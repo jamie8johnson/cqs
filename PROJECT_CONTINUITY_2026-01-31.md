@@ -1,18 +1,20 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T20:00Z
+Updated: 2026-01-31T22:30Z
 
 ## Current State
 
-**v0.1.5 published. Full MCP 2025-11-25 compliance with SSE. CI active.**
+**v0.1.5 published. Full MCP 2025-11-25 compliance. CI green. Branch protected.**
 
-- ~3000 lines across all modules
+- ~3000 lines across 7 modules
 - 21 tests passing
 - Published v0.1.3, v0.1.4, v0.1.5 to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
 - Automated dependency reviews active
-- CI workflow running (build, test, clippy, fmt)
+- CI workflow running (build, test, clippy, fmt) - all passing
 - GitHub release v0.1.5 created
+- Branch ruleset active (main requires CI, blocks force push)
+- 16-category audit completed (74 findings documented)
 
 ### Version History This Session
 
@@ -54,15 +56,18 @@ Updated: 2026-01-31T20:00Z
 4. Updated to MCP 2025-11-25 (v0.1.4)
 5. Added SSE stream support (v0.1.5)
 6. Added automated dependency reviews
-7. Full MD file review
-8. Published v0.1.5 to crates.io
-9. Added CI workflow, issue templates, GitHub release
+7. Published v0.1.5 to crates.io
+8. Added CI workflow, issue templates, GitHub release
+9. **16-category audit** - 74 findings (0 critical, 6 high, 29 medium, 39 low)
+10. **CI fixes** - dtolnay/rust-toolchain action, clippy warnings, .cargo/config.toml excluded
+11. **Branch ruleset** - main protection via GitHub API (require PR, require CI, block force push)
+12. Full MD file review and updates
 
 ## Next Steps
 
 1. Phase 4: HNSW for scale (>50k chunks)
 2. Monitor automated review results (weekly)
-3. Address any CI failures from first run
+3. Address audit HIGH findings (S1.1, C5.1, T8.1, D10.1-3)
 
 ## Blockers
 

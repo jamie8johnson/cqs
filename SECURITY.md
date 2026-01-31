@@ -45,6 +45,14 @@ cqs accesses:
 - **CI workflow**: Runs clippy with `-D warnings` to catch issues
 - **No secrets in CI**: Build and test only, no publish credentials exposed
 
+## Branch Protection
+
+The `main` branch is protected by a GitHub ruleset:
+
+- **Pull requests required**: All changes go through PR
+- **Status checks required**: `test`, `clippy`, `fmt` must pass
+- **Force push blocked**: History cannot be rewritten
+
 ## Reporting Vulnerabilities
 
 Report security issues to: https://github.com/jamie8johnson/cqs/issues
