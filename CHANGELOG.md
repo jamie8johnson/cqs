@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-01-31
+
+### Added
+- MCP: `semantic_only` parameter to disable RRF hybrid search when needed
+- MCP: HNSW index status in `cqs_stats` output
+
+### Changed
+- tree-sitter-rust: 0.23 -> 0.24
+- tree-sitter-python: 0.23 -> 0.25
+- Raised brute-force warning threshold from 50k to 100k chunks
+
+### Documentation
+- Simplified CLAUDE.md and tears system
+- Added docs/SCARS.md for failed approaches
+- Consolidated PROJECT_CONTINUITY.md (removed dated files)
+
 ## [0.1.10] - 2026-01-31
 
 ### Added
