@@ -31,6 +31,6 @@ cqs accesses:
 
 ## Reporting Vulnerabilities
 
-Report security issues to: https://github.com/jamie8johnson/cq/issues
+Report security issues to: https://github.com/jamie8johnson/cqs/issues
 
 Use a private security advisory for sensitive issues.

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Semantic code search with local embeddings"
 license = "MIT"
-repository = "https://github.com/jamie8johnson/cq"
+repository = "https://github.com/jamie8johnson/cqs"
 keywords = ["code-search", "embeddings", "semantic-search"]
 categories = ["command-line-utilities", "development-tools"]
 
