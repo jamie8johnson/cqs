@@ -1,0 +1,1149 @@
+# cq - Code Query
+
+**Version:** 0.6.1-draft  
+**Updated:** 2026-01-31T03:30:00Z
+
+Semantic search over local codebases using embeddings. Find patterns, not files.
+
+---
+
+## Problem
+
+Claude Code sees files it's told to see. Doesn't know project patterns. Reinvents instead of reuses.
+
+## Solution
+
+Embed code chunks, store locally, query semantically. "How does this project handle X?" returns actual examples from your code.
+
+## Design Principles
+
+1. **Zero setup** - `cargo install cq && cq init && cq index` works
+2. **Local only** - No accounts, no API keys, no data leaving machine
+3. **Fast** - GPU when available, CPU always works
+4. **Explicit** - No magic updates, user controls versioning
+5. **Multi-language** - Same tool, any codebase
+
+## Non-Goals
+
+- Not a replacement for grep/ripgrep (use those for exact matches)
+- Not cross-project search (one index per project)
+- Not a code intelligence server (no go-to-definition, no LSP)
+- Not macro-aware (sees invocation, not expansion)
+- Not multi-hop (single-chunk retrieval, user synthesizes)
+
+---
+
+## Architecture
+
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│   Parser     │────▶│   Embedder   │────▶│    Store     │
+│(tree-sitter) │     │ (ort + hf    │     │   (sqlite)   │
+│              │     │  tokenizers) │     │              │
+└──────────────┘     └──────────────┘     └──────────────┘
+       │                   │
+       │            ┌──────┴──────┐
+       │            │  Runtime    │
+       │            │  Detection  │
+       │            └─────────────┘
+       │            CUDA → TensorRT → CPU
+       │
+  ┌────┴────┐
+  │ Grammar │
+  │  Store  │
+  └─────────┘
+  rust, python, typescript, go...
+```
+
+**Why tree-sitter instead of syn?**
+
+| Factor | syn | tree-sitter |
+|--------|-----|-------------|
+| Languages | Rust only | 100+ languages |
+| Error recovery | Fails on invalid syntax | Parses broken/partial code |
+| Comments | Manual extraction | First-class nodes |
+| Ecosystem | Proc-macro focused | Editor/analysis focused |
+| FFI | Pure Rust | C library + Rust bindings |
+
+syn is excellent for proc-macros. tree-sitter is built for exactly what we're doing: parsing code for analysis. The C FFI is battle-tested (Helix, Zed, Neovim, GitHub).
+
+**Why ort + tokenizers instead of fastembed-rs?**
+
+fastembed-rs doesn't expose execution provider configuration. For GPU support, we need direct control over ort session creation.
+
+---
+
+## Model Details
+
+**Model:** nomic-embed-text-v1.5  
+**Source:** https://huggingface.co/nomic-ai/nomic-embed-text-v1.5  
+**License:** Apache 2.0  
+**Dimensions:** 768 (supports Matryoshka truncation to 512, 256)  
+**Context:** 8192 tokens  
+**Parameters:** 137M  
+
+**ONNX file:**
+- `onnx/model.onnx` - float32, ~523MB
+
+**Critical: Task prefixes required**
+
+nomic-embed-text requires task-specific prefixes for optimal performance:
+
+```
+# When indexing code chunks (documents)
+"search_document: fn retry_with_backoff<F, T>..."
+
+# When querying
+"search_query: retry with exponential backoff"
+```
+
+Without prefixes, retrieval quality degrades significantly. Non-negotiable.
+
+---
+
+## Components
+
+### 1. Parser (tree-sitter)
+
+**Input:** Source files (any supported language)  
+**Output:** Chunks with metadata
+
+Uses tree-sitter to parse source into concrete syntax trees (CST), then extracts semantic units.
+
+```rust
+pub struct Parser {
+    languages: HashMap<String, tree_sitter::Language>,
+}
+
+impl Parser {
+    pub fn new() -> Result<Self>;
+    pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>>;
+    pub fn supported_extensions(&self) -> &[&str];
+}
+
+pub struct Chunk {
+    id: String,              // {relative_path}:{line_start}
+    file: PathBuf,           // relative to project root
+    language: Language,
+    chunk_type: ChunkType,
+    name: String,
+    signature: String,       // function/method signature
+    content: String,         // full source text of the node
+    doc: Option<String>,     // doc comments (/// or /** */)
+    line_start: u32,
+    line_end: u32,
+    content_hash: String,    // blake3
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    Rust,
+    Python,
+    TypeScript,
+    JavaScript,
+    Go,
+    // Phase 2: C, Cpp, Java, Ruby, etc.
+}
+
+impl Language {
+    pub fn from_extension(ext: &str) -> Option<Self>;
+    pub fn grammar(&self) -> tree_sitter::Language;
+    pub fn comment_patterns(&self) -> &[&str];
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkType {
+    Function,
+    Method,
+    // Phase 2: Class, Struct, Enum, Trait, Interface, Module
+}
+```
+
+**Language detection:**
+
+```rust
+impl Language {
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext {
+            "rs" => Some(Language::Rust),
+            "py" | "pyi" => Some(Language::Python),
+            "ts" | "tsx" => Some(Language::TypeScript),
+            "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
+            "go" => Some(Language::Go),
+            _ => None,
+        }
+    }
+}
+```
+
+**tree-sitter query patterns (per language):**
+
+Each language needs a query to extract functions/methods. tree-sitter queries use S-expression patterns.
+
+```rust
+impl Language {
+    pub fn query_pattern(&self) -> &'static str {
+        match self {
+            Language::Rust => RUST_QUERY,
+            Language::Python => PYTHON_QUERY,
+            Language::TypeScript | Language::JavaScript => TYPESCRIPT_QUERY,
+            Language::Go => GO_QUERY,
+        }
+    }
+}
+
+// Rust: capture all function_item nodes
+const RUST_QUERY: &str = r#"
+(function_item
+  name: (identifier) @name) @function
+"#;
+
+// Python: capture all function_definition nodes
+const PYTHON_QUERY: &str = r#"
+(function_definition
+  name: (identifier) @name) @function
+"#;
+
+// TypeScript/JavaScript: functions, methods, arrow functions
+const TYPESCRIPT_QUERY: &str = r#"
+(function_declaration
+  name: (identifier) @name) @function
+
+(method_definition
+  name: (property_identifier) @name) @function
+
+;; Arrow function assigned to variable: const foo = () => {}
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function) @function))
+
+;; Arrow function assigned with var/let
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function) @function))
+
+;; Standalone arrow function (truly anonymous, e.g. callback)
+(arrow_function) @function
+"#;
+
+// Go: functions and methods
+const GO_QUERY: &str = r#"
+(function_declaration
+  name: (identifier) @name) @function
+
+(method_declaration
+  name: (field_identifier) @name) @function
+"#;
+```
+
+**Note on queries:**
+- `@function` captures the entire node (we extract content from this)
+- `@name` captures just the identifier (for display, optional for anonymous functions)
+- Use `query.capture_index_for_name()` to find captures by name, not by node kind
+- For Go, `infer_chunk_type()` checks node type directly; for others, checks parent chain
+
+**Chunk extraction:**
+
+```rust
+use tree_sitter::StreamingIterator;  // Required for query iteration
+
+impl Language {
+    pub fn grammar(&self) -> tree_sitter::Language {
+        match self {
+            Language::Rust => tree_sitter_rust::LANGUAGE.into(),
+            Language::Python => tree_sitter_python::LANGUAGE.into(),
+            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Language::Go => tree_sitter_go::LANGUAGE.into(),
+        }
+    }
+}
+
+impl Parser {
+    pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>> {
+        let source = std::fs::read_to_string(path)?;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        
+        let language = Language::from_extension(ext)
+            .ok_or_else(|| anyhow!("Unsupported file type: {}", ext))?;
+        
+        let grammar = language.grammar();
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&grammar)
+            .map_err(|e| anyhow!("Failed to set language: {:?}", e))?;
+        
+        let tree = parser.parse(&source, None)
+            .ok_or_else(|| anyhow!("Failed to parse {}", path.display()))?;
+        
+        let query = tree_sitter::Query::new(&grammar, language.query_pattern())
+            .map_err(|e| anyhow!("Invalid query: {:?}", e))?;
+        let mut cursor = tree_sitter::QueryCursor::new();
+        
+        // Note: matches() returns StreamingIterator, requires trait in scope
+        let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+        
+        let mut chunks = Vec::new();
+        
+        while let Some(m) = matches.next() {
+            let chunk = self.extract_chunk(&source, m, &query, language, path)?;
+            
+            // Skip chunks over 100 lines
+            let lines = chunk.line_end - chunk.line_start;
+            if lines > 100 {
+                tracing::warn!(
+                    "Skipping {} ({} lines > 100 max)",
+                    chunk.id, lines
+                );
+                continue;
+            }
+            
+            chunks.push(chunk);
+        }
+        
+        Ok(chunks)
+    }
+    
+    fn extract_chunk(
+        &self,
+        source: &str,
+        m: &tree_sitter::QueryMatch<'_, '_>,
+        query: &tree_sitter::Query,
+        language: Language,
+        path: &Path,
+    ) -> Result<Chunk> {
+        // Get capture indices by name from query
+        let func_idx = query.capture_index_for_name("function")
+            .ok_or_else(|| anyhow!("Query missing @function capture"))?;
+        let name_idx = query.capture_index_for_name("name");  // Optional for arrow functions
+        
+        // Find the function node by capture index
+        let func_capture = m.captures.iter()
+            .find(|c| c.index == func_idx)
+            .ok_or_else(|| anyhow!("Missing @function capture in match"))?;
+        let node = func_capture.node;
+        
+        // Find name by capture index (may not exist for anonymous functions)
+        let name = name_idx
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .map(|c| source[c.node.byte_range()].to_string())
+            .unwrap_or_else(|| "<anonymous>".to_string());
+        
+        // Extract content
+        let content = source[node.byte_range()].to_string();
+        
+        // Line numbers (1-indexed for display)
+        let line_start = node.start_position().row + 1;
+        let line_end = node.end_position().row + 1;
+        
+        // Extract signature (first line for most languages)
+        let signature = self.extract_signature(&content, language);
+        
+        // Extract doc comments (look at preceding siblings)
+        let doc = self.extract_doc_comment(node, source, language);
+        
+        // Determine chunk type from the captured node's parent context
+        let chunk_type = self.infer_chunk_type(node, language);
+        
+        let id = format!("{}:{}", path.display(), line_start);
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        
+        Ok(Chunk {
+            id,
+            file: path.to_path_buf(),
+            language,
+            chunk_type,
+            name,
+            signature,
+            content,
+            doc,
+            line_start: line_start as u32,
+            line_end: line_end as u32,
+            content_hash,
+        })
+    }
+    
+    fn infer_chunk_type(&self, node: tree_sitter::Node, language: Language) -> ChunkType {
+        // For Go, the node type itself determines function vs method
+        // method_declaration = has receiver, function_declaration = no receiver
+        if language == Language::Go {
+            return if node.kind() == "method_declaration" {
+                ChunkType::Method
+            } else {
+                ChunkType::Function
+            };
+        }
+        
+        // For other languages, check if function is inside a class/impl/struct body
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            let kind = parent.kind();
+            let is_method_container = match language {
+                Language::Rust => kind == "impl_item" || kind == "trait_item",
+                Language::Python => kind == "class_definition",
+                Language::TypeScript | Language::JavaScript => {
+                    kind == "class_body" || kind == "class_declaration"
+                }
+                Language::Go => unreachable!(),  // Handled above
+            };
+            if is_method_container {
+                return ChunkType::Method;
+            }
+            current = parent.parent();
+        }
+        ChunkType::Function
+    }
+    
+    fn extract_signature(&self, content: &str, language: Language) -> String {
+        // Extract up to first { or : (language dependent)
+        let sig_end = match language {
+            Language::Rust | Language::Go | Language::TypeScript | Language::JavaScript => {
+                content.find('{').unwrap_or(content.len())
+            }
+            Language::Python => {
+                content.find(':').unwrap_or(content.len())
+            }
+        };
+        
+        let sig = &content[..sig_end];
+        // Normalize whitespace
+        sig.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    
+    fn extract_doc_comment(
+        &self,
+        node: tree_sitter::Node,
+        source: &str,
+        language: Language,
+    ) -> Option<String> {
+        // Walk backwards through siblings looking for comments
+        let mut comments = Vec::new();
+        let mut current = node.prev_sibling();
+        
+        while let Some(sibling) = current {
+            let kind = sibling.kind();
+            
+            let is_doc = match language {
+                Language::Rust => kind == "line_comment" || kind == "block_comment",
+                Language::Python => kind == "string" || kind == "comment",  // docstrings
+                Language::TypeScript | Language::JavaScript => kind == "comment",
+                Language::Go => kind == "comment",
+            };
+            
+            if is_doc {
+                let text = &source[sibling.byte_range()];
+                comments.push(text.to_string());
+                current = sibling.prev_sibling();
+            } else if sibling.kind().contains("comment") {
+                // Keep looking
+                current = sibling.prev_sibling();
+            } else {
+                break;
+            }
+        }
+        
+        if comments.is_empty() {
+            // For Python, also check for docstring as first statement in body
+            if language == Language::Python {
+                if let Some(body) = node.child_by_field_name("body") {
+                    // Use named_child to skip whitespace/comments
+                    if let Some(first) = body.named_child(0) {
+                        if first.kind() == "expression_statement" {
+                            if let Some(string) = first.named_child(0) {
+                                if string.kind() == "string" {
+                                    return Some(source[string.byte_range()].to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+        
+        comments.reverse();
+        Some(comments.join("\n"))
+    }
+}
+```
+
+**Project root detection:**
+- Walk up from CWD looking for:
+  - `Cargo.toml` (Rust)
+  - `package.json` (JS/TS)
+  - `pyproject.toml` or `setup.py` (Python)
+  - `go.mod` (Go)
+  - `.git`
+- If found, that's project root
+- If not found, use CWD but warn
+
+**Path handling:**
+- Store paths relative to `.cq/` parent directory
+- Normalize to forward slashes on all platforms
+- On index: resolve relative to project root
+- On query: display as stored
+
+### 2. Embedder
+
+**ort for inference, tokenizers for encoding. Runtime GPU detection.**
+
+```rust
+pub struct Embedder {
+    session: ort::Session,
+    tokenizer: tokenizers::Tokenizer,
+    provider: ExecutionProvider,
+    max_length: usize,  // 8192 for nomic
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ExecutionProvider {
+    CUDA { device_id: i32 },
+    TensorRT { device_id: i32 },
+    CPU,
+}
+
+impl Embedder {
+    pub fn new() -> Result<Self>;
+    pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>>;
+    pub fn embed_query(&self, text: &str) -> Result<Embedding>;
+    pub fn provider(&self) -> ExecutionProvider;
+    pub fn warm(&self) -> Result<()>;  // dummy inference to load model
+}
+
+pub struct Embedding(pub Vec<f32>);  // 768 dimensions
+```
+
+**Execution provider selection:**
+
+```rust
+use ort::execution_providers::{
+    CUDAExecutionProvider, TensorRTExecutionProvider, ExecutionProvider as EP,
+};
+
+fn select_provider() -> ExecutionProvider {
+    // Try in order, first available wins
+    // Note: is_available() returns Result<bool>
+    
+    let cuda = CUDAExecutionProvider::default();
+    if cuda.is_available().unwrap_or(false) {
+        return ExecutionProvider::CUDA { device_id: 0 };
+    }
+    
+    let tensorrt = TensorRTExecutionProvider::default();
+    if tensorrt.is_available().unwrap_or(false) {
+        return ExecutionProvider::TensorRT { device_id: 0 };
+    }
+    
+    ExecutionProvider::CPU
+}
+```
+
+**Session creation:**
+
+```rust
+use ort::{Session, Tensor};
+use ndarray::Array2;
+
+fn create_session(model_path: &Path, provider: ExecutionProvider) -> Result<Session> {
+    let builder = Session::builder()?;
+    
+    match provider {
+        ExecutionProvider::CUDA { device_id } => {
+            builder.with_execution_providers([
+                CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build()
+            ])?
+        }
+        ExecutionProvider::TensorRT { device_id } => {
+            builder.with_execution_providers([
+                TensorRTExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build(),
+                // Fallback to CUDA for unsupported ops
+                CUDAExecutionProvider::default()
+                    .with_device_id(device_id)
+                    .build()
+            ])?
+        }
+        ExecutionProvider::CPU => builder,
+    }
+    .commit_from_file(model_path)
+}
+```
+
+**Model + tokenizer download (using hf-hub crate):**
+
+```rust
+use hf_hub::api::sync::Api;
+
+const MODEL_REPO: &str = "nomic-ai/nomic-embed-text-v1.5";
+const MODEL_FILE: &str = "onnx/model.onnx";  // ~523MB float32
+const TOKENIZER_FILE: &str = "tokenizer.json";
+
+fn ensure_model() -> Result<(PathBuf, PathBuf)> {
+    // hf-hub handles caching automatically (~/.cache/huggingface/hub/)
+    let api = Api::new()?;
+    let repo = api.model(MODEL_REPO.to_string());
+    
+    let model_path = repo.get(MODEL_FILE)?;
+    let tokenizer_path = repo.get(TOKENIZER_FILE)?;
+    
+    Ok((model_path, tokenizer_path))
+}
+```
+
+**ONNX tensor interface:**
+
+```rust
+// Inputs:
+//   - input_ids: INT32, shape [batch, seq_len]
+//   - attention_mask: INT32, shape [batch, seq_len]
+//
+// Outputs:
+//   - token_embeddings: FP32, shape [batch, seq_len, 768] - per-token
+//   - sentence_embedding: FP32, shape [batch, 768] - PRE-POOLED, use this
+```
+
+**Embedding with task prefixes:**
+
+```rust
+impl Embedder {
+    /// Embed documents (code chunks). Adds "search_document: " prefix.
+    pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>> {
+        let prefixed: Vec<String> = texts
+            .iter()
+            .map(|t| format!("search_document: {}", t))
+            .collect();
+        self.embed_batch(&prefixed)
+    }
+    
+    /// Embed a query. Adds "search_query: " prefix.
+    pub fn embed_query(&self, text: &str) -> Result<Embedding> {
+        let prefixed = format!("search_query: {}", text);
+        let results = self.embed_batch(&[prefixed])?;
+        Ok(results.into_iter().next().unwrap())
+    }
+    
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>> {
+        // Tokenize
+        let encodings = self.tokenizer.encode_batch(texts.to_vec(), true)
+            .map_err(|e| anyhow!("Tokenization failed: {}", e))?;
+        
+        // Prepare inputs - note INT32 not i64
+        let input_ids: Vec<Vec<i32>> = encodings
+            .iter()
+            .map(|e| e.get_ids().iter().map(|&id| id as i32).collect())
+            .collect();
+        let attention_mask: Vec<Vec<i32>> = encodings
+            .iter()
+            .map(|e| e.get_attention_mask().iter().map(|&m| m as i32).collect())
+            .collect();
+        
+        // Pad to max length in batch
+        let max_len = input_ids.iter().map(|v| v.len()).max().unwrap_or(0);
+        
+        // Create padded arrays
+        let input_ids_arr = pad_2d_i32(&input_ids, max_len, 0);
+        let attention_mask_arr = pad_2d_i32(&attention_mask, max_len, 0);
+        
+        // Run inference - ort 2.x inputs! macro accepts arrays directly
+        let outputs = self.session.run(ort::inputs![
+            "input_ids" => input_ids_arr,
+            "attention_mask" => attention_mask_arr,
+        ])?;
+        
+        // Use sentence_embedding directly - it's pre-pooled
+        // ort 2.x: try_extract_array returns ArrayViewD<f32>
+        let embeddings: ndarray::ArrayViewD<f32> = outputs["sentence_embedding"]
+            .try_extract_array()?;
+        
+        // L2 normalize - use axis_iter for dynamic-dimension arrays
+        Ok(embeddings
+            .axis_iter(ndarray::Axis(0))
+            .map(|row| {
+                let v: Vec<f32> = row.iter().copied().collect();
+                Embedding(normalize_l2(v))
+            })
+            .collect())
+    }
+}
+
+fn pad_2d_i32(inputs: &[Vec<i32>], max_len: usize, pad_value: i32) -> Array2<i32> {
+    let batch_size = inputs.len();
+    let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
+    for (i, seq) in inputs.iter().enumerate() {
+        for (j, &val) in seq.iter().enumerate() {
+            arr[[i, j]] = val;
+        }
+    }
+    arr
+}
+
+fn normalize_l2(v: Vec<f32>) -> Vec<f32> {
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm == 0.0 { v } else { v.into_iter().map(|x| x / norm).collect() }
+}
+```
+
+**Similarity (optimized for normalized vectors):**
+
+```rust
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    // Both vectors are L2-normalized, so cosine = dot product
+    debug_assert!((a.iter().map(|x| x * x).sum::<f32>().sqrt() - 1.0).abs() < 0.01);
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+```
+
+**Batching:**
+- Batch size: 16 (GPU), 4 (CPU)
+- On failure: retry individual items
+- Log failures, continue, report summary
+
+**Token limit handling:**
+- Max 8192 tokens per input
+- Estimate: chars / 4
+- Truncate content if over, warn in logs
+
+### 3. Store
+
+**sqlite with WAL mode, BLOB embeddings, brute-force search**
+
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=5000;
+
+CREATE TABLE metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE chunks (
+    id TEXT PRIMARY KEY,
+    file TEXT NOT NULL,
+    language TEXT NOT NULL,
+    chunk_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    doc TEXT,
+    line_start INTEGER NOT NULL,
+    line_end INTEGER NOT NULL,
+    embedding BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_chunks_file ON chunks(file);
+CREATE INDEX idx_chunks_content_hash ON chunks(content_hash);
+CREATE INDEX idx_chunks_name ON chunks(name);
+CREATE INDEX idx_chunks_language ON chunks(language);
+```
+
+**Metadata keys:**
+- `schema_version` - for migrations (start at 1)
+- `model_name` - "nomic-embed-text-v1.5"
+- `dimensions` - 768
+- `created_at` - index creation time
+- `updated_at` - last modification
+- `cq_version` - cq version that created index
+
+**Operations:**
+
+```rust
+impl Store {
+    fn open(path: &Path) -> Result<Self>;
+    fn init(&self, model_info: &ModelInfo) -> Result<()>;
+    fn upsert_chunk(&self, chunk: &Chunk, embedding: &Embedding) -> Result<()>;
+    fn delete_by_file(&self, file: &Path) -> Result<u32>;
+    fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32>;
+    fn get_by_content_hash(&self, hash: &str) -> Option<Embedding>;
+    fn search(&self, query: &Embedding, limit: usize, threshold: f32) -> Result<Vec<SearchResult>>;
+    fn search_filtered(&self, query: &Embedding, filter: &SearchFilter, limit: usize) -> Result<Vec<SearchResult>>;
+    fn stats(&self) -> Result<IndexStats>;
+}
+
+struct SearchFilter {
+    languages: Option<Vec<Language>>,
+    path_pattern: Option<String>,  // glob
+}
+
+struct SearchResult {
+    chunk: ChunkSummary,
+    score: f32,
+}
+```
+
+**Embedding storage:**
+- Store as BLOB (3072 bytes for 768 f32s)
+- Little-endian byte order
+- Compress in Phase 2 if needed
+
+**Search (brute force):**
+
+```rust
+fn search(&self, query: &Embedding, limit: usize, threshold: f32) -> Result<Vec<SearchResult>> {
+    let mut results: Vec<SearchResult> = self.conn
+        .prepare("SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding FROM chunks")?
+        .query_map([], |row| {
+            let embedding_bytes: Vec<u8> = row.get(10)?;
+            let embedding = bytes_to_embedding(&embedding_bytes);
+            let score = cosine_similarity(&query.0, &embedding);
+            Ok((row, score))
+        })?
+        .filter_map(|r| r.ok())
+        .filter(|(_, score)| *score >= threshold)
+        .map(|(row, score)| SearchResult {
+            chunk: ChunkSummary::from_row(&row),
+            score,
+        })
+        .collect();
+    
+    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    results.truncate(limit);
+    Ok(results)
+}
+```
+
+### 4. CLI
+
+```
+cq - semantic code search
+
+USAGE:
+    cq [OPTIONS] <QUERY>
+    cq <COMMAND>
+
+COMMANDS:
+    init          Download model and create .cq/
+    doctor        Check model, index, hardware
+    index         Index current project
+    stats         Show index statistics
+    config        Show/edit configuration
+    update-model  Download latest model
+    help          Show help
+
+QUERY OPTIONS:
+    -n, --limit <N>       Max results (default: 5)
+    -t, --threshold <F>   Min similarity (default: 0.3)
+    -l, --lang <LANG>     Filter by language (rust, python, ts, go)
+    -p, --path <GLOB>     Filter by path pattern
+    --json                Output as JSON
+    --no-content          Show only file:line, no code
+
+GLOBAL OPTIONS:
+    -q, --quiet           Suppress progress output
+    -v, --verbose         Show debug info
+    -V, --version         Show version
+```
+
+**cq init**
+
+```
+$ cq init
+
+Initializing cq...
+Downloading model (~523MB)... ████████████████████ done
+Downloading tokenizer... done
+Detecting hardware... NVIDIA RTX A6000 (CUDA)
+Created .cq/
+
+Run 'cq index' to index your codebase.
+```
+
+**cq doctor**
+
+```
+$ cq doctor
+
+Runtime:
+  [✓] Model: nomic-embed-text-v1.5
+  [✓] Tokenizer: loaded
+  [✓] Execution: CUDA (NVIDIA RTX A6000, 48GB)
+  [✓] Test embedding: 12ms
+
+Parser:
+  [✓] tree-sitter: loaded
+  [✓] Languages: rust, python, typescript, javascript, go
+
+Index:
+  [✓] Location: .cq/index.db
+  [✓] Schema version: 1
+  [✓] 847 chunks indexed (412 rust, 290 python, 145 typescript)
+  [✓] Last updated: 2 hours ago
+
+All checks passed.
+```
+
+**cq index**
+
+```
+$ cq index
+
+Scanning files...
+Found 156 files (89 .rs, 42 .py, 25 .ts)
+
+Parsing...
+├─ src/     [████████████████████] 89/89
+├─ scripts/ [████████████████████] 42/42
+└─ web/     [████████████████████] 25/25
+
+Embedding (CUDA)...
+[████████████████████] 847/847 chunks
+
+Index complete:
+  Functions: 623
+  Methods: 224
+  Skipped (>100 lines): 3
+
+Time: 12.4s (68 chunks/sec)
+```
+
+**cq <query>**
+
+```
+$ cq retry with backoff
+
+src/utils/retry.rs:24 (fn retry_with_backoff) [rust] [0.89]
+─────────────────────────────────────────────────
+/// Retries an async operation with exponential backoff.
+pub async fn retry_with_backoff<T, E, F, Fut>(
+    operation: F,
+    max_attempts: u32,
+    base_delay: Duration,
+) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    ...
+}
+
+scripts/api_client.py:156 (def fetch_with_retry) [python] [0.81]
+─────────────────────────────────────────────────
+def fetch_with_retry(self, url: str, max_retries: int = 3) -> Response:
+    """Fetches URL with exponential backoff on failure."""
+    ...
+
+2 results (23ms)
+```
+
+**cq --lang rust <query>**
+
+```
+$ cq --lang rust database connection pool
+
+src/db/pool.rs:12 (fn create_pool) [rust] [0.87]
+─────────────────────────────────────────────────
+/// Creates a connection pool with the given configuration.
+pub fn create_pool(config: &DbConfig) -> Result<Pool<Postgres>> {
+    ...
+}
+
+1 result (18ms)
+```
+
+---
+
+## Configuration
+
+```
+~/.config/cq/config.toml     # global defaults
+<project>/.cq/config.toml    # project overrides
+```
+
+```toml
+# .cq/config.toml
+
+[index]
+# Patterns are per-language globs
+include = [
+    "src/**/*.rs",
+    "lib/**/*.py",
+    "src/**/*.ts",
+]
+exclude = [
+    "target/**",
+    "**/generated/**",
+    "**/*_test.rs",
+    "**/__pycache__/**",
+    "**/node_modules/**",
+]
+max_chunk_lines = 100
+
+[embedding]
+# Auto-detected, but can force:
+# provider = "cpu"  # or "cuda"
+batch_size_gpu = 16
+batch_size_cpu = 4
+
+[query]
+default_limit = 5
+default_threshold = 0.3
+
+[output]
+color = true
+```
+
+---
+
+## Directory Structure
+
+**Global cache:**
+```
+~/.cache/cq/
+├── models/
+│   └── nomic-embed-text-v1.5/
+│       ├── model.onnx
+│       ├── tokenizer.json
+│       └── manifest.json
+```
+
+**Per-project:**
+```
+.cq/
+├── config.toml    # optional project config  
+├── index.db       # sqlite database
+└── .gitignore     # contains: index.db
+```
+
+---
+
+## Dependencies
+
+```toml
+[package]
+name = "cq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Parsing (tree-sitter)
+tree-sitter = "0.26"
+tree-sitter-rust = "0.23"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.25"
+tree-sitter-go = "0.23"
+
+# ML
+ort = { version = "2", features = ["cuda", "tensorrt"] }
+tokenizers = { version = "0.22", features = ["http"] }
+hf-hub = "0.4"
+ndarray = "0.16"
+
+# Async
+tokio = { version = "1", features = ["rt-multi-thread", "fs"] }
+
+# Storage
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Utilities
+blake3 = "1"
+glob = "0.3"
+colored = "2"
+indicatif = "0.17"
+anyhow = "1"
+thiserror = "2"
+dirs = "5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+insta = "1"
+
+# Note: cc is a transitive build dependency of tree-sitter grammar crates.
+# No need to declare it directly - cargo handles this automatically.
+```
+
+**Build notes:**
+- tree-sitter grammars compile C code via `cc` crate (transitive dependency)
+- Adds ~500KB base + ~2-3MB per grammar to binary
+- Cross-compilation needs C toolchain for target
+- Windows/macOS/Linux all supported
+
+---
+
+## Implementation Phases
+
+### Phase 1: MVP
+
+1. **Parser** - tree-sitter, Rust + Python + TypeScript + Go
+2. **Embedder** - ort + tokenizers, CUDA/CPU detection, model download
+3. **Store** - sqlite, BLOB, brute-force search
+4. **CLI** - init, doctor, index, query, stats, --lang filter
+5. **Eval** - 10 queries per language, measure recall
+
+**Exit criteria:**
+- `cargo install cq` works
+- GPU used when available, CPU fallback works
+- 8/10 test queries return relevant results per language
+- Index survives Ctrl+C during indexing
+
+### Phase 2: Polish
+
+1. More chunk types (classes, structs, interfaces)
+2. More languages (C, C++, Java, Ruby)
+3. Path filtering (`cq "error" --path "src/api/**"`)
+4. Hybrid search (embedding + name text match)
+5. Watch mode (`cq watch`)
+6. Stale file detection in doctor
+
+### Phase 3: Integration
+
+1. MCP tool for Claude Code
+2. `--context N` to show surrounding code
+3. VS Code extension
+4. Language server hints
+
+### Phase 4: Scale
+
+1. HNSW index for >50k chunks
+2. Incremental embedding updates
+3. Index sharing (team sync)
+
+---
+
+## Known Limitations
+
+1. **Macros** - Sees invocation, not expanded code
+2. **Large functions** - >100 lines skipped
+3. **Negation** - "without X" not supported
+4. **Multi-hop** - Single-chunk retrieval only
+5. **Offline** - First run requires network for model download
+6. **Error recovery** - tree-sitter tolerates broken code, but extracted chunks may be incomplete
+
+---
+
+## Security
+
+1. **No telemetry** - Nothing leaves your machine except model download
+2. **Local storage** - Embeddings stored locally only
+3. **Embeddings are lossy** - Can't reconstruct code from embeddings, but can hint at content
+4. **Model verification** - SHA256 checksum on download
+5. **C FFI** - tree-sitter is widely audited (GitHub, editors)
+
+---
+
+## Changelog
+
+- **0.6.1-draft (2026-01-31)**: Audit fixes: Updated ort 2.x API (`try_extract_array`, `axis_iter`), improved query capture finding by index, enhanced TypeScript arrow function queries, fixed Go method detection, improved Python docstring extraction with `named_child`, clarified cc transitive dependency.
+- **0.6.0-draft (2026-01-31)**: Replaced syn with tree-sitter for multi-language support. Added Python, TypeScript, JavaScript, Go. Updated dependencies. Simplified ExecutionProvider enum (removed CoreML/DirectML from MVP).
+- **0.5.1-draft (2026-01-30)**: Verified TBDs: sentence_embedding is pre-pooled, use hf-hub crate for downloads.
+- **0.5.0-draft (2026-01-30)**: Corrected ONNX tensor names. Fixed input dtype to INT32.
+- **0.4.0-draft**: Use ort + tokenizers directly for GPU support.
+- **0.3.0-draft**: Attempted fastembed-rs, discovered GPU limitation.
+- **0.2.0-draft**: Doctor, prune, deduplication, versioning.
+- **0.1.0-draft**: Initial design with Ollama.
