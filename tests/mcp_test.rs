@@ -59,7 +59,11 @@ fn test_initialize() {
     let response = server.handle_request(request);
 
     // Should succeed
-    assert!(response.error.is_none(), "Expected success, got error: {:?}", response.error);
+    assert!(
+        response.error.is_none(),
+        "Expected success, got error: {:?}",
+        response.error
+    );
     assert!(response.result.is_some());
 
     let result = response.result.unwrap();
@@ -109,7 +113,11 @@ fn test_tools_call_stats() {
 
     let response = server.handle_request(request);
 
-    assert!(response.error.is_none(), "Stats call failed: {:?}", response.error);
+    assert!(
+        response.error.is_none(),
+        "Stats call failed: {:?}",
+        response.error
+    );
     let result = response.result.unwrap();
 
     // Should have content array with text
@@ -119,7 +127,11 @@ fn test_tools_call_stats() {
 
     // Text should contain stats info
     let text = content[0]["text"].as_str().unwrap();
-    assert!(text.contains("chunks") || text.contains("Total"), "Stats text should mention chunks: {}", text);
+    assert!(
+        text.contains("chunks") || text.contains("Total"),
+        "Stats text should mention chunks: {}",
+        text
+    );
 }
 
 #[test]

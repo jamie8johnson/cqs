@@ -458,7 +458,9 @@ impl Store {
 
                 // Apply path filter in Rust (glob matching)
                 if let Some(ref pattern) = filter.path_pattern {
-                    if let Ok(glob_pattern) = globset::Glob::new(pattern).map(|g| g.compile_matcher()) {
+                    if let Ok(glob_pattern) =
+                        globset::Glob::new(pattern).map(|g| g.compile_matcher())
+                    {
                         // Extract file path from chunk id (format: path:line:hash)
                         let file_part = chunk.id.split(':').next().unwrap_or("");
                         if !glob_pattern.is_match(file_part) {
