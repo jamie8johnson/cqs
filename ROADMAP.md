@@ -2,7 +2,7 @@
 
 ## Current Phase: 1 (MVP)
 
-### Status: Implementation Complete, Testing In Progress
+### Status: Core Functionality Tested, MCP Testing Next
 
 ### Done
 
@@ -14,16 +14,18 @@
 - [x] CLI - init, doctor, index, query, stats, serve, --lang filter
 - [x] MCP - cqs serve with stdio, cqs_search + cqs_stats tools
 - [x] Published to crates.io as `cqs` v0.1.0
-- [ ] Integration tests - end-to-end with real model
+- [x] End-to-end testing - init, index, search all working
+- [ ] MCP integration test - with Claude Code
 - [ ] Eval suite - 10 queries/lang, measure recall@5
 
 ### Exit Criteria
 
 - [x] `cargo install cqs` works (published v0.1.0)
-- [ ] GPU used when available, CPU fallback works (implemented, needs testing)
+- [x] CPU fallback works (~20ms per embedding)
+- [ ] GPU works when available (CUDA setup documented, WSL2 intermittent)
 - [ ] 8/10 eval queries return relevant result in top-5 per language
 - [ ] Index survives Ctrl+C during indexing (implemented, needs testing)
-- [ ] MCP works with Claude Code (implemented, needs testing)
+- [ ] MCP works with Claude Code (implemented, testing next)
 
 ## Phase 2: Polish
 

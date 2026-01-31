@@ -63,3 +63,15 @@ Model verification skeleton exists but SHA256 constants are empty TODOs. Need to
 New two-phase search (id+embedding first, content second) reduces memory but adds a second SQL query. For small indexes this might be slower. Could add threshold: single-phase for <10k chunks, two-phase above.
 
 ---
+
+## 2026-01-31 - WSL2 CUDA is fragile
+
+GPU visibility in WSL2 can drop randomly. nvidia-smi works, then doesn't. Installing CUDA packages can disrupt the connection. CPU fallback saves us, but GPU acceleration in WSL2 shouldn't be promised - only "works when it works."
+
+---
+
+## 2026-01-31 - ONNX model input/output assumptions
+
+nomic-embed-text-v1.5 ONNX model needs: i64 inputs (not i32), token_type_ids (all zeros), and outputs last_hidden_state (not sentence_embedding). These aren't obvious from docs. If switching models, verify inputs/outputs with the model directly - don't assume they're standard.
+
+---
