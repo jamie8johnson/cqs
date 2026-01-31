@@ -159,10 +159,10 @@
 
 ### Planned
 
-- [ ] C and Java language support
-  - tree-sitter-c, tree-sitter-java grammars
-  - C: function_definition, struct_specifier
-  - Java: method_declaration, class_declaration, interface_declaration
+- [ ] Code→NL→Embed pipeline (Greptile insight: translate code to NL before embedding)
+- [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
+- [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs nomic)
+- [ ] MCP tests, CLI integration tests
 
 ## Phase 6: Security
 

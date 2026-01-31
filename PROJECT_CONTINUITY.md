@@ -2,11 +2,14 @@
 
 ## Right Now
 
-Completed 16-category audit. No critical/high issues. Medium: missing MCP tests, missing CLI integration tests. Ready to bundle changes into PR.
+Competitor analysis done. Key insight: Greptile translates code→NL before embedding for better results.
 
 ## Parked
 
 - C and Java language support (no user requests yet)
+- Code→NL→Embed pipeline (Greptile approach) - high priority improvement
+- Code-specific embedding model (CodeSage, Qwen3-Embedding)
+- Call graph analysis (grepai has this)
 
 ## Open Questions
 

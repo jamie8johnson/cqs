@@ -287,3 +287,9 @@ Store normalized text in FTS5, query with same normalization.
 The MCP `tools/list` response defines all available parameters for each tool. When adding new params like `semantic_only`, update the schema in `handle_tools_list()` in mcp.rs. The README and CLAUDE.md should reflect these but the schema is authoritative. Claude Code reads the schema directly.
 
 ---
+
+## 2026-01-31 - Greptile insight: code→NL→embed
+
+Greptile found that "semantic search on codebases works better if you first translate the code to natural language, before generating embedding vectors." Naive chunking by file/function yields poor results. They translate code→NL→embed. This could significantly improve our search quality. Competitors: SeaGOAT (Python/ChromaDB), CodeGrok MCP, grepai (call graphs).
+
+---
