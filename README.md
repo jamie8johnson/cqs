@@ -14,6 +14,11 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 cargo install cqs
 ```
 
+**Upgrading from v0.1.9 or earlier?** Rebuild your index to enable hybrid search:
+```bash
+cqs index --force
+```
+
 ## Quick Start
 
 ```bash
@@ -45,8 +50,8 @@ cqs --path "**/*.go" "interface"
 # Combined
 cqs --lang typescript --path "src/api/*" "authentication"
 
-# Hybrid search (boost name matches)
-cqs --name-boost 0.5 "parse"    # Names containing "parse" ranked higher
+# Hybrid search tuning
+cqs --name-boost 0.5 "parse"    # Boost name matches (default: 0.2)
 
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result
@@ -166,12 +171,16 @@ cqs index --dry-run    # Show what would be indexed
    - Constants
 2. Generates embeddings with nomic-embed-text-v1.5 (runs locally)
    - Includes doc comments for better semantic matching
-3. Stores in SQLite with vector search
-4. Uses GPU if available, falls back to CPU
+3. Stores in SQLite with vector search + FTS5 keyword index
+4. **Hybrid search (RRF)**: Combines semantic similarity with keyword matching
+   - Semantic search finds conceptually related code
+   - Keyword search catches exact identifier matches (e.g., `parseConfig`)
+   - Reciprocal Rank Fusion merges both rankings for best results
+5. Uses GPU if available, falls back to CPU
 
 ## Search Quality
 
-Semantic search finds conceptually related code:
+Hybrid search (RRF) combines semantic understanding with keyword matching:
 
 | Query | Top Match | Score |
 |-------|-----------|-------|
