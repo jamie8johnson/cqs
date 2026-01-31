@@ -41,3 +41,8 @@ Rust, Python, TypeScript, JavaScript, Go
 - Windows files at `/mnt/c/`
 - Tools: `gh` CLI, `cargo`, Rust toolchain
 - A6000 GPU (48GB VRAM) for CUDA testing
+
+## WSL Workarounds
+
+- **Git push**: Use `powershell.exe -Command "cd C:\projects\cq; git push"` - Windows has credentials configured
+- **Cargo build**: `.cargo/config.toml` sets `target-dir` to native Linux path to avoid permission issues on `/mnt/c/`
