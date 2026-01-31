@@ -18,6 +18,15 @@ If `docs/` doesn't exist or any listed files are missing, create them from the t
 As audits/reviews happen, add them here:
 * `docs/AUDIT_<date>.md` -- audit findings and resolutions
 
+## Keep Updated
+
+When making changes that affect these, update them:
+
+* `README.md` -- usage examples, supported languages, install instructions
+* `SECURITY.md` -- network requests, file access, data storage
+* `PRIVACY.md` -- what data is stored, telemetry (none), data deletion
+* `ROADMAP.md` -- phase progress, what's done/next
+
 ## Tears (Session Continuity)
 
 * `PROJECT_CONTINUITY_<date>.md` -- current state, blockers, next steps (read to resume)
