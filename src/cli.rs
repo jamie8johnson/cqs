@@ -145,10 +145,20 @@ enum Commands {
         #[arg(long)]
         project: Option<PathBuf>,
     },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 pub fn run() -> Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    // Load config and apply defaults (CLI flags override config)
+    let config = cqs::config::Config::load(&find_project_root());
+    apply_config_defaults(&mut cli, &config);
 
     match cli.command {
         Some(Commands::Init) => cmd_init(&cli),
@@ -168,6 +178,10 @@ pub fn run() -> Result<()> {
             port,
             ref project,
         }) => cmd_serve(&cli, transport, port, project.clone()),
+        Some(Commands::Completions { shell }) => {
+            cmd_completions(shell);
+            Ok(())
+        }
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -176,6 +190,38 @@ pub fn run() -> Result<()> {
                 Ok(())
             }
         },
+    }
+}
+
+/// Apply config file defaults to CLI options
+/// CLI flags always override config values
+fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config) {
+    // Only apply config if CLI has default values
+    // (we can't detect if user explicitly passed the default, so this is imperfect)
+    if cli.limit == 5 {
+        if let Some(limit) = config.limit {
+            cli.limit = limit;
+        }
+    }
+    if (cli.threshold - 0.3).abs() < f32::EPSILON {
+        if let Some(threshold) = config.threshold {
+            cli.threshold = threshold;
+        }
+    }
+    if (cli.name_boost - 0.2).abs() < f32::EPSILON {
+        if let Some(name_boost) = config.name_boost {
+            cli.name_boost = name_boost;
+        }
+    }
+    if !cli.quiet {
+        if let Some(true) = config.quiet {
+            cli.quiet = true;
+        }
+    }
+    if !cli.verbose {
+        if let Some(true) = config.verbose {
+            cli.verbose = true;
+        }
     }
 }
 
@@ -291,23 +337,68 @@ fn parse_files(parser: &CqParser, root: &Path, files: &[PathBuf]) -> Vec<cqs::pa
         .collect()
 }
 
+/// Check if a process with the given PID exists
+#[cfg(unix)]
+fn process_exists(pid: u32) -> bool {
+    // kill with signal 0 checks if process exists without sending a signal
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+#[cfg(windows)]
+fn process_exists(pid: u32) -> bool {
+    use std::process::Command;
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
 /// Acquire file lock to prevent concurrent indexing
+/// Writes PID to lock file for stale lock detection
 fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
     use fs4::fs_std::FileExt;
+    use std::io::Write;
 
     let lock_path = cq_dir.join("index.lock");
+
+    // Try to open/create the lock file
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
+        .read(true)
         .write(true)
         .open(&lock_path)
         .context("Failed to create lock file")?;
 
-    lock_file.try_lock_exclusive().map_err(|_| {
-        anyhow::anyhow!("Another cq process is indexing. Wait or remove .cq/index.lock")
-    })?;
-
-    Ok(lock_file)
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => {
+            // Write our PID to the lock file
+            let mut file = lock_file;
+            writeln!(file, "{}", std::process::id())?;
+            file.sync_all()?;
+            Ok(file)
+        }
+        Err(_) => {
+            // Lock is held - check if the owning process is still alive
+            if let Ok(content) = std::fs::read_to_string(&lock_path) {
+                if let Ok(pid) = content.trim().parse::<u32>() {
+                    if !process_exists(pid) {
+                        // Stale lock - process is dead, remove and retry
+                        tracing::warn!("Removing stale lock (PID {} no longer exists)", pid);
+                        drop(lock_file);
+                        std::fs::remove_file(&lock_path)?;
+                        // Recursive retry (once)
+                        return acquire_index_lock(cq_dir);
+                    }
+                }
+            }
+            bail!(
+                "Another cqs process is indexing (see .cq/index.lock). \
+                 Hint: Wait for it to finish, or delete .cq/index.lock if the process crashed."
+            )
+        }
+    }
 }
 
 // === Commands ===
@@ -645,14 +736,21 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                 };
                 let hnsw_results = hnsw.search(&query_embedding, oversample);
 
-                // Apply filters and threshold using Store's search on candidate set
-                // For now, fall back to brute-force if we have filters
-                // TODO: optimize by fetching only candidate chunks from Store
+                // Use HNSW candidates for filtered search (10-100x faster than brute-force)
                 if filter.languages.is_some()
                     || filter.path_pattern.is_some()
                     || filter.name_boost > 0.0
                 {
-                    store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
+                    // Extract candidate IDs from HNSW results
+                    let candidate_ids: Vec<&str> =
+                        hnsw_results.iter().map(|r| r.id.as_str()).collect();
+                    store.search_by_candidate_ids(
+                        &candidate_ids,
+                        &query_embedding,
+                        &filter,
+                        cli.limit,
+                        cli.threshold,
+                    )?
                 } else {
                     // No filters - use HNSW results directly, just filter by threshold
                     hnsw_results
@@ -864,7 +962,10 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                bail!("File watcher disconnected");
+                bail!(
+                    "File watcher disconnected unexpectedly. \
+                     Hint: Restart 'cqs watch' to resume monitoring."
+                );
             }
         }
 
@@ -959,6 +1060,11 @@ fn cmd_serve(_cli: &Cli, transport: &str, port: u16, project: Option<PathBuf>) -
             bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
         }
     }
+}
+
+fn cmd_completions(shell: clap_complete::Shell) {
+    use clap::CommandFactory;
+    clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
 }
 
 // === Output helpers ===

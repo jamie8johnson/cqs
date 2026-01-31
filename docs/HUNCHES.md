@@ -169,3 +169,45 @@ We depend on fast-moving projects:
 Added r2d2-sqlite with max 4 connections. This is arbitrary. For CPU-bound embedding work, more connections don't help (bottleneck is GPU/CPU, not DB). For pure search workloads (parallel queries), more connections could help. Monitor if users report connection pool exhaustion errors.
 
 ---
+
+## 2026-01-31 - Brute-force search will hit a wall
+
+**RESOLVED 2026-01-31:** HNSW index added in v0.1.8. O(log n) search with hnsw_rs. Falls back to brute-force when filters are active (can't pre-filter HNSW candidates efficiently yet).
+
+---
+
+## 2026-01-31 - hnsw_rs lifetime design forces reload on search
+
+The hnsw_rs crate returns `Hnsw<'a>` with lifetime tied to `HnswIo`. Can't store loaded index and search later without lifetime issues. Workaround: store path info in `HnswInner::Loaded`, reload on each search. Works but adds ~1-2ms overhead. Watch for library updates that fix this.
+
+---
+
+## 2026-01-31 - HNSW filtered search is still O(n)
+
+When filters are active (language, path pattern), we fall back to brute-force. Could optimize: run HNSW to get top-k*10 candidates, then filter in Rust. Trades recall for speed. Not implemented yet - brute-force is fine for <50k chunks.
+
+---
+
+## 2026-01-31 - MCP Registry is npm-focused
+
+Official MCP Registry (registry.modelcontextprotocol.io) only supports npm packages via their `mcp-publisher` CLI. Rust crates on crates.io aren't first-class citizens. Submitted to awesome-mcp-servers and mcpservers.org instead. Watch for registry updates adding cargo support.
+
+---
+
+## 2026-01-31 - gh pr checks --watch gets stale after force push
+
+When you force-push to a PR branch, `gh pr checks --watch` continues watching the old CI run. Need to Ctrl+C and restart the watch to pick up the new run. Minor annoyance but caused confusion during rapid iteration.
+
+---
+
+## 2026-01-31 - simsimd returns f64, not f32
+
+simsimd v6 returns `f64` from `SpatialSimilarity::dot()`, not `f32`. Had to cast result back to f32 for our API. Minor but surprising API difference from earlier versions.
+
+---
+
+## 2026-01-31 - Config file can't detect explicit CLI defaults
+
+When using config files, we can't distinguish "user passed -n 5" from "user didn't pass -n, using default 5". Current workaround: only apply config if CLI value equals the hardcoded default. If user explicitly passes the default value, config won't override. Minor edge case.
+
+---

@@ -44,13 +44,21 @@ impl From<ort::Error> for EmbedderError {
     }
 }
 
+/// A 768-dimensional L2-normalized embedding vector
+///
+/// Embeddings are produced by nomic-embed-text-v1.5 and can be
+/// compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(pub Vec<f32>);
 
+/// Hardware execution provider for inference
 #[derive(Debug, Clone, Copy)]
 pub enum ExecutionProvider {
+    /// NVIDIA CUDA (requires CUDA toolkit)
     CUDA { device_id: i32 },
+    /// NVIDIA TensorRT (faster than CUDA, requires TensorRT)
     TensorRT { device_id: i32 },
+    /// CPU fallback (always available)
     CPU,
 }
 
@@ -66,6 +74,21 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
+/// Text embedding generator using nomic-embed-text-v1.5
+///
+/// Automatically downloads the model from HuggingFace Hub on first use.
+/// Detects GPU availability and uses CUDA/TensorRT when available.
+///
+/// # Example
+///
+/// ```no_run
+/// use cqs::Embedder;
+///
+/// let mut embedder = Embedder::new()?;
+/// let embedding = embedder.embed_query("parse configuration file")?;
+/// println!("Embedding dimension: {}", embedding.0.len()); // 768
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub struct Embedder {
     session: Session,
     tokenizer: tokenizers::Tokenizer,
@@ -77,6 +100,10 @@ pub struct Embedder {
 }
 
 impl Embedder {
+    /// Create a new embedder, downloading the model if necessary
+    ///
+    /// Automatically detects GPU and uses CUDA/TensorRT when available.
+    /// Falls back to CPU if no GPU is found.
     pub fn new() -> Result<Self, EmbedderError> {
         let (model_path, tokenizer_path) = ensure_model()?;
         let provider = select_provider();

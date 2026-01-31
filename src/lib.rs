@@ -1,5 +1,56 @@
-//! cq - semantic code search with local embeddings
+//! # cqs - Semantic Code Search
+//!
+//! Local semantic search for code using ML embeddings.
+//! Find functions by what they do, not just their names.
+//!
+//! ## Features
+//!
+//! - **Semantic search**: Uses nomic-embed-text-v1.5 embeddings (768-dim)
+//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go
+//! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
+//! - **MCP integration**: Works with Claude Code and other AI assistants
+//!
+//! ## Quick Start
+//!
+//! ```no_run
+//! use cqs::{Embedder, Parser, Store};
+//! use cqs::store::ModelInfo;
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! // Initialize components
+//! let parser = Parser::new()?;
+//! let mut embedder = Embedder::new()?;
+//! let store = Store::open(std::path::Path::new(".cq/index.db"))?;
+//!
+//! // Parse and embed a file
+//! let chunks = parser.parse_file(std::path::Path::new("src/main.rs"))?;
+//! let embeddings = embedder.embed_documents(
+//!     &chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>()
+//! )?;
+//!
+//! // Search for similar code
+//! let query_embedding = embedder.embed_query("parse configuration file")?;
+//! let results = store.search(&query_embedding, 5, 0.3)?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! ## MCP Server
+//!
+//! Start the MCP server for AI assistant integration:
+//!
+//! ```no_run
+//! # async fn example() -> anyhow::Result<()> {
+//! // Stdio transport (for Claude Code)
+//! cqs::serve_stdio(".".into())?;
+//!
+//! // HTTP transport
+//! cqs::serve_http(".".into(), 3000)?;
+//! # Ok(())
+//! # }
+//! ```
 
+pub mod config;
 pub mod embedder;
 pub mod hnsw;
 pub mod mcp;

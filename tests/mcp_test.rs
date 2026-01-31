@@ -17,7 +17,7 @@ fn setup_test_server() -> (TempDir, cqs::mcp::McpServer) {
 
     // Initialize store with empty database
     let index_path = cq_dir.join("index.db");
-    let mut store = cqs::store::Store::open(&index_path).unwrap();
+    let store = cqs::store::Store::open(&index_path).unwrap();
     store
         .init(&cqs::store::ModelInfo {
             name: "nomic-embed-text-v1.5".into(),

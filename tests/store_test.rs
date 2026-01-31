@@ -44,7 +44,7 @@ fn test_store_init() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Stats should show empty index
@@ -60,7 +60,7 @@ fn test_upsert_and_search() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Insert a chunk
@@ -83,7 +83,7 @@ fn test_search_with_threshold() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Insert chunks with different embeddings
@@ -110,7 +110,7 @@ fn test_search_limit() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Insert multiple chunks
@@ -132,7 +132,7 @@ fn test_search_filtered_by_language() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Insert Rust chunk
@@ -168,7 +168,7 @@ fn test_prune_missing() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Insert chunks from two files
@@ -201,7 +201,7 @@ fn test_get_by_content_hash() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     let content = "fn test() { 42 }";
@@ -223,7 +223,7 @@ fn test_stats() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
 
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Insert various chunks
