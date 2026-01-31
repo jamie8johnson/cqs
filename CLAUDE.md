@@ -89,6 +89,7 @@ Date format: `YYYY-MM-DD` (UTC)
 
 - **Git push**: `powershell.exe -Command "cd C:\projects\cq; git push"` — Windows has GitHub credentials
 - **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
+  - This file is gitignored (`.cargo/` in .gitignore) so CI uses default target-dir
 
 ## Environment & Credentials
 

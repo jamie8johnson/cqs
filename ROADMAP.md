@@ -80,9 +80,13 @@
 - Incremental embedding updates
 - Index sharing (team sync)
 
+### Done (Post-Release)
+
+- [x] Branch protection ruleset (require CI, block force push)
+- [x] 16-category audit (74 findings documented)
+
 ### Optional (Enable as Needed)
 
-- Branch protection (require CI pass before merge)
 - GitHub Discussions (community Q&A)
 - GitHub Wiki (end-user documentation)
 - Security advisories (for vulnerability reports)

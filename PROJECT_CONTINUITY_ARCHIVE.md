@@ -332,3 +332,49 @@ Added:
 - `.github/` - Dependabot, workflows, issue templates
 
 ---
+
+## Session: 2026-01-31 (16-Category Audit + Branch Protection)
+
+### 16-Category Audit
+
+Conducted comprehensive audit covering all 16 categories:
+- Security, Error Handling, Performance, Memory Safety
+- Concurrency, API Design, Code Quality, Testing
+- Documentation, Dependencies, Configuration, Logging
+- Compatibility, Maintainability, User Experience, Deployment
+
+Results: 74 findings (0 critical, 6 high, 29 medium, 39 low)
+Full details in `docs/AUDIT_2026-01-31_16CAT.md`
+
+### CI Fixes
+
+1. **dtolnay/rust-action → dtolnay/rust-toolchain**: CI was using wrong action name
+2. **Clippy warnings**: Fixed 5 warnings with `-D warnings` flag
+   - `needless_range_loop` in embedder.rs (2 locations)
+   - `redundant_closure` in mcp.rs
+   - `io::Error::other` in store.rs
+   - `truncate(true)` in cli.rs lock file
+3. **.cargo/config.toml excluded**: WSL-specific config was breaking CI (permission denied for /home/user001/.cargo-target)
+   - Removed from git with `git rm --cached`
+   - Added `.cargo/` to .gitignore
+
+### Branch Protection
+
+Created GitHub ruleset for main branch via API:
+- Pull requests required (0 approvers for solo dev)
+- Status checks required: test, clippy, fmt
+- Force push blocked (non_fast_forward rule)
+
+Ruleset stored in `/tmp/ruleset.json` for reference.
+
+### Files Changed
+
+- `src/embedder.rs` - Fixed clippy needless_range_loop
+- `src/mcp.rs` - Fixed redundant_closure
+- `src/store.rs` - Fixed io::Error::other
+- `src/cli.rs` - Added truncate(true) to lock file
+- `.gitignore` - Added `.cargo/`
+- `.github/workflows/ci.yml` - Fixed action name
+- `docs/AUDIT_2026-01-31_16CAT.md` - Created
+
+---

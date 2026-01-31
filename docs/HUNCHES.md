@@ -110,6 +110,14 @@ Storing absolute paths in chunk IDs breaks path pattern filtering and makes inde
 
 ---
 
+## 2026-01-31 - WSL cargo config breaks CI
+
+`.cargo/config.toml` with custom `target-dir` is needed locally (avoids /mnt/c/ permission issues) but breaks CI (GitHub Actions can't access /home/user001/.cargo-target). Solution: gitignore `.cargo/` entirely. CI uses default target-dir, local dev uses custom config.
+
+**RESOLVED 2026-01-31:** Added `.cargo/` to .gitignore, removed from tracking.
+
+---
+
 ## 2026-01-31 - clap trailing_var_arg eats flags after query
 
 With `#[arg(trailing_var_arg = true)]` on the query field, any flags that appear AFTER the query get consumed as part of the query text. This means `cqs "foo" -C 3` doesn't work (context=None) but `cqs -C 3 "foo"` does. Documented in README but could surprise users. Might need to restructure CLI parsing or use `--` separator.
