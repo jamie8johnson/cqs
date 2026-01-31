@@ -22,25 +22,58 @@ cqs index
 
 # Search
 cqs "retry with exponential backoff"
+cqs "validate email with regex"
+cqs "database connection pool"
+```
+
+## Filters
+
+```bash
+# By language
 cqs --lang rust "error handling"
-cqs --json "parse config"
+cqs --lang python "parse json"
+
+# By path pattern
+cqs --path "src/*" "config"
+cqs --path "tests/**" "mock"
+cqs --path "**/*.go" "interface"
+
+# Combined
+cqs --lang typescript --path "src/api/*" "authentication"
+
+# Output options
+cqs --json "query"           # JSON output
+cqs --no-content "query"     # File:line only, no code
+cqs -n 10 "query"            # Limit results
+cqs -t 0.5 "query"           # Min similarity threshold
 ```
 
 ## MCP Integration
 
 Use with Claude Code as an MCP server:
 
+```bash
+claude mcp add cqs -- cqs serve --project /path/to/project
+```
+
+Or manually in `~/.claude.json`:
+
 ```json
 {
-  "mcpServers": {
-    "cqs": {
-      "command": "cqs",
-      "args": ["serve"],
-      "cwd": "/path/to/project"
+  "projects": {
+    "/path/to/project": {
+      "mcpServers": {
+        "cqs": {
+          "command": "cqs",
+          "args": ["serve", "--project", "/path/to/project"]
+        }
+      }
     }
   }
 }
 ```
+
+**Note:** The `--project` argument is required because MCP servers run from an unpredictable working directory.
 
 ## Supported Languages
 
@@ -56,6 +89,18 @@ Use with Claude Code as an MCP server:
 2. Generates embeddings with nomic-embed-text-v1.5 (runs locally)
 3. Stores in SQLite with vector search
 4. Uses GPU if available, falls back to CPU
+
+## Search Quality
+
+Semantic search finds conceptually related code:
+
+| Query | Top Match | Score |
+|-------|-----------|-------|
+| "cosine similarity" | `cosine_similarity` | 0.85 |
+| "validate email regex" | `validateEmail` | 0.73 |
+| "check if adult age 18" | `isAdult` | 0.71 |
+| "pop from stack" | `Stack.Pop` | 0.70 |
+| "generate random id" | `generateId` | 0.70 |
 
 ## GPU Acceleration (Optional)
 

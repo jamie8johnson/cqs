@@ -93,3 +93,15 @@ The `.mcp.json` file in the project root isn't used by Claude Code. Config set v
 The `ort` crate's internal logging goes to stdout unless you configure the subscriber otherwise. For stdio-based JSON-RPC (like MCP), this pollutes the response stream. Fix: `tracing_subscriber::fmt().with_writer(std::io::stderr).init()`.
 
 ---
+
+## 2026-01-30 - MCP tools/call response format is easy to get wrong
+
+MCP `tools/call` responses MUST wrap results in `{"content":[{"type":"text","text":"..."}]}`. Returning raw JSON works when tested standalone but fails silently in Claude Code - the tool runs but results appear empty. Not obvious from error messages.
+
+---
+
+## 2026-01-31 - Absolute vs relative paths in index
+
+Storing absolute paths in chunk IDs breaks path pattern filtering and makes indexes non-portable. The fix was straightforward but required touching multiple places: enumerate_files returns relative paths, parse_files rewrites chunk paths, callers join with root for filesystem ops. Test with glob patterns early - they're a good canary for path issues.
+
+---

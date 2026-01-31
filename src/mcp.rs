@@ -286,6 +286,7 @@ impl McpServer {
         let json_results: Vec<_> = results
             .iter()
             .map(|r| {
+                // Paths are stored relative; strip_prefix handles legacy absolute paths
                 serde_json::json!({
                     "file": r.chunk.file.strip_prefix(&self.project_root)
                         .unwrap_or(&r.chunk.file)
@@ -302,17 +303,25 @@ impl McpServer {
             })
             .collect();
 
-        Ok(serde_json::json!({
+        let result = serde_json::json!({
             "results": json_results,
             "query": args.query,
             "total": results.len(),
+        });
+
+        // MCP tools/call requires content array format
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&result)?
+            }]
         }))
     }
 
     fn tool_stats(&self) -> Result<Value> {
         let stats = self.store.stats()?;
 
-        Ok(serde_json::json!({
+        let result = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,
             "by_language": stats.chunks_by_language.iter()
@@ -325,6 +334,14 @@ impl McpServer {
             "model": stats.model_name,
             "last_indexed": stats.updated_at,
             "schema_version": stats.schema_version,
+        });
+
+        // MCP tools/call requires content array format
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&result)?
+            }]
         }))
     }
 }

@@ -205,10 +205,11 @@ fn enumerate_files(root: &Path, parser: &CqParser) -> Result<Vec<PathBuf>> {
                 .unwrap_or(false)
         })
         .filter_map(|e| {
-            // Validate path stays within project root
+            // Validate path stays within project root and convert to relative
             let path = e.path().canonicalize().ok()?;
             if path.starts_with(&root) {
-                Some(path)
+                // Store relative path for portability and glob matching
+                Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
             } else {
                 tracing::warn!("Skipping path outside project: {}", e.path().display());
                 None
@@ -220,14 +221,32 @@ fn enumerate_files(root: &Path, parser: &CqParser) -> Result<Vec<PathBuf>> {
 }
 
 /// Parse files in parallel
-fn parse_files(parser: &CqParser, files: &[PathBuf]) -> Vec<cqs::parser::Chunk> {
+/// `root` is joined with relative paths for filesystem access
+/// `files` contains relative paths which are stored in chunks for portability
+fn parse_files(parser: &CqParser, root: &Path, files: &[PathBuf]) -> Vec<cqs::parser::Chunk> {
     files
         .par_iter()
-        .flat_map(|path| match parser.parse_file(path) {
-            Ok(chunks) => chunks,
-            Err(e) => {
-                tracing::warn!("Failed to parse {}: {}", path.display(), e);
-                vec![]
+        .flat_map(|rel_path| {
+            let abs_path = root.join(rel_path);
+            match parser.parse_file(&abs_path) {
+                Ok(mut chunks) => {
+                    // Rewrite paths to be relative for storage
+                    for chunk in &mut chunks {
+                        chunk.file = rel_path.clone();
+                        // Rebuild ID with relative path
+                        chunk.id = format!(
+                            "{}:{}:{}",
+                            rel_path.display(),
+                            chunk.line_start,
+                            &chunk.content_hash[..8]
+                        );
+                    }
+                    chunks
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                    vec![]
+                }
             }
         })
         .collect()
@@ -402,7 +421,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
 
     if dry_run {
         for file in &files {
-            println!("  {}", file.strip_prefix(&root).unwrap_or(file).display());
+            println!("  {}", file.display());
         }
         println!();
         println!("(dry run - no changes made)");
@@ -413,7 +432,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
         println!("Parsing...");
     }
 
-    let chunks = parse_files(&parser, &files);
+    let chunks = parse_files(&parser, &root, &files);
 
     if !cli.quiet {
         println!("Found {} chunks", chunks.len());
@@ -438,7 +457,11 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
     } else {
         chunks
             .into_iter()
-            .filter(|c| store.needs_reindex(&c.file).unwrap_or(true))
+            .filter(|c| {
+                // Join with root for filesystem access
+                let abs_path = root.join(&c.file);
+                store.needs_reindex(&abs_path).unwrap_or(true)
+            })
             .collect()
     };
 
@@ -486,7 +509,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
         // Get file mtime (use first file's mtime for the batch)
         let file_mtime = batch
             .first()
-            .and_then(|c| c.file.metadata().ok())
+            .and_then(|c| root.join(&c.file).metadata().ok())
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
@@ -530,10 +553,13 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     let query_embedding = embedder.embed_query(query)?;
 
+    let languages = match &cli.lang {
+        Some(l) => Some(vec![l.parse().context("Invalid language. Valid: rust, python, typescript, javascript, go")?]),
+        None => None,
+    };
+
     let filter = SearchFilter {
-        languages: cli.lang.as_ref().map(|l| {
-            vec![l.parse().unwrap_or(Language::Rust)]
-        }),
+        languages,
         path_pattern: cli.path.clone(),
     };
 
@@ -632,6 +658,7 @@ fn display_results(
     no_content: bool,
 ) -> Result<()> {
     for result in results {
+        // Paths are stored relative; strip_prefix handles legacy absolute paths
         let rel_path = result
             .chunk
             .file
