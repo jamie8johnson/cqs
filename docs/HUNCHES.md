@@ -150,12 +150,6 @@ We depend on fast-moving projects:
 - **nomic-embed-text** - model updates break index compatibility
 - **MCP spec** - deprecations happen (SSE → Streamable HTTP)
 
-Should periodically:
-1. Run `cargo outdated` for crate updates
-2. Check HuggingFace for model updates
-3. Review MCP spec changelog
-4. Test with latest grammar versions
-
-No automation for this yet - relies on manual review during sessions.
+**AUTOMATED 2026-01-31:** Added Dependabot for crate PRs + GitHub Action for MCP/model checks. Runs weekly on Mondays.
 
 ---

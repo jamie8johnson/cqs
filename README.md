@@ -101,8 +101,11 @@ cqs serve --transport http --port 3000 --project /path/to/project
 ```
 
 Endpoints:
-- `POST /mcp` - JSON-RPC requests (MCP Streamable HTTP spec 2025-03-26)
+- `POST /mcp` - JSON-RPC requests
+- `GET /mcp` - SSE stream for server-to-client messages
 - `GET /health` - Health check
+
+Implements MCP Streamable HTTP spec 2025-11-25 with Origin validation and protocol version headers.
 
 ## Supported Languages
 

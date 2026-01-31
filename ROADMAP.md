@@ -50,16 +50,19 @@
 
 ## Phase 3: Integration
 
-### Status: Complete (v0.1.3)
+### Status: Complete (v0.1.3 → v0.1.5)
 
 ### Done
 
 - [x] .gitignore support (ignore crate replaces walkdir)
 - [x] Watch mode (`cqs watch` with debounce)
-- [x] HTTP transport (MCP Streamable HTTP spec 2025-03-26)
+- [x] HTTP transport (MCP Streamable HTTP spec)
 - [x] CLI restructured (query as positional arg, flags work anywhere)
 - [x] Compiler warnings fixed
 - [x] Model checksums renamed (SHA256 → BLAKE3)
+- [x] MCP 2025-11-25 compliance (Origin validation, Protocol-Version header)
+- [x] SSE stream support (GET /mcp)
+- [x] Automated dependency reviews (Dependabot + GitHub Actions)
 
 ### Deferred
 

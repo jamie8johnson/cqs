@@ -7,11 +7,17 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, bail};
 use axum::{
     extract::State,
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{get, post},
     Json, Router,
 };
+use futures::stream::{self, Stream};
+use std::convert::Infallible;
+use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
@@ -445,7 +451,7 @@ pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
         .allow_headers(Any);
 
     let app = Router::new()
-        .route("/mcp", post(handle_mcp_post))
+        .route("/mcp", post(handle_mcp_post).get(handle_mcp_sse))
         .route("/health", get(handle_health))
         .layer(cors)
         .with_state(state);
@@ -533,4 +539,59 @@ async fn handle_health() -> impl IntoResponse {
         "service": "cqs",
         "version": env!("CARGO_PKG_VERSION")
     }))
+}
+
+/// Handle GET /mcp - SSE stream for server-to-client messages (MCP 2025-11-25)
+async fn handle_mcp_sse(
+    headers: HeaderMap,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
+    // Validate Accept header includes text/event-stream
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !accept.contains("text/event-stream") {
+        return Err((
+            StatusCode::NOT_ACCEPTABLE,
+            Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32600,
+                    "message": "Accept header must include text/event-stream"
+                }
+            })),
+        ));
+    }
+
+    // Create SSE stream with priming event per MCP 2025-11-25 spec:
+    // "The server SHOULD immediately send an SSE event consisting of an event
+    // ID and an empty data field in order to prime the client to reconnect"
+    let event_id = uuid_simple();
+
+    let stream = stream::once(async move {
+        // Send priming event with ID and empty data
+        Ok(Event::default().id(event_id).data(""))
+    });
+
+    // Note: For a full implementation, this stream would be kept alive and
+    // server-initiated messages (notifications, requests) would be pushed here.
+    // Since cqs doesn't have server-initiated messages yet, we just send the
+    // priming event and keep the connection alive.
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
+}
+
+/// Generate a simple unique ID for SSE events
+fn uuid_simple() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:x}", nanos)
 }

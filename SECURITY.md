@@ -19,9 +19,10 @@ No other network requests are made. Search, indexing, and all other operations a
 When using `cqs serve --transport http`:
 
 - Server binds to `127.0.0.1` (localhost only) by default
+- Origin header validation (rejects non-localhost origins)
 - CORS is permissive for local development
 - No authentication built-in - use a reverse proxy for production
-- Follows MCP Streamable HTTP spec (2025-03-26)
+- Follows MCP Streamable HTTP spec 2025-11-25
 
 ## File Access
 

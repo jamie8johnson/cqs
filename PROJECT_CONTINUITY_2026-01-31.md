@@ -1,61 +1,60 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T19:00Z
+Updated: 2026-01-31T19:30Z
 
 ## Current State
 
-**v0.1.4 ready. MCP 2025-11-25 compliant. Automated reviews enabled.**
+**v0.1.5 ready. Full MCP 2025-11-25 compliance with SSE.**
 
-- All modules implemented (~2900 lines)
+- ~3000 lines across all modules
 - 21 tests passing
-- Published v0.1.3 to crates.io
+- Published v0.1.3, v0.1.4 to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
-- Build: 0 warnings
+- Automated dependency reviews active
 
-### v0.1.4 Changes (this session)
+### Version History This Session
 
-1. **MCP 2025-11-25 compliance**
-   - Origin header validation (403 on invalid)
-   - MCP-Protocol-Version header handling
-   - Supports both 2025-11-25 and 2025-03-26
+| Version | Changes |
+|---------|---------|
+| v0.1.3 | Watch mode, HTTP transport, .gitignore, CLI restructure |
+| v0.1.4 | MCP 2025-11-25 compliance (Origin, Protocol-Version headers) |
+| v0.1.5 | GET /mcp SSE stream support, full spec compliance |
 
-2. **Automated dependency reviews**
-   - Dependabot for weekly crate update PRs
-   - GitHub Action for MCP spec + model checks
-   - Runs Mondays 9am UTC
+## Features Complete
+
+### Core
+- Semantic code search (5 languages)
+- GPU acceleration (CUDA) with CPU fallback
+- .gitignore support
+- Watch mode with debounce
+
+### MCP
+- stdio transport (default)
+- HTTP transport (Streamable HTTP 2025-11-25)
+  - POST /mcp - JSON-RPC requests
+  - GET /mcp - SSE stream for server messages
+  - Origin validation
+  - MCP-Protocol-Version header
+- Tools: cqs_search, cqs_stats
+
+### Automation
+- Dependabot for weekly crate PRs
+- GitHub Action for MCP spec + model checks
 
 ## This Session Summary
 
-### Implemented (v0.1.3)
-- Watch mode, HTTP transport, .gitignore support
-- CLI restructured, warnings fixed, checksums renamed
-
-### Dependency Review Findings
-- **MCP spec**: Updated to 2025-11-25 (we were on 2025-03-26)
-- **ort**: Still RC (2.0.0-rc.11), no stable yet
-- **nomic model**: v1.5 current, vision variant available
-
-### Updated for MCP 2025-11-25
-- Origin validation required
-- MCP-Protocol-Version header required
-- Batching removed from spec (we didn't have it)
-
-### Automation Added
-- `.github/dependabot.yml` - crate PRs
-- `.github/workflows/dependency-review.yml` - spec/model checks
-
-## MCP Status
-
-**Working.** MCP 2025-11-25 compliant.
-
-Transports:
-- `stdio` - default
-- `http` - POST /mcp, GET /health
+1. Reviewed hunches, filled checksums
+2. Implemented v0.1.3 features (watch, HTTP, gitignore, CLI)
+3. Did dependency review - found MCP spec at 2025-11-25
+4. Updated to MCP 2025-11-25 (v0.1.4)
+5. Added SSE stream support (v0.1.5)
+6. Added automated dependency reviews
+7. Full MD file review
 
 ## Next Steps
 
-1. Publish v0.1.4
-2. Phase 4: HNSW for scale
+1. Publish v0.1.5
+2. Phase 4: HNSW for scale (>50k chunks)
 3. Monitor automated review results
 
 ## Blockers
