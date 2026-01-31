@@ -1,5 +1,5 @@
 #!/bin/sh
-# Pre-commit hook: Run cargo fmt check
+# Pre-commit hook: Run cargo fmt check and verify Cargo.lock
 
 echo "Running cargo fmt --check..."
 cargo fmt --check
@@ -8,5 +8,15 @@ if [ $? -ne 0 ]; then
     echo "Error: Code is not formatted. Run 'cargo fmt' to fix."
     exit 1
 fi
-
 echo "Format check passed."
+
+# Check if Cargo.lock needs updating (only if Cargo.toml is staged)
+if git diff --cached --name-only | grep -q "Cargo.toml"; then
+    echo "Checking Cargo.lock sync..."
+    cargo check --quiet 2>/dev/null
+    if git diff --name-only | grep -q "Cargo.lock"; then
+        echo ""
+        echo "Warning: Cargo.lock changed after cargo check."
+        echo "Consider staging Cargo.lock: git add Cargo.lock"
+    fi
+fi
