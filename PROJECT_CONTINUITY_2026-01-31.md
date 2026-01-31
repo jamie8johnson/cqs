@@ -1,6 +1,6 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T06:00Z
+Updated: 2026-01-31T06:15Z
 
 ## Current State
 
@@ -82,10 +82,28 @@ Files created:
 
 Run with: `cargo test eval -- --ignored --nocapture`
 
+### Verified: GPU/CUDA Working
+
+After WSL reboot, GPU acceleration confirmed working:
+
+```
+Provider: CUDA (device 0)
+Single query: 6-7ms (vs ~20ms CPU)
+Batch 50 docs: 0.3ms/doc
+```
+
+- RTX A6000, CUDA 13.0 driver, cuDNN 9.18.1
+- ort 2.x detects CUDA automatically
+- ~450ms warmup (CUDA kernel compilation), then fast
+- Created `examples/bench_embed.rs` for benchmarking
+
+Updated README with benchmark table, removed "intermittent" warning for WSL2.
+Updated CLAUDE.md with cqs_search usage instructions.
+
 ## Next Steps
 
 1. Implement hybrid search (embedding + name match) - Task #3
-2. Consider publishing v0.1.2 with eval suite
+2. Consider publishing v0.1.2 with eval suite + GPU benchmarks
 
 ## Blockers
 

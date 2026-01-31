@@ -175,3 +175,40 @@ echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cqs_stats","argum
 Restart Claude Code to activate the fixed MCP config.
 
 ---
+
+## Session: 2026-01-31 (GPU Verification)
+
+### CUDA Working
+
+After WSL reboot, verified GPU acceleration:
+
+```
+Provider: CUDA (device 0)
+Init: 850ms (model load)
+Warmup: 450ms (CUDA kernel compilation)
+
+Single query embeddings:
+  parse files                    6.76ms
+  database connection            6.19ms
+  error handling                 6.58ms
+
+Batch embedding:
+  10 docs: 22ms (2.2ms/doc)
+  50 docs: 17ms (0.3ms/doc)
+```
+
+Environment:
+- RTX A6000 (48GB VRAM)
+- CUDA 13.0 driver (Windows host)
+- cuDNN 9.18.1 (Ubuntu package)
+- ort 2.0.0-rc.11
+
+Created `examples/bench_embed.rs` for benchmarking.
+
+### Files Changed
+
+- `CLAUDE.md` - added cqs_search usage instructions
+- `README.md` - added benchmark table, updated WSL2 section
+- `examples/bench_embed.rs` - new benchmark example
+
+---

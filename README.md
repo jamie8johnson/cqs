@@ -104,7 +104,14 @@ Semantic search finds conceptually related code:
 
 ## GPU Acceleration (Optional)
 
-cqs works fine on CPU (~20ms per embedding). For GPU acceleration:
+cqs works on CPU (~20ms per embedding). GPU provides 3x+ speedup:
+
+| Mode | Single Query | Batch (50 docs) |
+|------|--------------|-----------------|
+| CPU  | ~20ms        | ~15ms/doc       |
+| CUDA | ~6ms         | ~0.3ms/doc      |
+
+For GPU acceleration:
 
 ### Linux
 
@@ -128,7 +135,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_
 Same as Linux, plus:
 - Requires NVIDIA GPU driver on Windows host
 - Add `/usr/lib/wsl/lib` to `LD_LIBRARY_PATH`
-- GPU visibility can be intermittent; CPU fallback always works
+- Tested working with RTX A6000, CUDA 13.0 driver, cuDNN 9.18
 
 ### Verify
 

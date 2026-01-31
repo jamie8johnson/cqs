@@ -64,9 +64,11 @@ New two-phase search (id+embedding first, content second) reduces memory but add
 
 ---
 
-## 2026-01-31 - WSL2 CUDA is fragile
+## 2026-01-31 - WSL2 CUDA is fragile (UPDATE: working reliably after reboot)
 
-GPU visibility in WSL2 can drop randomly. nvidia-smi works, then doesn't. Installing CUDA packages can disrupt the connection. CPU fallback saves us, but GPU acceleration in WSL2 shouldn't be promised - only "works when it works."
+Original concern: GPU visibility in WSL2 can drop randomly during package installation.
+
+**Update 2026-01-31:** After WSL reboot, CUDA working reliably. RTX A6000, CUDA 13.0 driver, cuDNN 9.18.1. ort detects CUDA automatically. Getting 6ms single queries, 0.3ms/doc in batches. The fragility may have been during initial setup - once stable, it stays stable.
 
 ---
 
