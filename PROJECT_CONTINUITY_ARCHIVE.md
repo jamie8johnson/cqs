@@ -440,3 +440,52 @@ Improved GitHub community health from 57% to 100%:
 - 8 MCP tests (new)
 
 ---
+
+## Session: 2026-01-31 (Audit Phase B Implementation)
+
+### Phase B Fixes
+
+Implemented all 4 Phase B items from the audit remediation plan:
+
+1. **B1: RwLock for HTTP Handler (C5.1 HIGH)**
+   - Initially couldn't use RwLock because rusqlite::Connection isn't Sync
+   - Solution: Added r2d2-sqlite connection pooling (4 max connections)
+   - Store methods now take `&self` instead of `&mut self`
+   - HttpState now uses `RwLock<McpServer>` for concurrent read access
+
+2. **B2: Secure UUID Generation (S1.3 MEDIUM)**
+   - Changed `uuid_simple()` to include random component
+   - Now uses: `format!("{:x}-{:08x}", nanos, random)`
+   - Random from `rand::thread_rng().gen::<u32>()`
+
+3. **B3: Request Body Limit (S1.4 MEDIUM)**
+   - Added `RequestBodyLimitLayer::new(1024 * 1024)` (1MB)
+   - Using tower ServiceBuilder to stack middleware
+
+4. **B4: Query Embedding Cache (P3.2 HIGH)**
+   - Added LRU cache with 100 entry capacity to Embedder
+   - Cache keyed by query text, returns cloned Embedding
+   - Uses `Mutex<LruCache<String, Embedding>>`
+
+### Dependencies Added
+
+- `r2d2 = "0.8"` - Generic connection pool
+- `r2d2_sqlite = "0.24"` - SQLite adapter for r2d2
+- `rand = "0.8"` - Random number generation
+- `lru = "0.12"` - LRU cache implementation
+- `tower-http` features: added `limit`
+
+### Files Changed
+
+- `Cargo.toml` - New dependencies, tower-http features
+- `src/store.rs` - Connection pooling (Pool<SqliteConnectionManager>)
+- `src/mcp.rs` - RwLock, uuid_simple(), RequestBodyLimitLayer
+- `src/embedder.rs` - LRU cache for query embeddings
+- `src/cli.rs` - Removed `mut` from Store variables
+
+### Test Results
+
+29 tests passing (unchanged from Phase A).
+Clippy clean with `-D warnings`.
+
+---

@@ -84,6 +84,13 @@
 
 - [x] Branch protection ruleset (require CI, block force push)
 - [x] 16-category audit (74 findings documented)
+- [x] Audit Phase A fixes (SQL params, globset, fs4, MCP tests)
+- [x] Audit Phase B fixes:
+  - Connection pooling (r2d2-sqlite) for concurrent reads
+  - RwLock for HTTP handler (enabled by pooling)
+  - Secure UUID generation (timestamp + random)
+  - Request body limit (1MB via tower middleware)
+  - Query embedding LRU cache (100 entries)
 
 ### Optional (Enable as Needed)
 
@@ -93,11 +100,15 @@
 
 ## Phase 5: Security
 
+### Done
+
+- [x] Rate limiting for HTTP transport (RequestBodyLimitLayer - 1MB)
+
 ### Planned
 
 - Index encryption (SQLCipher behind cargo feature flag)
   - Protect code snippets and embeddings at rest
   - Password/key required on operations
   - Optional: integrate with system keyring
-- Rate limiting for HTTP transport (tower middleware)
+- Request rate limiting (requests per second, not just body size)
 - Audit log for MCP operations

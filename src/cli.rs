@@ -481,14 +481,14 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
     }
 
     // Initialize or open store
-    let mut store = if index_path.exists() && !force {
+    let store = if index_path.exists() && !force {
         Store::open(&index_path)?
     } else {
         // Remove old index if forcing
         if index_path.exists() {
             std::fs::remove_file(&index_path)?;
         }
-        let mut store = Store::open(&index_path)?;
+        let store = Store::open(&index_path)?;
         store.init(&ModelInfo::default())?;
         store
     };
@@ -798,7 +798,7 @@ fn reindex_files(
     quiet: bool,
 ) -> Result<usize> {
     let mut embedder = Embedder::new()?;
-    let mut store = Store::open(index_path)?;
+    let store = Store::open(index_path)?;
 
     // Parse the changed files
     let chunks: Vec<_> = files

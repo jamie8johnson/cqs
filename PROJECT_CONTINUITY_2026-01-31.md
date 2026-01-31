@@ -1,12 +1,12 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T23:00Z
+Updated: 2026-01-31T24:00Z
 
 ## Current State
 
-**v0.1.5 published. Audit Phase A fixes in PR #7. 29 tests passing.**
+**v0.1.5 published. Audit Phase A merged, Phase B complete on branch. 29 tests passing.**
 
-- ~3200 lines across 7 modules
+- ~3400 lines across 7 modules
 - 29 tests passing (13 parser + 8 store + 8 MCP)
 - Published v0.1.3, v0.1.4, v0.1.5 to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
@@ -15,6 +15,8 @@ Updated: 2026-01-31T23:00Z
 - GitHub release v0.1.5 created
 - Branch ruleset active (main requires CI, blocks force push)
 - 16-category audit completed (74 findings documented)
+- **Audit Phase A merged** (PR #7)
+- **Audit Phase B complete** (branch: fix/audit-phase-b)
 
 ### Version History This Session
 
@@ -62,7 +64,7 @@ Updated: 2026-01-31T23:00Z
 10. **CI fixes** - dtolnay/rust-toolchain action, clippy warnings, .cargo/config.toml excluded
 11. **Branch ruleset** - main protection via GitHub API (require PR, require CI, block force push)
 12. Full MD file review and updates
-13. **Audit Phase A fixes** (PR #7):
+13. **Audit Phase A fixes** (PR #7 - MERGED):
     - A1: SQL parameterized queries (S1.1 HIGH)
     - A2: Replace glob with globset (D10.2 MEDIUM)
     - A3: Replace fs2 with fs4 (D10.3 MEDIUM)
@@ -71,12 +73,19 @@ Updated: 2026-01-31T23:00Z
     - D6: Community standards (CODE_OF_CONDUCT, CONTRIBUTING, PR template)
 14. **Phase 5 (Security)** added to roadmap - index encryption planned
 15. Enabled CodeQL analysis and Secret Protection
+16. **Audit Phase B fixes** (branch: fix/audit-phase-b):
+    - B1: RwLock for HTTP handler (enabled by connection pooling)
+    - B2: Secure UUID generation (timestamp + random component)
+    - B3: Request body limit (1MB via tower RequestBodyLimitLayer)
+    - B4: Query embedding LRU cache (100 entries)
+    - Added r2d2-sqlite connection pooling (4 concurrent connections)
+    - Store methods now take &self instead of &mut self
 
 ## Next Steps
 
-1. Merge PR #7 (Phase A audit fixes)
-2. Continue with Phase B (RwLock, UUID, rate limiting, query cache)
-3. Monitor Dependabot PRs (5 open)
+1. Push and PR for Phase B (fix/audit-phase-b branch)
+2. Review Dependabot PRs (5 open)
+3. Continue with Phase C (error handling, robustness)
 4. Phase 4: HNSW for scale (>50k chunks)
 
 ## Blockers
