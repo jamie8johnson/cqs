@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- RRF (Reciprocal Rank Fusion) hybrid search combining semantic + FTS5 keyword search
+- FTS5 virtual table for full-text keyword search
+- `normalize_for_fts()` for splitting camelCase/snake_case identifiers into searchable words
+- Chunk-level incremental indexing (skip re-embedding unchanged chunks via content_hash)
+- `Store::get_embeddings_by_hashes()` for batch embedding lookup
+
+### Changed
+- Schema version bumped from 1 to 2 (FTS5 support)
+- RRF enabled by default in CLI and MCP for improved recall
+
 ## [0.1.9] - 2026-01-31
 
 ### Added

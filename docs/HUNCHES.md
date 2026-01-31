@@ -251,4 +251,6 @@ fn normalize_for_fts(name: &str) -> String {
 
 Store normalized text in FTS5, query with same normalization.
 
+**RESOLVED 2026-01-31:** Implemented `normalize_for_fts()` in store.rs. FTS5 table `chunks_fts` stores normalized text. RRF hybrid search (PR #24) combines semantic + keyword results.
+
 ---
