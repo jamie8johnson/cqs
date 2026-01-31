@@ -103,7 +103,7 @@ Date format: `YYYY-MM-DD` (UTC)
 1. Create feature branch: `git checkout -b feature/name`
 2. Push branch: `powershell.exe -Command "cd C:\projects\cq; git push -u origin feature/name"`
 3. Create PR: `powershell.exe -Command 'gh pr create --title "..." --body "..."'`
-4. Wait for CI (test, clippy, fmt) to pass
+4. Wait for CI using `--watch`: `powershell.exe -Command 'gh pr checks N --watch'`
 5. Merge via: `powershell.exe -Command 'gh pr merge N --squash --delete-branch'`
 
 ## Environment & Credentials

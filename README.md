@@ -2,6 +2,8 @@
 
 Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included.
 
+**TL;DR:** Semantic code search for Claude Code. Instead of grep, it understands what code *does* - so Claude finds relevant functions without knowing exact names. Means Claude finds the right code faster and doesn't miss stuff buried in unfamiliar codebases.
+
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/jamie8johnson/cqs/actions/workflows/codeql.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/codeql.yml)
@@ -67,9 +69,19 @@ cqs watch --debounce 1000  # Custom debounce (ms)
 
 Watch mode respects `.gitignore` by default. Use `--no-ignore` to index ignored files.
 
-## MCP Integration
+## Claude Code Integration
 
-Use with Claude Code as an MCP server:
+### Why use cqs?
+
+Without cqs, Claude Code uses grep/glob to find code - which only works if you know the exact names. With cqs, Claude can:
+
+- **Find code by behavior**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`
+- **Navigate unfamiliar codebases**: Claude finds relevant code without knowing the project structure
+- **Catch related code**: Semantic search surfaces similar patterns across the codebase that text search misses
+
+### Setup
+
+**Step 1:** Add cqs as an MCP server:
 
 ```bash
 claude mcp add cqs -- cqs serve --project /path/to/project
@@ -93,6 +105,23 @@ Or manually in `~/.claude.json`:
 ```
 
 **Note:** The `--project` argument is required because MCP servers run from an unpredictable working directory.
+
+**Step 2:** Add to your project's `CLAUDE.md` so Claude uses it automatically:
+
+```markdown
+## Code Search
+
+Use `cqs_search` for semantic code search instead of grep/glob when looking for:
+- Functions by behavior ("retry with backoff", "parse config")
+- Implementation patterns ("error handling", "database connection")
+- Code where you don't know the exact name
+
+Available tools:
+- `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`
+- `cqs_stats` - index stats and chunk counts
+
+Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
+```
 
 ### HTTP Transport
 
