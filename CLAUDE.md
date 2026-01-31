@@ -93,6 +93,7 @@ Date format: `YYYY-MM-DD` (UTC)
   powershell.exe -Command 'gh pr create --title "Title" --body "Body"'
   powershell.exe -Command 'gh pr list'
   ```
+  - **Quirk**: `gh pr checks` returns exit code 1 if any checks are pending/skipped, even if important ones passed. Not necessarily an error.
 - **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
   - This file is gitignored (`.cargo/` in .gitignore) so CI uses default target-dir
 
