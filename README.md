@@ -122,8 +122,8 @@ Use `cqs_search` for semantic code search instead of grep/glob when looking for:
 - Code where you don't know the exact name
 
 Available tools:
-- `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`
-- `cqs_stats` - index stats and chunk counts
+- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `semantic_only`
+- `cqs_stats` - index stats, chunk counts, HNSW index status
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```

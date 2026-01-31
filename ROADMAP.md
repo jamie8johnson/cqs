@@ -152,6 +152,11 @@
   - Published to crates.io 2026-01-31
   - Schema version bumped to 2 (FTS5 support)
 
+- [x] MCP tool polish (post v0.1.10)
+  - Added `semantic_only` parameter to disable RRF when needed
+  - Added HNSW index status to cqs_stats output
+  - Updated tree-sitter grammars (rust 0.24, python 0.25)
+
 ### Planned
 
 - [ ] C and Java language support

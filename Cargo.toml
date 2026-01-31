@@ -15,8 +15,8 @@ clap_complete = "4"
 
 # Parsing (tree-sitter)
 tree-sitter = "0.26"
-tree-sitter-rust = "0.23"
-tree-sitter-python = "0.23"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
 tree-sitter-go = "0.25"

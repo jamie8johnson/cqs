@@ -31,6 +31,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::embedder::Embedder;
+use crate::hnsw::HnswIndex;
 use crate::parser::Language;
 use crate::store::{SearchFilter, Store};
 
@@ -131,6 +132,7 @@ struct SearchArgs {
     language: Option<String>,
     path_pattern: Option<String>,
     name_boost: Option<f32>,
+    semantic_only: Option<bool>,
 }
 
 /// MCP Server
@@ -262,6 +264,11 @@ impl McpServer {
                             "type": "number",
                             "description": "Weight for name matching 0.0-1.0 (default: 0.2)",
                             "default": 0.2
+                        },
+                        "semantic_only": {
+                            "type": "boolean",
+                            "description": "Disable RRF hybrid search, use pure semantic similarity (default: false)",
+                            "default": false
                         }
                     },
                     "required": ["query"]
@@ -327,7 +334,7 @@ impl McpServer {
             path_pattern: args.path_pattern,
             name_boost: args.name_boost.unwrap_or(0.2),
             query_text: args.query.clone(),
-            enable_rrf: true, // Enable RRF by default for better recall
+            enable_rrf: !args.semantic_only.unwrap_or(false), // RRF on by default, disable with semantic_only
         };
 
         let limit = args.limit.unwrap_or(5).min(20);
@@ -375,13 +382,24 @@ impl McpServer {
     fn tool_stats(&self) -> Result<Value> {
         let stats = self.store.stats()?;
 
-        let warning = if stats.total_chunks > 50_000 {
+        let warning = if stats.total_chunks > 100_000 {
             Some(format!(
-                "{} chunks. Search uses brute-force O(n). Consider splitting projects.",
+                "{} chunks is very large. Consider using --path to limit search scope.",
                 stats.total_chunks
             ))
         } else {
             None
+        };
+
+        // Check HNSW index status
+        let cq_dir = self.project_root.join(".cq");
+        let hnsw_status = if HnswIndex::exists(&cq_dir, "index") {
+            match HnswIndex::load(&cq_dir, "index") {
+                Ok(hnsw) => format!("{} vectors (O(log n) search)", hnsw.len()),
+                Err(_) => "exists but failed to load".to_string(),
+            }
+        } else {
+            "not built".to_string()
         };
 
         let result = serde_json::json!({
@@ -397,6 +415,7 @@ impl McpServer {
             "model": stats.model_name,
             "last_indexed": stats.updated_at,
             "schema_version": stats.schema_version,
+            "hnsw_index": hnsw_status,
             "warning": warning,
         });
 
