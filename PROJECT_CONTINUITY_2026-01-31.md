@@ -1,6 +1,6 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T05:30Z
+Updated: 2026-01-31T05:45Z
 
 ## Current State
 
@@ -33,6 +33,10 @@ Files changed:
 **Bug:** `--lang invalid` silently defaulted to Rust.
 
 **Fix:** Changed `unwrap_or(Language::Rust)` to proper error handling with context message.
+
+### Added: Scale Warning
+
+Added warning in `cqs stats` (CLI and MCP) when index exceeds 50k chunks. Brute-force O(n) search will be slow at that scale - warns users to split projects or wait for HNSW support.
 
 ### Extensive CLI Testing
 
@@ -69,3 +73,6 @@ None.
 - **Relative paths in index**: Makes indexes portable, fixes glob matching
 - **Error on invalid language**: Fail fast, don't silently default
 - **MCP project path required**: Working directory unpredictable for MCP servers
+- **Scale warning at 50k**: Inform users before search becomes slow
+- **Keep threshold at 0.3**: Reasonable default, users can adjust with `-t`
+- **Incremental indexing exists**: Already had `needs_reindex` + `prune_missing`
