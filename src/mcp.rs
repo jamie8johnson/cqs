@@ -28,33 +28,32 @@ use crate::store::{SearchFilter, Store};
 
 /// JSON-RPC request
 #[derive(Deserialize)]
-#[allow(dead_code)]
 pub struct JsonRpcRequest {
-    jsonrpc: String,
-    id: Option<Value>,
-    method: String,
-    params: Option<Value>,
+    pub jsonrpc: String,
+    pub id: Option<Value>,
+    pub method: String,
+    pub params: Option<Value>,
 }
 
 /// JSON-RPC response
 #[derive(Serialize)]
 pub struct JsonRpcResponse {
-    jsonrpc: String,
+    pub jsonrpc: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<Value>,
+    pub id: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
+    pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<JsonRpcError>,
+    pub error: Option<JsonRpcError>,
 }
 
 /// JSON-RPC error
-#[derive(Serialize)]
-struct JsonRpcError {
-    code: i32,
-    message: String,
+#[derive(Debug, Serialize)]
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    data: Option<Value>,
+    pub data: Option<Value>,
 }
 
 // MCP types

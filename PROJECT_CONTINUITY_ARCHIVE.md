@@ -378,3 +378,65 @@ Ruleset stored in `/tmp/ruleset.json` for reference.
 - `docs/AUDIT_2026-01-31_16CAT.md` - Created
 
 ---
+
+## Session: 2026-01-31 (Audit Phase A Remediation)
+
+### Phase A Fixes (PR #7)
+
+Addressed 4 HIGH and 2 MEDIUM audit findings:
+
+1. **A1: SQL Parameterized Queries (S1.1 HIGH)**
+   - Replaced string interpolation with `params_from_iter`
+   - Language filter now uses placeholders: `language IN (?,?)`
+   - File: `src/store.rs:407-430`
+
+2. **A2: Replace glob with globset (D10.2 MEDIUM)**
+   - Replaced unmaintained `glob 0.3` (last update 2016)
+   - Using `globset 0.4` from ripgrep project
+   - File: `Cargo.toml`, `src/store.rs:461`
+
+3. **A3: Replace fs2 with fs4 (D10.3 MEDIUM)**
+   - Replaced unmaintained `fs2 0.4` (last update 2017)
+   - Using `fs4 0.12` (maintained fork)
+   - File: `Cargo.toml`, `src/cli.rs:295`
+
+4. **A4: MCP Protocol Integration Tests (T8.1 HIGH)**
+   - Created 8 new tests in `tests/mcp_test.rs`
+   - Tests: initialize, tools/list, tools/call, error handling
+   - Made JsonRpcRequest/JsonRpcResponse/JsonRpcError fields public
+
+### Community Standards (D5-D6)
+
+Improved GitHub community health from 57% to 100%:
+- Added CodeQL badge to README
+- Created `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1)
+- Created `CONTRIBUTING.md` (development guide)
+- Created `.github/PULL_REQUEST_TEMPLATE.md`
+
+### Security Features
+
+- Enabled CodeQL analysis (GitHub security scanning)
+- Enabled Secret Protection
+- Added Phase 5 (Security) to roadmap with index encryption planned
+
+### Files Changed
+
+- `Cargo.toml` - glob→globset, fs2→fs4
+- `src/store.rs` - SQL params, globset usage
+- `src/cli.rs` - fs4 usage
+- `src/mcp.rs` - Public types for testing, Debug derive
+- `tests/mcp_test.rs` - New file, 8 tests
+- `README.md` - CodeQL badge
+- `CODE_OF_CONDUCT.md` - New file
+- `CONTRIBUTING.md` - New file
+- `.github/PULL_REQUEST_TEMPLATE.md` - New file
+- `ROADMAP.md` - Added Phase 5 (Security)
+
+### Test Results
+
+29 tests passing:
+- 13 parser tests
+- 8 store tests
+- 8 MCP tests (new)
+
+---

@@ -1,6 +1,6 @@
 //! SQLite storage for chunks and embeddings
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, Connection};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -403,11 +403,18 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        // Build WHERE clause from filter
+        // Build WHERE clause from filter with parameterized query
         let mut conditions = Vec::new();
+        let mut params_vec: Vec<String> = Vec::new();
+
         if let Some(ref langs) = filter.languages {
-            let lang_list: Vec<_> = langs.iter().map(|l| format!("'{}'", l)).collect();
-            conditions.push(format!("language IN ({})", lang_list.join(",")));
+            // Build placeholders: ?,?,?
+            let placeholders: Vec<_> = langs.iter().map(|_| "?").collect();
+            conditions.push(format!("language IN ({})", placeholders.join(",")));
+            // Collect param values
+            for lang in langs {
+                params_vec.push(lang.to_string());
+            }
         }
 
         let where_clause = if conditions.is_empty() {
@@ -428,7 +435,7 @@ impl Store {
         let mut stmt = self.conn.prepare(&sql)?;
 
         let mut scored: Vec<(String, f32)> = stmt
-            .query_map([], |row| {
+            .query_map(params_from_iter(params_vec.iter()), |row| {
                 Ok(ChunkScore {
                     id: row.get(0)?,
                     embedding: row.get(1)?,
@@ -451,10 +458,12 @@ impl Store {
 
                 // Apply path filter in Rust (glob matching)
                 if let Some(ref pattern) = filter.path_pattern {
-                    if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
+                    if let Ok(glob_pattern) =
+                        globset::Glob::new(pattern).map(|g| g.compile_matcher())
+                    {
                         // Extract file path from chunk id (format: path:line:hash)
                         let file_part = chunk.id.split(':').next().unwrap_or("");
-                        if !glob_pattern.matches(file_part) {
+                        if !glob_pattern.is_match(file_part) {
                             return None;
                         }
                     }

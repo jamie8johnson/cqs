@@ -292,7 +292,7 @@ fn parse_files(parser: &CqParser, root: &Path, files: &[PathBuf]) -> Vec<cqs::pa
 
 /// Acquire file lock to prevent concurrent indexing
 fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
-    use fs2::FileExt;
+    use fs4::fs_std::FileExt;
 
     let lock_path = cq_dir.join("index.lock");
     let lock_file = std::fs::OpenOptions::new()
