@@ -2,7 +2,7 @@
 name = "cqs"
 version = "0.1.8"
 edition = "2021"
-description = "Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included."
+description = "Semantic code search for Claude Code. Find functions by what they do, not their names. Local ML, GPU-accelerated."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 keywords = ["code-search", "embeddings", "semantic-search"]
