@@ -1,77 +1,85 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T21:00Z
+Updated: 2026-01-31T22:00Z
 
 ## Current State
 
-**v0.1.9 RELEASED - All planned fixes shipped.**
+**v0.1.9 RELEASED. Planning v0.1.10 with chunk-level incremental indexing.**
 
 - Published to crates.io: `cargo install cqs`
 - GitHub release: https://github.com/jamie8johnson/cqs/releases/tag/v0.1.9
 - ~4400 lines across 9 modules
 - 38 tests passing, 5 doctests, clippy clean
 
-## This Session - v0.1.9 Release
+## In Progress: Chunk-Level Incremental Indexing
+
+**Problem:** Editing one function re-embeds entire file. Wastes GPU/CPU time.
+
+**Solution:** Use `content_hash` (BLAKE3) to lookup existing embeddings. Skip re-embedding unchanged chunks.
+
+### Implementation Plan (approved, not yet implemented)
+
+**Step 1: Add batch hash lookup to Store** (`src/store.rs`)
+```rust
+pub fn get_embeddings_by_hashes(&self, hashes: &[&str]) -> HashMap<String, Embedding>
+```
+- Query: `SELECT content_hash, embedding FROM chunks WHERE content_hash IN (...)`
+- Returns map of hash → embedding for reuse
+
+**Step 2: Modify indexing loop** (`src/cli.rs:634-659`)
+- Before embedding batch, check which hashes already exist
+- Split into cached (reuse embedding) vs to_embed (need new embedding)
+- Only call `embedder.embed_documents()` for new chunks
+- Upsert all (cached + new) to DB
+
+**Step 3: Add cache hit stats**
+- Track cached vs embedded counts
+- Print: "Indexed X chunks (Y cached, Z embedded)"
+
+### Key Files to Change
+
+| File | Change |
+|------|--------|
+| `src/store.rs` | Add `get_embeddings_by_hashes()` after line 647 |
+| `src/cli.rs` | Modify indexing loop at lines 634-659 |
+
+### Expected Impact
+
+- 80-90% cache hit rate on re-index (per ck-search benchmarks)
+- Near-instant re-index when content unchanged (only mtime changed)
+
+## Future Work (After v0.1.10)
+
+### 1. RRF Hybrid Search (biggest quality improvement)
+
+Combine semantic + keyword search with Reciprocal Rank Fusion:
+- Add FTS5 virtual table for keyword search
+- Preprocess identifiers: `parseConfigFile` → "parse config file" (split camelCase/snake_case)
+- Run semantic + FTS5 independently
+- Fuse: `score = Σ 1/(k + rank)` where k=60
+
+**Note:** Default FTS5 tokenizer won't split on underscore or camelCase. Need preprocessing.
+
+### 2. C and Java Languages
+
+- Add tree-sitter-c, tree-sitter-java to Cargo.toml
+- Add query definitions:
+  - C: `function_definition`, `struct_specifier`
+  - Java: `method_declaration`, `class_declaration`, `interface_declaration`
+- Add to Language enum and file extension mapping
+
+## Previous Session - v0.1.9 Release
 
 ### PR #16: Performance and UX improvements (MERGED)
 
-**Performance:**
 - HNSW-guided filtered search (10-100x faster)
 - SIMD cosine similarity via simsimd (2-4x faster)
+- Shell completions, config file, lock PID, error hints
+- CHANGELOG.md, rustdoc
 
-**UX:**
-- Shell completions (bash/zsh/fish/powershell)
-- Config file support (.cqs.toml)
-- Lock file with PID for stale detection
-- Error messages with actionable hints
+### PR #17-19: Doc updates (MERGED)
 
-**Documentation:**
-- CHANGELOG.md with full version history
-- Rustdoc for public API
+## Hunches
 
-### PR #17: Cargo.lock fix (MERGED)
-
-- Updated Cargo.lock version to 0.1.9 (was missed in PR #16)
-
-## Files Changed
-
-| File | Changes |
-|------|---------|
-| Cargo.toml | +simsimd, +clap_complete, +libc, version=0.1.9 |
-| src/cli.rs | +128 lines (lock PID, config, completions, error hints) |
-| src/config.rs | NEW - 55 lines |
-| src/store.rs | +174 lines (search_by_candidate_ids, SIMD cosine, rustdoc) |
-| src/lib.rs | +53 lines (rustdoc) |
-| src/parser.rs | +57 lines (rustdoc) |
-| src/embedder.rs | +27 lines (rustdoc) |
-| src/mcp.rs | +5 lines (error hints) |
-| CHANGELOG.md | NEW - full version history |
-| tests/*.rs | Fixed mut warnings from Store API change |
-
-## Next Steps
-
-No immediate work required. Possible future improvements:
-
-1. **HNSW filtered search optimization** - Currently falls back to O(n) for path patterns
-2. **More languages** - C, C++, Java, Ruby
-3. **VS Code extension**
-4. **Index sharing** - Team sync for large codebases
-
-## Hunches Resolved
-
-- ort logs to stdout: Already using stderr (main.rs:5-11)
-- Model versioning: check_model_version() exists (store.rs:318-335)
-- Symlinks: follow_links(false) already set (cli.rs:259)
-
-## Remaining Hunches
-
-- hnsw_rs lifetime forces reload (~1-2ms overhead per search) - library limitation
-- HNSW filtered search uses candidates but path_pattern filter still O(n) scan
-
-## Dependencies
-
-```toml
-simsimd = "6"        # SIMD cosine similarity
-clap_complete = "4"  # Shell completions
-libc = "0.2"         # Unix PID checking
-```
+- hnsw_rs lifetime forces reload (~1-2ms overhead) - library limitation
+- FTS5 tokenization needs preprocessing for code identifiers
