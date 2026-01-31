@@ -145,9 +145,21 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
 }
 
 pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
+    // Expected: 768 dimensions * 4 bytes = 3072 bytes
+    const EXPECTED_BYTES: usize = 768 * 4;
+    if bytes.len() != EXPECTED_BYTES {
+        tracing::warn!(
+            "Embedding byte length mismatch: expected {}, got {} (possible corruption)",
+            EXPECTED_BYTES,
+            bytes.len()
+        );
+    }
     bytes
         .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .map(|chunk| {
+            // SAFETY: chunks_exact(4) guarantees exactly 4 bytes per chunk
+            f32::from_le_bytes(chunk.try_into().expect("chunks_exact guarantees 4 bytes"))
+        })
         .collect()
 }
 
@@ -666,5 +678,58 @@ impl Store {
             model_name,
             schema_version,
         })
+    }
+
+    /// Get a single chunk by its ID
+    pub fn get_chunk_by_id(&self, id: &str) -> Result<Option<ChunkSummary>, StoreError> {
+        let conn = self.pool.get()?;
+        let row = conn.query_row(
+            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end
+             FROM chunks WHERE id = ?1",
+            [id],
+            |row| {
+                Ok(ChunkRow {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    language: row.get(2)?,
+                    chunk_type: row.get(3)?,
+                    name: row.get(4)?,
+                    signature: row.get(5)?,
+                    content: row.get(6)?,
+                    doc: row.get(7)?,
+                    line_start: row.get(8)?,
+                    line_end: row.get(9)?,
+                })
+            },
+        );
+
+        match row {
+            Ok(r) => Ok(Some(ChunkSummary::from(r))),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Get all chunk IDs and embeddings (for HNSW index building)
+    pub fn all_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare("SELECT id, embedding FROM chunks")?;
+
+        let results: Vec<(String, Embedding)> = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let bytes: Vec<u8> = row.get(1)?;
+                Ok((id, Embedding(bytes_to_embedding(&bytes))))
+            })?
+            .filter_map(|r| match r {
+                Ok(pair) => Some(pair),
+                Err(e) => {
+                    tracing::warn!("Skipped chunk due to DB error: {}", e);
+                    None
+                }
+            })
+            .collect();
+
+        Ok(results)
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included."
 license = "MIT"
@@ -40,6 +40,9 @@ tokio-stream = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+
+# Vector search (HNSW)
+hnsw_rs = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

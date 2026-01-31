@@ -15,6 +15,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use rayon::prelude::*;
 
 use cqs::embedder::Embedder;
+use cqs::hnsw::HnswIndex;
 use cqs::parser::Parser as CqParser;
 use cqs::store::{ModelInfo, SearchFilter, Store};
 
@@ -581,12 +582,30 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
     }
 
+    // Build HNSW index for fast search
+    if !check_interrupted() {
+        if !cli.quiet {
+            println!("Building HNSW index...");
+        }
+
+        let all_embeddings = store.all_embeddings()?;
+        if !all_embeddings.is_empty() {
+            let hnsw = HnswIndex::build(all_embeddings)?;
+            hnsw.save(&cq_dir, "index")?;
+
+            if !cli.quiet {
+                println!("  HNSW index: {} vectors", hnsw.len());
+            }
+        }
+    }
+
     Ok(())
 }
 
 fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let root = find_project_root();
-    let index_path = root.join(".cq/index.db");
+    let cq_dir = root.join(".cq");
+    let index_path = cq_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cq init && cq index' first.");
@@ -611,7 +630,59 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         query_text: query.to_string(),
     };
 
-    let results = store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?;
+    // Try HNSW search first (much faster for large indexes)
+    let results = if HnswIndex::exists(&cq_dir, "index") {
+        match HnswIndex::load(&cq_dir, "index") {
+            Ok(hnsw) => {
+                if cli.verbose {
+                    eprintln!("Using HNSW index ({} vectors)", hnsw.len());
+                }
+                // Get more candidates from HNSW to allow for filtering
+                let oversample = if filter.languages.is_some() || filter.path_pattern.is_some() {
+                    cli.limit * 10
+                } else {
+                    cli.limit * 2
+                };
+                let hnsw_results = hnsw.search(&query_embedding, oversample);
+
+                // Apply filters and threshold using Store's search on candidate set
+                // For now, fall back to brute-force if we have filters
+                // TODO: optimize by fetching only candidate chunks from Store
+                if filter.languages.is_some()
+                    || filter.path_pattern.is_some()
+                    || filter.name_boost > 0.0
+                {
+                    store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
+                } else {
+                    // No filters - use HNSW results directly, just filter by threshold
+                    hnsw_results
+                        .into_iter()
+                        .filter(|r| r.score >= cli.threshold)
+                        .take(cli.limit)
+                        .filter_map(|r| {
+                            // Look up chunk details from store
+                            // This is a simplified approach - ideally we'd batch this
+                            store.get_chunk_by_id(&r.id).ok().flatten().map(|chunk| {
+                                cqs::store::SearchResult {
+                                    chunk,
+                                    score: r.score,
+                                }
+                            })
+                        })
+                        .collect()
+                }
+            }
+            Err(e) => {
+                if cli.verbose {
+                    eprintln!("HNSW load failed, using brute-force: {}", e);
+                }
+                store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
+            }
+        }
+    } else {
+        // No HNSW index, use brute-force
+        store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
+    };
 
     if results.is_empty() {
         if cli.json {
@@ -642,6 +713,13 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
     let store = Store::open(&index_path)?;
     let stats = store.stats()?;
 
+    let cq_dir = root.join(".cq");
+    let hnsw_vectors = if HnswIndex::exists(&cq_dir, "index") {
+        HnswIndex::load(&cq_dir, "index").ok().map(|h| h.len())
+    } else {
+        None
+    };
+
     if cli.json {
         let json = serde_json::json!({
             "total_chunks": stats.total_chunks,
@@ -655,6 +733,7 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
             "model": stats.model_name,
             "schema_version": stats.schema_version,
             "created_at": stats.created_at,
+            "hnsw_vectors": hnsw_vectors,
         });
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
@@ -678,14 +757,24 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
         println!("Schema: v{}", stats.schema_version);
         println!("Created: {}", stats.created_at);
 
-        // Warn about large indexes
-        if stats.total_chunks > 50_000 {
+        // HNSW index status
+        if HnswIndex::exists(&cq_dir, "index") {
+            match HnswIndex::load(&cq_dir, "index") {
+                Ok(hnsw) => {
+                    println!();
+                    println!("HNSW index: {} vectors (O(log n) search)", hnsw.len());
+                }
+                Err(e) => {
+                    println!();
+                    println!("HNSW index: error loading ({})", e);
+                }
+            }
+        } else {
             println!();
-            println!(
-                "Warning: {} chunks. Search uses brute-force O(n).",
-                stats.total_chunks
-            );
-            println!("Consider splitting into smaller projects or waiting for HNSW support.");
+            println!("HNSW index: not built (using brute-force O(n) search)");
+            if stats.total_chunks > 10_000 {
+                println!("  Tip: Run 'cqs index' to build HNSW for faster search");
+            }
         }
     }
 
