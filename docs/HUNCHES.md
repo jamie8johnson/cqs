@@ -186,6 +186,8 @@ The hnsw_rs crate returns `Hnsw<'a>` with lifetime tied to `HnswIo`. Can't store
 
 When filters are active (language, path pattern), we fall back to brute-force. Could optimize: run HNSW to get top-k*10 candidates, then filter in Rust. Trades recall for speed. Not implemented yet - brute-force is fine for <50k chunks.
 
+**RESOLVED 2026-01-31:** v0.1.9 added `search_by_candidate_ids()` - fetches only HNSW candidate chunks from DB, filters in Rust. 10-100x faster for filtered queries on large indexes. Path pattern filter is still O(candidates) but that's typically <1000.
+
 ---
 
 ## 2026-01-31 - MCP Registry is npm-focused
@@ -209,5 +211,17 @@ simsimd v6 returns `f64` from `SpatialSimilarity::dot()`, not `f32`. Had to cast
 ## 2026-01-31 - Config file can't detect explicit CLI defaults
 
 When using config files, we can't distinguish "user passed -n 5" from "user didn't pass -n, using default 5". Current workaround: only apply config if CLI value equals the hardcoded default. If user explicitly passes the default value, config won't override. Minor edge case.
+
+---
+
+## 2026-01-31 - Cargo.lock not auto-updated on version bump
+
+When bumping version in Cargo.toml, Cargo.lock isn't automatically regenerated unless you run a cargo command (build, check, etc.). Easy to forget to commit the updated lock file. Required a separate PR (#17) after v0.1.9 release. Consider adding a pre-commit hook to verify Cargo.lock is in sync.
+
+---
+
+## 2026-01-31 - PowerShell can't access WSL paths
+
+When calling `gh` or other Windows commands from WSL via `powershell.exe`, they can't read `/tmp/` or other WSL-native paths. Must copy files to `/mnt/c/` first. Example: `gh release create --notes-file /tmp/notes.md` fails silently. Workaround: write to Windows-accessible path or inline the content.
 
 ---
