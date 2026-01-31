@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use ignore::WalkBuilder;
+use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use rayon::prelude::*;
 
 use cqs::embedder::Embedder;
 use cqs::parser::Parser as CqParser;
@@ -152,12 +152,21 @@ pub fn run() -> Result<()> {
     match cli.command {
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(&cli),
-        Some(Commands::Index { force, dry_run, no_ignore }) => cmd_index(&cli, force, dry_run, no_ignore),
+        Some(Commands::Index {
+            force,
+            dry_run,
+            no_ignore,
+        }) => cmd_index(&cli, force, dry_run, no_ignore),
         Some(Commands::Stats) => cmd_stats(&cli),
-        Some(Commands::Watch { debounce, no_ignore }) => cmd_watch(&cli, debounce, no_ignore),
-        Some(Commands::Serve { ref transport, port, ref project }) => {
-            cmd_serve(&cli, transport, port, project.clone())
-        }
+        Some(Commands::Watch {
+            debounce,
+            no_ignore,
+        }) => cmd_watch(&cli, debounce, no_ignore),
+        Some(Commands::Serve {
+            ref transport,
+            port,
+            ref project,
+        }) => cmd_serve(&cli, transport, port, project.clone()),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -165,7 +174,7 @@ pub fn run() -> Result<()> {
                 println!("Run 'cqs --help' for more information.");
                 Ok(())
             }
-        }
+        },
     }
 }
 
@@ -288,13 +297,14 @@ fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
     let lock_path = cq_dir.join("index.lock");
     let lock_file = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(true)
         .write(true)
         .open(&lock_path)
         .context("Failed to create lock file")?;
 
-    lock_file
-        .try_lock_exclusive()
-        .map_err(|_| anyhow::anyhow!("Another cq process is indexing. Wait or remove .cq/index.lock"))?;
+    lock_file.try_lock_exclusive().map_err(|_| {
+        anyhow::anyhow!("Another cq process is indexing. Wait or remove .cq/index.lock")
+    })?;
 
     Ok(lock_file)
 }
@@ -314,8 +324,11 @@ fn cmd_init(cli: &Cli) -> Result<()> {
 
     // Create .gitignore
     let gitignore = cq_dir.join(".gitignore");
-    std::fs::write(&gitignore, "index.db\nindex.db-wal\nindex.db-shm\nindex.lock\n")
-        .context("Failed to create .gitignore")?;
+    std::fs::write(
+        &gitignore,
+        "index.db\nindex.db-wal\nindex.db-shm\nindex.lock\n",
+    )
+    .context("Failed to create .gitignore")?;
 
     // Download model
     if !cli.quiet {
@@ -388,12 +401,12 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
             Ok(store) => {
                 let stats = store.stats()?;
                 println!("  {} Location: {}", "[✓]".green(), index_path.display());
-                println!("  {} Schema version: {}", "[✓]".green(), stats.schema_version);
                 println!(
-                    "  {} {} chunks indexed",
+                    "  {} Schema version: {}",
                     "[✓]".green(),
-                    stats.total_chunks
+                    stats.schema_version
                 );
+                println!("  {} {} chunks indexed", "[✓]".green(), stats.total_chunks);
                 if !stats.chunks_by_language.is_empty() {
                     let lang_summary: Vec<_> = stats
                         .chunks_by_language
@@ -585,7 +598,9 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let query_embedding = embedder.embed_query(query)?;
 
     let languages = match &cli.lang {
-        Some(l) => Some(vec![l.parse().context("Invalid language. Valid: rust, python, typescript, javascript, go")?]),
+        Some(l) => Some(vec![l.parse().context(
+            "Invalid language. Valid: rust, python, typescript, javascript, go",
+        )?]),
         None => None,
     };
 
@@ -666,7 +681,10 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
         // Warn about large indexes
         if stats.total_chunks > 50_000 {
             println!();
-            println!("Warning: {} chunks. Search uses brute-force O(n).", stats.total_chunks);
+            println!(
+                "Warning: {} chunks. Search uses brute-force O(n).",
+                stats.total_chunks
+            );
             println!("Consider splitting into smaller projects or waiting for HNSW support.");
         }
     }
@@ -686,13 +704,18 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let parser = CqParser::new()?;
     let supported_ext: HashSet<_> = parser.supported_extensions().iter().cloned().collect();
 
-    println!("Watching {} for changes (Ctrl+C to stop)...", root.display());
-    println!("Supported extensions: {}", supported_ext.iter().cloned().collect::<Vec<_>>().join(", "));
+    println!(
+        "Watching {} for changes (Ctrl+C to stop)...",
+        root.display()
+    );
+    println!(
+        "Supported extensions: {}",
+        supported_ext.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
 
     let (tx, rx) = mpsc::channel();
 
-    let config = Config::default()
-        .with_poll_interval(Duration::from_millis(debounce_ms));
+    let config = Config::default().with_poll_interval(Duration::from_millis(debounce_ms));
 
     let mut watcher = RecommendedWatcher::new(tx, config)?;
     watcher.watch(&root, RecursiveMode::Recursive)?;
@@ -836,16 +859,10 @@ fn cmd_serve(_cli: &Cli, transport: &str, port: u16, project: Option<PathBuf>) -
     let root = project.unwrap_or_else(find_project_root);
 
     match transport {
-        "stdio" => {
-            cqs::serve_stdio(root)
-        }
-        "http" => {
-            cqs::serve_http(root, port)
-        }
+        "stdio" => cqs::serve_stdio(root),
+        "http" => cqs::serve_http(root, port),
         // Keep sse as alias for backwards compatibility
-        "sse" => {
-            cqs::serve_http(root, port)
-        }
+        "sse" => cqs::serve_http(root, port),
         _ => {
             bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
         }

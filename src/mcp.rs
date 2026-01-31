@@ -4,7 +4,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
@@ -16,10 +16,10 @@ use axum::{
     Json, Router,
 };
 use futures::stream::{self, Stream};
-use std::convert::Infallible;
-use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::convert::Infallible;
+use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::embedder::Embedder;
@@ -142,8 +142,7 @@ impl McpServer {
             bail!("Index not found. Run 'cq init && cq index' first.");
         }
 
-        let store = Store::open(&index_path)
-            .context("Failed to open index")?;
+        let store = Store::open(&index_path).context("Failed to open index")?;
 
         Ok(Self {
             store,
@@ -191,22 +190,25 @@ impl McpServer {
     }
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
-        let _params: InitializeParams = params
-            .map(|p| serde_json::from_value(p))
-            .transpose()?
-            .unwrap_or(InitializeParams {
-                protocol_version: "2024-11-05".into(),
-                capabilities: Value::Object(Default::default()),
-                client_info: ClientInfo {
-                    name: "unknown".into(),
-                    version: "0.0.0".into(),
-                },
-            });
+        let _params: InitializeParams =
+            params
+                .map(serde_json::from_value)
+                .transpose()?
+                .unwrap_or(InitializeParams {
+                    protocol_version: "2024-11-05".into(),
+                    capabilities: Value::Object(Default::default()),
+                    client_info: ClientInfo {
+                        name: "unknown".into(),
+                        version: "0.0.0".into(),
+                    },
+                });
 
         let result = InitializeResult {
             protocol_version: "2024-11-05".into(),
             capabilities: ServerCapabilities {
-                tools: ToolsCapability { list_changed: false },
+                tools: ToolsCapability {
+                    list_changed: false,
+                },
             },
             server_info: ServerInfo {
                 name: "cqs".into(),
@@ -278,7 +280,10 @@ impl McpServer {
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing tool name"))?;
 
-        let arguments = params.get("arguments").cloned().unwrap_or(Value::Object(Default::default()));
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
 
         match name {
             "cqs_search" => self.tool_search(arguments),
@@ -294,9 +299,9 @@ impl McpServer {
         let query_embedding = embedder.embed_query(&args.query)?;
 
         let filter = SearchFilter {
-            languages: args.language.map(|l| {
-                vec![l.parse().unwrap_or(Language::Rust)]
-            }),
+            languages: args
+                .language
+                .map(|l| vec![l.parse().unwrap_or(Language::Rust)]),
             path_pattern: args.path_pattern,
             name_boost: args.name_boost.unwrap_or(0.2),
             query_text: args.query.clone(),
@@ -305,7 +310,9 @@ impl McpServer {
         let limit = args.limit.unwrap_or(5).min(20);
         let threshold = args.threshold.unwrap_or(0.3);
 
-        let results = self.store.search_filtered(&query_embedding, &filter, limit, threshold)?;
+        let results = self
+            .store
+            .search_filtered(&query_embedding, &filter, limit, threshold)?;
 
         let json_results: Vec<_> = results
             .iter()
@@ -417,7 +424,13 @@ pub fn serve_stdio(project_root: PathBuf) -> Result<()> {
         let response = server.handle_request(request);
 
         // Skip response for notifications (no id)
-        if response.id.is_none() && response.result.as_ref().map(|v| v.is_null()).unwrap_or(false) {
+        if response.id.is_none()
+            && response
+                .result
+                .as_ref()
+                .map(|v| v.is_null())
+                .unwrap_or(false)
+        {
             continue;
         }
 
@@ -494,7 +507,7 @@ async fn handle_mcp_post(
                         "code": -32600,
                         "message": "Invalid origin"
                     }
-                }))
+                })),
             );
         }
     }
@@ -514,7 +527,7 @@ async fn handle_mcp_post(
                         "code": -32600,
                         "message": format!("Unsupported protocol version: {}. Supported: {}", version_str, MCP_PROTOCOL_VERSION)
                     }
-                }))
+                })),
             );
         }
     }
@@ -525,11 +538,20 @@ async fn handle_mcp_post(
     };
 
     // Return 202 Accepted for notifications (no response needed)
-    if response.id.is_none() && response.result.as_ref().map(|v| v.is_null()).unwrap_or(false) {
+    if response.id.is_none()
+        && response
+            .result
+            .as_ref()
+            .map(|v| v.is_null())
+            .unwrap_or(false)
+    {
         return (StatusCode::ACCEPTED, Json(serde_json::json!(null)));
     }
 
-    (StatusCode::OK, Json(serde_json::to_value(&response).unwrap_or_default()))
+    (
+        StatusCode::OK,
+        Json(serde_json::to_value(&response).unwrap_or_default()),
+    )
 }
 
 /// Handle GET /health

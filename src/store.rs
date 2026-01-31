@@ -1,8 +1,8 @@
 //! SQLite storage for chunks and embeddings
 
+use rusqlite::{params, Connection};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use rusqlite::{params, Connection};
 use thiserror::Error;
 
 use crate::embedder::Embedding;
@@ -22,7 +22,9 @@ pub enum StoreError {
     SchemaMismatch(i32, i32),
     #[error("Index created by newer cq version (schema v{0}). Please upgrade cq.")]
     SchemaNewerThanCq(i32),
-    #[error("Model mismatch: index uses '{0}', current is '{1}'. Run 'cq index --force' to re-embed.")]
+    #[error(
+        "Model mismatch: index uses '{0}', current is '{1}'. Run 'cq index --force' to re-embed."
+    )]
     ModelMismatch(String, String),
 }
 
@@ -134,11 +136,7 @@ pub struct IndexStats {
 
 // Helper functions for embedding serialization
 pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
-    embedding
-        .0
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
+    embedding.0.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
@@ -183,7 +181,11 @@ pub fn name_match_score(query: &str, name: &str) -> f32 {
 
     let overlap = query_words
         .iter()
-        .filter(|w| name_words.iter().any(|nw| nw.contains(w.as_str()) || w.contains(nw.as_str())))
+        .filter(|w| {
+            name_words
+                .iter()
+                .any(|nw| nw.contains(w.as_str()) || w.contains(nw.as_str()))
+        })
         .count() as f32;
     let total = query_words.len().max(1) as f32;
 
@@ -365,7 +367,7 @@ impl Store {
             .metadata()?
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "time error"))?
+            .map_err(|_| std::io::Error::other("time error"))?
             .as_secs() as i64;
 
         let stored_mtime: Option<i64> = self
@@ -538,7 +540,10 @@ impl Store {
         for file in indexed_files {
             let path = PathBuf::from(&file);
             if !existing_files.contains(&path) {
-                deleted += self.conn.execute("DELETE FROM chunks WHERE file = ?1", [&file])? as u32;
+                deleted += self
+                    .conn
+                    .execute("DELETE FROM chunks WHERE file = ?1", [&file])?
+                    as u32;
             }
         }
         Ok(deleted)
@@ -562,16 +567,18 @@ impl Store {
             .conn
             .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
 
-        let total_files: u64 = self
-            .conn
-            .query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
+        let total_files: u64 =
+            self.conn
+                .query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
 
         // Chunks by language
         let mut stmt = self
             .conn
             .prepare("SELECT language, COUNT(*) FROM chunks GROUP BY language")?;
         let chunks_by_language: HashMap<Language, u64> = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })?
             .filter_map(|r| r.ok())
             .filter_map(|(lang, count)| lang.parse().ok().map(|l| (l, count)))
             .collect();
@@ -581,7 +588,9 @@ impl Store {
             .conn
             .prepare("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")?;
         let chunks_by_type: HashMap<ChunkType, u64> = stmt
-            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+            })?
             .filter_map(|r| r.ok())
             .filter_map(|(ct, count)| ct.parse().ok().map(|c| (c, count)))
             .collect();

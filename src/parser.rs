@@ -164,10 +164,7 @@ impl Parser {
             Err(e) => return Err(e.into()),
         };
 
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let language = Language::from_extension(ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
@@ -183,10 +180,9 @@ impl Parser {
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
         // Use cached query
-        let query = self
-            .queries
-            .get(&language)
-            .ok_or_else(|| ParserError::QueryCompileFailed(language.to_string(), "not found".into()))?;
+        let query = self.queries.get(&language).ok_or_else(|| {
+            ParserError::QueryCompileFailed(language.to_string(), "not found".into())
+        })?;
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
@@ -199,11 +195,7 @@ impl Parser {
                     // Skip chunks over 100 lines
                     let lines = chunk.line_end - chunk.line_start;
                     if lines > 100 {
-                        tracing::warn!(
-                            "Skipping {} ({} lines > 100 max)",
-                            chunk.id,
-                            lines
-                        );
+                        tracing::warn!("Skipping {} ({} lines > 100 max)", chunk.id, lines);
                         continue;
                     }
                     chunks.push(chunk);
@@ -245,7 +237,9 @@ impl Parser {
                     .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
                     .map(|c| (c.node, *chunk_type))
             })
-            .ok_or_else(|| ParserError::ParseFailed("No definition capture found in match".into()))?;
+            .ok_or_else(|| {
+                ParserError::ParseFailed("No definition capture found in match".into())
+            })?;
 
         // Get name capture
         let name_idx = query.capture_index_for_name("name");
@@ -392,7 +386,9 @@ impl Parser {
     }
 
     pub fn supported_extensions(&self) -> &[&str] {
-        &["rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go"]
+        &[
+            "rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go",
+        ]
     }
 }
 

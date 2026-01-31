@@ -1,9 +1,9 @@
 //! Embedding generation with ort + tokenizers
 
-use std::path::{Path, PathBuf};
 use ndarray::Array2;
-use ort::session::Session;
 use ort::ep::ExecutionProvider as OrtExecutionProvider;
+use ort::session::Session;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 // Model configuration
@@ -55,7 +55,9 @@ impl std::fmt::Display for ExecutionProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionProvider::CUDA { device_id } => write!(f, "CUDA (device {})", device_id),
-            ExecutionProvider::TensorRT { device_id } => write!(f, "TensorRT (device {})", device_id),
+            ExecutionProvider::TensorRT { device_id } => {
+                write!(f, "TensorRT (device {})", device_id)
+            }
             ExecutionProvider::CPU => write!(f, "CPU"),
         }
     }
@@ -185,25 +187,25 @@ impl Embedder {
         let embedding_dim = 768;
         let mut results = Vec::with_capacity(batch_size);
 
-        for i in 0..batch_size {
+        for (i, mask_vec) in attention_mask.iter().enumerate().take(batch_size) {
             let mut sum = vec![0.0f32; embedding_dim];
             let mut count = 0.0f32;
 
             for j in 0..seq_len {
-                let mask = attention_mask[i].get(j).copied().unwrap_or(0) as f32;
+                let mask = mask_vec.get(j).copied().unwrap_or(0) as f32;
                 if mask > 0.0 {
                     count += mask;
                     let offset = i * seq_len * embedding_dim + j * embedding_dim;
-                    for k in 0..embedding_dim {
-                        sum[k] += data[offset + k] * mask;
+                    for (k, sum_val) in sum.iter_mut().enumerate() {
+                        *sum_val += data[offset + k] * mask;
                     }
                 }
             }
 
             // Avoid division by zero
             if count > 0.0 {
-                for k in 0..embedding_dim {
-                    sum[k] /= count;
+                for sum_val in &mut sum {
+                    *sum_val /= count;
                 }
             }
 
@@ -241,8 +243,8 @@ fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
 
 /// Verify file checksum using blake3
 fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| EmbedderError::ModelNotFound(e.to_string()))?;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| EmbedderError::ModelNotFound(e.to_string()))?;
     let mut hasher = blake3::Hasher::new();
     std::io::copy(&mut file, &mut hasher)
         .map_err(|e| EmbedderError::ModelNotFound(e.to_string()))?;
@@ -260,7 +262,7 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
 
 /// Select the best available execution provider
 fn select_provider() -> ExecutionProvider {
-    use ort::ep::{CUDA, TensorRT};
+    use ort::ep::{TensorRT, CUDA};
 
     // Try CUDA first
     let cuda = CUDA::default();
@@ -278,17 +280,18 @@ fn select_provider() -> ExecutionProvider {
 }
 
 /// Create an ort session with the specified provider
-fn create_session(model_path: &Path, provider: ExecutionProvider) -> Result<Session, EmbedderError> {
-    use ort::ep::{CUDA, TensorRT};
+fn create_session(
+    model_path: &Path,
+    provider: ExecutionProvider,
+) -> Result<Session, EmbedderError> {
+    use ort::ep::{TensorRT, CUDA};
 
     let builder = Session::builder()?;
 
     let session = match provider {
-        ExecutionProvider::CUDA { device_id } => {
-            builder
-                .with_execution_providers([CUDA::default().with_device_id(device_id).build()])?
-                .commit_from_file(model_path)?
-        }
+        ExecutionProvider::CUDA { device_id } => builder
+            .with_execution_providers([CUDA::default().with_device_id(device_id).build()])?
+            .commit_from_file(model_path)?,
         ExecutionProvider::TensorRT { device_id } => {
             builder
                 .with_execution_providers([

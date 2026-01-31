@@ -1,7 +1,7 @@
 //! Parser tests
 
-use std::path::Path;
 use cqs::parser::{ChunkType, Language, Parser};
+use std::path::Path;
 
 fn fixtures_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -14,10 +14,16 @@ fn test_rust_function_extraction() {
     let chunks = parser.parse_file(&path).unwrap();
 
     // Should find add, subtract, new, add, get functions
-    assert!(chunks.len() >= 5, "Expected at least 5 chunks, got {}", chunks.len());
+    assert!(
+        chunks.len() >= 5,
+        "Expected at least 5 chunks, got {}",
+        chunks.len()
+    );
 
     // Check for specific function
-    let add_fn = chunks.iter().find(|c| c.name == "add" && c.chunk_type == ChunkType::Function);
+    let add_fn = chunks
+        .iter()
+        .find(|c| c.name == "add" && c.chunk_type == ChunkType::Function);
     assert!(add_fn.is_some(), "Should find 'add' function");
 
     let add_fn = add_fn.unwrap();
@@ -32,11 +38,16 @@ fn test_rust_method_detection() {
     let chunks = parser.parse_file(&path).unwrap();
 
     // Methods inside impl block
-    let methods: Vec<_> = chunks.iter().filter(|c| c.chunk_type == ChunkType::Method).collect();
+    let methods: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.chunk_type == ChunkType::Method)
+        .collect();
     assert!(!methods.is_empty(), "Should find methods in impl block");
 
     // Check Calculator::new is a method
-    let new_method = chunks.iter().find(|c| c.name == "new" && c.chunk_type == ChunkType::Method);
+    let new_method = chunks
+        .iter()
+        .find(|c| c.name == "new" && c.chunk_type == ChunkType::Method);
     assert!(new_method.is_some(), "Calculator::new should be a method");
 }
 
@@ -62,7 +73,10 @@ fn test_python_method_detection() {
     let chunks = parser.parse_file(&path).unwrap();
 
     // Methods inside class
-    let methods: Vec<_> = chunks.iter().filter(|c| c.chunk_type == ChunkType::Method).collect();
+    let methods: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.chunk_type == ChunkType::Method)
+        .collect();
     assert!(!methods.is_empty(), "Should find methods in Python class");
 
     // Check increment is a method
@@ -105,7 +119,10 @@ fn test_javascript_function_extraction() {
     assert!(!chunks.is_empty(), "Should find chunks in JavaScript file");
 
     let validate_fn = chunks.iter().find(|c| c.name == "validateEmail");
-    assert!(validate_fn.is_some(), "Should find 'validateEmail' function");
+    assert!(
+        validate_fn.is_some(),
+        "Should find 'validateEmail' function"
+    );
 
     let validate_fn = validate_fn.unwrap();
     assert_eq!(validate_fn.language, Language::JavaScript);
@@ -145,11 +162,20 @@ fn test_signature_extraction() {
     let path = fixtures_path().join("sample.rs");
     let chunks = parser.parse_file(&path).unwrap();
 
-    let add_fn = chunks.iter().find(|c| c.name == "add" && c.chunk_type == ChunkType::Function).unwrap();
+    let add_fn = chunks
+        .iter()
+        .find(|c| c.name == "add" && c.chunk_type == ChunkType::Function)
+        .unwrap();
 
     // Signature should be normalized (single space)
-    assert!(add_fn.signature.contains("pub fn add"), "Signature should contain function declaration");
-    assert!(!add_fn.signature.contains('{'), "Signature should not contain body");
+    assert!(
+        add_fn.signature.contains("pub fn add"),
+        "Signature should contain function declaration"
+    );
+    assert!(
+        !add_fn.signature.contains('{'),
+        "Signature should not contain body"
+    );
 }
 
 #[test]
@@ -158,11 +184,17 @@ fn test_doc_comment_extraction() {
     let path = fixtures_path().join("sample.rs");
     let chunks = parser.parse_file(&path).unwrap();
 
-    let add_fn = chunks.iter().find(|c| c.name == "add" && c.chunk_type == ChunkType::Function).unwrap();
+    let add_fn = chunks
+        .iter()
+        .find(|c| c.name == "add" && c.chunk_type == ChunkType::Function)
+        .unwrap();
 
     assert!(add_fn.doc.is_some(), "Should extract doc comment");
     let doc = add_fn.doc.as_ref().unwrap();
-    assert!(doc.contains("Adds two numbers"), "Doc should contain description");
+    assert!(
+        doc.contains("Adds two numbers"),
+        "Doc should contain description"
+    );
 }
 
 #[test]

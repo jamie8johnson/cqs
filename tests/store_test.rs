@@ -1,15 +1,18 @@
 //! Store tests
 
-use std::collections::HashSet;
-use std::path::PathBuf;
 use cqs::embedder::Embedding;
 use cqs::parser::{Chunk, ChunkType, Language};
-use cqs::store::{ModelInfo, Store, SearchFilter};
+use cqs::store::{ModelInfo, SearchFilter, Store};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn create_test_chunk(name: &str, content: &str) -> Chunk {
     Chunk {
-        id: format!("test.rs:1:{}", &blake3::hash(content.as_bytes()).to_hex()[..8]),
+        id: format!(
+            "test.rs:1:{}",
+            &blake3::hash(content.as_bytes()).to_hex()[..8]
+        ),
         file: PathBuf::from("test.rs"),
         language: Language::Rust,
         chunk_type: ChunkType::Function,
@@ -69,7 +72,10 @@ fn test_upsert_and_search() {
     let results = store.search(&embedding, 5, 0.0).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "add");
-    assert!(results[0].score > 0.99, "Identical embedding should have score ~1.0");
+    assert!(
+        results[0].score > 0.99,
+        "Identical embedding should have score ~1.0"
+    );
 }
 
 #[test]
@@ -84,8 +90,12 @@ fn test_search_with_threshold() {
     let chunk1 = create_test_chunk("add", "fn add(a, b) { a + b }");
     let chunk2 = create_test_chunk("subtract", "fn subtract(a, b) { a - b }");
 
-    store.upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345).unwrap();
-    store.upsert_chunk(&chunk2, &create_mock_embedding(-1.0), 12345).unwrap();
+    store
+        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &create_mock_embedding(-1.0), 12345)
+        .unwrap();
 
     // Search with query similar to chunk1
     let query = create_mock_embedding(0.9);
@@ -127,13 +137,17 @@ fn test_search_filtered_by_language() {
 
     // Insert Rust chunk
     let rust_chunk = create_test_chunk("rust_fn", "fn rust_fn() {}");
-    store.upsert_chunk(&rust_chunk, &create_mock_embedding(1.0), 12345).unwrap();
+    store
+        .upsert_chunk(&rust_chunk, &create_mock_embedding(1.0), 12345)
+        .unwrap();
 
     // Insert Python chunk
     let mut py_chunk = create_test_chunk("py_fn", "def py_fn(): pass");
     py_chunk.language = Language::Python;
     py_chunk.file = PathBuf::from("test.py");
-    store.upsert_chunk(&py_chunk, &create_mock_embedding(1.0), 12345).unwrap();
+    store
+        .upsert_chunk(&py_chunk, &create_mock_embedding(1.0), 12345)
+        .unwrap();
 
     // Search for Rust only
     let filter = SearchFilter {
@@ -141,7 +155,9 @@ fn test_search_filtered_by_language() {
         path_pattern: None,
         ..Default::default()
     };
-    let results = store.search_filtered(&create_mock_embedding(1.0), &filter, 10, 0.0).unwrap();
+    let results = store
+        .search_filtered(&create_mock_embedding(1.0), &filter, 10, 0.0)
+        .unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "rust_fn");
@@ -161,8 +177,12 @@ fn test_prune_missing() {
     chunk2.file = PathBuf::from("other.rs");
     chunk2.id = format!("other.rs:1:{}", &chunk2.content_hash[..8]);
 
-    store.upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345).unwrap();
-    store.upsert_chunk(&chunk2, &create_mock_embedding(1.0), 12345).unwrap();
+    store
+        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &create_mock_embedding(1.0), 12345)
+        .unwrap();
 
     // Prune with only test.rs existing
     let existing: HashSet<PathBuf> = vec![PathBuf::from("test.rs")].into_iter().collect();
@@ -215,15 +235,30 @@ fn test_stats() {
     let mut chunk3 = create_test_chunk("method1", "fn method1(&self) {}");
     chunk3.chunk_type = ChunkType::Method;
 
-    store.upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345).unwrap();
-    store.upsert_chunk(&chunk2, &create_mock_embedding(1.0), 12345).unwrap();
-    store.upsert_chunk(&chunk3, &create_mock_embedding(1.0), 12345).unwrap();
+    store
+        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &create_mock_embedding(1.0), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk3, &create_mock_embedding(1.0), 12345)
+        .unwrap();
 
     let stats = store.stats().unwrap();
 
     assert_eq!(stats.total_chunks, 3);
     assert_eq!(stats.total_files, 2);
-    assert_eq!(*stats.chunks_by_language.get(&Language::Rust).unwrap_or(&0), 3);
-    assert_eq!(*stats.chunks_by_type.get(&ChunkType::Function).unwrap_or(&0), 2);
-    assert_eq!(*stats.chunks_by_type.get(&ChunkType::Method).unwrap_or(&0), 1);
+    assert_eq!(
+        *stats.chunks_by_language.get(&Language::Rust).unwrap_or(&0),
+        3
+    );
+    assert_eq!(
+        *stats.chunks_by_type.get(&ChunkType::Function).unwrap_or(&0),
+        2
+    );
+    assert_eq!(
+        *stats.chunks_by_type.get(&ChunkType::Method).unwrap_or(&0),
+        1
+    );
 }
