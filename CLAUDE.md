@@ -18,19 +18,20 @@ As audits/reviews happen, add them here:
 
 ## Tears (Session Continuity)
 
-* `PROJECT_CONTINUITY_<timestamp>.md` -- current state, blockers, next steps (read to resume)
-* `PROJECT_CONTINUITY_ARCHIVE_<timestamp>.md` -- session logs, detailed notes (reference only)
+* `PROJECT_CONTINUITY_<date>.md` -- current state, blockers, next steps (read to resume)
+* `PROJECT_CONTINUITY_ARCHIVE.md` -- session logs, detailed notes (reference only)
 * `docs/HUNCHES.md` -- latent risks, gut feelings (append during session, review at start)
 * `ROADMAP.md` -- what's done, what's next (update when phases change)
 
-Timestamps: UTC, format `YYYY-MM-DDTHHMM[Z]`
+Date format: `YYYY-MM-DD` (UTC)
 
 **Protocol:**
 1. Session start: read tear files + HUNCHES.md + ROADMAP.md before doing anything
 2. During work: note decisions, blockers, changes; append hunches as they arise
 3. Session end or milestone: update continuity files, ROADMAP.md if progress made
-4. Proactively offer updates—don't wait to be asked
-5. Flag stale or inconsistent state
+4. Day rollover: move previous day's continuity content to archive, start fresh
+5. Proactively offer updates—don't wait to be asked
+6. Flag stale or inconsistent state
 
 ## WSL Workarounds
 
@@ -159,12 +160,12 @@ Soft observations, gut feelings, latent risks. Append new entries as they arise.
 - Index sharing (team sync)
 ```
 
-### PROJECT_CONTINUITY_<timestamp>.md (Tear)
+### PROJECT_CONTINUITY_<date>.md (Tear)
 
 ```markdown
 # cq - Project Continuity
 
-Updated: <date>
+Updated: <date> (UTC)
 
 ## Current State
 
@@ -187,16 +188,16 @@ Updated: <date>
 <key choices with brief rationale>
 ```
 
-### PROJECT_CONTINUITY_ARCHIVE_<timestamp>.md
+### PROJECT_CONTINUITY_ARCHIVE.md
 
 ```markdown
 # cq - Archive
 
-Session log and detailed notes.
+Session log and detailed notes. Append daily summaries here when day rolls over.
 
 ---
 
-## Session: <date>
+## <date>
 
 ### <topic>
 
