@@ -128,3 +128,14 @@ The MCP spec (2025-03-26) deprecated HTTP+SSE transport in favor of "Streamable 
 Implemented Streamable HTTP transport. Kept "sse" as alias mapping to "http" for backwards compat with existing configs.
 
 ---
+
+## 2026-01-31 - Review MCP docs periodically
+
+MCP spec evolves. The SSE deprecation caught us by surprise. Periodically check:
+- https://modelcontextprotocol.io/specification (official spec)
+- https://mcp-framework.com/docs (framework docs)
+- https://github.com/anthropics/anthropic-cookbook (examples)
+
+Look for: new transport options, deprecations, new capabilities, security advisories.
+
+---

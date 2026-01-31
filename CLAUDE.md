@@ -49,6 +49,12 @@ When making changes that affect these, update them:
 * `PRIVACY.md` -- what data is stored, telemetry (none), data deletion
 * `ROADMAP.md` -- phase progress, what's done/next
 
+### MCP Spec Review
+
+Periodically check the MCP specification for updates:
+- https://modelcontextprotocol.io/specification (official spec)
+- Look for: transport changes, new capabilities, deprecations
+
 ## Tears (Session Continuity)
 
 * `PROJECT_CONTINUITY_<date>.md` -- current state, blockers, next steps (read to resume)
