@@ -2,290 +2,135 @@
 
 cqs - semantic code search with local embeddings
 
-(Renamed from `cq` - that name was taken on crates.io)
+## Working Style
 
-## First Run
+- Flat, dry, direct. No padding.
+- Push back when warranted.
+- Ask rather than guess wrong.
+- Efficiency over ceremony.
 
-If `docs/` doesn't exist or any listed files are missing, create them from the templates at the bottom of this document.
+## On Resume
 
-## Read Before Doing Anything
+If context just compacted: read tears, then ask "where were we?" rather than guessing.
 
-* `DESIGN.md` -- **source of truth**: architecture, API signatures, verified crate versions
-* `docs/SESSION_CONTEXT.md` -- who we are, how we work, conventions
-* `docs/HUNCHES.md` -- soft observations, gut feelings, latent risks (append as they arise)
-* `ROADMAP.md` -- current progress, what's done, what's next
+## Read First
 
-As audits/reviews happen, add them here:
-* `docs/AUDIT_<date>.md` -- audit findings and resolutions
+* `PROJECT_CONTINUITY.md` -- what's happening right now
+* `docs/HUNCHES.md` -- soft observations, latent risks
+* `docs/SCARS.md` -- things we tried that hurt. don't repeat these.
+* `ROADMAP.md` -- what's done, what's next
 
 ## Code Search
 
-Use `cqs_search` (MCP tool) for semantic code search instead of grep/glob when looking for:
-- Functions by behavior ("retry with backoff", "parse config file")
-- Implementation patterns ("error handling", "database connection")
-- Conceptual matches where you don't know the exact name
+**Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching.
 
-Available tools:
-- `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`, `name_boost`
-- `cqs_stats` - index stats, chunk counts by language
+Use it for:
+- Exploring unfamiliar code
+- Finding implementations by behavior
+- When you don't know exact names
 
-Note: `cq` was the original name but was taken on crates.io. The MCP tool names use `cqs_` prefix.
+Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-### Keeping Index Fresh
-
-For active development, run watch mode in a background terminal:
-```bash
-cqs watch
-```
-
-This automatically reindexes when files change (respects .gitignore).
-
-For manual reindex: `cqs index` (or `cqs index --force` to rebuild)
-
-## Keep Updated
-
-When making changes that affect these, update them:
-
-* `README.md` -- usage examples, supported languages, install instructions
-* `SECURITY.md` -- network requests, file access, data storage
-* `PRIVACY.md` -- what data is stored, telemetry (none), data deletion
-* `ROADMAP.md` -- phase progress, what's done/next
-
-### Periodic Reviews
-
-**MCP Spec** - https://modelcontextprotocol.io/specification
-- Transport changes, new capabilities, deprecations
-
-**Dependencies** - `cargo outdated` or check crates.io
-- `ort` - still RC, watch for 2.0 stable
-- `tree-sitter` - grammar crate compatibility
-- `axum`/`tower` - security patches
-
-**Embedding Model** - https://huggingface.co/nomic-ai
-- nomic-embed-text updates (would require reindex)
-- New models worth evaluating
-
-**tree-sitter Grammars** - language-specific updates
-- New syntax support, bug fixes
-
-## Tears (Session Continuity)
-
-* `PROJECT_CONTINUITY_<date>.md` -- current state, blockers, next steps (read to resume)
-* `PROJECT_CONTINUITY_ARCHIVE.md` -- session logs, detailed notes (reference only)
-* `docs/HUNCHES.md` -- latent risks, gut feelings (append during session, review at start)
-* `ROADMAP.md` -- what's done, what's next (update when phases change)
-
-Date format: `YYYY-MM-DD` (UTC)
-
-**Protocol:**
-1. Session start: read tear files + HUNCHES.md + ROADMAP.md before doing anything
-2. During work: note decisions, blockers, changes; append hunches as they arise
-3. Session end or milestone: update continuity files, ROADMAP.md if progress made
-4. Day rollover: move previous day's continuity content to archive, start fresh
-5. Proactively offer updates—don't wait to be asked
-6. Flag stale or inconsistent state
-
-## WSL Workarounds
-
-- **Git push**: `powershell.exe -Command "cd C:\projects\cq; git push"` — Windows has GitHub credentials
-- **GitHub CLI (gh)**: Not installed in WSL. Use PowerShell:
-  ```bash
-  powershell.exe -Command 'gh pr create --title "Title" --body "Body"'
-  powershell.exe -Command 'gh pr list'
-  ```
-  - **Quirk**: `gh pr checks` returns exit code 1 if any checks are pending/skipped, even if important ones passed. Not necessarily an error.
-- **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
-  - This file is gitignored (`.cargo/` in .gitignore) so CI uses default target-dir
-
-## Branch Protection
-
-**main branch is protected** - cannot push directly. All changes require:
-1. Create feature branch: `git checkout -b feature/name`
-2. Push branch: `powershell.exe -Command "cd C:\projects\cq; git push -u origin feature/name"`
-3. Create PR: `powershell.exe -Command 'gh pr create --title "..." --body "..."'`
-4. Wait for CI using `--watch`: `powershell.exe -Command 'gh pr checks N --watch'`
-5. Merge via: `powershell.exe -Command 'gh pr merge N --squash --delete-branch'`
-
-## Environment & Credentials
-
-- `.env` files are gitignored - use for local secrets
-- `.env.example` shows what variables are available
-- **Crates.io**: Use `cargo login <token>` (preferred) or set `CARGO_REGISTRY_TOKEN` in `.env`
-- Token scopes needed: `publish-new`, `publish-update`
-- Token expiration: track in `.env.example` comments or calendar
-
-## Bootstrap (First Session)
-
-1. Create `docs/` directory
-2. Create initial docs from templates below
-3. Create initial tear files
-4. Scaffold project: `cargo init`, set up Cargo.toml per design doc
-5. Create GitHub repo: `gh repo create cqs --public --source=. --push`
-6. Claim crate name on crates.io: `cargo publish` (needs token with publish-new scope)
-
----
-
-## Doc Templates
-
-### docs/SESSION_CONTEXT.md
-
-```markdown
-# Session Context
-
-## Communication Style
-
-- Flat, dry, direct
-- No warmth padding, enthusiasm, or hedging
-- Good questions over wrong answers—ask for context rather than guessing
-- Push back when warranted
-- Flag assumptions, admit ignorance, own errors without defending
-
-## Expertise Level
-
-- Experienced dev, familiar with Rust ownership/lifetimes
-- Don't over-explain basics
+Tools: `cqs_search`, `cqs_stats` (run `cqs watch` to keep index fresh)
 
 ## Project Conventions
 
 - Rust edition 2021
 - `thiserror` for library errors, `anyhow` in CLI
-- `impl Into<PathBuf>` over concrete path types
 - No `unwrap()` except in tests
-- Streaming/iterator patterns for large result sets
 - GPU detection at runtime, graceful CPU fallback
 
-## Tech Stack
+## WSL Workarounds
 
-- tree-sitter 0.26 (multi-language parsing)
-- ort 2.x (ONNX Runtime) - uses `try_extract_array`, `axis_iter`
-- tokenizers 0.22
-- hf-hub 0.4
-- rusqlite 0.31 + r2d2-sqlite 0.24 (connection pooling)
-- hnsw_rs 0.3 + simsimd 6 (fast vector search)
-- nomic-embed-text-v1.5 (768-dim, Matryoshka truncatable)
-- lru 0.16 (query embedding cache)
-
-## Phase 1 Languages
-
-Rust, Python, TypeScript, JavaScript, Go
-
-## Environment
-
-- Claude Code via WSL
-- Windows files at `/mnt/c/`
-- Tools: `gh` CLI, `cargo`, Rust toolchain
-- A6000 GPU (48GB VRAM) for CUDA testing
+Git/GitHub operations need PowerShell (Windows has credentials):
+```bash
+powershell.exe -Command "cd C:\projects\cq; git push"
+powershell.exe -Command 'gh pr create --title "..." --body "..."'
+powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 ```
 
-### docs/HUNCHES.md
+**main is protected** - all changes via PR.
 
+## Continuity (Tears)
+
+"Update tears" = capture state before context compacts.
+
+**Keep "Right Now" current** - update it when switching tasks, not just at session end.
+
+* `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
+* `docs/HUNCHES.md` -- soft risks, observations
+* `docs/SCARS.md` -- failed approaches (add when something hurts)
+
+Don't log activity - git history has that.
+
+*Etymology: PIE \*teks- (weave/construct), collapses with \*der- (rip) and \*dakru- (crying). Portuguese "tear" = loom. Context is woven, then cut—Clotho spins, Lachesis measures, Atropos snips. Construction, destruction, loss.*
+
+---
+
+## Bootstrap (New Project)
+
+Create these files if missing:
+
+**docs/HUNCHES.md:**
 ```markdown
 # Hunches
 
-Soft observations, gut feelings, latent risks. Append new entries as they arise.
-
----
-
-## <date> - <topic>
-
-<observation>
+Soft observations, latent risks. Append as they arise.
 
 ---
 ```
 
-### ROADMAP.md
+**docs/SCARS.md:**
+```markdown
+# Scars
 
+Limbic memory. Things that hurt, so we don't touch the stove twice.
+
+---
+
+## <topic>
+
+**Tried:** what we attempted
+**Pain:** why it hurt
+**Learned:** what to do instead
+
+---
+```
+
+**PROJECT_CONTINUITY.md:**
+```markdown
+# Project Continuity
+
+## Right Now
+
+(active task - update when starting something)
+
+## Parked
+
+(threads to revisit later)
+
+## Open Questions
+
+(decisions being weighed, with options)
+
+## Blockers
+
+None.
+
+## Pending Changes
+
+(uncommitted work)
+```
+
+**ROADMAP.md:**
 ```markdown
 # Roadmap
 
-## Current Phase: 1 (MVP)
+## Current Phase
 
 ### Done
+- [ ] ...
 
-- [ ] Parser - tree-sitter extraction, all 5 languages
-- [ ] Embedder - ort + tokenizers, CUDA/CPU detection, model download
-- [ ] Store - sqlite with WAL, BLOB embeddings, two-phase search
-- [ ] CLI - init, doctor, index, query, stats, serve, --lang filter
-- [ ] MCP - cq serve with stdio, cq_search + cq_stats tools
-- [ ] Tests - unit tests, integration tests, eval suite (10 queries/lang)
-
-### Exit Criteria
-
-- `cargo install cq` works
-- GPU used when available, CPU fallback works
-- 8/10 eval queries return relevant result in top-5 per language
-- Index survives Ctrl+C during indexing
-- MCP works with Claude Code
-
-## Phase 2: Polish
-
-- More chunk types (classes, structs, interfaces)
-- More languages (C, C++, Java, Ruby)
-- Hybrid search (embedding + name match)
-- Watch mode, stale file detection
-- MCP extras: cq_similar, cq_index, progress notifications
-
-## Phase 3: Integration
-
-- `--context N` for surrounding code
-- VS Code extension
-- SSE transport for MCP
-
-## Phase 4: Scale
-
-- HNSW index for >50k chunks
-- Incremental embedding updates
-- Index sharing (team sync)
+### Next
+- [ ] ...
 ```
-
-### PROJECT_CONTINUITY_<date>.md (Tear)
-
-```markdown
-# cq - Project Continuity
-
-Updated: <date> (UTC)
-
-## Current State
-
-<what works, what doesn't, where we are>
-
-## Recent Changes
-
-<last session's work>
-
-## Blockers / Open Questions
-
-<anything stuck>
-
-## Next Steps
-
-<prioritized list>
-
-## Decisions Made
-
-<key choices with brief rationale>
-```
-
-### PROJECT_CONTINUITY_ARCHIVE.md
-
-```markdown
-# cq - Archive
-
-Session log and detailed notes. Append daily summaries here when day rolls over.
-
----
-
-## <date>
-
-### <topic>
-
-<detailed notes, code snippets, error messages, research>
-
----
-```
-
----
-
-## Why "Tears"
-
-Etymology: PIE *teks- (weave/construct). Also collapses with *der- (rip) and *dakru- (crying). Construction, destruction, loss—the full arc of session boundaries.

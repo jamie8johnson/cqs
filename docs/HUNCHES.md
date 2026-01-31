@@ -8,11 +8,18 @@ Soft observations, gut feelings, latent risks. Append new entries as they arise.
 
 Grammar crates (0.23.x) have dev-dep on tree-sitter ^0.23, but we're using tree-sitter 0.26. Works via `tree-sitter-language` abstraction layer, but feels fragile. If parsing breaks mysteriously, check this first.
 
+**UPDATE 2026-01-31:** Updated grammars to reduce gap:
+- tree-sitter-rust: 0.23 → 0.24
+- tree-sitter-python: 0.23 → 0.25
+Still not fully aligned with tree-sitter 0.26 but closer. All tests pass.
+
 ---
 
 ## 2026-01-31 - ort 2.x is still RC
 
 Using `ort = "2.0.0-rc.11"` - no stable 2.0 release yet. API could change. Pin exact version and watch for breaking changes on upgrade.
+
+**UPDATE 2026-01-31:** Still on rc.11 as of this date. Dependabot will notify when stable releases. No API issues encountered so far.
 
 ---
 
@@ -42,17 +49,23 @@ O(n) search with 100k chunks = 300ms. Users will notice. HNSW in Phase 4 is non-
 
 No policy defined. Could follow into `/etc/`, could loop forever, could index vendor code outside project. Default should be "skip symlinks" - safer and predictable.
 
+**RESOLVED 2026-01-31:** `.follow_links(false)` set in cli.rs:272. Symlinks are skipped during enumeration.
+
 ---
 
 ## 2026-01-31 - Model versioning time bomb
 
 If nomic releases v2.0 with different embeddings, old indexes become garbage. Need to check model_name on every query and warn loudly if mismatched. Re-index isn't optional in that case.
 
+**RESOLVED 2026-01-31:** `check_model_version()` called on `Store::open()`. Returns `StoreError::ModelMismatch` with helpful message if stored model differs from current.
+
 ---
 
 ## 2026-01-31 - MCP server resource consumption
 
 `cq_index` tool in MCP allows remote triggering of reindex. On large codebases this is CPU/GPU intensive. Could be DoS vector if SSE transport exposed to network. Keep SSE localhost-only or add rate limiting.
+
+**RESOLVED 2026-01-31:** No `cq_index` tool exists. MCP only exposes `cqs_search` (read-only) and `cqs_stats` (metadata). HTTP transport binds to localhost only with 1MB body limit.
 
 ---
 
@@ -67,6 +80,8 @@ Model verification skeleton exists but SHA256 constants are empty TODOs. Need to
 ## 2026-01-31 - Two-phase search trades latency for memory
 
 New two-phase search (id+embedding first, content second) reduces memory but adds a second SQL query. For small indexes this might be slower. Could add threshold: single-phase for <10k chunks, two-phase above.
+
+**ACCEPTED 2026-01-31:** Trade-off is acceptable. Second query is fast (fetches by PK). HNSW search path bypasses this for unfiltered queries. Memory savings matter more for large indexes.
 
 ---
 
@@ -228,6 +243,8 @@ When using config files, we can't distinguish "user passed -n 5" from "user didn
 
 When bumping version in Cargo.toml, Cargo.lock isn't automatically regenerated unless you run a cargo command (build, check, etc.). Easy to forget to commit the updated lock file. Required a separate PR (#17) after v0.1.9 release. Consider adding a pre-commit hook to verify Cargo.lock is in sync.
 
+**RESOLVED 2026-01-31:** Pre-commit hook (.githooks/pre-commit) runs `cargo check` when Cargo.toml is staged and warns if Cargo.lock changes.
+
 ---
 
 ## 2026-01-31 - PowerShell can't access WSL paths
@@ -262,5 +279,11 @@ fn normalize_for_fts(name: &str) -> String {
 Store normalized text in FTS5, query with same normalization.
 
 **RESOLVED 2026-01-31:** Implemented `normalize_for_fts()` in store.rs. FTS5 table `chunks_fts` stores normalized text. RRF hybrid search (PR #24) combines semantic + keyword results.
+
+---
+
+## 2026-01-31 - MCP tool schema is the source of truth for params
+
+The MCP `tools/list` response defines all available parameters for each tool. When adding new params like `semantic_only`, update the schema in `handle_tools_list()` in mcp.rs. The README and CLAUDE.md should reflect these but the schema is authoritative. Claude Code reads the schema directly.
 
 ---
