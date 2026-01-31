@@ -1,0 +1,69 @@
+name: Dependency Review
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Weekly on Monday 9am UTC
+  workflow_dispatch:  # Manual trigger
+
+jobs:
+  check-crates:
+    name: Check Rust Crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated
+
+      - name: Check outdated crates
+        run: |
+          echo "## Outdated Crates" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo outdated --root-deps-only 2>&1 | tee -a $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  check-mcp-spec:
+    name: Check MCP Specification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check MCP spec version
+        run: |
+          echo "## MCP Spec Version" >> $GITHUB_STEP_SUMMARY
+
+          # Fetch current spec version from the website
+          CURRENT=$(curl -s https://modelcontextprotocol.io/specification | grep -oP '\d{4}-\d{2}-\d{2}' | head -1 || echo "unknown")
+          OUR_VERSION="2025-11-25"
+
+          echo "Current MCP spec: **$CURRENT**" >> $GITHUB_STEP_SUMMARY
+          echo "Our implementation: **$OUR_VERSION**" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$CURRENT" != "$OUR_VERSION" ] && [ "$CURRENT" != "unknown" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **MCP spec may have changed!** Review: https://modelcontextprotocol.io/specification" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  check-model:
+    name: Check Embedding Model
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check nomic-embed-text model
+        run: |
+          echo "## Embedding Model" >> $GITHUB_STEP_SUMMARY
+
+          # Check HuggingFace API for model info
+          MODEL_INFO=$(curl -s https://huggingface.co/api/models/nomic-ai/nomic-embed-text-v1.5)
+          LAST_MODIFIED=$(echo "$MODEL_INFO" | jq -r '.lastModified // "unknown"')
+
+          echo "Model: **nomic-ai/nomic-embed-text-v1.5**" >> $GITHUB_STEP_SUMMARY
+          echo "Last modified: **$LAST_MODIFIED**" >> $GITHUB_STEP_SUMMARY
+
+          # Check if there's a newer version
+          MODELS=$(curl -s "https://huggingface.co/api/models?author=nomic-ai&search=embed-text")
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Available nomic embedding models:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$MODELS" | jq -r '.[].id' | grep -i embed-text | head -5 >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
