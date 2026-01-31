@@ -5,6 +5,9 @@ on:
     - cron: '0 9 * * 1'  # Weekly on Monday 9am UTC
   workflow_dispatch:  # Manual trigger
 
+permissions:
+  contents: read
+
 jobs:
   check-crates:
     name: Check Rust Crates

@@ -1,4 +1,10 @@
 //! MCP (Model Context Protocol) server implementation
+//!
+//! # Security
+//!
+//! JSON deserialization from untrusted input is bounded by:
+//! - HTTP transport: 1MB request body limit (RequestBodyLimitLayer)
+//! - Stdio transport: trusted client (Claude Code) with reasonable message sizes
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
