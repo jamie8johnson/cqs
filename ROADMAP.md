@@ -74,10 +74,25 @@
 
 ## Current Phase: 4 (Scale)
 
-### Planned
+### Status: Complete (v0.1.8)
 
-- HNSW index for >50k chunks
-- Incremental embedding updates
+### Done
+
+- [x] HNSW index for >50k chunks (hnsw_rs v0.3.3)
+  - O(log n) search, sub-10ms for 100k chunks
+  - Auto-builds after indexing, persists to disk
+  - Falls back to brute-force when filters active
+- [x] P0 audit fixes:
+  - RwLock poison recovery in HTTP handler
+  - LRU cache poison recovery in embedder
+  - Query length validation (8KB max)
+  - Embedding byte validation
+- [x] Published v0.1.8 to crates.io
+- [x] Submitted to awesome-mcp-servers
+
+### Deferred
+
+- Incremental embedding updates (rebuild works fine for now)
 - Index sharing (team sync)
 
 ### Done (Post-Release)
