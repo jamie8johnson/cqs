@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.12.0-draft
-**Updated:** 2026-01-31T07:00:00Z
+**Version:** 0.13.0-draft
+**Updated:** 2026-01-31T07:30:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -1919,35 +1919,34 @@ insta = "1"
 
 ### Phase 1: MVP
 
-1. **Parser** - tree-sitter, Rust + Python + TypeScript + Go
+1. **Parser** - tree-sitter, Rust + Python + TypeScript + JavaScript + Go
 2. **Embedder** - ort + tokenizers, CUDA/CPU detection, model download
-3. **Store** - sqlite, BLOB, brute-force search
+3. **Store** - sqlite, BLOB, two-phase search
 4. **CLI** - init, doctor, index, query, stats, --lang filter
-5. **Eval** - 10 queries per language, measure recall
+5. **MCP** - `cq serve` with stdio transport, `cq_search` + `cq_stats` tools
+6. **Tests** - Unit tests, integration tests, eval suite (10 queries/language)
 
 **Exit criteria:**
 - `cargo install cq` works
 - GPU used when available, CPU fallback works
-- 8/10 test queries return relevant results per language
+- 8/10 eval queries return relevant result in top-5 per language
 - Index survives Ctrl+C during indexing
+- MCP works with Claude Code
 
 ### Phase 2: Polish
 
 1. More chunk types (classes, structs, interfaces)
 2. More languages (C, C++, Java, Ruby)
-3. Path filtering (`cq "error" --path "src/api/**"`)
-4. Hybrid search (embedding + name text match)
-5. Watch mode (`cq watch`)
-6. Stale file detection in doctor
+3. Hybrid search (embedding + name text match)
+4. Watch mode (`cq watch`)
+5. Stale file detection in doctor
+6. MCP extras: `cq_similar`, `cq_index`, progress notifications
 
 ### Phase 3: Integration
 
-1. **MCP server** - `cq serve` for Claude Code (see MCP Integration section)
-   - 3a: Core (`cq_search`, `cq_stats`, stdio transport)
-   - 3b: Polish (`cq_similar`, `cq_index`, progress, SSE)
-   - 3c: Production (pooling, health, metrics)
-2. `--context N` to show surrounding code
-3. VS Code extension (use MCP or direct integration)
+1. `--context N` to show surrounding code
+2. VS Code extension
+3. SSE transport for MCP
 4. Language server hints
 
 ### Phase 4: Scale
@@ -1980,6 +1979,238 @@ insta = "1"
 7. **No symlink follow** - Prevents path traversal attacks
 8. **File size limits** - Prevents memory exhaustion from large files
 9. **Concurrent access** - File lock prevents index corruption
+
+---
+
+## Testing Strategy
+
+Three-tier testing: unit, integration, and evaluation.
+
+### Unit Tests
+
+Test each module in isolation with mocked dependencies.
+
+```rust
+// tests/parser_test.rs
+#[test]
+fn test_rust_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(Path::new("fixtures/sample.rs")).unwrap();
+
+    assert_eq!(chunks.len(), 3);
+    assert_eq!(chunks[0].name, "main");
+    assert_eq!(chunks[0].chunk_type, ChunkType::Function);
+}
+
+#[test]
+fn test_python_method_detection() {
+    let parser = Parser::new().unwrap();
+    let chunks = parser.parse_file(Path::new("fixtures/sample.py")).unwrap();
+
+    let methods: Vec<_> = chunks.iter().filter(|c| c.chunk_type == ChunkType::Method).collect();
+    assert!(!methods.is_empty());
+}
+
+// tests/embedder_test.rs
+#[test]
+fn test_embedding_dimensions() {
+    let embedder = Embedder::new().unwrap();
+    let embedding = embedder.embed_query("test query").unwrap();
+
+    assert_eq!(embedding.0.len(), 768);
+}
+
+#[test]
+fn test_embedding_normalization() {
+    let embedder = Embedder::new().unwrap();
+    let embedding = embedder.embed_query("test").unwrap();
+
+    let norm: f32 = embedding.0.iter().map(|x| x * x).sum::<f32>().sqrt();
+    assert!((norm - 1.0).abs() < 0.001);  // L2 normalized
+}
+
+// tests/store_test.rs
+#[test]
+fn test_upsert_and_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = Store::open(dir.path().join("index.db")).unwrap();
+    store.init(&ModelInfo::default()).unwrap();
+
+    // Insert chunk with embedding
+    let chunk = Chunk { /* ... */ };
+    let embedding = Embedding(vec![0.1; 768]);
+    store.upsert_chunk(&chunk, &embedding, 12345).unwrap();
+
+    // Search should find it
+    let results = store.search(&embedding, 5, 0.0).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].chunk.name, chunk.name);
+}
+```
+
+### Integration Tests
+
+Test the full pipeline: files → parse → embed → store → search.
+
+```rust
+// tests/integration_test.rs
+#[test]
+fn test_full_pipeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+
+    // Create test file
+    std::fs::write(project.join("lib.rs"), r#"
+        /// Adds two numbers
+        pub fn add(a: i32, b: i32) -> i32 {
+            a + b
+        }
+
+        /// Subtracts two numbers
+        pub fn subtract(a: i32, b: i32) -> i32 {
+            a - b
+        }
+    "#).unwrap();
+
+    // Run indexing
+    let parser = Parser::new().unwrap();
+    let embedder = Embedder::new().unwrap();
+    let mut store = Store::open(project.join(".cq/index.db")).unwrap();
+    store.init(&ModelInfo::default()).unwrap();
+
+    let files = enumerate_files(&project).unwrap();
+    let chunks = parse_files(&parser, &files);
+
+    for chunk in &chunks {
+        let embedding = embedder.embed_documents(&[&chunk.content]).unwrap().pop().unwrap();
+        store.upsert_chunk(chunk, &embedding, 12345).unwrap();
+    }
+
+    // Query should find relevant function
+    let query_emb = embedder.embed_query("add two numbers together").unwrap();
+    let results = store.search(&query_emb, 5, 0.3).unwrap();
+
+    assert!(!results.is_empty());
+    assert_eq!(results[0].chunk.name, "add");
+}
+
+#[test]
+fn test_mcp_search_tool() {
+    // Set up index as above, then test MCP interface
+    let mut server = McpServer::new(project_path).unwrap();
+
+    let response = server.handle_tools_call("cq_search", json!({
+        "query": "add numbers"
+    })).await.unwrap();
+
+    assert!(response["results"].as_array().unwrap().len() > 0);
+}
+```
+
+### Evaluation Suite
+
+Golden queries to measure retrieval quality. Target: 8/10 queries return relevant result in top-5.
+
+```rust
+// tests/eval_test.rs
+
+struct EvalQuery {
+    query: &'static str,
+    expected_name: &'static str,  // Function/method that should appear in results
+    language: Language,
+}
+
+const EVAL_QUERIES: &[EvalQuery] = &[
+    // Rust
+    EvalQuery { query: "retry with exponential backoff", expected_name: "retry_with_backoff", language: Language::Rust },
+    EvalQuery { query: "parse command line arguments", expected_name: "parse_args", language: Language::Rust },
+    EvalQuery { query: "serialize to JSON", expected_name: "to_json", language: Language::Rust },
+    EvalQuery { query: "handle HTTP errors", expected_name: "handle_error", language: Language::Rust },
+    EvalQuery { query: "validate user input", expected_name: "validate", language: Language::Rust },
+    EvalQuery { query: "connect to database", expected_name: "connect", language: Language::Rust },
+    EvalQuery { query: "hash password securely", expected_name: "hash_password", language: Language::Rust },
+    EvalQuery { query: "read configuration file", expected_name: "load_config", language: Language::Rust },
+    EvalQuery { query: "send email notification", expected_name: "send_email", language: Language::Rust },
+    EvalQuery { query: "compress data", expected_name: "compress", language: Language::Rust },
+
+    // Python (similar pattern)
+    // TypeScript (similar pattern)
+    // JavaScript (similar pattern)
+    // Go (similar pattern)
+];
+
+#[test]
+fn eval_retrieval_quality() {
+    let embedder = Embedder::new().unwrap();
+    let store = Store::open("fixtures/eval_index.db").unwrap();
+
+    let mut passed = 0;
+    let mut failed = Vec::new();
+
+    for eq in EVAL_QUERIES {
+        let query_emb = embedder.embed_query(eq.query).unwrap();
+        let results = store.search(&query_emb, 5, 0.0).unwrap();
+
+        let found = results.iter().any(|r| r.chunk.name == eq.expected_name);
+        if found {
+            passed += 1;
+        } else {
+            failed.push((eq.query, eq.expected_name));
+        }
+    }
+
+    let total = EVAL_QUERIES.len();
+    let ratio = passed as f32 / total as f32;
+
+    println!("Eval: {}/{} ({:.0}%)", passed, total, ratio * 100.0);
+    for (query, expected) in &failed {
+        println!("  FAIL: '{}' should find '{}'", query, expected);
+    }
+
+    assert!(ratio >= 0.8, "Retrieval quality below 80%: {}/{}", passed, total);
+}
+```
+
+### Test Fixtures
+
+```
+tests/
+├── fixtures/
+│   ├── sample.rs         # Rust test file
+│   ├── sample.py         # Python test file
+│   ├── sample.ts         # TypeScript test file
+│   ├── sample.js         # JavaScript test file
+│   ├── sample.go         # Go test file
+│   └── eval/             # Larger codebase for eval
+│       ├── rust_project/
+│       ├── python_project/
+│       └── ...
+├── parser_test.rs
+├── embedder_test.rs
+├── store_test.rs
+├── integration_test.rs
+└── eval_test.rs
+```
+
+### Running Tests
+
+```bash
+# All tests
+cargo test
+
+# Unit tests only
+cargo test --lib
+
+# Integration tests (slower, needs model)
+cargo test --test integration_test
+
+# Eval suite (slowest, needs fixtures)
+cargo test --test eval_test -- --nocapture
+
+# With coverage
+cargo tarpaulin --out Html
+```
 
 ---
 
@@ -2583,6 +2814,11 @@ async fn test_mcp_search() {
 
 ## Changelog
 
+- **0.13.0-draft (2026-01-31)**: MCP moved to Phase 1, added testing strategy:
+  - **Roadmap**: MCP (stdio transport, cq_search, cq_stats) now Phase 1 exit criteria
+  - **Testing**: Added comprehensive testing section with unit tests, integration tests, and eval suite
+  - **Eval**: 10 golden queries per language, 80% recall@5 target
+  - **Name**: Confirmed `cq` available on crates.io
 - **0.12.0-draft (2026-01-31)**: Complete Store API implementations:
   - **search_filtered()**: Full implementation with language/path filtering, two-phase search
   - **stats()**: Full implementation with chunk counts, language/type breakdown, metadata
