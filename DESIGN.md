@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.9.0-draft
-**Updated:** 2026-01-31T05:00:00Z
+**Version:** 0.10.0-draft
+**Updated:** 2026-01-31T06:00:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -157,6 +157,52 @@ pub enum ChunkType {
     Function,
     Method,
     // Phase 2: Class, Struct, Enum, Trait, Interface, Module
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Language::Rust => write!(f, "rust"),
+            Language::Python => write!(f, "python"),
+            Language::TypeScript => write!(f, "typescript"),
+            Language::JavaScript => write!(f, "javascript"),
+            Language::Go => write!(f, "go"),
+        }
+    }
+}
+
+impl std::str::FromStr for Language {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "rust" => Ok(Language::Rust),
+            "python" => Ok(Language::Python),
+            "typescript" => Ok(Language::TypeScript),
+            "javascript" => Ok(Language::JavaScript),
+            "go" => Ok(Language::Go),
+            _ => bail!("Unknown language: {}", s),
+        }
+    }
+}
+
+impl std::fmt::Display for ChunkType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChunkType::Function => write!(f, "function"),
+            ChunkType::Method => write!(f, "method"),
+        }
+    }
+}
+
+impl std::str::FromStr for ChunkType {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "function" => Ok(ChunkType::Function),
+            "method" => Ok(ChunkType::Method),
+            _ => bail!("Unknown chunk type: {}", s),
+        }
+    }
 }
 ```
 
@@ -797,6 +843,22 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 }
 ```
 
+**Embedding serialization (for BLOB storage):**
+
+```rust
+fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
+    embedding.0.iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
+}
+
+fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
+    bytes.chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+```
+
 **Note:** All embeddings are L2-normalized in `normalize_l2()` before storage. This is non-negotiable - cosine similarity requires it.
 
 **Batching:**
@@ -812,6 +874,15 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 ### 3. Store
 
 **sqlite with WAL mode, BLOB embeddings, brute-force search**
+
+```rust
+use std::collections::HashMap;
+use rusqlite::Connection;
+
+pub struct Store {
+    conn: Connection,
+}
+```
 
 ```sql
 PRAGMA journal_mode=WAL;
@@ -1164,6 +1235,7 @@ COMMANDS:
     stats         Show index statistics
     config        Show/edit configuration
     update-model  Download latest model
+    serve         Start MCP server (for Claude Code integration)
     help          Show help
 
 QUERY OPTIONS:
@@ -1973,6 +2045,104 @@ Deferred to Phase 3b.
 
 ### Implementation
 
+**MCP protocol types:**
+```rust
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Deserialize)]
+struct JsonRpcRequest {
+    jsonrpc: String,
+    id: Option<Value>,
+    method: String,
+    params: Option<Value>,
+}
+
+#[derive(Serialize)]
+struct JsonRpcResponse {
+    jsonrpc: String,
+    id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<JsonRpcError>,
+}
+
+#[derive(Serialize)]
+struct JsonRpcError {
+    code: i32,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+}
+
+// MCP-specific types
+#[derive(Deserialize)]
+struct InitializeParams {
+    protocol_version: String,
+    capabilities: Value,
+    client_info: ClientInfo,
+}
+
+#[derive(Deserialize)]
+struct ClientInfo {
+    name: String,
+    version: String,
+}
+
+#[derive(Serialize)]
+struct InitializeResult {
+    protocol_version: String,
+    capabilities: ServerCapabilities,
+    server_info: ServerInfo,
+}
+
+#[derive(Serialize)]
+struct ServerCapabilities {
+    tools: ToolsCapability,
+}
+
+#[derive(Serialize)]
+struct ToolsCapability {
+    list_changed: bool,
+}
+
+#[derive(Serialize)]
+struct ServerInfo {
+    name: String,
+    version: String,
+}
+
+#[derive(Serialize)]
+struct Tool {
+    name: String,
+    description: String,
+    input_schema: Value,
+}
+
+// Tool argument types
+#[derive(Deserialize)]
+struct SearchArgs {
+    query: String,
+    limit: Option<usize>,
+    threshold: Option<f32>,
+    language: Option<String>,
+    path_pattern: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SimilarArgs {
+    file: String,
+    line: u32,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct IndexArgs {
+    force: Option<bool>,
+}
+```
+
 **Server struct:**
 ```rust
 pub struct McpServer {
@@ -1997,6 +2167,35 @@ impl McpServer {
 
     // Ensure embedder is loaded (lazy init)
     fn ensure_embedder(&mut self) -> Result<&Embedder>;
+
+    // Main request router
+    async fn handle_request(&mut self, req: JsonRpcRequest) -> JsonRpcResponse {
+        let result = match req.method.as_str() {
+            "initialize" => self.handle_initialize(req.params).await,
+            "tools/list" => Ok(serde_json::to_value(self.handle_tools_list().await)?),
+            "tools/call" => self.handle_tools_call_dispatch(req.params).await,
+            _ => Err(anyhow!("Unknown method: {}", req.method)),
+        };
+
+        match result {
+            Ok(value) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id,
+                result: Some(value),
+                error: None,
+            },
+            Err(e) => JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: req.id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32000,
+                    message: e.to_string(),
+                    data: None,
+                }),
+            },
+        }
+    }
 }
 ```
 
@@ -2078,6 +2277,13 @@ async fn test_mcp_search() {
 
 ## Changelog
 
+- **0.10.0-draft (2026-01-31)**: Fixed remaining high-priority issues from v0.9 audit:
+  - **Helpers**: Added `embedding_to_bytes()` and `bytes_to_embedding()` for BLOB serialization
+  - **Traits**: Added `Display` and `FromStr` impls for `Language` and `ChunkType`
+  - **Store**: Added struct definition with `conn: Connection` field
+  - **CLI**: Added `serve` command to help text
+  - **MCP types**: Added all protocol types (`JsonRpcRequest`, `JsonRpcResponse`, `Tool`, `SearchArgs`, etc.)
+  - **MCP routing**: Added `handle_request()` method for dispatching JSON-RPC methods
 - **0.9.0-draft (2026-01-31)**: Added comprehensive MCP Integration section:
   - **Server mode**: `cq serve` with stdio/SSE transports
   - **Tools**: `cq_search`, `cq_similar`, `cq_stats`, `cq_index` with full JSON schemas
