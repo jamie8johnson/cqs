@@ -225,3 +225,30 @@ When bumping version in Cargo.toml, Cargo.lock isn't automatically regenerated u
 When calling `gh` or other Windows commands from WSL via `powershell.exe`, they can't read `/tmp/` or other WSL-native paths. Must copy files to `/mnt/c/` first. Example: `gh release create --notes-file /tmp/notes.md` fails silently. Workaround: write to Windows-accessible path or inline the content.
 
 ---
+
+## 2026-01-31 - FTS5 tokenization needs preprocessing for code
+
+When implementing RRF hybrid search with SQLite FTS5, default tokenizer won't work well for code:
+- `parse_config_file` is one token (underscore not a separator by default)
+- `parseConfigFile` is one token (camelCase not split)
+
+Solution: preprocess before indexing:
+```rust
+fn normalize_for_fts(name: &str) -> String {
+    // snake_case -> "snake case"
+    // camelCase -> "camel case"
+    name.replace('_', " ")
+        .chars()
+        .fold(String::new(), |mut s, c| {
+            if c.is_uppercase() && !s.is_empty() {
+                s.push(' ');
+            }
+            s.push(c.to_lowercase().next().unwrap_or(c));
+            s
+        })
+}
+```
+
+Store normalized text in FTS5, query with same normalization.
+
+---
