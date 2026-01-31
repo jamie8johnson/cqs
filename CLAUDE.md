@@ -49,11 +49,22 @@ When making changes that affect these, update them:
 * `PRIVACY.md` -- what data is stored, telemetry (none), data deletion
 * `ROADMAP.md` -- phase progress, what's done/next
 
-### MCP Spec Review
+### Periodic Reviews
 
-Periodically check the MCP specification for updates:
-- https://modelcontextprotocol.io/specification (official spec)
-- Look for: transport changes, new capabilities, deprecations
+**MCP Spec** - https://modelcontextprotocol.io/specification
+- Transport changes, new capabilities, deprecations
+
+**Dependencies** - `cargo outdated` or check crates.io
+- `ort` - still RC, watch for 2.0 stable
+- `tree-sitter` - grammar crate compatibility
+- `axum`/`tower` - security patches
+
+**Embedding Model** - https://huggingface.co/nomic-ai
+- nomic-embed-text updates (would require reindex)
+- New models worth evaluating
+
+**tree-sitter Grammars** - language-specific updates
+- New syntax support, bug fixes
 
 ## Tears (Session Continuity)
 

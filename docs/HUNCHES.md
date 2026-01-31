@@ -139,3 +139,21 @@ MCP spec evolves. The SSE deprecation caught us by surprise. Periodically check:
 Look for: new transport options, deprecations, new capabilities, security advisories.
 
 ---
+
+## 2026-01-31 - Dependency drift is silent risk
+
+We depend on fast-moving projects:
+- **ort 2.0.0-rc.11** - still RC, API could change
+- **tree-sitter grammars** - version gap (0.23 vs 0.26)
+- **nomic-embed-text** - model updates break index compatibility
+- **MCP spec** - deprecations happen (SSE → Streamable HTTP)
+
+Should periodically:
+1. Run `cargo outdated` for crate updates
+2. Check HuggingFace for model updates
+3. Review MCP spec changelog
+4. Test with latest grammar versions
+
+No automation for this yet - relies on manual review during sessions.
+
+---
