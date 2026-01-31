@@ -84,8 +84,8 @@ src/
   cli.rs      - Command-line interface (clap)
   parser.rs   - tree-sitter code parsing
   embedder.rs - ONNX model embedding generation
-  store.rs    - SQLite storage and brute-force search
-  hnsw.rs     - HNSW index for fast O(log n) search
+  store.rs    - SQLite storage, FTS5 keyword search, RRF hybrid fusion
+  hnsw.rs     - HNSW index for fast O(log n) vector search
   mcp.rs      - MCP server implementation
   lib.rs      - Public API
 ```
