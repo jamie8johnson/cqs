@@ -96,6 +96,15 @@ Date format: `YYYY-MM-DD` (UTC)
 - **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
   - This file is gitignored (`.cargo/` in .gitignore) so CI uses default target-dir
 
+## Branch Protection
+
+**main branch is protected** - cannot push directly. All changes require:
+1. Create feature branch: `git checkout -b feature/name`
+2. Push branch: `powershell.exe -Command "cd C:\projects\cq; git push -u origin feature/name"`
+3. Create PR: `powershell.exe -Command 'gh pr create --title "..." --body "..."'`
+4. Wait for CI (test, clippy, fmt) to pass
+5. Merge via: `powershell.exe -Command 'gh pr merge N --squash --delete-branch'`
+
 ## Environment & Credentials
 
 - `.env` files are gitignored - use for local secrets
