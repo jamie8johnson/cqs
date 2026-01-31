@@ -62,11 +62,30 @@ Tools available:
 - `cqs_search` - semantic code search with filters
 - `cqs_stats` - index statistics
 
+### Created Eval Suite
+
+50 test cases (10 per language), measuring Recall@5:
+- Rust: 9/10 (90%)
+- Python: 10/10 (100%)
+- TypeScript: 10/10 (100%)
+- JavaScript: 10/10 (100%)
+- Go: 10/10 (100%)
+- **Overall: 49/50 (98%)**
+
+Files created:
+- `tests/fixtures/eval_rust.rs` (20+ functions)
+- `tests/fixtures/eval_python.py`
+- `tests/fixtures/eval_typescript.ts`
+- `tests/fixtures/eval_javascript.js`
+- `tests/fixtures/eval_go.go`
+- `tests/eval_test.rs` (test harness)
+
+Run with: `cargo test eval -- --ignored --nocapture`
+
 ## Next Steps
 
-1. Write eval suite - 10 queries per language, measure recall@5
-2. Publish v0.1.1 with path fix
-3. Consider hybrid search (embedding + name match)
+1. Implement hybrid search (embedding + name match) - Task #3
+2. Consider publishing v0.1.2 with eval suite
 
 ## Blockers
 

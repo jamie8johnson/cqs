@@ -18,14 +18,14 @@
 - [x] MCP integration tested with Claude Code
 - [x] Path pattern filtering fixed (relative paths)
 - [x] Invalid language error handling
-- [ ] Eval suite - 10 queries/lang, measure recall@5
+- [x] Eval suite - 50 queries (10/lang), Recall@5: 98% (49/50)
 
 ### Exit Criteria
 
 - [x] `cargo install cqs` works (published v0.1.0)
 - [x] CPU fallback works (~20ms per embedding)
 - [x] GPU works when available (CUDA tested)
-- [ ] 8/10 eval queries return relevant result in top-5 per language
+- [x] 8/10 eval queries return relevant result in top-5 per language (actual: 9.8/10)
 - [x] Index survives Ctrl+C during indexing
 - [x] MCP works with Claude Code
 
