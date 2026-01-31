@@ -140,14 +140,14 @@ impl Embedder {
             .encode_batch(texts.to_vec(), true)
             .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
 
-        // Prepare inputs - note INT32 (i32) for ONNX model compatibility
-        let input_ids: Vec<Vec<i32>> = encodings
+        // Prepare inputs - INT64 (i64) for ONNX model
+        let input_ids: Vec<Vec<i64>> = encodings
             .iter()
-            .map(|e| e.get_ids().iter().map(|&id| id as i32).collect())
+            .map(|e| e.get_ids().iter().map(|&id| id as i64).collect())
             .collect();
-        let attention_mask: Vec<Vec<i32>> = encodings
+        let attention_mask: Vec<Vec<i64>> = encodings
             .iter()
-            .map(|e| e.get_attention_mask().iter().map(|&m| m as i32).collect())
+            .map(|e| e.get_attention_mask().iter().map(|&m| m as i64).collect())
             .collect();
 
         // Pad to max length in batch
@@ -159,34 +159,55 @@ impl Embedder {
             .min(self.max_length);
 
         // Create padded arrays
-        let input_ids_arr = pad_2d_i32(&input_ids, max_len, 0);
-        let attention_mask_arr = pad_2d_i32(&attention_mask, max_len, 0);
+        let input_ids_arr = pad_2d_i64(&input_ids, max_len, 0);
+        let attention_mask_arr = pad_2d_i64(&attention_mask, max_len, 0);
+        // token_type_ids: all zeros, same shape as input_ids
+        let token_type_ids_arr = Array2::<i64>::zeros((texts.len(), max_len));
 
         // Create tensors
         let input_ids_tensor = Tensor::from_array(input_ids_arr)?;
         let attention_mask_tensor = Tensor::from_array(attention_mask_arr)?;
+        let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr)?;
 
         // Run inference
         let outputs = self.session.run(ort::inputs![
             "input_ids" => input_ids_tensor,
             "attention_mask" => attention_mask_tensor,
+            "token_type_ids" => token_type_ids_tensor,
         ])?;
 
-        // Use sentence_embedding directly - it's pre-pooled
-        // try_extract_tensor returns (Shape, &[T])
-        let (_shape, data) = outputs["sentence_embedding"].try_extract_tensor::<f32>()?;
+        // Get the last_hidden_state output: shape [batch, seq_len, 768]
+        let (shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
 
-        // L2 normalize each embedding
+        // Mean pooling over sequence dimension, weighted by attention mask
         let batch_size = texts.len();
-        // nomic-embed-text-v1.5 always outputs 768-dim embeddings
+        let seq_len = max_len;
         let embedding_dim = 768;
         let mut results = Vec::with_capacity(batch_size);
 
         for i in 0..batch_size {
-            let start = i * embedding_dim;
-            let end = start + embedding_dim;
-            let v: Vec<f32> = data[start..end].to_vec();
-            results.push(Embedding(normalize_l2(v)));
+            let mut sum = vec![0.0f32; embedding_dim];
+            let mut count = 0.0f32;
+
+            for j in 0..seq_len {
+                let mask = attention_mask[i].get(j).copied().unwrap_or(0) as f32;
+                if mask > 0.0 {
+                    count += mask;
+                    let offset = i * seq_len * embedding_dim + j * embedding_dim;
+                    for k in 0..embedding_dim {
+                        sum[k] += data[offset + k] * mask;
+                    }
+                }
+            }
+
+            // Avoid division by zero
+            if count > 0.0 {
+                for k in 0..embedding_dim {
+                    sum[k] /= count;
+                }
+            }
+
+            results.push(Embedding(normalize_l2(sum)));
         }
 
         Ok(results)
@@ -284,7 +305,7 @@ fn create_session(model_path: &Path, provider: ExecutionProvider) -> Result<Sess
 }
 
 /// Pad 2D sequences to a fixed length
-fn pad_2d_i32(inputs: &[Vec<i32>], max_len: usize, pad_value: i32) -> Array2<i32> {
+fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
     let batch_size = inputs.len();
     let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
     for (i, seq) in inputs.iter().enumerate() {
