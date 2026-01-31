@@ -548,3 +548,75 @@ Error handling and robustness improvements:
 Required adding `signal` feature to tokio for Ctrl+C handling.
 
 ---
+
+## Session: 2026-01-31 (RRF Hybrid Search Implementation)
+
+### PR #24: RRF Hybrid Search (merged)
+
+Implemented Reciprocal Rank Fusion combining semantic embeddings with FTS5 keyword search.
+
+#### Changes
+
+1. **Schema v2** (`src/schema.sql`)
+   - Added FTS5 virtual table `chunks_fts` with columns: id, name, signature, content, doc
+   - Bumped schema version from 1 to 2
+
+2. **FTS5 Support** (`src/store.rs`)
+   - Added `normalize_for_fts()` - splits camelCase/snake_case into words
+     - Example: `parseConfigFile` → "parse config file"
+   - Added `search_fts()` - FTS5 keyword search returning ranked IDs
+   - Added `rrf_fuse()` - RRF scoring: `score = Σ 1/(k + rank)` where k=60
+   - Added `enable_rrf` to `SearchFilter`
+   - Modified `upsert_chunks_batch` to populate FTS5 with normalized text
+   - Modified `delete_by_file` and `prune_missing` to clean FTS5
+
+3. **Integration** (`src/cli.rs`, `src/mcp.rs`)
+   - RRF enabled by default for improved recall
+
+4. **Tests** (`tests/store_test.rs`)
+   - Added `test_fts_search` - verifies FTS5 finds normalized identifiers
+   - Added `test_rrf_search` - verifies RRF combines semantic + FTS results
+   - Added `test_normalize_for_fts` - verifies identifier normalization
+   - Updated schema version assertion from 1 to 2
+   - Total: 12 store tests passing
+
+#### How RRF Works
+
+1. User searches for "parse config"
+2. Semantic search returns top candidates ranked by embedding similarity
+3. FTS5 search returns top candidates ranked by BM25 keyword relevance
+4. RRF fuses rankings: each result gets `1/(60 + rank)` from each list
+5. Results re-ranked by combined RRF score
+6. Top N returned with fused scores
+
+#### Why RRF
+
+Semantic search alone can miss exact identifier matches. Searching for "parseConfig" might not rank `parseConfigFile` highly if semantic meaning diverges. RRF combines semantic understanding with keyword matching for better recall.
+
+### Files Changed
+
+| File | Change |
+|------|--------|
+| `src/schema.sql` | FTS5 virtual table, schema v2 |
+| `src/store.rs` | normalize_for_fts, search_fts, rrf_fuse, enable_rrf |
+| `src/cli.rs` | Enable RRF by default |
+| `src/mcp.rs` | Enable RRF by default |
+| `tests/store_test.rs` | 3 new tests, schema version update |
+| `ROADMAP.md` | Mark RRF as complete |
+| `PROJECT_CONTINUITY_2026-01-31.md` | Updated for RRF implementation |
+| `CHANGELOG.md` | Added unreleased changes |
+| `docs/HUNCHES.md` | Marked FTS5 hunch as resolved |
+
+### Test Results
+
+42 tests passing:
+- 3 lib tests (HNSW)
+- 13 parser tests
+- 12 store tests (3 new)
+- 8 MCP tests
+- 1 eval test (fixtures)
+- 5 doctests
+
+Clippy clean with `-D warnings`.
+
+---
