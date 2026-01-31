@@ -88,6 +88,11 @@ Date format: `YYYY-MM-DD` (UTC)
 ## WSL Workarounds
 
 - **Git push**: `powershell.exe -Command "cd C:\projects\cq; git push"` — Windows has GitHub credentials
+- **GitHub CLI (gh)**: Not installed in WSL. Use PowerShell:
+  ```bash
+  powershell.exe -Command 'gh pr create --title "Title" --body "Body"'
+  powershell.exe -Command 'gh pr list'
+  ```
 - **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
   - This file is gitignored (`.cargo/` in .gitignore) so CI uses default target-dir
 
