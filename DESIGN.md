@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.7.0-draft
-**Updated:** 2026-01-31T03:00:00Z
+**Version:** 0.9.0-draft
+**Updated:** 2026-01-31T05:00:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -648,15 +648,43 @@ const MODEL_REPO: &str = "nomic-ai/nomic-embed-text-v1.5";
 const MODEL_FILE: &str = "onnx/model.onnx";  // ~547MB float32 (or model_fp16.onnx ~274MB)
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
+// SHA256 checksums for model verification (update when model changes)
+// Get from: sha256sum ~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v1.5/...
+const MODEL_SHA256: &str = ""; // TODO: Fill after first download
+const TOKENIZER_SHA256: &str = ""; // TODO: Fill after first download
+
 fn ensure_model() -> Result<(PathBuf, PathBuf)> {
     // hf-hub handles caching automatically (~/.cache/huggingface/hub/)
     let api = Api::new()?;
     let repo = api.model(MODEL_REPO.to_string());
-    
+
     let model_path = repo.get(MODEL_FILE)?;
     let tokenizer_path = repo.get(TOKENIZER_FILE)?;
-    
+
+    // Verify checksums (skip if not configured)
+    if !MODEL_SHA256.is_empty() {
+        verify_checksum(&model_path, MODEL_SHA256)?;
+    }
+    if !TOKENIZER_SHA256.is_empty() {
+        verify_checksum(&tokenizer_path, TOKENIZER_SHA256)?;
+    }
+
     Ok((model_path, tokenizer_path))
+}
+
+fn verify_checksum(path: &Path, expected: &str) -> Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hasher)?;
+    let actual = hasher.finalize().to_hex().to_string();
+
+    if actual != expected {
+        bail!(
+            "Checksum mismatch for {}: expected {}, got {}",
+            path.display(), expected, actual
+        );
+    }
+    Ok(())
 }
 ```
 
@@ -687,7 +715,12 @@ impl Embedder {
     }
     
     /// Embed a query. Adds "search_query: " prefix.
+    /// Returns error if query is empty or whitespace-only.
     pub fn embed_query(&self, text: &str) -> Result<Embedding> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("Query cannot be empty");
+        }
         let prefixed = format!("search_query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
         Ok(results.into_iter().next().unwrap())
@@ -802,6 +835,7 @@ CREATE TABLE chunks (
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
     embedding BLOB NOT NULL,
+    file_mtime INTEGER NOT NULL,  -- Unix timestamp when file was indexed
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -847,8 +881,15 @@ impl Store {
     }
 
     fn check_schema_version(&self) -> Result<()> {
+        // metadata.value is TEXT, parse to i32
         let version: i32 = self.conn
-            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .ok()
+            .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
         if version > CURRENT_SCHEMA_VERSION {
@@ -923,6 +964,72 @@ struct SearchResult {
     chunk: ChunkSummary,
     score: f32,
 }
+
+/// Lightweight chunk info for search results (no embedding, no full content)
+struct ChunkSummary {
+    id: String,
+    file: PathBuf,
+    language: Language,
+    chunk_type: ChunkType,
+    name: String,
+    signature: String,
+    content: String,  // Full content for display
+    doc: Option<String>,
+    line_start: u32,
+    line_end: u32,
+}
+
+/// Raw row from chunks table (for internal use)
+struct ChunkRow {
+    id: String,
+    file: String,
+    language: String,
+    chunk_type: String,
+    name: String,
+    signature: String,
+    content: String,
+    doc: Option<String>,
+    line_start: u32,
+    line_end: u32,
+    embedding: Vec<u8>,
+}
+
+impl From<ChunkRow> for ChunkSummary {
+    fn from(row: ChunkRow) -> Self {
+        ChunkSummary {
+            id: row.id,
+            file: PathBuf::from(row.file),
+            language: row.language.parse().unwrap_or(Language::Rust),
+            chunk_type: row.chunk_type.parse().unwrap_or(ChunkType::Function),
+            name: row.name,
+            signature: row.signature,
+            content: row.content,
+            doc: row.doc,
+            line_start: row.line_start,
+            line_end: row.line_end,
+        }
+    }
+}
+
+/// Model metadata for index initialization
+struct ModelInfo {
+    name: String,       // "nomic-embed-text-v1.5"
+    dimensions: u32,    // 768
+    version: String,    // Model version/commit
+}
+
+/// Index statistics returned by stats()
+struct IndexStats {
+    total_chunks: u64,
+    total_files: u64,
+    chunks_by_language: HashMap<Language, u64>,
+    chunks_by_type: HashMap<ChunkType, u64>,
+    index_size_bytes: u64,
+    created_at: String,
+    updated_at: String,
+    model_name: String,
+    schema_version: i32,
+}
 ```
 
 **Embedding storage:**
@@ -933,13 +1040,13 @@ struct SearchResult {
 **Batch inserts (10x faster):**
 
 ```rust
-fn upsert_chunks_batch(&self, chunks: &[(Chunk, Embedding)]) -> Result<usize> {
+fn upsert_chunks_batch(&mut self, chunks: &[(Chunk, Embedding)], file_mtime: i64) -> Result<usize> {
     let tx = self.conn.transaction()?;
 
     {
         let mut stmt = tx.prepare_cached(
-            "INSERT OR REPLACE INTO chunks (id, file, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+            "INSERT OR REPLACE INTO chunks (id, file, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, file_mtime, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
         )?;
 
         let now = chrono::Utc::now().to_rfc3339();
@@ -957,6 +1064,7 @@ fn upsert_chunks_batch(&self, chunks: &[(Chunk, Embedding)]) -> Result<usize> {
                 chunk.line_start,
                 chunk.line_end,
                 embedding_to_bytes(embedding),
+                file_mtime,
                 &now,
                 &now,
             ])?;
@@ -971,19 +1079,19 @@ fn upsert_chunks_batch(&self, chunks: &[(Chunk, Embedding)]) -> Result<usize> {
 **mtime caching (skip unchanged files):**
 
 ```rust
-// Add to chunks table
-// file_mtime INTEGER  -- Unix timestamp of file when indexed
+// file_mtime column is in chunks table schema above
 
 fn needs_reindex(&self, path: &Path) -> Result<bool> {
     let current_mtime = path.metadata()?.modified()?
         .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
 
+    // query_row returns Result<T>, .ok() gives Option<T>
     let stored_mtime: Option<i64> = self.conn
         .query_row(
-            "SELECT MAX(file_mtime) FROM chunks WHERE file = ?1",
+            "SELECT file_mtime FROM chunks WHERE file = ?1 LIMIT 1",
             [path.to_string_lossy()],
             |r| r.get(0)
-        ).ok().flatten();
+        ).ok();
 
     match stored_mtime {
         Some(mtime) if mtime >= current_mtime => Ok(false),  // Skip
@@ -1102,6 +1210,8 @@ fn setup_signal_handler() {
             // Second Ctrl+C: force exit
             std::process::exit(130);
         }
+        // Note: eprintln! is not async-signal-safe, but ctrlc runs handler
+        // in a separate thread (not signal context), so this is safe.
         eprintln!("\nInterrupted. Finishing current batch...");
     }).expect("Failed to set Ctrl+C handler");
 }
@@ -1125,10 +1235,20 @@ for batch in chunks.chunks(BATCH_SIZE) {
 ```rust
 use rayon::prelude::*;
 
-fn parse_files(parser: &Parser, files: &[PathBuf]) -> Vec<Chunk> {
+// Note: tree_sitter::Parser::parse() takes &mut self, so each thread needs its own Parser.
+// We create a fresh Parser per file. Parser::new() is cheap (~microseconds).
+fn parse_files(files: &[PathBuf]) -> Vec<Chunk> {
     files
         .par_iter()  // Parallel iteration
         .flat_map(|path| {
+            // Create parser per thread (Parser::parse needs &mut self)
+            let parser = match Parser::new() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Failed to create parser: {}", e);
+                    return vec![];
+                }
+            };
             match parser.parse_file(path) {
                 Ok(chunks) => chunks,
                 Err(e) => {
@@ -1399,6 +1519,10 @@ dirs = "5"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
+# MCP server (Phase 3)
+# async-trait = "0.1"     # Async trait methods
+# futures = "0.3"         # Stream utilities
+
 [dev-dependencies]
 tempfile = "3"
 insta = "1"
@@ -1442,9 +1566,12 @@ insta = "1"
 
 ### Phase 3: Integration
 
-1. MCP tool for Claude Code
+1. **MCP server** - `cq serve` for Claude Code (see MCP Integration section)
+   - 3a: Core (`cq_search`, `cq_stats`, stdio transport)
+   - 3b: Polish (`cq_similar`, `cq_index`, progress, SSE)
+   - 3c: Production (pooling, health, metrics)
 2. `--context N` to show surrounding code
-3. VS Code extension
+3. VS Code extension (use MCP or direct integration)
 4. Language server hints
 
 ### Phase 4: Scale
@@ -1480,8 +1607,492 @@ insta = "1"
 
 ---
 
+## MCP Integration
+
+Model Context Protocol integration for Claude Code and other MCP-compatible clients.
+
+### Overview
+
+cq exposes semantic code search as an MCP server. This allows AI assistants to query the codebase semantically without multiple grep/glob round-trips.
+
+**Why MCP?**
+- Single tool call vs. multiple search iterations
+- Structured results with scores and metadata
+- Progress notifications for long operations
+- Automatic discovery via config
+
+### Server Mode
+
+```
+cq serve [OPTIONS]
+
+OPTIONS:
+    --transport <TYPE>    Transport type: stdio (default), sse
+    --port <PORT>         Port for SSE transport (default: 3000)
+    --project <PATH>      Project root (default: current directory)
+```
+
+**Startup behavior:**
+1. Find project root (walk up looking for .cq/)
+2. Open index (or return error if missing)
+3. Load model lazily (on first search)
+4. Listen for MCP messages
+
+### Transport
+
+**stdio (default)** - For subprocess spawning (Claude Code):
+```json
+// Request (stdin)
+{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {...}}
+
+// Response (stdout)
+{"jsonrpc": "2.0", "id": 1, "result": {...}}
+```
+
+**SSE** - For HTTP clients:
+```
+POST /message
+Content-Type: application/json
+
+{"jsonrpc": "2.0", ...}
+```
+
+### Tools
+
+#### cq_search
+
+Semantic code search. The primary tool.
+
+```json
+{
+  "name": "cq_search",
+  "description": "Search code semantically. Find functions/methods by concept, not just name. Example: 'retry with exponential backoff' finds retry logic regardless of naming.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Natural language description of what you're looking for"
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum results (default: 5, max: 20)",
+        "default": 5
+      },
+      "threshold": {
+        "type": "number",
+        "description": "Minimum similarity score 0.0-1.0 (default: 0.3)",
+        "default": 0.3
+      },
+      "language": {
+        "type": "string",
+        "enum": ["rust", "python", "typescript", "javascript", "go"],
+        "description": "Filter by language (optional)"
+      },
+      "path_pattern": {
+        "type": "string",
+        "description": "Glob pattern to filter paths (e.g., 'src/api/**')"
+      }
+    },
+    "required": ["query"]
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "file": "src/utils/retry.rs",
+      "line_start": 24,
+      "line_end": 45,
+      "name": "retry_with_backoff",
+      "signature": "pub async fn retry_with_backoff<T, E, F, Fut>(...)",
+      "language": "rust",
+      "chunk_type": "function",
+      "score": 0.89,
+      "content": "/// Retries an async operation with exponential backoff.\npub async fn retry_with_backoff<T, E, F, Fut>(\n    operation: F,\n    max_attempts: u32,\n) -> Result<T, E>\nwhere\n    F: Fn() -> Fut,\n    Fut: Future<Output = Result<T, E>>,\n{\n    // ...\n}"
+    }
+  ],
+  "query": "retry with exponential backoff",
+  "total": 1,
+  "time_ms": 23
+}
+```
+
+#### cq_similar
+
+Find code similar to a given chunk. Useful for finding related implementations.
+
+```json
+{
+  "name": "cq_similar",
+  "description": "Find code similar to a specific function/method. Pass file path and line number of existing code.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "file": {
+        "type": "string",
+        "description": "Path to file containing the reference code"
+      },
+      "line": {
+        "type": "integer",
+        "description": "Line number within the chunk"
+      },
+      "limit": {
+        "type": "integer",
+        "default": 5
+      }
+    },
+    "required": ["file", "line"]
+  }
+}
+```
+
+**Implementation:** Look up chunk by file:line, use its embedding to search.
+
+#### cq_stats
+
+Index health and statistics.
+
+```json
+{
+  "name": "cq_stats",
+  "description": "Get index statistics: chunk counts, languages, last update time.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {}
+  }
+}
+```
+
+**Response:**
+```json
+{
+  "total_chunks": 847,
+  "total_files": 156,
+  "by_language": {
+    "rust": 412,
+    "python": 290,
+    "typescript": 145
+  },
+  "by_type": {
+    "function": 623,
+    "method": 224
+  },
+  "index_path": "/home/user/project/.cq/index.db",
+  "index_size_mb": 12.4,
+  "model": "nomic-embed-text-v1.5",
+  "last_indexed": "2026-01-31T12:34:56Z",
+  "schema_version": 1
+}
+```
+
+#### cq_index
+
+Trigger reindexing. Use sparingly - can be slow.
+
+```json
+{
+  "name": "cq_index",
+  "description": "Reindex the codebase. Only use when index is stale or missing files. Returns progress updates.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "force": {
+        "type": "boolean",
+        "description": "Force full reindex, ignore mtime cache",
+        "default": false
+      }
+    }
+  }
+}
+```
+
+**Response (with progress):**
+```json
+{
+  "status": "completed",
+  "files_scanned": 156,
+  "chunks_indexed": 847,
+  "chunks_unchanged": 412,
+  "chunks_updated": 35,
+  "time_seconds": 12.4
+}
+```
+
+**Progress notifications** (sent during indexing):
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "notifications/progress",
+  "params": {
+    "progressToken": "index-1234",
+    "value": {
+      "kind": "report",
+      "message": "Embedding chunks...",
+      "percentage": 45
+    }
+  }
+}
+```
+
+### Resources (Optional)
+
+Expose indexed chunks as MCP resources for direct access:
+
+```json
+{
+  "uri": "cq://chunks/src/utils/retry.rs:24",
+  "name": "retry_with_backoff",
+  "mimeType": "text/x-rust",
+  "description": "pub async fn retry_with_backoff<T, E, F, Fut>(...)"
+}
+```
+
+**List resources:** Returns top-level files with chunk counts.
+**Read resource:** Returns full chunk content and metadata.
+
+Deferred to Phase 3b - tools are higher priority.
+
+### Prompts (Optional)
+
+Pre-built prompts for common workflows:
+
+```json
+{
+  "name": "find-similar",
+  "description": "Find code similar to what's in your clipboard or selection",
+  "arguments": [
+    {
+      "name": "code",
+      "description": "The code to find similar implementations of",
+      "required": true
+    }
+  ]
+}
+```
+
+Deferred to Phase 3b.
+
+### Configuration
+
+**Claude Code setup** (`~/.claude/claude_code_config.json`):
+```json
+{
+  "mcpServers": {
+    "cq": {
+      "command": "cq",
+      "args": ["serve"],
+      "env": {}
+    }
+  }
+}
+```
+
+**Per-project override** (`.claude/settings.json` in project):
+```json
+{
+  "mcpServers": {
+    "cq": {
+      "command": "cq",
+      "args": ["serve", "--project", "."]
+    }
+  }
+}
+```
+
+**Multi-project setup** (workspaces):
+```json
+{
+  "mcpServers": {
+    "cq-frontend": {
+      "command": "cq",
+      "args": ["serve", "--project", "./frontend"]
+    },
+    "cq-backend": {
+      "command": "cq",
+      "args": ["serve", "--project", "./backend"]
+    }
+  }
+}
+```
+
+### Error Handling
+
+**Index missing:**
+```json
+{
+  "error": {
+    "code": -32000,
+    "message": "Index not found. Run 'cq init && cq index' first.",
+    "data": {
+      "type": "index_missing",
+      "project": "/home/user/project"
+    }
+  }
+}
+```
+
+**Index stale** (files changed since last index):
+```json
+{
+  "result": {
+    "results": [...],
+    "_warning": "Index may be stale. 12 files modified since last index."
+  }
+}
+```
+
+**Model not downloaded:**
+```json
+{
+  "error": {
+    "code": -32001,
+    "message": "Model not downloaded. Run 'cq init' first.",
+    "data": {
+      "type": "model_missing"
+    }
+  }
+}
+```
+
+**Empty query:**
+```json
+{
+  "error": {
+    "code": -32602,
+    "message": "Query cannot be empty",
+    "data": {
+      "type": "invalid_params"
+    }
+  }
+}
+```
+
+### Implementation
+
+**Server struct:**
+```rust
+pub struct McpServer {
+    store: Store,
+    embedder: Option<Embedder>,  // Lazy loaded
+    project_root: PathBuf,
+}
+
+impl McpServer {
+    pub fn new(project_root: PathBuf) -> Result<Self>;
+
+    // MCP protocol handlers
+    pub async fn handle_initialize(&self, params: InitializeParams) -> InitializeResult;
+    pub async fn handle_tools_list(&self) -> Vec<Tool>;
+    pub async fn handle_tools_call(&mut self, name: &str, args: Value) -> Result<Value>;
+
+    // Tool implementations
+    fn search(&mut self, args: SearchArgs) -> Result<SearchResponse>;
+    fn similar(&mut self, args: SimilarArgs) -> Result<SearchResponse>;
+    fn stats(&self) -> Result<StatsResponse>;
+    fn index(&mut self, args: IndexArgs) -> Result<IndexResponse>;
+
+    // Ensure embedder is loaded (lazy init)
+    fn ensure_embedder(&mut self) -> Result<&Embedder>;
+}
+```
+
+**Main loop (stdio):**
+```rust
+pub async fn serve_stdio(project_root: PathBuf) -> Result<()> {
+    let mut server = McpServer::new(project_root)?;
+    let stdin = BufReader::new(tokio::io::stdin());
+    let mut stdout = tokio::io::stdout();
+
+    let mut lines = stdin.lines();
+    while let Some(line) = lines.next_line().await? {
+        let request: JsonRpcRequest = serde_json::from_str(&line)?;
+        let response = server.handle_request(request).await;
+        let response_json = serde_json::to_string(&response)?;
+        stdout.write_all(response_json.as_bytes()).await?;
+        stdout.write_all(b"\n").await?;
+        stdout.flush().await?;
+    }
+    Ok(())
+}
+```
+
+### Dependencies (Additional)
+
+```toml
+# Add to Cargo.toml for MCP support
+async-trait = "0.1"       # Async trait methods
+futures = "0.3"           # Stream utilities
+```
+
+### Testing
+
+**Manual testing:**
+```bash
+# Start server
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | cq serve
+
+# Search
+echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"cq_search","arguments":{"query":"error handling"}}}' | cq serve
+```
+
+**Integration test:**
+```rust
+#[tokio::test]
+async fn test_mcp_search() {
+    let server = McpServer::new(test_project_path()).unwrap();
+    let result = server.handle_tools_call("cq_search", json!({
+        "query": "test query"
+    })).await.unwrap();
+
+    assert!(result["results"].is_array());
+}
+```
+
+### Phase 3 Milestones
+
+1. **3a: Core MCP** (MVP)
+   - `cq serve` with stdio transport
+   - `cq_search` tool
+   - `cq_stats` tool
+   - Basic error handling
+   - Claude Code config docs
+
+2. **3b: Polish**
+   - `cq_similar` tool
+   - `cq_index` tool with progress
+   - SSE transport
+   - Resources (optional)
+   - Prompts (optional)
+
+3. **3c: Production**
+   - Connection pooling
+   - Graceful shutdown
+   - Health checks
+   - Metrics/logging
+
+---
+
 ## Changelog
 
+- **0.9.0-draft (2026-01-31)**: Added comprehensive MCP Integration section:
+  - **Server mode**: `cq serve` with stdio/SSE transports
+  - **Tools**: `cq_search`, `cq_similar`, `cq_stats`, `cq_index` with full JSON schemas
+  - **Configuration**: Claude Code setup, per-project overrides, multi-project workspaces
+  - **Error handling**: Structured errors for missing index, stale data, invalid params
+  - **Implementation**: Server struct, async handlers, lazy model loading
+  - **Milestones**: Phase 3a/3b/3c breakdown
+- **0.8.0-draft (2026-01-31)**: Fixed compilation errors and missing types from re-audit:
+  - **Critical fixes**: `upsert_chunks_batch` now takes `&mut self`, fixed `needs_reindex` (removed invalid `.flatten()`), fixed `check_schema_version` type parsing (TEXT→i32)
+  - **Schema**: Added `file_mtime INTEGER` column to chunks table
+  - **Types**: Added missing struct definitions: `ChunkSummary`, `ChunkRow`, `ModelInfo`, `IndexStats`
+  - **Thread safety**: Fixed parallel parsing - create Parser per thread (tree-sitter needs `&mut self`)
+  - **Validation**: Added empty query validation in `embed_query()`
+  - **Security**: Added model checksum verification skeleton (SHA256 with blake3)
+  - **Docs**: Clarified ctrlc handler runs in thread (not signal context, so eprintln is safe)
 - **0.7.0-draft (2026-01-31)**: Security and robustness overhaul from deep audit:
   - **Security**: Path validation (canonicalize + prefix check), symlinks skipped, file size limit (1MB)
   - **Concurrency**: File lock prevents concurrent `cq index`, schema/model version checks on open
