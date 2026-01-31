@@ -1,6 +1,6 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T05:45Z
+Updated: 2026-01-31T06:00Z
 
 ## Current State
 
@@ -37,6 +37,10 @@ Files changed:
 ### Added: Scale Warning
 
 Added warning in `cqs stats` (CLI and MCP) when index exceeds 50k chunks. Brute-force O(n) search will be slow at that scale - warns users to split projects or wait for HNSW support.
+
+### Published v0.1.1
+
+Released to crates.io with all fixes from this session.
 
 ### Extensive CLI Testing
 

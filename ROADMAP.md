@@ -13,7 +13,7 @@
 - [x] Store - sqlite with WAL, BLOB embeddings, two-phase search (8 tests passing)
 - [x] CLI - init, doctor, index, query, stats, serve, --lang filter, --path filter
 - [x] MCP - cqs serve with stdio, cqs_search + cqs_stats tools
-- [x] Published to crates.io as `cqs` v0.1.0
+- [x] Published to crates.io as `cqs` v0.1.0, v0.1.1
 - [x] End-to-end testing - init, index, search all working
 - [x] MCP integration tested with Claude Code
 - [x] Path pattern filtering fixed (relative paths)
