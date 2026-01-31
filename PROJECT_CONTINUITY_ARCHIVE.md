@@ -489,3 +489,37 @@ Implemented all 4 Phase B items from the audit remediation plan:
 Clippy clean with `-D warnings`.
 
 ---
+
+## Session: 2026-01-31 (v0.1.6 Release & Dependency Updates)
+
+### v0.1.6 Published
+
+Released with:
+- All Phase B audit fixes (connection pooling, caching, rate limiting, secure IDs)
+- lru vulnerability fix (0.12 → 0.16, GHSA-rhfx-m35p-ff5j)
+
+### Dependency Updates (PR #11)
+
+Combined all Dependabot PRs into single update:
+- axum 0.7 → 0.8
+- tower-http 0.5 → 0.6
+- toml 0.8 → 0.9
+- tree-sitter-go 0.23 → 0.25
+
+No breaking changes - all tests pass.
+
+### CLAUDE.md Improvements
+
+Added documentation for common gotchas:
+- `gh` CLI not installed in WSL - use PowerShell
+- `gh pr checks` returns exit code 1 for pending checks (not an error)
+- Branch protection workflow (must use PRs, can't push to main directly)
+
+### PRs This Session
+
+- PR #8: Audit Phase B fixes (merged)
+- PR #9: Release v0.1.6 (merged)
+- PR #11: Dependency updates (merged)
+- PRs #2-5: Dependabot PRs (closed, superseded by #11)
+
+---
