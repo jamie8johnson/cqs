@@ -1,3 +1,0 @@
-# Use native Linux path for target to avoid WSL permission issues on /mnt/c/
-[build]
-target-dir = "/home/user001/.cargo-target/cq"
