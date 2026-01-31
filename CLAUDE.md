@@ -30,6 +30,11 @@ Timestamps: UTC, format `YYYY-MM-DDTHHMM[Z]`
 4. Proactively offer updates—don't wait to be asked
 5. Flag stale or inconsistent state
 
+## WSL Workarounds
+
+- **Git push**: `powershell.exe -Command "cd C:\projects\cq; git push"` — Windows has GitHub credentials
+- **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
+
 ## Bootstrap (First Session)
 
 1. Create `docs/` directory
