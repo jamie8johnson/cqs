@@ -199,3 +199,15 @@ Official MCP Registry (registry.modelcontextprotocol.io) only supports npm packa
 When you force-push to a PR branch, `gh pr checks --watch` continues watching the old CI run. Need to Ctrl+C and restart the watch to pick up the new run. Minor annoyance but caused confusion during rapid iteration.
 
 ---
+
+## 2026-01-31 - simsimd returns f64, not f32
+
+simsimd v6 returns `f64` from `SpatialSimilarity::dot()`, not `f32`. Had to cast result back to f32 for our API. Minor but surprising API difference from earlier versions.
+
+---
+
+## 2026-01-31 - Config file can't detect explicit CLI defaults
+
+When using config files, we can't distinguish "user passed -n 5" from "user didn't pass -n, using default 5". Current workaround: only apply config if CLI value equals the hardcoded default. If user explicitly passes the default value, config won't override. Minor edge case.
+
+---

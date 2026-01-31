@@ -126,12 +126,30 @@ const GO_QUERY: &str = r#"
     name: (identifier) @name)) @const
 "#;
 
+/// Code parser using tree-sitter grammars
+///
+/// Extracts functions, methods, classes, and other code elements
+/// from source files in supported languages.
+///
+/// # Example
+///
+/// ```no_run
+/// use cqs::Parser;
+///
+/// let parser = Parser::new()?;
+/// let chunks = parser.parse_file(std::path::Path::new("src/main.rs"))?;
+/// for chunk in chunks {
+///     println!("{}: {} ({})", chunk.file.display(), chunk.name, chunk.chunk_type);
+/// }
+/// # Ok::<(), anyhow::Error>(())
+/// ```
 pub struct Parser {
     /// Cached compiled queries per language (Query compilation is ~1ms, worth caching)
     queries: HashMap<Language, tree_sitter::Query>,
 }
 
 impl Parser {
+    /// Create a new parser with pre-compiled queries for all supported languages
     pub fn new() -> Result<Self, ParserError> {
         let mut queries = HashMap::new();
 
@@ -153,6 +171,10 @@ impl Parser {
         Ok(Self { queries })
     }
 
+    /// Parse a source file and extract code chunks
+    ///
+    /// Returns an empty Vec for non-UTF8 files (with a warning logged).
+    /// Returns an error for unsupported file types.
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
         // Gracefully handle non-UTF8 files
         let source = match std::fs::read_to_string(path) {
@@ -405,21 +427,37 @@ impl Parser {
 // Note: Default impl intentionally omitted to prevent hidden panics.
 // Use Parser::new() which returns Result for proper error handling.
 
+/// A parsed code chunk (function, method, class, etc.)
+///
+/// Chunks are the basic unit of indexing and search in cqs.
+/// Each chunk represents a single code element extracted by tree-sitter.
 #[derive(Debug, Clone)]
 pub struct Chunk {
+    /// Unique identifier: `{file}:{line_start}:{content_hash}`
     pub id: String,
+    /// Source file path (relative to project root)
     pub file: std::path::PathBuf,
+    /// Programming language
     pub language: Language,
+    /// Type of code element
     pub chunk_type: ChunkType,
+    /// Name of the function/class/etc.
     pub name: String,
+    /// Function signature or declaration line
     pub signature: String,
+    /// Full source code content
     pub content: String,
+    /// Documentation comment if present
     pub doc: Option<String>,
+    /// Starting line number (1-indexed)
     pub line_start: u32,
+    /// Ending line number (1-indexed)
     pub line_end: u32,
+    /// BLAKE3 hash of content for change detection
     pub content_hash: String,
 }
 
+/// Supported programming languages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
     Rust,
@@ -483,20 +521,32 @@ impl std::str::FromStr for Language {
             "typescript" => Ok(Language::TypeScript),
             "javascript" => Ok(Language::JavaScript),
             "go" => Ok(Language::Go),
-            _ => anyhow::bail!("Unknown language: {}", s),
+            _ => anyhow::bail!(
+                "Unknown language: '{}'. Valid options: rust, python, typescript, javascript, go",
+                s
+            ),
         }
     }
 }
 
+/// Type of code element extracted by the parser
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkType {
+    /// Standalone function
     Function,
+    /// Method (function inside a class/struct/impl)
     Method,
+    /// Class definition (Python, TypeScript, JavaScript)
     Class,
+    /// Struct definition (Rust, Go)
     Struct,
+    /// Enum definition
     Enum,
+    /// Trait definition (Rust)
     Trait,
+    /// Interface definition (TypeScript, Go)
     Interface,
+    /// Constant or static variable
     Constant,
 }
 
@@ -527,7 +577,10 @@ impl std::str::FromStr for ChunkType {
             "trait" => Ok(ChunkType::Trait),
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
-            _ => anyhow::bail!("Unknown chunk type: {}", s),
+            _ => anyhow::bail!(
+                "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant",
+                s
+            ),
         }
     }
 }

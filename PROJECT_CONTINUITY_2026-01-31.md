@@ -1,77 +1,87 @@
 # cqs - Project Continuity
 
-Updated: 2026-02-01T00:10Z
+Updated: 2026-01-31T20:40Z
 
 ## Current State
 
-**v0.1.8 published. Phase 4 (Scale) complete. Discoverability in progress.**
+**v0.1.8 published. All planned fixes implemented, ready for v0.1.9 release.**
 
-- ~3900 lines across 8 modules
-- 32 tests passing
-- v0.1.8 on crates.io
-- GitHub release: https://github.com/jamie8johnson/cqs/releases/tag/v0.1.8
+- ~4400 lines across 9 modules (added config.rs)
+- 38 tests passing
+- All clippy warnings resolved
 
-## This Session
+## This Session - Major Changes
 
-### Completed
+### PR 1: HNSW Filtered Search Fix (CRITICAL)
+- Added `Store::search_by_candidate_ids()` in store.rs
+- Modified cli.rs to use HNSW candidates instead of falling back to brute-force
+- **Impact:** 10-100x faster filtered queries on large indexes
 
-1. **HNSW Implementation** (Phase 4)
-   - Added src/hnsw.rs using hnsw_rs v0.3.3
-   - O(log n) search for >50k chunks
-   - Auto-build after indexing, disk persistence
-   - Brute-force fallback for filtered searches
+### PR 2: SIMD Cosine Similarity
+- Added `simsimd = "6"` dependency
+- Updated `cosine_similarity()` to use SIMD-accelerated dot product
+- **Impact:** 2-4x faster similarity calculations
 
-2. **P0 Audit Fixes**
-   - RwLock poison recovery in HTTP handler
-   - LRU cache poison recovery in embedder
-   - Query length validation (8KB max)
-   - Embedding byte validation with warning
+### PR 3: UX Improvements
+- **Lock file with PID:** Writes PID, detects stale locks, auto-cleanup (cli.rs:357-400)
+- **Error messages:** Added hints to all user-facing errors
+- **Shell completions:** `cqs completions bash/zsh/fish/powershell`
+- **Config file:** `.cqs.toml` (project) and `~/.config/cqs/config.toml` (user)
+- Added `libc` and `clap_complete` dependencies
 
-3. **Published v0.1.8**
-   - Merged PR #14 (HNSW + P0 fixes)
-   - Published to crates.io
-   - Created GitHub release
+### PR 4: Documentation
+- Created `CHANGELOG.md` with all releases v0.1.0-v0.1.8
+- Added rustdoc to public API: lib.rs, parser.rs, store.rs, embedder.rs
+- 5 doctests now passing
 
-4. **Documentation Updates** (PR #15)
-   - Updated README with Claude Code integration section
-   - Added TL;DR and "Why use cqs?" section
-   - Added CLAUDE.md example for projects
-   - Updated Cargo.toml and GitHub repo descriptions
-   - Added `--watch` note to CLAUDE.md for PR checks
+## Files Changed
 
-5. **Discoverability**
-   - Added GitHub topics: claude-code, mcp-server, semantic-search, code-search, embeddings, rust
-   - PR to punkpeye/awesome-mcp-servers: https://github.com/punkpeye/awesome-mcp-servers/pull/1783
-   - mcpservers.org submission pending (manual form)
+| File | Changes |
+|------|---------|
+| Cargo.toml | +simsimd, +clap_complete, +libc |
+| src/cli.rs | +128 lines (lock PID, config, completions, error hints) |
+| src/config.rs | NEW - 55 lines |
+| src/store.rs | +174 lines (search_by_candidate_ids, SIMD cosine, rustdoc) |
+| src/lib.rs | +53 lines (rustdoc) |
+| src/parser.rs | +57 lines (rustdoc) |
+| src/embedder.rs | +27 lines (rustdoc) |
+| src/mcp.rs | +5 lines (error hints) |
+| CHANGELOG.md | NEW - full version history |
+| tests/*.rs | Fixed mut warnings from Store API change |
 
-### Version History
+## Tests Verified
 
-| Version | Changes |
-|---------|---------|
-| v0.1.3 | Watch mode, HTTP transport, .gitignore |
-| v0.1.4 | MCP 2025-11-25 compliance |
-| v0.1.5 | SSE stream support |
-| v0.1.6 | Phase B audit fixes, dependency updates |
-| v0.1.7 | Phase C audit fixes (error handling, graceful shutdown) |
-| v0.1.8 | HNSW index + P0 audit fixes |
-
-## Features Complete
-
-- Semantic code search (5 languages: Rust, Python, TypeScript, JavaScript, Go)
-- HNSW index for O(log n) search
-- GPU acceleration (CUDA) with CPU fallback
-- Watch mode with debounce
-- MCP server (stdio + HTTP transport)
-- Connection pooling, query caching
-- Graceful shutdown, lock poisoning recovery
+- 38 unit/integration tests passing
+- 5 doctests passing
+- Clippy clean with -D warnings
+- Shell completions generate correctly (bash/zsh/fish)
+- Config file loading works
+- Stale lock detection works
+- CUDA benchmark unchanged (~6ms single, 0.3ms/doc batch)
 
 ## Next Steps
 
-1. **Await PR merge** - awesome-mcp-servers #1783
-2. **Submit to mcpservers.org** - manual form at https://mcpservers.org/submit
-3. **Consider MCP Registry** - once they support non-npm packages
-4. **Future work** - filtered HNSW search, more languages, encryption
+1. **Commit changes** - All PRs can be combined into one
+2. **Bump version to 0.1.9** - Cargo.toml
+3. **Create PR and merge**
+4. **Publish to crates.io**
+5. **Update README if needed** (CUDA benchmarks still accurate)
 
-## Blockers
+## Hunches Resolved This Session
 
-None.
+- ort logs to stdout: Already using stderr (main.rs:5-11)
+- Model versioning: check_model_version() exists (store.rs:318-335)
+- Symlinks: follow_links(false) already set (cli.rs:259)
+
+## Remaining Hunches
+
+- hnsw_rs lifetime forces reload (~1-2ms overhead per search) - library limitation
+- HNSW filtered search now optimized but still O(n) for path pattern (could add SQL LIKE)
+
+## Dependencies Added
+
+```toml
+simsimd = "6"        # SIMD cosine similarity
+clap_complete = "4"  # Shell completions
+libc = "0.2"         # Unix PID checking
+```

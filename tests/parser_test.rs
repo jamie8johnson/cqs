@@ -1,7 +1,6 @@
 //! Parser tests
 
 use cqs::parser::{ChunkType, Language, Parser};
-use std::path::Path;
 
 fn fixtures_path() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")

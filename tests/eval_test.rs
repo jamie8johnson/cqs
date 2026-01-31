@@ -306,7 +306,7 @@ fn test_recall_at_5() {
     // Create temporary store
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("eval.db");
-    let mut store = Store::open(&db_path).unwrap();
+    let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
     // Parse and index all fixtures
@@ -340,7 +340,7 @@ fn test_recall_at_5() {
 
             // Store chunk (mtime 0 since these are test fixtures)
             store
-                .upsert_chunk(&chunk, embedding, 0)
+                .upsert_chunk(chunk, embedding, 0)
                 .expect("Failed to store chunk");
             chunk_count += 1;
         }

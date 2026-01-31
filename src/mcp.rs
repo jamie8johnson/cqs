@@ -289,7 +289,10 @@ impl McpServer {
         match name {
             "cqs_search" => self.tool_search(arguments),
             "cqs_stats" => self.tool_stats(),
-            _ => bail!("Unknown tool: {}", name),
+            _ => bail!(
+                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats",
+                name
+            ),
         }
     }
 

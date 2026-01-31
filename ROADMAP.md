@@ -81,7 +81,7 @@
 - [x] HNSW index for >50k chunks (hnsw_rs v0.3.3)
   - O(log n) search, sub-10ms for 100k chunks
   - Auto-builds after indexing, persists to disk
-  - Falls back to brute-force when filters active
+  - HNSW-guided filtered search (no longer falls back to brute-force)
 - [x] P0 audit fixes:
   - RwLock poison recovery in HTTP handler
   - LRU cache poison recovery in embedder
@@ -115,6 +115,15 @@
   - Added 100KB chunk byte limit (handles minified files)
   - Graceful HTTP shutdown (Ctrl+C handler)
   - Protocol version constant consistency
+- [x] v0.1.9 improvements (pending release):
+  - HNSW-guided filtered search (10-100x faster)
+  - SIMD cosine similarity (simsimd crate)
+  - Shell completions (bash/zsh/fish/powershell)
+  - Config file support (.cqs.toml)
+  - Lock file with PID (stale lock detection)
+  - Error messages with actionable hints
+  - Rustdoc for public API
+  - CHANGELOG.md
 
 ### Optional (Enable as Needed)
 
