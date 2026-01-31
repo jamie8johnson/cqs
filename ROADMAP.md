@@ -148,14 +148,16 @@
   - Fuse semantic + keyword with `1/(k + rank)` scoring (k=60)
   - Enabled by default for better recall
 
+- [x] v0.1.10 release (includes incremental indexing + RRF)
+  - Published to crates.io 2026-01-31
+  - Schema version bumped to 2 (FTS5 support)
+
 ### Planned
 
 - [ ] C and Java language support
   - tree-sitter-c, tree-sitter-java grammars
   - C: function_definition, struct_specifier
   - Java: method_declaration, class_declaration, interface_declaration
-
-- [ ] v0.1.10 release (includes incremental indexing + RRF)
 
 ## Phase 6: Security
 
