@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.6.1-draft  
-**Updated:** 2026-01-31T03:30:00Z
+**Version:** 0.6.2-draft
+**Updated:** 2026-01-31T02:30:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -83,7 +83,8 @@ fastembed-rs doesn't expose execution provider configuration. For GPU support, w
 **Parameters:** 137M  
 
 **ONNX file:**
-- `onnx/model.onnx` - float32, ~523MB
+- `onnx/model.onnx` - float32, ~547MB
+- `onnx/model_fp16.onnx` - float16, ~274MB (recommended: 2x smaller, minimal quality loss)
 
 **Critical: Task prefixes required**
 
@@ -122,7 +123,7 @@ impl Parser {
 }
 
 pub struct Chunk {
-    id: String,              // {relative_path}:{line_start}
+    id: String,              // {relative_path}:{line_start}:{content_hash[..8]}
     file: PathBuf,           // relative to project root
     language: Language,
     chunk_type: ChunkType,
@@ -205,6 +206,8 @@ const PYTHON_QUERY: &str = r#"
 "#;
 
 // TypeScript/JavaScript: functions, methods, arrow functions
+// Note: Standalone arrow_function pattern may duplicate assigned arrows.
+// Deduplicate by byte range in extract_chunk() or filter in post-processing.
 const TYPESCRIPT_QUERY: &str = r#"
 (function_declaration
   name: (identifier) @name) @function
@@ -223,10 +226,9 @@ const TYPESCRIPT_QUERY: &str = r#"
   (variable_declarator
     name: (identifier) @name
     value: (arrow_function) @function))
-
-;; Standalone arrow function (truly anonymous, e.g. callback)
-(arrow_function) @function
 "#;
+// Removed standalone (arrow_function) @function to avoid duplicates.
+// Anonymous callbacks in .map()/.filter() won't be indexed - acceptable for MVP.
 
 // Go: functions and methods
 const GO_QUERY: &str = r#"
@@ -346,8 +348,8 @@ impl Parser {
         // Determine chunk type from the captured node's parent context
         let chunk_type = self.infer_chunk_type(node, language);
         
-        let id = format!("{}:{}", path.display(), line_start);
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let id = format!("{}:{}:{}", path.display(), line_start, &content_hash[..8]);
         
         Ok(Chunk {
             id,
@@ -493,7 +495,8 @@ pub struct Embedder {
     session: ort::Session,
     tokenizer: tokenizers::Tokenizer,
     provider: ExecutionProvider,
-    max_length: usize,  // 8192 for nomic
+    max_length: usize,   // 8192 for nomic
+    batch_size: usize,   // 16 (GPU) or 4 (CPU)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -517,24 +520,20 @@ pub struct Embedding(pub Vec<f32>);  // 768 dimensions
 **Execution provider selection:**
 
 ```rust
-use ort::execution_providers::{
-    CUDAExecutionProvider, TensorRTExecutionProvider, ExecutionProvider as EP,
-};
+use ort::execution_providers as ep;
 
 fn select_provider() -> ExecutionProvider {
     // Try in order, first available wins
     // Note: is_available() returns Result<bool>
-    
-    let cuda = CUDAExecutionProvider::default();
-    if cuda.is_available().unwrap_or(false) {
+
+    if ep::CUDA::default().is_available().unwrap_or(false) {
         return ExecutionProvider::CUDA { device_id: 0 };
     }
-    
-    let tensorrt = TensorRTExecutionProvider::default();
-    if tensorrt.is_available().unwrap_or(false) {
+
+    if ep::TensorRT::default().is_available().unwrap_or(false) {
         return ExecutionProvider::TensorRT { device_id: 0 };
     }
-    
+
     ExecutionProvider::CPU
 }
 ```
@@ -542,27 +541,28 @@ fn select_provider() -> ExecutionProvider {
 **Session creation:**
 
 ```rust
-use ort::{Session, Tensor};
+use ort::Session;
+use ort::execution_providers as ep;
 use ndarray::Array2;
 
 fn create_session(model_path: &Path, provider: ExecutionProvider) -> Result<Session> {
     let builder = Session::builder()?;
-    
+
     match provider {
         ExecutionProvider::CUDA { device_id } => {
             builder.with_execution_providers([
-                CUDAExecutionProvider::default()
+                ep::CUDA::default()
                     .with_device_id(device_id)
                     .build()
             ])?
         }
         ExecutionProvider::TensorRT { device_id } => {
             builder.with_execution_providers([
-                TensorRTExecutionProvider::default()
+                ep::TensorRT::default()
                     .with_device_id(device_id)
                     .build(),
                 // Fallback to CUDA for unsupported ops
-                CUDAExecutionProvider::default()
+                ep::CUDA::default()
                     .with_device_id(device_id)
                     .build()
             ])?
@@ -579,7 +579,7 @@ fn create_session(model_path: &Path, provider: ExecutionProvider) -> Result<Sess
 use hf_hub::api::sync::Api;
 
 const MODEL_REPO: &str = "nomic-ai/nomic-embed-text-v1.5";
-const MODEL_FILE: &str = "onnx/model.onnx";  // ~523MB float32
+const MODEL_FILE: &str = "onnx/model.onnx";  // ~547MB float32 (or model_fp16.onnx ~274MB)
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
 fn ensure_model() -> Result<(PathBuf, PathBuf)> {
@@ -600,6 +600,7 @@ fn ensure_model() -> Result<(PathBuf, PathBuf)> {
 // Inputs:
 //   - input_ids: INT32, shape [batch, seq_len]
 //   - attention_mask: INT32, shape [batch, seq_len]
+//   - token_type_ids: NOT REQUIRED (nomic model doesn't use it)
 //
 // Outputs:
 //   - token_embeddings: FP32, shape [batch, seq_len, 768] - per-token
@@ -691,11 +692,13 @@ fn normalize_l2(v: Vec<f32>) -> Vec<f32> {
 
 ```rust
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    // Both vectors are L2-normalized, so cosine = dot product
-    debug_assert!((a.iter().map(|x| x * x).sum::<f32>().sqrt() - 1.0).abs() < 0.01);
+    // Both vectors are L2-normalized in normalize_l2(), so cosine = dot product
+    // We always normalize on embed, so this is safe
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 ```
+
+**Note:** All embeddings are L2-normalized in `normalize_l2()` before storage. This is non-negotiable - cosine similarity requires it.
 
 **Batching:**
 - Batch size: 16 (GPU), 4 (CPU)
@@ -751,11 +754,30 @@ CREATE INDEX idx_chunks_language ON chunks(language);
 - `updated_at` - last modification
 - `cq_version` - cq version that created index
 
+**Connection setup:**
+
+```rust
+impl Store {
+    fn open(path: &Path) -> Result<Self> {
+        let conn = Connection::open(path)?;
+
+        // Enable WAL mode for better concurrent read performance
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Wait up to 5s if database is locked
+        conn.pragma_update(None, "busy_timeout", 5000)?;
+        // NORMAL sync is safe with WAL and faster than FULL
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+
+        Ok(Self { conn })
+    }
+}
+```
+
 **Operations:**
 
 ```rust
 impl Store {
-    fn open(path: &Path) -> Result<Self>;
+    fn open(path: &Path) -> Result<Self>;  // See above for implementation
     fn init(&self, model_info: &ModelInfo) -> Result<()>;
     fn upsert_chunk(&self, chunk: &Chunk, embedding: &Embedding) -> Result<()>;
     fn delete_by_file(&self, file: &Path) -> Result<u32>;
@@ -786,22 +808,44 @@ struct SearchResult {
 
 ```rust
 fn search(&self, query: &Embedding, limit: usize, threshold: f32) -> Result<Vec<SearchResult>> {
-    let mut results: Vec<SearchResult> = self.conn
-        .prepare("SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding FROM chunks")?
-        .query_map([], |row| {
-            let embedding_bytes: Vec<u8> = row.get(10)?;
-            let embedding = bytes_to_embedding(&embedding_bytes);
+    let mut stmt = self.conn.prepare(
+        "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding FROM chunks"
+    )?;
+
+    // Extract all data from rows in the closure (can't return Row reference)
+    let rows: Vec<_> = stmt.query_map([], |row| {
+        Ok(ChunkRow {
+            id: row.get(0)?,
+            file: row.get(1)?,
+            language: row.get(2)?,
+            chunk_type: row.get(3)?,
+            name: row.get(4)?,
+            signature: row.get(5)?,
+            content: row.get(6)?,
+            doc: row.get(7)?,
+            line_start: row.get(8)?,
+            line_end: row.get(9)?,
+            embedding: row.get(10)?,
+        })
+    })?.filter_map(|r| r.ok()).collect();
+
+    // Score and filter in Rust
+    let mut results: Vec<SearchResult> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let embedding = bytes_to_embedding(&row.embedding);
             let score = cosine_similarity(&query.0, &embedding);
-            Ok((row, score))
-        })?
-        .filter_map(|r| r.ok())
-        .filter(|(_, score)| *score >= threshold)
-        .map(|(row, score)| SearchResult {
-            chunk: ChunkSummary::from_row(&row),
-            score,
+            if score >= threshold {
+                Some(SearchResult {
+                    chunk: ChunkSummary::from(row),
+                    score,
+                })
+            } else {
+                None
+            }
         })
         .collect();
-    
+
     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
     results.truncate(limit);
     Ok(results)
@@ -846,7 +890,7 @@ GLOBAL OPTIONS:
 $ cq init
 
 Initializing cq...
-Downloading model (~523MB)... ████████████████████ done
+Downloading model (~547MB)... ████████████████████ done
 Downloading tokenizer... done
 Detecting hardware... NVIDIA RTX A6000 (CUDA)
 Created .cq/
@@ -1033,7 +1077,8 @@ tree-sitter-javascript = "0.25"
 tree-sitter-go = "0.23"
 
 # ML
-ort = { version = "2", features = ["cuda", "tensorrt"] }
+# Note: ort 2.0 stable not released yet, use exact RC version
+ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4"
 ndarray = "0.16"
@@ -1139,6 +1184,7 @@ insta = "1"
 
 ## Changelog
 
+- **0.6.2-draft (2026-01-31)**: Post-audit fixes: Fixed ort execution provider imports (`ep::CUDA` not `CUDAExecutionProvider`), corrected model size (547MB), added SQLite pragma setup code, fixed search function closure issue, added batch_size to Embedder struct, fixed chunk ID format to include hash prefix, removed duplicate arrow function query, clarified token_type_ids not needed, pinned ort to exact RC version.
 - **0.6.1-draft (2026-01-31)**: Audit fixes: Updated ort 2.x API (`try_extract_array`, `axis_iter`), improved query capture finding by index, enhanced TypeScript arrow function queries, fixed Go method detection, improved Python docstring extraction with `named_child`, clarified cc transitive dependency.
 - **0.6.0-draft (2026-01-31)**: Replaced syn with tree-sitter for multi-language support. Added Python, TypeScript, JavaScript, Go. Updated dependencies. Simplified ExecutionProvider enum (removed CoreML/DirectML from MVP).
 - **0.5.1-draft (2026-01-30)**: Verified TBDs: sentence_embedding is pre-pooled, use hf-hub crate for downloads.
