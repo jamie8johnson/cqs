@@ -1,5 +1,5 @@
 [package]
-name = "cq"
+name = "cqs"
 version = "0.1.0"
 edition = "2021"
 description = "Semantic code search with local embeddings"
@@ -24,7 +24,7 @@ tree-sitter-go = "0.23"
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4"
-ndarray = "0.16"
+ndarray = "0.17"
 
 # Async
 tokio = { version = "1", features = ["rt-multi-thread", "fs"] }

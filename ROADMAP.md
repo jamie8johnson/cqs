@@ -2,26 +2,28 @@
 
 ## Current Phase: 1 (MVP)
 
-### Status: Design Complete, Implementation Ready
+### Status: Implementation Complete, Testing In Progress
 
 ### Done
 
 - [x] Design document (v0.13.0) - architecture, API, all implementations specified
 - [x] Audits - 7 rounds, 0 critical/high issues remaining
-- [ ] Parser - tree-sitter extraction, all 5 languages
-- [ ] Embedder - ort + tokenizers, CUDA/CPU detection, model download
-- [ ] Store - sqlite with WAL, BLOB embeddings, two-phase search
-- [ ] CLI - init, doctor, index, query, stats, serve, --lang filter
-- [ ] MCP - cq serve with stdio, cq_search + cq_stats tools
-- [ ] Tests - unit tests, integration tests, eval suite (10 queries/lang)
+- [x] Parser - tree-sitter extraction, all 5 languages (13 tests passing)
+- [x] Embedder - ort + tokenizers, CUDA/CPU detection, model download
+- [x] Store - sqlite with WAL, BLOB embeddings, two-phase search (8 tests passing)
+- [x] CLI - init, doctor, index, query, stats, serve, --lang filter
+- [x] MCP - cqs serve with stdio, cqs_search + cqs_stats tools
+- [x] Published to crates.io as `cqs` v0.1.0
+- [ ] Integration tests - end-to-end with real model
+- [ ] Eval suite - 10 queries/lang, measure recall@5
 
 ### Exit Criteria
 
-- `cargo install cq` works
-- GPU used when available, CPU fallback works
-- 8/10 eval queries return relevant result in top-5 per language
-- Index survives Ctrl+C during indexing
-- MCP works with Claude Code
+- [x] `cargo install cqs` works (published v0.1.0)
+- [ ] GPU used when available, CPU fallback works (implemented, needs testing)
+- [ ] 8/10 eval queries return relevant result in top-5 per language
+- [ ] Index survives Ctrl+C during indexing (implemented, needs testing)
+- [ ] MCP works with Claude Code (implemented, needs testing)
 
 ## Phase 2: Polish
 
@@ -29,7 +31,7 @@
 - More languages (C, C++, Java, Ruby)
 - Hybrid search (embedding + name match)
 - Watch mode, stale file detection
-- MCP extras: cq_similar, cq_index, progress notifications
+- MCP extras: cqs_similar, cqs_index, progress notifications
 
 ## Phase 3: Integration
 

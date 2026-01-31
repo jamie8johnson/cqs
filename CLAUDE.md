@@ -1,6 +1,8 @@
 # CLAUDE.md
 
-cq - semantic code search with local embeddings
+cqs - semantic code search with local embeddings
+
+(Renamed from `cq` - that name was taken on crates.io)
 
 ## First Run
 
@@ -38,14 +40,22 @@ Date format: `YYYY-MM-DD` (UTC)
 - **Git push**: `powershell.exe -Command "cd C:\projects\cq; git push"` — Windows has GitHub credentials
 - **Cargo build**: `.cargo/config.toml` routes target-dir to native Linux path (avoids permission errors on `/mnt/c/`)
 
+## Environment & Credentials
+
+- `.env` files are gitignored - use for local secrets
+- `.env.example` shows what variables are available
+- **Crates.io**: Use `cargo login <token>` (preferred) or set `CARGO_REGISTRY_TOKEN` in `.env`
+- Token scopes needed: `publish-new`, `publish-update`
+- Token expiration: track in `.env.example` comments or calendar
+
 ## Bootstrap (First Session)
 
 1. Create `docs/` directory
 2. Create initial docs from templates below
 3. Create initial tear files
 4. Scaffold project: `cargo init`, set up Cargo.toml per design doc
-5. Create GitHub repo: `gh repo create cq --public --source=. --push`
-6. Claim crate name on crates.io (placeholder with intent)
+5. Create GitHub repo: `gh repo create cqs --public --source=. --push`
+6. Claim crate name on crates.io: `cargo publish` (needs token with publish-new scope)
 
 ---
 
