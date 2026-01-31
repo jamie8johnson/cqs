@@ -34,6 +34,8 @@ Building Rust on Windows paths from WSL causes random permission errors (libsqli
 
 O(n) search with 100k chunks = 300ms. Users will notice. HNSW in Phase 4 is non-negotiable for serious use. Consider adding a warning in `cq stats` when chunk count exceeds 50k.
 
+**RESOLVED 2026-01-31:** HNSW index added in v0.1.8. See later entry for details.
+
 ---
 
 ## 2026-01-31 - Symlinks are a landmine
@@ -72,7 +74,7 @@ New two-phase search (id+embedding first, content second) reduces memory but add
 
 Original concern: GPU visibility in WSL2 can drop randomly during package installation.
 
-**Update 2026-01-31:** After WSL reboot, CUDA working reliably. RTX A6000, CUDA 13.0 driver, cuDNN 9.18.1. ort detects CUDA automatically. Getting 6ms single queries, 0.3ms/doc in batches. The fragility may have been during initial setup - once stable, it stays stable.
+**RESOLVED 2026-01-31:** After WSL reboot, CUDA working reliably. RTX A6000, CUDA 13.0 driver, cuDNN 9.18.1. ort detects CUDA automatically. Getting 6ms single queries, 0.3ms/doc in batches. The fragility was during initial setup - once stable, it stays stable.
 
 ---
 
@@ -86,6 +88,8 @@ nomic-embed-text-v1.5 ONNX model needs: i64 inputs (not i32), token_type_ids (al
 
 Claude Code starts MCP servers from an unknown cwd. The `find_project_root()` approach (walk up looking for Cargo.toml/.git) fails because the server isn't started from the project directory. Solution: always require `--project` in MCP config. This is a footgun for any MCP server that relies on cwd inference.
 
+**RESOLVED 2026-01-31:** `--project` is now required for `cqs serve`. Documented in README.
+
 ---
 
 ## 2026-01-31 - Claude Code MCP config lives in ~/.claude.json, not .mcp.json
@@ -98,17 +102,23 @@ The `.mcp.json` file in the project root isn't used by Claude Code. Config set v
 
 The `ort` crate's internal logging goes to stdout unless you configure the subscriber otherwise. For stdio-based JSON-RPC (like MCP), this pollutes the response stream. Fix: `tracing_subscriber::fmt().with_writer(std::io::stderr).init()`.
 
+**RESOLVED 2026-01-31:** All logging goes to stderr. MCP stdio transport works cleanly.
+
 ---
 
 ## 2026-01-30 - MCP tools/call response format is easy to get wrong
 
 MCP `tools/call` responses MUST wrap results in `{"content":[{"type":"text","text":"..."}]}`. Returning raw JSON works when tested standalone but fails silently in Claude Code - the tool runs but results appear empty. Not obvious from error messages.
 
+**RESOLVED 2026-01-31:** Fixed in mcp.rs. All tool responses properly wrapped.
+
 ---
 
 ## 2026-01-31 - Absolute vs relative paths in index
 
 Storing absolute paths in chunk IDs breaks path pattern filtering and makes indexes non-portable. The fix was straightforward but required touching multiple places: enumerate_files returns relative paths, parse_files rewrites chunk paths, callers join with root for filesystem ops. Test with glob patterns early - they're a good canary for path issues.
+
+**RESOLVED 2026-01-31:** All paths stored as relative. Path pattern filtering works correctly.
 
 ---
 
@@ -135,7 +145,7 @@ The MCP spec (2025-03-26) deprecated HTTP+SSE transport in favor of "Streamable 
 - POST for requests, optional GET for server-initiated SSE stream
 - Session management via `Mcp-Session-Id` header
 
-Implemented Streamable HTTP transport. Kept "sse" as alias mapping to "http" for backwards compat with existing configs.
+**RESOLVED 2026-01-31:** Implemented Streamable HTTP transport. Kept "sse" as alias mapping to "http" for backwards compat with existing configs.
 
 ---
 
