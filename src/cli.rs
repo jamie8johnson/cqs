@@ -911,6 +911,17 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
                 println!("  Tip: Run 'cqs index' to build HNSW for faster search");
             }
         }
+
+        // Warning for very large indexes
+        if stats.total_chunks > 50_000 {
+            println!();
+            println!(
+                "Warning: {} chunks is a large index. Consider:",
+                stats.total_chunks
+            );
+            println!("  - Using --path to limit search scope");
+            println!("  - Splitting into multiple projects");
+        }
     }
 
     Ok(())

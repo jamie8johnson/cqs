@@ -219,6 +219,42 @@ fn test_get_by_content_hash() {
 }
 
 #[test]
+fn test_get_embeddings_by_hashes() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("index.db");
+
+    let store = Store::open(&db_path).unwrap();
+    store.init(&ModelInfo::default()).unwrap();
+
+    // Insert two chunks with different content
+    let chunk1 = create_test_chunk("fn1", "fn fn1() { 1 }");
+    let chunk2 = create_test_chunk("fn2", "fn fn2() { 2 }");
+    let emb1 = create_mock_embedding(0.1);
+    let emb2 = create_mock_embedding(0.2);
+
+    store.upsert_chunk(&chunk1, &emb1, 12345).unwrap();
+    store.upsert_chunk(&chunk2, &emb2, 12345).unwrap();
+
+    // Query both hashes + one non-existent
+    let hashes = vec![
+        chunk1.content_hash.as_str(),
+        chunk2.content_hash.as_str(),
+        "nonexistent_hash",
+    ];
+    let result = store.get_embeddings_by_hashes(&hashes);
+
+    // Should find exactly 2
+    assert_eq!(result.len(), 2);
+    assert!(result.contains_key(&chunk1.content_hash));
+    assert!(result.contains_key(&chunk2.content_hash));
+    assert!(!result.contains_key("nonexistent_hash"));
+
+    // Empty input should return empty map
+    let empty_result = store.get_embeddings_by_hashes(&[]);
+    assert!(empty_result.is_empty());
+}
+
+#[test]
 fn test_stats() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("index.db");
