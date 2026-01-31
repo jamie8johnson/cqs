@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current Phase: 1 (MVP)
+## Phase 1: MVP
 
 ### Status: Complete
 
@@ -31,7 +31,7 @@
 
 ## Phase 2: Polish
 
-**Status: Complete**
+### Status: Complete (v0.1.2)
 
 ### Done
 
@@ -40,6 +40,7 @@
 - [x] Hybrid search (embedding + name match, --name-boost flag)
 - [x] Doc comments in embeddings (prepend to content)
 - [x] --context N for surrounding lines
+- [x] Published v0.1.2 to crates.io
 
 ### Deferred
 
@@ -48,10 +49,10 @@
 - Watch mode, stale file detection
 - MCP extras: cqs_similar, cqs_index, progress notifications
 
-## Phase 3: Integration
+## Current Phase: 3 (Integration)
 
-- VS Code extension
-- SSE transport for MCP
+- [ ] VS Code extension
+- [ ] SSE transport for MCP
 
 ## Phase 4: Scale
 

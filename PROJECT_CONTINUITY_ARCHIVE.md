@@ -262,3 +262,31 @@ By type:
 - `tests/eval_test.rs` - Updated SearchFilter usage
 
 ---
+
+## Session: 2026-01-31 (v0.1.2 Release)
+
+### Published v0.1.2
+
+Committed and published all Phase 2 features to crates.io:
+- New chunk types (Class, Struct, Enum, Trait, Interface, Constant)
+- Hybrid search with `--name-boost`
+- Context display with `-C N`
+- Doc comments in embeddings
+
+### Reindexed with Doc Comments
+
+Ran `cqs index --force` to rebuild embeddings with doc comments included.
+
+Final stats:
+```
+Total chunks: 296
+By type: function 173, method 65, struct 33, constant 15, enum 8, class 2
+By lang: rust 181, python 31, go 31, typescript 28, javascript 25
+```
+
+### Commits
+
+- `4ce3924` - Add Phase 2 features: new chunk types, hybrid search, context display
+- `b3e75cf` - Bump version to 0.1.2
+
+---
