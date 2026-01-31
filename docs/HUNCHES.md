@@ -138,6 +138,8 @@ MCP spec evolves. The SSE deprecation caught us by surprise. Periodically check:
 
 Look for: new transport options, deprecations, new capabilities, security advisories.
 
+**UPDATE 2026-01-31:** Found spec moved to 2025-11-25. Changes: MCP-Protocol-Version header required, Origin validation mandatory, batching removed. Updated HTTP transport.
+
 ---
 
 ## 2026-01-31 - Dependency drift is silent risk

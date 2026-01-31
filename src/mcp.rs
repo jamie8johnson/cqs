@@ -423,7 +423,9 @@ pub fn serve_stdio(project_root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-// === HTTP Transport (Streamable HTTP per MCP spec 2025-03-26) ===
+// === HTTP Transport (Streamable HTTP per MCP spec 2025-11-25) ===
+
+const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Shared state for HTTP server
 struct HttpState {
@@ -450,6 +452,7 @@ pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
 
     let addr = format!("127.0.0.1:{}", port);
     eprintln!("MCP HTTP server listening on http://{}", addr);
+    eprintln!("MCP Protocol Version: {}", MCP_PROTOCOL_VERSION);
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -461,11 +464,55 @@ pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Handle POST /mcp - JSON-RPC requests
+/// Handle POST /mcp - JSON-RPC requests (MCP 2025-11-25 compliant)
 async fn handle_mcp_post(
     State(state): State<Arc<HttpState>>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
+    // Validate Origin header to prevent DNS rebinding attacks (MCP 2025-11-25 security requirement)
+    if let Some(origin) = headers.get("origin") {
+        let origin_str = origin.to_str().unwrap_or("");
+        // Allow localhost origins only
+        if !origin_str.is_empty()
+            && !origin_str.starts_with("http://localhost")
+            && !origin_str.starts_with("http://127.0.0.1")
+            && !origin_str.starts_with("https://localhost")
+            && !origin_str.starts_with("https://127.0.0.1")
+        {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid origin"
+                    }
+                }))
+            );
+        }
+    }
+
+    // Check MCP-Protocol-Version header (optional, default to 2025-03-26 per spec)
+    if let Some(version) = headers.get("mcp-protocol-version") {
+        let version_str = version.to_str().unwrap_or("");
+        if !version_str.is_empty()
+            && version_str != MCP_PROTOCOL_VERSION
+            && version_str != "2025-03-26"
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": format!("Unsupported protocol version: {}. Supported: {}", version_str, MCP_PROTOCOL_VERSION)
+                    }
+                }))
+            );
+        }
+    }
+
     let response = {
         let mut server = state.server.lock().unwrap();
         server.handle_request(request)
