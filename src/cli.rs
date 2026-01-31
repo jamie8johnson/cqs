@@ -817,7 +817,10 @@ fn reindex_files(
                     }
                     file_chunks
                 }
-                Err(_) => vec![],
+                Err(e) => {
+                    tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                    vec![]
+                }
             }
         })
         .collect();

@@ -1,6 +1,6 @@
 # cqs
 
-Semantic code search with local embeddings.
+Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)

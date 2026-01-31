@@ -457,7 +457,13 @@ impl Store {
                     name: if use_hybrid { row.get(2).ok() } else { None },
                 })
             })?
-            .filter_map(|r| r.ok())
+            .filter_map(|r| match r {
+                Ok(chunk) => Some(chunk),
+                Err(e) => {
+                    tracing::warn!("Skipped chunk due to DB error: {}", e);
+                    None
+                }
+            })
             .filter_map(|chunk| {
                 let embedding = bytes_to_embedding(&chunk.embedding);
                 let embedding_score = cosine_similarity(&query.0, &embedding);

@@ -27,6 +27,12 @@ Thank you for your interest in contributing to cqs!
    cargo run -- "your search query"
    ```
 
+5. Set up pre-commit hook (recommended):
+   ```bash
+   git config core.hooksPath .githooks
+   ```
+   This runs `cargo fmt --check` before each commit.
+
 ## Code Style
 
 - Run `cargo fmt` before committing

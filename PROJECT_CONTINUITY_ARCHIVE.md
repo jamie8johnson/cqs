@@ -489,3 +489,62 @@ Implemented all 4 Phase B items from the audit remediation plan:
 Clippy clean with `-D warnings`.
 
 ---
+
+## Session: 2026-01-31 (v0.1.6 Release & Dependency Updates)
+
+### v0.1.6 Published
+
+Released with:
+- All Phase B audit fixes (connection pooling, caching, rate limiting, secure IDs)
+- lru vulnerability fix (0.12 → 0.16, GHSA-rhfx-m35p-ff5j)
+
+### Dependency Updates (PR #11)
+
+Combined all Dependabot PRs into single update:
+- axum 0.7 → 0.8
+- tower-http 0.5 → 0.6
+- toml 0.8 → 0.9
+- tree-sitter-go 0.23 → 0.25
+
+No breaking changes - all tests pass.
+
+### CLAUDE.md Improvements
+
+Added documentation for common gotchas:
+- `gh` CLI not installed in WSL - use PowerShell
+- `gh pr checks` returns exit code 1 for pending checks (not an error)
+- Branch protection workflow (must use PRs, can't push to main directly)
+
+### PRs This Session
+
+- PR #8: Audit Phase B fixes (merged)
+- PR #9: Release v0.1.6 (merged)
+- PR #11: Dependency updates (merged)
+- PRs #2-5: Dependabot PRs (closed, superseded by #11)
+
+---
+
+## Session: 2026-01-31 (Continued - Phase C)
+
+### Pre-commit Hook
+
+Added `.githooks/pre-commit` with cargo fmt check. Configured via:
+```bash
+git config core.hooksPath .githooks
+```
+
+### Phase C Audit Fixes (v0.1.7)
+
+Error handling and robustness improvements:
+
+1. **C1 - Removed Parser::default() panic**: Changed to comment explaining why Default is omitted
+2. **C2 - Log search errors**: Added tracing::warn for DB errors in filter_map
+3. **C3 - Clarified embedder unwrap**: Changed `.unwrap()` to `.expect("embed_batch with single item always returns one result")`
+4. **C4 - Log parse errors in watch**: Added tracing::warn for parse failures
+5. **C5 - Chunk byte limit**: Added 100KB limit alongside 100-line limit (handles minified files)
+6. **C6 - Graceful HTTP shutdown**: Added Ctrl+C handler with `with_graceful_shutdown()`
+7. **C7 - Protocol version**: Changed hardcoded "2024-11-05" to use MCP_PROTOCOL_VERSION constant
+
+Required adding `signal` feature to tokio for Ctrl+C handling.
+
+---

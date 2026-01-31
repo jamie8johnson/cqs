@@ -1,22 +1,18 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T24:00Z
+Updated: 2026-01-31T21:00Z
 
 ## Current State
 
-**v0.1.5 published. Audit Phase A merged, Phase B complete on branch. 29 tests passing.**
+**v0.1.7 published. Phase C audit complete. Pre-commit hook active. 29 tests passing.**
 
-- ~3400 lines across 7 modules
+- ~3500 lines across 7 modules
 - 29 tests passing (13 parser + 8 store + 8 MCP)
-- Published v0.1.3, v0.1.4, v0.1.5 to crates.io
+- Published v0.1.3 through v0.1.7 to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
-- Automated dependency reviews active
 - CI workflow running (build, test, clippy, fmt) - all passing
-- GitHub release v0.1.5 created
-- Branch ruleset active (main requires CI, blocks force push)
-- 16-category audit completed (74 findings documented)
-- **Audit Phase A merged** (PR #7)
-- **Audit Phase B complete** (branch: fix/audit-phase-b)
+- Branch ruleset active (main requires PR + CI, blocks force push)
+- Pre-commit hook configured (cargo fmt check)
 
 ### Version History This Session
 
@@ -25,7 +21,8 @@ Updated: 2026-01-31T24:00Z
 | v0.1.3 | Watch mode, HTTP transport, .gitignore, CLI restructure |
 | v0.1.4 | MCP 2025-11-25 compliance (Origin, Protocol-Version headers) |
 | v0.1.5 | GET /mcp SSE stream support, full spec compliance |
-| post-v0.1.5 | CI workflow, issue templates, GitHub release |
+| v0.1.6 | Phase B audit fixes, lru vulnerability fix, dependency updates |
+| v0.1.7 | Phase C audit fixes (error handling, graceful shutdown, byte limits) |
 
 ## Features Complete
 
@@ -34,59 +31,47 @@ Updated: 2026-01-31T24:00Z
 - GPU acceleration (CUDA) with CPU fallback
 - .gitignore support
 - Watch mode with debounce
+- Connection pooling (r2d2-sqlite, 4 concurrent connections)
+- Query embedding cache (LRU, 100 entries)
+- Graceful HTTP shutdown (Ctrl+C)
 
 ### MCP
 - stdio transport (default)
 - HTTP transport (Streamable HTTP 2025-11-25)
   - POST /mcp - JSON-RPC requests
   - GET /mcp - SSE stream for server messages
-  - Origin validation
-  - MCP-Protocol-Version header
+  - Origin validation, request body limit (1MB)
+  - Graceful shutdown on Ctrl+C
 - Tools: cqs_search, cqs_stats
 
-### Automation
-- Dependabot for weekly crate PRs
-- GitHub Action for MCP spec + model checks
-- CI workflow (build, test, clippy, fmt on push/PR)
-- Issue templates (bug report, feature request)
+### Security
+- SQL parameterized queries
+- Secure UUID generation (timestamp + random)
+- Request body limit (1MB)
+- Branch protection enforced
+- Chunk byte limit (100KB max)
 
 ## This Session Summary
 
-1. Reviewed hunches, filled checksums
-2. Implemented v0.1.3 features (watch, HTTP, gitignore, CLI)
-3. Did dependency review - found MCP spec at 2025-11-25
-4. Updated to MCP 2025-11-25 (v0.1.4)
-5. Added SSE stream support (v0.1.5)
-6. Added automated dependency reviews
-7. Published v0.1.5 to crates.io
-8. Added CI workflow, issue templates, GitHub release
-9. **16-category audit** - 74 findings (0 critical, 6 high, 29 medium, 39 low)
-10. **CI fixes** - dtolnay/rust-toolchain action, clippy warnings, .cargo/config.toml excluded
-11. **Branch ruleset** - main protection via GitHub API (require PR, require CI, block force push)
-12. Full MD file review and updates
-13. **Audit Phase A fixes** (PR #7 - MERGED):
-    - A1: SQL parameterized queries (S1.1 HIGH)
-    - A2: Replace glob with globset (D10.2 MEDIUM)
-    - A3: Replace fs2 with fs4 (D10.3 MEDIUM)
-    - A4: 8 MCP protocol integration tests (T8.1 HIGH)
-    - D5: CodeQL badge added to README
-    - D6: Community standards (CODE_OF_CONDUCT, CONTRIBUTING, PR template)
-14. **Phase 5 (Security)** added to roadmap - index encryption planned
-15. Enabled CodeQL analysis and Secret Protection
-16. **Audit Phase B fixes** (branch: fix/audit-phase-b):
-    - B1: RwLock for HTTP handler (enabled by connection pooling)
-    - B2: Secure UUID generation (timestamp + random component)
-    - B3: Request body limit (1MB via tower RequestBodyLimitLayer)
-    - B4: Query embedding LRU cache (100 entries)
-    - Added r2d2-sqlite connection pooling (4 concurrent connections)
-    - Store methods now take &self instead of &mut self
+1. **Audit Phase A** (PR #7 merged): SQL params, globset, fs4, MCP tests, community docs
+2. **Audit Phase B** (PR #8 merged): Connection pooling, RwLock, UUID, rate limiting, LRU cache
+3. **v0.1.6 published**: Phase B fixes + lru vulnerability fix (0.12→0.16)
+4. **Dependencies updated** (PR #11): axum 0.8, tower-http 0.6, toml 0.9, tree-sitter-go 0.25
+5. **Dependabot PRs closed** (#2, #3, #4, #5 superseded by #11)
+6. **Pre-commit hook**: .githooks/pre-commit runs cargo fmt check
+7. **Phase C audit fixes** (v0.1.7):
+   - Removed Parser::default() panic
+   - Added logging for silent DB errors in search
+   - Clarified unwrap with .expect() in embedder
+   - Added logging for parse errors in watch mode
+   - Added 100KB byte limit for chunks (handles minified files)
+   - Added graceful HTTP shutdown with Ctrl+C
+   - Fixed protocol version constant consistency
 
 ## Next Steps
 
-1. Push and PR for Phase B (fix/audit-phase-b branch)
-2. Review Dependabot PRs (5 open)
-3. Continue with Phase C (error handling, robustness)
-4. Phase 4: HNSW for scale (>50k chunks)
+1. **Phase 4: HNSW** - scale to >50k chunks
+2. **More languages** - C, C++, Java, Ruby
 
 ## Blockers
 
