@@ -756,6 +756,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),
+        enable_rrf: true, // Enable RRF hybrid search by default
     };
 
     // Try HNSW search first (much faster for large indexes)
