@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.11.0-draft
-**Updated:** 2026-01-31T06:30:00Z
+**Version:** 0.12.0-draft
+**Updated:** 2026-01-31T07:00:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -1088,8 +1088,19 @@ impl Store {
         Ok(())
     }
 
-    fn upsert_chunk(&mut self, chunk: &Chunk, embedding: &Embedding) -> Result<()>;
-    fn delete_by_file(&mut self, file: &Path) -> Result<u32>;
+    fn upsert_chunk(&mut self, chunk: &Chunk, embedding: &Embedding, file_mtime: i64) -> Result<()> {
+        // Single-chunk insert (for incremental updates)
+        self.upsert_chunks_batch(&[(chunk.clone(), embedding.clone())], file_mtime)?;
+        Ok(())
+    }
+
+    fn delete_by_file(&mut self, file: &Path) -> Result<u32> {
+        let deleted = self.conn.execute(
+            "DELETE FROM chunks WHERE file = ?1",
+            [file.to_string_lossy()],
+        )?;
+        Ok(deleted as u32)
+    }
 
     fn prune_missing(&mut self, existing_files: &HashSet<PathBuf>) -> Result<u32> {
         // Get all files in index
@@ -1113,10 +1124,169 @@ impl Store {
         Ok(deleted)
     }
 
-    fn get_by_content_hash(&self, hash: &str) -> Option<Embedding>;
+    fn get_by_content_hash(&self, hash: &str) -> Option<Embedding> {
+        self.conn
+            .query_row(
+                "SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1",
+                [hash],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .ok()
+            .map(|bytes| Embedding(bytes_to_embedding(&bytes)))
+    }
     fn search(&self, query: &Embedding, limit: usize, threshold: f32) -> Result<Vec<SearchResult>>;
-    fn search_filtered(&self, query: &Embedding, filter: &SearchFilter, limit: usize) -> Result<Vec<SearchResult>>;
-    fn stats(&self) -> Result<IndexStats>;
+
+    fn search_filtered(&self, query: &Embedding, filter: &SearchFilter, limit: usize, threshold: f32) -> Result<Vec<SearchResult>> {
+        // Build WHERE clause from filter
+        let mut conditions = Vec::new();
+        if let Some(ref langs) = filter.languages {
+            let lang_list: Vec<_> = langs.iter().map(|l| format!("'{}'", l)).collect();
+            conditions.push(format!("language IN ({})", lang_list.join(",")));
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", conditions.join(" AND "))
+        };
+
+        // Phase 1: Score matching chunks
+        let sql = format!("SELECT id, embedding FROM chunks{}", where_clause);
+        let mut stmt = self.conn.prepare(&sql)?;
+
+        let mut scored: Vec<(String, f32)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(id, emb_bytes)| {
+                let embedding = bytes_to_embedding(&emb_bytes);
+                let score = cosine_similarity(&query.0, &embedding);
+
+                // Apply path filter in Rust (glob matching)
+                if let Some(ref pattern) = filter.path_pattern {
+                    // Use glob crate for pattern matching
+                    let glob_pattern = glob::Pattern::new(pattern).ok()?;
+                    if !glob_pattern.matches(&id.split(':').next().unwrap_or("")) {
+                        return None;
+                    }
+                }
+
+                if score >= threshold {
+                    Some((id, score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Sort and limit
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(limit);
+
+        if scored.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Phase 2: Fetch full content for top-N
+        let ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
+        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end
+             FROM chunks WHERE id IN ({})",
+            placeholders
+        );
+
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows: HashMap<String, ChunkRow> = stmt
+            .query_map(rusqlite::params_from_iter(&ids), |row| {
+                Ok(ChunkRow {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    language: row.get(2)?,
+                    chunk_type: row.get(3)?,
+                    name: row.get(4)?,
+                    signature: row.get(5)?,
+                    content: row.get(6)?,
+                    doc: row.get(7)?,
+                    line_start: row.get(8)?,
+                    line_end: row.get(9)?,
+                    embedding: vec![],
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .map(|row| (row.id.clone(), row))
+            .collect();
+
+        let results: Vec<SearchResult> = scored
+            .into_iter()
+            .filter_map(|(id, score)| {
+                rows.get(&id).map(|row| SearchResult {
+                    chunk: ChunkSummary::from(row.clone()),
+                    score,
+                })
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    fn stats(&self) -> Result<IndexStats> {
+        let total_chunks: u64 = self.conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+
+        let total_files: u64 = self.conn
+            .query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
+
+        // Chunks by language
+        let mut stmt = self.conn.prepare("SELECT language, COUNT(*) FROM chunks GROUP BY language")?;
+        let chunks_by_language: HashMap<Language, u64> = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter_map(|(lang, count)| lang.parse().ok().map(|l| (l, count)))
+            .collect();
+
+        // Chunks by type
+        let mut stmt = self.conn.prepare("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")?;
+        let chunks_by_type: HashMap<ChunkType, u64> = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)))?
+            .filter_map(|r| r.ok())
+            .filter_map(|(ct, count)| ct.parse().ok().map(|c| (c, count)))
+            .collect();
+
+        // Metadata
+        let model_name: String = self.conn
+            .query_row("SELECT value FROM metadata WHERE key = 'model_name'", [], |r| r.get(0))
+            .unwrap_or_default();
+        let created_at: String = self.conn
+            .query_row("SELECT value FROM metadata WHERE key = 'created_at'", [], |r| r.get(0))
+            .unwrap_or_default();
+        let updated_at: String = self.conn
+            .query_row("SELECT value FROM metadata WHERE key = 'updated_at'", [], |r| r.get(0))
+            .unwrap_or_default();
+        let schema_version: i32 = self.conn
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |r| r.get::<_, String>(0))
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Index file size
+        let index_size_bytes = std::fs::metadata(".cq/index.db")
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        Ok(IndexStats {
+            total_chunks,
+            total_files,
+            chunks_by_language,
+            chunks_by_type,
+            index_size_bytes,
+            created_at,
+            updated_at,
+            model_name,
+            schema_version,
+        })
+    }
 }
 
 struct SearchFilter {
@@ -2413,6 +2583,12 @@ async fn test_mcp_search() {
 
 ## Changelog
 
+- **0.12.0-draft (2026-01-31)**: Complete Store API implementations:
+  - **search_filtered()**: Full implementation with language/path filtering, two-phase search
+  - **stats()**: Full implementation with chunk counts, language/type breakdown, metadata
+  - **upsert_chunk()**: Delegates to batch method
+  - **delete_by_file()**: Simple DELETE query
+  - **get_by_content_hash()**: For embedding reuse
 - **0.11.0-draft (2026-01-31)**: Fixed search memory issue and remaining medium issues:
   - **Two-phase search**: Phase 1 loads only id+embedding for scoring, Phase 2 fetches full content for top-N results only. Eliminates loading unused chunk content entirely.
   - **Parser query caching**: Pre-compile tree-sitter queries in `Parser::new()`, reuse across files (~1ms saved per file)
