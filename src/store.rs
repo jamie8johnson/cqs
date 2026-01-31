@@ -225,16 +225,15 @@ fn tokenize_identifier(s: &str) -> Vec<String> {
 impl Store {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let manager = SqliteConnectionManager::file(path)
-            .with_init(|conn| {
-                // Enable WAL mode for better concurrent read performance
-                conn.pragma_update(None, "journal_mode", "WAL")?;
-                // Wait up to 5s if database is locked
-                conn.pragma_update(None, "busy_timeout", 5000)?;
-                // NORMAL sync is safe with WAL and faster than FULL
-                conn.pragma_update(None, "synchronous", "NORMAL")?;
-                Ok(())
-            });
+        let manager = SqliteConnectionManager::file(path).with_init(|conn| {
+            // Enable WAL mode for better concurrent read performance
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            // Wait up to 5s if database is locked
+            conn.pragma_update(None, "busy_timeout", 5000)?;
+            // NORMAL sync is safe with WAL and faster than FULL
+            conn.pragma_update(None, "synchronous", "NORMAL")?;
+            Ok(())
+        });
 
         let pool = Pool::builder()
             .max_size(4) // Allow up to 4 concurrent connections
@@ -567,9 +566,7 @@ impl Store {
         for file in indexed_files {
             let path = PathBuf::from(&file);
             if !existing_files.contains(&path) {
-                deleted += conn
-                    .execute("DELETE FROM chunks WHERE file = ?1", [&file])?
-                    as u32;
+                deleted += conn.execute("DELETE FROM chunks WHERE file = ?1", [&file])? as u32;
             }
         }
         Ok(deleted)
@@ -591,15 +588,13 @@ impl Store {
     pub fn stats(&self) -> Result<IndexStats, StoreError> {
         let conn = self.pool.get()?;
 
-        let total_chunks: u64 = conn
-            .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+        let total_chunks: u64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
 
         let total_files: u64 =
             conn.query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
 
         // Chunks by language
-        let mut stmt = conn
-            .prepare("SELECT language, COUNT(*) FROM chunks GROUP BY language")?;
+        let mut stmt = conn.prepare("SELECT language, COUNT(*) FROM chunks GROUP BY language")?;
         let chunks_by_language: HashMap<Language, u64> = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
@@ -609,8 +604,8 @@ impl Store {
             .collect();
 
         // Chunks by type
-        let mut stmt = conn
-            .prepare("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")?;
+        let mut stmt =
+            conn.prepare("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")?;
         let chunks_by_type: HashMap<ChunkType, u64> = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
