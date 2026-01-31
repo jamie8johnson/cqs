@@ -107,3 +107,9 @@ MCP `tools/call` responses MUST wrap results in `{"content":[{"type":"text","tex
 Storing absolute paths in chunk IDs breaks path pattern filtering and makes indexes non-portable. The fix was straightforward but required touching multiple places: enumerate_files returns relative paths, parse_files rewrites chunk paths, callers join with root for filesystem ops. Test with glob patterns early - they're a good canary for path issues.
 
 ---
+
+## 2026-01-31 - clap trailing_var_arg eats flags after query
+
+With `#[arg(trailing_var_arg = true)]` on the query field, any flags that appear AFTER the query get consumed as part of the query text. This means `cqs "foo" -C 3` doesn't work (context=None) but `cqs -C 3 "foo"` does. Documented in README but could surprise users. Might need to restructure CLI parsing or use `--` separator.
+
+---

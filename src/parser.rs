@@ -19,19 +19,37 @@ pub enum ParserError {
 
 // Tree-sitter query patterns per language
 
-/// Rust: capture all function_item nodes
+/// Rust: functions, structs, enums, traits, constants
 const RUST_QUERY: &str = r#"
 (function_item
   name: (identifier) @name) @function
+
+(struct_item
+  name: (type_identifier) @name) @struct
+
+(enum_item
+  name: (type_identifier) @name) @enum
+
+(trait_item
+  name: (type_identifier) @name) @trait
+
+(const_item
+  name: (identifier) @name) @const
+
+(static_item
+  name: (identifier) @name) @const
 "#;
 
-/// Python: capture all function_definition nodes
+/// Python: functions and classes
 const PYTHON_QUERY: &str = r#"
 (function_definition
   name: (identifier) @name) @function
+
+(class_definition
+  name: (identifier) @name) @class
 "#;
 
-/// TypeScript/JavaScript: functions, methods, arrow functions
+/// TypeScript: functions, methods, arrow functions, classes, interfaces, enums
 const TYPESCRIPT_QUERY: &str = r#"
 (function_declaration
   name: (identifier) @name) @function
@@ -50,15 +68,62 @@ const TYPESCRIPT_QUERY: &str = r#"
   (variable_declarator
     name: (identifier) @name
     value: (arrow_function) @function))
+
+(class_declaration
+  name: (type_identifier) @name) @class
+
+(interface_declaration
+  name: (type_identifier) @name) @interface
+
+(enum_declaration
+  name: (identifier) @name) @enum
 "#;
 
-/// Go: functions and methods
+/// JavaScript: functions, methods, arrow functions, classes
+const JAVASCRIPT_QUERY: &str = r#"
+(function_declaration
+  name: (identifier) @name) @function
+
+(method_definition
+  name: (property_identifier) @name) @function
+
+;; Arrow function assigned to variable: const foo = () => {}
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function) @function))
+
+;; Arrow function assigned with var/let
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @name
+    value: (arrow_function) @function))
+
+(class_declaration
+  name: (identifier) @name) @class
+"#;
+
+/// Go: functions, methods, structs, interfaces, constants
 const GO_QUERY: &str = r#"
 (function_declaration
   name: (identifier) @name) @function
 
 (method_declaration
   name: (field_identifier) @name) @function
+
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (struct_type))) @struct
+
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (interface_type))) @interface
+
+(const_declaration
+  (const_spec
+    name: (identifier) @name)) @const
 "#;
 
 pub struct Parser {
@@ -160,21 +225,30 @@ impl Parser {
         language: Language,
         path: &Path,
     ) -> Result<Chunk, ParserError> {
-        // Get capture indices by name from query
-        let func_idx = query
-            .capture_index_for_name("function")
-            .ok_or_else(|| ParserError::ParseFailed("Query missing @function capture".into()))?;
-        let name_idx = query.capture_index_for_name("name");
+        // Map capture names to chunk types
+        let capture_types: &[(&str, ChunkType)] = &[
+            ("function", ChunkType::Function),
+            ("struct", ChunkType::Struct),
+            ("class", ChunkType::Class),
+            ("enum", ChunkType::Enum),
+            ("trait", ChunkType::Trait),
+            ("interface", ChunkType::Interface),
+            ("const", ChunkType::Constant),
+        ];
 
-        // Find the function node by capture index
-        let func_capture = m
-            .captures
+        // Find which definition capture matched and get its node
+        let (node, base_chunk_type) = capture_types
             .iter()
-            .find(|c| c.index == func_idx)
-            .ok_or_else(|| ParserError::ParseFailed("Missing @function capture in match".into()))?;
-        let node = func_capture.node;
+            .find_map(|(name, chunk_type)| {
+                query
+                    .capture_index_for_name(name)
+                    .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                    .map(|c| (c.node, *chunk_type))
+            })
+            .ok_or_else(|| ParserError::ParseFailed("No definition capture found in match".into()))?;
 
-        // Find name by capture index (may not exist for anonymous functions)
+        // Get name capture
+        let name_idx = query.capture_index_for_name("name");
         let name = name_idx
             .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
             .map(|c| source[c.node.byte_range()].to_string())
@@ -193,8 +267,12 @@ impl Parser {
         // Extract doc comments
         let doc = self.extract_doc_comment(node, source, language);
 
-        // Determine chunk type
-        let chunk_type = self.infer_chunk_type(node, language);
+        // Determine chunk type - only infer for functions (to detect methods)
+        let chunk_type = if base_chunk_type == ChunkType::Function {
+            self.infer_chunk_type(node, language)
+        } else {
+            base_chunk_type
+        };
 
         // Content hash for deduplication
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
@@ -374,7 +452,8 @@ impl Language {
         match self {
             Language::Rust => RUST_QUERY,
             Language::Python => PYTHON_QUERY,
-            Language::TypeScript | Language::JavaScript => TYPESCRIPT_QUERY,
+            Language::TypeScript => TYPESCRIPT_QUERY,
+            Language::JavaScript => JAVASCRIPT_QUERY,
             Language::Go => GO_QUERY,
         }
     }
@@ -410,6 +489,12 @@ impl std::str::FromStr for Language {
 pub enum ChunkType {
     Function,
     Method,
+    Class,
+    Struct,
+    Enum,
+    Trait,
+    Interface,
+    Constant,
 }
 
 impl std::fmt::Display for ChunkType {
@@ -417,6 +502,12 @@ impl std::fmt::Display for ChunkType {
         match self {
             ChunkType::Function => write!(f, "function"),
             ChunkType::Method => write!(f, "method"),
+            ChunkType::Class => write!(f, "class"),
+            ChunkType::Struct => write!(f, "struct"),
+            ChunkType::Enum => write!(f, "enum"),
+            ChunkType::Trait => write!(f, "trait"),
+            ChunkType::Interface => write!(f, "interface"),
+            ChunkType::Constant => write!(f, "constant"),
         }
     }
 }
@@ -427,6 +518,12 @@ impl std::str::FromStr for ChunkType {
         match s.to_lowercase().as_str() {
             "function" => Ok(ChunkType::Function),
             "method" => Ok(ChunkType::Method),
+            "class" => Ok(ChunkType::Class),
+            "struct" => Ok(ChunkType::Struct),
+            "enum" => Ok(ChunkType::Enum),
+            "trait" => Ok(ChunkType::Trait),
+            "interface" => Ok(ChunkType::Interface),
+            "constant" => Ok(ChunkType::Constant),
             _ => anyhow::bail!("Unknown chunk type: {}", s),
         }
     }

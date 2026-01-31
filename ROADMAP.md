@@ -31,15 +31,25 @@
 
 ## Phase 2: Polish
 
-- More chunk types (classes, structs, interfaces)
+**Status: Complete**
+
+### Done
+
+- [x] GPU acceleration verified (6ms query, 0.3ms/doc batched)
+- [x] More chunk types (Class, Struct, Enum, Trait, Interface, Constant)
+- [x] Hybrid search (embedding + name match, --name-boost flag)
+- [x] Doc comments in embeddings (prepend to content)
+- [x] --context N for surrounding lines
+
+### Deferred
+
+- Signature-aware search (name boost covers most cases)
 - More languages (C, C++, Java, Ruby)
-- Hybrid search (embedding + name match)
 - Watch mode, stale file detection
 - MCP extras: cqs_similar, cqs_index, progress notifications
 
 ## Phase 3: Integration
 
-- `--context N` for surrounding code
 - VS Code extension
 - SSE transport for MCP
 

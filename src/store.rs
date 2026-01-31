@@ -45,10 +45,11 @@ struct ChunkRow {
     line_end: u32,
 }
 
-/// Minimal struct for scoring phase - just ID and embedding
+/// Minimal struct for scoring phase - ID, embedding, and optionally name
 struct ChunkScore {
     id: String,
     embedding: Vec<u8>,
+    name: Option<String>,
 }
 
 /// Lightweight chunk info for search results
@@ -94,6 +95,10 @@ pub struct SearchResult {
 pub struct SearchFilter {
     pub languages: Option<Vec<Language>>,
     pub path_pattern: Option<String>,
+    /// Weight for name matching (0.0-1.0, default 0.0 = pure embedding)
+    pub name_boost: f32,
+    /// Original query text for name matching
+    pub query_text: String,
 }
 
 /// Model metadata for index initialization
@@ -146,6 +151,68 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
 /// Cosine similarity for L2-normalized vectors (just dot product)
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// Compute name match score for hybrid search
+pub fn name_match_score(query: &str, name: &str) -> f32 {
+    let query_lower = query.to_lowercase();
+    let name_lower = name.to_lowercase();
+
+    // Exact match
+    if name_lower == query_lower {
+        return 1.0;
+    }
+
+    // Name contains query as substring
+    if name_lower.contains(&query_lower) {
+        return 0.8;
+    }
+
+    // Query contains name as substring
+    if query_lower.contains(&name_lower) {
+        return 0.6;
+    }
+
+    // Word overlap (split on camelCase, snake_case)
+    let query_words = tokenize_identifier(&query_lower);
+    let name_words = tokenize_identifier(&name_lower);
+
+    if query_words.is_empty() || name_words.is_empty() {
+        return 0.0;
+    }
+
+    let overlap = query_words
+        .iter()
+        .filter(|w| name_words.iter().any(|nw| nw.contains(w.as_str()) || w.contains(nw.as_str())))
+        .count() as f32;
+    let total = query_words.len().max(1) as f32;
+
+    (overlap / total) * 0.5 // Max 0.5 for partial word overlap
+}
+
+/// Split identifier on snake_case and camelCase boundaries
+fn tokenize_identifier(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+
+    for c in s.chars() {
+        if c == '_' || c == '-' || c == ' ' {
+            if !current.is_empty() {
+                words.push(current.clone());
+                current.clear();
+            }
+        } else if c.is_uppercase() && !current.is_empty() {
+            words.push(current.clone());
+            current.clear();
+            current.push(c.to_lowercase().next().unwrap_or(c));
+        } else {
+            current.push(c.to_lowercase().next().unwrap_or(c));
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
 }
 
 impl Store {
@@ -347,8 +414,15 @@ impl Store {
             format!(" WHERE {}", conditions.join(" AND "))
         };
 
-        // Phase 1: Score matching chunks (load only id + embedding)
-        let sql = format!("SELECT id, embedding FROM chunks{}", where_clause);
+        // Check if we need hybrid scoring
+        let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+
+        // Phase 1: Score matching chunks (load id + embedding, optionally name)
+        let sql = if use_hybrid {
+            format!("SELECT id, embedding, name FROM chunks{}", where_clause)
+        } else {
+            format!("SELECT id, embedding FROM chunks{}", where_clause)
+        };
         let mut stmt = self.conn.prepare(&sql)?;
 
         let mut scored: Vec<(String, f32)> = stmt
@@ -356,12 +430,22 @@ impl Store {
                 Ok(ChunkScore {
                     id: row.get(0)?,
                     embedding: row.get(1)?,
+                    name: if use_hybrid { row.get(2).ok() } else { None },
                 })
             })?
             .filter_map(|r| r.ok())
             .filter_map(|chunk| {
                 let embedding = bytes_to_embedding(&chunk.embedding);
-                let score = cosine_similarity(&query.0, &embedding);
+                let embedding_score = cosine_similarity(&query.0, &embedding);
+
+                // Compute hybrid score if enabled
+                let score = if use_hybrid {
+                    let name = chunk.name.as_deref().unwrap_or("");
+                    let name_score = name_match_score(&filter.query_text, name);
+                    (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
+                } else {
+                    embedding_score
+                };
 
                 // Apply path filter in Rust (glob matching)
                 if let Some(ref pattern) = filter.path_pattern {

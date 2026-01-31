@@ -139,6 +139,7 @@ fn test_search_filtered_by_language() {
     let filter = SearchFilter {
         languages: Some(vec![Language::Rust]),
         path_pattern: None,
+        ..Default::default()
     };
     let results = store.search_filtered(&create_mock_embedding(1.0), &filter, 10, 0.0).unwrap();
 

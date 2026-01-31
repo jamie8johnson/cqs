@@ -67,6 +67,10 @@ pub struct Cli {
     #[arg(short = 't', long, default_value = "0.3")]
     threshold: f32,
 
+    /// Weight for name matching in hybrid search (0.0-1.0)
+    #[arg(long, default_value = "0.2")]
+    name_boost: f32,
+
     /// Filter by language
     #[arg(short = 'l', long)]
     lang: Option<String>,
@@ -82,6 +86,10 @@ pub struct Cli {
     /// Show only file:line, no code
     #[arg(long)]
     no_content: bool,
+
+    /// Show N lines of context before/after the chunk
+    #[arg(short = 'C', long)]
+    context: Option<usize>,
 
     /// Suppress progress output
     #[arg(short, long)]
@@ -503,8 +511,10 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
             break;
         }
 
-        let texts: Vec<&str> = batch.iter().map(|c| c.content.as_str()).collect();
-        let embeddings = embedder.embed_documents(&texts)?;
+        // Prepare embedding input: doc + signature + content
+        let texts: Vec<String> = batch.iter().map(prepare_embedding_input).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let embeddings = embedder.embed_documents(&text_refs)?;
 
         // Get file mtime (use first file's mtime for the batch)
         let file_mtime = batch
@@ -561,6 +571,8 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let filter = SearchFilter {
         languages,
         path_pattern: cli.path.clone(),
+        name_boost: cli.name_boost,
+        query_text: query.to_string(),
     };
 
     let results = store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?;
@@ -577,7 +589,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     if cli.json {
         display_results_json(&results, query)?;
     } else {
-        display_results(&results, &root, cli.no_content)?;
+        display_results(&results, &root, cli.no_content, cli.context)?;
     }
 
     Ok(())
@@ -663,6 +675,7 @@ fn display_results(
     results: &[cqs::store::SearchResult],
     root: &Path,
     no_content: bool,
+    context: Option<usize>,
 ) -> Result<()> {
     for result in results {
         // Paths are stored relative; strip_prefix handles legacy absolute paths
@@ -686,6 +699,25 @@ fn display_results(
 
         if !no_content {
             println!("{}", "─".repeat(50));
+
+            // Read context if requested
+            if let Some(n) = context {
+                if n > 0 {
+                    let abs_path = root.join(&result.chunk.file);
+                    if let Ok((before, _)) = read_context_lines(
+                        &abs_path,
+                        result.chunk.line_start,
+                        result.chunk.line_end,
+                        n,
+                    ) {
+                        // Print before context (dimmed)
+                        for line in &before {
+                            println!("{}", format!("  {}", line).dimmed());
+                        }
+                    }
+                }
+            }
+
             // Show signature or truncated content
             if result.chunk.content.lines().count() <= 10 {
                 println!("{}", result.chunk.content);
@@ -695,12 +727,87 @@ fn display_results(
                 }
                 println!("    ...");
             }
+
+            // Print after context if requested
+            if let Some(n) = context {
+                if n > 0 {
+                    let abs_path = root.join(&result.chunk.file);
+                    if let Ok((_, after)) = read_context_lines(
+                        &abs_path,
+                        result.chunk.line_start,
+                        result.chunk.line_end,
+                        n,
+                    ) {
+                        for line in &after {
+                            println!("{}", format!("  {}", line).dimmed());
+                        }
+                    }
+                }
+            }
+
             println!();
         }
     }
 
     println!("{} results", results.len());
     Ok(())
+}
+
+/// Read context lines before and after a range in a file
+fn read_context_lines(
+    file: &Path,
+    line_start: u32,
+    line_end: u32,
+    context: usize,
+) -> Result<(Vec<String>, Vec<String>)> {
+    let content = std::fs::read_to_string(file)?;
+    let lines: Vec<&str> = content.lines().collect();
+
+    let start_idx = (line_start as usize).saturating_sub(1);
+    let end_idx = (line_end as usize).saturating_sub(1);
+
+    // Context before
+    let context_start = start_idx.saturating_sub(context);
+    let before: Vec<String> = lines[context_start..start_idx]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    // Context after
+    let context_end = (end_idx + context + 1).min(lines.len());
+    let after: Vec<String> = if end_idx + 1 < lines.len() {
+        lines[(end_idx + 1)..context_end]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![]
+    };
+
+    Ok((before, after))
+}
+
+/// Prepare embedding input for a chunk: doc + signature + content
+/// This improves semantic matching by including documentation.
+fn prepare_embedding_input(chunk: &cqs::parser::Chunk) -> String {
+    let mut input = String::new();
+
+    // Include doc comment if present
+    if let Some(ref doc) = chunk.doc {
+        input.push_str(doc);
+        input.push('\n');
+    }
+
+    // Include signature (function/method declaration)
+    if !chunk.signature.is_empty() {
+        input.push_str(&chunk.signature);
+        input.push('\n');
+    }
+
+    // Include full content
+    input.push_str(&chunk.content);
+
+    input
 }
 
 fn display_results_json(results: &[cqs::store::SearchResult], query: &str) -> Result<()> {

@@ -1,6 +1,6 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T06:15Z
+Updated: 2026-01-31T07:30Z
 
 ## Current State
 
@@ -100,10 +100,42 @@ Batch 50 docs: 0.3ms/doc
 Updated README with benchmark table, removed "intermittent" warning for WSL2.
 Updated CLAUDE.md with cqs_search usage instructions.
 
+### Implemented: Phase 2 Features
+
+All 6 planned features implemented:
+
+1. **New chunk types** ✓
+   - Added: Class, Struct, Enum, Trait, Interface, Constant
+   - Extended tree-sitter queries for all 5 languages
+   - Separate JavaScript query (no type_identifier node)
+   - Index now has 293 chunks (was 234)
+
+2. **Hybrid search** ✓
+   - Added name_match_score() with substring/word overlap
+   - Added --name-boost flag (default 0.2)
+   - MCP tool updated with name_boost parameter
+
+3. **--context N** ✓
+   - Added -C/--context flag for surrounding lines
+   - Note: flag must come before query due to trailing_var_arg
+   - Example: `cqs -C 3 "query"` (not `cqs "query" -C 3`)
+
+4. **Doc comments in embeddings** ✓
+   - prepare_embedding_input() prepends doc + signature
+   - Requires reindex to take effect
+
+Files changed:
+- `src/parser.rs` - ChunkType enum, queries, extract_chunk
+- `src/store.rs` - SearchFilter, name_match_score, hybrid scoring
+- `src/cli.rs` - --name-boost, --context, prepare_embedding_input
+- `src/mcp.rs` - name_boost parameter in tool schema
+
 ## Next Steps
 
-1. Implement hybrid search (embedding + name match) - Task #3
-2. Consider publishing v0.1.2 with eval suite + GPU benchmarks
+1. Reindex to pick up doc comment embeddings: `cqs index --force`
+2. Test hybrid search effectiveness
+3. Publish v0.1.2 with new features
+4. Signature-aware search (deferred - name boost covers most cases)
 
 ## Blockers
 

@@ -156,6 +156,7 @@ fn test_recall_at_5() {
         let filter = SearchFilter {
             languages: Some(vec![case.language]),
             path_pattern: None,
+            ..Default::default()
         };
         let results = store
             .search_filtered(&query_embedding, &filter, 5, 0.0)

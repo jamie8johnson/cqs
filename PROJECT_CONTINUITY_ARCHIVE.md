@@ -212,3 +212,53 @@ Created `examples/bench_embed.rs` for benchmarking.
 - `examples/bench_embed.rs` - new benchmark example
 
 ---
+
+## Session: 2026-01-31 (Phase 2 Implementation)
+
+### Implemented All Phase 2 Features
+
+1. **New chunk types** (Task #1-3)
+   - Extended ChunkType: Class, Struct, Enum, Trait, Interface, Constant
+   - Updated tree-sitter queries for all 5 languages
+   - Created separate JavaScript query (no type_identifier)
+   - Modified extract_chunk() for multi-capture handling
+
+2. **Hybrid search** (Task #4)
+   - Added name_match_score() with substring/word overlap
+   - Extended SearchFilter with name_boost, query_text
+   - Added --name-boost CLI flag (default 0.2)
+   - Updated MCP tool schema
+
+3. **Context display** (Task #5)
+   - Added -C/--context flag
+   - Implemented read_context_lines() for file reading
+   - Note: flag must come before query due to trailing_var_arg
+
+4. **Doc comments in embeddings** (Task #6)
+   - Added prepare_embedding_input()
+   - Prepends doc + signature to content
+
+### Index Stats After Reindex
+
+```
+Total chunks: 293 (was 234)
+
+By type:
+  struct: 33
+  enum: 8
+  function: 170
+  constant: 15
+  class: 2
+  method: 65
+```
+
+### Files Changed
+
+- `src/parser.rs` - ChunkType enum, tree-sitter queries, extract_chunk
+- `src/store.rs` - SearchFilter, name_match_score, hybrid scoring
+- `src/cli.rs` - --name-boost, --context, prepare_embedding_input
+- `src/mcp.rs` - name_boost in tool schema
+- `tests/store_test.rs` - Updated SearchFilter usage
+- `tests/eval_test.rs` - Updated SearchFilter usage
+
+---

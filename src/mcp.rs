@@ -107,6 +107,7 @@ struct SearchArgs {
     threshold: Option<f32>,
     language: Option<String>,
     path_pattern: Option<String>,
+    name_boost: Option<f32>,
 }
 
 /// MCP Server
@@ -230,6 +231,11 @@ impl McpServer {
                         "path_pattern": {
                             "type": "string",
                             "description": "Glob pattern to filter paths (e.g., 'src/api/**')"
+                        },
+                        "name_boost": {
+                            "type": "number",
+                            "description": "Weight for name matching 0.0-1.0 (default: 0.2)",
+                            "default": 0.2
                         }
                     },
                     "required": ["query"]
@@ -276,6 +282,8 @@ impl McpServer {
                 vec![l.parse().unwrap_or(Language::Rust)]
             }),
             path_pattern: args.path_pattern,
+            name_boost: args.name_boost.unwrap_or(0.2),
+            query_text: args.query.clone(),
         };
 
         let limit = args.limit.unwrap_or(5).min(20);

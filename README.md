@@ -41,12 +41,20 @@ cqs --path "**/*.go" "interface"
 # Combined
 cqs --lang typescript --path "src/api/*" "authentication"
 
+# Hybrid search (boost name matches)
+cqs --name-boost 0.5 "parse"    # Names containing "parse" ranked higher
+
+# Show surrounding context
+cqs -C 3 "error handling"       # 3 lines before/after each result
+
 # Output options
 cqs --json "query"           # JSON output
 cqs --no-content "query"     # File:line only, no code
 cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
 ```
+
+**Note:** Put flags before the query (e.g., `cqs -C 3 "query"` not `cqs "query" -C 3`).
 
 ## MCP Integration
 
@@ -85,8 +93,13 @@ Or manually in `~/.claude.json`:
 
 ## How It Works
 
-1. Parses code with tree-sitter to extract functions/methods
+1. Parses code with tree-sitter to extract:
+   - Functions and methods
+   - Classes and structs
+   - Enums, traits, interfaces
+   - Constants
 2. Generates embeddings with nomic-embed-text-v1.5 (runs locally)
+   - Includes doc comments for better semantic matching
 3. Stores in SQLite with vector search
 4. Uses GPU if available, falls back to CPU
 
