@@ -28,8 +28,9 @@
 - ort 2.x (ONNX Runtime) - uses `try_extract_array`, `axis_iter`
 - tokenizers 0.22
 - hf-hub 0.4
-- rusqlite 0.31
+- rusqlite 0.31 + r2d2-sqlite 0.24 (connection pooling)
 - nomic-embed-text-v1.5 (768-dim, Matryoshka truncatable)
+- lru 0.12 (query embedding cache)
 
 ## Phase 1 Languages
 

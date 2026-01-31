@@ -26,6 +26,8 @@ Building Rust on Windows paths from WSL causes random permission errors (libsqli
 
 `glob 0.3` hasn't been updated since 2016. Works fine for basic patterns but if we need anything fancier, `globset` from ripgrep is the modern replacement.
 
+**RESOLVED 2026-01-31:** Replaced glob with globset in Audit Phase A.
+
 ---
 
 ## 2026-01-31 - Brute-force search will hit a wall
@@ -159,5 +161,11 @@ We depend on fast-moving projects:
 - **MCP spec** - deprecations happen (SSE → Streamable HTTP)
 
 **AUTOMATED 2026-01-31:** Added Dependabot for crate PRs + GitHub Action for MCP/model checks. Runs weekly on Mondays. CI workflow (build, test, clippy) catches breaking changes early.
+
+---
+
+## 2026-01-31 - r2d2 pool size may need tuning
+
+Added r2d2-sqlite with max 4 connections. This is arbitrary. For CPU-bound embedding work, more connections don't help (bottleneck is GPU/CPU, not DB). For pure search workloads (parallel queries), more connections could help. Monitor if users report connection pool exhaustion errors.
 
 ---
