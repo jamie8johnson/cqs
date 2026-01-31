@@ -197,6 +197,7 @@ impl McpServer {
     }
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
+        // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
         let _params: InitializeParams =
             params
                 .map(serde_json::from_value)
@@ -303,6 +304,7 @@ impl McpServer {
     }
 
     fn tool_search(&mut self, arguments: Value) -> Result<Value> {
+        // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
         let args: SearchArgs = serde_json::from_value(arguments)?;
 
         // Validate query length (prevent excessive embedding computation)
@@ -422,6 +424,7 @@ pub fn serve_stdio(project_root: PathBuf) -> Result<()> {
             continue;
         }
 
+        // SAFETY: Stdio transport is from trusted client (Claude Code)
         let request: JsonRpcRequest = match serde_json::from_str(&line) {
             Ok(req) => req,
             Err(e) => {
