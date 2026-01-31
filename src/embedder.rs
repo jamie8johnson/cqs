@@ -120,7 +120,10 @@ impl Embedder {
 
         // Check cache first
         {
-            let mut cache = self.query_cache.lock().unwrap();
+            let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
+                tracing::warn!("Query cache lock poisoned, recovering");
+                poisoned.into_inner()
+            });
             if let Some(cached) = cache.get(text) {
                 return Ok(cached.clone());
             }
@@ -136,7 +139,10 @@ impl Embedder {
 
         // Store in cache
         {
-            let mut cache = self.query_cache.lock().unwrap();
+            let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
+                tracing::warn!("Query cache lock poisoned, recovering");
+                poisoned.into_inner()
+            });
             cache.put(text.to_string(), embedding.clone());
         }
 

@@ -1,18 +1,33 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T21:00Z
+Updated: 2026-01-31T23:30Z
 
 ## Current State
 
-**v0.1.7 published. Phase C audit complete. Pre-commit hook active. 29 tests passing.**
+**v0.1.8 ready to commit: HNSW + P0 audit fixes.**
 
-- ~3500 lines across 7 modules
-- 29 tests passing (13 parser + 8 store + 8 MCP)
-- Published v0.1.3 through v0.1.7 to crates.io
+- ~3900 lines across 8 modules (added hnsw.rs)
+- 32 tests passing (13 parser + 8 store + 8 MCP + 3 HNSW)
+- Clippy clean
+- v0.1.7 published to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
-- CI workflow running (build, test, clippy, fmt) - all passing
-- Branch ruleset active (main requires PR + CI, blocks force push)
-- Pre-commit hook configured (cargo fmt check)
+- CI workflow running - all passing
+- Branch ruleset active
+
+### v0.1.8 Changes (ready to commit)
+
+**HNSW Implementation (Phase 4):**
+- `src/hnsw.rs` - NEW: HNSW index wrapper using hnsw_rs crate
+- `src/lib.rs` - Added hnsw module export
+- `src/store.rs` - Added `all_embeddings()` and `get_chunk_by_id()` methods
+- `src/cli.rs` - Integrated HNSW build after index, HNSW search in query
+- `Cargo.toml` - Added `hnsw_rs = "0.3"` dependency
+- `CONTRIBUTING.md` - Updated architecture, added contribution ideas
+
+**P0 Audit Fixes:**
+- `src/mcp.rs` - Fixed RwLock panic risk in HTTP handler, added query length validation
+- `src/embedder.rs` - Fixed LRU cache lock poisoning risk
+- `src/store.rs` - Added embedding byte length validation with warning
 
 ### Version History This Session
 
@@ -23,6 +38,7 @@ Updated: 2026-01-31T21:00Z
 | v0.1.5 | GET /mcp SSE stream support, full spec compliance |
 | v0.1.6 | Phase B audit fixes, lru vulnerability fix, dependency updates |
 | v0.1.7 | Phase C audit fixes (error handling, graceful shutdown, byte limits) |
+| v0.1.8 | (pending) HNSW index for O(log n) search + P0 audit fixes |
 
 ## Features Complete
 
@@ -34,44 +50,34 @@ Updated: 2026-01-31T21:00Z
 - Connection pooling (r2d2-sqlite, 4 concurrent connections)
 - Query embedding cache (LRU, 100 entries)
 - Graceful HTTP shutdown (Ctrl+C)
+- **HNSW index for O(log n) search** (pending commit)
 
 ### MCP
 - stdio transport (default)
 - HTTP transport (Streamable HTTP 2025-11-25)
-  - POST /mcp - JSON-RPC requests
-  - GET /mcp - SSE stream for server messages
-  - Origin validation, request body limit (1MB)
-  - Graceful shutdown on Ctrl+C
 - Tools: cqs_search, cqs_stats
 
 ### Security
 - SQL parameterized queries
-- Secure UUID generation (timestamp + random)
+- Secure UUID generation
 - Request body limit (1MB)
-- Branch protection enforced
-- Chunk byte limit (100KB max)
+- Chunk byte limit (100KB)
+- Query length validation (8KB max)
+- Lock poisoning recovery
 
-## This Session Summary
+## HNSW Design Decisions
 
-1. **Audit Phase A** (PR #7 merged): SQL params, globset, fs4, MCP tests, community docs
-2. **Audit Phase B** (PR #8 merged): Connection pooling, RwLock, UUID, rate limiting, LRU cache
-3. **v0.1.6 published**: Phase B fixes + lru vulnerability fix (0.12→0.16)
-4. **Dependencies updated** (PR #11): axum 0.8, tower-http 0.6, toml 0.9, tree-sitter-go 0.25
-5. **Dependabot PRs closed** (#2, #3, #4, #5 superseded by #11)
-6. **Pre-commit hook**: .githooks/pre-commit runs cargo fmt check
-7. **Phase C audit fixes** (v0.1.7):
-   - Removed Parser::default() panic
-   - Added logging for silent DB errors in search
-   - Clarified unwrap with .expect() in embedder
-   - Added logging for parse errors in watch mode
-   - Added 100KB byte limit for chunks (handles minified files)
-   - Added graceful HTTP shutdown with Ctrl+C
-   - Fixed protocol version constant consistency
+- **Crate**: hnsw_rs v0.3.3 (pure Rust, no C++ deps)
+- **Parameters**: M=24, max_layer=16, ef_construction=200, ef_search=100
+- **Persistence**: .cq/index.hnsw.{graph,data,ids}
+- **Search fallback**: Uses brute-force when filters active or HNSW unavailable
+- **Limitation**: No delete support (rebuild required for removals)
 
 ## Next Steps
 
-1. **Phase 4: HNSW** - scale to >50k chunks
-2. **More languages** - C, C++, Java, Ruby
+1. **Commit v0.1.8** - HNSW + P0 fixes
+2. **Publish and release**
+3. **Optimize filtered search** - use HNSW candidates with Store filtering
 
 ## Blockers
 

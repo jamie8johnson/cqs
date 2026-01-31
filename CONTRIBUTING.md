@@ -63,7 +63,9 @@ Thank you for your interest in contributing to cqs!
 
 ### Feature Ideas
 
-- Additional language support (tree-sitter grammars)
+- Additional language support (tree-sitter grammars: C, C++, Java, Ruby)
+- Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
+- VS Code extension
 - Performance improvements
 - CLI enhancements
 
@@ -82,7 +84,8 @@ src/
   cli.rs      - Command-line interface (clap)
   parser.rs   - tree-sitter code parsing
   embedder.rs - ONNX model embedding generation
-  store.rs    - SQLite storage and search
+  store.rs    - SQLite storage and brute-force search
+  hnsw.rs     - HNSW index for fast O(log n) search
   mcp.rs      - MCP server implementation
   lib.rs      - Public API
 ```

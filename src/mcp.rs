@@ -296,6 +296,16 @@ impl McpServer {
     fn tool_search(&mut self, arguments: Value) -> Result<Value> {
         let args: SearchArgs = serde_json::from_value(arguments)?;
 
+        // Validate query length (prevent excessive embedding computation)
+        const MAX_QUERY_LENGTH: usize = 8192;
+        if args.query.len() > MAX_QUERY_LENGTH {
+            bail!(
+                "Query too long: {} bytes (max {})",
+                args.query.len(),
+                MAX_QUERY_LENGTH
+            );
+        }
+
         let embedder = self.ensure_embedder()?;
         let query_embedding = embedder.embed_query(&args.query)?;
 
@@ -545,7 +555,13 @@ async fn handle_mcp_post(
     }
 
     let response = {
-        let mut server = state.server.write().unwrap();
+        let mut server = match state.server.write() {
+            Ok(s) => s,
+            Err(poisoned) => {
+                tracing::warn!("Server lock poisoned, recovering");
+                poisoned.into_inner()
+            }
+        };
         server.handle_request(request)
     };
 
