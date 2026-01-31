@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Semantic code search with local embeddings"
 license = "MIT"
-repository = "https://github.com/anthropics/cq"
+repository = "https://github.com/jamie8johnson/cq"
 keywords = ["code-search", "embeddings", "semantic-search"]
 categories = ["command-line-utilities", "development-tools"]
 
@@ -39,6 +39,11 @@ toml = "0.8"
 
 # Utilities
 blake3 = "1"
+walkdir = "2"
+fs2 = "0.4"
+ctrlc = "3"
+rayon = "1"
+chrono = "0.4"
 glob = "0.3"
 colored = "2"
 indicatif = "0.17"

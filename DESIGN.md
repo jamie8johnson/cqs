@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.6.2-draft
-**Updated:** 2026-01-31T02:30:00Z
+**Version:** 0.7.0-draft
+**Updated:** 2026-01-31T03:00:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -486,6 +486,72 @@ impl Parser {
 - On index: resolve relative to project root
 - On query: display as stored
 
+**File enumeration (safety):**
+
+```rust
+use walkdir::WalkDir;
+
+const MAX_FILE_SIZE: u64 = 1_048_576;  // 1MB
+
+fn enumerate_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let root = root.canonicalize()?;  // Resolve symlinks in root path
+
+    let files: Vec<PathBuf> = WalkDir::new(&root)
+        .follow_links(false)  // Don't follow symlinks (security)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| {
+            // Skip files over size limit
+            e.metadata().map(|m| m.len() <= MAX_FILE_SIZE).unwrap_or(false)
+        })
+        .filter(|e| {
+            // Only supported extensions
+            e.path().extension()
+                .and_then(|ext| ext.to_str())
+                .and_then(Language::from_extension)
+                .is_some()
+        })
+        .map(|e| {
+            // Validate path stays within project root
+            let path = e.path().canonicalize().ok()?;
+            if path.starts_with(&root) {
+                Some(path)
+            } else {
+                tracing::warn!("Skipping path outside project: {}", e.path().display());
+                None
+            }
+        })
+        .flatten()
+        .collect();
+
+    Ok(files)
+}
+```
+
+**Safety guarantees:**
+- Symlinks not followed (prevents escape attacks)
+- Files >1MB skipped (prevents OOM)
+- Paths validated to stay within project root
+- Non-UTF8 files handled gracefully (see parse_file)
+
+**UTF-8 handling in parse_file:**
+
+```rust
+pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>> {
+    // Gracefully handle non-UTF8 files
+    let source = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            tracing::warn!("Skipping non-UTF8 file: {}", path.display());
+            return Ok(vec![]);  // Return empty, don't abort
+        }
+        Err(e) => return Err(e.into()),
+    };
+    // ... rest of parsing
+}
+```
+
 ### 2. Embedder
 
 **ort for inference, tokenizers for encoding. Runtime GPU detection.**
@@ -754,9 +820,11 @@ CREATE INDEX idx_chunks_language ON chunks(language);
 - `updated_at` - last modification
 - `cq_version` - cq version that created index
 
-**Connection setup:**
+**Connection setup with version checking:**
 
 ```rust
+use fs2::FileExt;
+
 impl Store {
     fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -768,9 +836,67 @@ impl Store {
         // NORMAL sync is safe with WAL and faster than FULL
         conn.pragma_update(None, "synchronous", "NORMAL")?;
 
-        Ok(Self { conn })
+        let store = Self { conn };
+
+        // Check schema version compatibility
+        store.check_schema_version()?;
+        // Check model version compatibility
+        store.check_model_version()?;
+
+        Ok(store)
+    }
+
+    fn check_schema_version(&self) -> Result<()> {
+        let version: i32 = self.conn
+            .query_row("SELECT value FROM metadata WHERE key = 'schema_version'", [], |r| r.get(0))
+            .unwrap_or(0);
+
+        if version > CURRENT_SCHEMA_VERSION {
+            bail!("Index created by newer cq version (schema {}). Please upgrade cq.", version);
+        }
+        if version < CURRENT_SCHEMA_VERSION {
+            // Run migrations or prompt user
+            bail!("Index schema outdated (v{}). Run 'cq index --force' to rebuild.", version);
+        }
+        Ok(())
+    }
+
+    fn check_model_version(&self) -> Result<()> {
+        let stored_model: String = self.conn
+            .query_row("SELECT value FROM metadata WHERE key = 'model_name'", [], |r| r.get(0))
+            .unwrap_or_default();
+
+        if !stored_model.is_empty() && stored_model != MODEL_NAME {
+            bail!(
+                "Index uses different model '{}'. Current model is '{}'. Run 'cq index --force' to re-embed.",
+                stored_model, MODEL_NAME
+            );
+        }
+        Ok(())
     }
 }
+
+const CURRENT_SCHEMA_VERSION: i32 = 1;
+const MODEL_NAME: &str = "nomic-embed-text-v1.5";
+```
+
+**Index lock (prevent concurrent indexing):**
+
+```rust
+fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
+    let lock_path = cq_dir.join("index.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)?;
+
+    lock_file.try_lock_exclusive().map_err(|_| {
+        anyhow!("Another cq process is indexing. Wait or remove .cq/index.lock")
+    })?;
+
+    Ok(lock_file)  // Lock released when file is dropped
+}
+```
 ```
 
 **Operations:**
@@ -803,6 +929,68 @@ struct SearchResult {
 - Store as BLOB (3072 bytes for 768 f32s)
 - Little-endian byte order
 - Compress in Phase 2 if needed
+
+**Batch inserts (10x faster):**
+
+```rust
+fn upsert_chunks_batch(&self, chunks: &[(Chunk, Embedding)]) -> Result<usize> {
+    let tx = self.conn.transaction()?;
+
+    {
+        let mut stmt = tx.prepare_cached(
+            "INSERT OR REPLACE INTO chunks (id, file, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+        )?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        for (chunk, embedding) in chunks {
+            stmt.execute(params![
+                chunk.id,
+                chunk.file.to_string_lossy(),
+                chunk.language.to_string(),
+                chunk.chunk_type.to_string(),
+                chunk.name,
+                chunk.signature,
+                chunk.content,
+                chunk.content_hash,
+                chunk.doc,
+                chunk.line_start,
+                chunk.line_end,
+                embedding_to_bytes(embedding),
+                &now,
+                &now,
+            ])?;
+        }
+    }
+
+    tx.commit()?;
+    Ok(chunks.len())
+}
+```
+
+**mtime caching (skip unchanged files):**
+
+```rust
+// Add to chunks table
+// file_mtime INTEGER  -- Unix timestamp of file when indexed
+
+fn needs_reindex(&self, path: &Path) -> Result<bool> {
+    let current_mtime = path.metadata()?.modified()?
+        .duration_since(std::time::UNIX_EPOCH)?.as_secs() as i64;
+
+    let stored_mtime: Option<i64> = self.conn
+        .query_row(
+            "SELECT MAX(file_mtime) FROM chunks WHERE file = ?1",
+            [path.to_string_lossy()],
+            |r| r.get(0)
+        ).ok().flatten();
+
+    match stored_mtime {
+        Some(mtime) if mtime >= current_mtime => Ok(false),  // Skip
+        _ => Ok(true),  // Needs reindex
+    }
+}
+```
 
 **Search (brute force):**
 
@@ -872,16 +1060,108 @@ COMMANDS:
 
 QUERY OPTIONS:
     -n, --limit <N>       Max results (default: 5)
-    -t, --threshold <F>   Min similarity (default: 0.3)
-    -l, --lang <LANG>     Filter by language (rust, python, ts, go)
+    -t, --threshold <F>   Min similarity 0.0-1.0 (default: 0.3)
+    -l, --lang <LANG>     Filter by language (rust, python, typescript, javascript, go)
     -p, --path <GLOB>     Filter by path pattern
-    --json                Output as JSON
+    --json                Output as JSON (see JSON Schema below)
     --no-content          Show only file:line, no code
 
+INDEX OPTIONS:
+    --force               Re-index all files, ignore mtime cache
+    --dry-run             Show what would be indexed, don't write
+
 GLOBAL OPTIONS:
-    -q, --quiet           Suppress progress output
+    -q, --quiet           Suppress progress output (errors still shown)
     -v, --verbose         Show debug info
     -V, --version         Show version
+```
+
+**Exit codes:**
+
+```rust
+pub enum ExitCode {
+    Success = 0,
+    GeneralError = 1,
+    NoResults = 2,       // Query returned nothing
+    IndexMissing = 3,    // .cq/index.db not found
+    ModelMissing = 4,    // Model not downloaded
+    Interrupted = 130,   // Ctrl+C (128 + SIGINT)
+}
+```
+
+**SIGINT handling (graceful shutdown):**
+
+```rust
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+fn setup_signal_handler() {
+    ctrlc::set_handler(|| {
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            // Second Ctrl+C: force exit
+            std::process::exit(130);
+        }
+        eprintln!("\nInterrupted. Finishing current batch...");
+    }).expect("Failed to set Ctrl+C handler");
+}
+
+fn check_interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst)
+}
+
+// In indexing loop:
+for batch in chunks.chunks(BATCH_SIZE) {
+    if check_interrupted() {
+        eprintln!("Committing partial index...");
+        break;
+    }
+    // Process batch...
+}
+```
+
+**Parallel file parsing:**
+
+```rust
+use rayon::prelude::*;
+
+fn parse_files(parser: &Parser, files: &[PathBuf]) -> Vec<Chunk> {
+    files
+        .par_iter()  // Parallel iteration
+        .flat_map(|path| {
+            match parser.parse_file(path) {
+                Ok(chunks) => chunks,
+                Err(e) => {
+                    tracing::warn!("Failed to parse {}: {}", path.display(), e);
+                    vec![]
+                }
+            }
+        })
+        .collect()
+}
+```
+
+**JSON output schema:**
+
+```json
+{
+  "results": [
+    {
+      "file": "src/utils/retry.rs",
+      "line_start": 24,
+      "line_end": 45,
+      "name": "retry_with_backoff",
+      "signature": "pub async fn retry_with_backoff<T, E, F, Fut>(...)",
+      "language": "rust",
+      "chunk_type": "function",
+      "score": 0.89,
+      "content": "/// Retries an async operation..."
+    }
+  ],
+  "query": "retry with backoff",
+  "total": 2,
+  "time_ms": 23
+}
 ```
 
 **cq init**
@@ -1049,9 +1329,18 @@ color = true
 **Per-project:**
 ```
 .cq/
-├── config.toml    # optional project config  
+├── config.toml    # optional project config
 ├── index.db       # sqlite database
-└── .gitignore     # contains: index.db
+├── index.lock     # prevents concurrent indexing
+└── .gitignore     # see below
+```
+
+**.cq/.gitignore contents:**
+```
+index.db
+index.db-wal
+index.db-shm
+index.lock
 ```
 
 ---
@@ -1096,6 +1385,11 @@ toml = "0.8"
 
 # Utilities
 blake3 = "1"
+walkdir = "2"              # File enumeration (no symlink follow)
+fs2 = "0.4"                # File locking
+ctrlc = "3"                # SIGINT handling
+rayon = "1"                # Parallel parsing
+chrono = "0.4"             # Timestamps
 glob = "0.3"
 colored = "2"
 indicatif = "0.17"
@@ -1179,11 +1473,23 @@ insta = "1"
 3. **Embeddings are lossy** - Can't reconstruct code from embeddings, but can hint at content
 4. **Model verification** - SHA256 checksum on download
 5. **C FFI** - tree-sitter is widely audited (GitHub, editors)
+6. **Path validation** - Files validated to stay within project root
+7. **No symlink follow** - Prevents path traversal attacks
+8. **File size limits** - Prevents memory exhaustion from large files
+9. **Concurrent access** - File lock prevents index corruption
 
 ---
 
 ## Changelog
 
+- **0.7.0-draft (2026-01-31)**: Security and robustness overhaul from deep audit:
+  - **Security**: Path validation (canonicalize + prefix check), symlinks skipped, file size limit (1MB)
+  - **Concurrency**: File lock prevents concurrent `cq index`, schema/model version checks on open
+  - **Performance**: Batch SQLite inserts (10x faster), parallel file parsing (rayon), mtime caching
+  - **Robustness**: UTF-8 error handling (skip, don't abort), SIGINT graceful shutdown
+  - **CLI**: Added `--force`, `--dry-run` flags, defined exit codes, JSON output schema
+  - **Dependencies**: Added walkdir, fs2, ctrlc, rayon, chrono
+  - **Docs**: Updated .gitignore to include WAL files and lock file
 - **0.6.2-draft (2026-01-31)**: Post-audit fixes: Fixed ort execution provider imports (`ep::CUDA` not `CUDAExecutionProvider`), corrected model size (547MB), added SQLite pragma setup code, fixed search function closure issue, added batch_size to Embedder struct, fixed chunk ID format to include hash prefix, removed duplicate arrow function query, clarified token_type_ids not needed, pinned ort to exact RC version.
 - **0.6.1-draft (2026-01-31)**: Audit fixes: Updated ort 2.x API (`try_extract_array`, `axis_iter`), improved query capture finding by index, enhanced TypeScript arrow function queries, fixed Go method detection, improved Python docstring extraction with `named_child`, clarified cc transitive dependency.
 - **0.6.0-draft (2026-01-31)**: Replaced syn with tree-sitter for multi-language support. Added Python, TypeScript, JavaScript, Go. Updated dependencies. Simplified ExecutionProvider enum (removed CoreML/DirectML from MVP).
