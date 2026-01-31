@@ -33,9 +33,10 @@ HuggingFace may log download requests per their privacy policy. After download, 
 
 When using `cqs serve` with Claude Code:
 
-- cqs communicates with Claude Code via local stdio
+- **stdio transport** (default): Communicates via local stdin/stdout
+- **HTTP transport**: Binds to localhost (127.0.0.1) only
 - Search queries and results pass through the MCP protocol
-- This is local IPC, not network traffic
+- All communication is local - no external network traffic
 
 ## Deleting Your Data
 

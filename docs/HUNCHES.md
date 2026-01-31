@@ -114,4 +114,17 @@ Storing absolute paths in chunk IDs breaks path pattern filtering and makes inde
 
 With `#[arg(trailing_var_arg = true)]` on the query field, any flags that appear AFTER the query get consumed as part of the query text. This means `cqs "foo" -C 3` doesn't work (context=None) but `cqs -C 3 "foo"` does. Documented in README but could surprise users. Might need to restructure CLI parsing or use `--` separator.
 
+**RESOLVED 2026-01-31:** Removed trailing_var_arg. Query is now positional `Option<String>`. Users must quote multi-word queries but flags work anywhere.
+
+---
+
+## 2026-01-31 - MCP SSE transport deprecated
+
+The MCP spec (2025-03-26) deprecated HTTP+SSE transport in favor of "Streamable HTTP". Key differences:
+- Single `/mcp` endpoint instead of separate `/sse` and `/messages`
+- POST for requests, optional GET for server-initiated SSE stream
+- Session management via `Mcp-Session-Id` header
+
+Implemented Streamable HTTP transport. Kept "sse" as alias mapping to "http" for backwards compat with existing configs.
+
 ---

@@ -3,16 +3,19 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
-use walkdir::WalkDir;
+use ignore::WalkBuilder;
+use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 
 use cqs::embedder::Embedder;
-use cqs::parser::{Language, Parser as CqParser};
+use cqs::parser::Parser as CqParser;
 use cqs::store::{ModelInfo, SearchFilter, Store};
 
 // Constants
@@ -20,6 +23,7 @@ const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
 
 // Exit codes
 #[repr(i32)]
+#[allow(dead_code)]
 pub enum ExitCode {
     Success = 0,
     GeneralError = 1,
@@ -55,9 +59,8 @@ pub struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    /// Search query
-    #[arg(trailing_var_arg = true)]
-    query: Vec<String>,
+    /// Search query (quote multi-word queries)
+    query: Option<String>,
 
     /// Max results
     #[arg(short = 'n', long, default_value = "5")]
@@ -114,15 +117,27 @@ enum Commands {
         /// Show what would be indexed, don't write
         #[arg(long)]
         dry_run: bool,
+        /// Index files ignored by .gitignore
+        #[arg(long)]
+        no_ignore: bool,
     },
     /// Show index statistics
     Stats,
+    /// Watch for changes and reindex
+    Watch {
+        /// Debounce interval in milliseconds
+        #[arg(long, default_value = "500")]
+        debounce: u64,
+        /// Index files ignored by .gitignore
+        #[arg(long)]
+        no_ignore: bool,
+    },
     /// Start MCP server
     Serve {
-        /// Transport type: stdio, sse
+        /// Transport type: stdio, http
         #[arg(long, default_value = "stdio")]
         transport: String,
-        /// Port for SSE transport
+        /// Port for HTTP transport
         #[arg(long, default_value = "3000")]
         port: u16,
         /// Project root
@@ -137,19 +152,18 @@ pub fn run() -> Result<()> {
     match cli.command {
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(&cli),
-        Some(Commands::Index { force, dry_run }) => cmd_index(&cli, force, dry_run),
+        Some(Commands::Index { force, dry_run, no_ignore }) => cmd_index(&cli, force, dry_run, no_ignore),
         Some(Commands::Stats) => cmd_stats(&cli),
+        Some(Commands::Watch { debounce, no_ignore }) => cmd_watch(&cli, debounce, no_ignore),
         Some(Commands::Serve { ref transport, port, ref project }) => {
             cmd_serve(&cli, transport, port, project.clone())
         }
-        None => {
-            if cli.query.is_empty() {
-                println!("Usage: cq <query> or cq <command>");
-                println!("Run 'cq --help' for more information.");
+        None => match &cli.query {
+            Some(q) => cmd_query(&cli, q),
+            None => {
+                println!("Usage: cqs <query> or cqs <command>");
+                println!("Run 'cqs --help' for more information.");
                 Ok(())
-            } else {
-                let query = cli.query.join(" ");
-                cmd_query(&cli, &query)
             }
         }
     }
@@ -190,14 +204,21 @@ fn find_project_root() -> PathBuf {
 }
 
 /// Enumerate files to index
-fn enumerate_files(root: &Path, parser: &CqParser) -> Result<Vec<PathBuf>> {
+fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Vec<PathBuf>> {
     let root = root.canonicalize().context("Failed to canonicalize root")?;
 
-    let files: Vec<PathBuf> = WalkDir::new(&root)
+    let walker = WalkBuilder::new(&root)
+        .git_ignore(!no_ignore)
+        .git_global(!no_ignore)
+        .git_exclude(!no_ignore)
+        .ignore(!no_ignore)
+        .hidden(!no_ignore)
         .follow_links(false)
-        .into_iter()
+        .build();
+
+    let files: Vec<PathBuf> = walker
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         .filter(|e| {
             // Skip files over size limit
             e.metadata()
@@ -319,7 +340,7 @@ fn cmd_init(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_doctor(cli: &Cli) -> Result<()> {
+fn cmd_doctor(_cli: &Cli) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");
@@ -397,7 +418,7 @@ fn cmd_doctor(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
+fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");
@@ -421,7 +442,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool) -> Result<()> {
     }
 
     let parser = CqParser::new()?;
-    let files = enumerate_files(&root, &parser)?;
+    let files = enumerate_files(&root, &parser, no_ignore)?;
 
     if !cli.quiet {
         println!("Found {} files", files.len());
@@ -653,18 +674,180 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(_cli: &Cli, transport: &str, _port: u16, project: Option<PathBuf>) -> Result<()> {
+fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
+    let root = find_project_root();
+    let cq_dir = root.join(".cq");
+    let index_path = cq_dir.join("index.db");
+
+    if !index_path.exists() {
+        bail!("No index found. Run 'cqs index' first.");
+    }
+
+    let parser = CqParser::new()?;
+    let supported_ext: HashSet<_> = parser.supported_extensions().iter().cloned().collect();
+
+    println!("Watching {} for changes (Ctrl+C to stop)...", root.display());
+    println!("Supported extensions: {}", supported_ext.iter().cloned().collect::<Vec<_>>().join(", "));
+
+    let (tx, rx) = mpsc::channel();
+
+    let config = Config::default()
+        .with_poll_interval(Duration::from_millis(debounce_ms));
+
+    let mut watcher = RecommendedWatcher::new(tx, config)?;
+    watcher.watch(&root, RecursiveMode::Recursive)?;
+
+    // Track pending changes for debouncing
+    let mut pending_files: HashSet<PathBuf> = HashSet::new();
+    let mut last_event = std::time::Instant::now();
+    let debounce = Duration::from_millis(debounce_ms);
+
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(Ok(event)) => {
+                for path in event.paths {
+                    // Skip if not a supported extension
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if !supported_ext.contains(ext) {
+                        continue;
+                    }
+                    // Skip .cq directory
+                    if path.starts_with(&cq_dir) {
+                        continue;
+                    }
+                    // Convert to relative path
+                    if let Ok(rel) = path.strip_prefix(&root) {
+                        pending_files.insert(rel.to_path_buf());
+                        last_event = std::time::Instant::now();
+                    }
+                }
+            }
+            Ok(Err(e)) => {
+                if !cli.quiet {
+                    eprintln!("Watch error: {}", e);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // Check if we should process pending changes
+                if !pending_files.is_empty() && last_event.elapsed() >= debounce {
+                    let files: Vec<PathBuf> = pending_files.drain().collect();
+                    if !cli.quiet {
+                        println!("\n{} file(s) changed, reindexing...", files.len());
+                        for f in &files {
+                            println!("  {}", f.display());
+                        }
+                    }
+
+                    // Reindex changed files
+                    match reindex_files(&root, &index_path, &files, &parser, no_ignore, cli.quiet) {
+                        Ok(count) => {
+                            if !cli.quiet {
+                                println!("Indexed {} chunk(s)", count);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Reindex error: {}", e);
+                        }
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("File watcher disconnected");
+            }
+        }
+
+        if check_interrupted() {
+            println!("\nStopping watch...");
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Reindex specific files
+fn reindex_files(
+    root: &Path,
+    index_path: &Path,
+    files: &[PathBuf],
+    parser: &CqParser,
+    _no_ignore: bool,
+    quiet: bool,
+) -> Result<usize> {
+    let mut embedder = Embedder::new()?;
+    let mut store = Store::open(index_path)?;
+
+    // Parse the changed files
+    let chunks: Vec<_> = files
+        .iter()
+        .flat_map(|rel_path| {
+            let abs_path = root.join(rel_path);
+            if !abs_path.exists() {
+                // File was deleted, we'll handle this by removing old chunks
+                return vec![];
+            }
+            match parser.parse_file(&abs_path) {
+                Ok(mut file_chunks) => {
+                    // Rewrite paths to be relative
+                    for chunk in &mut file_chunks {
+                        chunk.file = rel_path.clone();
+                    }
+                    file_chunks
+                }
+                Err(_) => vec![],
+            }
+        })
+        .collect();
+
+    if chunks.is_empty() {
+        return Ok(0);
+    }
+
+    // Generate embeddings
+    let texts: Vec<String> = chunks.iter().map(prepare_embedding_input).collect();
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let embeddings = embedder.embed_documents(&text_refs)?;
+
+    // Delete old chunks for these files and insert new ones
+    for rel_path in files {
+        store.delete_by_file(rel_path)?;
+    }
+
+    for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+        let abs_path = root.join(&chunk.file);
+        let mtime = abs_path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        store.upsert_chunk(chunk, embedding, mtime)?;
+    }
+
+    if !quiet {
+        println!("Updated {} file(s)", files.len());
+    }
+
+    Ok(chunks.len())
+}
+
+fn cmd_serve(_cli: &Cli, transport: &str, port: u16, project: Option<PathBuf>) -> Result<()> {
     let root = project.unwrap_or_else(find_project_root);
 
     match transport {
         "stdio" => {
             cqs::serve_stdio(root)
         }
+        "http" => {
+            cqs::serve_http(root, port)
+        }
+        // Keep sse as alias for backwards compatibility
         "sse" => {
-            bail!("SSE transport not yet implemented (Phase 3)");
+            cqs::serve_http(root, port)
         }
         _ => {
-            bail!("Unknown transport: {}. Use 'stdio' or 'sse'.", transport);
+            bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
         }
     }
 }

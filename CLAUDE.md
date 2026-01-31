@@ -26,10 +26,19 @@ Use `cqs_search` (MCP tool) for semantic code search instead of grep/glob when l
 - Conceptual matches where you don't know the exact name
 
 Available tools:
-- `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`
+- `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`, `name_boost`
 - `cqs_stats` - index stats, chunk counts by language
 
-Reindex after significant code changes: `cqs index`
+### Keeping Index Fresh
+
+For active development, run watch mode in a background terminal:
+```bash
+cqs watch
+```
+
+This automatically reindexes when files change (respects .gitignore).
+
+For manual reindex: `cqs index` (or `cqs index --force` to rebuild)
 
 ## Keep Updated
 

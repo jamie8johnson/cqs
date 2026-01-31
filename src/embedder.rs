@@ -12,8 +12,8 @@ const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
 // blake3 checksums for model verification (update when model changes)
-const MODEL_SHA256: &str = "34f5f98a1bb6ecd9e6095ec8d4da7b3491517dcf1d6dd5bd57c0171bf744b749";
-const TOKENIZER_SHA256: &str = "6e933bf59db40b8b2a0de480fe5006662770757e1e1671eb7e48ff6a5f00b0b4";
+const MODEL_BLAKE3: &str = "34f5f98a1bb6ecd9e6095ec8d4da7b3491517dcf1d6dd5bd57c0171bf744b749";
+const TOKENIZER_BLAKE3: &str = "6e933bf59db40b8b2a0de480fe5006662770757e1e1671eb7e48ff6a5f00b0b4";
 
 #[derive(Error, Debug)]
 pub enum EmbedderError {
@@ -177,7 +177,7 @@ impl Embedder {
         ])?;
 
         // Get the last_hidden_state output: shape [batch, seq_len, 768]
-        let (shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
+        let (_shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
 
         // Mean pooling over sequence dimension, weighted by attention mask
         let batch_size = texts.len();
@@ -229,11 +229,11 @@ fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
         .map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
 
     // Verify checksums (skip if not configured)
-    if !MODEL_SHA256.is_empty() {
-        verify_checksum(&model_path, MODEL_SHA256)?;
+    if !MODEL_BLAKE3.is_empty() {
+        verify_checksum(&model_path, MODEL_BLAKE3)?;
     }
-    if !TOKENIZER_SHA256.is_empty() {
-        verify_checksum(&tokenizer_path, TOKENIZER_SHA256)?;
+    if !TOKENIZER_BLAKE3.is_empty() {
+        verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
     }
 
     Ok((model_path, tokenizer_path))

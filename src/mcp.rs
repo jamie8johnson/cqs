@@ -2,10 +2,19 @@
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, bail};
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::embedder::Embedder;
 use crate::parser::Language;
@@ -55,6 +64,7 @@ struct InitializeParams {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct ClientInfo {
     name: String,
     version: String,
@@ -411,4 +421,69 @@ pub fn serve_stdio(project_root: PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+
+// === HTTP Transport (Streamable HTTP per MCP spec 2025-03-26) ===
+
+/// Shared state for HTTP server
+struct HttpState {
+    server: Mutex<McpServer>,
+}
+
+/// Run the MCP server with HTTP transport
+pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
+    let server = McpServer::new(project_root)?;
+    let state = Arc::new(HttpState {
+        server: Mutex::new(server),
+    });
+
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    let app = Router::new()
+        .route("/mcp", post(handle_mcp_post))
+        .route("/health", get(handle_health))
+        .layer(cors)
+        .with_state(state);
+
+    let addr = format!("127.0.0.1:{}", port);
+    eprintln!("MCP HTTP server listening on http://{}", addr);
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        axum::serve(listener, app).await?;
+        Ok::<_, anyhow::Error>(())
+    })?;
+
+    Ok(())
+}
+
+/// Handle POST /mcp - JSON-RPC requests
+async fn handle_mcp_post(
+    State(state): State<Arc<HttpState>>,
+    Json(request): Json<JsonRpcRequest>,
+) -> impl IntoResponse {
+    let response = {
+        let mut server = state.server.lock().unwrap();
+        server.handle_request(request)
+    };
+
+    // Return 202 Accepted for notifications (no response needed)
+    if response.id.is_none() && response.result.as_ref().map(|v| v.is_null()).unwrap_or(false) {
+        return (StatusCode::ACCEPTED, Json(serde_json::json!(null)));
+    }
+
+    (StatusCode::OK, Json(serde_json::to_value(&response).unwrap_or_default()))
+}
+
+/// Handle GET /health
+async fn handle_health() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": "cqs",
+        "version": env!("CARGO_PKG_VERSION")
+    }))
 }

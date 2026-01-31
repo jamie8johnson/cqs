@@ -46,15 +46,26 @@
 
 - Signature-aware search (name boost covers most cases)
 - More languages (C, C++, Java, Ruby)
-- Watch mode, stale file detection
 - MCP extras: cqs_similar, cqs_index, progress notifications
 
-## Current Phase: 3 (Integration)
+## Phase 3: Integration
 
-- [ ] VS Code extension
-- [ ] SSE transport for MCP
+### Status: Complete (v0.1.3)
 
-## Phase 4: Scale
+### Done
+
+- [x] .gitignore support (ignore crate replaces walkdir)
+- [x] Watch mode (`cqs watch` with debounce)
+- [x] HTTP transport (MCP Streamable HTTP spec 2025-03-26)
+- [x] CLI restructured (query as positional arg, flags work anywhere)
+- [x] Compiler warnings fixed
+- [x] Model checksums renamed (SHA256 → BLAKE3)
+
+### Deferred
+
+- VS Code extension (can use MCP directly)
+
+## Current Phase: 4 (Scale)
 
 - HNSW index for >50k chunks
 - Incremental embedding updates

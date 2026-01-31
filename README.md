@@ -54,7 +54,16 @@ cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
 ```
 
-**Note:** Put flags before the query (e.g., `cqs -C 3 "query"` not `cqs "query" -C 3`).
+## Watch Mode
+
+Keep your index up to date automatically:
+
+```bash
+cqs watch              # Watch for changes and reindex
+cqs watch --debounce 1000  # Custom debounce (ms)
+```
+
+Watch mode respects `.gitignore` by default. Use `--no-ignore` to index ignored files.
 
 ## MCP Integration
 
@@ -83,6 +92,18 @@ Or manually in `~/.claude.json`:
 
 **Note:** The `--project` argument is required because MCP servers run from an unpredictable working directory.
 
+### HTTP Transport
+
+For web integrations, use the HTTP transport:
+
+```bash
+cqs serve --transport http --port 3000 --project /path/to/project
+```
+
+Endpoints:
+- `POST /mcp` - JSON-RPC requests (MCP Streamable HTTP spec 2025-03-26)
+- `GET /health` - Health check
+
 ## Supported Languages
 
 - Rust
@@ -90,6 +111,17 @@ Or manually in `~/.claude.json`:
 - TypeScript
 - JavaScript
 - Go
+
+## Indexing
+
+By default, `cqs index` respects `.gitignore` rules:
+
+```bash
+cqs index              # Respects .gitignore
+cqs index --no-ignore  # Index everything
+cqs index --force      # Re-index all files
+cqs index --dry-run    # Show what would be indexed
+```
 
 ## How It Works
 
