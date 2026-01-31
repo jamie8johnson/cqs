@@ -45,3 +45,21 @@ No policy defined. Could follow into `/etc/`, could loop forever, could index ve
 If nomic releases v2.0 with different embeddings, old indexes become garbage. Need to check model_name on every query and warn loudly if mismatched. Re-index isn't optional in that case.
 
 ---
+
+## 2026-01-31 - MCP server resource consumption
+
+`cq_index` tool in MCP allows remote triggering of reindex. On large codebases this is CPU/GPU intensive. Could be DoS vector if SSE transport exposed to network. Keep SSE localhost-only or add rate limiting.
+
+---
+
+## 2026-01-31 - Embedding model checksums still empty
+
+Model verification skeleton exists but SHA256 constants are empty TODOs. Need to actually download the model, compute checksums, and fill them in. First person to run `cq init` should do this.
+
+---
+
+## 2026-01-31 - Two-phase search trades latency for memory
+
+New two-phase search (id+embedding first, content second) reduces memory but adds a second SQL query. For small indexes this might be slower. Could add threshold: single-phase for <10k chunks, two-phase above.
+
+---

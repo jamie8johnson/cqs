@@ -20,13 +20,15 @@ As audits/reviews happen, add them here:
 
 * `PROJECT_CONTINUITY_<timestamp>.md` -- current state, blockers, next steps (read to resume)
 * `PROJECT_CONTINUITY_ARCHIVE_<timestamp>.md` -- session logs, detailed notes (reference only)
+* `docs/HUNCHES.md` -- latent risks, gut feelings (append during session, review at start)
+* `ROADMAP.md` -- what's done, what's next (update when phases change)
 
 Timestamps: UTC, format `YYYY-MM-DDTHHMM[Z]`
 
 **Protocol:**
-1. Session start: read tear files before doing anything
-2. During work: note decisions, blockers, changes
-3. Session end or milestone: update both files
+1. Session start: read tear files + HUNCHES.md + ROADMAP.md before doing anything
+2. During work: note decisions, blockers, changes; append hunches as they arise
+3. Session end or milestone: update continuity files, ROADMAP.md if progress made
 4. Proactively offer updates—don't wait to be asked
 5. Flag stale or inconsistent state
 
@@ -123,31 +125,32 @@ Soft observations, gut feelings, latent risks. Append new entries as they arise.
 
 - [ ] Parser - tree-sitter extraction, all 5 languages
 - [ ] Embedder - ort + tokenizers, CUDA/CPU detection, model download
-- [ ] Store - sqlite with WAL, BLOB embeddings, brute-force search
-- [ ] CLI - init, doctor, index, query, stats, --lang filter
-- [ ] Eval - 10 queries per language, measure recall
+- [ ] Store - sqlite with WAL, BLOB embeddings, two-phase search
+- [ ] CLI - init, doctor, index, query, stats, serve, --lang filter
+- [ ] MCP - cq serve with stdio, cq_search + cq_stats tools
+- [ ] Tests - unit tests, integration tests, eval suite (10 queries/lang)
 
 ### Exit Criteria
 
 - `cargo install cq` works
 - GPU used when available, CPU fallback works
-- 8/10 test queries return relevant results per language
+- 8/10 eval queries return relevant result in top-5 per language
 - Index survives Ctrl+C during indexing
+- MCP works with Claude Code
 
 ## Phase 2: Polish
 
 - More chunk types (classes, structs, interfaces)
 - More languages (C, C++, Java, Ruby)
-- Path filtering
 - Hybrid search (embedding + name match)
-- Watch mode
-- Stale file detection in doctor
+- Watch mode, stale file detection
+- MCP extras: cq_similar, cq_index, progress notifications
 
 ## Phase 3: Integration
 
-- MCP tool for Claude Code
 - `--context N` for surrounding code
 - VS Code extension
+- SSE transport for MCP
 
 ## Phase 4: Scale
 
