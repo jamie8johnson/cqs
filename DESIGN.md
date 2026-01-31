@@ -1,7 +1,7 @@
 # cq - Code Query
 
-**Version:** 0.10.0-draft
-**Updated:** 2026-01-31T06:00:00Z
+**Version:** 0.11.0-draft
+**Updated:** 2026-01-31T06:30:00Z
 
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
@@ -112,14 +112,31 @@ Without prefixes, retrieval quality degrades significantly. Non-negotiable.
 Uses tree-sitter to parse source into concrete syntax trees (CST), then extracts semantic units.
 
 ```rust
+use std::collections::HashMap;
+
 pub struct Parser {
-    languages: HashMap<String, tree_sitter::Language>,
+    /// Cached compiled queries per language (Query compilation is ~1ms, worth caching)
+    queries: HashMap<Language, tree_sitter::Query>,
 }
 
 impl Parser {
-    pub fn new() -> Result<Self>;
+    pub fn new() -> Result<Self> {
+        // Pre-compile queries for all supported languages
+        let mut queries = HashMap::new();
+        for lang in [Language::Rust, Language::Python, Language::TypeScript,
+                     Language::JavaScript, Language::Go] {
+            let grammar = lang.grammar();
+            let query = tree_sitter::Query::new(&grammar, lang.query_pattern())
+                .map_err(|e| anyhow!("Failed to compile {} query: {:?}", lang, e))?;
+            queries.insert(lang, query);
+        }
+        Ok(Self { queries })
+    }
+
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>>;
-    pub fn supported_extensions(&self) -> &[&str];
+    pub fn supported_extensions(&self) -> &[&str] {
+        &["rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go"]
+    }
 }
 
 pub struct Chunk {
@@ -313,20 +330,21 @@ impl Parser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>> {
         let source = std::fs::read_to_string(path)?;
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        
+
         let language = Language::from_extension(ext)
             .ok_or_else(|| anyhow!("Unsupported file type: {}", ext))?;
-        
+
         let grammar = language.grammar();
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&grammar)
             .map_err(|e| anyhow!("Failed to set language: {:?}", e))?;
-        
+
         let tree = parser.parse(&source, None)
             .ok_or_else(|| anyhow!("Failed to parse {}", path.display()))?;
-        
-        let query = tree_sitter::Query::new(&grammar, language.query_pattern())
-            .map_err(|e| anyhow!("Invalid query: {:?}", e))?;
+
+        // Use cached query (compiled in Parser::new())
+        let query = self.queries.get(&language)
+            .ok_or_else(|| anyhow!("No query for language: {}", language))?;
         let mut cursor = tree_sitter::QueryCursor::new();
         
         // Note: matches() returns StreamingIterator, requires trait in scope
@@ -619,11 +637,35 @@ pub enum ExecutionProvider {
 }
 
 impl Embedder {
-    pub fn new() -> Result<Self>;
+    pub fn new() -> Result<Self> {
+        let (model_path, tokenizer_path) = ensure_model()?;
+        let provider = select_provider();
+        let session = create_session(&model_path, provider)?;
+        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
+            .map_err(|e| anyhow!("Failed to load tokenizer: {}", e))?;
+
+        let batch_size = match provider {
+            ExecutionProvider::CPU => 4,
+            _ => 16,
+        };
+
+        Ok(Self {
+            session,
+            tokenizer,
+            provider,
+            max_length: 8192,
+            batch_size,
+        })
+    }
+
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>>;
     pub fn embed_query(&self, text: &str) -> Result<Embedding>;
-    pub fn provider(&self) -> ExecutionProvider;
-    pub fn warm(&self) -> Result<()>;  // dummy inference to load model
+    pub fn provider(&self) -> ExecutionProvider { self.provider }
+    pub fn warm(&self) -> Result<()> {
+        // Run a dummy embedding to trigger model load
+        let _ = self.embed_query("warmup")?;
+        Ok(())
+    }
 }
 
 pub struct Embedding(pub Vec<f32>);  // 768 dimensions
@@ -1016,10 +1058,61 @@ fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
 ```rust
 impl Store {
     fn open(path: &Path) -> Result<Self>;  // See above for implementation
-    fn init(&self, model_info: &ModelInfo) -> Result<()>;
-    fn upsert_chunk(&self, chunk: &Chunk, embedding: &Embedding) -> Result<()>;
-    fn delete_by_file(&self, file: &Path) -> Result<u32>;
-    fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32>;
+
+    fn init(&mut self, model_info: &ModelInfo) -> Result<()> {
+        // Create tables
+        self.conn.execute_batch(include_str!("schema.sql"))?;
+
+        // Store metadata
+        let now = chrono::Utc::now().to_rfc3339();
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+            ["schema_version", &CURRENT_SCHEMA_VERSION.to_string()],
+        )?;
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+            ["model_name", &model_info.name],
+        )?;
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+            ["dimensions", &model_info.dimensions.to_string()],
+        )?;
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+            ["created_at", &now],
+        )?;
+        self.conn.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
+            ["cq_version", env!("CARGO_PKG_VERSION")],
+        )?;
+        Ok(())
+    }
+
+    fn upsert_chunk(&mut self, chunk: &Chunk, embedding: &Embedding) -> Result<()>;
+    fn delete_by_file(&mut self, file: &Path) -> Result<u32>;
+
+    fn prune_missing(&mut self, existing_files: &HashSet<PathBuf>) -> Result<u32> {
+        // Get all files in index
+        let mut stmt = self.conn.prepare("SELECT DISTINCT file FROM chunks")?;
+        let indexed_files: Vec<String> = stmt
+            .query_map([], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Delete chunks for files that no longer exist
+        let mut deleted = 0u32;
+        for file in indexed_files {
+            let path = PathBuf::from(&file);
+            if !existing_files.contains(&path) {
+                deleted += self.conn.execute(
+                    "DELETE FROM chunks WHERE file = ?1",
+                    [&file],
+                )? as u32;
+            }
+        }
+        Ok(deleted)
+    }
+
     fn get_by_content_hash(&self, hash: &str) -> Option<Embedding>;
     fn search(&self, query: &Embedding, limit: usize, threshold: f32) -> Result<Vec<SearchResult>>;
     fn search_filtered(&self, query: &Embedding, filter: &SearchFilter, limit: usize) -> Result<Vec<SearchResult>>;
@@ -1051,6 +1144,7 @@ struct ChunkSummary {
 }
 
 /// Raw row from chunks table (for internal use)
+#[derive(Clone)]
 struct ChunkRow {
     id: String,
     file: String,
@@ -1171,50 +1265,90 @@ fn needs_reindex(&self, path: &Path) -> Result<bool> {
 }
 ```
 
-**Search (brute force):**
+**Search (two-phase for memory efficiency):**
 
 ```rust
+/// Minimal struct for scoring phase - just ID and embedding
+struct ChunkScore {
+    id: String,
+    embedding: Vec<u8>,
+}
+
 fn search(&self, query: &Embedding, limit: usize, threshold: f32) -> Result<Vec<SearchResult>> {
+    // Phase 1: Load only IDs and embeddings for scoring
+    // This uses ~3KB per chunk instead of ~3.5KB (no content/signature/doc)
     let mut stmt = self.conn.prepare(
-        "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding FROM chunks"
+        "SELECT id, embedding FROM chunks"
     )?;
 
-    // Extract all data from rows in the closure (can't return Row reference)
-    let rows: Vec<_> = stmt.query_map([], |row| {
-        Ok(ChunkRow {
-            id: row.get(0)?,
-            file: row.get(1)?,
-            language: row.get(2)?,
-            chunk_type: row.get(3)?,
-            name: row.get(4)?,
-            signature: row.get(5)?,
-            content: row.get(6)?,
-            doc: row.get(7)?,
-            line_start: row.get(8)?,
-            line_end: row.get(9)?,
-            embedding: row.get(10)?,
-        })
-    })?.filter_map(|r| r.ok()).collect();
-
-    // Score and filter in Rust
-    let mut results: Vec<SearchResult> = rows
-        .into_iter()
-        .filter_map(|row| {
-            let embedding = bytes_to_embedding(&row.embedding);
+    let mut scored: Vec<(String, f32)> = stmt
+        .query_map([], |row| {
+            Ok(ChunkScore {
+                id: row.get(0)?,
+                embedding: row.get(1)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .filter_map(|chunk| {
+            let embedding = bytes_to_embedding(&chunk.embedding);
             let score = cosine_similarity(&query.0, &embedding);
             if score >= threshold {
-                Some(SearchResult {
-                    chunk: ChunkSummary::from(row),
-                    score,
-                })
+                Some((chunk.id, score))
             } else {
                 None
             }
         })
         .collect();
 
-    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    results.truncate(limit);
+    // Sort and take top-N
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(limit);
+
+    if scored.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Phase 2: Fetch full content only for top-N results
+    let ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
+    let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end
+         FROM chunks WHERE id IN ({})",
+        placeholders
+    );
+
+    let mut stmt = self.conn.prepare(&sql)?;
+    let rows: HashMap<String, ChunkRow> = stmt
+        .query_map(rusqlite::params_from_iter(&ids), |row| {
+            Ok(ChunkRow {
+                id: row.get(0)?,
+                file: row.get(1)?,
+                language: row.get(2)?,
+                chunk_type: row.get(3)?,
+                name: row.get(4)?,
+                signature: row.get(5)?,
+                content: row.get(6)?,
+                doc: row.get(7)?,
+                line_start: row.get(8)?,
+                line_end: row.get(9)?,
+                embedding: vec![],  // Not needed for display
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .map(|row| (row.id.clone(), row))
+        .collect();
+
+    // Reassemble results in score order
+    let results: Vec<SearchResult> = scored
+        .into_iter()
+        .filter_map(|(id, score)| {
+            rows.get(&id).map(|row| SearchResult {
+                chunk: ChunkSummary::from(row.clone()),
+                score,
+            })
+        })
+        .collect();
+
     Ok(results)
 }
 ```
@@ -1249,6 +1383,11 @@ QUERY OPTIONS:
 INDEX OPTIONS:
     --force               Re-index all files, ignore mtime cache
     --dry-run             Show what would be indexed, don't write
+
+SERVE OPTIONS:
+    --transport <TYPE>    Transport: stdio (default), sse
+    --port <PORT>         Port for SSE transport (default: 3000)
+    --project <PATH>      Project root (default: current directory)
 
 GLOBAL OPTIONS:
     -q, --quiet           Suppress progress output (errors still shown)
@@ -1307,20 +1446,15 @@ for batch in chunks.chunks(BATCH_SIZE) {
 ```rust
 use rayon::prelude::*;
 
-// Note: tree_sitter::Parser::parse() takes &mut self, so each thread needs its own Parser.
-// We create a fresh Parser per file. Parser::new() is cheap (~microseconds).
-fn parse_files(files: &[PathBuf]) -> Vec<Chunk> {
+// Parser holds pre-compiled queries, shared across threads via &Parser.
+// tree_sitter::Parser is created per-call in parse_file (cheap, ~microseconds).
+// The cached queries in Parser are accessed via &self, which is Send+Sync.
+fn parse_files(parser: &Parser, files: &[PathBuf]) -> Vec<Chunk> {
     files
         .par_iter()  // Parallel iteration
         .flat_map(|path| {
-            // Create parser per thread (Parser::parse needs &mut self)
-            let parser = match Parser::new() {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::warn!("Failed to create parser: {}", e);
-                    return vec![];
-                }
-            };
+            // parser.parse_file() creates its own tree_sitter::Parser internally
+            // Our Parser struct is shared read-only (queries are pre-compiled)
             match parser.parse_file(path) {
                 Ok(chunks) => chunks,
                 Err(e) => {
@@ -1728,6 +1862,8 @@ Content-Type: application/json
 
 {"jsonrpc": "2.0", ...}
 ```
+
+**SSE Security:** SSE transport binds to `127.0.0.1` only by default (not `0.0.0.0`). No authentication is implemented - assumes localhost is trusted. Do not expose to network without adding auth.
 
 ### Tools
 
@@ -2277,6 +2413,15 @@ async fn test_mcp_search() {
 
 ## Changelog
 
+- **0.11.0-draft (2026-01-31)**: Fixed search memory issue and remaining medium issues:
+  - **Two-phase search**: Phase 1 loads only id+embedding for scoring, Phase 2 fetches full content for top-N results only. Eliminates loading unused chunk content entirely.
+  - **Parser query caching**: Pre-compile tree-sitter queries in `Parser::new()`, reuse across files (~1ms saved per file)
+  - **Embedder::new()**: Added full implementation with model loading, tokenizer init, batch size selection
+  - **Store::init()**: Added implementation with table creation and metadata insertion
+  - **Store::prune_missing()**: Added implementation to remove chunks for deleted files
+  - **CLI**: Added SERVE OPTIONS section documenting --transport, --port, --project
+  - **SSE security**: Added localhost-only binding note and auth warning
+  - Added `ChunkScore` struct for minimal scoring data, `#[derive(Clone)]` to `ChunkRow`
 - **0.10.0-draft (2026-01-31)**: Fixed remaining high-priority issues from v0.9 audit:
   - **Helpers**: Added `embedding_to_bytes()` and `bytes_to_embedding()` for BLOB serialization
   - **Traits**: Added `Display` and `FromStr` impls for `Language` and `ChunkType`
