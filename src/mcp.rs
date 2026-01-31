@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use anyhow::{bail, Context, Result};
 use axum::{
@@ -20,7 +20,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::convert::Infallible;
 use std::time::Duration;
+use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::embedder::Embedder;
 use crate::parser::Language;
@@ -447,14 +449,14 @@ const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Shared state for HTTP server
 struct HttpState {
-    server: Mutex<McpServer>,
+    server: RwLock<McpServer>,
 }
 
 /// Run the MCP server with HTTP transport
 pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
     let server = McpServer::new(project_root)?;
     let state = Arc::new(HttpState {
-        server: Mutex::new(server),
+        server: RwLock::new(server),
     });
 
     let cors = CorsLayer::new()
@@ -462,10 +464,15 @@ pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Rate limiting: 1MB body limit, reasonable for MCP JSON-RPC
+    let middleware = ServiceBuilder::new()
+        .layer(RequestBodyLimitLayer::new(1024 * 1024))
+        .layer(cors);
+
     let app = Router::new()
         .route("/mcp", post(handle_mcp_post).get(handle_mcp_sse))
         .route("/health", get(handle_health))
-        .layer(cors)
+        .layer(middleware)
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", port);
@@ -532,7 +539,7 @@ async fn handle_mcp_post(
     }
 
     let response = {
-        let mut server = state.server.lock().unwrap();
+        let mut server = state.server.write().unwrap();
         server.handle_request(request)
     };
 
@@ -609,10 +616,12 @@ async fn handle_mcp_sse(
 
 /// Generate a simple unique ID for SSE events
 fn uuid_simple() -> String {
+    use rand::Rng;
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{:x}", nanos)
+    let random: u32 = rand::thread_rng().gen();
+    format!("{:x}-{:08x}", nanos, random)
 }

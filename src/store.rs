@@ -1,6 +1,8 @@
 //! SQLite storage for chunks and embeddings
 
-use rusqlite::{params, params_from_iter, Connection};
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
+use rusqlite::{params, params_from_iter};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -18,6 +20,8 @@ pub enum StoreError {
     Database(#[from] rusqlite::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("Connection pool error: {0}")]
+    Pool(#[from] r2d2::Error),
     #[error("Schema version mismatch: index is v{0}, cq expects v{1}. Run 'cq index --force' to rebuild.")]
     SchemaMismatch(i32, i32),
     #[error("Index created by newer cq version (schema v{0}). Please upgrade cq.")]
@@ -28,8 +32,9 @@ pub enum StoreError {
     ModelMismatch(String, String),
 }
 
+/// Thread-safe SQLite store using connection pooling
 pub struct Store {
-    conn: Connection,
+    pool: Pool<SqliteConnectionManager>,
 }
 
 /// Raw row from chunks table (for internal use)
@@ -218,18 +223,24 @@ fn tokenize_identifier(s: &str) -> Vec<String> {
 }
 
 impl Store {
-    /// Open an existing index
+    /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let conn = Connection::open(path)?;
+        let manager = SqliteConnectionManager::file(path)
+            .with_init(|conn| {
+                // Enable WAL mode for better concurrent read performance
+                conn.pragma_update(None, "journal_mode", "WAL")?;
+                // Wait up to 5s if database is locked
+                conn.pragma_update(None, "busy_timeout", 5000)?;
+                // NORMAL sync is safe with WAL and faster than FULL
+                conn.pragma_update(None, "synchronous", "NORMAL")?;
+                Ok(())
+            });
 
-        // Enable WAL mode for better concurrent read performance
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        // Wait up to 5s if database is locked
-        conn.pragma_update(None, "busy_timeout", 5000)?;
-        // NORMAL sync is safe with WAL and faster than FULL
-        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        let pool = Pool::builder()
+            .max_size(4) // Allow up to 4 concurrent connections
+            .build(manager)?;
 
-        let store = Self { conn };
+        let store = Self { pool };
 
         // Check schema version compatibility
         store.check_schema_version()?;
@@ -240,29 +251,31 @@ impl Store {
     }
 
     /// Create a new index
-    pub fn init(&mut self, model_info: &ModelInfo) -> Result<(), StoreError> {
+    pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
+        let conn = self.pool.get()?;
+
         // Create tables
-        self.conn.execute_batch(include_str!("schema.sql"))?;
+        conn.execute_batch(include_str!("schema.sql"))?;
 
         // Store metadata
         let now = chrono::Utc::now().to_rfc3339();
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
             ["schema_version", &CURRENT_SCHEMA_VERSION.to_string()],
         )?;
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
             ["model_name", &model_info.name],
         )?;
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
             ["dimensions", &model_info.dimensions.to_string()],
         )?;
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
             ["created_at", &now],
         )?;
-        self.conn.execute(
+        conn.execute(
             "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
             ["cq_version", env!("CARGO_PKG_VERSION")],
         )?;
@@ -271,8 +284,8 @@ impl Store {
     }
 
     fn check_schema_version(&self) -> Result<(), StoreError> {
-        let version: i32 = self
-            .conn
+        let conn = self.pool.get()?;
+        let version: i32 = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'schema_version'",
                 [],
@@ -292,8 +305,8 @@ impl Store {
     }
 
     fn check_model_version(&self) -> Result<(), StoreError> {
-        let stored_model: String = self
-            .conn
+        let conn = self.pool.get()?;
+        let stored_model: String = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'model_name'",
                 [],
@@ -312,11 +325,12 @@ impl Store {
 
     /// Insert or update chunks in batch (10x faster than individual inserts)
     pub fn upsert_chunks_batch(
-        &mut self,
+        &self,
         chunks: &[(Chunk, Embedding)],
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
-        let tx = self.conn.transaction()?;
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
 
         {
             let mut stmt = tx.prepare_cached(
@@ -352,7 +366,7 @@ impl Store {
 
     /// Insert or update a single chunk
     pub fn upsert_chunk(
-        &mut self,
+        &self,
         chunk: &Chunk,
         embedding: &Embedding,
         file_mtime: i64,
@@ -370,8 +384,8 @@ impl Store {
             .map_err(|_| std::io::Error::other("time error"))?
             .as_secs() as i64;
 
-        let stored_mtime: Option<i64> = self
-            .conn
+        let conn = self.pool.get()?;
+        let stored_mtime: Option<i64> = conn
             .query_row(
                 "SELECT file_mtime FROM chunks WHERE file = ?1 LIMIT 1",
                 [path.to_string_lossy()],
@@ -403,6 +417,8 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        let conn = self.pool.get()?;
+
         // Build WHERE clause from filter with parameterized query
         let mut conditions = Vec::new();
         let mut params_vec: Vec<String> = Vec::new();
@@ -432,7 +448,7 @@ impl Store {
         } else {
             format!("SELECT id, embedding FROM chunks{}", where_clause)
         };
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
 
         let mut scored: Vec<(String, f32)> = stmt
             .query_map(params_from_iter(params_vec.iter()), |row| {
@@ -494,7 +510,7 @@ impl Store {
             placeholders
         );
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(&sql)?;
         let rows: HashMap<String, ChunkRow> = stmt
             .query_map(rusqlite::params_from_iter(&ids), |row| {
                 Ok(ChunkRow {
@@ -529,8 +545,9 @@ impl Store {
     }
 
     /// Delete all chunks for a file
-    pub fn delete_by_file(&mut self, file: &Path) -> Result<u32, StoreError> {
-        let deleted = self.conn.execute(
+    pub fn delete_by_file(&self, file: &Path) -> Result<u32, StoreError> {
+        let conn = self.pool.get()?;
+        let deleted = conn.execute(
             "DELETE FROM chunks WHERE file = ?1",
             [file.to_string_lossy()],
         )?;
@@ -538,8 +555,9 @@ impl Store {
     }
 
     /// Delete chunks for files that no longer exist
-    pub fn prune_missing(&mut self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
-        let mut stmt = self.conn.prepare("SELECT DISTINCT file FROM chunks")?;
+    pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
+        let conn = self.pool.get()?;
+        let mut stmt = conn.prepare("SELECT DISTINCT file FROM chunks")?;
         let indexed_files: Vec<String> = stmt
             .query_map([], |row| row.get(0))?
             .filter_map(|r| r.ok())
@@ -549,8 +567,7 @@ impl Store {
         for file in indexed_files {
             let path = PathBuf::from(&file);
             if !existing_files.contains(&path) {
-                deleted += self
-                    .conn
+                deleted += conn
                     .execute("DELETE FROM chunks WHERE file = ?1", [&file])?
                     as u32;
             }
@@ -560,29 +577,28 @@ impl Store {
 
     /// Get embedding by content hash (for reuse when content unchanged)
     pub fn get_by_content_hash(&self, hash: &str) -> Option<Embedding> {
-        self.conn
-            .query_row(
-                "SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1",
-                [hash],
-                |row| row.get::<_, Vec<u8>>(0),
-            )
-            .ok()
-            .map(|bytes| Embedding(bytes_to_embedding(&bytes)))
+        let conn = self.pool.get().ok()?;
+        conn.query_row(
+            "SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1",
+            [hash],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .ok()
+        .map(|bytes| Embedding(bytes_to_embedding(&bytes)))
     }
 
     /// Get index statistics
     pub fn stats(&self) -> Result<IndexStats, StoreError> {
-        let total_chunks: u64 = self
-            .conn
+        let conn = self.pool.get()?;
+
+        let total_chunks: u64 = conn
             .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
 
         let total_files: u64 =
-            self.conn
-                .query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
 
         // Chunks by language
-        let mut stmt = self
-            .conn
+        let mut stmt = conn
             .prepare("SELECT language, COUNT(*) FROM chunks GROUP BY language")?;
         let chunks_by_language: HashMap<Language, u64> = stmt
             .query_map([], |row| {
@@ -593,8 +609,7 @@ impl Store {
             .collect();
 
         // Chunks by type
-        let mut stmt = self
-            .conn
+        let mut stmt = conn
             .prepare("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")?;
         let chunks_by_type: HashMap<ChunkType, u64> = stmt
             .query_map([], |row| {
@@ -605,32 +620,28 @@ impl Store {
             .collect();
 
         // Metadata
-        let model_name: String = self
-            .conn
+        let model_name: String = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'model_name'",
                 [],
                 |r| r.get(0),
             )
             .unwrap_or_default();
-        let created_at: String = self
-            .conn
+        let created_at: String = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'created_at'",
                 [],
                 |r| r.get(0),
             )
             .unwrap_or_default();
-        let updated_at: String = self
-            .conn
+        let updated_at: String = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'updated_at'",
                 [],
                 |r| r.get(0),
             )
             .unwrap_or_else(|_| created_at.clone());
-        let schema_version: i32 = self
-            .conn
+        let schema_version: i32 = conn
             .query_row(
                 "SELECT value FROM metadata WHERE key = 'schema_version'",
                 [],

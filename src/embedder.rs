@@ -1,9 +1,12 @@
 //! Embedding generation with ort + tokenizers
 
+use lru::LruCache;
 use ndarray::Array2;
 use ort::ep::ExecutionProvider as OrtExecutionProvider;
 use ort::session::Session;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use thiserror::Error;
 
 // Model configuration
@@ -69,6 +72,8 @@ pub struct Embedder {
     provider: ExecutionProvider,
     max_length: usize,
     batch_size: usize,
+    /// LRU cache for query embeddings (avoids re-computing same queries)
+    query_cache: Mutex<LruCache<String, Embedding>>,
 }
 
 impl Embedder {
@@ -84,12 +89,16 @@ impl Embedder {
             _ => 16,
         };
 
+        // Cache up to 100 query embeddings (typical search session)
+        let query_cache = Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
+
         Ok(Self {
             session,
             tokenizer,
             provider,
             max_length: 8192,
             batch_size,
+            query_cache,
         })
     }
 
@@ -102,15 +111,33 @@ impl Embedder {
         self.embed_batch(&prefixed)
     }
 
-    /// Embed a query. Adds "search_query: " prefix.
+    /// Embed a query. Adds "search_query: " prefix. Uses LRU cache for repeated queries.
     pub fn embed_query(&mut self, text: &str) -> Result<Embedding, EmbedderError> {
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);
         }
+
+        // Check cache first
+        {
+            let mut cache = self.query_cache.lock().unwrap();
+            if let Some(cached) = cache.get(text) {
+                return Ok(cached.clone());
+            }
+        }
+
+        // Compute embedding
         let prefixed = format!("search_query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
-        Ok(results.into_iter().next().unwrap())
+        let embedding = results.into_iter().next().unwrap();
+
+        // Store in cache
+        {
+            let mut cache = self.query_cache.lock().unwrap();
+            cache.put(text.to_string(), embedding.clone());
+        }
+
+        Ok(embedding)
     }
 
     /// Get the execution provider being used
