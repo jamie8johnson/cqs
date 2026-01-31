@@ -18,6 +18,19 @@ If `docs/` doesn't exist or any listed files are missing, create them from the t
 As audits/reviews happen, add them here:
 * `docs/AUDIT_<date>.md` -- audit findings and resolutions
 
+## Code Search
+
+Use `cqs_search` (MCP tool) for semantic code search instead of grep/glob when looking for:
+- Functions by behavior ("retry with backoff", "parse config file")
+- Implementation patterns ("error handling", "database connection")
+- Conceptual matches where you don't know the exact name
+
+Available tools:
+- `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`
+- `cqs_stats` - index stats, chunk counts by language
+
+Reindex after significant code changes: `cqs index`
+
 ## Keep Updated
 
 When making changes that affect these, update them:
