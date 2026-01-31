@@ -38,6 +38,15 @@ When using `cqs serve` with Claude Code:
 - Search queries and results pass through the MCP protocol
 - All communication is local - no external network traffic
 
+## CI/CD
+
+If you fork or contribute to the cqs repository:
+
+- GitHub Actions runs tests on push/PR
+- Code is processed on GitHub-hosted runners
+- No index data is uploaded (only source code)
+- See GitHub's privacy policy for runner data handling
+
 ## Deleting Your Data
 
 To remove all cqs data:

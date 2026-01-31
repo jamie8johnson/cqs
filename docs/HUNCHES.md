@@ -150,6 +150,6 @@ We depend on fast-moving projects:
 - **nomic-embed-text** - model updates break index compatibility
 - **MCP spec** - deprecations happen (SSE → Streamable HTTP)
 
-**AUTOMATED 2026-01-31:** Added Dependabot for crate PRs + GitHub Action for MCP/model checks. Runs weekly on Mondays.
+**AUTOMATED 2026-01-31:** Added Dependabot for crate PRs + GitHub Action for MCP/model checks. Runs weekly on Mondays. CI workflow (build, test, clippy) catches breaking changes early.
 
 ---

@@ -3,6 +3,7 @@
 Semantic code search with local embeddings.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
+[![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
 
 ## Install
 
@@ -190,6 +191,10 @@ Same as Linux, plus:
 ```bash
 cqs doctor  # Shows execution provider (CUDA or CPU)
 ```
+
+## Contributing
+
+Issues and PRs welcome at [GitHub](https://github.com/jamie8johnson/cqs).
 
 ## License
 

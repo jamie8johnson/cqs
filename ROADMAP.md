@@ -63,6 +63,10 @@
 - [x] MCP 2025-11-25 compliance (Origin validation, Protocol-Version header)
 - [x] SSE stream support (GET /mcp)
 - [x] Automated dependency reviews (Dependabot + GitHub Actions)
+- [x] CI workflow (build, test, clippy, fmt)
+- [x] Issue templates (bug report, feature request)
+- [x] GitHub releases with changelogs
+- [x] Published v0.1.3, v0.1.4, v0.1.5 to crates.io
 
 ### Deferred
 
@@ -70,6 +74,15 @@
 
 ## Current Phase: 4 (Scale)
 
+### Planned
+
 - HNSW index for >50k chunks
 - Incremental embedding updates
 - Index sharing (team sync)
+
+### Optional (Enable as Needed)
+
+- Branch protection (require CI pass before merge)
+- GitHub Discussions (community Q&A)
+- GitHub Wiki (end-user documentation)
+- Security advisories (for vulnerability reports)

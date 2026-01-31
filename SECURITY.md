@@ -39,6 +39,12 @@ cqs accesses:
 - Contains: code chunks, embeddings, file metadata
 - Add `.cq/` to `.gitignore` to avoid committing
 
+## CI/CD Security
+
+- **Dependabot**: Automated weekly checks for crate updates
+- **CI workflow**: Runs clippy with `-D warnings` to catch issues
+- **No secrets in CI**: Build and test only, no publish credentials exposed
+
 ## Reporting Vulnerabilities
 
 Report security issues to: https://github.com/jamie8johnson/cqs/issues

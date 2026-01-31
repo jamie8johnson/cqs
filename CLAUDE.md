@@ -29,6 +29,8 @@ Available tools:
 - `cqs_search` - semantic search, supports `language`, `path_pattern`, `threshold`, `limit`, `name_boost`
 - `cqs_stats` - index stats, chunk counts by language
 
+Note: `cq` was the original name but was taken on crates.io. The MCP tool names use `cqs_` prefix.
+
 ### Keeping Index Fresh
 
 For active development, run watch mode in a background terminal:

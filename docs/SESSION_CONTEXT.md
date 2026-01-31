@@ -41,6 +41,7 @@ Rust, Python, TypeScript, JavaScript, Go
 - Windows files at `/mnt/c/`
 - Tools: `gh` CLI, `cargo`, Rust toolchain
 - A6000 GPU (48GB VRAM) for CUDA testing
+- GitHub Actions CI for automated testing
 
 ## WSL Workarounds
 

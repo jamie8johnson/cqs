@@ -290,3 +290,45 @@ By lang: rust 181, python 31, go 31, typescript 28, javascript 25
 - `b3e75cf` - Bump version to 0.1.2
 
 ---
+
+## Session: 2026-01-31 (Phase 3 Complete + GitHub Infrastructure)
+
+### v0.1.3 → v0.1.5 Published
+
+Full Phase 3 implementation:
+- v0.1.3: Watch mode, HTTP transport, .gitignore support, CLI restructure
+- v0.1.4: MCP 2025-11-25 compliance (Origin validation, Protocol-Version header)
+- v0.1.5: GET /mcp SSE stream support for full spec compliance
+
+### MCP Spec Updates
+
+Discovered MCP spec had moved to 2025-11-25 during dependency review:
+- Origin header validation now mandatory
+- MCP-Protocol-Version header required
+- Batching removed from spec
+- SSE stream via GET /mcp for server-to-client messages
+
+### GitHub Infrastructure
+
+Added:
+- **Dependabot**: Weekly crate update PRs
+- **dependency-review.yml**: Weekly MCP spec + model checks
+- **ci.yml**: Build, test, clippy, fmt on push/PR
+- **Issue templates**: Bug report, feature request forms
+- **GitHub release**: v0.1.5 with changelog
+
+### Key Decisions
+
+- Implemented Streamable HTTP instead of deprecated SSE transport
+- Kept "sse" as alias for "http" for backwards compatibility
+- Removed trailing_var_arg from CLI (query now positional Option<String>)
+- Replaced walkdir with ignore crate for .gitignore support
+
+### Files Changed
+
+- `src/mcp.rs` - HTTP transport, SSE handler, MCP 2025-11-25 compliance
+- `src/cli.rs` - Watch mode, gitignore support, CLI restructure
+- `Cargo.toml` - Added axum, tower, notify, ignore, futures, tokio-stream
+- `.github/` - Dependabot, workflows, issue templates
+
+---
