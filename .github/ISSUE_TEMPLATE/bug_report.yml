@@ -1,0 +1,26 @@
+name: Bug Report
+description: Report a bug in cqs
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: Description
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+  - type: textarea
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+  - type: input
+    attributes:
+      label: cqs version
+      placeholder: "0.1.5"
+  - type: input
+    attributes:
+      label: OS
+      placeholder: "Ubuntu 22.04 / Windows 11 / macOS 14"
