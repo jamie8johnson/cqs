@@ -325,6 +325,7 @@ impl McpServer {
             path_pattern: args.path_pattern,
             name_boost: args.name_boost.unwrap_or(0.2),
             query_text: args.query.clone(),
+            enable_rrf: true, // Enable RRF by default for better recall
         };
 
         let limit = args.limit.unwrap_or(5).min(20);

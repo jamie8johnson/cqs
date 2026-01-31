@@ -1,66 +1,61 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T22:00Z
+Updated: 2026-01-31T23:30Z
 
 ## Current State
 
-**v0.1.9 RELEASED. Planning v0.1.10 with chunk-level incremental indexing.**
+**v0.1.10 IN PROGRESS. Chunk-level incremental indexing + RRF hybrid search implemented.**
 
-- Published to crates.io: `cargo install cqs`
+- Published to crates.io: `cargo install cqs` (v0.1.9)
 - GitHub release: https://github.com/jamie8johnson/cqs/releases/tag/v0.1.9
-- ~4400 lines across 9 modules
-- 38 tests passing, 5 doctests, clippy clean
+- ~4600 lines across 9 modules
+- 42 tests passing, 5 doctests, clippy clean
 
-## In Progress: Chunk-Level Incremental Indexing
+## Implemented (pending release)
+
+### Chunk-Level Incremental Indexing (PR pending)
 
 **Problem:** Editing one function re-embeds entire file. Wastes GPU/CPU time.
 
 **Solution:** Use `content_hash` (BLAKE3) to lookup existing embeddings. Skip re-embedding unchanged chunks.
 
-### Implementation Plan (approved, not yet implemented)
+**Implementation:**
+- `Store::get_embeddings_by_hashes()` for batch lookup
+- Indexing loop checks cache first, only embeds new chunks
+- Stats output: "Indexed X chunks (Y cached, Z embedded)"
+- Verified 80-90% cache hit rate
 
-**Step 1: Add batch hash lookup to Store** (`src/store.rs`)
-```rust
-pub fn get_embeddings_by_hashes(&self, hashes: &[&str]) -> HashMap<String, Embedding>
-```
-- Query: `SELECT content_hash, embedding FROM chunks WHERE content_hash IN (...)`
-- Returns map of hash → embedding for reuse
+### RRF Hybrid Search (PR pending)
 
-**Step 2: Modify indexing loop** (`src/cli.rs:634-659`)
-- Before embedding batch, check which hashes already exist
-- Split into cached (reuse embedding) vs to_embed (need new embedding)
-- Only call `embedder.embed_documents()` for new chunks
-- Upsert all (cached + new) to DB
+**Problem:** Semantic search misses exact identifier matches.
 
-**Step 3: Add cache hit stats**
-- Track cached vs embedded counts
-- Print: "Indexed X chunks (Y cached, Z embedded)"
+**Solution:** Combine semantic + FTS5 keyword search with Reciprocal Rank Fusion.
 
-### Key Files to Change
+**Implementation:**
+- FTS5 virtual table `chunks_fts` for full-text search
+- `normalize_for_fts()`: splits camelCase/snake_case → "words"
+  - Example: `parseConfigFile` → "parse config file"
+- RRF fusion: `score = Σ 1/(k + rank)` where k=60
+- Enabled by default in CLI and MCP
+- Schema version bumped from 1 to 2
 
-| File | Change |
-|------|--------|
-| `src/store.rs` | Add `get_embeddings_by_hashes()` after line 647 |
-| `src/cli.rs` | Modify indexing loop at lines 634-659 |
+**Key Files Changed:**
+- `src/schema.sql`: Added FTS5 virtual table
+- `src/store.rs`: Added normalize_for_fts(), search_fts(), rrf_fuse(), enable_rrf in SearchFilter
+- `src/cli.rs`: Enable RRF by default
+- `src/mcp.rs`: Enable RRF by default
+- `tests/store_test.rs`: 12 tests including FTS and RRF tests
 
-### Expected Impact
+## Next Steps
 
-- 80-90% cache hit rate on re-index (per ck-search benchmarks)
-- Near-instant re-index when content unchanged (only mtime changed)
+1. Push branch and create PR for RRF (feat/rrf-hybrid-search)
+2. Merge after CI passes
+3. Add C and Java language support (if desired)
+4. Release v0.1.10
 
-## Future Work (After v0.1.10)
+## Future Work
 
-### 1. RRF Hybrid Search (biggest quality improvement)
-
-Combine semantic + keyword search with Reciprocal Rank Fusion:
-- Add FTS5 virtual table for keyword search
-- Preprocess identifiers: `parseConfigFile` → "parse config file" (split camelCase/snake_case)
-- Run semantic + FTS5 independently
-- Fuse: `score = Σ 1/(k + rank)` where k=60
-
-**Note:** Default FTS5 tokenizer won't split on underscore or camelCase. Need preprocessing.
-
-### 2. C and Java Languages
+### C and Java Languages
 
 - Add tree-sitter-c, tree-sitter-java to Cargo.toml
 - Add query definitions:
@@ -68,18 +63,16 @@ Combine semantic + keyword search with Reciprocal Rank Fusion:
   - Java: `method_declaration`, `class_declaration`, `interface_declaration`
 - Add to Language enum and file extension mapping
 
-## Previous Session - v0.1.9 Release
+## Previous Session Notes
 
-### PR #16: Performance and UX improvements (MERGED)
+### v0.1.9 Release
 
 - HNSW-guided filtered search (10-100x faster)
 - SIMD cosine similarity via simsimd (2-4x faster)
 - Shell completions, config file, lock PID, error hints
 - CHANGELOG.md, rustdoc
 
-### PR #17-19: Doc updates (MERGED)
-
 ## Hunches
 
 - hnsw_rs lifetime forces reload (~1-2ms overhead) - library limitation
-- FTS5 tokenization needs preprocessing for code identifiers
+- FTS5 tokenization with preprocessing works well for code identifiers

@@ -1,4 +1,4 @@
--- cq index schema v1
+-- cq index schema v2
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -27,3 +27,14 @@ CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file);
 CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_chunks_name ON chunks(name);
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language);
+
+-- FTS5 virtual table for keyword search (RRF hybrid search)
+-- Normalized text (camelCase/snake_case split to words) populated by application
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+    id UNINDEXED,  -- chunk ID for joining (not searchable)
+    name,          -- normalized function/method name
+    signature,     -- normalized signature
+    content,       -- normalized code content
+    doc,           -- documentation text
+    tokenize='unicode61'
+);

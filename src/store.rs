@@ -11,7 +11,7 @@ use crate::embedder::Embedding;
 use crate::parser::{Chunk, ChunkType, Language};
 
 // Schema version for migrations
-const CURRENT_SCHEMA_VERSION: i32 = 1;
+const CURRENT_SCHEMA_VERSION: i32 = 2;
 const MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 #[derive(Error, Debug)]
@@ -143,8 +143,14 @@ pub struct SearchFilter {
     /// 1.0 = pure name matching
     /// 0.2 = recommended for balanced results
     pub name_boost: f32,
-    /// Query text for name matching (required if name_boost > 0)
+    /// Query text for name matching (required if name_boost > 0 or enable_rrf)
     pub query_text: String,
+    /// Enable RRF (Reciprocal Rank Fusion) hybrid search
+    ///
+    /// When enabled, combines semantic search results with FTS5 keyword search
+    /// using the formula: score = Σ 1/(k + rank), where k=60.
+    /// This typically improves recall for identifier-heavy queries.
+    pub enable_rrf: bool,
 }
 
 /// Model metadata for index initialization
@@ -278,6 +284,39 @@ fn tokenize_identifier(s: &str) -> Vec<String> {
     words
 }
 
+/// Normalize code text for FTS5 indexing.
+/// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
+/// Example: "parseConfigFile" -> "parse config file"
+pub fn normalize_for_fts(text: &str) -> String {
+    // Split on word boundaries (spaces, punctuation, operators)
+    let mut result = String::new();
+    let mut current_word = String::new();
+
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            current_word.push(c);
+        } else if !current_word.is_empty() {
+            // Tokenize this identifier
+            let tokens = tokenize_identifier(&current_word);
+            if !result.is_empty() && !tokens.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(&tokens.join(" "));
+            current_word.clear();
+        }
+        // Skip punctuation/whitespace - we only want spaces between words
+    }
+    // Handle trailing word
+    if !current_word.is_empty() {
+        let tokens = tokenize_identifier(&current_word);
+        if !result.is_empty() && !tokens.is_empty() {
+            result.push(' ');
+        }
+        result.push_str(&tokens.join(" "));
+    }
+    result
+}
+
 impl Store {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
@@ -393,6 +432,12 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             )?;
 
+            // FTS5: delete old entry, insert new (UPSERT not supported in FTS5)
+            let mut fts_delete = tx.prepare_cached("DELETE FROM chunks_fts WHERE id = ?1")?;
+            let mut fts_insert = tx.prepare_cached(
+                "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+
             let now = chrono::Utc::now().to_rfc3339();
             for (chunk, embedding) in chunks {
                 stmt.execute(params![
@@ -411,6 +456,20 @@ impl Store {
                     file_mtime,
                     &now,
                     &now,
+                ])?;
+
+                // Update FTS5 index with normalized text
+                let _ = fts_delete.execute(params![chunk.id]);
+                fts_insert.execute(params![
+                    chunk.id,
+                    normalize_for_fts(&chunk.name),
+                    normalize_for_fts(&chunk.signature),
+                    normalize_for_fts(&chunk.content),
+                    chunk
+                        .doc
+                        .as_ref()
+                        .map(|d| normalize_for_fts(d))
+                        .unwrap_or_default(),
                 ])?;
             }
         }
@@ -454,6 +513,58 @@ impl Store {
         }
     }
 
+    /// Search FTS5 index for keyword matches.
+    /// Returns chunk IDs ranked by FTS5 relevance (BM25).
+    /// Query is normalized before searching.
+    pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
+        let conn = self.pool.get()?;
+
+        // Normalize query for FTS matching
+        let normalized_query = normalize_for_fts(query);
+        if normalized_query.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // FTS5 MATCH query - search across all indexed columns
+        // bm25() returns negative scores (more negative = better match)
+        let sql = "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2";
+
+        let mut stmt = conn.prepare(sql)?;
+        let results: Vec<String> = stmt
+            .query_map(params![normalized_query, limit as i64], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Compute RRF (Reciprocal Rank Fusion) scores for combining two ranked lists.
+    /// Formula: score = Σ 1/(k + rank), where k=60 (standard constant).
+    /// Returns IDs sorted by fused score (descending).
+    fn rrf_fuse(semantic_ids: &[String], fts_ids: &[String], limit: usize) -> Vec<(String, f32)> {
+        const K: f32 = 60.0;
+
+        let mut scores: HashMap<String, f32> = HashMap::new();
+
+        // Add semantic search contributions
+        for (rank, id) in semantic_ids.iter().enumerate() {
+            let contribution = 1.0 / (K + rank as f32 + 1.0);
+            *scores.entry(id.clone()).or_insert(0.0) += contribution;
+        }
+
+        // Add FTS search contributions
+        for (rank, id) in fts_ids.iter().enumerate() {
+            let contribution = 1.0 / (K + rank as f32 + 1.0);
+            *scores.entry(id.clone()).or_insert(0.0) += contribution;
+        }
+
+        // Sort by score descending
+        let mut sorted: Vec<(String, f32)> = scores.into_iter().collect();
+        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.truncate(limit);
+        sorted
+    }
+
     /// Search for similar chunks (two-phase for memory efficiency)
     pub fn search(
         &self,
@@ -494,8 +605,14 @@ impl Store {
             format!(" WHERE {}", conditions.join(" AND "))
         };
 
-        // Check if we need hybrid scoring
+        // Check if we need hybrid scoring (weighted combination)
         let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+
+        // Check if RRF is enabled
+        let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
+
+        // For RRF, we need more candidates to fuse
+        let semantic_limit = if use_rrf { limit * 3 } else { limit };
 
         // Phase 1: Score matching chunks (load id + embedding, optionally name)
         let sql = if use_hybrid {
@@ -554,16 +671,29 @@ impl Store {
             })
             .collect();
 
-        // Sort and take top-N
+        // Sort and take top-N (or more for RRF)
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
+        scored.truncate(semantic_limit);
 
-        if scored.is_empty() {
+        // Apply RRF if enabled
+        let final_scored: Vec<(String, f32)> = if use_rrf {
+            // Get FTS5 results
+            let fts_ids = self.search_fts(&filter.query_text, semantic_limit)?;
+            let semantic_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+
+            // Fuse rankings
+            Self::rrf_fuse(&semantic_ids, &fts_ids, limit)
+        } else {
+            scored.truncate(limit);
+            scored
+        };
+
+        if final_scored.is_empty() {
             return Ok(vec![]);
         }
 
         // Phase 2: Fetch full content only for top-N results
-        let ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
+        let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end
@@ -592,7 +722,7 @@ impl Store {
             .collect();
 
         // Reassemble results in score order
-        let results: Vec<SearchResult> = scored
+        let results: Vec<SearchResult> = final_scored
             .into_iter()
             .filter_map(|(id, score)| {
                 rows.get(&id).map(|row| SearchResult {
@@ -608,6 +738,11 @@ impl Store {
     /// Delete all chunks for a file
     pub fn delete_by_file(&self, file: &Path) -> Result<u32, StoreError> {
         let conn = self.pool.get()?;
+        // Delete from FTS5 first (need the IDs)
+        conn.execute(
+            "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE file = ?1)",
+            [file.to_string_lossy()],
+        )?;
         let deleted = conn.execute(
             "DELETE FROM chunks WHERE file = ?1",
             [file.to_string_lossy()],
@@ -628,6 +763,11 @@ impl Store {
         for file in indexed_files {
             let path = PathBuf::from(&file);
             if !existing_files.contains(&path) {
+                // Delete from FTS5 first
+                conn.execute(
+                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE file = ?1)",
+                    [&file],
+                )?;
                 deleted += conn.execute("DELETE FROM chunks WHERE file = ?1", [&file])? as u32;
             }
         }

@@ -2,7 +2,7 @@
 
 use cqs::embedder::Embedding;
 use cqs::parser::{Chunk, ChunkType, Language};
-use cqs::store::{ModelInfo, SearchFilter, Store};
+use cqs::store::{normalize_for_fts, ModelInfo, SearchFilter, Store};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -51,7 +51,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 1);
+    assert_eq!(stats.schema_version, 2); // Updated for FTS5 support
     assert_eq!(stats.model_name, "nomic-embed-text-v1.5");
 }
 
@@ -297,4 +297,132 @@ fn test_stats() {
         *stats.chunks_by_type.get(&ChunkType::Method).unwrap_or(&0),
         1
     );
+}
+
+#[test]
+fn test_fts_search() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("index.db");
+
+    let store = Store::open(&db_path).unwrap();
+    store.init(&ModelInfo::default()).unwrap();
+
+    // Insert chunks with distinctive names
+    let chunk1 = create_test_chunk(
+        "parseConfigFile",
+        "fn parseConfigFile() { /* parse config */ }",
+    );
+    let chunk2 = create_test_chunk(
+        "loadUserSettings",
+        "fn loadUserSettings() { /* load settings */ }",
+    );
+    let chunk3 = create_test_chunk("calculateTotal", "fn calculateTotal() { /* math */ }");
+
+    store
+        .upsert_chunk(&chunk1, &create_mock_embedding(0.1), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &create_mock_embedding(0.2), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk3, &create_mock_embedding(0.3), 12345)
+        .unwrap();
+
+    // FTS search for "config" should find parseConfigFile
+    let results = store.search_fts("config", 5).unwrap();
+    assert!(
+        !results.is_empty(),
+        "FTS should find 'config' in parseConfigFile"
+    );
+    assert!(results
+        .iter()
+        .any(|id| id.contains("parseConfigFile") || id.starts_with("test.rs")));
+
+    // FTS search for "parse file" should also find parseConfigFile (normalized)
+    let results = store.search_fts("parse file", 5).unwrap();
+    assert!(
+        !results.is_empty(),
+        "FTS should find 'parse file' via normalization"
+    );
+
+    // FTS search for "settings" should find loadUserSettings
+    let results = store.search_fts("settings", 5).unwrap();
+    assert!(!results.is_empty(), "FTS should find 'settings'");
+
+    // FTS search for nonexistent term
+    let results = store.search_fts("xyznonexistent", 5).unwrap();
+    assert!(
+        results.is_empty(),
+        "FTS should return empty for nonexistent term"
+    );
+}
+
+#[test]
+fn test_rrf_search() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("index.db");
+
+    let store = Store::open(&db_path).unwrap();
+    store.init(&ModelInfo::default()).unwrap();
+
+    // Insert chunks
+    let chunk1 = create_test_chunk("handleError", "fn handleError(err: Error) { log(err); }");
+    let chunk2 = create_test_chunk(
+        "processData",
+        "fn processData(data: Vec<u8>) { /* process */ }",
+    );
+
+    store
+        .upsert_chunk(&chunk1, &create_mock_embedding(0.5), 12345)
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &create_mock_embedding(0.5), 12345)
+        .unwrap();
+
+    // Search with RRF enabled
+    let filter = SearchFilter {
+        enable_rrf: true,
+        query_text: "error handling".to_string(),
+        ..Default::default()
+    };
+
+    let results = store
+        .search_filtered(&create_mock_embedding(0.5), &filter, 5, 0.0)
+        .unwrap();
+
+    // Should return results (RRF combines semantic + FTS)
+    assert!(!results.is_empty(), "RRF search should return results");
+}
+
+#[test]
+fn test_normalize_for_fts() {
+    // camelCase
+    assert_eq!(normalize_for_fts("parseConfigFile"), "parse config file");
+
+    // snake_case
+    assert_eq!(normalize_for_fts("parse_config_file"), "parse config file");
+
+    // PascalCase
+    assert_eq!(normalize_for_fts("ParseConfigFile"), "parse config file");
+
+    // Mixed with punctuation
+    assert_eq!(
+        normalize_for_fts("fn parseConfig() { return value; }"),
+        "fn parse config return value"
+    );
+
+    // Numbers preserved
+    assert_eq!(
+        normalize_for_fts("parseVersion2Config"),
+        "parse version2 config"
+    );
+
+    // Already normalized
+    assert_eq!(normalize_for_fts("hello world"), "hello world");
+
+    // Empty string
+    assert_eq!(normalize_for_fts(""), "");
+
+    // Single word
+    assert_eq!(normalize_for_fts("parse"), "parse");
 }

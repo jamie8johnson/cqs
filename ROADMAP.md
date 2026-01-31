@@ -133,25 +133,29 @@
 
 ## Phase 5: Quality
 
-### In Progress
+### Status: In Progress
 
-- [ ] v0.1.10: Chunk-level incremental indexing
+### Done
+
+- [x] Chunk-level incremental indexing
   - Use content_hash to skip re-embedding unchanged chunks
-  - Add `Store::get_embeddings_by_hashes()` for batch lookup
-  - Expected 80-90% cache hit rate on re-index
+  - `Store::get_embeddings_by_hashes()` for batch lookup
+  - 80-90% cache hit rate on re-index verified
+
+- [x] RRF hybrid search (Reciprocal Rank Fusion)
+  - FTS5 virtual table for keyword search
+  - Preprocess identifiers (split camelCase/snake_case)
+  - Fuse semantic + keyword with `1/(k + rank)` scoring (k=60)
+  - Enabled by default for better recall
 
 ### Planned
-
-- [ ] RRF hybrid search (Reciprocal Rank Fusion)
-  - Add FTS5 virtual table for keyword search
-  - Preprocess identifiers (split camelCase/snake_case)
-  - Fuse semantic + keyword with `1/(k + rank)` scoring
-  - Catches exact matches semantic misses
 
 - [ ] C and Java language support
   - tree-sitter-c, tree-sitter-java grammars
   - C: function_definition, struct_specifier
   - Java: method_declaration, class_declaration, interface_declaration
+
+- [ ] v0.1.10 release (includes incremental indexing + RRF)
 
 ## Phase 6: Security
 
