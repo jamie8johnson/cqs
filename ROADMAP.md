@@ -115,7 +115,7 @@
   - Added 100KB chunk byte limit (handles minified files)
   - Graceful HTTP shutdown (Ctrl+C handler)
   - Protocol version constant consistency
-- [x] v0.1.9 improvements (pending release):
+- [x] v0.1.9 (published):
   - HNSW-guided filtered search (10-100x faster)
   - SIMD cosine similarity (simsimd crate)
   - Shell completions (bash/zsh/fish/powershell)
