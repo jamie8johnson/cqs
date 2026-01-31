@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-01-31
+
 ### Added
 - RRF (Reciprocal Rank Fusion) hybrid search combining semantic + FTS5 keyword search
 - FTS5 virtual table for full-text keyword search
@@ -124,7 +126,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/jamie8johnson/cqs/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/jamie8johnson/cqs/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/jamie8johnson/cqs/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/jamie8johnson/cqs/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/jamie8johnson/cqs/compare/v0.1.5...v0.1.6
