@@ -137,3 +137,41 @@ Needs Claude Code restart to activate.
 - `tests/fixtures/` - sample files for 5 languages
 
 ---
+
+## Session: 2026-01-31 (MCP Debugging)
+
+### Problem
+
+MCP tools (`cqs_search`, `cqs_stats`) returned no output when called from Claude Code conversation, but CLI worked fine.
+
+### Investigation
+
+1. Verified index exists: `.cq/index.db` (121 chunks)
+2. Verified CLI works: `cqs "parse files"` returns results (0.79 similarity for `parse_files`)
+3. Tested MCP server directly with JSON-RPC - works when given correct project path
+4. Found root cause: `.mcp.json` had `"args": ["serve"]` without `--project`
+
+### Root Cause
+
+The `serve` command uses `find_project_root()` which walks up from cwd looking for Cargo.toml/.git. But Claude Code starts MCP servers from an unpredictable working directory, so the server couldn't find the project root or index.
+
+### Fix
+
+Updated `.mcp.json`:
+```json
+"args": ["serve", "--project", "/mnt/c/projects/cq"]
+```
+
+### Verification
+
+```bash
+echo '{"jsonrpc":"2.0","method":"tools/call","params":{"name":"cqs_stats","arguments":{}},"id":1}' | \
+  cqs serve --project /mnt/c/projects/cq 2>/dev/null | grep -E '^\{'
+# Returns full stats JSON
+```
+
+### Next
+
+Restart Claude Code to activate the fixed MCP config.
+
+---

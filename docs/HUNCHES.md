@@ -75,3 +75,21 @@ GPU visibility in WSL2 can drop randomly. nvidia-smi works, then doesn't. Instal
 nomic-embed-text-v1.5 ONNX model needs: i64 inputs (not i32), token_type_ids (all zeros), and outputs last_hidden_state (not sentence_embedding). These aren't obvious from docs. If switching models, verify inputs/outputs with the model directly - don't assume they're standard.
 
 ---
+
+## 2026-01-31 - MCP server working directory is unpredictable
+
+Claude Code starts MCP servers from an unknown cwd. The `find_project_root()` approach (walk up looking for Cargo.toml/.git) fails because the server isn't started from the project directory. Solution: always require `--project` in MCP config. This is a footgun for any MCP server that relies on cwd inference.
+
+---
+
+## 2026-01-31 - Claude Code MCP config lives in ~/.claude.json, not .mcp.json
+
+The `.mcp.json` file in the project root isn't used by Claude Code. Config set via `claude mcp add` goes to `~/.claude.json` under `projects["/path/to/project"].mcpServers`. Editing `.mcp.json` does nothing. Also: Claude Code caches config in memory - changes to `~/.claude.json` require restart to take effect.
+
+---
+
+## 2026-01-31 - ort logs to stdout by default
+
+The `ort` crate's internal logging goes to stdout unless you configure the subscriber otherwise. For stdio-based JSON-RPC (like MCP), this pollutes the response stream. Fix: `tracing_subscriber::fmt().with_writer(std::io::stderr).init()`.
+
+---

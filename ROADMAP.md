@@ -2,7 +2,7 @@
 
 ## Current Phase: 1 (MVP)
 
-### Status: Core Functionality Tested, MCP Testing Next
+### Status: MCP Config Fixed, Restart Required
 
 ### Done
 
@@ -15,7 +15,8 @@
 - [x] MCP - cqs serve with stdio, cqs_search + cqs_stats tools
 - [x] Published to crates.io as `cqs` v0.1.0
 - [x] End-to-end testing - init, index, search all working
-- [ ] MCP integration test - with Claude Code
+- [x] MCP config fix - added --project arg (restart to activate)
+- [ ] MCP integration test - with Claude Code (after restart)
 - [ ] Eval suite - 10 queries/lang, measure recall@5
 
 ### Exit Criteria
@@ -25,7 +26,7 @@
 - [ ] GPU works when available (CUDA setup documented, WSL2 intermittent)
 - [ ] 8/10 eval queries return relevant result in top-5 per language
 - [ ] Index survives Ctrl+C during indexing (implemented, needs testing)
-- [ ] MCP works with Claude Code (implemented, testing next)
+- [ ] MCP works with Claude Code (config fixed, restart to test)
 
 ## Phase 2: Polish
 
