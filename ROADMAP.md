@@ -90,3 +90,14 @@
 - GitHub Discussions (community Q&A)
 - GitHub Wiki (end-user documentation)
 - Security advisories (for vulnerability reports)
+
+## Phase 5: Security
+
+### Planned
+
+- Index encryption (SQLCipher behind cargo feature flag)
+  - Protect code snippets and embeddings at rest
+  - Password/key required on operations
+  - Optional: integrate with system keyring
+- Rate limiting for HTTP transport (tower middleware)
+- Audit log for MCP operations
