@@ -1,44 +1,43 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T20:40Z
+Updated: 2026-01-31T21:00Z
 
 ## Current State
 
-**v0.1.8 published. All planned fixes implemented, ready for v0.1.9 release.**
+**v0.1.9 RELEASED - All planned fixes shipped.**
 
-- ~4400 lines across 9 modules (added config.rs)
-- 38 tests passing
-- All clippy warnings resolved
+- Published to crates.io: `cargo install cqs`
+- GitHub release: https://github.com/jamie8johnson/cqs/releases/tag/v0.1.9
+- ~4400 lines across 9 modules
+- 38 tests passing, 5 doctests, clippy clean
 
-## This Session - Major Changes
+## This Session - v0.1.9 Release
 
-### PR 1: HNSW Filtered Search Fix (CRITICAL)
-- Added `Store::search_by_candidate_ids()` in store.rs
-- Modified cli.rs to use HNSW candidates instead of falling back to brute-force
-- **Impact:** 10-100x faster filtered queries on large indexes
+### PR #16: Performance and UX improvements (MERGED)
 
-### PR 2: SIMD Cosine Similarity
-- Added `simsimd = "6"` dependency
-- Updated `cosine_similarity()` to use SIMD-accelerated dot product
-- **Impact:** 2-4x faster similarity calculations
+**Performance:**
+- HNSW-guided filtered search (10-100x faster)
+- SIMD cosine similarity via simsimd (2-4x faster)
 
-### PR 3: UX Improvements
-- **Lock file with PID:** Writes PID, detects stale locks, auto-cleanup (cli.rs:357-400)
-- **Error messages:** Added hints to all user-facing errors
-- **Shell completions:** `cqs completions bash/zsh/fish/powershell`
-- **Config file:** `.cqs.toml` (project) and `~/.config/cqs/config.toml` (user)
-- Added `libc` and `clap_complete` dependencies
+**UX:**
+- Shell completions (bash/zsh/fish/powershell)
+- Config file support (.cqs.toml)
+- Lock file with PID for stale detection
+- Error messages with actionable hints
 
-### PR 4: Documentation
-- Created `CHANGELOG.md` with all releases v0.1.0-v0.1.8
-- Added rustdoc to public API: lib.rs, parser.rs, store.rs, embedder.rs
-- 5 doctests now passing
+**Documentation:**
+- CHANGELOG.md with full version history
+- Rustdoc for public API
+
+### PR #17: Cargo.lock fix (MERGED)
+
+- Updated Cargo.lock version to 0.1.9 (was missed in PR #16)
 
 ## Files Changed
 
 | File | Changes |
 |------|---------|
-| Cargo.toml | +simsimd, +clap_complete, +libc |
+| Cargo.toml | +simsimd, +clap_complete, +libc, version=0.1.9 |
 | src/cli.rs | +128 lines (lock PID, config, completions, error hints) |
 | src/config.rs | NEW - 55 lines |
 | src/store.rs | +174 lines (search_by_candidate_ids, SIMD cosine, rustdoc) |
@@ -49,25 +48,16 @@ Updated: 2026-01-31T20:40Z
 | CHANGELOG.md | NEW - full version history |
 | tests/*.rs | Fixed mut warnings from Store API change |
 
-## Tests Verified
-
-- 38 unit/integration tests passing
-- 5 doctests passing
-- Clippy clean with -D warnings
-- Shell completions generate correctly (bash/zsh/fish)
-- Config file loading works
-- Stale lock detection works
-- CUDA benchmark unchanged (~6ms single, 0.3ms/doc batch)
-
 ## Next Steps
 
-1. **Commit changes** - All PRs can be combined into one
-2. **Bump version to 0.1.9** - Cargo.toml
-3. **Create PR and merge**
-4. **Publish to crates.io**
-5. **Update README if needed** (CUDA benchmarks still accurate)
+No immediate work required. Possible future improvements:
 
-## Hunches Resolved This Session
+1. **HNSW filtered search optimization** - Currently falls back to O(n) for path patterns
+2. **More languages** - C, C++, Java, Ruby
+3. **VS Code extension**
+4. **Index sharing** - Team sync for large codebases
+
+## Hunches Resolved
 
 - ort logs to stdout: Already using stderr (main.rs:5-11)
 - Model versioning: check_model_version() exists (store.rs:318-335)
@@ -76,9 +66,9 @@ Updated: 2026-01-31T20:40Z
 ## Remaining Hunches
 
 - hnsw_rs lifetime forces reload (~1-2ms overhead per search) - library limitation
-- HNSW filtered search now optimized but still O(n) for path pattern (could add SQL LIKE)
+- HNSW filtered search uses candidates but path_pattern filter still O(n) scan
 
-## Dependencies Added
+## Dependencies
 
 ```toml
 simsimd = "6"        # SIMD cosine similarity
