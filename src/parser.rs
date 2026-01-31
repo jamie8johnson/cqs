@@ -192,10 +192,20 @@ impl Parser {
         while let Some(m) = matches.next() {
             match self.extract_chunk(&source, m, query, language, path) {
                 Ok(chunk) => {
-                    // Skip chunks over 100 lines
+                    // Skip chunks over 100 lines or 100KB (handles minified files)
                     let lines = chunk.line_end - chunk.line_start;
+                    const MAX_CHUNK_BYTES: usize = 100_000;
                     if lines > 100 {
-                        tracing::warn!("Skipping {} ({} lines > 100 max)", chunk.id, lines);
+                        tracing::debug!("Skipping {} ({} lines > 100 max)", chunk.id, lines);
+                        continue;
+                    }
+                    if chunk.content.len() > MAX_CHUNK_BYTES {
+                        tracing::debug!(
+                            "Skipping {} ({} bytes > {} max)",
+                            chunk.id,
+                            chunk.content.len(),
+                            MAX_CHUNK_BYTES
+                        );
                         continue;
                     }
                     chunks.push(chunk);
@@ -392,11 +402,8 @@ impl Parser {
     }
 }
 
-impl Default for Parser {
-    fn default() -> Self {
-        Self::new().expect("failed to create parser")
-    }
-}
+// Note: Default impl intentionally omitted to prevent hidden panics.
+// Use Parser::new() which returns Result for proper error handling.
 
 #[derive(Debug, Clone)]
 pub struct Chunk {

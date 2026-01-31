@@ -205,7 +205,7 @@ impl McpServer {
                 });
 
         let result = InitializeResult {
-            protocol_version: "2024-11-05".into(),
+            protocol_version: MCP_PROTOCOL_VERSION.into(),
             capabilities: ServerCapabilities {
                 tools: ToolsCapability {
                     list_changed: false,
@@ -482,7 +482,13 @@ pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
-        axum::serve(listener, app).await?;
+        let shutdown = async {
+            tokio::signal::ctrl_c().await.ok();
+            eprintln!("\nShutting down HTTP server...");
+        };
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown)
+            .await?;
         Ok::<_, anyhow::Error>(())
     })?;
 

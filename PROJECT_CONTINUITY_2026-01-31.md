@@ -1,18 +1,18 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T19:30Z
+Updated: 2026-01-31T21:00Z
 
 ## Current State
 
-**v0.1.6 published. All audit Phase A+B merged. Dependencies updated. 29 tests passing.**
+**v0.1.7 published. Phase C audit complete. Pre-commit hook active. 29 tests passing.**
 
-- ~3400 lines across 7 modules
+- ~3500 lines across 7 modules
 - 29 tests passing (13 parser + 8 store + 8 MCP)
-- Published v0.1.3 through v0.1.6 to crates.io
+- Published v0.1.3 through v0.1.7 to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
-- All Dependabot PRs resolved
 - CI workflow running (build, test, clippy, fmt) - all passing
 - Branch ruleset active (main requires PR + CI, blocks force push)
+- Pre-commit hook configured (cargo fmt check)
 
 ### Version History This Session
 
@@ -22,6 +22,7 @@ Updated: 2026-01-31T19:30Z
 | v0.1.4 | MCP 2025-11-25 compliance (Origin, Protocol-Version headers) |
 | v0.1.5 | GET /mcp SSE stream support, full spec compliance |
 | v0.1.6 | Phase B audit fixes, lru vulnerability fix, dependency updates |
+| v0.1.7 | Phase C audit fixes (error handling, graceful shutdown, byte limits) |
 
 ## Features Complete
 
@@ -32,6 +33,7 @@ Updated: 2026-01-31T19:30Z
 - Watch mode with debounce
 - Connection pooling (r2d2-sqlite, 4 concurrent connections)
 - Query embedding cache (LRU, 100 entries)
+- Graceful HTTP shutdown (Ctrl+C)
 
 ### MCP
 - stdio transport (default)
@@ -39,13 +41,15 @@ Updated: 2026-01-31T19:30Z
   - POST /mcp - JSON-RPC requests
   - GET /mcp - SSE stream for server messages
   - Origin validation, request body limit (1MB)
+  - Graceful shutdown on Ctrl+C
 - Tools: cqs_search, cqs_stats
 
 ### Security
 - SQL parameterized queries
 - Secure UUID generation (timestamp + random)
-- Request body limit
+- Request body limit (1MB)
 - Branch protection enforced
+- Chunk byte limit (100KB max)
 
 ## This Session Summary
 
@@ -54,13 +58,20 @@ Updated: 2026-01-31T19:30Z
 3. **v0.1.6 published**: Phase B fixes + lru vulnerability fix (0.12→0.16)
 4. **Dependencies updated** (PR #11): axum 0.8, tower-http 0.6, toml 0.9, tree-sitter-go 0.25
 5. **Dependabot PRs closed** (#2, #3, #4, #5 superseded by #11)
-6. **CLAUDE.md updated**: gh CLI workaround, branch protection workflow, gh pr checks quirk
+6. **Pre-commit hook**: .githooks/pre-commit runs cargo fmt check
+7. **Phase C audit fixes** (v0.1.7):
+   - Removed Parser::default() panic
+   - Added logging for silent DB errors in search
+   - Clarified unwrap with .expect() in embedder
+   - Added logging for parse errors in watch mode
+   - Added 100KB byte limit for chunks (handles minified files)
+   - Added graceful HTTP shutdown with Ctrl+C
+   - Fixed protocol version constant consistency
 
 ## Next Steps
 
-1. **Phase C audit remediation** - error handling, robustness items
-2. **Pre-commit hook** - cargo fmt check
-3. **Phase 4: HNSW** - scale to >50k chunks
+1. **Phase 4: HNSW** - scale to >50k chunks
+2. **More languages** - C, C++, Java, Ruby
 
 ## Blockers
 

@@ -91,6 +91,15 @@
   - Secure UUID generation (timestamp + random)
   - Request body limit (1MB via tower middleware)
   - Query embedding LRU cache (100 entries)
+- [x] Pre-commit hook (.githooks/pre-commit - cargo fmt check)
+- [x] Audit Phase C fixes (v0.1.7):
+  - Removed Parser::default() panic risk
+  - Added logging for silent search errors
+  - Clarified embedder unwrap with expect()
+  - Added parse error logging in watch mode
+  - Added 100KB chunk byte limit (handles minified files)
+  - Graceful HTTP shutdown (Ctrl+C handler)
+  - Protocol version constant consistency
 
 ### Optional (Enable as Needed)
 

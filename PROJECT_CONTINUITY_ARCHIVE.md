@@ -523,3 +523,28 @@ Added documentation for common gotchas:
 - PRs #2-5: Dependabot PRs (closed, superseded by #11)
 
 ---
+
+## Session: 2026-01-31 (Continued - Phase C)
+
+### Pre-commit Hook
+
+Added `.githooks/pre-commit` with cargo fmt check. Configured via:
+```bash
+git config core.hooksPath .githooks
+```
+
+### Phase C Audit Fixes (v0.1.7)
+
+Error handling and robustness improvements:
+
+1. **C1 - Removed Parser::default() panic**: Changed to comment explaining why Default is omitted
+2. **C2 - Log search errors**: Added tracing::warn for DB errors in filter_map
+3. **C3 - Clarified embedder unwrap**: Changed `.unwrap()` to `.expect("embed_batch with single item always returns one result")`
+4. **C4 - Log parse errors in watch**: Added tracing::warn for parse failures
+5. **C5 - Chunk byte limit**: Added 100KB limit alongside 100-line limit (handles minified files)
+6. **C6 - Graceful HTTP shutdown**: Added Ctrl+C handler with `with_graceful_shutdown()`
+7. **C7 - Protocol version**: Changed hardcoded "2024-11-05" to use MCP_PROTOCOL_VERSION constant
+
+Required adding `signal` feature to tokio for Ctrl+C handling.
+
+---

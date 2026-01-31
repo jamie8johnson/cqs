@@ -1,8 +1,8 @@
 [package]
 name = "cqs"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
-description = "Semantic code search with local embeddings"
+description = "Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 keywords = ["code-search", "embeddings", "semantic-search"]
@@ -27,7 +27,7 @@ hf-hub = "0.4"
 ndarray = "0.17"
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync", "time", "macros", "signal"] }
 
 # HTTP (for SSE transport)
 axum = "0.8"
