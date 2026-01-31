@@ -1,13 +1,13 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T22:30Z
+Updated: 2026-01-31T23:00Z
 
 ## Current State
 
-**v0.1.5 published. Full MCP 2025-11-25 compliance. CI green. Branch protected.**
+**v0.1.5 published. Audit Phase A fixes in PR #7. 29 tests passing.**
 
-- ~3000 lines across 7 modules
-- 21 tests passing
+- ~3200 lines across 7 modules
+- 29 tests passing (13 parser + 8 store + 8 MCP)
 - Published v0.1.3, v0.1.4, v0.1.5 to crates.io
 - GitHub repo: github.com/jamie8johnson/cqs
 - Automated dependency reviews active
@@ -62,12 +62,22 @@ Updated: 2026-01-31T22:30Z
 10. **CI fixes** - dtolnay/rust-toolchain action, clippy warnings, .cargo/config.toml excluded
 11. **Branch ruleset** - main protection via GitHub API (require PR, require CI, block force push)
 12. Full MD file review and updates
+13. **Audit Phase A fixes** (PR #7):
+    - A1: SQL parameterized queries (S1.1 HIGH)
+    - A2: Replace glob with globset (D10.2 MEDIUM)
+    - A3: Replace fs2 with fs4 (D10.3 MEDIUM)
+    - A4: 8 MCP protocol integration tests (T8.1 HIGH)
+    - D5: CodeQL badge added to README
+    - D6: Community standards (CODE_OF_CONDUCT, CONTRIBUTING, PR template)
+14. **Phase 5 (Security)** added to roadmap - index encryption planned
+15. Enabled CodeQL analysis and Secret Protection
 
 ## Next Steps
 
-1. Phase 4: HNSW for scale (>50k chunks)
-2. Monitor automated review results (weekly)
-3. Address audit HIGH findings (S1.1, C5.1, T8.1, D10.1-3)
+1. Merge PR #7 (Phase A audit fixes)
+2. Continue with Phase B (RwLock, UUID, rate limiting, query cache)
+3. Monitor Dependabot PRs (5 open)
+4. Phase 4: HNSW for scale (>50k chunks)
 
 ## Blockers
 
