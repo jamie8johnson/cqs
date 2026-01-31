@@ -25,3 +25,4 @@ target
 .env.local
 .env.*.local
 credentials.toml
+.cq/
