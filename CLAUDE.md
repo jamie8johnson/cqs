@@ -8,7 +8,7 @@ If `docs/` doesn't exist or any listed files are missing, create them from the t
 
 ## Read Before Doing Anything
 
-* `cq-design-v6.md` -- **source of truth**: architecture, API signatures, verified crate versions
+* `DESIGN.md` -- **source of truth**: architecture, API signatures, verified crate versions
 * `docs/SESSION_CONTEXT.md` -- who we are, how we work, conventions
 * `docs/HUNCHES.md` -- soft observations, gut feelings, latent risks (append as they arise)
 * `ROADMAP.md` -- current progress, what's done, what's next

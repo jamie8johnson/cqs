@@ -16,8 +16,10 @@ Project bootstrapped. Repo exists with design doc (v6.1), docs created. Cargo.to
 
 ## Blockers / Open Questions
 
+- **Push to GitHub blocked**: `gh` CLI not installed in WSL, git credential helper not configured
 - crates.io name claim requires publishing a placeholder—defer until we have something runnable
 - Need to verify tree-sitter grammar versions match tree-sitter 0.26
+- WSL permission issues require using `CARGO_TARGET_DIR=~/cq-target` for builds
 
 ## Next Steps
 

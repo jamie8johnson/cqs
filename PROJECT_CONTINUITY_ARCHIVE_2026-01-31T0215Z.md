@@ -13,7 +13,7 @@ Ran bootstrap per CLAUDE.md instructions:
 - Created SESSION_CONTEXT.md, HUNCHES.md from templates
 - Created ROADMAP.md from template
 - Created tear files (this file and PROJECT_CONTINUITY)
-- Scaffolded Cargo.toml per cq-design-v6.md dependencies section
+- Scaffolded Cargo.toml per DESIGN.md dependencies section
 - Created GitHub repo
 
 Design doc version: 0.6.1-draft
