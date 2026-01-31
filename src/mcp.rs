@@ -321,6 +321,15 @@ impl McpServer {
     fn tool_stats(&self) -> Result<Value> {
         let stats = self.store.stats()?;
 
+        let warning = if stats.total_chunks > 50_000 {
+            Some(format!(
+                "{} chunks. Search uses brute-force O(n). Consider splitting projects.",
+                stats.total_chunks
+            ))
+        } else {
+            None
+        };
+
         let result = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,
@@ -334,6 +343,7 @@ impl McpServer {
             "model": stats.model_name,
             "last_indexed": stats.updated_at,
             "schema_version": stats.schema_version,
+            "warning": warning,
         });
 
         // MCP tools/call requires content array format

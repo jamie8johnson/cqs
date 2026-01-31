@@ -629,6 +629,13 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
         println!("Model: {}", stats.model_name);
         println!("Schema: v{}", stats.schema_version);
         println!("Created: {}", stats.created_at);
+
+        // Warn about large indexes
+        if stats.total_chunks > 50_000 {
+            println!();
+            println!("Warning: {} chunks. Search uses brute-force O(n).", stats.total_chunks);
+            println!("Consider splitting into smaller projects or waiting for HNSW support.");
+        }
     }
 
     Ok(())
