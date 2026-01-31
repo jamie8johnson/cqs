@@ -14,9 +14,9 @@ use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use rayon::prelude::*;
 
-use cqs::embedder::Embedder;
+use cqs::embedder::{Embedder, Embedding};
 use cqs::hnsw::HnswIndex;
-use cqs::parser::Parser as CqParser;
+use cqs::parser::{Chunk, Parser as CqParser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 
 // Constants
@@ -630,6 +630,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
 
     let batch_size = embedder.batch_size();
     let mut total_embedded = 0;
+    let mut total_cached = 0;
 
     for batch in chunks_to_embed.chunks(batch_size) {
         if check_interrupted() {
@@ -637,10 +638,33 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
             break;
         }
 
-        // Prepare embedding input: doc + signature + content
-        let texts: Vec<String> = batch.iter().map(prepare_embedding_input).collect();
-        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        let embeddings = embedder.embed_documents(&text_refs)?;
+        // Check for existing embeddings by content hash (skip re-embedding unchanged chunks)
+        let hashes: Vec<&str> = batch.iter().map(|c| c.content_hash.as_str()).collect();
+        let existing = store.get_embeddings_by_hashes(&hashes);
+
+        // Separate into cached (reuse embedding) vs to_embed (need new embedding)
+        let mut to_embed: Vec<&Chunk> = Vec::new();
+        let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+
+        for chunk in batch {
+            if let Some(emb) = existing.get(&chunk.content_hash) {
+                cached.push((chunk.clone(), emb.clone()));
+            } else {
+                to_embed.push(chunk);
+            }
+        }
+
+        // Embed only new chunks
+        let new_embeddings = if to_embed.is_empty() {
+            vec![]
+        } else {
+            let texts: Vec<String> = to_embed
+                .iter()
+                .map(|c| prepare_embedding_input(c))
+                .collect();
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            embedder.embed_documents(&text_refs)?
+        };
 
         // Get file mtime (use first file's mtime for the batch)
         let file_mtime = batch
@@ -651,10 +675,15 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
 
-        let chunk_embeddings: Vec<_> = batch.iter().cloned().zip(embeddings).collect();
+        // Combine cached + new embeddings
+        let batch_cached_count = cached.len();
+        let mut chunk_embeddings: Vec<(Chunk, Embedding)> = cached;
+        chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
+
         store.upsert_chunks_batch(&chunk_embeddings, file_mtime)?;
 
-        total_embedded += batch.len();
+        total_embedded += chunk_embeddings.len();
+        total_cached += batch_cached_count;
         progress.set_position(total_embedded as u64);
     }
 
@@ -667,7 +696,15 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
     if !cli.quiet {
         println!();
         println!("Index complete:");
-        println!("  Embedded: {}", total_embedded);
+        let newly_embedded = total_embedded - total_cached;
+        if total_cached > 0 {
+            println!(
+                "  Chunks: {} ({} cached, {} embedded)",
+                total_embedded, total_cached, newly_embedded
+            );
+        } else {
+            println!("  Embedded: {}", total_embedded);
+        }
         if pruned > 0 {
             println!("  Pruned: {} (deleted files)", pruned);
         }

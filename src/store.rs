@@ -646,6 +646,47 @@ impl Store {
         .map(|bytes| Embedding(bytes_to_embedding(&bytes)))
     }
 
+    /// Get embeddings for chunks with matching content hashes (batch lookup).
+    /// Returns a map of content_hash -> Embedding for hashes that exist in the index.
+    /// Used to skip re-embedding unchanged chunks during incremental indexing.
+    pub fn get_embeddings_by_hashes(&self, hashes: &[&str]) -> HashMap<String, Embedding> {
+        if hashes.is_empty() {
+            return HashMap::new();
+        }
+        let conn = match self.pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to get connection for hash lookup: {}", e);
+                return HashMap::new();
+            }
+        };
+
+        // Build IN clause: WHERE content_hash IN (?, ?, ...)
+        let placeholders: Vec<&str> = (0..hashes.len()).map(|_| "?").collect();
+        let sql = format!(
+            "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
+            placeholders.join(", ")
+        );
+
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Failed to prepare hash lookup query: {}", e);
+                return HashMap::new();
+            }
+        };
+
+        let mut result = HashMap::new();
+        if let Ok(rows) = stmt.query_map(params_from_iter(hashes.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+        }) {
+            for row in rows.flatten() {
+                result.insert(row.0, Embedding(bytes_to_embedding(&row.1)));
+            }
+        }
+        result
+    }
+
     /// Get index statistics
     pub fn stats(&self) -> Result<IndexStats, StoreError> {
         let conn = self.pool.get()?;
