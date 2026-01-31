@@ -11,9 +11,9 @@ const MODEL_REPO: &str = "nomic-ai/nomic-embed-text-v1.5";
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
-// SHA256 checksums for model verification (update when model changes)
-const MODEL_SHA256: &str = ""; // TODO: Fill after first download
-const TOKENIZER_SHA256: &str = ""; // TODO: Fill after first download
+// blake3 checksums for model verification (update when model changes)
+const MODEL_SHA256: &str = "34f5f98a1bb6ecd9e6095ec8d4da7b3491517dcf1d6dd5bd57c0171bf744b749";
+const TOKENIZER_SHA256: &str = "6e933bf59db40b8b2a0de480fe5006662770757e1e1671eb7e48ff6a5f00b0b4";
 
 #[derive(Error, Debug)]
 pub enum EmbedderError {

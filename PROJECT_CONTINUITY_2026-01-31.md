@@ -1,10 +1,10 @@
 # cqs - Project Continuity
 
-Updated: 2026-01-31T08:45Z
+Updated: 2026-01-31T17:20Z
 
 ## Current State
 
-**Phase 2 complete. Published v0.1.2.**
+**Phase 2 complete. Published v0.1.2. Hunches audited.**
 
 - All modules implemented (~2300 lines)
 - 21 tests passing (13 parser, 8 store)
@@ -12,6 +12,7 @@ Updated: 2026-01-31T08:45Z
 - GitHub repo public at github.com/jamie8johnson/cqs
 - Index has 296 chunks with doc comments embedded
 - MCP integration working
+- Model checksums now verified (blake3)
 
 ### Index Stats
 
@@ -27,6 +28,14 @@ By type:
 ```
 
 ## This Session
+
+### Hunch Audit
+
+Reviewed all hunches in docs/HUNCHES.md:
+- **6 already addressed in code** (symlinks, model versioning, stderr logging, scale warning, relative paths, MCP working dir)
+- **7 monitor only** (tree-sitter gap, ort RC, glob crate, two-phase latency, MCP rate limiting, WSL issues)
+- **3 documentation/knowledge** (no code needed)
+- **1 fixed this session**: filled blake3 checksums in embedder.rs
 
 ### Phase 2 Implementation Complete
 

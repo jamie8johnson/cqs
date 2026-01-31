@@ -56,6 +56,8 @@ If nomic releases v2.0 with different embeddings, old indexes become garbage. Ne
 
 Model verification skeleton exists but SHA256 constants are empty TODOs. Need to actually download the model, compute checksums, and fill them in. First person to run `cq init` should do this.
 
+**RESOLVED 2026-01-31:** Filled blake3 checksums in embedder.rs:15-16. Verified with `cqs doctor`.
+
 ---
 
 ## 2026-01-31 - Two-phase search trades latency for memory
