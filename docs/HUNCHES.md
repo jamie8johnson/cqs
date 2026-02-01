@@ -315,3 +315,31 @@ Every chunk now starts with "A function named..." or "A method named...". This r
 **RESOLVED 2026-01-31:** Added `parse_jsdoc_tags()` in nl.rs to extract @param and @returns from JSDoc comments. JavaScript now gets type info from JSDoc when signature parsing fails.
 
 ---
+
+## 2026-02-01 - ONNX runtime logs ignore RUST_LOG
+
+The ort crate's underlying ONNX runtime logs INFO messages to stderr even with `RUST_LOG=error`. These aren't Rust tracing logs - they're from the C++ ONNX runtime. Cosmetic annoyance but clutters CLI output.
+
+Potential fix: ort has `OrtLoggingLevel` but it's set at session creation time, not globally. Would need to change `Embedder::new()`.
+
+---
+
+## 2026-02-01 - No schema migrations, just rebuild
+
+When schema version bumps (v3→v4→v5), users must run `cqs index --force` to rebuild. No incremental migrations. Acceptable for now since reindexing is fast (<30s for most projects), but could be painful for large codebases.
+
+---
+
+## 2026-02-01 - Call graph method ambiguity
+
+`store.search()` and `hnsw.search()` both match callee name "search". No type information in call graph - can't distinguish which `search` is called. Would need type analysis to resolve. Documented limitation, won't fix soon.
+
+---
+
+## 2026-02-01 - Large functions skipped from call graph
+
+Functions >100 lines are skipped during chunk extraction (embedding quality filter). Their calls aren't captured in call graph. CLI handlers particularly affected.
+
+**PLANNED:** Separate call extraction from chunking. Extract calls from ALL functions regardless of size. See plan in session notes.
+
+---
