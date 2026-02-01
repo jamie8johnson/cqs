@@ -2,6 +2,7 @@
 
 use lru::LruCache;
 use ndarray::Array2;
+use once_cell::sync::OnceCell;
 use ort::ep::ExecutionProvider as OrtExecutionProvider;
 use ort::session::Session;
 use std::num::NonZeroUsize;
@@ -122,8 +123,13 @@ impl std::fmt::Display for ExecutionProvider {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Embedder {
-    session: Session,
-    tokenizer: tokenizers::Tokenizer,
+    /// Lazy-loaded ONNX session (expensive ~500ms init, needs Mutex for run())
+    session: OnceCell<Mutex<Session>>,
+    /// Lazy-loaded tokenizer
+    tokenizer: OnceCell<tokenizers::Tokenizer>,
+    /// Cached model paths
+    model_path: PathBuf,
+    tokenizer_path: PathBuf,
     provider: ExecutionProvider,
     max_length: usize,
     batch_size: usize,
@@ -136,28 +142,44 @@ impl Embedder {
     ///
     /// Automatically detects GPU and uses CUDA/TensorRT when available.
     /// Falls back to CPU if no GPU is found.
+    ///
+    /// Note: ONNX session is lazy-loaded on first embedding request (~500ms).
     pub fn new() -> Result<Self, EmbedderError> {
         let (model_path, tokenizer_path) = ensure_model()?;
         let provider = select_provider();
-        let session = create_session(&model_path, provider)?;
-        let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
 
         let batch_size = match provider {
             ExecutionProvider::CPU => 4,
             _ => 16,
         };
 
-        // Cache up to 100 query embeddings (typical search session)
         let query_cache = Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
 
         Ok(Self {
-            session,
-            tokenizer,
+            session: OnceCell::new(),
+            tokenizer: OnceCell::new(),
+            model_path,
+            tokenizer_path,
             provider,
             max_length: 8192,
             batch_size,
             query_cache,
+        })
+    }
+
+    /// Get or initialize the ONNX session
+    fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, EmbedderError> {
+        let session = self
+            .session
+            .get_or_try_init(|| create_session(&self.model_path, self.provider).map(Mutex::new))?;
+        Ok(session.lock().unwrap_or_else(|p| p.into_inner()))
+    }
+
+    /// Get or initialize the tokenizer
+    fn tokenizer(&self) -> Result<&tokenizers::Tokenizer, EmbedderError> {
+        self.tokenizer.get_or_try_init(|| {
+            tokenizers::Tokenizer::from_file(&self.tokenizer_path)
+                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))
         })
     }
 
@@ -233,9 +255,9 @@ impl Embedder {
             return Ok(vec![]);
         }
 
-        // Tokenize
+        // Tokenize (lazy init tokenizer)
         let encodings = self
-            .tokenizer
+            .tokenizer()?
             .encode_batch(texts.to_vec(), true)
             .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
 
@@ -268,8 +290,9 @@ impl Embedder {
         let attention_mask_tensor = Tensor::from_array(attention_mask_arr)?;
         let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr)?;
 
-        // Run inference
-        let outputs = self.session.run(ort::inputs![
+        // Run inference (lazy init session)
+        let mut session = self.session()?;
+        let outputs = session.run(ort::inputs![
             "input_ids" => input_ids_tensor,
             "attention_mask" => attention_mask_tensor,
             "token_type_ids" => token_type_ids_tensor,
