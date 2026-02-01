@@ -1,0 +1,167 @@
+# Hunches - soft observations indexed by cqs
+# These surface in search results when semantically relevant.
+# Format: see CLAUDE.md for schema
+
+[[hunch]]
+date = "2026-02-01"
+title = "cqs is Tears, not code search"
+severity = "high"
+confidence = "high"
+resolution = "open"
+mentions = ["README.md", "CLAUDE.md"]
+description = """
+cqs marketed as 'semantic code search' but actual value is context persistence
+for AI collaborators. Code chunks are entity type 1, hunches are type 2.
+Scars and session state (tears) are next. The name was always right.
+"""
+
+# Hunches - soft observations indexed by cqs
+# These surface in search results when semantically relevant.
+
+[[hunch]]
+date = "2026-01-31"
+title = "tree-sitter version gap"
+severity = "med"
+confidence = "med"
+resolution = "open"
+mentions = ["tree-sitter", "Cargo.toml"]
+description = """
+Grammar crates (0.23-0.25) have dev-dep on tree-sitter ^0.23, but we're using
+tree-sitter 0.26. Works via tree-sitter-language abstraction layer. If parsing
+breaks mysteriously, check this first.
+
+Updated 2026-01-31: Bumped grammars to reduce gap. Still not fully aligned
+with tree-sitter 0.26 but closer. All tests pass.
+"""
+
+[[hunch]]
+date = "2026-01-31"
+title = "ort 2.x is still RC"
+severity = "med"
+confidence = "high"
+resolution = "open"
+mentions = ["ort", "Cargo.toml", "embedder.rs"]
+description = """
+Using ort = "2.0.0-rc.11" - no stable 2.0 release yet. API could change.
+Pin exact version and watch for breaking changes on upgrade.
+
+Updated 2026-01-31: Still on rc.11. Dependabot will notify when stable releases.
+No API issues encountered so far.
+"""
+
+[[hunch]]
+date = "2026-01-31"
+title = "WSL /mnt/c/ permission hell"
+severity = "low"
+confidence = "high"
+resolution = "open"
+mentions = [".cargo/config.toml", "libsqlite3-sys"]
+description = """
+Building Rust on Windows paths from WSL causes random permission errors
+(libsqlite3-sys, git config). Workaround in place (.cargo/config.toml),
+but might bite us elsewhere.
+"""
+
+[[hunch]]
+date = "2026-01-31"
+title = "r2d2 pool size may need tuning"
+severity = "low"
+confidence = "low"
+resolution = "open"
+mentions = ["store.rs", "r2d2"]
+description = """
+Added r2d2-sqlite with max 4 connections. This is arbitrary. For CPU-bound
+embedding work, more connections don't help (bottleneck is GPU/CPU, not DB).
+For pure search workloads (parallel queries), more connections could help.
+Monitor if users report connection pool exhaustion errors.
+"""
+
+[[hunch]]
+date = "2026-01-31"
+title = "ONNX model input/output assumptions"
+severity = "high"
+confidence = "high"
+resolution = "resolved"
+mentions = ["embedder.rs", "nomic-embed-text"]
+description = """
+nomic-embed-text-v1.5 ONNX model needs: i64 inputs (not i32), token_type_ids
+(all zeros), and outputs last_hidden_state (not sentence_embedding). These
+aren't obvious from docs. If switching models, verify inputs/outputs with
+the model directly - don't assume they're standard.
+"""
+
+[[hunch]]
+date = "2026-01-31"
+title = "hnsw_rs lifetime design forces reload on search"
+severity = "low"
+confidence = "high"
+resolution = "open"
+mentions = ["hnsw.rs", "hnsw_rs"]
+description = """
+The hnsw_rs crate returns Hnsw<'a> with lifetime tied to HnswIo. Can't store
+loaded index and search later without lifetime issues. Workaround: store path
+info in HnswInner::Loaded, reload on each search. Works but adds ~1-2ms
+overhead. Watch for library updates that fix this.
+"""
+
+[[hunch]]
+date = "2026-01-31"
+title = "NL descriptions are shorter than raw code"
+severity = "low"
+confidence = "med"
+resolution = "open"
+mentions = ["nl.rs", "embedder.rs"]
+description = """
+The NL template produces ~50-100 chars vs 500+ for raw code. nomic-embed-text
+was trained on longer texts. Might affect embedding quality. Monitor recall@5
+on eval suite - if it drops, consider adding body tokens back.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "No schema migrations, just rebuild"
+severity = "med"
+confidence = "high"
+resolution = "open"
+mentions = ["store.rs", "schema.sql"]
+description = """
+When schema version bumps (v3→v4→v5→v6), users must run `cqs index --force`
+to rebuild. No incremental migrations. Acceptable for now since reindexing
+is fast (<30s for most projects), but could be painful for large codebases.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "Call graph method ambiguity"
+severity = "low"
+confidence = "high"
+resolution = "open"
+mentions = ["store.rs", "parser.rs"]
+description = """
+store.search() and hnsw.search() both match callee name "search". No type
+information in call graph - can't distinguish which search is called. Would
+need type analysis to resolve. Documented limitation, won't fix soon.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "bincode deserialization risk in HNSW"
+severity = "high"
+confidence = "high"
+resolution = "resolved"
+mentions = ["hnsw.rs", "hnsw_rs", "bincode"]
+description = """
+hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141) to serialize
+the HNSW index. We load these files without checksum verification.
+
+Threat: attacker crafts malicious .cq/hnsw/* files, user runs cqs search,
+bincode deserializes → potential RCE or memory corruption.
+
+Mitigating factors: index files are in user-controlled .cq/ directory,
+not downloaded from network. Attacker needs local write access.
+
+Fix options:
+1. Add blake3 checksum to HNSW save/load (like we do for model files)
+2. File issue on hnsw_rs to switch bincode → postcard/rmp-serde
+3. Fork hnsw_rs
+"""

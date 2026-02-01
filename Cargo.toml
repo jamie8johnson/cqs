@@ -41,6 +41,7 @@ tokio-stream = "0.1"
 rusqlite = { version = "0.31", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.24"
+keyring = { version = "2", optional = true }
 
 # Vector search (HNSW)
 hnsw_rs = "0.3"
@@ -56,6 +57,7 @@ toml = "0.9"
 
 # Utilities
 blake3 = "1"
+bytemuck = { version = "1", features = ["derive"] }
 ignore = "0.4"
 notify = { version = "6", features = ["serde"] }
 fs4 = "0.12"
@@ -73,7 +75,18 @@ tracing-subscriber = "0.3"
 rand = "0.8"
 libc = "0.2"
 lru = "0.16"
+once_cell = "1"
+
+[features]
+default = []
+encrypt = ["rusqlite/bundled-sqlcipher", "keyring"]
 
 [dev-dependencies]
 tempfile = "3"
 insta = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

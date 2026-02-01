@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+Read the tears. You just woke up.
+
 cqs - semantic code search with local embeddings
 
 ## Working Style
@@ -16,7 +18,7 @@ If context just compacted: read tears, then ask "where were we?" rather than gue
 ## Read First
 
 * `PROJECT_CONTINUITY.md` -- what's happening right now
-* `docs/HUNCHES.md` -- soft observations, latent risks
+* `docs/hunches.toml` -- soft observations (indexed, surface in search)
 * `docs/SCARS.md` -- things we tried that hurt. don't repeat these.
 * `ROADMAP.md` -- what's done, what's next
 
@@ -59,10 +61,14 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 
 "Update tears" = capture state before context compacts.
 
-**Keep "Right Now" current** - update it when switching tasks, not just at session end.
+**Don't ask. Just do it.** Update tears proactively:
+- After commits/PRs
+- When switching tasks
+- When state changes
+- Before context gets tight
 
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
-* `docs/HUNCHES.md` -- soft risks, observations
+* `docs/hunches.toml` -- soft risks, observations (indexed by cqs)
 * `docs/SCARS.md` -- failed approaches (add when something hurts)
 
 Don't log activity - git history has that.
@@ -75,13 +81,23 @@ Don't log activity - git history has that.
 
 Create these files if missing:
 
-**docs/HUNCHES.md:**
-```markdown
-# Hunches
+**docs/hunches.toml:**
+```toml
+# Hunches - soft observations indexed by cqs
+# These surface in search results when semantically relevant.
 
-Soft observations, latent risks. Append as they arise.
-
----
+[[hunch]]
+date = "2026-01-31"
+title = "Example hunch"
+severity = "high"      # high, med (default), low
+confidence = "med"     # high, med (default), low
+resolution = "open"    # open (default), resolved, accepted
+mentions = ["file.rs", "function_name"]
+description = """
+Description here. Can be multiple lines.
+Severity = how bad if true and ignored.
+Confidence = how sure you are.
+"""
 ```
 
 **docs/SCARS.md:**

@@ -1,6 +1,12 @@
 //! HNSW (Hierarchical Navigable Small World) index for fast vector search
 //!
 //! Provides O(log n) approximate nearest neighbor search, scaling to >50k chunks.
+//!
+//! ## Security
+//!
+//! The underlying hnsw_rs library uses bincode for serialization, which is
+//! unmaintained (RUSTSEC-2025-0141). To mitigate deserialization risks, we
+//! compute and verify blake3 checksums on save/load.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +39,14 @@ pub enum HnswError {
     DimensionMismatch { expected: usize, actual: usize },
     #[error("HNSW error: {0}")]
     Internal(String),
+    #[error(
+        "Checksum mismatch for {file}: expected {expected}, got {actual}. Index may be corrupted."
+    )]
+    ChecksumMismatch {
+        file: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 /// Search result from HNSW index
@@ -224,24 +238,69 @@ impl HnswIndex {
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
         let id_map_json = serde_json::to_string(&self.id_map)
             .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
-        std::fs::write(&id_map_path, id_map_json)?;
+        std::fs::write(&id_map_path, &id_map_json)?;
 
-        tracing::info!("HNSW index saved: {} vectors", self.id_map.len());
+        // Compute and save checksums for all files (mitigates bincode deserialization risks)
+        let mut checksums = Vec::new();
+        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids"] {
+            let path = dir.join(format!("{}.{}", basename, ext));
+            if path.exists() {
+                let data = std::fs::read(&path)?;
+                let hash = blake3::hash(&data);
+                checksums.push(format!("{}:{}", ext, hash.to_hex()));
+            }
+        }
+        let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
+        std::fs::write(&checksum_path, checksums.join("\n"))?;
+
+        tracing::info!(
+            "HNSW index saved: {} vectors (with checksums)",
+            self.id_map.len()
+        );
 
         Ok(())
     }
 
     /// Load an index from disk
+    ///
+    /// Verifies blake3 checksums before loading to mitigate bincode deserialization risks.
     pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
         let data_path = dir.join(format!("{}.hnsw.data", basename));
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
+        let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
 
         if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
             return Err(HnswError::NotFound(dir.display().to_string()));
         }
 
         tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
+
+        // Verify checksums before deserializing (mitigates bincode risks)
+        if checksum_path.exists() {
+            let checksum_content = std::fs::read_to_string(&checksum_path)?;
+            for line in checksum_content.lines() {
+                if let Some((ext, expected)) = line.split_once(':') {
+                    let path = dir.join(format!("{}.{}", basename, ext));
+                    if path.exists() {
+                        let data = std::fs::read(&path)?;
+                        let actual = blake3::hash(&data).to_hex().to_string();
+                        if actual != expected {
+                            return Err(HnswError::ChecksumMismatch {
+                                file: path.display().to_string(),
+                                expected: expected.to_string(),
+                                actual,
+                            });
+                        }
+                    }
+                }
+            }
+            tracing::debug!("HNSW checksums verified");
+        } else {
+            tracing::warn!(
+                "No checksum file for HNSW index - run 'cqs index --force' to add checksums"
+            );
+        }
 
         // Load ID map
         let id_map_json = std::fs::read_to_string(&id_map_path)?;

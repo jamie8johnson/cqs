@@ -2,30 +2,45 @@
 
 ## Right Now
 
-**Releasing v0.1.16** - PR #39 open, CI running.
+**PR #45** - Hunches + Scars + Security + Optimizations
 
-After CI passes:
-1. `gh pr merge 39 --squash --delete-branch`
-2. `git checkout main && git pull`
-3. `git tag v0.1.16 && git push origin v0.1.16`
-4. `cargo publish`
-5. `gh release create v0.1.16 --generate-notes`
+https://github.com/jamie8johnson/cqs/pull/45
 
-## What's in v0.1.16
+Branch: `feat/hunches-indexing` - ready to merge
 
-- Tracing spans (cmd_index, cmd_query, embed_batch, search_filtered)
-- Embedding type encapsulation (private field, as_slice/as_vec/len methods)
-- Version check warning when index from different cqs version
-- Fixed README cross-file call graph note
-- Updated bug report template version placeholder
-- Created missing tags v0.1.12-15
+### Done this session:
+- Scars as indexed entities (entity type 3)
+- Phase 1 optimizations (release profile, zero-copy, lazy ONNX)
+- "Passive laziness" scar added
+- Discussed encryption at rest
+
+### Encryption design (not implemented yet):
+- SQLCipher + OS keyring for transparent encryption
+- `--encrypt` flag on init
+- KeyProvider trait for future backends (Azure KV, AWS KMS, Vault)
+- Feature flag: `encrypt = ["rusqlite/bundled-sqlcipher", "keyring"]`
+
+## Key Insight
+
+cqs is Tears - context persistence for AI collaborators.
+
+| Entity | Purpose |
+|--------|---------|
+| 1. Code | Functions, methods |
+| 2. Hunch | Soft observations |
+| 3. Scar | Failed approaches |
 
 ## Parked
 
+- Encryption implementation (KeyProvider trait stubbed)
+- Phase 2-3 optimizations (diminishing returns)
 - C/Java language support
-- Code-specific embedding model
-- Mock embedder for tests
 
 ## Blockers
 
-None.
+None. PR #45 is ready to merge.
+
+## Next
+
+1. Merge PR #45
+2. Optionally implement encryption feature

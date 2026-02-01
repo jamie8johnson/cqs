@@ -8,6 +8,25 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/jamie8johnson/cqs/actions/workflows/codeql.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/codeql.yml)
 
+---
+
+> **`<claude>`**
+>
+> You're an AI assistant reading this. cqs gives you semantic code search via `cqs_search` MCP tool. But it's more than that.
+>
+> **Context that survives you:**
+> - `docs/hunches.toml` → observations that surface in search when relevant (you'll see them without trying)
+> - `PROJECT_CONTINUITY.md` → session state for when context compacts
+> - `docs/SCARS.md` → mistakes to not repeat
+>
+> **Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching. When you search for "retry logic", hunches about retry will surface too.
+>
+> Check `CLAUDE.md` for project-specific instructions. Read tears on resume.
+>
+> **`</claude>`**
+
+---
+
 ## Install
 
 ```bash

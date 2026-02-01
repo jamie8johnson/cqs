@@ -32,8 +32,9 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::embedder::Embedder;
 use crate::hnsw::HnswIndex;
+use crate::hunch::parse_hunches;
 use crate::parser::Language;
-use crate::store::{SearchFilter, Store};
+use crate::store::{SearchFilter, Store, UnifiedResult};
 
 /// JSON-RPC request
 #[derive(Deserialize)]
@@ -310,6 +311,20 @@ impl McpServer {
                     "required": ["name"]
                 }),
             },
+            Tool {
+                name: "cqs_read".into(),
+                description: "Read a file with relevant context (hunches, observations) injected as comments. Use instead of raw file read to get contextual awareness.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Path to file (relative to project root)"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+            },
         ];
 
         Ok(serde_json::to_value(ToolsListResult { tools })?)
@@ -333,8 +348,9 @@ impl McpServer {
             "cqs_stats" => self.tool_stats(),
             "cqs_callers" => self.tool_callers(arguments),
             "cqs_callees" => self.tool_callees(arguments),
+            "cqs_read" => self.tool_read(arguments),
             _ => bail!(
-                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees",
+                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read",
                 name
             ),
         }
@@ -370,27 +386,58 @@ impl McpServer {
         let limit = args.limit.unwrap_or(5).min(20);
         let threshold = args.threshold.unwrap_or(0.3);
 
-        let results = self
-            .store
-            .search_filtered(&query_embedding, &filter, limit, threshold)?;
+        // Use unified search to include hunches
+        let results = self.store.search_unified(
+            &query_embedding,
+            &filter,
+            limit,
+            threshold,
+            true,  // include_hunches
+            false, // exclude resolved hunches by default
+        )?;
 
         let json_results: Vec<_> = results
             .iter()
-            .map(|r| {
-                // Paths are stored relative; strip_prefix handles legacy absolute paths
-                serde_json::json!({
-                    "file": r.chunk.file.strip_prefix(&self.project_root)
-                        .unwrap_or(&r.chunk.file)
-                        .to_string_lossy(),
-                    "line_start": r.chunk.line_start,
-                    "line_end": r.chunk.line_end,
-                    "name": r.chunk.name,
-                    "signature": r.chunk.signature,
-                    "language": r.chunk.language.to_string(),
-                    "chunk_type": r.chunk.chunk_type.to_string(),
-                    "score": r.score,
-                    "content": r.chunk.content,
-                })
+            .map(|r| match r {
+                UnifiedResult::Code(r) => {
+                    serde_json::json!({
+                        "type": "code",
+                        "file": r.chunk.file.strip_prefix(&self.project_root)
+                            .unwrap_or(&r.chunk.file)
+                            .to_string_lossy(),
+                        "line_start": r.chunk.line_start,
+                        "line_end": r.chunk.line_end,
+                        "name": r.chunk.name,
+                        "signature": r.chunk.signature,
+                        "language": r.chunk.language.to_string(),
+                        "chunk_type": r.chunk.chunk_type.to_string(),
+                        "score": r.score,
+                        "content": r.chunk.content,
+                    })
+                }
+                UnifiedResult::Hunch(r) => {
+                    serde_json::json!({
+                        "type": "hunch",
+                        "title": r.hunch.title,
+                        "severity": r.hunch.severity.to_string(),
+                        "confidence": r.hunch.confidence.to_string(),
+                        "resolution": r.hunch.resolution.to_string(),
+                        "description": r.hunch.description,
+                        "mentions": r.hunch.mentions,
+                        "score": r.score,
+                    })
+                }
+                UnifiedResult::Scar(r) => {
+                    serde_json::json!({
+                        "type": "scar",
+                        "title": r.scar.title,
+                        "tried": r.scar.tried,
+                        "pain": r.scar.pain,
+                        "learned": r.scar.learned,
+                        "mentions": r.scar.mentions,
+                        "score": r.score,
+                    })
+                }
             })
             .collect();
 
@@ -514,6 +561,94 @@ impl McpServer {
             "content": [{
                 "type": "text",
                 "text": serde_json::to_string_pretty(&result)?
+            }]
+        }))
+    }
+
+    fn tool_read(&mut self, arguments: Value) -> Result<Value> {
+        let path = arguments
+            .get("path")
+            .and_then(|p| p.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+
+        let file_path = self.project_root.join(path);
+        if !file_path.exists() {
+            bail!("File not found: {}", path);
+        }
+
+        // Path traversal protection
+        let canonical = file_path
+            .canonicalize()
+            .context("Failed to canonicalize path")?;
+        let project_canonical = self
+            .project_root
+            .canonicalize()
+            .context("Failed to canonicalize project root")?;
+        if !canonical.starts_with(&project_canonical) {
+            bail!("Path traversal not allowed: {}", path);
+        }
+
+        // Read file content
+        let content = std::fs::read_to_string(&file_path)
+            .context(format!("Failed to read file: {}", path))?;
+
+        // Find relevant hunches by searching for this file path
+        let hunches_path = self.project_root.join("docs/hunches.toml");
+        let mut context_header = String::new();
+
+        if hunches_path.exists() {
+            if let Ok(hunches) = parse_hunches(&hunches_path) {
+                // Find hunches that mention this file
+                let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                let relevant: Vec<_> = hunches
+                    .iter()
+                    .filter(|h| {
+                        h.mentions
+                            .iter()
+                            .any(|m| m == file_name || m == path || path.contains(m))
+                    })
+                    .filter(|h| h.resolution == crate::hunch::Resolution::Open)
+                    .collect();
+
+                if !relevant.is_empty() {
+                    context_header.push_str(
+                        "// ┌─────────────────────────────────────────────────────────────┐\n",
+                    );
+                    context_header.push_str(
+                        "// │ [cqs] Context from hunches.toml                            │\n",
+                    );
+                    context_header.push_str(
+                        "// └─────────────────────────────────────────────────────────────┘\n",
+                    );
+
+                    for h in relevant {
+                        let severity = match h.severity {
+                            crate::hunch::Severity::High => "HIGH",
+                            crate::hunch::Severity::Med => "MED",
+                            crate::hunch::Severity::Low => "LOW",
+                        };
+                        context_header.push_str(&format!("// [hunch:{}] {}\n", severity, h.title));
+                        // First line of description only
+                        if let Some(first_line) = h.description.lines().next() {
+                            context_header.push_str(&format!("//   {}\n", first_line.trim()));
+                        }
+                    }
+                    context_header.push_str("//\n");
+                }
+            }
+        }
+
+        let enriched_content = if context_header.is_empty() {
+            content
+        } else {
+            format!("{}{}", context_header, content)
+        };
+
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": enriched_content
             }]
         }))
     }

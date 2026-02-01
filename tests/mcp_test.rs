@@ -206,3 +206,122 @@ fn test_response_has_id() {
     // Response ID should match request ID
     assert_eq!(response.id, Some(json!(42)));
 }
+
+#[test]
+fn test_cqs_read_valid_file() {
+    let (dir, mut server) = setup_test_server();
+
+    // Create a test file
+    let test_file = dir.path().join("test.rs");
+    std::fs::write(&test_file, "fn main() {}").unwrap();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_read",
+            "arguments": {"path": "test.rs"}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "cqs_read failed: {:?}",
+        response.error
+    );
+    let result = response.result.unwrap();
+    let content = result["content"][0]["text"].as_str().unwrap();
+    assert!(content.contains("fn main()"));
+}
+
+#[test]
+fn test_cqs_read_path_traversal_blocked() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Try to read /etc/passwd via path traversal
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_read",
+            "arguments": {"path": "../../../etc/passwd"}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should fail with error
+    assert!(response.error.is_some(), "Path traversal should be blocked");
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("traversal") || error.message.contains("not found"),
+        "Error should mention traversal or not found: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_read_file_not_found() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_read",
+            "arguments": {"path": "nonexistent.rs"}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(error.message.contains("not found"));
+}
+
+#[test]
+fn test_cqs_read_with_hunches() {
+    let (dir, mut server) = setup_test_server();
+
+    // Create docs directory and hunches.toml
+    let docs_dir = dir.path().join("docs");
+    std::fs::create_dir_all(&docs_dir).unwrap();
+    std::fs::write(
+        docs_dir.join("hunches.toml"),
+        r#"
+[[hunch]]
+date = "2026-01-31"
+title = "Test hunch"
+severity = "high"
+mentions = ["test.rs"]
+description = "This is a test hunch."
+"#,
+    )
+    .unwrap();
+
+    // Create the mentioned file
+    std::fs::write(dir.path().join("test.rs"), "fn test() {}").unwrap();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_read",
+            "arguments": {"path": "test.rs"}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_none());
+    let result = response.result.unwrap();
+    let content = result["content"][0]["text"].as_str().unwrap();
+
+    // Should contain hunch context
+    assert!(
+        content.contains("[hunch:HIGH]") || content.contains("Test hunch"),
+        "Should inject hunch context: {}",
+        content
+    );
+    // Should also contain file content
+    assert!(content.contains("fn test()"));
+}
