@@ -7,8 +7,19 @@
 //! The underlying hnsw_rs library uses bincode for serialization, which is
 //! unmaintained (RUSTSEC-2025-0141). To mitigate deserialization risks, we
 //! compute and verify blake3 checksums on save/load.
+//!
+//! ## Memory Management
+//!
+//! When loading an index from disk, hnsw_rs returns `Hnsw<'a>` borrowing from
+//! `HnswIo`. We use `LoadedHnsw` to manage this self-referential pattern:
+//! - HnswIo is heap-allocated, we hold a raw pointer
+//! - Hnsw lifetime is transmuted to 'static (safe because HnswIo outlives it)
+//! - Custom Drop ensures HnswIo is freed after Hnsw is dropped
+//!
+//! This avoids memory leaks while keeping the loaded index usable.
 
-use std::path::{Path, PathBuf};
+use std::mem::ManuallyDrop;
+use std::path::Path;
 
 use hnsw_rs::anndists::dist::distances::DistCosine;
 use hnsw_rs::api::AnnT;
@@ -58,6 +69,35 @@ pub struct HnswResult {
     pub score: f32,
 }
 
+/// Self-referential wrapper for loaded HNSW
+///
+/// HnswIo owns the data, Hnsw borrows from it. We manage lifetimes manually:
+/// - HnswIo is heap-allocated and we hold a raw pointer
+/// - Hnsw is in ManuallyDrop so we control drop order
+/// - Drop impl: drop Hnsw first, then free HnswIo
+struct LoadedHnsw {
+    /// Raw pointer to HnswIo - we own this memory
+    io_ptr: *mut HnswIo,
+    /// Hnsw borrowing from io_ptr (transmuted to 'static, manually dropped)
+    hnsw: ManuallyDrop<Hnsw<'static, f32, DistCosine>>,
+}
+
+impl Drop for LoadedHnsw {
+    fn drop(&mut self) {
+        // SAFETY: We control drop order - Hnsw first, then HnswIo
+        // 1. Drop Hnsw while HnswIo data is still valid
+        // 2. Then free HnswIo
+        unsafe {
+            ManuallyDrop::drop(&mut self.hnsw);
+            drop(Box::from_raw(self.io_ptr));
+        }
+    }
+}
+
+// SAFETY: HnswIo and Hnsw are both Send+Sync when T and D are
+unsafe impl Send for LoadedHnsw {}
+unsafe impl Sync for LoadedHnsw {}
+
 /// HNSW index wrapper for semantic code search
 ///
 /// This wraps the hnsw_rs library, handling:
@@ -74,10 +114,10 @@ pub struct HnswIndex {
 
 /// Internal HNSW state
 enum HnswInner {
-    /// Built in memory - owns its data
+    /// Built in memory - owns its data with 'static lifetime
     Owned(Hnsw<'static, f32, DistCosine>),
-    /// Loaded from disk - stores path info for reloading
-    Loaded { dir: PathBuf, basename: String },
+    /// Loaded from disk - self-referential with manual lifetime management
+    Loaded(LoadedHnsw),
 }
 
 impl HnswIndex {
@@ -162,19 +202,10 @@ impl HnswIndex {
 
         let neighbors = match &self.inner {
             HnswInner::Owned(hnsw) => hnsw.search_neighbours(query.as_slice(), k, EF_SEARCH),
-            HnswInner::Loaded { dir, basename, .. } => {
-                // For loaded indexes, we need to reload and search
-                // This is a limitation of the library's lifetime design
-                let mut hnsw_io = HnswIo::new(dir, basename);
-                let hnsw: Hnsw<f32, DistCosine> = match hnsw_io.load_hnsw() {
-                    Ok(h) => h,
-                    Err(e) => {
-                        tracing::error!("Failed to reload HNSW for search: {}", e);
-                        return Vec::new();
-                    }
-                };
-                // Collect results while hnsw is still alive
-                hnsw.search_neighbours(query.as_slice(), k, EF_SEARCH)
+            HnswInner::Loaded(loaded) => {
+                loaded
+                    .hnsw
+                    .search_neighbours(query.as_slice(), k, EF_SEARCH)
             }
         };
 
@@ -216,21 +247,11 @@ impl HnswIndex {
                 hnsw.file_dump(dir, basename)
                     .map_err(|e| HnswError::Internal(format!("Failed to dump HNSW: {}", e)))?;
             }
-            HnswInner::Loaded {
-                dir: src_dir,
-                basename: src_basename,
-                ..
-            } => {
-                // Copy existing files to new location if different
-                if src_dir != dir || src_basename != basename {
-                    for ext in &["hnsw.graph", "hnsw.data"] {
-                        let src = src_dir.join(format!("{}.{}", src_basename, ext));
-                        let dst = dir.join(format!("{}.{}", basename, ext));
-                        if src.exists() {
-                            std::fs::copy(&src, &dst)?;
-                        }
-                    }
-                }
+            HnswInner::Loaded(loaded) => {
+                loaded
+                    .hnsw
+                    .file_dump(dir, basename)
+                    .map_err(|e| HnswError::Internal(format!("Failed to dump HNSW: {}", e)))?;
             }
         }
 
@@ -264,6 +285,7 @@ impl HnswIndex {
     /// Load an index from disk
     ///
     /// Verifies blake3 checksums before loading to mitigate bincode deserialization risks.
+    /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
         let data_path = dir.join(format!("{}.hnsw.data", basename));
@@ -307,19 +329,39 @@ impl HnswIndex {
         let id_map: Vec<String> = serde_json::from_str(&id_map_json)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
 
-        // Verify the HNSW files can be loaded by doing a test load
-        let mut hnsw_io = HnswIo::new(dir, basename);
-        let _: Hnsw<f32, DistCosine> = hnsw_io
-            .load_hnsw()
-            .map_err(|e| HnswError::Internal(format!("Failed to load HNSW: {}", e)))?;
+        // Load HNSW graph using LoadedHnsw for proper memory management
+        //
+        // hnsw_rs returns Hnsw<'a> borrowing from HnswIo. We use LoadedHnsw to:
+        // 1. Keep HnswIo alive as long as Hnsw needs it
+        // 2. Clean up HnswIo when HnswIndex is dropped
+        // 3. Ensure drop order (Hnsw first, then HnswIo)
+        let hnsw_io = Box::new(HnswIo::new(dir, basename));
+        let io_ptr = Box::into_raw(hnsw_io);
+
+        // SAFETY: io_ptr is valid, we just created it
+        let hnsw: Hnsw<'_, f32, DistCosine> = unsafe { &mut *io_ptr }.load_hnsw().map_err(|e| {
+            // Clean up on error
+            unsafe {
+                drop(Box::from_raw(io_ptr));
+            }
+            HnswError::Internal(format!("Failed to load HNSW: {}", e))
+        })?;
+
+        // SAFETY: The transmute is sound because:
+        // - io_ptr will live as long as LoadedHnsw (cleaned up in Drop)
+        // - LoadedHnsw's Drop ensures hnsw is dropped before io_ptr is freed
+        // - Hnsw only reads from the data owned by HnswIo
+        let hnsw: Hnsw<'static, f32, DistCosine> = unsafe { std::mem::transmute(hnsw) };
+
+        let loaded = LoadedHnsw {
+            io_ptr,
+            hnsw: ManuallyDrop::new(hnsw),
+        };
 
         tracing::info!("HNSW index loaded: {} vectors", id_map.len());
 
         Ok(Self {
-            inner: HnswInner::Loaded {
-                dir: dir.to_path_buf(),
-                basename: basename.to_string(),
-            },
+            inner: HnswInner::Loaded(loaded),
             id_map,
         })
     }
@@ -417,5 +459,25 @@ mod tests {
         let query = make_embedding(1);
         let results = index.search(&query, 5);
         assert!(results.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod send_sync_tests {
+    use super::*;
+
+    fn assert_send<T: Send>() {}
+    fn assert_sync<T: Sync>() {}
+
+    #[test]
+    fn test_hnsw_index_is_send_sync() {
+        assert_send::<HnswIndex>();
+        assert_sync::<HnswIndex>();
+    }
+
+    #[test]
+    fn test_loaded_hnsw_is_send_sync() {
+        assert_send::<LoadedHnsw>();
+        assert_sync::<LoadedHnsw>();
     }
 }

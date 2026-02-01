@@ -141,12 +141,14 @@ pub struct McpServer {
     store: Store,
     embedder: Option<Embedder>,
     project_root: PathBuf,
+    hnsw: Option<HnswIndex>,
 }
 
 impl McpServer {
     /// Create a new MCP server for the given project
     pub fn new(project_root: PathBuf) -> Result<Self> {
         let index_path = project_root.join(".cq/index.db");
+        let cq_dir = project_root.join(".cq");
 
         if !index_path.exists() {
             bail!("Index not found. Run 'cq init && cq index' first.");
@@ -154,10 +156,27 @@ impl McpServer {
 
         let store = Store::open(&index_path).context("Failed to open index")?;
 
+        // Load HNSW index if available
+        let hnsw = if HnswIndex::exists(&cq_dir, "index") {
+            match HnswIndex::load(&cq_dir, "index") {
+                Ok(index) => {
+                    tracing::info!("MCP: Loaded HNSW index ({} vectors)", index.len());
+                    Some(index)
+                }
+                Err(e) => {
+                    tracing::warn!("MCP: Failed to load HNSW index: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             store,
             embedder: None,
             project_root,
+            hnsw,
         })
     }
 
@@ -411,10 +430,14 @@ impl McpServer {
         let limit = args.limit.unwrap_or(5).min(20);
         let threshold = args.threshold.unwrap_or(0.3);
 
-        // Use unified search (code + notes)
-        let results = self
-            .store
-            .search_unified(&query_embedding, &filter, limit, threshold)?;
+        // Use unified search with HNSW if available
+        let results = self.store.search_unified_with_index(
+            &query_embedding,
+            &filter,
+            limit,
+            threshold,
+            self.hnsw.as_ref(),
+        )?;
 
         let json_results: Vec<_> = results
             .iter()

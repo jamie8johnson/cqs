@@ -885,8 +885,31 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
     };
 
-    // Use unified search (code + notes)
-    let results = store.search_unified(&query_embedding, &filter, cli.limit, cli.threshold)?;
+    // Load HNSW index if available for O(log n) search
+    let hnsw = if HnswIndex::exists(&cq_dir, "index") {
+        match HnswIndex::load(&cq_dir, "index") {
+            Ok(index) => {
+                tracing::info!("Using HNSW index ({} vectors)", index.len());
+                Some(index)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::debug!("No HNSW index found, using brute-force search");
+        None
+    };
+
+    // Use unified search with HNSW if available
+    let results = store.search_unified_with_index(
+        &query_embedding,
+        &filter,
+        cli.limit,
+        cli.threshold,
+        hnsw.as_ref(),
+    )?;
 
     if results.is_empty() {
         if cli.json {

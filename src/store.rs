@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::embedder::Embedding;
+use crate::hnsw::HnswIndex;
 use crate::note::Note;
 use crate::parser::{Chunk, ChunkType, Language};
 
@@ -817,6 +818,41 @@ impl Store {
         Ok(results)
     }
 
+    /// Search with optional HNSW index for O(log n) candidate retrieval
+    ///
+    /// If an HNSW index is provided, uses it to get top candidates first,
+    /// then filters and scores them. Falls back to brute-force if no index.
+    pub fn search_filtered_with_index(
+        &self,
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        hnsw: Option<&HnswIndex>,
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        // If HNSW available, use it for candidate retrieval
+        if let Some(index) = hnsw {
+            let _span = tracing::info_span!("search_hnsw_guided", limit = limit).entered();
+
+            // Get more candidates than needed to account for filtering
+            let candidate_count = (limit * 5).max(100);
+            let hnsw_results = index.search(query, candidate_count);
+
+            if hnsw_results.is_empty() {
+                tracing::debug!("HNSW returned no candidates, falling back to brute-force");
+                return self.search_filtered(query, filter, limit, threshold);
+            }
+
+            tracing::debug!("HNSW returned {} candidates", hnsw_results.len());
+
+            let candidate_ids: Vec<&str> = hnsw_results.iter().map(|r| r.id.as_str()).collect();
+            return self.search_by_candidate_ids(&candidate_ids, query, filter, limit, threshold);
+        }
+
+        // No HNSW index, fall back to brute-force
+        self.search_filtered(query, filter, limit, threshold)
+    }
+
     /// Delete all chunks for a file
     pub fn delete_by_file(&self, file: &Path) -> Result<u32, StoreError> {
         let conn = self.pool.get()?;
@@ -1368,6 +1404,41 @@ impl Store {
         let code_results = self.search_filtered(query, filter, limit, threshold)?;
 
         // Search notes (unified memory)
+        let note_results = self.search_notes(query, limit, threshold)?;
+
+        // Merge and sort by score
+        let mut unified: Vec<UnifiedResult> = code_results
+            .into_iter()
+            .map(UnifiedResult::Code)
+            .chain(note_results.into_iter().map(UnifiedResult::Note))
+            .collect();
+
+        unified.sort_by(|a, b| {
+            b.score()
+                .partial_cmp(&a.score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        unified.truncate(limit);
+
+        Ok(unified)
+    }
+
+    /// Unified search with optional HNSW index
+    ///
+    /// Like search_unified, but uses HNSW for O(log n) candidate retrieval when available.
+    pub fn search_unified_with_index(
+        &self,
+        query: &Embedding,
+        filter: &SearchFilter,
+        limit: usize,
+        threshold: f32,
+        hnsw: Option<&HnswIndex>,
+    ) -> Result<Vec<UnifiedResult>, StoreError> {
+        // Search code chunks with HNSW if available
+        let code_results =
+            self.search_filtered_with_index(query, filter, limit, threshold, hnsw)?;
+
+        // Search notes (no HNSW for notes - they're typically few)
         let note_results = self.search_notes(query, limit, threshold)?;
 
         // Merge and sort by score
