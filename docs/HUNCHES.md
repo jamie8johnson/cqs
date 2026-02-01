@@ -340,6 +340,6 @@ When schema version bumps (v3→v4→v5), users must run `cqs index --force` to 
 
 Functions >100 lines are skipped during chunk extraction (embedding quality filter). Their calls aren't captured in call graph. CLI handlers particularly affected.
 
-**PLANNED:** Separate call extraction from chunking. Extract calls from ALL functions regardless of size. See plan in session notes.
+**RESOLVED 2026-02-01:** v0.1.15 separates call extraction from chunking. New `function_calls` table captures calls from ALL functions regardless of size. Schema v5.
 
 ---
