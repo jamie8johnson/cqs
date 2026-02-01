@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::embedder::Embedding;
-use crate::hunch::{Confidence, Hunch, Resolution, Severity};
+use crate::note::Note;
 use crate::parser::{Chunk, ChunkType, Language};
-use crate::scar::Scar;
 
 // Schema version for migrations
 // v3: NL-based embeddings (code->NL translation before embedding)
@@ -18,7 +17,8 @@ use crate::scar::Scar;
 // v5: Full call graph (captures calls from large functions)
 // v6: Hunches (soft observations indexed for semantic search)
 // v7: Scars (failed approaches - limbic memory)
-const CURRENT_SCHEMA_VERSION: i32 = 7;
+// v8: Notes (unified memory with sentiment, 769-dim embeddings)
+const CURRENT_SCHEMA_VERSION: i32 = 8;
 const MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 #[derive(Error, Debug)]
@@ -149,70 +149,33 @@ pub struct CallerInfo {
     pub line: u32,
 }
 
-/// Hunch metadata returned from search results
+/// Note metadata returned from search results
 #[derive(Debug, Clone)]
-pub struct HunchSummary {
+pub struct NoteSummary {
     /// Unique identifier
     pub id: String,
-    /// Date recorded
-    pub date: String,
-    /// Short title
-    pub title: String,
-    /// Full description
-    pub description: String,
-    /// Severity level
-    pub severity: Severity,
-    /// Confidence level
-    pub confidence: Confidence,
-    /// Resolution status
-    pub resolution: Resolution,
+    /// Note content
+    pub text: String,
+    /// Sentiment: -1.0 to +1.0
+    pub sentiment: f32,
     /// Mentioned code paths/functions
     pub mentions: Vec<String>,
 }
 
-/// A hunch search result with similarity score
+/// A note search result with similarity score
 #[derive(Debug)]
-pub struct HunchSearchResult {
-    /// The matching hunch
-    pub hunch: HunchSummary,
+pub struct NoteSearchResult {
+    /// The matching note
+    pub note: NoteSummary,
     /// Similarity score (0.0 to 1.0)
     pub score: f32,
 }
 
-/// Scar metadata returned from search results
-#[derive(Debug, Clone)]
-pub struct ScarSummary {
-    /// Unique identifier
-    pub id: String,
-    /// Date recorded
-    pub date: String,
-    /// Short title
-    pub title: String,
-    /// What was attempted
-    pub tried: String,
-    /// What hurt
-    pub pain: String,
-    /// What to do instead
-    pub learned: String,
-    /// Mentioned code paths/functions
-    pub mentions: Vec<String>,
-}
-
-/// A scar search result with similarity score
-#[derive(Debug)]
-pub struct ScarSearchResult {
-    /// The matching scar
-    pub scar: ScarSummary,
-    /// Similarity score (0.0 to 1.0)
-    pub score: f32,
-}
-
-/// Unified search result (code chunk, hunch, or scar)
+/// Unified search result (code chunk or note)
 #[derive(Debug)]
 pub enum UnifiedResult {
     Code(SearchResult),
-    Hunch(HunchSearchResult),
-    Scar(ScarSearchResult),
+    Note(NoteSearchResult),
 }
 
 impl UnifiedResult {
@@ -220,8 +183,7 @@ impl UnifiedResult {
     pub fn score(&self) -> f32 {
         match self {
             UnifiedResult::Code(r) => r.score,
-            UnifiedResult::Hunch(r) => r.score,
-            UnifiedResult::Scar(r) => r.score,
+            UnifiedResult::Note(r) => r.score,
         }
     }
 }
@@ -1392,150 +1354,27 @@ impl Store {
         Ok((total_calls, unique_callers, unique_callees))
     }
 
-    // ============ Hunch Methods (v6) ============
-
-    /// Insert or update hunches in batch
-    pub fn upsert_hunches_batch(
-        &self,
-        hunches: &[(Hunch, Embedding)],
-        source_file: &Path,
-        file_mtime: i64,
-    ) -> Result<usize, StoreError> {
-        let mut conn = self.pool.get()?;
-        let tx = conn.transaction()?;
-        let source_str = source_file.to_string_lossy();
-
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO hunches (id, date, title, description, severity, confidence, resolution, mentions, embedding, source_file, file_mtime, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            )?;
-
-            let mut fts_delete = tx.prepare_cached("DELETE FROM hunches_fts WHERE id = ?1")?;
-            let mut fts_insert = tx.prepare_cached(
-                "INSERT INTO hunches_fts (id, title, description) VALUES (?1, ?2, ?3)",
-            )?;
-
-            let now = chrono::Utc::now().to_rfc3339();
-            for (hunch, embedding) in hunches {
-                let mentions_json = serde_json::to_string(&hunch.mentions).unwrap_or_default();
-
-                stmt.execute(params![
-                    hunch.id,
-                    hunch.date.to_string(),
-                    hunch.title,
-                    hunch.description,
-                    hunch.severity.to_string(),
-                    hunch.confidence.to_string(),
-                    hunch.resolution.to_string(),
-                    mentions_json,
-                    embedding_to_bytes(embedding),
-                    &source_str,
-                    file_mtime,
-                    &now,
-                    &now,
-                ])?;
-
-                // Update FTS5 index
-                let _ = fts_delete.execute(params![hunch.id]);
-                fts_insert.execute(params![
-                    hunch.id,
-                    normalize_for_fts(&hunch.title),
-                    normalize_for_fts(&hunch.description),
-                ])?;
-            }
-        }
-
-        tx.commit()?;
-        Ok(hunches.len())
-    }
-
-    /// Search hunches by embedding similarity
-    pub fn search_hunches(
-        &self,
-        query: &Embedding,
-        limit: usize,
-        threshold: f32,
-        include_resolved: bool,
-    ) -> Result<Vec<HunchSearchResult>, StoreError> {
-        let conn = self.pool.get()?;
-
-        let sql = if include_resolved {
-            "SELECT id, date, title, description, severity, confidence, resolution, mentions, embedding FROM hunches"
-        } else {
-            "SELECT id, date, title, description, severity, confidence, resolution, mentions, embedding FROM hunches WHERE resolution = 'open'"
-        };
-
-        let mut stmt = conn.prepare(sql)?;
-        let mut scored: Vec<(HunchSummary, f32)> = stmt
-            .query_map([], |row| {
-                let mentions_json: String = row.get(7)?;
-                let mentions: Vec<String> =
-                    serde_json::from_str(&mentions_json).unwrap_or_default();
-
-                Ok((
-                    HunchSummary {
-                        id: row.get(0)?,
-                        date: row.get(1)?,
-                        title: row.get(2)?,
-                        description: row.get(3)?,
-                        severity: row.get::<_, String>(4)?.parse().unwrap_or(Severity::Med),
-                        confidence: row.get::<_, String>(5)?.parse().unwrap_or(Confidence::Med),
-                        resolution: row.get::<_, String>(6)?.parse().unwrap_or(Resolution::Open),
-                        mentions,
-                    },
-                    row.get::<_, Vec<u8>>(8)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .filter_map(|(summary, embedding_bytes)| {
-                let embedding = embedding_slice(&embedding_bytes)?;
-                let score = cosine_similarity(query.as_slice(), embedding);
-                (score >= threshold).then_some((summary, score))
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
-
-        Ok(scored
-            .into_iter()
-            .map(|(hunch, score)| HunchSearchResult { hunch, score })
-            .collect())
-    }
-
-    /// Unified search across code chunks, hunches, and scars
+    /// Unified search across code chunks and notes
     ///
-    /// Returns results sorted by score, interleaving all entity types.
-    /// By default excludes resolved hunches.
+    /// Returns results sorted by score, interleaving code and notes.
     pub fn search_unified(
         &self,
         query: &Embedding,
         filter: &SearchFilter,
         limit: usize,
         threshold: f32,
-        include_hunches: bool,
-        include_resolved_hunches: bool,
     ) -> Result<Vec<UnifiedResult>, StoreError> {
         // Search code chunks
         let code_results = self.search_filtered(query, filter, limit, threshold)?;
 
-        // Search hunches if requested
-        let hunch_results = if include_hunches {
-            self.search_hunches(query, limit, threshold, include_resolved_hunches)?
-        } else {
-            vec![]
-        };
-
-        // Search scars (always included - limbic memory is always relevant)
-        let scar_results = self.search_scars(query, limit, threshold)?;
+        // Search notes (unified memory)
+        let note_results = self.search_notes(query, limit, threshold)?;
 
         // Merge and sort by score
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
             .map(UnifiedResult::Code)
-            .chain(hunch_results.into_iter().map(UnifiedResult::Hunch))
-            .chain(scar_results.into_iter().map(UnifiedResult::Scar))
+            .chain(note_results.into_iter().map(UnifiedResult::Note))
             .collect();
 
         unified.sort_by(|a, b| {
@@ -1548,76 +1387,12 @@ impl Store {
         Ok(unified)
     }
 
-    /// Get hunch statistics
-    pub fn hunch_stats(&self) -> Result<(u64, u64, u64), StoreError> {
-        let conn = self.pool.get()?;
+    // ============ Note Methods (v8) ============
 
-        let total: u64 = conn
-            .query_row("SELECT COUNT(*) FROM hunches", [], |r| r.get(0))
-            .unwrap_or(0);
-        let open: u64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM hunches WHERE resolution = 'open'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        let high_severity: u64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM hunches WHERE severity = 'high' AND resolution = 'open'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-
-        Ok((total, open, high_severity))
-    }
-
-    /// Delete all hunches from a source file
-    pub fn delete_hunches_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
-        let conn = self.pool.get()?;
-        let source_str = source_file.to_string_lossy();
-
-        // Delete from FTS5 first
-        conn.execute(
-            "DELETE FROM hunches_fts WHERE id IN (SELECT id FROM hunches WHERE source_file = ?1)",
-            [&source_str],
-        )?;
-
-        let deleted = conn.execute("DELETE FROM hunches WHERE source_file = ?1", [&source_str])?;
-        Ok(deleted as u32)
-    }
-
-    /// Check if hunches file needs reindexing
-    pub fn hunches_need_reindex(&self, source_file: &Path) -> Result<bool, StoreError> {
-        let current_mtime = source_file
-            .metadata()?
-            .modified()?
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| std::io::Error::other("time error"))?
-            .as_secs() as i64;
-
-        let conn = self.pool.get()?;
-        let stored_mtime: Option<i64> = conn
-            .query_row(
-                "SELECT file_mtime FROM hunches WHERE source_file = ?1 LIMIT 1",
-                [source_file.to_string_lossy()],
-                |r| r.get(0),
-            )
-            .ok();
-
-        match stored_mtime {
-            Some(mtime) if mtime >= current_mtime => Ok(false),
-            _ => Ok(true),
-        }
-    }
-
-    // ============ Scar Methods (v7) ============
-
-    /// Insert or update scars in batch
-    pub fn upsert_scars_batch(
+    /// Insert or update notes in batch
+    pub fn upsert_notes_batch(
         &self,
-        scars: &[(Scar, Embedding)],
+        notes: &[(Note, crate::embedder::Embedding)],
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
@@ -1627,26 +1402,22 @@ impl Store {
 
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO scars (id, date, title, tried, pain, learned, mentions, embedding, source_file, file_mtime, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             )?;
 
-            let mut fts_delete = tx.prepare_cached("DELETE FROM scars_fts WHERE id = ?1")?;
-            let mut fts_insert = tx.prepare_cached(
-                "INSERT INTO scars_fts (id, title, tried, pain, learned) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
+            let mut fts_delete = tx.prepare_cached("DELETE FROM notes_fts WHERE id = ?1")?;
+            let mut fts_insert =
+                tx.prepare_cached("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")?;
 
             let now = chrono::Utc::now().to_rfc3339();
-            for (scar, embedding) in scars {
-                let mentions_json = serde_json::to_string(&scar.mentions).unwrap_or_default();
+            for (note, embedding) in notes {
+                let mentions_json = serde_json::to_string(&note.mentions).unwrap_or_default();
 
                 stmt.execute(params![
-                    scar.id,
-                    scar.date.to_string(),
-                    scar.title,
-                    scar.tried,
-                    scar.pain,
-                    scar.learned,
+                    note.id,
+                    note.text,
+                    note.sentiment,
                     mentions_json,
                     embedding_to_bytes(embedding),
                     &source_str,
@@ -1656,50 +1427,41 @@ impl Store {
                 ])?;
 
                 // Update FTS5 index
-                let _ = fts_delete.execute(params![scar.id]);
-                fts_insert.execute(params![
-                    scar.id,
-                    normalize_for_fts(&scar.title),
-                    normalize_for_fts(&scar.tried),
-                    normalize_for_fts(&scar.pain),
-                    normalize_for_fts(&scar.learned),
-                ])?;
+                let _ = fts_delete.execute(params![note.id]);
+                fts_insert.execute(params![note.id, normalize_for_fts(&note.text),])?;
             }
         }
 
         tx.commit()?;
-        Ok(scars.len())
+        Ok(notes.len())
     }
 
-    /// Search scars by embedding similarity
-    pub fn search_scars(
+    /// Search notes by embedding similarity
+    pub fn search_notes(
         &self,
         query: &Embedding,
         limit: usize,
         threshold: f32,
-    ) -> Result<Vec<ScarSearchResult>, StoreError> {
+    ) -> Result<Vec<NoteSearchResult>, StoreError> {
         let conn = self.pool.get()?;
 
-        let sql = "SELECT id, date, title, tried, pain, learned, mentions, embedding FROM scars";
+        let sql = "SELECT id, text, sentiment, mentions, embedding FROM notes";
 
         let mut stmt = conn.prepare(sql)?;
-        let mut scored: Vec<(ScarSummary, f32)> = stmt
+        let mut scored: Vec<(NoteSummary, f32)> = stmt
             .query_map([], |row| {
-                let mentions_json: String = row.get(6)?;
+                let mentions_json: String = row.get(3)?;
                 let mentions: Vec<String> =
                     serde_json::from_str(&mentions_json).unwrap_or_default();
 
                 Ok((
-                    ScarSummary {
+                    NoteSummary {
                         id: row.get(0)?,
-                        date: row.get(1)?,
-                        title: row.get(2)?,
-                        tried: row.get(3)?,
-                        pain: row.get(4)?,
-                        learned: row.get(5)?,
+                        text: row.get(1)?,
+                        sentiment: row.get(2)?,
                         mentions,
                     },
-                    row.get::<_, Vec<u8>>(7)?,
+                    row.get::<_, Vec<u8>>(4)?,
                 ))
             })?
             .filter_map(|r| r.ok())
@@ -1715,27 +1477,27 @@ impl Store {
 
         Ok(scored
             .into_iter()
-            .map(|(scar, score)| ScarSearchResult { scar, score })
+            .map(|(note, score)| NoteSearchResult { note, score })
             .collect())
     }
 
-    /// Delete all scars from a source file
-    pub fn delete_scars_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
+    /// Delete all notes from a source file
+    pub fn delete_notes_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
         let conn = self.pool.get()?;
         let source_str = source_file.to_string_lossy();
 
         // Delete from FTS5 first
         conn.execute(
-            "DELETE FROM scars_fts WHERE id IN (SELECT id FROM scars WHERE source_file = ?1)",
+            "DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes WHERE source_file = ?1)",
             [&source_str],
         )?;
 
-        let deleted = conn.execute("DELETE FROM scars WHERE source_file = ?1", [&source_str])?;
+        let deleted = conn.execute("DELETE FROM notes WHERE source_file = ?1", [&source_str])?;
         Ok(deleted as u32)
     }
 
-    /// Check if scars file needs reindexing
-    pub fn scars_need_reindex(&self, source_file: &Path) -> Result<bool, StoreError> {
+    /// Check if notes file needs reindexing
+    pub fn notes_need_reindex(&self, source_file: &Path) -> Result<bool, StoreError> {
         let current_mtime = source_file
             .metadata()?
             .modified()?
@@ -1746,7 +1508,7 @@ impl Store {
         let conn = self.pool.get()?;
         let stored_mtime: Option<i64> = conn
             .query_row(
-                "SELECT file_mtime FROM scars WHERE source_file = ?1 LIMIT 1",
+                "SELECT file_mtime FROM notes WHERE source_file = ?1 LIMIT 1",
                 [source_file.to_string_lossy()],
                 |r| r.get(0),
             )
@@ -1758,10 +1520,37 @@ impl Store {
         }
     }
 
-    /// Get scar count
-    pub fn scar_count(&self) -> Result<u64, StoreError> {
+    /// Get note count
+    pub fn note_count(&self) -> Result<u64, StoreError> {
         let conn = self.pool.get()?;
-        let count: u64 = conn.query_row("SELECT COUNT(*) FROM scars", [], |r| r.get(0))?;
+        let count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap_or(0);
         Ok(count)
+    }
+
+    /// Get note statistics
+    pub fn note_stats(&self) -> Result<(u64, u64, u64), StoreError> {
+        let conn = self.pool.get()?;
+
+        let total: u64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap_or(0);
+        let warnings: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE sentiment < -0.3",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let patterns: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes WHERE sentiment > 0.3",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        Ok((total, warnings, patterns))
     }
 }

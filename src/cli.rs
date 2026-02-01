@@ -16,7 +16,7 @@ use rayon::prelude::*;
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::hnsw::HnswIndex;
-use cqs::hunch::parse_hunches;
+use cqs::note::parse_notes;
 use cqs::parser::{Chunk, Parser as CqParser};
 use cqs::store::{ModelInfo, SearchFilter, Store, UnifiedResult};
 
@@ -103,14 +103,6 @@ pub struct Cli {
     /// Show debug info
     #[arg(short, long)]
     verbose: bool,
-
-    /// Exclude hunches from search results
-    #[arg(long)]
-    no_hunches: bool,
-
-    /// Include resolved hunches in search results
-    #[arg(long)]
-    include_resolved: bool,
 }
 
 #[derive(Subcommand)]
@@ -684,7 +676,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
 
         // Embed only new chunks
-        let new_embeddings = if to_embed.is_empty() {
+        let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
             vec![]
         } else {
             let texts: Vec<String> = to_embed
@@ -692,7 +684,12 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
                 .map(|c| generate_nl_description(c))
                 .collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            embedder.embed_documents(&text_refs)?
+            // Add neutral sentiment (0.0) as 769th dimension for code chunks
+            embedder
+                .embed_documents(&text_refs)?
+                .into_iter()
+                .map(|e| e.with_sentiment(0.0))
+                .collect()
         };
 
         // Get file mtime (use first file's mtime for the batch)
@@ -792,29 +789,36 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
     }
 
-    // Index hunches if hunches.toml exists
+    // Index notes if notes.toml exists
     if !check_interrupted() {
-        let hunches_path = root.join("docs/hunches.toml");
-        if hunches_path.exists() {
-            // Check if hunches need reindexing
-            let needs_reindex = force || store.hunches_need_reindex(&hunches_path).unwrap_or(true);
+        let notes_path = root.join("docs/notes.toml");
+        if notes_path.exists() {
+            // Check if notes need reindexing
+            let needs_reindex = force || store.notes_need_reindex(&notes_path).unwrap_or(true);
 
             if needs_reindex {
                 if !cli.quiet {
-                    println!("Indexing hunches...");
+                    println!("Indexing notes...");
                 }
 
-                match parse_hunches(&hunches_path) {
-                    Ok(hunches) => {
-                        if !hunches.is_empty() {
-                            // Embed hunch descriptions
+                match parse_notes(&notes_path) {
+                    Ok(notes) => {
+                        if !notes.is_empty() {
+                            // Embed note content with sentiment
                             let texts: Vec<String> =
-                                hunches.iter().map(|h| h.embedding_text()).collect();
+                                notes.iter().map(|n| n.embedding_text()).collect();
                             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                            let embeddings = embedder.embed_documents(&text_refs)?;
+                            let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+                            // Add sentiment as 769th dimension
+                            let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
+                                .into_iter()
+                                .zip(notes.iter())
+                                .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+                                .collect();
 
                             // Get file mtime
-                            let file_mtime = hunches_path
+                            let file_mtime = notes_path
                                 .metadata()
                                 .and_then(|m| m.modified())
                                 .ok()
@@ -822,83 +826,27 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
                                 .map(|d| d.as_secs() as i64)
                                 .unwrap_or(0);
 
-                            // Delete old hunches and insert new
-                            store.delete_hunches_by_file(&hunches_path)?;
-                            let hunch_embeddings: Vec<_> =
-                                hunches.into_iter().zip(embeddings).collect();
-                            store.upsert_hunches_batch(
-                                &hunch_embeddings,
-                                &hunches_path,
-                                file_mtime,
-                            )?;
+                            // Delete old notes and insert new
+                            store.delete_notes_by_file(&notes_path)?;
+                            let note_embeddings: Vec<_> =
+                                notes.into_iter().zip(embeddings_with_sentiment).collect();
+                            store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
 
                             if !cli.quiet {
-                                let (total, open, high) = store.hunch_stats()?;
+                                let (total, warnings, patterns) = store.note_stats()?;
                                 println!(
-                                    "  Hunches: {} total ({} open, {} high-severity)",
-                                    total, open, high
+                                    "  Notes: {} total ({} warnings, {} patterns)",
+                                    total, warnings, patterns
                                 );
                             }
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to parse hunches: {}", e);
+                        tracing::warn!("Failed to parse notes: {}", e);
                     }
                 }
             } else if !cli.quiet {
-                println!("Hunches up to date.");
-            }
-        }
-    }
-
-    // Index scars if scars.toml exists
-    if !check_interrupted() {
-        let scars_path = root.join("docs/scars.toml");
-        if scars_path.exists() {
-            // Check if scars need reindexing
-            let needs_reindex = force || store.scars_need_reindex(&scars_path).unwrap_or(true);
-
-            if needs_reindex {
-                if !cli.quiet {
-                    println!("Indexing scars...");
-                }
-
-                match cqs::scar::parse_scars(&scars_path) {
-                    Ok(scars) => {
-                        if !scars.is_empty() {
-                            // Embed scar content
-                            let texts: Vec<String> =
-                                scars.iter().map(|s| s.embedding_text()).collect();
-                            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                            let embeddings = embedder.embed_documents(&text_refs)?;
-
-                            // Get file mtime
-                            let file_mtime = scars_path
-                                .metadata()
-                                .and_then(|m| m.modified())
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs() as i64)
-                                .unwrap_or(0);
-
-                            // Delete old scars and insert new
-                            store.delete_scars_by_file(&scars_path)?;
-                            let scar_embeddings: Vec<_> =
-                                scars.into_iter().zip(embeddings).collect();
-                            store.upsert_scars_batch(&scar_embeddings, &scars_path, file_mtime)?;
-
-                            if !cli.quiet {
-                                let count = store.scar_count()?;
-                                println!("  Scars: {} total", count);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse scars: {}", e);
-                    }
-                }
-            } else if !cli.quiet {
-                println!("Scars up to date.");
+                println!("Notes up to date.");
             }
         }
     }
@@ -937,101 +885,8 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
     };
 
-    // Determine if we should include hunches
-    let include_hunches = !cli.no_hunches;
-
-    // Try HNSW search first (much faster for large indexes)
-    let code_results = if HnswIndex::exists(&cq_dir, "index") {
-        match HnswIndex::load(&cq_dir, "index") {
-            Ok(hnsw) => {
-                if cli.verbose {
-                    eprintln!("Using HNSW index ({} vectors)", hnsw.len());
-                }
-                // Get more candidates from HNSW to allow for filtering
-                let oversample = if filter.languages.is_some() || filter.path_pattern.is_some() {
-                    cli.limit * 10
-                } else {
-                    cli.limit * 2
-                };
-                let hnsw_results = hnsw.search(&query_embedding, oversample);
-
-                // Use HNSW candidates for filtered search (10-100x faster than brute-force)
-                if filter.languages.is_some()
-                    || filter.path_pattern.is_some()
-                    || filter.name_boost > 0.0
-                {
-                    // Extract candidate IDs from HNSW results
-                    let candidate_ids: Vec<&str> =
-                        hnsw_results.iter().map(|r| r.id.as_str()).collect();
-                    store.search_by_candidate_ids(
-                        &candidate_ids,
-                        &query_embedding,
-                        &filter,
-                        cli.limit,
-                        cli.threshold,
-                    )?
-                } else {
-                    // No filters - use HNSW results directly, just filter by threshold
-                    hnsw_results
-                        .into_iter()
-                        .filter(|r| r.score >= cli.threshold)
-                        .take(cli.limit)
-                        .filter_map(|r| {
-                            // Look up chunk details from store
-                            // This is a simplified approach - ideally we'd batch this
-                            store.get_chunk_by_id(&r.id).ok().flatten().map(|chunk| {
-                                cqs::store::SearchResult {
-                                    chunk,
-                                    score: r.score,
-                                }
-                            })
-                        })
-                        .collect()
-                }
-            }
-            Err(e) => {
-                if cli.verbose {
-                    eprintln!("HNSW load failed, using brute-force: {}", e);
-                }
-                store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
-            }
-        }
-    } else {
-        // No HNSW index, use brute-force
-        store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
-    };
-
-    // Search hunches if requested
-    let hunch_results = if include_hunches {
-        store.search_hunches(
-            &query_embedding,
-            cli.limit,
-            cli.threshold,
-            cli.include_resolved,
-        )?
-    } else {
-        vec![]
-    };
-
-    // Search scars (always included - limbic memory is always relevant)
-    let scar_results = store.search_scars(&query_embedding, cli.limit, cli.threshold)?;
-
-    // Merge results
-    let results: Vec<UnifiedResult> = {
-        let mut unified: Vec<UnifiedResult> = code_results
-            .into_iter()
-            .map(UnifiedResult::Code)
-            .chain(hunch_results.into_iter().map(UnifiedResult::Hunch))
-            .chain(scar_results.into_iter().map(UnifiedResult::Scar))
-            .collect();
-        unified.sort_by(|a, b| {
-            b.score()
-                .partial_cmp(&a.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        unified.truncate(cli.limit);
-        unified
-    };
+    // Use unified search (code + notes)
+    let results = store.search_unified(&query_embedding, &filter, cli.limit, cli.threshold)?;
 
     if results.is_empty() {
         if cli.json {
@@ -1370,10 +1225,14 @@ fn reindex_files(
         return Ok(0);
     }
 
-    // Generate embeddings
+    // Generate embeddings with neutral sentiment for code chunks
     let texts: Vec<String> = chunks.iter().map(generate_nl_description).collect();
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_documents(&text_refs)?;
+    let embeddings: Vec<Embedding> = embedder
+        .embed_documents(&text_refs)?
+        .into_iter()
+        .map(|e| e.with_sentiment(0.0))
+        .collect();
 
     // Delete old chunks for these files and insert new ones
     for rel_path in files {
@@ -1457,7 +1316,7 @@ fn read_context_lines(
 // NL generation moved to cqs::nl module
 use cqs::nl::generate_nl_description;
 
-/// Display unified search results (code + hunches)
+/// Display unified search results (code + notes)
 fn display_unified_results(
     results: &[UnifiedResult],
     root: &Path,
@@ -1532,53 +1391,32 @@ fn display_unified_results(
                     println!();
                 }
             }
-            UnifiedResult::Hunch(r) => {
-                // Format: [hunch:severity] title [score]
-                let severity_color = match r.hunch.severity {
-                    cqs::hunch::Severity::High => "high".red(),
-                    cqs::hunch::Severity::Med => "med".yellow(),
-                    cqs::hunch::Severity::Low => "low".dimmed(),
+            UnifiedResult::Note(r) => {
+                // Format: [note:sentiment] text [score]
+                let sentiment_indicator = if r.note.sentiment < -0.3 {
+                    format!("v={:.1}", r.note.sentiment).red()
+                } else if r.note.sentiment > 0.3 {
+                    format!("v={:.1}", r.note.sentiment).green()
+                } else {
+                    format!("v={:.1}", r.note.sentiment).dimmed()
                 };
 
-                let resolution_marker = match r.hunch.resolution {
-                    cqs::hunch::Resolution::Open => "",
-                    cqs::hunch::Resolution::Resolved => " ✓",
-                    cqs::hunch::Resolution::Accepted => " ⚡",
-                };
+                let header = format!("[note] {} [{:.2}]", sentiment_indicator, r.score);
 
-                let header = format!(
-                    "[hunch:{}] {}{} [{:.2}]",
-                    severity_color, r.hunch.title, resolution_marker, r.score
-                );
-
-                println!("{}", header.magenta());
+                println!("{}", header.blue());
 
                 if !no_content {
                     println!("{}", "─".repeat(50));
-                    // Show truncated description
-                    let desc_lines: Vec<&str> = r.hunch.description.lines().collect();
-                    if desc_lines.len() <= 5 {
-                        println!("{}", r.hunch.description);
+                    // Show truncated text
+                    let text_lines: Vec<&str> = r.note.text.lines().collect();
+                    if text_lines.len() <= 3 {
+                        println!("{}", r.note.text);
                     } else {
-                        for line in desc_lines.iter().take(4) {
+                        for line in text_lines.iter().take(3) {
                             println!("{}", line);
                         }
                         println!("    ...");
                     }
-                    println!();
-                }
-            }
-            UnifiedResult::Scar(r) => {
-                // Format: [scar] title [score]
-                let header = format!("[scar] {} [{:.2}]", r.scar.title, r.score);
-
-                println!("{}", header.red());
-
-                if !no_content {
-                    println!("{}", "─".repeat(50));
-                    println!("{} {}", "Tried:".bold(), r.scar.tried);
-                    println!("{} {}", "Pain:".bold(), r.scar.pain);
-                    println!("{} {}", "Learned:".bold(), r.scar.learned);
                     println!();
                 }
             }
@@ -1606,27 +1444,12 @@ fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> Resul
                 "score": r.score,
                 "content": r.chunk.content,
             }),
-            UnifiedResult::Hunch(r) => serde_json::json!({
-                "type": "hunch",
-                "id": r.hunch.id,
-                "date": r.hunch.date,
-                "title": r.hunch.title,
-                "description": r.hunch.description,
-                "severity": r.hunch.severity.to_string(),
-                "confidence": r.hunch.confidence.to_string(),
-                "resolution": r.hunch.resolution.to_string(),
-                "mentions": r.hunch.mentions,
-                "score": r.score,
-            }),
-            UnifiedResult::Scar(r) => serde_json::json!({
-                "type": "scar",
-                "id": r.scar.id,
-                "date": r.scar.date,
-                "title": r.scar.title,
-                "tried": r.scar.tried,
-                "pain": r.scar.pain,
-                "learned": r.scar.learned,
-                "mentions": r.scar.mentions,
+            UnifiedResult::Note(r) => serde_json::json!({
+                "type": "note",
+                "id": r.note.id,
+                "text": r.note.text,
+                "sentiment": r.note.sentiment,
+                "mentions": r.note.mentions,
                 "score": r.score,
             }),
         })

@@ -142,3 +142,13 @@ mentions = ["note.rs", "tears"]
 sentiment = 0.6
 text = "Scale changes economics. 90% savings at 1M instances = $90k/month. Watch mode, embedding efficiency, GPU utilization matter more at scale."
 mentions = ["embedder.rs", "cli.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "Copilot+ PC is a hardware contract for AI workloads - guarantees NPU with 40+ TOPS, DirectML, Phi Silica. ort crate has DirectML execution provider. If we detect Copilot+ runtime, could use NPU path instead of CUDA/CPU. Third acceleration tier after GPU and CPU."
+mentions = ["embedder.rs", "ort", "DirectML"]
+
+[[note]]
+sentiment = -0.3
+text = "cuvs-sys crate uses find_package(cuvs), not source build. Needs libcuvs pre-installed via conda or manual RAPIDS build. Not self-contained like expected."
+mentions = ["cuvs", "Cargo.toml", "gpu-search"]

@@ -1,4 +1,4 @@
--- cq index schema v7
+-- cq index schema v8
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -117,5 +117,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS scars_fts USING fts5(
     tried,
     pain,
     learned,
+    tokenize='unicode61'
+);
+
+-- Notes: unified memory entries (replaces separate scars/hunches in v9+)
+-- Sentiment field bakes valence into similarity search via 769th embedding dimension
+CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,           -- "note:0", "note:1", etc.
+    text TEXT NOT NULL,            -- the note content
+    sentiment REAL NOT NULL,       -- -1.0 to +1.0 (negative=warning, positive=pattern)
+    mentions TEXT,                 -- JSON array of mentioned paths/functions
+    embedding BLOB NOT NULL,       -- 769-dim (768 model + sentiment)
+    source_file TEXT NOT NULL,     -- path to notes.toml
+    file_mtime INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_sentiment ON notes(sentiment);
+
+-- FTS5 for note keyword search
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+    id UNINDEXED,
+    text,
     tokenize='unicode61'
 );

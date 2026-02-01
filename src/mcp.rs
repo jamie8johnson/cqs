@@ -32,7 +32,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::embedder::Embedder;
 use crate::hnsw::HnswIndex;
-use crate::hunch::parse_hunches;
+use crate::note::parse_notes;
 use crate::parser::Language;
 use crate::store::{SearchFilter, Store, UnifiedResult};
 
@@ -325,6 +325,30 @@ impl McpServer {
                     "required": ["path"]
                 }),
             },
+            Tool {
+                name: "cqs_add_note".into(),
+                description: "Add a note to project memory. Use for surprises - things that broke unexpectedly (negative sentiment) or patterns that worked well (positive sentiment). Notes are indexed and surface in future searches.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "text": {
+                            "type": "string",
+                            "description": "The note content - what happened, why it matters"
+                        },
+                        "sentiment": {
+                            "type": "number",
+                            "description": "-1.0 (pain/failure) to +1.0 (gain/success). Default 0.0 (neutral observation)",
+                            "default": 0.0
+                        },
+                        "mentions": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Code paths, files, or concepts this note relates to"
+                        }
+                    },
+                    "required": ["text"]
+                }),
+            },
         ];
 
         Ok(serde_json::to_value(ToolsListResult { tools })?)
@@ -349,8 +373,9 @@ impl McpServer {
             "cqs_callers" => self.tool_callers(arguments),
             "cqs_callees" => self.tool_callees(arguments),
             "cqs_read" => self.tool_read(arguments),
+            "cqs_add_note" => self.tool_add_note(arguments),
             _ => bail!(
-                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read",
+                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note",
                 name
             ),
         }
@@ -386,15 +411,10 @@ impl McpServer {
         let limit = args.limit.unwrap_or(5).min(20);
         let threshold = args.threshold.unwrap_or(0.3);
 
-        // Use unified search to include hunches
-        let results = self.store.search_unified(
-            &query_embedding,
-            &filter,
-            limit,
-            threshold,
-            true,  // include_hunches
-            false, // exclude resolved hunches by default
-        )?;
+        // Use unified search (code + notes)
+        let results = self
+            .store
+            .search_unified(&query_embedding, &filter, limit, threshold)?;
 
         let json_results: Vec<_> = results
             .iter()
@@ -415,26 +435,12 @@ impl McpServer {
                         "content": r.chunk.content,
                     })
                 }
-                UnifiedResult::Hunch(r) => {
+                UnifiedResult::Note(r) => {
                     serde_json::json!({
-                        "type": "hunch",
-                        "title": r.hunch.title,
-                        "severity": r.hunch.severity.to_string(),
-                        "confidence": r.hunch.confidence.to_string(),
-                        "resolution": r.hunch.resolution.to_string(),
-                        "description": r.hunch.description,
-                        "mentions": r.hunch.mentions,
-                        "score": r.score,
-                    })
-                }
-                UnifiedResult::Scar(r) => {
-                    serde_json::json!({
-                        "type": "scar",
-                        "title": r.scar.title,
-                        "tried": r.scar.tried,
-                        "pain": r.scar.pain,
-                        "learned": r.scar.learned,
-                        "mentions": r.scar.mentions,
+                        "type": "note",
+                        "text": r.note.text,
+                        "sentiment": r.note.sentiment,
+                        "mentions": r.note.mentions,
                         "score": r.score,
                     })
                 }
@@ -592,23 +598,22 @@ impl McpServer {
         let content = std::fs::read_to_string(&file_path)
             .context(format!("Failed to read file: {}", path))?;
 
-        // Find relevant hunches by searching for this file path
-        let hunches_path = self.project_root.join("docs/hunches.toml");
+        // Find relevant notes by searching for this file path
+        let notes_path = self.project_root.join("docs/notes.toml");
         let mut context_header = String::new();
 
-        if hunches_path.exists() {
-            if let Ok(hunches) = parse_hunches(&hunches_path) {
-                // Find hunches that mention this file
+        if notes_path.exists() {
+            if let Ok(notes) = parse_notes(&notes_path) {
+                // Find notes that mention this file
                 let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-                let relevant: Vec<_> = hunches
+                let relevant: Vec<_> = notes
                     .iter()
-                    .filter(|h| {
-                        h.mentions
+                    .filter(|n| {
+                        n.mentions
                             .iter()
                             .any(|m| m == file_name || m == path || path.contains(m))
                     })
-                    .filter(|h| h.resolution == crate::hunch::Resolution::Open)
                     .collect();
 
                 if !relevant.is_empty() {
@@ -616,22 +621,27 @@ impl McpServer {
                         "// ┌─────────────────────────────────────────────────────────────┐\n",
                     );
                     context_header.push_str(
-                        "// │ [cqs] Context from hunches.toml                            │\n",
+                        "// │ [cqs] Context from notes.toml                              │\n",
                     );
                     context_header.push_str(
                         "// └─────────────────────────────────────────────────────────────┘\n",
                     );
 
-                    for h in relevant {
-                        let severity = match h.severity {
-                            crate::hunch::Severity::High => "HIGH",
-                            crate::hunch::Severity::Med => "MED",
-                            crate::hunch::Severity::Low => "LOW",
+                    for n in relevant {
+                        let sentiment_label = if n.sentiment() < -0.3 {
+                            "WARNING"
+                        } else if n.sentiment() > 0.3 {
+                            "PATTERN"
+                        } else {
+                            "NOTE"
                         };
-                        context_header.push_str(&format!("// [hunch:{}] {}\n", severity, h.title));
-                        // First line of description only
-                        if let Some(first_line) = h.description.lines().next() {
-                            context_header.push_str(&format!("//   {}\n", first_line.trim()));
+                        // First line of text only
+                        if let Some(first_line) = n.text.lines().next() {
+                            context_header.push_str(&format!(
+                                "// [{}] {}\n",
+                                sentiment_label,
+                                first_line.trim()
+                            ));
                         }
                     }
                     context_header.push_str("//\n");
@@ -649,6 +659,115 @@ impl McpServer {
             "content": [{
                 "type": "text",
                 "text": enriched_content
+            }]
+        }))
+    }
+
+    fn tool_add_note(&self, arguments: Value) -> Result<Value> {
+        let text = arguments
+            .get("text")
+            .and_then(|t| t.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'text' argument"))?;
+
+        // Validate text length
+        if text.is_empty() {
+            bail!("Note text cannot be empty");
+        }
+        if text.len() > 2000 {
+            bail!("Note text too long: {} chars (max 2000)", text.len());
+        }
+
+        let sentiment: f32 = arguments
+            .get("sentiment")
+            .and_then(|s| s.as_f64())
+            .map(|s| (s as f32).clamp(-1.0, 1.0))
+            .unwrap_or(0.0);
+
+        let mentions: Vec<String> = arguments
+            .get("mentions")
+            .and_then(|m| m.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Build TOML entry
+        let mentions_toml = if mentions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "\nmentions = [{}]",
+                mentions
+                    .iter()
+                    .map(|m| format!("\"{}\"", m.replace('\"', "\\\"")))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+
+        // Escape text for TOML (handle quotes and newlines)
+        let text_escaped = text.replace('\\', "\\\\").replace('\"', "\\\"");
+        let text_toml = if text.contains('\n') {
+            format!("\"\"\"{}\"\"\"", text_escaped)
+        } else {
+            format!("\"{}\"", text_escaped)
+        };
+
+        let entry = format!(
+            "\n[[note]]\nsentiment = {:.1}\ntext = {}{}\n",
+            sentiment, text_toml, mentions_toml
+        );
+
+        // Append to notes.toml
+        let notes_path = self.project_root.join("docs/notes.toml");
+
+        // Create docs dir if needed
+        if let Some(parent) = notes_path.parent() {
+            std::fs::create_dir_all(parent).context("Failed to create docs directory")?;
+        }
+
+        // Create file with header if it doesn't exist
+        if !notes_path.exists() {
+            std::fs::write(
+                &notes_path,
+                "# Notes - unified memory for AI collaborators\n# sentiment: -1.0 (pain) to +1.0 (gain)\n",
+            )
+            .context("Failed to create notes.toml")?;
+        }
+
+        // Append entry
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&notes_path)
+            .context("Failed to open notes.toml")?;
+
+        file.write_all(entry.as_bytes())
+            .context("Failed to write note")?;
+
+        let sentiment_label = if sentiment < -0.3 {
+            "warning"
+        } else if sentiment > 0.3 {
+            "pattern"
+        } else {
+            "observation"
+        };
+
+        let result = serde_json::json!({
+            "status": "added",
+            "type": sentiment_label,
+            "sentiment": sentiment,
+            "text_preview": if text.len() > 100 { format!("{}...", &text[..100]) } else { text.to_string() },
+            "file": "docs/notes.toml",
+            "note": "Run 'cqs index' to make this note searchable"
+        });
+
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&result)?
             }]
         }))
     }

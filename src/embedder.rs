@@ -238,10 +238,13 @@ impl Embedder {
         // Compute embedding
         let prefixed = format!("search_query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
-        let embedding = results
+        let base_embedding = results
             .into_iter()
             .next()
             .expect("embed_batch with single item always returns one result");
+
+        // Add neutral sentiment (0.0) as 769th dimension
+        let embedding = base_embedding.with_sentiment(0.0);
 
         // Store in cache
         {

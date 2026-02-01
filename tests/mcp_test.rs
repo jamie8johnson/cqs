@@ -21,7 +21,7 @@ fn setup_test_server() -> (TempDir, cqs::mcp::McpServer) {
     store
         .init(&cqs::store::ModelInfo {
             name: "nomic-embed-text-v1.5".into(),
-            dimensions: 768,
+            dimensions: 769, // 768 model + 1 sentiment
             version: "1.0".into(),
         })
         .unwrap();
@@ -280,21 +280,19 @@ fn test_cqs_read_file_not_found() {
 }
 
 #[test]
-fn test_cqs_read_with_hunches() {
+fn test_cqs_read_with_notes() {
     let (dir, mut server) = setup_test_server();
 
-    // Create docs directory and hunches.toml
+    // Create docs directory and notes.toml
     let docs_dir = dir.path().join("docs");
     std::fs::create_dir_all(&docs_dir).unwrap();
     std::fs::write(
-        docs_dir.join("hunches.toml"),
+        docs_dir.join("notes.toml"),
         r#"
-[[hunch]]
-date = "2026-01-31"
-title = "Test hunch"
-severity = "high"
+[[note]]
+sentiment = -0.8
+text = "This is a warning note about test.rs"
 mentions = ["test.rs"]
-description = "This is a test hunch."
 "#,
     )
     .unwrap();
@@ -316,10 +314,10 @@ description = "This is a test hunch."
     let result = response.result.unwrap();
     let content = result["content"][0]["text"].as_str().unwrap();
 
-    // Should contain hunch context
+    // Should contain note context
     assert!(
-        content.contains("[hunch:HIGH]") || content.contains("Test hunch"),
-        "Should inject hunch context: {}",
+        content.contains("[WARNING]") || content.contains("warning note"),
+        "Should inject note context: {}",
         content
     );
     // Should also contain file content

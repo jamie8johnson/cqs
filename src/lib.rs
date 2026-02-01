@@ -54,12 +54,10 @@
 pub mod config;
 pub mod embedder;
 pub mod hnsw;
-pub mod hunch;
 pub mod mcp;
 pub mod nl;
 pub mod note;
 pub mod parser;
-pub mod scar;
 pub mod store;
 
 pub use embedder::Embedder;
