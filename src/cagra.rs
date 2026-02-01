@@ -175,9 +175,11 @@ impl CagraIndex {
             }
         };
 
-        // Search parameters
+        // Search parameters - set itopk_size large enough for our k
+        // CAGRA requires itopk_size > k, default is 64
+        let itopk_size = (k * 2).max(128);
         let search_params = match cuvs::cagra::SearchParams::new() {
-            Ok(params) => params,
+            Ok(params) => params.set_itopk_size(itopk_size),
             Err(e) => {
                 tracing::error!("Failed to create search params: {}", e);
                 // Put index back
