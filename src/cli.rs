@@ -1013,12 +1013,16 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         vec![]
     };
 
+    // Search scars (always included - limbic memory is always relevant)
+    let scar_results = store.search_scars(&query_embedding, cli.limit, cli.threshold)?;
+
     // Merge results
     let results: Vec<UnifiedResult> = {
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
             .map(UnifiedResult::Code)
             .chain(hunch_results.into_iter().map(UnifiedResult::Hunch))
+            .chain(scar_results.into_iter().map(UnifiedResult::Scar))
             .collect();
         unified.sort_by(|a, b| {
             b.score()
