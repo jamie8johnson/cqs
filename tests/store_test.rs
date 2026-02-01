@@ -51,7 +51,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 6); // v6: Hunches
+    assert_eq!(stats.schema_version, 7); // v7: Scars
     assert_eq!(stats.model_name, "nomic-embed-text-v1.5");
 }
 

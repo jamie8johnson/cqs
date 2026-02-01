@@ -851,6 +851,58 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
     }
 
+    // Index scars if scars.toml exists
+    if !check_interrupted() {
+        let scars_path = root.join("docs/scars.toml");
+        if scars_path.exists() {
+            // Check if scars need reindexing
+            let needs_reindex = force || store.scars_need_reindex(&scars_path).unwrap_or(true);
+
+            if needs_reindex {
+                if !cli.quiet {
+                    println!("Indexing scars...");
+                }
+
+                match cqs::scar::parse_scars(&scars_path) {
+                    Ok(scars) => {
+                        if !scars.is_empty() {
+                            // Embed scar content
+                            let texts: Vec<String> =
+                                scars.iter().map(|s| s.embedding_text()).collect();
+                            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                            let embeddings = embedder.embed_documents(&text_refs)?;
+
+                            // Get file mtime
+                            let file_mtime = scars_path
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+
+                            // Delete old scars and insert new
+                            store.delete_scars_by_file(&scars_path)?;
+                            let scar_embeddings: Vec<_> =
+                                scars.into_iter().zip(embeddings).collect();
+                            store.upsert_scars_batch(&scar_embeddings, &scars_path, file_mtime)?;
+
+                            if !cli.quiet {
+                                let count = store.scar_count()?;
+                                println!("  Scars: {} total", count);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse scars: {}", e);
+                    }
+                }
+            } else if !cli.quiet {
+                println!("Scars up to date.");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -1512,6 +1564,20 @@ fn display_unified_results(
                     println!();
                 }
             }
+            UnifiedResult::Scar(r) => {
+                // Format: [scar] title [score]
+                let header = format!("[scar] {} [{:.2}]", r.scar.title, r.score);
+
+                println!("{}", header.red());
+
+                if !no_content {
+                    println!("{}", "─".repeat(50));
+                    println!("{} {}", "Tried:".bold(), r.scar.tried);
+                    println!("{} {}", "Pain:".bold(), r.scar.pain);
+                    println!("{} {}", "Learned:".bold(), r.scar.learned);
+                    println!();
+                }
+            }
         }
     }
 
@@ -1546,6 +1612,17 @@ fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> Resul
                 "confidence": r.hunch.confidence.to_string(),
                 "resolution": r.hunch.resolution.to_string(),
                 "mentions": r.hunch.mentions,
+                "score": r.score,
+            }),
+            UnifiedResult::Scar(r) => serde_json::json!({
+                "type": "scar",
+                "id": r.scar.id,
+                "date": r.scar.date,
+                "title": r.scar.title,
+                "tried": r.scar.tried,
+                "pain": r.scar.pain,
+                "learned": r.scar.learned,
+                "mentions": r.scar.mentions,
                 "score": r.score,
             }),
         })

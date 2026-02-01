@@ -427,6 +427,17 @@ impl McpServer {
                         "score": r.score,
                     })
                 }
+                UnifiedResult::Scar(r) => {
+                    serde_json::json!({
+                        "type": "scar",
+                        "title": r.scar.title,
+                        "tried": r.scar.tried,
+                        "pain": r.scar.pain,
+                        "learned": r.scar.learned,
+                        "mentions": r.scar.mentions,
+                        "score": r.score,
+                    })
+                }
             })
             .collect();
 

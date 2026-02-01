@@ -10,13 +10,15 @@ use thiserror::Error;
 use crate::embedder::Embedding;
 use crate::hunch::{Confidence, Hunch, Resolution, Severity};
 use crate::parser::{Chunk, ChunkType, Language};
+use crate::scar::Scar;
 
 // Schema version for migrations
 // v3: NL-based embeddings (code->NL translation before embedding)
 // v4: Call graph (function call relationships)
 // v5: Full call graph (captures calls from large functions)
 // v6: Hunches (soft observations indexed for semantic search)
-const CURRENT_SCHEMA_VERSION: i32 = 6;
+// v7: Scars (failed approaches - limbic memory)
+const CURRENT_SCHEMA_VERSION: i32 = 7;
 const MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 #[derive(Error, Debug)]
@@ -177,11 +179,40 @@ pub struct HunchSearchResult {
     pub score: f32,
 }
 
-/// Unified search result (code chunk or hunch)
+/// Scar metadata returned from search results
+#[derive(Debug, Clone)]
+pub struct ScarSummary {
+    /// Unique identifier
+    pub id: String,
+    /// Date recorded
+    pub date: String,
+    /// Short title
+    pub title: String,
+    /// What was attempted
+    pub tried: String,
+    /// What hurt
+    pub pain: String,
+    /// What to do instead
+    pub learned: String,
+    /// Mentioned code paths/functions
+    pub mentions: Vec<String>,
+}
+
+/// A scar search result with similarity score
+#[derive(Debug)]
+pub struct ScarSearchResult {
+    /// The matching scar
+    pub scar: ScarSummary,
+    /// Similarity score (0.0 to 1.0)
+    pub score: f32,
+}
+
+/// Unified search result (code chunk, hunch, or scar)
 #[derive(Debug)]
 pub enum UnifiedResult {
     Code(SearchResult),
     Hunch(HunchSearchResult),
+    Scar(ScarSearchResult),
 }
 
 impl UnifiedResult {
@@ -190,6 +221,7 @@ impl UnifiedResult {
         match self {
             UnifiedResult::Code(r) => r.score,
             UnifiedResult::Hunch(r) => r.score,
+            UnifiedResult::Scar(r) => r.score,
         }
     }
 }
@@ -1462,9 +1494,9 @@ impl Store {
             .collect())
     }
 
-    /// Unified search across code chunks and hunches
+    /// Unified search across code chunks, hunches, and scars
     ///
-    /// Returns results sorted by score, interleaving code and hunches.
+    /// Returns results sorted by score, interleaving all entity types.
     /// By default excludes resolved hunches.
     pub fn search_unified(
         &self,
@@ -1485,11 +1517,15 @@ impl Store {
             vec![]
         };
 
+        // Search scars (always included - limbic memory is always relevant)
+        let scar_results = self.search_scars(query, limit, threshold)?;
+
         // Merge and sort by score
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
             .map(UnifiedResult::Code)
             .chain(hunch_results.into_iter().map(UnifiedResult::Hunch))
+            .chain(scar_results.into_iter().map(UnifiedResult::Scar))
             .collect();
 
         unified.sort_by(|a, b| {
@@ -1564,5 +1600,162 @@ impl Store {
             Some(mtime) if mtime >= current_mtime => Ok(false),
             _ => Ok(true),
         }
+    }
+
+    // ============ Scar Methods (v7) ============
+
+    /// Insert or update scars in batch
+    pub fn upsert_scars_batch(
+        &self,
+        scars: &[(Scar, Embedding)],
+        source_file: &Path,
+        file_mtime: i64,
+    ) -> Result<usize, StoreError> {
+        let mut conn = self.pool.get()?;
+        let tx = conn.transaction()?;
+        let source_str = source_file.to_string_lossy();
+
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT OR REPLACE INTO scars (id, date, title, tried, pain, learned, mentions, embedding, source_file, file_mtime, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )?;
+
+            let mut fts_delete = tx.prepare_cached("DELETE FROM scars_fts WHERE id = ?1")?;
+            let mut fts_insert = tx.prepare_cached(
+                "INSERT INTO scars_fts (id, title, tried, pain, learned) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+
+            let now = chrono::Utc::now().to_rfc3339();
+            for (scar, embedding) in scars {
+                let mentions_json = serde_json::to_string(&scar.mentions).unwrap_or_default();
+
+                stmt.execute(params![
+                    scar.id,
+                    scar.date.to_string(),
+                    scar.title,
+                    scar.tried,
+                    scar.pain,
+                    scar.learned,
+                    mentions_json,
+                    embedding_to_bytes(embedding),
+                    &source_str,
+                    file_mtime,
+                    &now,
+                    &now,
+                ])?;
+
+                // Update FTS5 index
+                let _ = fts_delete.execute(params![scar.id]);
+                fts_insert.execute(params![
+                    scar.id,
+                    normalize_for_fts(&scar.title),
+                    normalize_for_fts(&scar.tried),
+                    normalize_for_fts(&scar.pain),
+                    normalize_for_fts(&scar.learned),
+                ])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(scars.len())
+    }
+
+    /// Search scars by embedding similarity
+    pub fn search_scars(
+        &self,
+        query: &Embedding,
+        limit: usize,
+        threshold: f32,
+    ) -> Result<Vec<ScarSearchResult>, StoreError> {
+        let conn = self.pool.get()?;
+
+        let sql = "SELECT id, date, title, tried, pain, learned, mentions, embedding FROM scars";
+
+        let mut stmt = conn.prepare(sql)?;
+        let mut scored: Vec<(ScarSummary, f32)> = stmt
+            .query_map([], |row| {
+                let mentions_json: String = row.get(6)?;
+                let mentions: Vec<String> =
+                    serde_json::from_str(&mentions_json).unwrap_or_default();
+
+                Ok((
+                    ScarSummary {
+                        id: row.get(0)?,
+                        date: row.get(1)?,
+                        title: row.get(2)?,
+                        tried: row.get(3)?,
+                        pain: row.get(4)?,
+                        learned: row.get(5)?,
+                        mentions,
+                    },
+                    row.get::<_, Vec<u8>>(7)?,
+                ))
+            })?
+            .filter_map(|r| r.ok())
+            .filter_map(|(summary, embedding_bytes)| {
+                let embedding = bytes_to_embedding(&embedding_bytes);
+                let score = cosine_similarity(query.as_slice(), &embedding);
+                if score >= threshold {
+                    Some((summary, score))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+
+        Ok(scored
+            .into_iter()
+            .map(|(scar, score)| ScarSearchResult { scar, score })
+            .collect())
+    }
+
+    /// Delete all scars from a source file
+    pub fn delete_scars_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
+        let conn = self.pool.get()?;
+        let source_str = source_file.to_string_lossy();
+
+        // Delete from FTS5 first
+        conn.execute(
+            "DELETE FROM scars_fts WHERE id IN (SELECT id FROM scars WHERE source_file = ?1)",
+            [&source_str],
+        )?;
+
+        let deleted = conn.execute("DELETE FROM scars WHERE source_file = ?1", [&source_str])?;
+        Ok(deleted as u32)
+    }
+
+    /// Check if scars file needs reindexing
+    pub fn scars_need_reindex(&self, source_file: &Path) -> Result<bool, StoreError> {
+        let current_mtime = source_file
+            .metadata()?
+            .modified()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| std::io::Error::other("time error"))?
+            .as_secs() as i64;
+
+        let conn = self.pool.get()?;
+        let stored_mtime: Option<i64> = conn
+            .query_row(
+                "SELECT file_mtime FROM scars WHERE source_file = ?1 LIMIT 1",
+                [source_file.to_string_lossy()],
+                |r| r.get(0),
+            )
+            .ok();
+
+        match stored_mtime {
+            Some(mtime) if mtime >= current_mtime => Ok(false),
+            _ => Ok(true),
+        }
+    }
+
+    /// Get scar count
+    pub fn scar_count(&self) -> Result<u64, StoreError> {
+        let conn = self.pool.get()?;
+        let count: u64 = conn.query_row("SELECT COUNT(*) FROM scars", [], |r| r.get(0))?;
+        Ok(count)
     }
 }

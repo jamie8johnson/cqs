@@ -1,4 +1,4 @@
--- cq index schema v6
+-- cq index schema v7
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -89,5 +89,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS hunches_fts USING fts5(
     id UNINDEXED,
     title,
     description,
+    tokenize='unicode61'
+);
+
+-- Scars: failed approaches - limbic memory that surfaces when relevant
+CREATE TABLE IF NOT EXISTS scars (
+    id TEXT PRIMARY KEY,           -- "scar:2026-01-31-title-slug"
+    date TEXT NOT NULL,            -- ISO date (YYYY-MM-DD)
+    title TEXT NOT NULL,
+    tried TEXT NOT NULL,           -- what was attempted
+    pain TEXT NOT NULL,            -- what hurt
+    learned TEXT NOT NULL,         -- what to do instead
+    mentions TEXT,                 -- JSON array of mentioned paths/functions
+    embedding BLOB NOT NULL,
+    source_file TEXT NOT NULL,     -- path to scars.toml
+    file_mtime INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_scars_date ON scars(date);
+
+-- FTS5 for scar keyword search
+CREATE VIRTUAL TABLE IF NOT EXISTS scars_fts USING fts5(
+    id UNINDEXED,
+    title,
+    tried,
+    pain,
+    learned,
     tokenize='unicode61'
 );

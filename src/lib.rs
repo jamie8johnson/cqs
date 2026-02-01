@@ -57,6 +57,7 @@ pub mod hunch;
 pub mod mcp;
 pub mod nl;
 pub mod parser;
+pub mod scar;
 pub mod store;
 
 pub use embedder::Embedder;
