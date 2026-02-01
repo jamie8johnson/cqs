@@ -1154,9 +1154,10 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
         root.display()
     );
     println!(
-        "Supported extensions: {}",
+        "Code extensions: {}",
         supported_ext.iter().cloned().collect::<Vec<_>>().join(", ")
     );
+    println!("Also watching: docs/notes.toml");
 
     let (tx, rx) = mpsc::channel();
 
@@ -1167,22 +1168,33 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 
     // Track pending changes for debouncing
     let mut pending_files: HashSet<PathBuf> = HashSet::new();
+    let mut pending_notes = false; // Track if notes.toml changed
     let mut last_event = std::time::Instant::now();
     let debounce = Duration::from_millis(debounce_ms);
+    let notes_path = root.join("docs/notes.toml");
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 for path in event.paths {
+                    // Skip .cq directory
+                    if path.starts_with(&cq_dir) {
+                        continue;
+                    }
+
+                    // Check if it's notes.toml
+                    if path == notes_path {
+                        pending_notes = true;
+                        last_event = std::time::Instant::now();
+                        continue;
+                    }
+
                     // Skip if not a supported extension
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                     if !supported_ext.contains(ext) {
                         continue;
                     }
-                    // Skip .cq directory
-                    if path.starts_with(&cq_dir) {
-                        continue;
-                    }
+
                     // Convert to relative path
                     if let Ok(rel) = path.strip_prefix(&root) {
                         pending_files.insert(rel.to_path_buf());
@@ -1197,24 +1209,54 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Check if we should process pending changes
-                if !pending_files.is_empty() && last_event.elapsed() >= debounce {
-                    let files: Vec<PathBuf> = pending_files.drain().collect();
-                    if !cli.quiet {
-                        println!("\n{} file(s) changed, reindexing...", files.len());
-                        for f in &files {
-                            println!("  {}", f.display());
+                let should_process = (!pending_files.is_empty() || pending_notes)
+                    && last_event.elapsed() >= debounce;
+
+                if should_process {
+                    // Reindex code files if any changed
+                    if !pending_files.is_empty() {
+                        let files: Vec<PathBuf> = pending_files.drain().collect();
+                        if !cli.quiet {
+                            println!("\n{} file(s) changed, reindexing...", files.len());
+                            for f in &files {
+                                println!("  {}", f.display());
+                            }
+                        }
+
+                        match reindex_files(
+                            &root,
+                            &index_path,
+                            &files,
+                            &parser,
+                            no_ignore,
+                            cli.quiet,
+                        ) {
+                            Ok(count) => {
+                                if !cli.quiet {
+                                    println!("Indexed {} chunk(s)", count);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Reindex error: {}", e);
+                            }
                         }
                     }
 
-                    // Reindex changed files
-                    match reindex_files(&root, &index_path, &files, &parser, no_ignore, cli.quiet) {
-                        Ok(count) => {
-                            if !cli.quiet {
-                                println!("Indexed {} chunk(s)", count);
-                            }
+                    // Reindex notes if notes.toml changed
+                    if pending_notes {
+                        pending_notes = false;
+                        if !cli.quiet {
+                            println!("\nNotes changed, reindexing...");
                         }
-                        Err(e) => {
-                            eprintln!("Reindex error: {}", e);
+                        match reindex_notes(&root, &index_path, cli.quiet) {
+                            Ok(count) => {
+                                if !cli.quiet {
+                                    println!("Indexed {} note(s)", count);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Notes reindex error: {}", e);
+                            }
                         }
                     }
                 }
@@ -1308,6 +1350,58 @@ fn reindex_files(
     }
 
     Ok(chunks.len())
+}
+
+/// Reindex notes from docs/notes.toml
+fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
+    let notes_path = root.join("docs/notes.toml");
+    if !notes_path.exists() {
+        return Ok(0);
+    }
+
+    let notes = parse_notes(&notes_path)?;
+    if notes.is_empty() {
+        return Ok(0);
+    }
+
+    let mut embedder = Embedder::new()?;
+    let store = Store::open(index_path)?;
+
+    // Embed note content with sentiment prefix
+    let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+    // Add sentiment as 769th dimension
+    let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
+        .into_iter()
+        .zip(notes.iter())
+        .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+        .collect();
+
+    // Get file mtime
+    let file_mtime = notes_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Delete old notes and insert new
+    store.delete_notes_by_file(&notes_path)?;
+    let note_embeddings: Vec<_> = notes.into_iter().zip(embeddings_with_sentiment).collect();
+    store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
+
+    if !quiet {
+        let (total, warnings, patterns) = store.note_stats()?;
+        println!(
+            "  Notes: {} total ({} warnings, {} patterns)",
+            total, warnings, patterns
+        );
+    }
+
+    Ok(note_embeddings.len())
 }
 
 fn cmd_serve(_cli: &Cli, transport: &str, port: u16, project: Option<PathBuf>) -> Result<()> {

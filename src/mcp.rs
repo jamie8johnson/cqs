@@ -715,7 +715,7 @@ impl McpServer {
         }))
     }
 
-    fn tool_add_note(&self, arguments: Value) -> Result<Value> {
+    fn tool_add_note(&mut self, arguments: Value) -> Result<Value> {
         let text = arguments
             .get("text")
             .and_then(|t| t.as_str())
@@ -790,14 +790,31 @@ impl McpServer {
         }
 
         // Append entry
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&notes_path)
-            .context("Failed to open notes.toml")?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&notes_path)
+                .context("Failed to open notes.toml")?;
+            file.write_all(entry.as_bytes())
+                .context("Failed to write note")?;
+        }
 
-        file.write_all(entry.as_bytes())
-            .context("Failed to write note")?;
+        // Re-parse and re-index all notes so the new one is immediately searchable
+        let indexed = match parse_notes(&notes_path) {
+            Ok(notes) if !notes.is_empty() => match self.index_notes(&notes, &notes_path) {
+                Ok(count) => count,
+                Err(e) => {
+                    tracing::warn!("Failed to index notes: {}", e);
+                    0
+                }
+            },
+            Ok(_) => 0,
+            Err(e) => {
+                tracing::warn!("Failed to parse notes after adding: {}", e);
+                0
+            }
+        };
 
         let sentiment_label = if sentiment < -0.3 {
             "warning"
@@ -813,7 +830,8 @@ impl McpServer {
             "sentiment": sentiment,
             "text_preview": if text.len() > 100 { format!("{}...", &text[..100]) } else { text.to_string() },
             "file": "docs/notes.toml",
-            "note": "Run 'cqs index' to make this note searchable"
+            "indexed": indexed > 0,
+            "total_notes": indexed
         });
 
         Ok(serde_json::json!({
@@ -822,6 +840,50 @@ impl McpServer {
                 "text": serde_json::to_string_pretty(&result)?
             }]
         }))
+    }
+
+    /// Index notes into the database (embed and store)
+    fn index_notes(
+        &mut self,
+        notes: &[crate::note::Note],
+        notes_path: &std::path::Path,
+    ) -> Result<usize> {
+        use crate::embedder::Embedding;
+
+        let embedder = self.ensure_embedder()?;
+
+        // Embed note content with sentiment prefix
+        let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+        // Add sentiment as 769th dimension
+        let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
+            .into_iter()
+            .zip(notes.iter())
+            .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+            .collect();
+
+        // Get file mtime
+        let file_mtime = notes_path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        // Delete old notes and insert new
+        self.store.delete_notes_by_file(notes_path)?;
+        let note_embeddings: Vec<_> = notes
+            .iter()
+            .cloned()
+            .zip(embeddings_with_sentiment)
+            .collect();
+        self.store
+            .upsert_notes_batch(&note_embeddings, notes_path, file_mtime)?;
+
+        Ok(notes.len())
     }
 }
 
