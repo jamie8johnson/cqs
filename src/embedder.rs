@@ -416,12 +416,12 @@ fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64
     arr
 }
 
-/// L2 normalize a vector
-fn normalize_l2(v: Vec<f32>) -> Vec<f32> {
-    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm == 0.0 {
-        v
-    } else {
-        v.into_iter().map(|x| x / norm).collect()
+/// L2 normalize a vector (single-pass, in-place)
+fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
+    let norm_sq: f32 = v.iter().fold(0.0, |acc, &x| acc + x * x);
+    if norm_sq > 0.0 {
+        let inv_norm = 1.0 / norm_sq.sqrt();
+        v.iter_mut().for_each(|x| *x *= inv_norm);
     }
+    v
 }

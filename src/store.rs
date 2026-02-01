@@ -291,31 +291,40 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
         .collect()
 }
 
-pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
-    // Expected: 768 dimensions * 4 bytes = 3072 bytes
+/// Zero-copy view of embedding bytes as f32 slice (for hot paths)
+pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
     const EXPECTED_BYTES: usize = 768 * 4;
     if bytes.len() != EXPECTED_BYTES {
-        tracing::warn!(
-            "Embedding byte length mismatch: expected {}, got {} (possible corruption)",
-            EXPECTED_BYTES,
-            bytes.len()
-        );
+        return None;
     }
-    bytes
-        .chunks_exact(4)
-        .map(|chunk| {
-            // SAFETY: chunks_exact(4) guarantees exactly 4 bytes per chunk
-            f32::from_le_bytes(chunk.try_into().expect("chunks_exact guarantees 4 bytes"))
+    Some(bytemuck::cast_slice(bytes))
+}
+
+/// Convert embedding bytes to owned Vec (when ownership needed)
+pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
+    embedding_slice(bytes)
+        .map(|s| s.to_vec())
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                "Embedding byte length mismatch: expected {}, got {} (possible corruption)",
+                768 * 4,
+                bytes.len()
+            );
+            bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("4 bytes")))
+                .collect()
         })
-        .collect()
 }
 
 /// Cosine similarity for L2-normalized vectors (just dot product)
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    debug_assert_eq!(a.len(), b.len(), "Embedding dimension mismatch");
+    debug_assert_eq!(a.len(), 768, "Expected 768-dim embeddings");
     use simsimd::SpatialSimilarity;
     f32::dot(a, b).unwrap_or_else(|| {
-        // Fallback for unsupported architectures or mismatched lengths
+        // Fallback for unsupported architectures
         a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() as f64
     }) as f32
 }
@@ -650,22 +659,24 @@ impl Store {
     fn rrf_fuse(semantic_ids: &[String], fts_ids: &[String], limit: usize) -> Vec<(String, f32)> {
         const K: f32 = 60.0;
 
-        let mut scores: HashMap<String, f32> = HashMap::new();
+        // Use &str keys to avoid cloning in hot loop
+        let mut scores: HashMap<&str, f32> = HashMap::new();
 
-        // Add semantic search contributions
         for (rank, id) in semantic_ids.iter().enumerate() {
             let contribution = 1.0 / (K + rank as f32 + 1.0);
-            *scores.entry(id.clone()).or_insert(0.0) += contribution;
+            *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
 
-        // Add FTS search contributions
         for (rank, id) in fts_ids.iter().enumerate() {
             let contribution = 1.0 / (K + rank as f32 + 1.0);
-            *scores.entry(id.clone()).or_insert(0.0) += contribution;
+            *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
 
-        // Sort by score descending
-        let mut sorted: Vec<(String, f32)> = scores.into_iter().collect();
+        // Clone only at the end for the result
+        let mut sorted: Vec<(String, f32)> = scores
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
         sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         sorted.truncate(limit);
         sorted
@@ -747,8 +758,8 @@ impl Store {
                 }
             })
             .filter_map(|chunk| {
-                let embedding = bytes_to_embedding(&chunk.embedding);
-                let embedding_score = cosine_similarity(query.as_slice(), &embedding);
+                let embedding = embedding_slice(&chunk.embedding)?;
+                let embedding_score = cosine_similarity(query.as_slice(), embedding);
 
                 // Compute hybrid score if enabled
                 let score = if use_hybrid {
@@ -1126,9 +1137,12 @@ impl Store {
                     }
                 }
 
-                // Compute similarity score
-                let embedding = bytes_to_embedding(&embedding_bytes);
-                let embedding_score = cosine_similarity(query.as_slice(), &embedding);
+                // Compute similarity score (zero-copy)
+                let embedding = match embedding_slice(&embedding_bytes) {
+                    Some(e) => e,
+                    None => return None,
+                };
+                let embedding_score = cosine_similarity(query.as_slice(), embedding);
 
                 // Compute hybrid score if enabled
                 let score = if use_hybrid {
@@ -1475,13 +1489,9 @@ impl Store {
             })?
             .filter_map(|r| r.ok())
             .filter_map(|(summary, embedding_bytes)| {
-                let embedding = bytes_to_embedding(&embedding_bytes);
-                let score = cosine_similarity(query.as_slice(), &embedding);
-                if score >= threshold {
-                    Some((summary, score))
-                } else {
-                    None
-                }
+                let embedding = embedding_slice(&embedding_bytes)?;
+                let score = cosine_similarity(query.as_slice(), embedding);
+                (score >= threshold).then_some((summary, score))
             })
             .collect();
 
@@ -1694,13 +1704,9 @@ impl Store {
             })?
             .filter_map(|r| r.ok())
             .filter_map(|(summary, embedding_bytes)| {
-                let embedding = bytes_to_embedding(&embedding_bytes);
-                let score = cosine_similarity(query.as_slice(), &embedding);
-                if score >= threshold {
-                    Some((summary, score))
-                } else {
-                    None
-                }
+                let embedding = embedding_slice(&embedding_bytes)?;
+                let score = cosine_similarity(query.as_slice(), embedding);
+                (score >= threshold).then_some((summary, score))
             })
             .collect();
 

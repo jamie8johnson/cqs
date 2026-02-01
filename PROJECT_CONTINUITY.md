@@ -2,48 +2,48 @@
 
 ## Right Now
 
-**PR #45** - Hunches + security. Ready to push.
+**PR #45** - Hunches + Scars + Security
 
 https://github.com/jamie8johnson/cqs/pull/45
 
 Session work:
-- Hunches as indexed entities
+- Hunches as indexed entities (entity type 2)
+- Scars as indexed entities (entity type 3)
 - Path traversal fix in cqs_read
 - 12 MCP integration tests
 - 18-category audit (verified clean)
 - blake3 checksums for HNSW (mitigates bincode RUSTSEC-2025-0141)
+- Schema v7 with scars table + FTS
 
-## Key Insight
+## Entity Types
 
-cqs is not "semantic code search". It's **Tears** - context persistence for AI collaborators. Code search was just the first entity type. Hunches are the second. Scars and tears proper are next.
+| Type | Purpose | Source | Display |
+|------|---------|--------|---------|
+| 1. Code | Functions, methods, structs | Source files | Standard |
+| 2. Hunch | Soft observations | docs/hunches.toml | Yellow `[hunch]` |
+| 3. Scar | Failed approaches | docs/scars.toml | Red `[scar]` |
 
-## MCP Tools Now
+Hunches = optional (--no-hunches flag)
+Scars = always included (limbic memory, protective reflex)
 
-- `cqs_search` - returns code + hunches unified
-- `cqs_read` - reads file with relevant hunches injected as header comments
-- `cqs_stats`, `cqs_callers`, `cqs_callees` - unchanged
-
-## Hunch Format (TOML)
+## Scar Format (TOML)
 
 ```toml
-[[hunch]]
-date = "2026-01-31"
-title = "Example"
-severity = "high"  # high, med, low
-confidence = "med"
-resolution = "open"  # open, resolved, accepted
-mentions = ["file.rs"]
-description = """
-Multi-line description.
-"""
+[[scar]]
+date = "2026-01-15"
+title = "tree-sitter grammar version mismatch"
+mentions = ["tree-sitter", "parser.rs"]
+tried = "Using tree-sitter 0.26 with grammar crates pinned to 0.23.x"
+pain = "Mysterious parsing failures, no clear error messages."
+learned = "Keep grammar versions as close to core as possible."
 ```
 
 ## Parked
 
 - C/Java language support
 - `/tears` command for auto state capture
-- Scars indexing
 - Pre-compaction hook
+- Session state persistence (entity type 4?)
 
 ## Blockers
 

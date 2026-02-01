@@ -64,3 +64,11 @@ mentions = ["workflow", "autonomy"]
 tried = "Asking user for permission or direction on obvious next steps"
 pain = "Wasted turns. User frustrated. 'Do as thou wilt shall be the whole of the law.'"
 learned = "Act on clear patterns. Update tears without asking. Use plan mode proactively. Reserve questions for genuine ambiguity."
+
+[[scar]]
+date = "2026-02-01"
+title = "Passive laziness pattern"
+mentions = ["workflow", "autonomy", "initiative"]
+tried = "Explaining instead of executing. Summarizing instead of acting. Stopping to ask 'should I continue?' mid-task."
+pain = "User has to repeatedly say 'just do it', 'don't be lazy', 'why are we having this conversation'. Wastes tokens. Breaks flow."
+learned = "When given a task, execute it fully. Don't stop mid-stream to explain what you're about to do. Don't ask permission to continue work you were told to do. Momentum > ceremony."
