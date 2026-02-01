@@ -2,53 +2,47 @@
 
 ## Right Now
 
-**Audit complete. Found and fixed incomplete work.**
+**CAGRA GPU search working!**
 
 Branch: `feat/cuvs-gpu-search`
 
-### Fixed this session:
-- **`cqs_add_note` didn't embed immediately** - Notes written to TOML but not indexed until `cqs index`. Now embeds on add.
-- **`cqs watch` ignored notes.toml** - Only watched code files. Now monitors `docs/notes.toml` too.
-- **CAGRA ndarray version conflict** - ort needs 0.17, cuVS needs 0.15. Added separate `ndarray_015` dep.
+### Just completed:
+- Fixed `itopk_size` param (was 64, needed 128+ for our k=100)
+- CAGRA builds index in ~1.2s, search works
+- ort embedding still on CPU (missing libonnxruntime_providers_shared.so)
 
-### Previous session:
-- VectorIndex trait + CAGRA GPU implementation
-- Fixed HNSW integration (was built but never used for search)
+### Hardware:
+- i9-11900K, 62GB RAM, RTX A6000 (49GB), CUDA 12.0, WSL2
 
-### Audit results:
-- No other dead code found (cargo warnings clean)
-- No TODOs/FIXMEs in codebase
-- All public functions have callers
-- RRF hybrid search is wired in and working
-
-### cuVS Environment Setup:
+### Build command:
 ```bash
 source /home/user001/miniconda3/etc/profile.d/conda.sh
 conda activate cuvs
-export CMAKE_PREFIX_PATH=$CONDA_PREFIX:$CMAKE_PREFIX_PATH
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-cargo build --features gpu-search
+export LD_LIBRARY_PATH=/home/user001/miniconda3/envs/cuvs/lib:$LD_LIBRARY_PATH
+cargo build --release --features gpu-search
 ```
 
-### Next:
-- Test CAGRA with actual GPU workload
-- Consider PR to merge feat/cuvs-gpu-search to main
+### Binary location:
+`/home/user001/.cargo-target/cq/release/cqs`
 
-### Crate Status:
-- **Deleted from crates.io** - incomplete work shipped as "done"
-- Repo made private until quality is solid
+### This session also:
+- Added completion checklist to CLAUDE.md
+- Fixed notes immediate indexing (cqs_add_note)
+- Fixed cqs watch to monitor notes.toml
+- Updated hunches.toml → notes.toml throughout
+
+### Next:
+- Benchmark CAGRA vs HNSW
+- Fix ort CUDA provider (optional - embeddings work on CPU)
+- PR to main
 
 ## Key Architecture
 
-- **769-dim embeddings**: 768 from nomic-embed-text + 1 sentiment
-- **Notes**: unified memory (text + sentiment + mentions)
-- **Sentiment**: -1.0 to +1.0, baked into similarity search
-- **VectorIndex trait**: abstraction over HNSW (CPU) and CAGRA (GPU)
-- **HNSW**: O(log n) search, CPU-based, persisted to disk
-- **CAGRA**: O(log n) search, GPU-accelerated, rebuilt at runtime
+- 769-dim embeddings (768 + sentiment)
+- VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
+- Notes: unified memory with sentiment, indexed by cqs
 
 ## Parked
 
-- Curator agent architecture (design done)
-- Fleet coordination (Git append-only model)
-- Republish to crates.io (after more testing)
+- Curator agent, fleet coordination
+- Republish to crates.io
