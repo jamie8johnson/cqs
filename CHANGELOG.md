@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-01-31
+
+### Added
+- Code→NL embedding pipeline (Greptile approach)
+  - Embeds natural language descriptions instead of raw code
+  - Generates: "A function named X. Takes parameters Y. Returns Z."
+  - Doc comments prioritized as human-written NL
+  - Identifier normalization: `parseConfig` → "parse config"
+
+### Changed
+- Schema version: 2 → 3 (requires `cqs index --force` to rebuild)
+
+### Breaking Changes
+- Existing indexes must be rebuilt with `--force`
+
 ## [0.1.11] - 2026-01-31
 
 ### Added
@@ -142,7 +157,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/jamie8johnson/cqs/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/jamie8johnson/cqs/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/jamie8johnson/cqs/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/jamie8johnson/cqs/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/jamie8johnson/cqs/compare/v0.1.7...v0.1.8

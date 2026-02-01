@@ -11,7 +11,8 @@ use crate::embedder::Embedding;
 use crate::parser::{Chunk, ChunkType, Language};
 
 // Schema version for migrations
-const CURRENT_SCHEMA_VERSION: i32 = 2;
+// v3: NL-based embeddings (code->NL translation before embedding)
+const CURRENT_SCHEMA_VERSION: i32 = 3;
 const MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 #[derive(Error, Debug)]
@@ -259,8 +260,9 @@ pub fn name_match_score(query: &str, name: &str) -> f32 {
     (overlap / total) * 0.5 // Max 0.5 for partial word overlap
 }
 
-/// Split identifier on snake_case and camelCase boundaries
-fn tokenize_identifier(s: &str) -> Vec<String> {
+/// Split identifier on snake_case and camelCase boundaries.
+/// Example: `parseConfigFile` -> `["parse", "config", "file"]`
+pub fn tokenize_identifier(s: &str) -> Vec<String> {
     let mut words = Vec::new();
     let mut current = String::new();
 

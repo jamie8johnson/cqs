@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "Semantic code search for Claude Code. Find functions by what they do, not their names. Local ML, GPU-accelerated."
 license = "MIT"

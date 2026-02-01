@@ -2,12 +2,11 @@
 
 ## Right Now
 
-Competitor analysis done. Key insight: Greptile translates code→NL before embedding for better results.
+Implemented code→NL→embed pipeline (v0.1.12). Ready to test and push.
 
 ## Parked
 
 - C and Java language support (no user requests yet)
-- Code→NL→Embed pipeline (Greptile approach) - high priority improvement
 - Code-specific embedding model (CodeSage, Qwen3-Embedding)
 - Call graph analysis (grepai has this)
 
