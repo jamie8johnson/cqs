@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-02-01
+
+### Added
+- Tracing spans for major operations (`cmd_index`, `cmd_query`, `embed_batch`, `search_filtered`)
+- Version check warning when index was created by different cqs version
+- `Embedding` type encapsulation with `as_slice()`, `as_vec()`, `len()` methods
+
+### Fixed
+- README: Corrected call graph documentation (cross-file works, not within-file only)
+- Bug report template: Updated version placeholder
+
+### Documentation
+- Added security doc comment for MCP origin validation behavior
+
 ## [0.1.15] - 2026-02-01
 
 ### Added
@@ -191,7 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/jamie8johnson/cqs/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/jamie8johnson/cqs/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/jamie8johnson/cqs/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/jamie8johnson/cqs/compare/v0.1.12...v0.1.13

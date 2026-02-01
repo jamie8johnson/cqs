@@ -19,7 +19,7 @@ body:
   - type: input
     attributes:
       label: cqs version
-      placeholder: "0.1.5"
+      placeholder: "0.1.15"
   - type: input
     attributes:
       label: OS
