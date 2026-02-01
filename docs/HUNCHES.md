@@ -292,4 +292,24 @@ The MCP `tools/list` response defines all available parameters for each tool. Wh
 
 Greptile found that "semantic search on codebases works better if you first translate the code to natural language, before generating embedding vectors." Naive chunking by file/function yields poor results. They translate code→NL→embed. This could significantly improve our search quality. Competitors: SeaGOAT (Python/ChromaDB), CodeGrok MCP, grepai (call graphs).
 
+**IMPLEMENTED 2026-01-31:** v0.1.12 adds template-based NL generation. Schema v3.
+
+---
+
+## 2026-01-31 - NL descriptions are shorter than raw code
+
+The NL template produces ~50-100 chars vs 500+ for raw code. nomic-embed-text was trained on longer texts. Might affect embedding quality. Monitor recall@5 on eval suite - if it drops, consider adding body tokens back.
+
+---
+
+## 2026-01-31 - Template repetition might create noise
+
+Every chunk now starts with "A function named..." or "A method named...". This repetitive prefix might dilute the semantic signal. Could experiment with dropping the prefix for embedding but keeping it for display.
+
+---
+
+## 2026-01-31 - JavaScript has no type annotations
+
+`extract_return_nl` returns `None` for JavaScript because there's no type syntax in signatures. This creates asymmetry: Rust/TS/Python get richer descriptions than JS. May need JSDoc parsing for parity.
+
 ---
