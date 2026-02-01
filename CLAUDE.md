@@ -15,10 +15,15 @@ cqs - semantic code search with local embeddings
 
 If context just compacted: read tears, then ask "where were we?" rather than guessing.
 
+**Distrust previous sessions.** Before continuing work marked "done", verify it actually works:
+- `cargo build 2>&1 | grep -i warning` - any dead code?
+- Grep for the function - does anything call it?
+- Run the feature - does it do what's claimed?
+
 ## Read First
 
 * `PROJECT_CONTINUITY.md` -- what's happening right now
-* `docs/hunches.toml` -- soft observations (indexed, surface in search)
+* `docs/notes.toml` -- observations indexed by cqs (warnings, patterns)
 * `docs/SCARS.md` -- things we tried that hurt. don't repeat these.
 * `ROADMAP.md` -- what's done, what's next
 
@@ -34,6 +39,19 @@ Use it for:
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
 Tools: `cqs_search`, `cqs_stats` (run `cqs watch` to keep index fresh)
+
+## Completion Checklist
+
+Before marking any feature "done":
+
+1. **Trace the call path.** If you wrote `fn foo()`, grep for callers. Zero callers = dead code = not done.
+2. **Test end-to-end.** "It compiles" is not done. Actually run it. Does the user-facing command use your code?
+3. **Check for warnings.** `cargo build 2>&1 | grep warning` - dead code warnings mean incomplete wiring.
+4. **Verify previous work.** If building on existing code, verify that code actually works first. Don't assume.
+
+The HNSW disaster: built an index, wrote save/load, marked "done" - but search never called it. Three months of O(n) scans because nobody traced `search()` → `search_by_candidate_ids()` → zero callers.
+
+**"Done" means a user can use it, not that code exists.**
 
 ## Project Conventions
 
@@ -68,7 +86,7 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 - Before context gets tight
 
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
-* `docs/hunches.toml` -- soft risks, observations (indexed by cqs)
+* `docs/notes.toml` -- observations with sentiment (indexed by cqs, use `cqs_add_note`)
 * `docs/SCARS.md` -- failed approaches (add when something hurts)
 
 Don't log activity - git history has that.
@@ -81,23 +99,20 @@ Don't log activity - git history has that.
 
 Create these files if missing:
 
-**docs/hunches.toml:**
+**docs/notes.toml:**
 ```toml
-# Hunches - soft observations indexed by cqs
-# These surface in search results when semantically relevant.
+# Notes - unified memory for AI collaborators
+# sentiment: -1.0 (pain/warning) to +1.0 (gain/pattern)
 
-[[hunch]]
-date = "2026-01-31"
-title = "Example hunch"
-severity = "high"      # high, med (default), low
-confidence = "med"     # high, med (default), low
-resolution = "open"    # open (default), resolved, accepted
+[[note]]
+sentiment = -0.8
+text = "Example warning - something that hurt"
 mentions = ["file.rs", "function_name"]
-description = """
-Description here. Can be multiple lines.
-Severity = how bad if true and ignored.
-Confidence = how sure you are.
-"""
+
+[[note]]
+sentiment = 0.7
+text = "Example pattern - something that worked well"
+mentions = ["other_file.rs"]
 ```
 
 **docs/SCARS.md:**
