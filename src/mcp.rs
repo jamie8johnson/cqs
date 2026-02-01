@@ -464,7 +464,8 @@ impl McpServer {
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'name' argument"))?;
 
-        let callers = self.store.get_callers(name)?;
+        // Use full call graph (includes large functions)
+        let callers = self.store.get_callers_full(name)?;
 
         let result = if callers.is_empty() {
             serde_json::json!({
@@ -477,8 +478,7 @@ impl McpServer {
                     serde_json::json!({
                         "name": c.name,
                         "file": c.file.to_string_lossy(),
-                        "line": c.line_start,
-                        "language": c.language.to_string(),
+                        "line": c.line,
                     })
                 }).collect::<Vec<_>>(),
                 "count": callers.len(),
@@ -499,42 +499,14 @@ impl McpServer {
             .and_then(|n| n.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'name' argument"))?;
 
-        // Find the chunk by name (exact match first, then partial)
-        let index_path = self.project_root.join(".cq/index.db");
-        let conn = rusqlite::Connection::open(&index_path)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, name, file, line_start FROM chunks WHERE name = ?1 OR name LIKE ?2 LIMIT 10",
-        )?;
-        let chunks: Vec<(String, String, String, u32)> = stmt
-            .query_map(rusqlite::params![name, format!("%{}", name)], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        if chunks.is_empty() {
-            return Ok(serde_json::json!({
-                "content": [{
-                    "type": "text",
-                    "text": format!("Function '{}' not found in index", name)
-                }]
-            }));
-        }
-
-        // Prefer exact match
-        let (chunk_id, chunk_name, chunk_file, chunk_line) = chunks
-            .iter()
-            .find(|(_, n, _, _)| n == name)
-            .cloned()
-            .unwrap_or_else(|| chunks.into_iter().next().unwrap());
-
-        let callees = self.store.get_callees(&chunk_id)?;
+        // Use full call graph (includes large functions)
+        let callees = self.store.get_callees_full(name)?;
 
         let result = serde_json::json!({
-            "function": chunk_name,
-            "file": chunk_file,
-            "line": chunk_line,
-            "calls": callees,
+            "function": name,
+            "calls": callees.iter().map(|(n, line)| {
+                serde_json::json!({"name": n, "line": line})
+            }).collect::<Vec<_>>(),
             "count": callees.len(),
         });
 

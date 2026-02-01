@@ -552,6 +552,17 @@ fn should_skip_callee(name: &str) -> bool {
     )
 }
 
+/// A function with its call sites (for full call graph coverage)
+#[derive(Debug, Clone)]
+pub struct FunctionCalls {
+    /// Function name
+    pub name: String,
+    /// Starting line number (1-indexed)
+    pub line_start: u32,
+    /// Function calls made by this function
+    pub calls: Vec<CallSite>,
+}
+
 impl Parser {
     /// Extract function calls from a parsed chunk
     ///
@@ -564,6 +575,112 @@ impl Parser {
             chunk.content.len(),
             0, // No line offset since we're parsing the content directly
         )
+    }
+
+    /// Extract all function calls from a file, ignoring size limits
+    ///
+    /// Returns calls for every function in the file, including those >100 lines
+    /// that would normally be skipped during chunk extraction.
+    pub fn parse_file_calls(&self, path: &Path) -> Result<Vec<FunctionCalls>, ParserError> {
+        // Read file
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                return Ok(vec![]);
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let language = Language::from_extension(ext)
+            .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
+
+        let grammar = language.grammar();
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&grammar)
+            .map_err(|e| ParserError::ParseFailed(format!("{:?}", e)))?;
+
+        let tree = parser
+            .parse(&source, None)
+            .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
+
+        // Get chunk query to find all functions
+        let chunk_query = self.queries.get(&language).ok_or_else(|| {
+            ParserError::QueryCompileFailed(language.to_string(), "not found".into())
+        })?;
+
+        // Get call query
+        let call_query = self.call_queries.get(&language).ok_or_else(|| {
+            ParserError::QueryCompileFailed(format!("{}_calls", language), "not found".into())
+        })?;
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());
+
+        let mut results = Vec::new();
+
+        while let Some(m) = matches.next() {
+            // Find function node
+            let func_node = m.captures.iter().find(|c| {
+                let name = chunk_query.capture_names()[c.index as usize];
+                matches!(
+                    name,
+                    "function" | "struct" | "class" | "enum" | "trait" | "interface" | "const"
+                )
+            });
+
+            let Some(func_capture) = func_node else {
+                continue;
+            };
+
+            let node = func_capture.node;
+
+            // Get function name
+            let name_idx = chunk_query.capture_index_for_name("name");
+            let name = name_idx
+                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                .map(|c| source[c.node.byte_range()].to_string())
+                .unwrap_or_else(|| "<anonymous>".to_string());
+
+            let line_start = node.start_position().row as u32 + 1;
+
+            // Extract calls within this function (no size limit!)
+            let mut call_cursor = tree_sitter::QueryCursor::new();
+            call_cursor.set_byte_range(node.byte_range());
+
+            let mut calls = Vec::new();
+            let mut call_matches =
+                call_cursor.matches(call_query, tree.root_node(), source.as_bytes());
+
+            while let Some(cm) = call_matches.next() {
+                for cap in cm.captures {
+                    let callee_name = source[cap.node.byte_range()].to_string();
+                    let call_line = cap.node.start_position().row as u32 + 1;
+
+                    if !should_skip_callee(&callee_name) {
+                        calls.push(CallSite {
+                            callee_name,
+                            line_number: call_line,
+                        });
+                    }
+                }
+            }
+
+            // Deduplicate
+            let mut seen = std::collections::HashSet::new();
+            calls.retain(|c| seen.insert(c.callee_name.clone()));
+
+            if !calls.is_empty() {
+                results.push(FunctionCalls {
+                    name,
+                    line_start,
+                    calls,
+                });
+            }
+        }
+
+        Ok(results)
     }
 }
 

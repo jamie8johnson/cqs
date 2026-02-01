@@ -13,7 +13,8 @@ use crate::parser::{Chunk, ChunkType, Language};
 // Schema version for migrations
 // v3: NL-based embeddings (code->NL translation before embedding)
 // v4: Call graph (function call relationships)
-const CURRENT_SCHEMA_VERSION: i32 = 4;
+// v5: Full call graph (captures calls from large functions)
+const CURRENT_SCHEMA_VERSION: i32 = 5;
 const MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 #[derive(Error, Debug)]
@@ -128,6 +129,20 @@ pub struct SearchResult {
     pub chunk: ChunkSummary,
     /// Similarity score (0.0 to 1.0, higher is better)
     pub score: f32,
+}
+
+/// Caller information from the full call graph
+///
+/// Unlike ChunkSummary, this doesn't require a chunk to exist -
+/// it captures callers from large functions that exceed chunk size limits.
+#[derive(Debug, Clone)]
+pub struct CallerInfo {
+    /// Function name
+    pub name: String,
+    /// Source file path
+    pub file: PathBuf,
+    /// Line where function starts
+    pub line: u32,
 }
 
 /// Filter and scoring options for search
@@ -1145,5 +1160,107 @@ impl Store {
             })?;
 
         Ok((total_calls, unique_callees))
+    }
+
+    // ============ Full Call Graph Methods (v5) ============
+
+    /// Insert function calls for a file (full call graph, no size limits)
+    pub fn upsert_function_calls(
+        &self,
+        file: &Path,
+        function_calls: &[crate::parser::FunctionCalls],
+    ) -> Result<(), StoreError> {
+        let conn = self.pool.get()?;
+        let file_str = file.to_string_lossy();
+
+        // Delete existing calls for this file
+        conn.execute("DELETE FROM function_calls WHERE file = ?1", [&file_str])?;
+
+        // Insert new calls
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+
+        for fc in function_calls {
+            for call in &fc.calls {
+                stmt.execute(params![
+                    &file_str,
+                    &fc.name,
+                    fc.line_start,
+                    &call.callee_name,
+                    call.line_number,
+                ])?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Find all callers of a function (from full call graph)
+    ///
+    /// This searches the function_calls table, which includes callers from
+    /// large functions that exceed the 100-line chunk limit.
+    pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
+        let conn = self.pool.get()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT file, caller_name, caller_line
+             FROM function_calls
+             WHERE callee_name = ?1
+             ORDER BY file, caller_line",
+        )?;
+
+        let rows: Vec<CallerInfo> = stmt
+            .query_map([callee_name], |row| {
+                Ok(CallerInfo {
+                    file: PathBuf::from(row.get::<_, String>(0)?),
+                    name: row.get(1)?,
+                    line: row.get(2)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Get all callees of a function (from full call graph)
+    pub fn get_callees_full(&self, caller_name: &str) -> Result<Vec<(String, u32)>, StoreError> {
+        let conn = self.pool.get()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT callee_name, call_line
+             FROM function_calls
+             WHERE caller_name = ?1
+             ORDER BY call_line",
+        )?;
+
+        let callees: Vec<(String, u32)> = stmt
+            .query_map([caller_name], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(callees)
+    }
+
+    /// Get full call graph statistics
+    pub fn function_call_stats(&self) -> Result<(u64, u64, u64), StoreError> {
+        let conn = self.pool.get()?;
+
+        let total_calls: u64 =
+            conn.query_row("SELECT COUNT(*) FROM function_calls", [], |r| r.get(0))?;
+        let unique_callers: u64 = conn.query_row(
+            "SELECT COUNT(DISTINCT caller_name) FROM function_calls",
+            [],
+            |r| r.get(0),
+        )?;
+        let unique_callees: u64 = conn.query_row(
+            "SELECT COUNT(DISTINCT callee_name) FROM function_calls",
+            [],
+            |r| r.get(0),
+        )?;
+
+        Ok((total_calls, unique_callers, unique_callees))
     }
 }

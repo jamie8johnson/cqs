@@ -1,4 +1,4 @@
--- cq index schema v2
+-- cq index schema v5
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -49,3 +49,17 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
 CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name);
+
+-- Full call graph: captures ALL function calls, including from large functions
+-- that are skipped during chunk extraction (>100 lines)
+CREATE TABLE IF NOT EXISTS function_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file TEXT NOT NULL,           -- source file path
+    caller_name TEXT NOT NULL,    -- name of the calling function
+    caller_line INTEGER NOT NULL, -- line where function starts
+    callee_name TEXT NOT NULL,    -- name of the called function
+    call_line INTEGER NOT NULL    -- line where call occurs
+);
+CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file);
+CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name);
+CREATE INDEX IF NOT EXISTS idx_fcalls_callee ON function_calls(callee_name);
