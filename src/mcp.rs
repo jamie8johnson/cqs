@@ -282,6 +282,34 @@ impl McpServer {
                     "properties": {}
                 }),
             },
+            Tool {
+                name: "cqs_callers".into(),
+                description: "Find functions that call a given function name. Useful for impact analysis and understanding code dependencies.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the function to find callers for"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
+            Tool {
+                name: "cqs_callees".into(),
+                description: "Find functions called by a given function. Useful for understanding what a function depends on.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "Name of the function to find callees for"
+                        }
+                    },
+                    "required": ["name"]
+                }),
+            },
         ];
 
         Ok(serde_json::to_value(ToolsListResult { tools })?)
@@ -303,8 +331,10 @@ impl McpServer {
         match name {
             "cqs_search" => self.tool_search(arguments),
             "cqs_stats" => self.tool_stats(),
+            "cqs_callers" => self.tool_callers(arguments),
+            "cqs_callees" => self.tool_callees(arguments),
             _ => bail!(
-                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats",
+                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees",
                 name
             ),
         }
@@ -420,6 +450,94 @@ impl McpServer {
         });
 
         // MCP tools/call requires content array format
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&result)?
+            }]
+        }))
+    }
+
+    fn tool_callers(&self, arguments: Value) -> Result<Value> {
+        let name = arguments
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'name' argument"))?;
+
+        let callers = self.store.get_callers(name)?;
+
+        let result = if callers.is_empty() {
+            serde_json::json!({
+                "callers": [],
+                "message": format!("No callers found for '{}'", name)
+            })
+        } else {
+            serde_json::json!({
+                "callers": callers.iter().map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "file": c.file.to_string_lossy(),
+                        "line": c.line_start,
+                        "language": c.language.to_string(),
+                    })
+                }).collect::<Vec<_>>(),
+                "count": callers.len(),
+            })
+        };
+
+        Ok(serde_json::json!({
+            "content": [{
+                "type": "text",
+                "text": serde_json::to_string_pretty(&result)?
+            }]
+        }))
+    }
+
+    fn tool_callees(&self, arguments: Value) -> Result<Value> {
+        let name = arguments
+            .get("name")
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'name' argument"))?;
+
+        // Find the chunk by name (exact match first, then partial)
+        let index_path = self.project_root.join(".cq/index.db");
+        let conn = rusqlite::Connection::open(&index_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, file, line_start FROM chunks WHERE name = ?1 OR name LIKE ?2 LIMIT 10",
+        )?;
+        let chunks: Vec<(String, String, String, u32)> = stmt
+            .query_map(rusqlite::params![name, format!("%{}", name)], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        if chunks.is_empty() {
+            return Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": format!("Function '{}' not found in index", name)
+                }]
+            }));
+        }
+
+        // Prefer exact match
+        let (chunk_id, chunk_name, chunk_file, chunk_line) = chunks
+            .iter()
+            .find(|(_, n, _, _)| n == name)
+            .cloned()
+            .unwrap_or_else(|| chunks.into_iter().next().unwrap());
+
+        let callees = self.store.get_callees(&chunk_id)?;
+
+        let result = serde_json::json!({
+            "function": chunk_name,
+            "file": chunk_file,
+            "line": chunk_line,
+            "calls": callees,
+            "count": callees.len(),
+        });
+
         Ok(serde_json::json!({
             "content": [{
                 "type": "text",

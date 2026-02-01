@@ -126,6 +126,55 @@ const GO_QUERY: &str = r#"
     name: (identifier) @name)) @const
 "#;
 
+// Call extraction queries per language
+
+/// Rust: function calls, method calls, macro invocations
+const RUST_CALL_QUERY: &str = r#"
+(call_expression
+  function: (identifier) @callee)
+
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @callee))
+
+(call_expression
+  function: (scoped_identifier
+    name: (identifier) @callee))
+
+(macro_invocation
+  macro: (identifier) @callee)
+"#;
+
+/// Python: function and method calls
+const PYTHON_CALL_QUERY: &str = r#"
+(call
+  function: (identifier) @callee)
+
+(call
+  function: (attribute
+    attribute: (identifier) @callee))
+"#;
+
+/// TypeScript/JavaScript: function and method calls
+const TS_JS_CALL_QUERY: &str = r#"
+(call_expression
+  function: (identifier) @callee)
+
+(call_expression
+  function: (member_expression
+    property: (property_identifier) @callee))
+"#;
+
+/// Go: function and method calls
+const GO_CALL_QUERY: &str = r#"
+(call_expression
+  function: (identifier) @callee)
+
+(call_expression
+  function: (selector_expression
+    field: (field_identifier) @callee))
+"#;
+
 /// Code parser using tree-sitter grammars
 ///
 /// Extracts functions, methods, classes, and other code elements
@@ -146,12 +195,15 @@ const GO_QUERY: &str = r#"
 pub struct Parser {
     /// Cached compiled queries per language (Query compilation is ~1ms, worth caching)
     queries: HashMap<Language, tree_sitter::Query>,
+    /// Cached call extraction queries per language
+    call_queries: HashMap<Language, tree_sitter::Query>,
 }
 
 impl Parser {
     /// Create a new parser with pre-compiled queries for all supported languages
     pub fn new() -> Result<Self, ParserError> {
         let mut queries = HashMap::new();
+        let mut call_queries = HashMap::new();
 
         for lang in [
             Language::Rust,
@@ -161,14 +213,26 @@ impl Parser {
             Language::Go,
         ] {
             let grammar = lang.grammar();
+
+            // Chunk extraction queries
             let pattern = lang.query_pattern();
             let query = tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
                 ParserError::QueryCompileFailed(lang.to_string(), format!("{:?}", e))
             })?;
             queries.insert(lang, query);
+
+            // Call extraction queries
+            let call_pattern = lang.call_query_pattern();
+            let call_query = tree_sitter::Query::new(&grammar, call_pattern).map_err(|e| {
+                ParserError::QueryCompileFailed(format!("{}_calls", lang), format!("{:?}", e))
+            })?;
+            call_queries.insert(lang, call_query);
         }
 
-        Ok(Self { queries })
+        Ok(Self {
+            queries,
+            call_queries,
+        })
     }
 
     /// Parse a source file and extract code chunks
@@ -422,6 +486,85 @@ impl Parser {
             "rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go",
         ]
     }
+
+    /// Extract function calls from a chunk's source code
+    ///
+    /// Returns call sites found within the given byte range of the source.
+    pub fn extract_calls(
+        &self,
+        source: &str,
+        language: Language,
+        start_byte: usize,
+        end_byte: usize,
+        line_offset: u32,
+    ) -> Vec<CallSite> {
+        let grammar = language.grammar();
+        let mut parser = tree_sitter::Parser::new();
+        if parser.set_language(&grammar).is_err() {
+            return vec![];
+        }
+
+        let tree = match parser.parse(source, None) {
+            Some(t) => t,
+            None => return vec![],
+        };
+
+        let query = match self.call_queries.get(&language) {
+            Some(q) => q,
+            None => return vec![],
+        };
+
+        let mut cursor = tree_sitter::QueryCursor::new();
+        // Only match within the chunk's byte range
+        cursor.set_byte_range(start_byte..end_byte);
+
+        let mut calls = Vec::new();
+        let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
+
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                let callee_name = source[cap.node.byte_range()].to_string();
+                let line_number = cap.node.start_position().row as u32 + 1 - line_offset + 1;
+
+                // Skip common noise (self, this, super, etc.)
+                if !should_skip_callee(&callee_name) {
+                    calls.push(CallSite {
+                        callee_name,
+                        line_number,
+                    });
+                }
+            }
+        }
+
+        // Deduplicate calls to the same function (keep first occurrence)
+        let mut seen = std::collections::HashSet::new();
+        calls.retain(|c| seen.insert(c.callee_name.clone()));
+
+        calls
+    }
+}
+
+/// Check if a callee name should be skipped (common noise)
+fn should_skip_callee(name: &str) -> bool {
+    matches!(
+        name,
+        "self" | "this" | "super" | "Self" | "new" | "toString" | "valueOf"
+    )
+}
+
+impl Parser {
+    /// Extract function calls from a parsed chunk
+    ///
+    /// Convenience method that extracts calls from the chunk's content.
+    pub fn extract_calls_from_chunk(&self, chunk: &Chunk) -> Vec<CallSite> {
+        self.extract_calls(
+            &chunk.content,
+            chunk.language,
+            0,
+            chunk.content.len(),
+            0, // No line offset since we're parsing the content directly
+        )
+    }
 }
 
 // Note: Default impl intentionally omitted to prevent hidden panics.
@@ -496,6 +639,15 @@ impl Language {
             Language::TypeScript => TYPESCRIPT_QUERY,
             Language::JavaScript => JAVASCRIPT_QUERY,
             Language::Go => GO_QUERY,
+        }
+    }
+
+    pub fn call_query_pattern(&self) -> &'static str {
+        match self {
+            Language::Rust => RUST_CALL_QUERY,
+            Language::Python => PYTHON_CALL_QUERY,
+            Language::TypeScript | Language::JavaScript => TS_JS_CALL_QUERY,
+            Language::Go => GO_CALL_QUERY,
         }
     }
 }
@@ -583,4 +735,13 @@ impl std::str::FromStr for ChunkType {
             ),
         }
     }
+}
+
+/// A function call site extracted from code
+#[derive(Debug, Clone)]
+pub struct CallSite {
+    /// Name of the called function/method
+    pub callee_name: String,
+    /// Line number where the call occurs (1-indexed)
+    pub line_number: u32,
 }

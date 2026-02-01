@@ -74,6 +74,22 @@ cqs watch --debounce 1000  # Custom debounce (ms)
 
 Watch mode respects `.gitignore` by default. Use `--no-ignore` to index ignored files.
 
+## Call Graph
+
+Find function call relationships:
+
+```bash
+cqs callers <name>   # Functions that call <name>
+cqs callees <name>   # Functions called by <name>
+```
+
+Use cases:
+- **Impact analysis**: What calls this function I'm about to change?
+- **Context expansion**: Show related functions
+- **Entry point discovery**: Find functions with no callers
+
+Note: Currently resolves within-file calls only. Cross-file resolution is planned.
+
 ## Claude Code Integration
 
 ### Why use cqs?
@@ -124,6 +140,8 @@ Use `cqs_search` for semantic code search instead of grep/glob when looking for:
 Available tools:
 - `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `semantic_only`
 - `cqs_stats` - index stats, chunk counts, HNSW index status
+- `cqs_callers` - find functions that call a given function
+- `cqs_callees` - find functions called by a given function
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```

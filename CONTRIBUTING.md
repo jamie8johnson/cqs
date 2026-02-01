@@ -82,9 +82,9 @@ When reporting bugs, please include:
 ```
 src/
   cli.rs      - Command-line interface (clap)
-  parser.rs   - tree-sitter code parsing
+  parser.rs   - tree-sitter code parsing, call extraction
   embedder.rs - ONNX model embedding generation
-  store.rs    - SQLite storage, FTS5 keyword search, RRF hybrid fusion
+  store.rs    - SQLite storage, FTS5 keyword search, RRF hybrid fusion, call graph
   hnsw.rs     - HNSW index for fast O(log n) vector search
   mcp.rs      - MCP server implementation
   nl.rs       - NL description generation, JSDoc parsing
