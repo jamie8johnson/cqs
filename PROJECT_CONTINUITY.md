@@ -2,25 +2,9 @@
 
 ## Right Now
 
-**Hunches feature COMPLETE. All code compiles, all tests pass.**
+**PR #45 open** - Hunches as indexed entities. CI running after clippy fix.
 
-What was built this session:
-- `src/hunch.rs` - TOML parser for `docs/hunches.toml`
-- Schema v6 with `hunches` table + FTS5
-- `store.rs` - hunch storage, unified search (code + hunches together)
-- `cli.rs` - hunches indexed during `cqs index`, `--no-hunches`, `--include-resolved` flags
-- `mcp.rs` - `cqs_search` now returns hunches, new `cqs_read` tool injects context
-- `docs/hunches.toml` - sample entries created
-- README updated with `<claude>` section for AI instances
-- Audit expanded to 18 categories (added Community + Promotion)
-
-**Ready for PR.** Uncommitted files:
-- src/hunch.rs (new)
-- src/lib.rs, src/schema.sql, src/store.rs, src/cli.rs, src/mcp.rs
-- tests/store_test.rs (schema version bump)
-- docs/hunches.toml (new), docs/HUNCHES.md (keep for reference)
-- docs/AUDIT_2026-01-31_16CAT.md (now 18 categories)
-- CLAUDE.md, README.md
+https://github.com/jamie8johnson/cqs/pull/45
 
 ## Key Insight
 

@@ -18,7 +18,7 @@ If context just compacted: read tears, then ask "where were we?" rather than gue
 ## Read First
 
 * `PROJECT_CONTINUITY.md` -- what's happening right now
-* `docs/HUNCHES.md` -- soft observations, latent risks
+* `docs/hunches.toml` -- soft observations (indexed, surface in search)
 * `docs/SCARS.md` -- things we tried that hurt. don't repeat these.
 * `ROADMAP.md` -- what's done, what's next
 
@@ -61,10 +61,14 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 
 "Update tears" = capture state before context compacts.
 
-**Keep "Right Now" current** - update it when switching tasks, not just at session end.
+**Don't ask. Just do it.** Update tears proactively:
+- After commits/PRs
+- When switching tasks
+- When state changes
+- Before context gets tight
 
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
-* `docs/HUNCHES.md` -- soft risks, observations
+* `docs/hunches.toml` -- soft risks, observations (indexed by cqs)
 * `docs/SCARS.md` -- failed approaches (add when something hurts)
 
 Don't log activity - git history has that.

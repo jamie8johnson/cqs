@@ -199,7 +199,7 @@ pub fn parse_hunches_str(content: &str) -> Result<Vec<Hunch>, HunchError> {
     let hunches = file
         .hunch
         .into_iter()
-        .filter_map(|entry| {
+        .map(|entry| {
             let date = NaiveDate::parse_from_str(&entry.date, "%Y-%m-%d")
                 .unwrap_or_else(|_| NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
 
@@ -218,7 +218,7 @@ pub fn parse_hunches_str(content: &str) -> Result<Vec<Hunch>, HunchError> {
 
             let id = format!("hunch:{}-{}", date.format("%Y-%m-%d"), slug);
 
-            Some(Hunch {
+            Hunch {
                 id,
                 date,
                 title: entry.title,
@@ -227,7 +227,7 @@ pub fn parse_hunches_str(content: &str) -> Result<Vec<Hunch>, HunchError> {
                 confidence: entry.confidence,
                 resolution: entry.resolution,
                 mentions: entry.mentions,
-            })
+            }
         })
         .collect();
 
