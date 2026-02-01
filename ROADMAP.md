@@ -172,6 +172,16 @@
 
 - [x] MCP integration tests (8 tests)
 
+- [x] Call graph analysis (v0.1.14)
+  - Extract function call relationships via tree-sitter
+  - `cqs callers` / `cqs callees` commands
+  - MCP tools: `cqs_callers`, `cqs_callees`
+
+- [x] Full call graph coverage (v0.1.15)
+  - Separate call extraction from chunk extraction
+  - Large functions (>100 lines) now captured
+  - 1889 calls indexed (CLI handlers included)
+
 ### Planned
 
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)

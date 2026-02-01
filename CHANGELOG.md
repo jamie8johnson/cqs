@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] - 2026-02-01
+
+### Added
+- Full call graph coverage for large functions (>100 lines)
+  - Separate `function_calls` table captures all calls regardless of chunk size limits
+  - CLI handlers like `cmd_index` now have call graph entries
+  - 1889 calls captured vs ~200 previously
+
+### Changed
+- Schema version: 4 → 5 (requires `cqs index --force` to rebuild)
+
+## [0.1.14] - 2026-01-31
+
+### Added
+- Call graph analysis (`cqs callers`, `cqs callees`)
+  - Extract function call relationships from source code
+  - Find what calls a function and what a function calls
+  - MCP tools: `cqs_callers`, `cqs_callees`
+  - tree-sitter queries for call extraction across all 5 languages
+
+### Changed
+- Schema version: 3 → 4 (adds `calls` table)
+
+## [0.1.13] - 2026-01-31
+
+### Added
+- NL module extraction (src/nl.rs)
+  - `generate_nl_description()` for code→NL→embed pipeline
+  - `tokenize_identifier()` for camelCase/snake_case splitting
+  - JSDoc parsing for JavaScript (@param, @returns tags)
+- Eval improvements
+  - Eval suite uses NL pipeline (matches production)
+  - Runs in CI on tagged releases
+
 ## [0.1.12] - 2026-01-31
 
 ### Added
@@ -157,7 +191,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/jamie8johnson/cqs/compare/v0.1.14...v0.1.15
+[0.1.14]: https://github.com/jamie8johnson/cqs/compare/v0.1.13...v0.1.14
+[0.1.13]: https://github.com/jamie8johnson/cqs/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/jamie8johnson/cqs/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/jamie8johnson/cqs/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/jamie8johnson/cqs/compare/v0.1.9...v0.1.10

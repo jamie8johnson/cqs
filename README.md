@@ -14,9 +14,9 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 cargo install cqs
 ```
 
-**Upgrading from v0.1.9 or earlier?** Rebuild your index to enable hybrid search:
+**Upgrading?** Schema changes require rebuilding the index:
 ```bash
-cqs index --force
+cqs index --force  # Run after upgrading from v0.1.9 or earlier
 ```
 
 ## Quick Start
