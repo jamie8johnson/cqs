@@ -51,6 +51,8 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 
 **Use `gh pr checks --watch`** to wait for CI. Don't use `sleep` + poll.
 
+**PowerShell mangles complex strings.** Backticks, quotes, newlines in `gh issue create --body` or `gh pr create --body` will break. Write to a file on `/mnt/c/` and use `--body-file` instead.
+
 **main is protected** - all changes via PR.
 
 ## Continuity (Tears)
