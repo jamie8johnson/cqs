@@ -2,45 +2,40 @@
 
 ## Right Now
 
-**Phase 2 complete: VectorIndex trait + CAGRA implementation**
+**Audit complete. Found and fixed incomplete work.**
 
 Branch: `feat/cuvs-gpu-search`
 
-### Done this session:
-- **VectorIndex trait** (`src/index.rs`)
-  - Abstracts over HNSW and CAGRA
-  - `search()`, `len()`, `is_empty()`
-  - `Send + Sync` for async contexts
-- **Implemented VectorIndex for HnswIndex** (`src/hnsw.rs`)
-- **CAGRA GPU implementation** (`src/cagra.rs`, behind `gpu-search` feature)
-  - Builds from SQLite embeddings at runtime (no persistence)
-  - Interior mutability with `Mutex<Option<Index>>` for consuming `search()` API
-  - `build_from_store()` helper for easy initialization
-- **Updated CLI and MCP** to use trait object `Box<dyn VectorIndex>`
-  - Runtime selection: CAGRA (GPU) > HNSW (CPU) > brute-force
-  - Automatic fallback if GPU unavailable
+### Fixed this session:
+- **`cqs_add_note` didn't embed immediately** - Notes written to TOML but not indexed until `cqs index`. Now embeds on add.
+- **`cqs watch` ignored notes.toml** - Only watched code files. Now monitors `docs/notes.toml` too.
+- **CAGRA ndarray version conflict** - ort needs 0.17, cuVS needs 0.15. Added separate `ndarray_015` dep.
 
 ### Previous session:
-- Fixed incomplete HNSW integration (was built but never used for search)
-- Fixed hnsw_rs lifetime issue properly (no leak)
+- VectorIndex trait + CAGRA GPU implementation
+- Fixed HNSW integration (was built but never used for search)
+
+### Audit results:
+- No other dead code found (cargo warnings clean)
+- No TODOs/FIXMEs in codebase
+- All public functions have callers
+- RRF hybrid search is wired in and working
 
 ### cuVS Environment Setup:
 ```bash
-source $HOME/miniconda3/etc/profile.d/conda.sh
+source /home/user001/miniconda3/etc/profile.d/conda.sh
 conda activate cuvs
 export CMAKE_PREFIX_PATH=$CONDA_PREFIX:$CMAKE_PREFIX_PATH
 export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-export LIBCLANG_PATH=$CONDA_PREFIX/lib
 cargo build --features gpu-search
 ```
 
 ### Next:
-- Test with actual GPU (requires cuVS installed)
-- Benchmark CAGRA vs HNSW performance
-- Consider adding `--gpu` CLI flag to force CAGRA
+- Test CAGRA with actual GPU workload
+- Consider PR to merge feat/cuvs-gpu-search to main
 
 ### Crate Status:
-- **Deleted from crates.io** - incomplete HNSW work shipped as "done"
+- **Deleted from crates.io** - incomplete work shipped as "done"
 - Repo made private until quality is solid
 
 ## Key Architecture
@@ -56,4 +51,4 @@ cargo build --features gpu-search
 
 - Curator agent architecture (design done)
 - Fleet coordination (Git append-only model)
-- Republish to crates.io (after GPU testing)
+- Republish to crates.io (after more testing)
