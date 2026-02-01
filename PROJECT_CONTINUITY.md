@@ -6,10 +6,20 @@
 
 Branch: `feat/cuvs-gpu-search`
 
-### Just completed:
-- Fixed `itopk_size` param (was 64, needed 128+ for our k=100)
-- CAGRA builds index in ~1.2s, search works
-- ort embedding still on CPU (missing libonnxruntime_providers_shared.so)
+### Benchmark Results (474 vectors):
+
+| Config | Time | Notes |
+|--------|------|-------|
+| HNSW (CPU) | ~1.0s | Fastest - index persisted |
+| CAGRA + CPU embed | ~2.3s | CAGRA rebuild each query |
+| CAGRA + CUDA embed | ~2.7s | GPU context overhead |
+
+HNSW wins for small indexes. CAGRA shines at scale (10k+) or when index stays in memory (MCP server).
+
+### ort CUDA provider:
+- Fix: add `~/.cache/ort.pyke.io/dfbin/.../` to LD_LIBRARY_PATH
+- Not worth it for single queries (slower than CPU due to setup)
+- Documented in notes.toml
 
 ### Hardware:
 - i9-11900K, 62GB RAM, RTX A6000 (49GB), CUDA 12.0, WSL2
@@ -25,15 +35,15 @@ cargo build --release --features gpu-search
 ### Binary location:
 `/home/user001/.cargo-target/cq/release/cqs`
 
-### This session also:
+### This session:
+- Benchmarked CAGRA vs HNSW
+- Investigated ort CUDA (not worth it for single queries)
+- Security review passed (no issues)
 - Added completion checklist to CLAUDE.md
 - Fixed notes immediate indexing (cqs_add_note)
 - Fixed cqs watch to monitor notes.toml
-- Updated hunches.toml → notes.toml throughout
 
 ### Next:
-- Benchmark CAGRA vs HNSW
-- Fix ort CUDA provider (optional - embeddings work on CPU)
 - PR to main
 
 ## Key Architecture

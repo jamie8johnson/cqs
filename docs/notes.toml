@@ -162,3 +162,8 @@ mentions = ["cagra.rs", "gpu-search"]
 sentiment = 0.3
 text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 12.0, WSL2"
 mentions = ["hardware", "benchmarking"]
+
+[[note]]
+sentiment = 0.0
+text = "ort CUDA provider needs libonnxruntime_providers_shared.so in LD_LIBRARY_PATH. Libs exist at ~/.cache/ort.pyke.io/dfbin/... but aren't found at runtime. Fix: export LD_LIBRARY_PATH with that path. However, CUDA embedding is slower than CPU for single queries due to GPU context setup overhead - only worth it for batch embedding during indexing."
+mentions = ["embedder.rs", "ort", "CUDA", "LD_LIBRARY_PATH"]
