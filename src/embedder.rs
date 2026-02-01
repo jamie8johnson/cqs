@@ -408,9 +408,88 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
+/// Ensure ort CUDA provider libraries are findable
+///
+/// The ort crate downloads provider libs to ~/.cache/ort.pyke.io/... but
+/// doesn't add them to the library search path. This function creates
+/// symlinks in a directory that's already in LD_LIBRARY_PATH.
+fn ensure_ort_provider_libs() {
+    // Find ort's download cache
+    let home = match std::env::var("HOME") {
+        Ok(h) => std::path::PathBuf::from(h),
+        Err(_) => return,
+    };
+    let ort_cache = home.join(".cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
+
+    // Find the versioned subdirectory (hash-named)
+    let ort_lib_dir = match std::fs::read_dir(&ort_cache) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.path())
+            .next(),
+        Err(_) => return,
+    };
+
+    let ort_lib_dir = match ort_lib_dir {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Find target directory from LD_LIBRARY_PATH
+    let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    let target_dir = ld_path
+        .split(':')
+        .find(|p| !p.is_empty() && std::path::Path::new(p).is_dir())
+        .map(std::path::PathBuf::from);
+
+    let target_dir = match target_dir {
+        Some(d) => d,
+        None => return, // No writable lib dir in path
+    };
+
+    // Provider libs to symlink
+    let provider_libs = [
+        "libonnxruntime_providers_shared.so",
+        "libonnxruntime_providers_cuda.so",
+        "libonnxruntime_providers_tensorrt.so",
+    ];
+
+    for lib in &provider_libs {
+        let src = ort_lib_dir.join(lib);
+        let dst = target_dir.join(lib);
+
+        // Skip if source doesn't exist
+        if !src.exists() {
+            continue;
+        }
+
+        // Skip if symlink already valid
+        if dst.symlink_metadata().is_ok() {
+            if let Ok(target) = std::fs::read_link(&dst) {
+                if target == src {
+                    continue; // Already correct
+                }
+            }
+            // Remove stale symlink
+            let _ = std::fs::remove_file(&dst);
+        }
+
+        // Create symlink
+        if let Err(e) = std::os::unix::fs::symlink(&src, &dst) {
+            tracing::debug!("Failed to symlink {}: {}", lib, e);
+        } else {
+            tracing::info!("Created symlink: {} -> {}", dst.display(), src.display());
+        }
+    }
+}
+
 /// Select the best available execution provider
 fn select_provider() -> ExecutionProvider {
     use ort::ep::{TensorRT, CUDA};
+
+    // Ensure provider libs are findable before checking availability
+    ensure_ort_provider_libs();
 
     // Try CUDA first
     let cuda = CUDA::default();
