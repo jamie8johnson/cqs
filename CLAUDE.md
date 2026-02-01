@@ -49,6 +49,8 @@ powershell.exe -Command 'gh pr create --title "..." --body "..."'
 powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 ```
 
+**Use `gh pr checks --watch`** to wait for CI. Don't use `sleep` + poll.
+
 **main is protected** - all changes via PR.
 
 ## Continuity (Tears)

@@ -51,7 +51,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 2); // Updated for FTS5 support
+    assert_eq!(stats.schema_version, 3); // v3: NL-based embeddings
     assert_eq!(stats.model_name, "nomic-embed-text-v1.5");
 }
 

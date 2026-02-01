@@ -2,11 +2,13 @@
 
 ## Right Now
 
-Completed 16-category audit. No critical/high issues. Medium: missing MCP tests, missing CLI integration tests. Ready to bundle changes into PR.
+Implemented code→NL→embed pipeline (v0.1.12). Ready to test and push.
 
 ## Parked
 
 - C and Java language support (no user requests yet)
+- Code-specific embedding model (CodeSage, Qwen3-Embedding)
+- Call graph analysis (grepai has this)
 
 ## Open Questions
 

@@ -157,12 +157,18 @@
   - Added HNSW index status to cqs_stats output
   - Updated tree-sitter grammars (rust 0.24, python 0.25)
 
+### Done
+
+- [x] Code→NL→Embed pipeline (Greptile insight)
+  - Embeds NL descriptions instead of raw code
+  - Template-based: "A function named X. Takes parameters Y. Returns Z."
+  - Doc comments prioritized as human-written NL
+
 ### Planned
 
-- [ ] C and Java language support
-  - tree-sitter-c, tree-sitter-java grammars
-  - C: function_definition, struct_specifier
-  - Java: method_declaration, class_declaration, interface_declaration
+- [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
+- [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs nomic)
+- [ ] MCP tests, CLI integration tests
 
 ## Phase 6: Security
 

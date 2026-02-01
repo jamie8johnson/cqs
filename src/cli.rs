@@ -660,7 +660,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         } else {
             let texts: Vec<String> = to_embed
                 .iter()
-                .map(|c| prepare_embedding_input(c))
+                .map(|c| generate_nl_description(c))
                 .collect();
             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
             embedder.embed_documents(&text_refs)?
@@ -1069,7 +1069,7 @@ fn reindex_files(
     }
 
     // Generate embeddings
-    let texts: Vec<String> = chunks.iter().map(prepare_embedding_input).collect();
+    let texts: Vec<String> = chunks.iter().map(generate_nl_description).collect();
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
     let embeddings = embedder.embed_documents(&text_refs)?;
 
@@ -1234,27 +1234,130 @@ fn read_context_lines(
     Ok((before, after))
 }
 
-/// Prepare embedding input for a chunk: doc + signature + content
-/// This improves semantic matching by including documentation.
-fn prepare_embedding_input(chunk: &cqs::parser::Chunk) -> String {
-    let mut input = String::new();
+/// Generate natural language description from chunk metadata.
+/// Based on Greptile's finding that code->NL->embed improves semantic search.
+/// Produces text like: "A function named parse config. Takes path parameter. Returns config."
+fn generate_nl_description(chunk: &cqs::parser::Chunk) -> String {
+    use cqs::parser::ChunkType;
+    use cqs::store::tokenize_identifier;
 
-    // Include doc comment if present
+    let mut parts = Vec::new();
+
+    // 1. Doc comment is gold - it's human-written NL
     if let Some(ref doc) = chunk.doc {
-        input.push_str(doc);
-        input.push('\n');
+        let doc_trimmed = doc.trim();
+        if !doc_trimmed.is_empty() {
+            parts.push(doc_trimmed.to_string());
+        }
     }
 
-    // Include signature (function/method declaration)
-    if !chunk.signature.is_empty() {
-        input.push_str(&chunk.signature);
-        input.push('\n');
+    // 2. Chunk type + normalized name
+    let type_word = match chunk.chunk_type {
+        ChunkType::Function => "function",
+        ChunkType::Method => "method",
+        ChunkType::Class => "class",
+        ChunkType::Struct => "struct",
+        ChunkType::Enum => "enum",
+        ChunkType::Trait => "trait",
+        ChunkType::Interface => "interface",
+        ChunkType::Constant => "constant",
+    };
+    let name_words = tokenize_identifier(&chunk.name).join(" ");
+    parts.push(format!("A {} named {}", type_word, name_words));
+
+    // 3. Parse signature for params/return
+    if let Some(params_desc) = extract_params_nl(&chunk.signature) {
+        parts.push(params_desc);
+    }
+    if let Some(return_desc) = extract_return_nl(&chunk.signature, chunk.language) {
+        parts.push(return_desc);
     }
 
-    // Include full content
-    input.push_str(&chunk.content);
+    parts.join(". ")
+}
 
-    input
+/// Extract parameter information from signature as natural language.
+fn extract_params_nl(signature: &str) -> Option<String> {
+    use cqs::store::tokenize_identifier;
+
+    let start = signature.find('(')?;
+    let end = signature.rfind(')')?;
+    if start >= end {
+        return None;
+    }
+    let params_str = &signature[start + 1..end];
+
+    if params_str.trim().is_empty() {
+        return Some("Takes no parameters".to_string());
+    }
+
+    let params: Vec<String> = params_str
+        .split(',')
+        .filter_map(|p| {
+            let p = p.trim();
+            if p.is_empty() {
+                return None;
+            }
+            let words: Vec<_> = tokenize_identifier(p)
+                .into_iter()
+                .filter(|w| !["self", "mut"].contains(&w.as_str()))
+                .collect();
+            if words.is_empty() {
+                None
+            } else {
+                Some(words.join(" "))
+            }
+        })
+        .collect();
+
+    if params.is_empty() {
+        None
+    } else {
+        Some(format!("Takes parameters: {}", params.join(", ")))
+    }
+}
+
+/// Extract return type from signature as natural language.
+fn extract_return_nl(signature: &str, lang: cqs::parser::Language) -> Option<String> {
+    use cqs::parser::Language;
+    use cqs::store::tokenize_identifier;
+
+    match lang {
+        Language::Rust | Language::Go => {
+            if let Some(arrow) = signature.find("->") {
+                let ret = signature[arrow + 2..].trim();
+                if ret.is_empty() {
+                    return None;
+                }
+                let ret_words = tokenize_identifier(ret).join(" ");
+                return Some(format!("Returns {}", ret_words));
+            }
+        }
+        Language::TypeScript => {
+            if let Some(colon) = signature.rfind("):") {
+                let ret = signature[colon + 2..].trim();
+                if ret.is_empty() {
+                    return None;
+                }
+                let ret_words = tokenize_identifier(ret).join(" ");
+                return Some(format!("Returns {}", ret_words));
+            }
+        }
+        Language::Python => {
+            if let Some(arrow) = signature.rfind("->") {
+                let ret = signature[arrow + 2..].trim().trim_end_matches(':');
+                if ret.is_empty() {
+                    return None;
+                }
+                let ret_words = tokenize_identifier(ret).join(" ");
+                return Some(format!("Returns {}", ret_words));
+            }
+        }
+        Language::JavaScript => {
+            // JavaScript doesn't have type annotations in signatures
+        }
+    }
+    None
 }
 
 fn display_results_json(results: &[cqs::store::SearchResult], query: &str) -> Result<()> {
