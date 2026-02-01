@@ -54,14 +54,22 @@
 pub mod config;
 pub mod embedder;
 pub mod hnsw;
+pub mod index;
 pub mod mcp;
 pub mod nl;
 pub mod note;
 pub mod parser;
 pub mod store;
 
+#[cfg(feature = "gpu-search")]
+pub mod cagra;
+
 pub use embedder::Embedder;
 pub use hnsw::HnswIndex;
+pub use index::{IndexResult, VectorIndex};
 pub use mcp::{serve_http, serve_stdio};
 pub use parser::Parser;
 pub use store::Store;
+
+#[cfg(feature = "gpu-search")]
+pub use cagra::CagraIndex;

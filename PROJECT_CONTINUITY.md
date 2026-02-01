@@ -2,22 +2,29 @@
 
 ## Right Now
 
-**HNSW wired into search. CAGRA next.**
+**Phase 2 complete: VectorIndex trait + CAGRA implementation**
 
 Branch: `feat/cuvs-gpu-search`
 
 ### Done this session:
-- **Fixed incomplete HNSW integration** (was built but never used for search)
-  - `search_filtered_with_index()` and `search_unified_with_index()` in store.rs
-  - CLI loads HNSW at query time, passes to search
-  - MCP loads HNSW at startup, keeps in memory
-  - `search_by_candidate_ids()` now has callers (was dead code)
-- **Fixed hnsw_rs lifetime issue properly** (no leak)
-  - `LoadedHnsw` struct with `ManuallyDrop` for controlled drop order
-  - 5 unsafe blocks, all localized and documented
-  - Memory freed when HnswIndex dropped
+- **VectorIndex trait** (`src/index.rs`)
+  - Abstracts over HNSW and CAGRA
+  - `search()`, `len()`, `is_empty()`
+  - `Send + Sync` for async contexts
+- **Implemented VectorIndex for HnswIndex** (`src/hnsw.rs`)
+- **CAGRA GPU implementation** (`src/cagra.rs`, behind `gpu-search` feature)
+  - Builds from SQLite embeddings at runtime (no persistence)
+  - Interior mutability with `Mutex<Option<Index>>` for consuming `search()` API
+  - `build_from_store()` helper for easy initialization
+- **Updated CLI and MCP** to use trait object `Box<dyn VectorIndex>`
+  - Runtime selection: CAGRA (GPU) > HNSW (CPU) > brute-force
+  - Automatic fallback if GPU unavailable
 
-### cuVS Environment Setup (for future use):
+### Previous session:
+- Fixed incomplete HNSW integration (was built but never used for search)
+- Fixed hnsw_rs lifetime issue properly (no leak)
+
+### cuVS Environment Setup:
 ```bash
 source $HOME/miniconda3/etc/profile.d/conda.sh
 conda activate cuvs
@@ -28,10 +35,9 @@ cargo build --features gpu-search
 ```
 
 ### Next:
-- Phase 2: VectorIndex trait + CAGRA implementation
-  - `src/index.rs` - trait definition
-  - `src/cagra.rs` - cuVS CAGRA backend (behind `gpu-search` feature)
-  - Runtime GPU detection and fallback
+- Test with actual GPU (requires cuVS installed)
+- Benchmark CAGRA vs HNSW performance
+- Consider adding `--gpu` CLI flag to force CAGRA
 
 ### Crate Status:
 - **Deleted from crates.io** - incomplete HNSW work shipped as "done"
@@ -42,10 +48,12 @@ cargo build --features gpu-search
 - **769-dim embeddings**: 768 from nomic-embed-text + 1 sentiment
 - **Notes**: unified memory (text + sentiment + mentions)
 - **Sentiment**: -1.0 to +1.0, baked into similarity search
-- **HNSW**: O(log n) search, CPU-based, now actually wired in
+- **VectorIndex trait**: abstraction over HNSW (CPU) and CAGRA (GPU)
+- **HNSW**: O(log n) search, CPU-based, persisted to disk
+- **CAGRA**: O(log n) search, GPU-accelerated, rebuilt at runtime
 
 ## Parked
 
 - Curator agent architecture (design done)
 - Fleet coordination (Git append-only model)
-- Republish to crates.io (after CAGRA done)
+- Republish to crates.io (after GPU testing)

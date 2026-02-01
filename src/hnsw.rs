@@ -28,6 +28,7 @@ use hnsw_rs::hnswio::HnswIo;
 use thiserror::Error;
 
 use crate::embedder::Embedding;
+use crate::index::{IndexResult, VectorIndex};
 
 /// HNSW index parameters
 const MAX_NB_CONNECTION: usize = 24; // M parameter - connections per node
@@ -383,6 +384,26 @@ impl HnswIndex {
     /// Check if the index is empty
     pub fn is_empty(&self) -> bool {
         self.id_map.is_empty()
+    }
+}
+
+impl VectorIndex for HnswIndex {
+    fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
+        self.search(query, k)
+            .into_iter()
+            .map(|r| IndexResult {
+                id: r.id,
+                score: r.score,
+            })
+            .collect()
+    }
+
+    fn len(&self) -> usize {
+        self.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.is_empty()
     }
 }
 

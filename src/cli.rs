@@ -854,6 +854,25 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
     Ok(())
 }
 
+/// Load HNSW index if available, wrapped as trait object
+fn load_hnsw_index(cq_dir: &std::path::Path) -> Option<Box<dyn cqs::index::VectorIndex>> {
+    if HnswIndex::exists(cq_dir, "index") {
+        match HnswIndex::load(cq_dir, "index") {
+            Ok(index) => {
+                tracing::info!("Using HNSW index ({} vectors)", index.len());
+                Some(Box::new(index))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::debug!("No HNSW index found, using brute-force search");
+        None
+    }
+}
+
 fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
 
@@ -885,30 +904,40 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
     };
 
-    // Load HNSW index if available for O(log n) search
-    let hnsw = if HnswIndex::exists(&cq_dir, "index") {
-        match HnswIndex::load(&cq_dir, "index") {
-            Ok(index) => {
-                tracing::info!("Using HNSW index ({} vectors)", index.len());
-                Some(index)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
-                None
+    // Load vector index for O(log n) search
+    // Priority: CAGRA (GPU) > HNSW (CPU) > brute-force
+    let index: Option<Box<dyn cqs::index::VectorIndex>> = {
+        #[cfg(feature = "gpu-search")]
+        {
+            if cqs::cagra::CagraIndex::gpu_available() {
+                match cqs::cagra::CagraIndex::build_from_store(&store) {
+                    Ok(idx) => {
+                        tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
+                        Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
+                        load_hnsw_index(&cq_dir)
+                    }
+                }
+            } else {
+                tracing::debug!("GPU not available, using HNSW");
+                load_hnsw_index(&cq_dir)
             }
         }
-    } else {
-        tracing::debug!("No HNSW index found, using brute-force search");
-        None
+        #[cfg(not(feature = "gpu-search"))]
+        {
+            load_hnsw_index(&cq_dir)
+        }
     };
 
-    // Use unified search with HNSW if available
+    // Use unified search with vector index if available
     let results = store.search_unified_with_index(
         &query_embedding,
         &filter,
         cli.limit,
         cli.threshold,
-        hnsw.as_ref(),
+        index.as_deref(),
     )?;
 
     if results.is_empty() {

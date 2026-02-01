@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::embedder::Embedding;
-use crate::hnsw::HnswIndex;
+use crate::index::VectorIndex;
 use crate::note::Note;
 use crate::parser::{Chunk, ChunkType, Language};
 
@@ -818,38 +818,39 @@ impl Store {
         Ok(results)
     }
 
-    /// Search with optional HNSW index for O(log n) candidate retrieval
+    /// Search with optional vector index for O(log n) candidate retrieval
     ///
-    /// If an HNSW index is provided, uses it to get top candidates first,
-    /// then filters and scores them. Falls back to brute-force if no index.
+    /// If a vector index is provided (HNSW, CAGRA, etc.), uses it to get
+    /// top candidates first, then filters and scores them. Falls back to
+    /// brute-force if no index.
     pub fn search_filtered_with_index(
         &self,
         query: &Embedding,
         filter: &SearchFilter,
         limit: usize,
         threshold: f32,
-        hnsw: Option<&HnswIndex>,
+        index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        // If HNSW available, use it for candidate retrieval
-        if let Some(index) = hnsw {
-            let _span = tracing::info_span!("search_hnsw_guided", limit = limit).entered();
+        // If index available, use it for candidate retrieval
+        if let Some(idx) = index {
+            let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
             // Get more candidates than needed to account for filtering
             let candidate_count = (limit * 5).max(100);
-            let hnsw_results = index.search(query, candidate_count);
+            let index_results = idx.search(query, candidate_count);
 
-            if hnsw_results.is_empty() {
-                tracing::debug!("HNSW returned no candidates, falling back to brute-force");
+            if index_results.is_empty() {
+                tracing::debug!("Index returned no candidates, falling back to brute-force");
                 return self.search_filtered(query, filter, limit, threshold);
             }
 
-            tracing::debug!("HNSW returned {} candidates", hnsw_results.len());
+            tracing::debug!("Index returned {} candidates", index_results.len());
 
-            let candidate_ids: Vec<&str> = hnsw_results.iter().map(|r| r.id.as_str()).collect();
+            let candidate_ids: Vec<&str> = index_results.iter().map(|r| r.id.as_str()).collect();
             return self.search_by_candidate_ids(&candidate_ids, query, filter, limit, threshold);
         }
 
-        // No HNSW index, fall back to brute-force
+        // No index, fall back to brute-force
         self.search_filtered(query, filter, limit, threshold)
     }
 
@@ -1423,20 +1424,21 @@ impl Store {
         Ok(unified)
     }
 
-    /// Unified search with optional HNSW index
+    /// Unified search with optional vector index
     ///
-    /// Like search_unified, but uses HNSW for O(log n) candidate retrieval when available.
+    /// Like search_unified, but uses vector index (HNSW, CAGRA, etc.) for
+    /// O(log n) candidate retrieval when available.
     pub fn search_unified_with_index(
         &self,
         query: &Embedding,
         filter: &SearchFilter,
         limit: usize,
         threshold: f32,
-        hnsw: Option<&HnswIndex>,
+        index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<UnifiedResult>, StoreError> {
-        // Search code chunks with HNSW if available
+        // Search code chunks with index if available
         let code_results =
-            self.search_filtered_with_index(query, filter, limit, threshold, hnsw)?;
+            self.search_filtered_with_index(query, filter, limit, threshold, index)?;
 
         // Search notes (no HNSW for notes - they're typically few)
         let note_results = self.search_notes(query, limit, threshold)?;

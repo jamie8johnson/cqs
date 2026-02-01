@@ -32,6 +32,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::embedder::Embedder;
 use crate::hnsw::HnswIndex;
+use crate::index::VectorIndex;
 use crate::note::parse_notes;
 use crate::parser::Language;
 use crate::store::{SearchFilter, Store, UnifiedResult};
@@ -141,7 +142,8 @@ pub struct McpServer {
     store: Store,
     embedder: Option<Embedder>,
     project_root: PathBuf,
-    hnsw: Option<HnswIndex>,
+    /// Vector index for O(log n) search (CAGRA or HNSW)
+    index: Option<Box<dyn VectorIndex>>,
 }
 
 impl McpServer {
@@ -156,12 +158,46 @@ impl McpServer {
 
         let store = Store::open(&index_path).context("Failed to open index")?;
 
-        // Load HNSW index if available
-        let hnsw = if HnswIndex::exists(&cq_dir, "index") {
-            match HnswIndex::load(&cq_dir, "index") {
+        // Load vector index: CAGRA (GPU) > HNSW (CPU)
+        let index: Option<Box<dyn VectorIndex>> = {
+            #[cfg(feature = "gpu-search")]
+            {
+                if crate::cagra::CagraIndex::gpu_available() {
+                    match crate::cagra::CagraIndex::build_from_store(&store) {
+                        Ok(idx) => {
+                            tracing::info!("MCP: Using CAGRA GPU index ({} vectors)", idx.len());
+                            Some(Box::new(idx) as Box<dyn VectorIndex>)
+                        }
+                        Err(e) => {
+                            tracing::warn!("MCP: Failed to build CAGRA index: {}", e);
+                            Self::load_hnsw_index(&cq_dir)
+                        }
+                    }
+                } else {
+                    Self::load_hnsw_index(&cq_dir)
+                }
+            }
+            #[cfg(not(feature = "gpu-search"))]
+            {
+                Self::load_hnsw_index(&cq_dir)
+            }
+        };
+
+        Ok(Self {
+            store,
+            embedder: None,
+            project_root,
+            index,
+        })
+    }
+
+    /// Load HNSW index if available
+    fn load_hnsw_index(cq_dir: &std::path::Path) -> Option<Box<dyn VectorIndex>> {
+        if HnswIndex::exists(cq_dir, "index") {
+            match HnswIndex::load(cq_dir, "index") {
                 Ok(index) => {
                     tracing::info!("MCP: Loaded HNSW index ({} vectors)", index.len());
-                    Some(index)
+                    Some(Box::new(index))
                 }
                 Err(e) => {
                     tracing::warn!("MCP: Failed to load HNSW index: {}", e);
@@ -170,14 +206,7 @@ impl McpServer {
             }
         } else {
             None
-        };
-
-        Ok(Self {
-            store,
-            embedder: None,
-            project_root,
-            hnsw,
-        })
+        }
     }
 
     /// Ensure embedder is loaded (lazy initialization)
@@ -430,13 +459,13 @@ impl McpServer {
         let limit = args.limit.unwrap_or(5).min(20);
         let threshold = args.threshold.unwrap_or(0.3);
 
-        // Use unified search with HNSW if available
+        // Use unified search with vector index if available
         let results = self.store.search_unified_with_index(
             &query_embedding,
             &filter,
             limit,
             threshold,
-            self.hnsw.as_ref(),
+            self.index.as_deref(),
         )?;
 
         let json_results: Vec<_> = results
