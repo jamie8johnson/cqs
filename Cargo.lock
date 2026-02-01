@@ -820,6 +820,7 @@ dependencies = [
  "keyring",
  "libc",
  "lru",
+ "ndarray 0.15.6",
  "ndarray 0.17.2",
  "notify",
  "once_cell",

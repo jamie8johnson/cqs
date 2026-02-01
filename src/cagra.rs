@@ -11,11 +11,14 @@
 //!
 //! ## Ownership Model
 //!
-//! The cuVS `search()` method consumes the index. We use interior mutability
-//! to rebuild the index as needed while maintaining the VectorIndex trait.
+//! The cuVS `search()` method consumes the index. We cache the embeddings
+//! and rebuild the index as needed.
 
 #[cfg(feature = "gpu-search")]
 use std::sync::Mutex;
+
+#[cfg(feature = "gpu-search")]
+use ndarray_015::Array2;
 
 #[cfg(feature = "gpu-search")]
 use thiserror::Error;
@@ -50,20 +53,18 @@ pub enum CagraError {
 pub struct CagraIndex {
     /// cuVS resources (CUDA context, streams, etc.)
     resources: cuvs::Resources,
-    /// Cached embedding data for rebuilding index after search
-    embeddings: Vec<Vec<f32>>,
+    /// Cached embedding data as ndarray for rebuilding index after search
+    dataset: Array2<f32>,
     /// Mapping from internal index to chunk ID
     id_map: Vec<String>,
     /// The actual index (rebuilt after each search due to consuming API)
-    index: Mutex<Option<cuvs::cagra::Index<f32>>>,
+    index: Mutex<Option<cuvs::cagra::Index>>,
 }
 
 #[cfg(feature = "gpu-search")]
 impl CagraIndex {
     /// Check if GPU is available for CAGRA
     pub fn gpu_available() -> bool {
-        // TODO: Proper GPU detection
-        // For now, try to create Resources and see if it succeeds
         cuvs::Resources::new().is_ok()
     }
 
@@ -84,64 +85,49 @@ impl CagraIndex {
             tracing::trace!("Adding {} to CAGRA index", id);
         }
 
-        tracing::info!("Building CAGRA index with {} vectors", embeddings.len());
+        let n_vectors = embeddings.len();
+        tracing::info!("Building CAGRA index with {} vectors", n_vectors);
 
         // Create cuVS resources
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
-        // Prepare data
-        let mut id_map = Vec::with_capacity(embeddings.len());
-        let mut emb_data = Vec::with_capacity(embeddings.len());
+        // Prepare data as ndarray (row-major: [n_vectors, EMBEDDING_DIM])
+        let mut id_map = Vec::with_capacity(n_vectors);
+        let mut flat_data = Vec::with_capacity(n_vectors * EMBEDDING_DIM);
 
         for (chunk_id, embedding) in embeddings {
             id_map.push(chunk_id);
-            emb_data.push(embedding.into_vec());
+            flat_data.extend(embedding.into_inner());
         }
 
-        // Flatten for cuVS (expects [n_vectors * dim] layout)
-        let n_vectors = emb_data.len();
-        let flat_data: Vec<f32> = emb_data.iter().flatten().copied().collect();
+        let dataset = Array2::from_shape_vec((n_vectors, EMBEDDING_DIM), flat_data)
+            .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
 
         // Build index parameters
         let build_params =
             cuvs::cagra::IndexParams::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
         // Build the index
-        let index = cuvs::cagra::Index::build(
-            &resources,
-            &build_params,
-            &flat_data,
-            n_vectors,
-            EMBEDDING_DIM,
-        )
-        .map_err(|e| CagraError::Cuvs(e.to_string()))?;
+        let index = cuvs::cagra::Index::build(&resources, &build_params, &dataset)
+            .map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
         tracing::info!("CAGRA index built successfully");
 
         Ok(Self {
             resources,
-            embeddings: emb_data,
+            dataset,
             id_map,
             index: Mutex::new(Some(index)),
         })
     }
 
     /// Rebuild index from cached embeddings (needed after search consumes it)
-    fn rebuild_index(&self) -> Result<cuvs::cagra::Index<f32>, CagraError> {
-        let n_vectors = self.embeddings.len();
-        let flat_data: Vec<f32> = self.embeddings.iter().flatten().copied().collect();
-
+    fn rebuild_index(&self) -> Result<cuvs::cagra::Index, CagraError> {
         let build_params =
             cuvs::cagra::IndexParams::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
-        cuvs::cagra::Index::build(
-            &self.resources,
-            &build_params,
-            &flat_data,
-            n_vectors,
-            EMBEDDING_DIM,
-        )
-        .map_err(|e| CagraError::Cuvs(e.to_string()))
+        cuvs::cagra::Index::build(&self.resources, &build_params, &self.dataset)
+            .map_err(|e| CagraError::Cuvs(e.to_string()))
     }
 
     /// Number of vectors in the index
@@ -201,43 +187,94 @@ impl CagraIndex {
             }
         };
 
-        // Perform search
-        let query_data = query.as_slice();
-        let result = cuvs::cagra::search(
+        // Prepare query as 2D array (1 query x EMBEDDING_DIM)
+        let query_host = Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec())
+            .expect("query shape");
+
+        // Copy query to device
+        let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&self.resources) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Failed to copy query to device: {}", e);
+                let mut guard = self.index.lock().unwrap();
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        // Prepare output buffers on host, then copy to device
+        let neighbors_host: Array2<u32> = Array2::zeros((1, k));
+        let distances_host: Array2<f32> = Array2::zeros((1, k));
+
+        let neighbors_device =
+            match cuvs::ManagedTensor::from(&neighbors_host).to_device(&self.resources) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to allocate neighbors on device: {}", e);
+                    let mut guard = self.index.lock().unwrap();
+                    *guard = Some(index);
+                    return Vec::new();
+                }
+            };
+
+        let distances_device =
+            match cuvs::ManagedTensor::from(&distances_host).to_device(&self.resources) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to allocate distances on device: {}", e);
+                    let mut guard = self.index.lock().unwrap();
+                    *guard = Some(index);
+                    return Vec::new();
+                }
+            };
+
+        // Perform search (consumes index)
+        if let Err(e) = index.search(
             &self.resources,
             &search_params,
-            index,
-            query_data,
-            1, // n_queries
-            k, // top_k
-        );
+            &query_device,
+            &neighbors_device,
+            &distances_device,
+        ) {
+            tracing::error!("CAGRA search failed: {}", e);
+            return Vec::new();
+        }
 
-        match result {
-            Ok((distances, indices, _returned_index)) => {
-                // Note: cuVS search consumes the index, so we need to rebuild next time
-                // We could put _returned_index back, but the API might vary
+        // Copy results back to host
+        let mut neighbors_result: Array2<u32> = Array2::zeros((1, k));
+        let mut distances_result: Array2<f32> = Array2::zeros((1, k));
 
-                let mut results = Vec::with_capacity(k);
-                for (dist, idx) in distances.iter().zip(indices.iter()) {
-                    let idx = *idx as usize;
-                    if idx < self.id_map.len() {
-                        // Convert L2 distance to similarity
-                        // L2 distance for normalized vectors: d = 2 - 2*cos_sim
-                        // So cos_sim = 1 - d/2
-                        let score = 1.0 - dist / 2.0;
-                        results.push(IndexResult {
-                            id: self.id_map[idx].clone(),
-                            score,
-                        });
-                    }
-                }
-                results
-            }
-            Err(e) => {
-                tracing::error!("CAGRA search failed: {}", e);
-                Vec::new()
+        if let Err(e) = neighbors_device.to_host(&self.resources, &mut neighbors_result) {
+            tracing::error!("Failed to copy neighbors from device: {}", e);
+            return Vec::new();
+        }
+        if let Err(e) = distances_device.to_host(&self.resources, &mut distances_result) {
+            tracing::error!("Failed to copy distances from device: {}", e);
+            return Vec::new();
+        }
+
+        // Note: index was consumed by search, will be rebuilt on next search
+
+        // Convert results
+        let mut results = Vec::with_capacity(k);
+        let neighbor_row = neighbors_result.row(0);
+        let distance_row = distances_result.row(0);
+
+        for i in 0..k {
+            let idx = neighbor_row[i] as usize;
+            if idx < self.id_map.len() {
+                // CAGRA returns L2 distance for normalized vectors
+                // L2 distance for normalized: d = 2 - 2*cos_sim, so cos_sim = 1 - d/2
+                let dist = distance_row[i];
+                let score = 1.0 - dist / 2.0;
+                results.push(IndexResult {
+                    id: self.id_map[idx].clone(),
+                    score,
+                });
             }
         }
+
+        results
     }
 }
 
