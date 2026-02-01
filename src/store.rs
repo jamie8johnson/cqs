@@ -262,7 +262,7 @@ impl Default for ModelInfo {
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
-            dimensions: 768,
+            dimensions: 769, // 768 from model + 1 sentiment
             version: "1.5".to_string(),
         }
     }
@@ -293,7 +293,7 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)
 pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
-    const EXPECTED_BYTES: usize = 768 * 4;
+    const EXPECTED_BYTES: usize = 769 * 4; // 768 model + 1 sentiment
     if bytes.len() != EXPECTED_BYTES {
         return None;
     }
@@ -307,7 +307,7 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
         .unwrap_or_else(|| {
             tracing::warn!(
                 "Embedding byte length mismatch: expected {}, got {} (possible corruption)",
-                768 * 4,
+                769 * 4,
                 bytes.len()
             );
             bytes
@@ -321,7 +321,7 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     debug_assert_eq!(a.len(), b.len(), "Embedding dimension mismatch");
-    debug_assert_eq!(a.len(), 768, "Expected 768-dim embeddings");
+    debug_assert_eq!(a.len(), 769, "Expected 769-dim embeddings");
     use simsimd::SpatialSimilarity;
     f32::dot(a, b).unwrap_or_else(|| {
         // Fallback for unsupported architectures

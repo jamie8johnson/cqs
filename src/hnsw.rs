@@ -23,8 +23,8 @@ const MAX_NB_CONNECTION: usize = 24; // M parameter - connections per node
 const MAX_LAYER: usize = 16; // Maximum layers in the graph
 const EF_CONSTRUCTION: usize = 200; // Construction-time search width
 
-/// Embedding dimension (nomic-embed-text-v1.5)
-const EMBEDDING_DIM: usize = 768;
+/// Embedding dimension (768 from model + 1 sentiment)
+const EMBEDDING_DIM: usize = 769;
 
 /// Search width for queries (higher = more accurate but slower)
 const EF_SEARCH: usize = 100;

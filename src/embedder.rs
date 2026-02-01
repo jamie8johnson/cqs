@@ -45,17 +45,42 @@ impl From<ort::Error> for EmbedderError {
     }
 }
 
-/// A 768-dimensional L2-normalized embedding vector
+/// A 769-dimensional L2-normalized embedding vector
 ///
-/// Embeddings are produced by nomic-embed-text-v1.5 and can be
-/// compared using cosine similarity (dot product for normalized vectors).
+/// Embeddings are produced by nomic-embed-text-v1.5 (768-dim) with an
+/// optional 769th dimension for sentiment (-1.0 to +1.0).
+/// Can be compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
+
+/// Standard embedding dimension from model
+pub const MODEL_DIM: usize = 768;
+/// Full embedding dimension with sentiment
+pub const EMBEDDING_DIM: usize = 769;
 
 impl Embedding {
     /// Create a new embedding from raw vector data
     pub fn new(data: Vec<f32>) -> Self {
         Self(data)
+    }
+
+    /// Append sentiment as 769th dimension
+    ///
+    /// Converts a 768-dim model embedding to 769-dim with sentiment.
+    /// Sentiment should be -1.0 (negative) to +1.0 (positive).
+    pub fn with_sentiment(mut self, sentiment: f32) -> Self {
+        debug_assert_eq!(self.0.len(), MODEL_DIM, "Expected 768-dim embedding");
+        self.0.push(sentiment.clamp(-1.0, 1.0));
+        self
+    }
+
+    /// Get the sentiment (769th dimension) if present
+    pub fn sentiment(&self) -> Option<f32> {
+        if self.0.len() == EMBEDDING_DIM {
+            Some(self.0[MODEL_DIM])
+        } else {
+            None
+        }
     }
 
     /// Get the embedding as a slice

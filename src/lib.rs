@@ -5,7 +5,8 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Uses nomic-embed-text-v1.5 embeddings (768-dim)
+//! - **Semantic search**: Uses nomic-embed-text-v1.5 embeddings (769-dim: 768 model + sentiment)
+//! - **Notes with sentiment**: Unified memory system for AI collaborators
 //! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **MCP integration**: Works with Claude Code and other AI assistants
@@ -56,6 +57,7 @@ pub mod hnsw;
 pub mod hunch;
 pub mod mcp;
 pub mod nl;
+pub mod note;
 pub mod parser;
 pub mod scar;
 pub mod store;

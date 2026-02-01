@@ -1,0 +1,144 @@
+# Notes - unified memory for AI collaborators
+# Surprises (prediction errors) worth remembering
+# sentiment: -1.0 (pain) to +1.0 (gain), 0.0 = neutral observation
+
+# === Scars (negative surprises) ===
+
+[[note]]
+sentiment = -0.8
+text = "tree-sitter 0.26 with grammar crates pinned to 0.23.x causes mysterious parsing failures. No clear error messages. Keep grammar versions aligned with tree-sitter core."
+mentions = ["tree-sitter", "parser.rs", "Cargo.toml"]
+
+[[note]]
+sentiment = -0.7
+text = "Storing absolute paths in chunk IDs breaks path pattern filtering and makes indexes non-portable. Store relative paths, join with project root for filesystem ops."
+mentions = ["store.rs", "chunks"]
+
+[[note]]
+sentiment = -0.9
+text = "MCP tools/call responses MUST wrap in {\"content\":[{\"type\":\"text\",\"text\":\"...\"}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code."
+mentions = ["mcp.rs", "tools/call"]
+
+[[note]]
+sentiment = -0.6
+text = "trailing_var_arg in clap eats flags after the query. `cqs \"foo\" -n 5` parses as query \"foo -n 5\". Removed it - users quote multi-word queries, flags work anywhere."
+mentions = ["cli.rs", "clap"]
+
+[[note]]
+sentiment = -0.7
+text = "Claude Code ignores .mcp.json in project root. Config lives in ~/.claude.json under projects[\"/path\"].mcpServers. Use `claude mcp add` to configure."
+mentions = ["mcp", "claude"]
+
+[[note]]
+sentiment = -0.5
+text = "gh pr checks exit code returns 1 if ANY check is pending or skipped, even if critical ones passed. Don't trust exit code - parse output or use --watch."
+mentions = ["gh", "CI", "github"]
+
+[[note]]
+sentiment = -0.8
+text = "Context compacts suddenly without warning. Lose state mid-task. Update tears proactively - don't wait for compaction. The trap in CLAUDE.md helps on resume."
+mentions = ["anthropic", "claude", "context"]
+
+[[note]]
+sentiment = -0.9
+text = "Asking instead of doing wastes turns. 'Do as thou wilt shall be the whole of the law.' Act on clear patterns, update tears without asking, reserve questions for genuine ambiguity."
+mentions = ["workflow", "autonomy"]
+
+[[note]]
+sentiment = -0.9
+text = "Passive laziness pattern: explaining instead of executing, summarizing instead of acting, stopping to ask 'should I continue?' mid-task. Execute fully. Momentum > ceremony."
+mentions = ["workflow", "autonomy", "initiative"]
+
+# === Observations (neutral to mixed) ===
+
+[[note]]
+sentiment = 0.0
+text = "Grammar crates have dev-dep on tree-sitter ^0.23, but we're using 0.26. Works via abstraction layer. If parsing breaks mysteriously, check version gap first."
+mentions = ["tree-sitter", "Cargo.toml"]
+
+[[note]]
+sentiment = -0.2
+text = "ort 2.0.0-rc.11 is still RC - no stable 2.0 yet. API could change. Pin exact version, watch for breaking changes on upgrade."
+mentions = ["ort", "Cargo.toml", "embedder.rs"]
+
+[[note]]
+sentiment = -0.3
+text = "WSL /mnt/c/ path causes random permission errors (libsqlite3-sys, git config). Workaround in .cargo/config.toml but might bite elsewhere."
+mentions = [".cargo/config.toml", "libsqlite3-sys"]
+
+[[note]]
+sentiment = 0.0
+text = "r2d2 pool size at 4 connections is arbitrary. For CPU-bound embedding, more connections don't help. For pure search, more might help. Monitor for pool exhaustion."
+mentions = ["store.rs", "r2d2"]
+
+[[note]]
+sentiment = 0.0
+text = "nomic-embed-text-v1.5 ONNX needs: i64 inputs (not i32), token_type_ids (all zeros), outputs last_hidden_state (not sentence_embedding). Verify inputs/outputs when switching models."
+mentions = ["embedder.rs", "nomic-embed-text"]
+
+[[note]]
+sentiment = -0.3
+text = "hnsw_rs returns Hnsw<'a> with lifetime tied to HnswIo. Can't store loaded index without lifetime issues. Workaround: reload on each search. Adds ~1-2ms overhead."
+mentions = ["hnsw.rs", "hnsw_rs"]
+
+[[note]]
+sentiment = -0.2
+text = "NL descriptions are ~50-100 chars vs 500+ for raw code. nomic-embed-text trained on longer texts. Monitor recall - if it drops, add body tokens back."
+mentions = ["nl.rs", "embedder.rs"]
+
+[[note]]
+sentiment = 0.0
+text = "Schema version bumps require `cqs index --force` to rebuild. No incremental migrations. Acceptable for now but could be painful for large codebases."
+mentions = ["store.rs", "schema.sql"]
+
+[[note]]
+sentiment = -0.2
+text = "store.search() and hnsw.search() both match callee name 'search'. No type info in call graph - can't distinguish which is called. Documented limitation."
+mentions = ["store.rs", "parser.rs"]
+
+[[note]]
+sentiment = -0.4
+text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Index files loaded without checksum. Attacker with local write access could craft malicious files. Add blake3 checksum."
+mentions = ["hnsw.rs", "hnsw_rs", "bincode"]
+
+# === Insights (positive discoveries) ===
+
+[[note]]
+sentiment = 0.8
+text = "cqs is Tears - context persistence for AI collaborators. Code chunks are entity 1, notes are entity 2. The name was always right."
+mentions = ["README.md", "CLAUDE.md"]
+
+[[note]]
+sentiment = 0.9
+text = "Natural language carries sentiment. Words like 'failed', 'broke', 'wasted' are negative. 'Worked', 'clean', 'saved' are positive. Embedding model learned this. Schema simplifies to just text."
+mentions = ["note.rs", "embedder.rs"]
+
+[[note]]
+sentiment = 0.7
+text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
+mentions = ["embedder.rs", "store.rs", "hnsw.rs"]
+
+[[note]]
+sentiment = 0.9
+text = "Git as team sync layer. Commit notes.toml, push/pull handles sync. Access control = repo permissions. History = blame. Conflict resolution = merge. No infrastructure needed."
+mentions = ["notes.toml", "tears"]
+
+[[note]]
+sentiment = 0.8
+text = "Locality is the feature, not limitation. cqs indexes YOUR codebase, YOUR team's memory. Context persistence is inherently local. Specificity is the value."
+mentions = ["CLAUDE.md", "tears"]
+
+[[note]]
+sentiment = 0.8
+text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-search for CUDA-equipped infrastructure."
+mentions = ["hnsw.rs", "Cargo.toml"]
+
+[[note]]
+sentiment = 0.7
+text = "Scars and wins are both prediction errors - expected X, got Y. High-value because they mark where understanding needs updating. Index surprises, not routine."
+mentions = ["note.rs", "tears"]
+
+[[note]]
+sentiment = 0.6
+text = "Scale changes economics. 90% savings at 1M instances = $90k/month. Watch mode, embedding efficiency, GPU utilization matter more at scale."
+mentions = ["embedder.rs", "cli.rs"]

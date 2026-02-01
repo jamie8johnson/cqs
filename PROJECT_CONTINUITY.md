@@ -2,45 +2,61 @@
 
 ## Right Now
 
-**PR #45** - Hunches + Scars + Security + Optimizations
+**Implementing unified notes + 769-dim sentiment + cuVS**
 
-https://github.com/jamie8johnson/cqs/pull/45
-
-Branch: `feat/hunches-indexing` - ready to merge
+Branch: `feat/cuvs-gpu-search`
 
 ### Done this session:
-- Scars as indexed entities (entity type 3)
-- Phase 1 optimizations (release profile, zero-copy, lazy ONNX)
-- "Passive laziness" scar added
-- Discussed encryption at rest
+- Merged PR #45
+- Created notes.toml (migrated scars + hunches)
+- Created src/note.rs with sentiment field
+- Updated embedder.rs: with_sentiment(), EMBEDDING_DIM=769
+- Updated store.rs + hnsw.rs: 768→769 everywhere
+- Code compiles clean
 
-### Encryption design (not implemented yet):
-- SQLCipher + OS keyring for transparent encryption
-- `--encrypt` flag on init
-- KeyProvider trait for future backends (Azure KV, AWS KMS, Vault)
-- Feature flag: `encrypt = ["rusqlite/bundled-sqlcipher", "keyring"]`
+### Key architecture decisions:
+- `sentiment` field (-1.0 to +1.0) replaces pain/gain/type fields
+- Natural language carries valence, sentiment makes it explicit/searchable
+- 769th embedding dimension = sentiment baked into similarity
+- cuVS CAGRA feature-flagged as `gpu-search`
 
-## Key Insight
+### Fleet architecture (not implemented):
+- Multiple Claudes share notes.toml via Git
+- Any Claude can append notes (cqs_add_note MCP tool)
+- "Curator" role is an impulse, not dedicated agent
+- Append-only, truth emerges from pile
+- cqs is MCP server first, CLI second
+- Consumer is Claude, not human
 
-cqs is Tears - context persistence for AI collaborators.
+## Schema
 
-| Entity | Purpose |
-|--------|---------|
-| 1. Code | Functions, methods |
-| 2. Hunch | Soft observations |
-| 3. Scar | Failed approaches |
+```toml
+[[note]]
+sentiment = -0.8
+text = "tree-sitter 0.26 breaks with 0.23 grammars"
+mentions = ["tree-sitter"]
+```
 
-## Parked
+## Files Modified
 
-- Encryption implementation (KeyProvider trait stubbed)
-- Phase 2-3 optimizations (diminishing returns)
-- C/Java language support
-
-## Blockers
-
-None. PR #45 is ready to merge.
+- src/note.rs (NEW)
+- src/embedder.rs (with_sentiment, 769 dim)
+- src/store.rs (769 dim)
+- src/hnsw.rs (769 dim)
+- src/lib.rs (exports note module)
+- docs/notes.toml (NEW - migrated content)
+- Cargo.toml (gpu-search feature)
 
 ## Next
 
-1. Merge PR #45
-2. Optionally implement encryption feature
+1. Add cqs_add_note MCP tool
+2. Update cli.rs for note display
+3. Wire notes into search results
+4. Test reindex with 769-dim
+5. Delete old scar.rs, hunch.rs after verification
+
+## Parked
+
+- cuVS CAGRA implementation (needs CUDA environment)
+- Curator agent architecture (design done, impl later)
+- Fleet coordination (Git append-only model)
