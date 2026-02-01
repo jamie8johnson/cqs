@@ -1,4 +1,4 @@
--- cq index schema v5
+-- cq index schema v6
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -63,3 +63,31 @@ CREATE TABLE IF NOT EXISTS function_calls (
 CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file);
 CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name);
 CREATE INDEX IF NOT EXISTS idx_fcalls_callee ON function_calls(callee_name);
+
+-- Hunches: soft observations and latent risks that surface in search
+CREATE TABLE IF NOT EXISTS hunches (
+    id TEXT PRIMARY KEY,           -- "hunch:2026-01-31-title-slug"
+    date TEXT NOT NULL,            -- ISO date (YYYY-MM-DD)
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity TEXT NOT NULL,        -- high, med, low
+    confidence TEXT NOT NULL,      -- high, med, low
+    resolution TEXT NOT NULL,      -- open, resolved, accepted
+    mentions TEXT,                 -- JSON array of mentioned paths/functions
+    embedding BLOB NOT NULL,
+    source_file TEXT NOT NULL,     -- path to HUNCHES.md
+    file_mtime INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_hunches_resolution ON hunches(resolution);
+CREATE INDEX IF NOT EXISTS idx_hunches_severity ON hunches(severity);
+
+-- FTS5 for hunch keyword search
+CREATE VIRTUAL TABLE IF NOT EXISTS hunches_fts USING fts5(
+    id UNINDEXED,
+    title,
+    description,
+    tokenize='unicode61'
+);

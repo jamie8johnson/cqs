@@ -16,8 +16,9 @@ use rayon::prelude::*;
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::hnsw::HnswIndex;
+use cqs::hunch::parse_hunches;
 use cqs::parser::{Chunk, Parser as CqParser};
-use cqs::store::{ModelInfo, SearchFilter, Store};
+use cqs::store::{ModelInfo, SearchFilter, Store, UnifiedResult};
 
 // Constants
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
@@ -102,6 +103,14 @@ pub struct Cli {
     /// Show debug info
     #[arg(short, long)]
     verbose: bool,
+
+    /// Exclude hunches from search results
+    #[arg(long)]
+    no_hunches: bool,
+
+    /// Include resolved hunches in search results
+    #[arg(long)]
+    include_resolved: bool,
 }
 
 #[derive(Subcommand)]
@@ -783,6 +792,65 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
     }
 
+    // Index hunches if hunches.toml exists
+    if !check_interrupted() {
+        let hunches_path = root.join("docs/hunches.toml");
+        if hunches_path.exists() {
+            // Check if hunches need reindexing
+            let needs_reindex = force || store.hunches_need_reindex(&hunches_path).unwrap_or(true);
+
+            if needs_reindex {
+                if !cli.quiet {
+                    println!("Indexing hunches...");
+                }
+
+                match parse_hunches(&hunches_path) {
+                    Ok(hunches) => {
+                        if !hunches.is_empty() {
+                            // Embed hunch descriptions
+                            let texts: Vec<String> =
+                                hunches.iter().map(|h| h.embedding_text()).collect();
+                            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                            let embeddings = embedder.embed_documents(&text_refs)?;
+
+                            // Get file mtime
+                            let file_mtime = hunches_path
+                                .metadata()
+                                .and_then(|m| m.modified())
+                                .ok()
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs() as i64)
+                                .unwrap_or(0);
+
+                            // Delete old hunches and insert new
+                            store.delete_hunches_by_file(&hunches_path)?;
+                            let hunch_embeddings: Vec<_> =
+                                hunches.into_iter().zip(embeddings).collect();
+                            store.upsert_hunches_batch(
+                                &hunch_embeddings,
+                                &hunches_path,
+                                file_mtime,
+                            )?;
+
+                            if !cli.quiet {
+                                let (total, open, high) = store.hunch_stats()?;
+                                println!(
+                                    "  Hunches: {} total ({} open, {} high-severity)",
+                                    total, open, high
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse hunches: {}", e);
+                    }
+                }
+            } else if !cli.quiet {
+                println!("Hunches up to date.");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -817,8 +885,11 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
     };
 
+    // Determine if we should include hunches
+    let include_hunches = !cli.no_hunches;
+
     // Try HNSW search first (much faster for large indexes)
-    let results = if HnswIndex::exists(&cq_dir, "index") {
+    let code_results = if HnswIndex::exists(&cq_dir, "index") {
         match HnswIndex::load(&cq_dir, "index") {
             Ok(hnsw) => {
                 if cli.verbose {
@@ -878,6 +949,34 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
     };
 
+    // Search hunches if requested
+    let hunch_results = if include_hunches {
+        store.search_hunches(
+            &query_embedding,
+            cli.limit,
+            cli.threshold,
+            cli.include_resolved,
+        )?
+    } else {
+        vec![]
+    };
+
+    // Merge results
+    let results: Vec<UnifiedResult> = {
+        let mut unified: Vec<UnifiedResult> = code_results
+            .into_iter()
+            .map(UnifiedResult::Code)
+            .chain(hunch_results.into_iter().map(UnifiedResult::Hunch))
+            .collect();
+        unified.sort_by(|a, b| {
+            b.score()
+                .partial_cmp(&a.score())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        unified.truncate(cli.limit);
+        unified
+    };
+
     if results.is_empty() {
         if cli.json {
             println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
@@ -888,9 +987,9 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     if cli.json {
-        display_results_json(&results, query)?;
+        display_unified_results_json(&results, query)?;
     } else {
-        display_results(&results, &root, cli.no_content, cli.context)?;
+        display_unified_results(&results, &root, cli.no_content, cli.context)?;
     }
 
     Ok(())
@@ -1265,88 +1364,6 @@ fn cmd_completions(shell: clap_complete::Shell) {
 
 // === Output helpers ===
 
-fn display_results(
-    results: &[cqs::store::SearchResult],
-    root: &Path,
-    no_content: bool,
-    context: Option<usize>,
-) -> Result<()> {
-    for result in results {
-        // Paths are stored relative; strip_prefix handles legacy absolute paths
-        let rel_path = result
-            .chunk
-            .file
-            .strip_prefix(root)
-            .unwrap_or(&result.chunk.file);
-
-        let header = format!(
-            "{}:{} ({} {}) [{}] [{:.2}]",
-            rel_path.display(),
-            result.chunk.line_start,
-            result.chunk.chunk_type,
-            result.chunk.name,
-            result.chunk.language,
-            result.score
-        );
-
-        println!("{}", header.cyan());
-
-        if !no_content {
-            println!("{}", "─".repeat(50));
-
-            // Read context if requested
-            if let Some(n) = context {
-                if n > 0 {
-                    let abs_path = root.join(&result.chunk.file);
-                    if let Ok((before, _)) = read_context_lines(
-                        &abs_path,
-                        result.chunk.line_start,
-                        result.chunk.line_end,
-                        n,
-                    ) {
-                        // Print before context (dimmed)
-                        for line in &before {
-                            println!("{}", format!("  {}", line).dimmed());
-                        }
-                    }
-                }
-            }
-
-            // Show signature or truncated content
-            if result.chunk.content.lines().count() <= 10 {
-                println!("{}", result.chunk.content);
-            } else {
-                for line in result.chunk.content.lines().take(8) {
-                    println!("{}", line);
-                }
-                println!("    ...");
-            }
-
-            // Print after context if requested
-            if let Some(n) = context {
-                if n > 0 {
-                    let abs_path = root.join(&result.chunk.file);
-                    if let Ok((_, after)) = read_context_lines(
-                        &abs_path,
-                        result.chunk.line_start,
-                        result.chunk.line_end,
-                        n,
-                    ) {
-                        for line in &after {
-                            println!("{}", format!("  {}", line).dimmed());
-                        }
-                    }
-                }
-            }
-
-            println!();
-        }
-    }
-
-    println!("{} results", results.len());
-    Ok(())
-}
-
 /// Read context lines before and after a range in a file
 fn read_context_lines(
     file: &Path,
@@ -1384,11 +1401,131 @@ fn read_context_lines(
 // NL generation moved to cqs::nl module
 use cqs::nl::generate_nl_description;
 
-fn display_results_json(results: &[cqs::store::SearchResult], query: &str) -> Result<()> {
+/// Display unified search results (code + hunches)
+fn display_unified_results(
+    results: &[UnifiedResult],
+    root: &Path,
+    no_content: bool,
+    context: Option<usize>,
+) -> Result<()> {
+    for result in results {
+        match result {
+            UnifiedResult::Code(r) => {
+                // Paths are stored relative; strip_prefix handles legacy absolute paths
+                let rel_path = r.chunk.file.strip_prefix(root).unwrap_or(&r.chunk.file);
+
+                let header = format!(
+                    "{}:{} ({} {}) [{}] [{:.2}]",
+                    rel_path.display(),
+                    r.chunk.line_start,
+                    r.chunk.chunk_type,
+                    r.chunk.name,
+                    r.chunk.language,
+                    r.score
+                );
+
+                println!("{}", header.cyan());
+
+                if !no_content {
+                    println!("{}", "─".repeat(50));
+
+                    // Read context if requested
+                    if let Some(n) = context {
+                        if n > 0 {
+                            let abs_path = root.join(&r.chunk.file);
+                            if let Ok((before, _)) = read_context_lines(
+                                &abs_path,
+                                r.chunk.line_start,
+                                r.chunk.line_end,
+                                n,
+                            ) {
+                                for line in &before {
+                                    println!("{}", format!("  {}", line).dimmed());
+                                }
+                            }
+                        }
+                    }
+
+                    // Show signature or truncated content
+                    if r.chunk.content.lines().count() <= 10 {
+                        println!("{}", r.chunk.content);
+                    } else {
+                        for line in r.chunk.content.lines().take(8) {
+                            println!("{}", line);
+                        }
+                        println!("    ...");
+                    }
+
+                    // Print after context if requested
+                    if let Some(n) = context {
+                        if n > 0 {
+                            let abs_path = root.join(&r.chunk.file);
+                            if let Ok((_, after)) = read_context_lines(
+                                &abs_path,
+                                r.chunk.line_start,
+                                r.chunk.line_end,
+                                n,
+                            ) {
+                                for line in &after {
+                                    println!("{}", format!("  {}", line).dimmed());
+                                }
+                            }
+                        }
+                    }
+
+                    println!();
+                }
+            }
+            UnifiedResult::Hunch(r) => {
+                // Format: [hunch:severity] title [score]
+                let severity_color = match r.hunch.severity {
+                    cqs::hunch::Severity::High => "high".red(),
+                    cqs::hunch::Severity::Med => "med".yellow(),
+                    cqs::hunch::Severity::Low => "low".dimmed(),
+                };
+
+                let resolution_marker = match r.hunch.resolution {
+                    cqs::hunch::Resolution::Open => "",
+                    cqs::hunch::Resolution::Resolved => " ✓",
+                    cqs::hunch::Resolution::Accepted => " ⚡",
+                };
+
+                let header = format!(
+                    "[hunch:{}] {}{} [{:.2}]",
+                    severity_color, r.hunch.title, resolution_marker, r.score
+                );
+
+                println!("{}", header.magenta());
+
+                if !no_content {
+                    println!("{}", "─".repeat(50));
+                    // Show truncated description
+                    let desc_lines: Vec<&str> = r.hunch.description.lines().collect();
+                    if desc_lines.len() <= 5 {
+                        println!("{}", r.hunch.description);
+                    } else {
+                        for line in desc_lines.iter().take(4) {
+                            println!("{}", line);
+                        }
+                        println!("    ...");
+                    }
+                    println!();
+                }
+            }
+        }
+    }
+
+    println!("{} results", results.len());
+    Ok(())
+}
+
+/// Display unified results as JSON
+fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> Result<()> {
     let json_results: Vec<_> = results
         .iter()
-        .map(|r| {
-            serde_json::json!({
+        .map(|r| match r {
+            UnifiedResult::Code(r) => serde_json::json!({
+                "type": "code",
                 "file": r.chunk.file.to_string_lossy(),
                 "line_start": r.chunk.line_start,
                 "line_end": r.chunk.line_end,
@@ -1398,7 +1535,19 @@ fn display_results_json(results: &[cqs::store::SearchResult], query: &str) -> Re
                 "chunk_type": r.chunk.chunk_type.to_string(),
                 "score": r.score,
                 "content": r.chunk.content,
-            })
+            }),
+            UnifiedResult::Hunch(r) => serde_json::json!({
+                "type": "hunch",
+                "id": r.hunch.id,
+                "date": r.hunch.date,
+                "title": r.hunch.title,
+                "description": r.hunch.description,
+                "severity": r.hunch.severity.to_string(),
+                "confidence": r.hunch.confidence.to_string(),
+                "resolution": r.hunch.resolution.to_string(),
+                "mentions": r.hunch.mentions,
+                "score": r.score,
+            }),
         })
         .collect();
 
