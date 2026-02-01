@@ -565,6 +565,18 @@ impl McpServer {
             bail!("File not found: {}", path);
         }
 
+        // Path traversal protection
+        let canonical = file_path
+            .canonicalize()
+            .context("Failed to canonicalize path")?;
+        let project_canonical = self
+            .project_root
+            .canonicalize()
+            .context("Failed to canonicalize project root")?;
+        if !canonical.starts_with(&project_canonical) {
+            bail!("Path traversal not allowed: {}", path);
+        }
+
         // Read file content
         let content = std::fs::read_to_string(&file_path)
             .context(format!("Failed to read file: {}", path))?;

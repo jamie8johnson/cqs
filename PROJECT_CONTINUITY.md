@@ -2,9 +2,11 @@
 
 ## Right Now
 
-**PR #45 open** - Hunches as indexed entities. CI running after clippy fix.
+**BLOCKER: Path traversal in cqs_read** (mcp.rs:563)
+- `cqs_read` tool allows `../../../etc/passwd` reads
+- Must fix before PR #45 merges
 
-https://github.com/jamie8johnson/cqs/pull/45
+PR #45: https://github.com/jamie8johnson/cqs/pull/45
 
 ## Key Insight
 
