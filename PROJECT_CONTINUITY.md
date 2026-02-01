@@ -2,29 +2,35 @@
 
 ## Right Now
 
-**CAGRA GPU search working!**
+**Optimizing GPU search performance**
 
 Branch: `feat/cuvs-gpu-search`
+PR: #46 (open)
 
-### Benchmark Results (474 vectors):
+### Key Finding: HNSW beats CAGRA for MCP queries
 
-| Config | Time | Notes |
-|--------|------|-------|
-| HNSW (CPU) | ~1.0s | Fastest - index persisted |
-| CAGRA + CPU embed | ~2.3s | CAGRA rebuild each query |
-| CAGRA + CUDA embed | ~2.7s | GPU context overhead |
+| Config | 10 queries (8k vectors) |
+|--------|------------------------|
+| CPU embed + HNSW | **1.3s** (0.13s/query) |
+| CPU embed + CAGRA | 13s (1.3s/query) |
 
-HNSW wins for small indexes. CAGRA shines at scale (10k+) or when index stays in memory (MCP server).
+**Why:** CAGRA rebuilds from SQLite at startup (~1.5s). HNSW loads from disk (~50ms).
 
-### ort CUDA provider:
-- Fix: add `~/.cache/ort.pyke.io/dfbin/.../` to LD_LIBRARY_PATH
-- Not worth it for single queries (slower than CPU due to setup)
-- Documented in notes.toml
+### Optimizations committed:
+- `Embedder::new_cpu()` - CPU embedding for single queries (faster than GPU)
+- MCP server uses CPU embedding, GPU for batch indexing only
+- `CAGRA_THRESHOLD = 5000` - use HNSW for smaller indexes
+- Auto-heal symlinks for ort CUDA provider libs
+
+### Testing large index (in progress):
+- Indexing rust-lang/rust compiler (35k files, ~350k chunks expected)
+- Index at `/tmp/rust-compiler/.cq/index.db`
+- Testing if CAGRA wins at scale
 
 ### Hardware:
 - i9-11900K, 62GB RAM, RTX A6000 (49GB), CUDA 12.0, WSL2
 
-### Build command:
+### Build:
 ```bash
 source /home/user001/miniconda3/etc/profile.d/conda.sh
 conda activate cuvs
@@ -32,25 +38,14 @@ export LD_LIBRARY_PATH=/home/user001/miniconda3/envs/cuvs/lib:$LD_LIBRARY_PATH
 cargo build --release --features gpu-search
 ```
 
-### Binary location:
-`/home/user001/.cargo-target/cq/release/cqs`
-
-### This session:
-- Benchmarked CAGRA vs HNSW
-- Investigated ort CUDA (not worth it for single queries)
-- Security review passed (no issues)
-- Added completion checklist to CLAUDE.md
-- Fixed notes immediate indexing (cqs_add_note)
-- Fixed cqs watch to monitor notes.toml
-
-### Next:
-- PR to main
+### Binary: `/home/user001/.cargo-target/cq/release/cqs`
 
 ## Key Architecture
 
 - 769-dim embeddings (768 + sentiment)
 - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
-- Notes: unified memory with sentiment, indexed by cqs
+- MCP: CPU embed + HNSW (fast) or CAGRA (large indexes)
+- Indexing: GPU batch embedding
 
 ## Parked
 
