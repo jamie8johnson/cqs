@@ -54,6 +54,7 @@ pub mod config;
 pub mod embedder;
 pub mod hnsw;
 pub mod mcp;
+pub mod nl;
 pub mod parser;
 pub mod store;
 

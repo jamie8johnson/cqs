@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -42,3 +43,15 @@ jobs:
           components: rustfmt
       - name: Format check
         run: cargo fmt --check
+
+  # Eval suite - only runs on tagged releases (slow, requires model download)
+  eval:
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run eval suite
+        run: cargo test eval -- --ignored --nocapture
+        env:
+          RUST_BACKTRACE: 1

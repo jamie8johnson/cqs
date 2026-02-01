@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.1.12"
+version = "0.1.13"
 edition = "2021"
 description = "Semantic code search for Claude Code. Find functions by what they do, not their names. Local ML, GPU-accelerated."
 license = "MIT"
@@ -45,6 +45,9 @@ r2d2_sqlite = "0.24"
 # Vector search (HNSW)
 hnsw_rs = "0.3"
 simsimd = "6"
+
+# Text processing
+regex = "1"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

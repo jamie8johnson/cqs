@@ -164,11 +164,19 @@
   - Template-based: "A function named X. Takes parameters Y. Returns Z."
   - Doc comments prioritized as human-written NL
 
+- [x] NL module extraction (v0.1.13)
+  - src/nl.rs with generate_nl_description, tokenize_identifier
+  - JSDoc parsing for JavaScript (@param, @returns)
+  - Eval suite uses NL pipeline (matches production)
+  - Eval runs in CI on tagged releases
+
+- [x] MCP integration tests (8 tests)
+
 ### Planned
 
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
 - [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs nomic)
-- [ ] MCP tests, CLI integration tests
+- [ ] Template experiments (no prefix, body keywords) - run eval to compare
 
 ## Phase 6: Security
 
