@@ -151,6 +151,22 @@ enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Find functions that call a given function
+    Callers {
+        /// Function name to search for
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find functions called by a given function
+    Callees {
+        /// Function name to search for
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 pub fn run() -> Result<()> {
@@ -182,6 +198,8 @@ pub fn run() -> Result<()> {
             cmd_completions(shell);
             Ok(())
         }
+        Some(Commands::Callers { ref name, json }) => cmd_callers(&cli, name, json),
+        Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -682,6 +700,14 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
 
         store.upsert_chunks_batch(&chunk_embeddings, file_mtime)?;
 
+        // Extract and store function calls for call graph
+        for (chunk, _) in &chunk_embeddings {
+            let calls = parser.extract_calls_from_chunk(chunk);
+            if !calls.is_empty() {
+                store.upsert_calls(&chunk.id, &calls)?;
+            }
+        }
+
         total_embedded += chunk_embeddings.len();
         total_cached += batch_cached_count;
         progress.set_position(total_embedded as u64);
@@ -923,6 +949,133 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
             println!("  - Using --path to limit search scope");
             println!("  - Splitting into multiple projects");
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
+    let root = find_project_root();
+    let index_path = root.join(".cq/index.db");
+
+    if !index_path.exists() {
+        bail!("Index not found. Run 'cqs init && cqs index' first.");
+    }
+
+    let store = Store::open(&index_path)?;
+    let callers = store.get_callers(name)?;
+
+    if callers.is_empty() {
+        if json {
+            println!("[]");
+        } else {
+            println!("No callers found for '{}'", name);
+        }
+        return Ok(());
+    }
+
+    if json {
+        let json_output: Vec<serde_json::Value> = callers
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "file": c.file.to_string_lossy(),
+                    "line": c.line_start,
+                    "language": c.language.to_string(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_output)?);
+    } else {
+        println!("Functions that call '{}':", name);
+        println!();
+        for caller in &callers {
+            println!(
+                "  {} ({}:{})",
+                caller.name.cyan(),
+                caller.file.display(),
+                caller.line_start
+            );
+        }
+        println!();
+        println!("Total: {} caller(s)", callers.len());
+    }
+
+    Ok(())
+}
+
+fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
+    let root = find_project_root();
+    let index_path = root.join(".cq/index.db");
+
+    if !index_path.exists() {
+        bail!("Index not found. Run 'cqs init && cqs index' first.");
+    }
+
+    let store = Store::open(&index_path)?;
+
+    // First, find the chunk by name
+    // We search for chunks where name matches (case-insensitive partial match)
+    let conn = rusqlite::Connection::open(&index_path)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, name, file, line_start FROM chunks WHERE name = ?1 OR name LIKE ?2 LIMIT 10",
+    )?;
+    let chunks: Vec<(String, String, String, u32)> = stmt
+        .query_map(rusqlite::params![name, format!("%{}", name)], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if chunks.is_empty() {
+        if json {
+            println!("{{\"error\": \"Function not found\"}}");
+        } else {
+            println!("Function '{}' not found in index", name);
+        }
+        return Ok(());
+    }
+
+    // If multiple matches, show them and use the first exact match or first result
+    let (chunk_id, chunk_name, chunk_file, chunk_line) = if chunks.len() == 1 {
+        chunks.into_iter().next().unwrap()
+    } else {
+        // Prefer exact match
+        chunks
+            .iter()
+            .find(|(_, n, _, _)| n == name)
+            .cloned()
+            .unwrap_or_else(|| chunks.into_iter().next().unwrap())
+    };
+
+    let callees = store.get_callees(&chunk_id)?;
+
+    if json {
+        let json_output = serde_json::json!({
+            "function": chunk_name,
+            "file": chunk_file,
+            "line": chunk_line,
+            "calls": callees,
+        });
+        println!("{}", serde_json::to_string_pretty(&json_output)?);
+    } else {
+        println!(
+            "Functions called by '{}' ({}:{}):",
+            chunk_name.cyan(),
+            chunk_file,
+            chunk_line
+        );
+        println!();
+        if callees.is_empty() {
+            println!("  (no function calls found)");
+        } else {
+            for callee in &callees {
+                println!("  {}", callee);
+            }
+        }
+        println!();
+        println!("Total: {} call(s)", callees.len());
     }
 
     Ok(())

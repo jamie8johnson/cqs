@@ -12,7 +12,8 @@ use crate::parser::{Chunk, ChunkType, Language};
 
 // Schema version for migrations
 // v3: NL-based embeddings (code->NL translation before embedding)
-const CURRENT_SCHEMA_VERSION: i32 = 3;
+// v4: Call graph (function call relationships)
+const CURRENT_SCHEMA_VERSION: i32 = 4;
 const MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 #[derive(Error, Debug)]
@@ -1053,5 +1054,96 @@ impl Store {
             .collect();
 
         Ok(results)
+    }
+
+    // ============ Call Graph Methods ============
+
+    /// Insert or replace call sites for a chunk
+    ///
+    /// Deletes existing calls for the chunk, then inserts new ones.
+    pub fn upsert_calls(
+        &self,
+        chunk_id: &str,
+        calls: &[crate::parser::CallSite],
+    ) -> Result<(), StoreError> {
+        let conn = self.pool.get()?;
+
+        // Delete existing calls for this chunk
+        conn.execute("DELETE FROM calls WHERE caller_id = ?1", [chunk_id])?;
+
+        // Insert new calls
+        let mut stmt = conn.prepare_cached(
+            "INSERT INTO calls (caller_id, callee_name, line_number) VALUES (?1, ?2, ?3)",
+        )?;
+
+        for call in calls {
+            stmt.execute(params![chunk_id, call.callee_name, call.line_number])?;
+        }
+
+        Ok(())
+    }
+
+    /// Find all chunks that call a given function name
+    pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+        let conn = self.pool.get()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT c.id, c.file, c.language, c.chunk_type, c.name, c.signature,
+                    c.content, c.doc, c.line_start, c.line_end
+             FROM chunks c
+             JOIN calls ca ON c.id = ca.caller_id
+             WHERE ca.callee_name = ?1
+             ORDER BY c.file, c.line_start",
+        )?;
+
+        let rows: Vec<ChunkSummary> = stmt
+            .query_map([callee_name], |row| {
+                Ok(ChunkRow {
+                    id: row.get(0)?,
+                    file: row.get(1)?,
+                    language: row.get(2)?,
+                    chunk_type: row.get(3)?,
+                    name: row.get(4)?,
+                    signature: row.get(5)?,
+                    content: row.get(6)?,
+                    doc: row.get(7)?,
+                    line_start: row.get(8)?,
+                    line_end: row.get(9)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .map(ChunkSummary::from)
+            .collect();
+
+        Ok(rows)
+    }
+
+    /// Get all function names called by a given chunk
+    pub fn get_callees(&self, chunk_id: &str) -> Result<Vec<String>, StoreError> {
+        let conn = self.pool.get()?;
+
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT callee_name FROM calls WHERE caller_id = ?1 ORDER BY line_number",
+        )?;
+
+        let callees: Vec<String> = stmt
+            .query_map([chunk_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(callees)
+    }
+
+    /// Get call graph statistics
+    pub fn call_stats(&self) -> Result<(u64, u64), StoreError> {
+        let conn = self.pool.get()?;
+
+        let total_calls: u64 = conn.query_row("SELECT COUNT(*) FROM calls", [], |r| r.get(0))?;
+        let unique_callees: u64 =
+            conn.query_row("SELECT COUNT(DISTINCT callee_name) FROM calls", [], |r| {
+                r.get(0)
+            })?;
+
+        Ok((total_calls, unique_callees))
     }
 }

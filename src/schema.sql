@@ -38,3 +38,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     doc,           -- documentation text
     tokenize='unicode61'
 );
+
+-- Call graph: function call relationships (within-file resolution)
+CREATE TABLE IF NOT EXISTS calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    caller_id TEXT NOT NULL,      -- chunk ID of the calling function
+    callee_name TEXT NOT NULL,    -- name of the called function
+    line_number INTEGER NOT NULL, -- line where call occurs
+    FOREIGN KEY (caller_id) REFERENCES chunks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_calls_caller ON calls(caller_id);
+CREATE INDEX IF NOT EXISTS idx_calls_callee ON calls(callee_name);
