@@ -2,15 +2,16 @@
 
 ## Right Now
 
-**PR #45** - Hunches feature. CI passed, ready to merge.
+**PR #45** - Hunches + security. Ready to push.
 
 https://github.com/jamie8johnson/cqs/pull/45
 
-Done this session:
+Session work:
+- Hunches as indexed entities
 - Path traversal fix in cqs_read
-- MCP integration tests (12 tests including path traversal)
-- 18-category audit (found everything already fixed)
-- Verified audit was stale - codebase is polished
+- 12 MCP integration tests
+- 18-category audit (verified clean)
+- blake3 checksums for HNSW (mitigates bincode RUSTSEC-2025-0141)
 
 ## Key Insight
 
