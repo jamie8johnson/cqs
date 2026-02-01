@@ -142,3 +142,26 @@ store.search() and hnsw.search() both match callee name "search". No type
 information in call graph - can't distinguish which search is called. Would
 need type analysis to resolve. Documented limitation, won't fix soon.
 """
+
+[[hunch]]
+date = "2026-02-01"
+title = "bincode deserialization risk in HNSW"
+severity = "high"
+confidence = "high"
+resolution = "open"
+mentions = ["hnsw.rs", "hnsw_rs", "bincode"]
+description = """
+hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141) to serialize
+the HNSW index. We load these files without checksum verification.
+
+Threat: attacker crafts malicious .cq/hnsw/* files, user runs cqs search,
+bincode deserializes → potential RCE or memory corruption.
+
+Mitigating factors: index files are in user-controlled .cq/ directory,
+not downloaded from network. Attacker needs local write access.
+
+Fix options:
+1. Add blake3 checksum to HNSW save/load (like we do for model files)
+2. File issue on hnsw_rs to switch bincode → postcard/rmp-serde
+3. Fork hnsw_rs
+"""
