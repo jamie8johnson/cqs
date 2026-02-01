@@ -2,11 +2,15 @@
 
 ## Right Now
 
-**BLOCKER: Path traversal in cqs_read** (mcp.rs:563)
-- `cqs_read` tool allows `../../../etc/passwd` reads
-- Must fix before PR #45 merges
+**PR #45** - Hunches feature. CI passed, ready to merge.
 
-PR #45: https://github.com/jamie8johnson/cqs/pull/45
+https://github.com/jamie8johnson/cqs/pull/45
+
+Done this session:
+- Path traversal fix in cqs_read
+- MCP integration tests (12 tests including path traversal)
+- 18-category audit (found everything already fixed)
+- Verified audit was stale - codebase is polished
 
 ## Key Insight
 
