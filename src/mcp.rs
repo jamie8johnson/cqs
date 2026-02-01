@@ -628,6 +628,16 @@ pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
 }
 
 /// Handle POST /mcp - JSON-RPC requests (MCP 2025-11-25 compliant)
+///
+/// # Security: Origin Validation
+///
+/// Validates the Origin header to prevent DNS rebinding attacks per MCP 2025-11-25 spec:
+/// - Localhost origins (http://localhost:*, http://127.0.0.1:*) are allowed
+/// - Empty/missing Origin header is allowed (some MCP clients don't send it)
+/// - All other origins are rejected with 403 Forbidden
+///
+/// This behavior is intentional for a localhost-only service. If exposing via proxy,
+/// additional origin restrictions should be configured at the proxy layer.
 async fn handle_mcp_post(
     State(state): State<Arc<HttpState>>,
     headers: axum::http::HeaderMap,

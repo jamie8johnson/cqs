@@ -36,7 +36,7 @@ fn create_mock_embedding(seed: f32) -> Embedding {
             *x /= norm;
         }
     }
-    Embedding(v)
+    Embedding::new(v)
 }
 
 #[test]

@@ -88,7 +88,7 @@ Use cases:
 - **Context expansion**: Show related functions
 - **Entry point discovery**: Find functions with no callers
 
-Note: Currently resolves within-file calls only. Cross-file resolution is planned.
+Call graph is indexed across all files - callers are found regardless of which file they're in.
 
 ## Claude Code Integration
 

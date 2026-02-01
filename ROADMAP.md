@@ -202,3 +202,14 @@
   - Optional: integrate with system keyring
 - Request rate limiting (requests per second, not just body size)
 - Audit log for MCP operations
+
+## 1.0 Release Criteria
+
+Ship 1.0 when:
+
+- [ ] Schema stable for 1+ week of daily use (currently v5)
+- [ ] Used on 2+ different codebases without issues
+- [ ] MCP integration solid in daily Claude Code use
+- [ ] No known correctness bugs
+
+1.0 means: API stable, semver enforced, breaking changes = major bump.

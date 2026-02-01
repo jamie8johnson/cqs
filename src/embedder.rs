@@ -49,7 +49,39 @@ impl From<ort::Error> for EmbedderError {
 /// Embeddings are produced by nomic-embed-text-v1.5 and can be
 /// compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
-pub struct Embedding(pub Vec<f32>);
+pub struct Embedding(Vec<f32>);
+
+impl Embedding {
+    /// Create a new embedding from raw vector data
+    pub fn new(data: Vec<f32>) -> Self {
+        Self(data)
+    }
+
+    /// Get the embedding as a slice
+    pub fn as_slice(&self) -> &[f32] {
+        &self.0
+    }
+
+    /// Get a reference to the inner Vec (needed for some APIs like hnsw_rs)
+    pub fn as_vec(&self) -> &Vec<f32> {
+        &self.0
+    }
+
+    /// Consume the embedding and return the inner vector
+    pub fn into_inner(self) -> Vec<f32> {
+        self.0
+    }
+
+    /// Get the dimension of the embedding
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Check if the embedding is empty
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 
 /// Hardware execution provider for inference
 #[derive(Debug, Clone, Copy)]
@@ -86,7 +118,7 @@ impl std::fmt::Display for ExecutionProvider {
 ///
 /// let mut embedder = Embedder::new()?;
 /// let embedding = embedder.embed_query("parse configuration file")?;
-/// println!("Embedding dimension: {}", embedding.0.len()); // 768
+/// println!("Embedding dimension: {}", embedding.len()); // 768
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Embedder {
@@ -195,6 +227,8 @@ impl Embedder {
     fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Embedding>, EmbedderError> {
         use ort::value::Tensor;
 
+        let _span = tracing::info_span!("embed_batch", count = texts.len()).entered();
+
         if texts.is_empty() {
             return Ok(vec![]);
         }
@@ -272,7 +306,7 @@ impl Embedder {
                 }
             }
 
-            results.push(Embedding(normalize_l2(sum)));
+            results.push(Embedding::new(normalize_l2(sum)));
         }
 
         Ok(results)

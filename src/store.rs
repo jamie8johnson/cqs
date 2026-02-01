@@ -203,7 +203,11 @@ pub struct IndexStats {
 
 // Helper functions for embedding serialization
 pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
-    embedding.0.iter().flat_map(|f| f.to_le_bytes()).collect()
+    embedding
+        .as_slice()
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect()
 }
 
 pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
@@ -335,6 +339,8 @@ impl Store {
         store.check_schema_version()?;
         // Check model version compatibility
         store.check_model_version()?;
+        // Warn if index was created by different cq version
+        store.check_cq_version();
 
         Ok(store)
     }
@@ -410,6 +416,30 @@ impl Store {
             ));
         }
         Ok(())
+    }
+
+    /// Warn if index was created by a different version of cqs (informational only)
+    fn check_cq_version(&self) {
+        let conn = match self.pool.get() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let stored_version: String = conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'cq_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_default();
+
+        let current_version = env!("CARGO_PKG_VERSION");
+        if !stored_version.is_empty() && stored_version != current_version {
+            tracing::info!(
+                "Index created by cqs v{}, running v{}",
+                stored_version,
+                current_version
+            );
+        }
     }
 
     /// Insert or update chunks in batch (10x faster than individual inserts)
@@ -578,6 +608,9 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
+            .entered();
+
         let conn = self.pool.get()?;
 
         // Build WHERE clause from filter with parameterized query
@@ -634,7 +667,7 @@ impl Store {
             })
             .filter_map(|chunk| {
                 let embedding = bytes_to_embedding(&chunk.embedding);
-                let embedding_score = cosine_similarity(&query.0, &embedding);
+                let embedding_score = cosine_similarity(query.as_slice(), &embedding);
 
                 // Compute hybrid score if enabled
                 let score = if use_hybrid {
@@ -778,7 +811,7 @@ impl Store {
             |row| row.get::<_, Vec<u8>>(0),
         )
         .ok()
-        .map(|bytes| Embedding(bytes_to_embedding(&bytes)))
+        .map(|bytes| Embedding::new(bytes_to_embedding(&bytes)))
     }
 
     /// Get embeddings for chunks with matching content hashes (batch lookup).
@@ -816,7 +849,7 @@ impl Store {
             Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
         }) {
             for row in rows.flatten() {
-                result.insert(row.0, Embedding(bytes_to_embedding(&row.1)));
+                result.insert(row.0, Embedding::new(bytes_to_embedding(&row.1)));
             }
         }
         result
@@ -1014,7 +1047,7 @@ impl Store {
 
                 // Compute similarity score
                 let embedding = bytes_to_embedding(&embedding_bytes);
-                let embedding_score = cosine_similarity(&query.0, &embedding);
+                let embedding_score = cosine_similarity(query.as_slice(), &embedding);
 
                 // Compute hybrid score if enabled
                 let score = if use_hybrid {
@@ -1057,7 +1090,7 @@ impl Store {
             .query_map([], |row| {
                 let id: String = row.get(0)?;
                 let bytes: Vec<u8> = row.get(1)?;
-                Ok((id, Embedding(bytes_to_embedding(&bytes))))
+                Ok((id, Embedding::new(bytes_to_embedding(&bytes))))
             })?
             .filter_map(|r| match r {
                 Ok(pair) => Some(pair),

@@ -560,6 +560,8 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
 
     setup_signal_handler();
 
+    let _span = tracing::info_span!("cmd_index", force = force, dry_run = dry_run).entered();
+
     if !cli.quiet {
         println!("Scanning files...");
     }
@@ -785,6 +787,8 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
 }
 
 fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
+
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");

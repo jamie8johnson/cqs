@@ -83,10 +83,10 @@ impl HnswIndex {
 
         // Validate dimensions
         for (id, emb) in &embeddings {
-            if emb.0.len() != EMBEDDING_DIM {
+            if emb.len() != EMBEDDING_DIM {
                 return Err(HnswError::DimensionMismatch {
                     expected: EMBEDDING_DIM,
-                    actual: emb.0.len(),
+                    actual: emb.len(),
                 });
             }
             tracing::trace!("Adding {} to HNSW index", id);
@@ -110,7 +110,7 @@ impl HnswIndex {
 
         for (idx, (chunk_id, embedding)) in embeddings.iter().enumerate() {
             id_map.push(chunk_id.clone());
-            data_for_insert.push((&embedding.0, idx));
+            data_for_insert.push((embedding.as_vec(), idx));
         }
 
         // Parallel insert for performance
@@ -137,17 +137,17 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        if query.0.len() != EMBEDDING_DIM {
+        if query.len() != EMBEDDING_DIM {
             tracing::warn!(
                 "Query dimension mismatch: expected {}, got {}",
                 EMBEDDING_DIM,
-                query.0.len()
+                query.len()
             );
             return Vec::new();
         }
 
         let neighbors = match &self.inner {
-            HnswInner::Owned(hnsw) => hnsw.search_neighbours(&query.0, k, EF_SEARCH),
+            HnswInner::Owned(hnsw) => hnsw.search_neighbours(query.as_slice(), k, EF_SEARCH),
             HnswInner::Loaded { dir, basename, .. } => {
                 // For loaded indexes, we need to reload and search
                 // This is a limitation of the library's lifetime design
@@ -160,7 +160,7 @@ impl HnswIndex {
                     }
                 };
                 // Collect results while hnsw is still alive
-                hnsw.search_neighbours(&query.0, k, EF_SEARCH)
+                hnsw.search_neighbours(query.as_slice(), k, EF_SEARCH)
             }
         };
 
@@ -303,7 +303,7 @@ mod tests {
                 *val /= norm;
             }
         }
-        Embedding(v)
+        Embedding::new(v)
     }
 
     #[test]
