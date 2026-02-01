@@ -2,30 +2,30 @@
 
 ## Right Now
 
-Releasing v0.1.16 with audit fixes:
-- Tracing spans added to major operations
-- Embedding type encapsulated (private field)
-- Version check on index open
-- Documentation fixes
+**Releasing v0.1.16** - PR #39 open, CI running.
 
-Tags v0.1.12-15 were created (were missing). Need to merge to main and publish.
+After CI passes:
+1. `gh pr merge 39 --squash --delete-branch`
+2. `git checkout main && git pull`
+3. `git tag v0.1.16 && git push origin v0.1.16`
+4. `cargo publish`
+5. `gh release create v0.1.16 --generate-notes`
+
+## What's in v0.1.16
+
+- Tracing spans (cmd_index, cmd_query, embed_batch, search_filtered)
+- Embedding type encapsulation (private field, as_slice/as_vec/len methods)
+- Version check warning when index from different cqs version
+- Fixed README cross-file call graph note
+- Updated bug report template version placeholder
+- Created missing tags v0.1.12-15
 
 ## Parked
 
-- C and Java language support (no user requests yet)
-- Code-specific embedding model (CodeSage, Qwen3-Embedding)
-- Mock embedder for unit tests (needs trait abstraction)
-
-## Open Questions
-
-None.
+- C/Java language support
+- Code-specific embedding model
+- Mock embedder for tests
 
 ## Blockers
 
 None.
-
-## Pending Changes
-
-Branch: add-1.0-criteria
-- Audit fixes ready for merge to main
-- v0.1.16 release pending
