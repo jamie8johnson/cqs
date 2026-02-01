@@ -210,9 +210,12 @@ impl McpServer {
     }
 
     /// Ensure embedder is loaded (lazy initialization)
+    ///
+    /// Uses CPU-only embedder for single-query embedding (faster than GPU
+    /// due to CUDA context overhead). GPU is used for batch indexing only.
     fn ensure_embedder(&mut self) -> Result<&mut Embedder> {
         if self.embedder.is_none() {
-            self.embedder = Some(Embedder::new()?);
+            self.embedder = Some(Embedder::new_cpu()?);
         }
         Ok(self.embedder.as_mut().unwrap())
     }

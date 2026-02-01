@@ -192,6 +192,27 @@ impl Embedder {
         })
     }
 
+    /// Create a CPU-only embedder
+    ///
+    /// Use this for single-query embedding where CPU is faster than GPU
+    /// due to CUDA context setup overhead. GPU only helps for batch embedding.
+    pub fn new_cpu() -> Result<Self, EmbedderError> {
+        let (model_path, tokenizer_path) = ensure_model()?;
+
+        let query_cache = Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
+
+        Ok(Self {
+            session: OnceCell::new(),
+            tokenizer: OnceCell::new(),
+            model_path,
+            tokenizer_path,
+            provider: ExecutionProvider::CPU,
+            max_length: 8192,
+            batch_size: 4,
+            query_cache,
+        })
+    }
+
     /// Get or initialize the ONNX session
     fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, EmbedderError> {
         let session = self

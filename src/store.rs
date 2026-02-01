@@ -946,6 +946,13 @@ impl Store {
         result
     }
 
+    /// Get the number of chunks in the index
+    pub fn chunk_count(&self) -> Result<usize, StoreError> {
+        let conn = self.pool.get()?;
+        let count: u64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
     /// Get index statistics
     pub fn stats(&self) -> Result<IndexStats, StoreError> {
         let conn = self.pool.get()?;

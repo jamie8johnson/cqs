@@ -905,11 +905,18 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     };
 
     // Load vector index for O(log n) search
-    // Priority: CAGRA (GPU) > HNSW (CPU) > brute-force
+    // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
+    //
+    // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
+    // Only worth it when search time savings exceed rebuild cost.
+    // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
+    const CAGRA_THRESHOLD: usize = 5000;
+
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {
         #[cfg(feature = "gpu-search")]
         {
-            if cqs::cagra::CagraIndex::gpu_available() {
+            let chunk_count = store.chunk_count().unwrap_or(0);
+            if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
                 match cqs::cagra::CagraIndex::build_from_store(&store) {
                     Ok(idx) => {
                         tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
@@ -921,7 +928,15 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                     }
                 }
             } else {
-                tracing::debug!("GPU not available, using HNSW");
+                if chunk_count < CAGRA_THRESHOLD {
+                    tracing::debug!(
+                        "Index too small for CAGRA ({} < {}), using HNSW",
+                        chunk_count,
+                        CAGRA_THRESHOLD
+                    );
+                } else {
+                    tracing::debug!("GPU not available, using HNSW");
+                }
                 load_hnsw_index(&cq_dir)
             }
         }
