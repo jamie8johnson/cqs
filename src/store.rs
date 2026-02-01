@@ -260,31 +260,8 @@ pub fn name_match_score(query: &str, name: &str) -> f32 {
     (overlap / total) * 0.5 // Max 0.5 for partial word overlap
 }
 
-/// Split identifier on snake_case and camelCase boundaries.
-/// Example: `parseConfigFile` -> `["parse", "config", "file"]`
-pub fn tokenize_identifier(s: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-
-    for c in s.chars() {
-        if c == '_' || c == '-' || c == ' ' {
-            if !current.is_empty() {
-                words.push(current.clone());
-                current.clear();
-            }
-        } else if c.is_uppercase() && !current.is_empty() {
-            words.push(current.clone());
-            current.clear();
-            current.push(c.to_lowercase().next().unwrap_or(c));
-        } else {
-            current.push(c.to_lowercase().next().unwrap_or(c));
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
-}
+// Re-export tokenize_identifier from nl module for backwards compatibility
+pub use crate::nl::tokenize_identifier;
 
 /// Normalize code text for FTS5 indexing.
 /// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.

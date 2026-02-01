@@ -2,7 +2,7 @@
 
 ## Right Now
 
-v0.1.12 published. Idle.
+v0.1.13 in progress. NL module extraction, JSDoc parsing, eval improvements.
 
 ## Parked
 

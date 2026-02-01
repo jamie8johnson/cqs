@@ -488,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "cqs"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -516,6 +516,7 @@ dependencies = [
  "r2d2_sqlite",
  "rand 0.8.5",
  "rayon",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

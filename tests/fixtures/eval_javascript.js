@@ -2,6 +2,10 @@
 
 /**
  * Retry an operation with exponential backoff
+ * @param {Function} fn - The async function to retry
+ * @param {number} maxRetries - Maximum number of retry attempts
+ * @param {number} initialDelay - Initial delay in milliseconds
+ * @returns {Promise<*>} Result of the successful function call
  */
 async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 100) {
     let delay = initialDelay;
@@ -18,6 +22,8 @@ async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 100) {
 
 /**
  * Validate an email address format
+ * @param {string} email - The email address to validate
+ * @returns {boolean} True if the email format is valid
  */
 function validateEmail(email) {
     const pattern = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
@@ -26,6 +32,8 @@ function validateEmail(email) {
 
 /**
  * Parse JSON configuration from string
+ * @param {string} jsonString - The JSON string to parse
+ * @returns {Object} Parsed configuration object
  */
 function parseJsonConfig(jsonString) {
     return JSON.parse(jsonString);
@@ -33,6 +41,8 @@ function parseJsonConfig(jsonString) {
 
 /**
  * Compute SHA256 hash of string (browser-compatible)
+ * @param {string} data - The string to hash
+ * @returns {Promise<string>} Hex-encoded SHA256 hash
  */
 async function hashSha256(data) {
     const encoder = new TextEncoder();
@@ -44,6 +54,8 @@ async function hashSha256(data) {
 
 /**
  * Format a number as currency with commas
+ * @param {number} amount - The amount to format
+ * @returns {string} Formatted currency string
  */
 function formatCurrency(amount) {
     return new Intl.NumberFormat('en-US', {
@@ -54,6 +66,9 @@ function formatCurrency(amount) {
 
 /**
  * Send HTTP POST request with JSON body
+ * @param {string} url - The URL to send the request to
+ * @param {Object} body - The JSON body to send
+ * @returns {Promise<Object>} Parsed JSON response
  */
 async function httpPostJson(url, body) {
     const response = await fetch(url, {
@@ -66,6 +81,8 @@ async function httpPostJson(url, body) {
 
 /**
  * Read file contents (Node.js)
+ * @param {string} path - Path to the file
+ * @returns {string} File contents as UTF-8 string
  */
 function readFileUtf8(path) {
     const fs = require('fs');
@@ -74,6 +91,9 @@ function readFileUtf8(path) {
 
 /**
  * Write string to file atomically (Node.js)
+ * @param {string} path - Path to write to
+ * @param {string} content - Content to write
+ * @returns {void}
  */
 function writeFileAtomic(path, content) {
     const fs = require('fs');
@@ -84,6 +104,8 @@ function writeFileAtomic(path, content) {
 
 /**
  * Calculate mean average of numbers
+ * @param {number[]} numbers - Array of numbers
+ * @returns {number} Mean average value
  */
 function calculateMean(numbers) {
     if (numbers.length === 0) return 0;
@@ -92,6 +114,8 @@ function calculateMean(numbers) {
 
 /**
  * Find maximum value in array
+ * @param {number[]} numbers - Array of numbers
+ * @returns {number|undefined} Maximum value or undefined if empty
  */
 function findMaximum(numbers) {
     if (numbers.length === 0) return undefined;
@@ -100,6 +124,8 @@ function findMaximum(numbers) {
 
 /**
  * Convert camelCase to snake_case
+ * @param {string} s - The camelCase string
+ * @returns {string} The snake_case string
  */
 function camelToSnake(s) {
     return s.replace(/([A-Z])/g, (match, p1, offset) =>
@@ -109,6 +135,9 @@ function camelToSnake(s) {
 
 /**
  * Truncate string to maximum length with ellipsis
+ * @param {string} s - The string to truncate
+ * @param {number} maxLen - Maximum length including ellipsis
+ * @returns {string} Truncated string with ellipsis if needed
  */
 function truncateString(s, maxLen) {
     if (s.length <= maxLen) return s;
@@ -117,6 +146,8 @@ function truncateString(s, maxLen) {
 
 /**
  * Check if string is valid UUID format
+ * @param {string} s - The string to check
+ * @returns {boolean} True if valid UUID format
  */
 function isValidUuid(s) {
     const pattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -125,6 +156,8 @@ function isValidUuid(s) {
 
 /**
  * Generate random alphanumeric string
+ * @param {number} length - Desired length of the string
+ * @returns {string} Random alphanumeric string
  */
 function generateRandomId(length = 16) {
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -137,6 +170,8 @@ function generateRandomId(length = 16) {
 
 /**
  * Compress string using simple RLE encoding
+ * @param {string} data - String to compress
+ * @returns {string} RLE-compressed string
  */
 function compressRle(data) {
     if (!data) return '';
@@ -156,6 +191,8 @@ function compressRle(data) {
 
 /**
  * Parse command line arguments into key-value pairs
+ * @param {string[]} args - Array of command line arguments
+ * @returns {Object} Parsed key-value pairs
  */
 function parseCliArgs(args) {
     const result = {};
@@ -172,6 +209,8 @@ function parseCliArgs(args) {
 
 /**
  * Sort array using quicksort algorithm
+ * @param {number[]} arr - Array to sort
+ * @returns {number[]} Sorted array
  */
 function quicksort(arr) {
     if (arr.length <= 1) return arr;
@@ -184,6 +223,9 @@ function quicksort(arr) {
 
 /**
  * Debounce function calls with delay
+ * @param {Function} fn - Function to debounce
+ * @param {number} delayMs - Delay in milliseconds
+ * @returns {Function} Debounced function
  */
 function debounce(fn, delayMs) {
     let timeoutId = null;
@@ -195,6 +237,8 @@ function debounce(fn, delayMs) {
 
 /**
  * Memoize function results in cache
+ * @param {Function} fn - Function to memoize
+ * @returns {Function} Memoized function with cached results
  */
 function memoize(fn) {
     const cache = new Map();
@@ -209,6 +253,8 @@ function memoize(fn) {
 
 /**
  * Flatten a nested array into a single array
+ * @param {Array} nested - Nested array to flatten
+ * @returns {Array} Flattened array
  */
 function flattenNestedArray(nested) {
     return nested.reduce((acc, item) => {
@@ -221,6 +267,9 @@ function flattenNestedArray(nested) {
 
 /**
  * Deep merge two objects
+ * @param {Object} base - Base object
+ * @param {Object} override - Object to merge into base
+ * @returns {Object} Merged object
  */
 function deepMergeObjects(base, override) {
     const result = { ...base };

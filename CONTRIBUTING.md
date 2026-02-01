@@ -87,6 +87,7 @@ src/
   store.rs    - SQLite storage, FTS5 keyword search, RRF hybrid fusion
   hnsw.rs     - HNSW index for fast O(log n) vector search
   mcp.rs      - MCP server implementation
+  nl.rs       - NL description generation, JSDoc parsing
   lib.rs      - Public API
 ```
 

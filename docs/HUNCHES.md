@@ -312,4 +312,6 @@ Every chunk now starts with "A function named..." or "A method named...". This r
 
 `extract_return_nl` returns `None` for JavaScript because there's no type syntax in signatures. This creates asymmetry: Rust/TS/Python get richer descriptions than JS. May need JSDoc parsing for parity.
 
+**RESOLVED 2026-01-31:** Added `parse_jsdoc_tags()` in nl.rs to extract @param and @returns from JSDoc comments. JavaScript now gets type info from JSDoc when signature parsing fails.
+
 ---

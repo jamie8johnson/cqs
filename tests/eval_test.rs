@@ -4,6 +4,7 @@
 //! (Ignored by default because embedding generation is slow)
 
 use cqs::embedder::Embedder;
+use cqs::nl::generate_nl_description;
 use cqs::parser::{Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use std::collections::HashMap;
@@ -326,13 +327,8 @@ fn test_recall_at_5() {
         eprintln!("    Found {} chunks", chunks.len());
 
         for chunk in &chunks {
-            // Generate embedding for chunk (combine signature + doc + content)
-            let text = format!(
-                "{}\n{}\n{}",
-                chunk.signature,
-                chunk.doc.as_deref().unwrap_or(""),
-                chunk.content
-            );
+            // Generate embedding using NL pipeline (same as production)
+            let text = generate_nl_description(chunk);
             let embeddings = embedder
                 .embed_documents(&[&text])
                 .expect("Failed to embed chunk");
