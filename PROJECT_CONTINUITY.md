@@ -2,16 +2,22 @@
 
 ## Right Now
 
-**Session work:**
-- Published v0.1.17 to GitHub (crates.io blocked until 2026-02-02 05:18 UTC)
-- Merged 5 dependabot PRs (dirs, insta, rand 0.9, tower, notify)
-- Added `--bind` flag for HTTP transport with safety check
-- CodeQL suppression comment for allocation size alert
-- Simplified README claude block for external audience
+**Waiting on:**
+- `cargo publish` - crates.io cooldown ends 2026-02-02 05:18 UTC (run `cargo publish`)
+- CodeQL scan - verify suppression comment works (runs daily ~04:44 UTC)
+- awesome-mcp-servers PR #1783 - in queue (91 PRs, position 78)
 
 **1.0 progress:**
 - Schema v9 stable since 2026-02-01 (need 1 week = Feb 8)
 - Used on 2+ codebases (cqs + rust-lang/rust)
+- Zero open PRs/issues
+
+**Last session (2026-02-02):**
+- Published v0.1.17 to GitHub
+- Merged 5 dependabot PRs (dirs, insta, rand 0.9, tower, notify)
+- Added `--bind` flag with `--dangerously-allow-network-bind` safety
+- CodeQL suppression for allocation size alert
+- Simplified README claude block
 
 Pronunciation: cqs = "seeks" (it seeks code semantically).
 
