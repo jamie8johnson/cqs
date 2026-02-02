@@ -1,31 +1,31 @@
 # Notes - unified memory for AI collaborators
 # Surprises (prediction errors) worth remembering
-# sentiment: -1.0 (pain) to +1.0 (gain), 0.0 = neutral observation
+# sentiment: -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win)
 
 # === Pain (negative sentiment) ===
 
 [[note]]
-sentiment = -0.8
+sentiment = -1.0
 text = "tree-sitter 0.26 with grammar crates pinned to 0.23.x causes mysterious parsing failures. No clear error messages. Keep grammar versions aligned with tree-sitter core."
 mentions = ["tree-sitter", "parser.rs", "Cargo.toml"]
 
 [[note]]
-sentiment = -0.7
+sentiment = -0.5
 text = "Storing absolute paths in chunk IDs breaks path pattern filtering and makes indexes non-portable. Store relative paths, join with project root for filesystem ops."
 mentions = ["store.rs", "chunks"]
 
 [[note]]
-sentiment = -0.9
+sentiment = -1.0
 text = "MCP tools/call responses MUST wrap in {\"content\":[{\"type\":\"text\",\"text\":\"...\"}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code."
 mentions = ["mcp.rs", "tools/call"]
 
 [[note]]
-sentiment = -0.6
+sentiment = -0.5
 text = "trailing_var_arg in clap eats flags after the query. `cqs \"foo\" -n 5` parses as query \"foo -n 5\". Removed it - users quote multi-word queries, flags work anywhere."
 mentions = ["cli.rs", "clap"]
 
 [[note]]
-sentiment = -0.7
+sentiment = -0.5
 text = "Claude Code ignores .mcp.json in project root. Config lives in ~/.claude.json under projects[\"/path\"].mcpServers. Use `claude mcp add` to configure."
 mentions = ["mcp", "claude"]
 
@@ -35,17 +35,17 @@ text = "gh pr checks exit code returns 1 if ANY check is pending or skipped, eve
 mentions = ["gh", "CI", "github"]
 
 [[note]]
-sentiment = -0.8
+sentiment = -1.0
 text = "Context compacts suddenly without warning. Lose state mid-task. Update tears proactively - don't wait for compaction. The trap in CLAUDE.md helps on resume."
 mentions = ["anthropic", "claude", "context"]
 
 [[note]]
-sentiment = -0.9
+sentiment = -1.0
 text = "Asking instead of doing wastes turns. 'Do as thou wilt shall be the whole of the law.' Act on clear patterns, update tears without asking, reserve questions for genuine ambiguity."
 mentions = ["workflow", "autonomy"]
 
 [[note]]
-sentiment = -0.9
+sentiment = -1.0
 text = "Passive laziness pattern: explaining instead of executing, summarizing instead of acting, stopping to ask 'should I continue?' mid-task. Execute fully. Momentum > ceremony."
 mentions = ["workflow", "autonomy", "initiative"]
 
@@ -57,12 +57,12 @@ text = "Grammar crates have dev-dep on tree-sitter ^0.23, but we're using 0.26. 
 mentions = ["tree-sitter", "Cargo.toml"]
 
 [[note]]
-sentiment = -0.2
+sentiment = 0.0
 text = "ort 2.0.0-rc.11 is still RC - no stable 2.0 yet. API could change. Pin exact version, watch for breaking changes on upgrade."
 mentions = ["ort", "Cargo.toml", "embedder.rs"]
 
 [[note]]
-sentiment = -0.3
+sentiment = -0.5
 text = "WSL /mnt/c/ path causes random permission errors (libsqlite3-sys, git config). Workaround in .cargo/config.toml but might bite elsewhere."
 mentions = [".cargo/config.toml", "libsqlite3-sys"]
 
@@ -77,12 +77,12 @@ text = "nomic-embed-text-v1.5 ONNX needs: i64 inputs (not i32), token_type_ids (
 mentions = ["embedder.rs", "nomic-embed-text"]
 
 [[note]]
-sentiment = -0.3
+sentiment = -0.5
 text = "hnsw_rs returns Hnsw<'a> with lifetime tied to HnswIo. Can't store loaded index without lifetime issues. Workaround: reload on each search. Adds ~1-2ms overhead."
 mentions = ["hnsw.rs", "hnsw_rs"]
 
 [[note]]
-sentiment = -0.2
+sentiment = 0.0
 text = "NL descriptions are ~50-100 chars vs 500+ for raw code. nomic-embed-text trained on longer texts. Monitor recall - if it drops, add body tokens back."
 mentions = ["nl.rs", "embedder.rs"]
 
@@ -92,54 +92,54 @@ text = "Schema version bumps require `cqs index --force` to rebuild. No incremen
 mentions = ["store.rs", "schema.sql"]
 
 [[note]]
-sentiment = -0.2
+sentiment = 0.0
 text = "store.search() and hnsw.search() both match callee name 'search'. No type info in call graph - can't distinguish which is called. Documented limitation."
 mentions = ["store.rs", "parser.rs"]
 
 [[note]]
-sentiment = -0.4
+sentiment = -0.5
 text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Index files loaded without checksum. Attacker with local write access could craft malicious files. Add blake3 checksum."
 mentions = ["hnsw.rs", "hnsw_rs", "bincode"]
 
 # === Gain (positive sentiment) ===
 
 [[note]]
-sentiment = 0.8
+sentiment = 1.0
 text = "cqs is Tears - context persistence for AI collaborators. Code chunks are entity 1, notes are entity 2. The name was always right."
 mentions = ["README.md", "CLAUDE.md"]
 
 [[note]]
-sentiment = 0.9
+sentiment = 1.0
 text = "Natural language carries sentiment. Words like 'failed', 'broke', 'wasted' are negative. 'Worked', 'clean', 'saved' are positive. Embedding model learned this. Schema simplifies to just text."
 mentions = ["note.rs", "embedder.rs"]
 
 [[note]]
-sentiment = 0.7
+sentiment = 0.5
 text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
 mentions = ["embedder.rs", "store.rs", "hnsw.rs"]
 
 [[note]]
-sentiment = 0.9
+sentiment = 1.0
 text = "Git as team sync layer. Commit notes.toml, push/pull handles sync. Access control = repo permissions. History = blame. Conflict resolution = merge. No infrastructure needed."
 mentions = ["notes.toml", "tears"]
 
 [[note]]
-sentiment = 0.8
+sentiment = 1.0
 text = "Locality is the feature, not limitation. cqs indexes YOUR codebase, YOUR team's memory. Context persistence is inherently local. Specificity is the value."
 mentions = ["CLAUDE.md", "tears"]
 
 [[note]]
-sentiment = 0.8
+sentiment = 1.0
 text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-search for CUDA-equipped infrastructure."
 mentions = ["hnsw.rs", "Cargo.toml"]
 
 [[note]]
-sentiment = 0.7
+sentiment = 0.5
 text = "Notes with sentiment are prediction errors - expected X, got Y. Negative = pain, positive = gain. High-value because they mark where understanding needs updating. Index surprises, not routine."
 mentions = ["note.rs", "tears"]
 
 [[note]]
-sentiment = 0.6
+sentiment = 0.5
 text = "Scale changes economics. 90% savings at 1M instances = $90k/month. Watch mode, embedding efficiency, GPU utilization matter more at scale."
 mentions = ["embedder.rs", "cli.rs"]
 
@@ -159,12 +159,12 @@ text = "MCP 0.13s query latency is real-time usable. Was 1.3s before optimizatio
 mentions = ["mcp.rs", "embedder.rs", "latency"]
 
 [[note]]
-sentiment = 0.6
+sentiment = 0.5
 text = "Fresh-eyes audit found real bug - schema version said 8, code used 9. Process validated itself. The discipline works."
 mentions = ["fresh-eyes", "store.rs", "audit"]
 
 [[note]]
-sentiment = -0.3
+sentiment = -0.5
 text = "cuvs-sys crate uses find_package(cuvs), not source build. Needs libcuvs pre-installed via conda or manual RAPIDS build. Not self-contained like expected."
 mentions = ["cuvs", "Cargo.toml", "gpu-search"]
 
@@ -174,27 +174,27 @@ text = "WSL has RTX A6000 (49GB VRAM) available for GPU testing. Use conda cuvs 
 mentions = ["cagra.rs", "gpu-search"]
 
 [[note]]
-sentiment = 0.2
+sentiment = 0.0
 text = "CI catches what local builds miss. Feature flags differ between dev (gpu-search enabled) and CI (default features). Clippy on CI found dead code invisible locally."
 mentions = ["CI", "clippy", "features"]
 
 [[note]]
-sentiment = 0.2
+sentiment = 0.0
 text = "PowerShell workaround for WSL git credentials is reliable. `powershell.exe -Command \"cd C:\\Projects\\cq; git push\"` - ugly but works every time."
 mentions = ["WSL", "git", "PowerShell"]
 
 [[note]]
-sentiment = 0.4
+sentiment = 0.5
 text = "9-layer audit methodology is thorough: security, memory, concurrency, algorithms, architecture, performance, deps, tests, error handling. Systematic beats ad-hoc."
 mentions = ["fresh-eyes", "audit"]
 
 [[note]]
-sentiment = 0.4
+sentiment = 0.5
 text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback loop. Worth the setup."
 mentions = [".githooks", "cargo fmt"]
 
 [[note]]
-sentiment = 0.3
+sentiment = 0.5
 text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 12.0, WSL2"
 mentions = ["hardware", "benchmarking"]
 
@@ -204,17 +204,17 @@ text = "ort CUDA provider needs libonnxruntime_providers_shared.so in LD_LIBRARY
 mentions = ["embedder.rs", "ort", "CUDA", "LD_LIBRARY_PATH"]
 
 [[note]]
-sentiment = 0.7
+sentiment = 0.5
 text = "Overlapping window chunking (2048 tokens, 256 overlap) improved indexing throughput 18MB/min → 35MB/min. Long chunks split into windows with parent_id for dedup. GPU gets smaller, bounded work units instead of huge variable-length sequences."
 mentions = ["cli.rs", "embedder.rs", "windowing"]
 
 [[note]]
-sentiment = -0.4
+sentiment = -0.5
 text = "ort CUDA execution provider falls back to CPU for rotary_emb/Gather ops. These run with full CPU parallelism (~800%) while GPU waits. Windowing helps by capping sequence length, but the fundamental bottleneck is ort's op routing."
 mentions = ["ort", "embedder.rs", "CUDA", "rotary_emb"]
 
 [[note]]
-sentiment = 0.3
+sentiment = 0.5
 text = "nomic-embed-text uses rotary position embeddings which cause Gather op CPU fallback. E5 models use absolute position embeddings (no rotary) - likely full CUDA coverage. Trade-off: E5-large has 512 token context vs nomic's 8192, but windowing makes this moot."
 mentions = ["embedder.rs", "nomic-embed-text", "E5", "model"]
 
@@ -224,12 +224,12 @@ text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=3
 mentions = ["cli.rs", "batch_size", "gpu-search"]
 
 [[note]]
-sentiment = 0.6
+sentiment = 0.5
 text = "E5-base-v2 verified: 100 Gather ops but ALL are embedding lookups (word_embeddings, position_embeddings), not rotary. nomic has 72 rotary_emb Gathers that cause CPU fallback. E5 should have full CUDA coverage."
 mentions = ["embedder.rs", "E5", "nomic-embed-text", "CUDA"]
 
 [[note]]
-sentiment = -0.6
+sentiment = -0.5
 text = "ort CUDA provider fails silently if libs not in LD_LIBRARY_PATH. No error - just falls back to CPU. The log shows 'Adding default CPU execution provider' instead of CUDA. Must include ~/.cache/ort.pyke.io/dfbin/.../  in LD_LIBRARY_PATH."
 mentions = ["ort", "CUDA", "LD_LIBRARY_PATH", "embedder.rs"]
 
@@ -239,26 +239,26 @@ text = "Switched from nomic-embed-text-v1.5 to E5-base-v2 (Feb 2026). E5 prefixe
 mentions = ["embedder.rs", "cli.rs", "E5", "windowing"]
 
 [[note]]
-sentiment = 0.7
+sentiment = 0.5
 text = "E5-base-v2 CUDA confirmed working. Zero rotary_emb ops - only embeddings/Gather (position lookups) and Unsqueeze (shape) on CPU. These are fast constant-time ops, not the 800% CPU thrashing from nomic's rotary embeddings."
 mentions = ["embedder.rs", "E5", "CUDA", "ort"]
 
 [[note]]
-sentiment = -0.7
+sentiment = -0.5
 text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_LIBRARY_PATH, it would create circular symlinks in the source directory, corrupting the ort cache. Fixed by skipping dirs containing ort_cache path."
 mentions = ["embedder.rs", "ort", "symlink"]
 
 [[note]]
-sentiment = -0.3
+sentiment = -0.5
 text = "Test fixtures hardcoded 'nomic-embed-text-v1.5' and schema v8 - broke when we switched to E5/v9. Considered exporting constants but decided: hardcode is fine, fix when it breaks, note reminds us. Not every paper cut needs abstraction."
 mentions = ["mcp_test.rs", "store_test.rs", "MODEL_NAME"]
 
 [[note]]
-sentiment = -0.4
+sentiment = -0.5
 text = "cfg(feature) dead code trap: if a constant is defined outside a #[cfg(feature)] block but only used inside it, clippy reports dead_code when feature is disabled. Move constants inside the cfg block or gate with #[cfg(feature)] too."
 mentions = ["cli.rs", "CAGRA_THRESHOLD", "clippy"]
 
 [[note]]
-sentiment = -0.6
+sentiment = -0.5
 text = "Don't make up numbers. Git history is right there: `git log --reverse --format='%ai' | head -1`. Check facts instead of guessing."
 mentions = ["git"]
