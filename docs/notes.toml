@@ -167,3 +167,48 @@ mentions = ["hardware", "benchmarking"]
 sentiment = 0.0
 text = "ort CUDA provider needs libonnxruntime_providers_shared.so in LD_LIBRARY_PATH. Libs exist at ~/.cache/ort.pyke.io/dfbin/... but aren't found at runtime. Fix: export LD_LIBRARY_PATH with that path. However, CUDA embedding is slower than CPU for single queries due to GPU context setup overhead - only worth it for batch embedding during indexing."
 mentions = ["embedder.rs", "ort", "CUDA", "LD_LIBRARY_PATH"]
+
+[[note]]
+sentiment = 0.7
+text = "Overlapping window chunking (2048 tokens, 256 overlap) improved indexing throughput 18MB/min → 35MB/min. Long chunks split into windows with parent_id for dedup. GPU gets smaller, bounded work units instead of huge variable-length sequences."
+mentions = ["cli.rs", "embedder.rs", "windowing"]
+
+[[note]]
+sentiment = -0.4
+text = "ort CUDA execution provider falls back to CPU for rotary_emb/Gather ops. These run with full CPU parallelism (~800%) while GPU waits. Windowing helps by capping sequence length, but the fundamental bottleneck is ort's op routing."
+mentions = ["ort", "embedder.rs", "CUDA", "rotary_emb"]
+
+[[note]]
+sentiment = 0.3
+text = "nomic-embed-text uses rotary position embeddings which cause Gather op CPU fallback. E5 models use absolute position embeddings (no rotary) - likely full CUDA coverage. Trade-off: E5-large has 512 token context vs nomic's 8192, but windowing makes this moot."
+mentions = ["embedder.rs", "nomic-embed-text", "E5", "model"]
+
+[[note]]
+sentiment = -0.5
+text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=32 runs stable. With 2048-token windowing, GPU util cycles 0-99% (bursty) as it waits for ort CPU fallback ops between batches."
+mentions = ["cli.rs", "batch_size", "gpu-search"]
+
+[[note]]
+sentiment = 0.6
+text = "E5-base-v2 verified: 100 Gather ops but ALL are embedding lookups (word_embeddings, position_embeddings), not rotary. nomic has 72 rotary_emb Gathers that cause CPU fallback. E5 should have full CUDA coverage."
+mentions = ["embedder.rs", "E5", "nomic-embed-text", "CUDA"]
+
+[[note]]
+sentiment = -0.6
+text = "ort CUDA provider fails silently if libs not in LD_LIBRARY_PATH. No error - just falls back to CPU. The log shows 'Adding default CPU execution provider' instead of CUDA. Must include ~/.cache/ort.pyke.io/dfbin/.../  in LD_LIBRARY_PATH."
+mentions = ["ort", "CUDA", "LD_LIBRARY_PATH", "embedder.rs"]
+
+[[note]]
+sentiment = 0.0
+text = "Switched from nomic-embed-text-v1.5 to E5-base-v2 (Feb 2026). E5 prefixes: 'passage: ' for docs, 'query: ' for search. Window params adjusted: 480 tokens/64 overlap (E5's 512 limit vs nomic's 8192)."
+mentions = ["embedder.rs", "cli.rs", "E5", "windowing"]
+
+[[note]]
+sentiment = 0.7
+text = "E5-base-v2 CUDA confirmed working. Zero rotary_emb ops - only embeddings/Gather (position lookups) and Unsqueeze (shape) on CPU. These are fast constant-time ops, not the 800% CPU thrashing from nomic's rotary embeddings."
+mentions = ["embedder.rs", "E5", "CUDA", "ort"]
+
+[[note]]
+sentiment = -0.7
+text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_LIBRARY_PATH, it would create circular symlinks in the source directory, corrupting the ort cache. Fixed by skipping dirs containing ort_cache path."
+mentions = ["embedder.rs", "ort", "symlink"]

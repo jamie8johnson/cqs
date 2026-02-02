@@ -66,6 +66,7 @@ notify = { version = "6", features = ["serde"] }
 fs4 = "0.12"
 ctrlc = "3"
 rayon = "1"
+crossbeam-channel = "0.5"
 chrono = "0.4"
 globset = "0.4"
 colored = "2"

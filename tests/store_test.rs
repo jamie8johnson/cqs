@@ -23,6 +23,8 @@ fn create_test_chunk(name: &str, content: &str) -> Chunk {
         line_start: 1,
         line_end: 5,
         content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+        parent_id: None,
+        window_idx: None,
     }
 }
 

@@ -806,6 +806,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "colored",
+ "crossbeam-channel",
  "ctrlc",
  "cuvs",
  "dirs 5.0.1",

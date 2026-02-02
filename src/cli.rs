@@ -2,13 +2,16 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use crossbeam_channel::{bounded, select, Receiver, Sender};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -22,6 +25,8 @@ use cqs::store::{ModelInfo, SearchFilter, Store, UnifiedResult};
 
 // Constants
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
+const MAX_TOKENS_PER_WINDOW: usize = 480; // Max tokens before windowing (E5 has 512 limit)
+const WINDOW_OVERLAP_TOKENS: usize = 64; // Overlap between windows
 
 // Exit codes
 #[repr(i32)]
@@ -324,38 +329,6 @@ fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Ve
     Ok(files)
 }
 
-/// Parse files in parallel
-/// `root` is joined with relative paths for filesystem access
-/// `files` contains relative paths which are stored in chunks for portability
-fn parse_files(parser: &CqParser, root: &Path, files: &[PathBuf]) -> Vec<cqs::parser::Chunk> {
-    files
-        .par_iter()
-        .flat_map(|rel_path| {
-            let abs_path = root.join(rel_path);
-            match parser.parse_file(&abs_path) {
-                Ok(mut chunks) => {
-                    // Rewrite paths to be relative for storage
-                    for chunk in &mut chunks {
-                        chunk.file = rel_path.clone();
-                        // Rebuild ID with relative path
-                        chunk.id = format!(
-                            "{}:{}:{}",
-                            rel_path.display(),
-                            chunk.line_start,
-                            &chunk.content_hash[..8]
-                        );
-                    }
-                    chunks
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
-                    vec![]
-                }
-            }
-        })
-        .collect()
-}
-
 /// Check if a process with the given PID exists
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
@@ -542,6 +515,470 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Apply windowing to chunks that exceed the token limit.
+/// Long chunks are split into overlapping windows; short chunks pass through unchanged.
+fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
+    let mut result = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+        match embedder.split_into_windows(
+            &chunk.content,
+            MAX_TOKENS_PER_WINDOW,
+            WINDOW_OVERLAP_TOKENS,
+        ) {
+            Ok(windows) if windows.len() == 1 => {
+                // Fits in one window - pass through unchanged
+                result.push(chunk);
+            }
+            Ok(windows) => {
+                // Split into multiple windows
+                let parent_id = chunk.id.clone();
+                for (window_content, window_idx) in windows {
+                    let window_hash = blake3::hash(window_content.as_bytes()).to_hex().to_string();
+                    result.push(Chunk {
+                        id: format!("{}:w{}", parent_id, window_idx),
+                        file: chunk.file.clone(),
+                        language: chunk.language,
+                        chunk_type: chunk.chunk_type,
+                        name: chunk.name.clone(),
+                        signature: chunk.signature.clone(),
+                        content: window_content,
+                        doc: if window_idx == 0 {
+                            chunk.doc.clone()
+                        } else {
+                            None
+                        }, // Doc only on first window
+                        line_start: chunk.line_start,
+                        line_end: chunk.line_end,
+                        content_hash: window_hash,
+                        parent_id: Some(parent_id.clone()),
+                        window_idx: Some(window_idx),
+                    });
+                }
+            }
+            Err(e) => {
+                // Tokenization failed - pass through unchanged and hope for the best
+                tracing::warn!("Windowing failed for {}: {}, passing through", chunk.id, e);
+                result.push(chunk);
+            }
+        }
+    }
+
+    result
+}
+
+/// Message types for the pipelined indexer
+struct ParsedBatch {
+    chunks: Vec<Chunk>,
+    file_mtime: i64,
+}
+
+struct EmbeddedBatch {
+    chunk_embeddings: Vec<(Chunk, Embedding)>,
+    cached_count: usize,
+    file_mtime: i64,
+}
+
+/// Stats returned from pipelined indexing
+struct PipelineStats {
+    total_embedded: usize,
+    total_cached: usize,
+}
+
+/// Run the indexing pipeline with 3 concurrent stages:
+/// 1. Parser: Parse files in parallel batches
+/// 2. Embedder: Embed chunks (GPU)
+/// 3. Writer: Write to SQLite
+fn run_index_pipeline(
+    root: &Path,
+    files: Vec<PathBuf>,
+    store_path: &Path,
+    force: bool,
+    quiet: bool,
+) -> Result<PipelineStats> {
+    use cqs::nl::generate_nl_description;
+
+    let batch_size = 32; // Embedding batch size (backed off from 64 - crashed at 2%)
+    let file_batch_size = 100_000; // Files to parse per batch (all at once)
+    let channel_depth = 256; // Pipeline buffer depth (larger = smoother utilization)
+
+    // Channels
+    let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
+    let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
+        bounded(channel_depth);
+    // GPU failure channel - GPU requeues failed batches here for CPU to handle async
+    let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
+
+    // Shared state for progress
+    let total_files = files.len();
+    let parsed_count = Arc::new(AtomicUsize::new(0));
+    let embedded_count = Arc::new(AtomicUsize::new(0));
+
+    // Clone for threads
+    let root_clone = root.to_path_buf();
+    let parsed_count_clone = Arc::clone(&parsed_count);
+    let store_path_for_parser = store_path.to_path_buf();
+    let store_path_for_embedder = store_path.to_path_buf();
+
+    // Stage 1: Parser thread - parse files in parallel batches
+    let parser_handle = thread::spawn(move || -> Result<()> {
+        let parser = CqParser::new()?;
+        let store = Store::open(&store_path_for_parser)?;
+        let root = root_clone;
+
+        for file_batch in files.chunks(file_batch_size) {
+            if check_interrupted() {
+                break;
+            }
+
+            // Parse files in parallel
+            let chunks: Vec<Chunk> = file_batch
+                .par_iter()
+                .flat_map(|rel_path| {
+                    let abs_path = root.join(rel_path);
+                    match parser.parse_file(&abs_path) {
+                        Ok(mut chunks) => {
+                            // Rewrite paths to be relative for storage
+                            for chunk in &mut chunks {
+                                chunk.file = rel_path.clone();
+                                chunk.id = format!(
+                                    "{}:{}:{}",
+                                    rel_path.display(),
+                                    chunk.line_start,
+                                    &chunk.content_hash[..8]
+                                );
+                            }
+                            chunks
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                            vec![]
+                        }
+                    }
+                })
+                .collect();
+
+            // Filter by needs_reindex unless forced
+            let chunks: Vec<Chunk> = if force {
+                chunks
+            } else {
+                chunks
+                    .into_iter()
+                    .filter(|c| {
+                        let abs_path = root.join(&c.file);
+                        store.needs_reindex(&abs_path).unwrap_or(true)
+                    })
+                    .collect()
+            };
+
+            parsed_count_clone.fetch_add(file_batch.len(), Ordering::Relaxed);
+
+            if !chunks.is_empty() {
+                // Get mtime from first chunk's file
+                let file_mtime = chunks
+                    .first()
+                    .and_then(|c| root.join(&c.file).metadata().ok())
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                // Send in embedding-sized batches
+                for chunk_batch in chunks.chunks(batch_size) {
+                    if parse_tx
+                        .send(ParsedBatch {
+                            chunks: chunk_batch.to_vec(),
+                            file_mtime,
+                        })
+                        .is_err()
+                    {
+                        break; // Receiver dropped
+                    }
+                }
+            }
+        }
+        Ok(())
+    });
+
+    // Clone for embedders (GPU and CPU run in parallel)
+    let embedded_count_gpu = Arc::clone(&embedded_count);
+    let embedded_count_cpu = Arc::clone(&embedded_count);
+    let parse_rx_cpu = parse_rx.clone(); // CPU also grabs regular batches
+    let embed_tx_cpu = embed_tx.clone();
+    let store_path_for_cpu = store_path.to_path_buf();
+
+    // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
+    let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
+        let mut embedder = Embedder::new()?;
+        embedder.warm()?;
+        let store = Store::open(&store_path_for_embedder)?;
+
+        for batch in parse_rx {
+            if check_interrupted() {
+                break;
+            }
+
+            // Apply windowing to split long chunks into overlapping windows
+            let windowed_chunks = apply_windowing(batch.chunks, &embedder);
+            let batch = ParsedBatch {
+                chunks: windowed_chunks,
+                file_mtime: batch.file_mtime,
+            };
+
+            // Check for existing embeddings by content hash
+            let hashes: Vec<&str> = batch
+                .chunks
+                .iter()
+                .map(|c| c.content_hash.as_str())
+                .collect();
+            let existing = store.get_embeddings_by_hashes(&hashes);
+
+            // Separate into cached vs to_embed
+            let mut to_embed: Vec<&Chunk> = Vec::new();
+            let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+
+            for chunk in &batch.chunks {
+                if let Some(emb) = existing.get(&chunk.content_hash) {
+                    cached.push((chunk.clone(), emb.clone()));
+                } else {
+                    to_embed.push(chunk);
+                }
+            }
+
+            // Embed new chunks on GPU
+            if to_embed.is_empty() {
+                // All cached, send directly
+                let cached_count = cached.len();
+                embedded_count_gpu.fetch_add(cached_count, Ordering::Relaxed);
+                if embed_tx
+                    .send(EmbeddedBatch {
+                        chunk_embeddings: cached,
+                        cached_count,
+                        file_mtime: batch.file_mtime,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            } else {
+                let texts: Vec<String> = to_embed
+                    .iter()
+                    .map(|c| generate_nl_description(c))
+                    .collect();
+                let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
+
+                // Pre-filter long batches to CPU (GPU hits CUDNN limits >8k chars)
+                if max_len > 8000 {
+                    eprintln!(
+                        "Routing long batch to CPU: {} chunks, max_len={}",
+                        to_embed.len(),
+                        max_len
+                    );
+                    if fail_tx.send(batch).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                match embedder.embed_documents(&text_refs) {
+                    Ok(embs) => {
+                        let new_embeddings: Vec<Embedding> =
+                            embs.into_iter().map(|e| e.with_sentiment(0.0)).collect();
+                        let cached_count = cached.len();
+                        let mut chunk_embeddings = cached;
+                        chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
+                        embedded_count_gpu.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+                        if embed_tx
+                            .send(EmbeddedBatch {
+                                chunk_embeddings,
+                                cached_count,
+                                file_mtime: batch.file_mtime,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_e) => {
+                        // GPU failed - log details and requeue to CPU
+                        let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
+                        let files: Vec<_> = to_embed
+                            .iter()
+                            .map(|c| c.file.display().to_string())
+                            .collect();
+                        eprintln!(
+                            "GPU failed, requeueing {} chunks to CPU (max_len={}, files={:?})",
+                            batch.chunks.len(),
+                            max_len,
+                            files
+                        );
+                        if fail_tx.send(batch).is_err() {
+                            break; // CPU thread gone
+                        }
+                    }
+                }
+            }
+        }
+        drop(fail_tx); // Signal CPU thread to finish when done
+        Ok(())
+    });
+
+    // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
+    let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
+        let mut embedder = Embedder::new_cpu()?;
+        let store = Store::open(&store_path_for_cpu)?;
+
+        loop {
+            if check_interrupted() {
+                break;
+            }
+
+            // Race: GPU and CPU both grab from parse_rx, CPU also handles routed long batches
+            let batch = select! {
+                recv(fail_rx) -> msg => match msg {
+                    Ok(b) => b,
+                    Err(_) => match parse_rx_cpu.recv() {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    },
+                },
+                recv(parse_rx_cpu) -> msg => match msg {
+                    Ok(b) => b,
+                    Err(_) => match fail_rx.recv() {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    },
+                },
+            };
+
+            // Apply windowing to split long chunks into overlapping windows
+            let windowed_chunks = apply_windowing(batch.chunks, &embedder);
+            let batch = ParsedBatch {
+                chunks: windowed_chunks,
+                file_mtime: batch.file_mtime,
+            };
+
+            // Check for existing embeddings by content hash
+            let hashes: Vec<&str> = batch
+                .chunks
+                .iter()
+                .map(|c| c.content_hash.as_str())
+                .collect();
+            let existing = store.get_embeddings_by_hashes(&hashes);
+
+            // Separate into cached vs to_embed
+            let mut to_embed: Vec<&Chunk> = Vec::new();
+            let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+
+            for chunk in &batch.chunks {
+                if let Some(emb) = existing.get(&chunk.content_hash) {
+                    cached.push((chunk.clone(), emb.clone()));
+                } else {
+                    to_embed.push(chunk);
+                }
+            }
+
+            // Embed new chunks (CPU only)
+            let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
+                vec![]
+            } else {
+                let texts: Vec<String> = to_embed
+                    .iter()
+                    .map(|c| generate_nl_description(c))
+                    .collect();
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                embedder
+                    .embed_documents(&text_refs)?
+                    .into_iter()
+                    .map(|e| e.with_sentiment(0.0))
+                    .collect()
+            };
+
+            let cached_count = cached.len();
+            let mut chunk_embeddings = cached;
+            chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
+
+            embedded_count_cpu.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+
+            if embed_tx_cpu
+                .send(EmbeddedBatch {
+                    chunk_embeddings,
+                    cached_count,
+                    file_mtime: batch.file_mtime,
+                })
+                .is_err()
+            {
+                break; // Receiver dropped
+            }
+        }
+        Ok(())
+    });
+
+    // Stage 3: Writer (main thread) - write to SQLite
+    let store = Store::open(store_path)?;
+    let parser = CqParser::new()?;
+    let mut total_embedded = 0;
+    let mut total_cached = 0;
+
+    let progress = if quiet {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(total_files as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                .unwrap(),
+        );
+        pb
+    };
+
+    for batch in embed_rx {
+        if check_interrupted() {
+            break;
+        }
+
+        store.upsert_chunks_batch(&batch.chunk_embeddings, batch.file_mtime)?;
+
+        // Extract and store function calls
+        for (chunk, _) in &batch.chunk_embeddings {
+            let calls = parser.extract_calls_from_chunk(chunk);
+            if !calls.is_empty() {
+                store.upsert_calls(&chunk.id, &calls)?;
+            }
+        }
+
+        total_embedded += batch.chunk_embeddings.len();
+        total_cached += batch.cached_count;
+
+        let parsed = parsed_count.load(Ordering::Relaxed);
+        let embedded = embedded_count.load(Ordering::Relaxed);
+        progress.set_position(parsed as u64);
+        progress.set_message(format!(
+            "parsed:{} embedded:{} written:{}",
+            parsed, embedded, total_embedded
+        ));
+    }
+
+    progress.finish_with_message("done");
+
+    // Wait for threads to finish
+    parser_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Parser thread panicked"))??;
+    gpu_embedder_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("GPU embedder thread panicked"))??;
+    cpu_embedder_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("CPU embedder thread panicked"))??;
+
+    Ok(PipelineStats {
+        total_embedded,
+        total_cached,
+    })
+}
+
 fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -583,16 +1020,6 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         return Ok(());
     }
 
-    if !cli.quiet {
-        println!("Parsing...");
-    }
-
-    let chunks = parse_files(&parser, &root, &files);
-
-    if !cli.quiet {
-        println!("Found {} chunks", chunks.len());
-    }
-
     // Initialize or open store
     let store = if index_path.exists() && !force {
         Store::open(&index_path)?
@@ -606,122 +1033,14 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         store
     };
 
-    // Filter by needs_reindex unless forced
-    let chunks_to_embed: Vec<_> = if force {
-        chunks.into_iter().collect()
-    } else {
-        chunks
-            .into_iter()
-            .filter(|c| {
-                // Join with root for filesystem access
-                let abs_path = root.join(&c.file);
-                store.needs_reindex(&abs_path).unwrap_or(true)
-            })
-            .collect()
-    };
-
-    if chunks_to_embed.is_empty() {
-        if !cli.quiet {
-            println!("Index is up to date.");
-        }
-        return Ok(());
-    }
-
     if !cli.quiet {
-        println!("Embedding {} chunks...", chunks_to_embed.len());
+        println!("Indexing {} files (pipelined)...", files.len());
     }
 
-    let mut embedder = Embedder::new()?;
-
-    if !cli.quiet {
-        println!("Using {}", embedder.provider());
-    }
-
-    let progress = if cli.quiet {
-        ProgressBar::hidden()
-    } else {
-        let pb = ProgressBar::new(chunks_to_embed.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
-                .unwrap(),
-        );
-        pb
-    };
-
-    let batch_size = embedder.batch_size();
-    let mut total_embedded = 0;
-    let mut total_cached = 0;
-
-    for batch in chunks_to_embed.chunks(batch_size) {
-        if check_interrupted() {
-            eprintln!("Committing partial index...");
-            break;
-        }
-
-        // Check for existing embeddings by content hash (skip re-embedding unchanged chunks)
-        let hashes: Vec<&str> = batch.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store.get_embeddings_by_hashes(&hashes);
-
-        // Separate into cached (reuse embedding) vs to_embed (need new embedding)
-        let mut to_embed: Vec<&Chunk> = Vec::new();
-        let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
-
-        for chunk in batch {
-            if let Some(emb) = existing.get(&chunk.content_hash) {
-                cached.push((chunk.clone(), emb.clone()));
-            } else {
-                to_embed.push(chunk);
-            }
-        }
-
-        // Embed only new chunks
-        let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
-            vec![]
-        } else {
-            let texts: Vec<String> = to_embed
-                .iter()
-                .map(|c| generate_nl_description(c))
-                .collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            // Add neutral sentiment (0.0) as 769th dimension for code chunks
-            embedder
-                .embed_documents(&text_refs)?
-                .into_iter()
-                .map(|e| e.with_sentiment(0.0))
-                .collect()
-        };
-
-        // Get file mtime (use first file's mtime for the batch)
-        let file_mtime = batch
-            .first()
-            .and_then(|c| root.join(&c.file).metadata().ok())
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        // Combine cached + new embeddings
-        let batch_cached_count = cached.len();
-        let mut chunk_embeddings: Vec<(Chunk, Embedding)> = cached;
-        chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
-
-        store.upsert_chunks_batch(&chunk_embeddings, file_mtime)?;
-
-        // Extract and store function calls for call graph
-        for (chunk, _) in &chunk_embeddings {
-            let calls = parser.extract_calls_from_chunk(chunk);
-            if !calls.is_empty() {
-                store.upsert_calls(&chunk.id, &calls)?;
-            }
-        }
-
-        total_embedded += chunk_embeddings.len();
-        total_cached += batch_cached_count;
-        progress.set_position(total_embedded as u64);
-    }
-
-    progress.finish_with_message("done");
+    // Run the 3-stage pipeline: parse → embed → write
+    let stats = run_index_pipeline(&root, files.clone(), &index_path, force, cli.quiet)?;
+    let total_embedded = stats.total_embedded;
+    let total_cached = stats.total_cached;
 
     // Prune missing files
     let existing_files: HashSet<_> = files.into_iter().collect();
@@ -805,6 +1124,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
                     Ok(notes) => {
                         if !notes.is_empty() {
                             // Embed note content with sentiment
+                            let mut embedder = Embedder::new()?;
                             let texts: Vec<String> =
                                 notes.iter().map(|n| n.embedding_text()).collect();
                             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();

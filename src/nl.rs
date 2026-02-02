@@ -115,6 +115,8 @@ pub fn tokenize_identifier(s: &str) -> Vec<String> {
 ///     line_end: 5,
 ///     doc: Some("/// Parse configuration from file".to_string()),
 ///     content_hash: "abcd1234".to_string(),
+///     parent_id: None,
+///     window_idx: None,
 /// };
 ///
 /// let nl = generate_nl_description(&chunk);
@@ -331,6 +333,8 @@ mod tests {
             line_end: 1,
             doc: Some("/// Load config from path".to_string()),
             content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
         };
 
         let nl = generate_nl_description(&chunk);
@@ -362,6 +366,8 @@ mod tests {
                 .to_string(),
             ),
             content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
         };
 
         let nl = generate_nl_description(&chunk);

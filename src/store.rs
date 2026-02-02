@@ -74,6 +74,7 @@ struct ChunkRow {
     doc: Option<String>,
     line_start: u32,
     line_end: u32,
+    parent_id: Option<String>,
 }
 
 /// Minimal struct for scoring phase - ID, embedding, and optionally name
@@ -379,6 +380,12 @@ impl Store {
             conn.pragma_update(None, "busy_timeout", 5000)?;
             // NORMAL sync is safe with WAL and faster than FULL
             conn.pragma_update(None, "synchronous", "NORMAL")?;
+            // 64MB page cache (negative = KB, so -65536 = 64MB)
+            conn.pragma_update(None, "cache_size", -65536)?;
+            // Keep temp tables in memory
+            conn.pragma_update(None, "temp_store", "MEMORY")?;
+            // Memory-map up to 256MB for read performance
+            conn.pragma_update(None, "mmap_size", 268435456)?;
             Ok(())
         });
 
@@ -506,8 +513,8 @@ impl Store {
 
         {
             let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO chunks (id, file, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, file_mtime, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                "INSERT OR REPLACE INTO chunks (id, file, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, file_mtime, created_at, updated_at, parent_id, window_idx)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?;
 
             // FTS5: delete old entry, insert new (UPSERT not supported in FTS5)
@@ -534,6 +541,8 @@ impl Store {
                     file_mtime,
                     &now,
                     &now,
+                    chunk.parent_id,
+                    chunk.window_idx,
                 ])?;
 
                 // Update FTS5 index with normalized text
@@ -779,7 +788,7 @@ impl Store {
         let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
         let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end
+            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
              FROM chunks WHERE id IN ({})",
             placeholders
         );
@@ -798,19 +807,30 @@ impl Store {
                     doc: row.get(7)?,
                     line_start: row.get(8)?,
                     line_end: row.get(9)?,
+                    parent_id: row.get(10)?,
                 })
             })?
             .filter_map(|r| r.ok())
             .map(|row| (row.id.clone(), row))
             .collect();
 
-        // Reassemble results in score order
+        // Reassemble results in score order, deduplicating by parent_id
+        // (windowed chunks from the same function collapse to highest-scoring window)
+        let mut seen_parents: std::collections::HashSet<String> = std::collections::HashSet::new();
         let results: Vec<SearchResult> = final_scored
             .into_iter()
             .filter_map(|(id, score)| {
-                rows.get(&id).map(|row| SearchResult {
-                    chunk: ChunkSummary::from(row.clone()),
-                    score,
+                rows.get(&id).and_then(|row| {
+                    // Use parent_id if set, otherwise use id as the dedup key
+                    let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                    if seen_parents.insert(dedup_key) {
+                        Some(SearchResult {
+                            chunk: ChunkSummary::from(row.clone()),
+                            score,
+                        })
+                    } else {
+                        None // Already saw a higher-scoring chunk from this parent
+                    }
                 })
             })
             .collect();
@@ -1035,7 +1055,7 @@ impl Store {
     pub fn get_chunk_by_id(&self, id: &str) -> Result<Option<ChunkSummary>, StoreError> {
         let conn = self.pool.get()?;
         let row = conn.query_row(
-            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end
+            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
              FROM chunks WHERE id = ?1",
             [id],
             |row| {
@@ -1050,6 +1070,7 @@ impl Store {
                     doc: row.get(7)?,
                     line_start: row.get(8)?,
                     line_end: row.get(9)?,
+                    parent_id: row.get(10)?,
                 })
             },
         );
@@ -1089,7 +1110,7 @@ impl Store {
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding
+            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding, parent_id
              FROM chunks WHERE id IN ({})",
             placeholders
         );
@@ -1109,6 +1130,7 @@ impl Store {
                         doc: row.get(7)?,
                         line_start: row.get(8)?,
                         line_end: row.get(9)?,
+                        parent_id: row.get(11)?,
                     },
                     row.get::<_, Vec<u8>>(10)?,
                 ))
@@ -1166,17 +1188,25 @@ impl Store {
             })
             .collect();
 
-        // Sort by score descending and take top-N
+        // Sort by score descending
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
 
-        // Convert to SearchResult
+        // Deduplicate by parent_id (windowed chunks from same function collapse to highest-scoring)
+        let mut seen_parents: std::collections::HashSet<String> = std::collections::HashSet::new();
         let results: Vec<SearchResult> = scored
             .into_iter()
-            .map(|(row, score)| SearchResult {
-                chunk: ChunkSummary::from(row),
-                score,
+            .filter_map(|(row, score)| {
+                let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                if seen_parents.insert(dedup_key) {
+                    Some(SearchResult {
+                        chunk: ChunkSummary::from(row),
+                        score,
+                    })
+                } else {
+                    None
+                }
             })
+            .take(limit)
             .collect();
 
         Ok(results)
@@ -1238,7 +1268,7 @@ impl Store {
 
         let mut stmt = conn.prepare(
             "SELECT DISTINCT c.id, c.file, c.language, c.chunk_type, c.name, c.signature,
-                    c.content, c.doc, c.line_start, c.line_end
+                    c.content, c.doc, c.line_start, c.line_end, c.parent_id
              FROM chunks c
              JOIN calls ca ON c.id = ca.caller_id
              WHERE ca.callee_name = ?1
@@ -1258,6 +1288,7 @@ impl Store {
                     doc: row.get(7)?,
                     line_start: row.get(8)?,
                     line_end: row.get(9)?,
+                    parent_id: row.get(10)?,
                 })
             })?
             .filter_map(|r| r.ok())

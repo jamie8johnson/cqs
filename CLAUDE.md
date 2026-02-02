@@ -23,8 +23,7 @@ If context just compacted: read tears, then ask "where were we?" rather than gue
 ## Read First
 
 * `PROJECT_CONTINUITY.md` -- what's happening right now
-* `docs/notes.toml` -- observations indexed by cqs (warnings, patterns)
-* `docs/SCARS.md` -- things we tried that hurt. don't repeat these.
+* `docs/notes.toml` -- observations indexed by cqs (warnings, patterns, scars)
 * `ROADMAP.md` -- what's done, what's next
 
 ## Code Search
@@ -87,7 +86,6 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
 * `docs/notes.toml` -- observations with sentiment (indexed by cqs, use `cqs_add_note`)
-* `docs/SCARS.md` -- failed approaches (add when something hurts)
 
 Don't log activity - git history has that.
 
@@ -113,23 +111,6 @@ mentions = ["file.rs", "function_name"]
 sentiment = 0.7
 text = "Example pattern - something that worked well"
 mentions = ["other_file.rs"]
-```
-
-**docs/SCARS.md:**
-```markdown
-# Scars
-
-Limbic memory. Things that hurt, so we don't touch the stove twice.
-
----
-
-## <topic>
-
-**Tried:** what we attempted
-**Pain:** why it hurt
-**Learned:** what to do instead
-
----
 ```
 
 **PROJECT_CONTINUITY.md:**
