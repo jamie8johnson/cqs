@@ -1446,13 +1446,29 @@ impl Store {
         // Search notes (unified memory)
         let note_results = self.search_notes(query, limit, threshold)?;
 
-        // Merge and sort by score
+        // Merge with minimum code guarantee (notes enhance but don't dominate)
+        // Reserve 60% of slots for code if available, notes fill the rest
+        let min_code_slots = (limit * 3) / 5; // 3 out of 5
+        let code_count = code_results.len().min(limit);
+        let reserved_code = code_count.min(min_code_slots);
+        let note_slots = limit.saturating_sub(reserved_code);
+
+        // Take top code results (already sorted by score)
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
+            .take(limit)
             .map(UnifiedResult::Code)
-            .chain(note_results.into_iter().map(UnifiedResult::Note))
             .collect();
 
+        // Add notes up to remaining slots
+        let notes_to_add: Vec<UnifiedResult> = note_results
+            .into_iter()
+            .take(note_slots)
+            .map(UnifiedResult::Note)
+            .collect();
+        unified.extend(notes_to_add);
+
+        // Re-sort by score for final ranking
         unified.sort_by(|a, b| {
             b.score()
                 .partial_cmp(&a.score())
@@ -1482,13 +1498,29 @@ impl Store {
         // Search notes (no HNSW for notes - they're typically few)
         let note_results = self.search_notes(query, limit, threshold)?;
 
-        // Merge and sort by score
+        // Merge with minimum code guarantee (notes enhance but don't dominate)
+        // Reserve 60% of slots for code if available, notes fill the rest
+        let min_code_slots = (limit * 3) / 5; // 3 out of 5
+        let code_count = code_results.len().min(limit);
+        let reserved_code = code_count.min(min_code_slots);
+        let note_slots = limit.saturating_sub(reserved_code);
+
+        // Take top code results (already sorted by score)
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
+            .take(limit)
             .map(UnifiedResult::Code)
-            .chain(note_results.into_iter().map(UnifiedResult::Note))
             .collect();
 
+        // Add notes up to remaining slots
+        let notes_to_add: Vec<UnifiedResult> = note_results
+            .into_iter()
+            .take(note_slots)
+            .map(UnifiedResult::Note)
+            .collect();
+        unified.extend(notes_to_add);
+
+        // Re-sort by score for final ranking
         unified.sort_by(|a, b| {
             b.score()
                 .partial_cmp(&a.score())
