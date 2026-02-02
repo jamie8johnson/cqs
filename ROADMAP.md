@@ -182,6 +182,12 @@
   - Large functions (>100 lines) now captured
   - 1889 calls indexed (CLI handlers included)
 
+- [x] E5-base-v2 model switch (v0.1.16)
+  - Full CUDA coverage (no rotary CPU fallback)
+  - Windowing for long functions (schema v9: parent_id, window_idx)
+  - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
+  - 9-layer fresh-eyes audit completed
+
 ### Planned
 
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
@@ -213,7 +219,7 @@
 
 Ship 1.0 when:
 
-- [ ] Schema stable for 1+ week of daily use (currently v5)
+- [ ] Schema stable for 1+ week of daily use (currently v9)
 - [ ] Used on 2+ different codebases without issues
 - [ ] MCP integration solid in daily Claude Code use
 - [ ] No known correctness bugs
