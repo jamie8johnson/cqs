@@ -19,8 +19,9 @@ use crate::parser::{Chunk, ChunkType, Language};
 // v6: Hunches (soft observations indexed for semantic search)
 // v7: Scars (failed approaches - limbic memory)
 // v8: Notes (unified memory with sentiment, 769-dim embeddings)
-const CURRENT_SCHEMA_VERSION: i32 = 8;
-const MODEL_NAME: &str = "nomic-embed-text-v1.5";
+// v9: Windowing (parent_id, window_idx for chunking long functions)
+const CURRENT_SCHEMA_VERSION: i32 = 9;
+const MODEL_NAME: &str = "intfloat/e5-base-v2";
 
 #[derive(Error, Debug)]
 pub enum StoreError {
