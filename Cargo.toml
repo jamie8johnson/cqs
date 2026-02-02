@@ -62,7 +62,7 @@ toml = "0.9"
 blake3 = "1"
 bytemuck = { version = "1", features = ["derive"] }
 ignore = "0.4"
-notify = { version = "6", features = ["serde"] }
+notify = { version = "8", features = ["serde"] }
 fs4 = "0.12"
 ctrlc = "3"
 rayon = "1"
