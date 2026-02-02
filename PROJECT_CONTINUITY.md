@@ -2,11 +2,7 @@
 
 ## Right Now
 
-**Testing complete.** All passing:
-- Unit tests (12), doc tests (8), clippy, fmt
-- CLI: search, filters, callers/callees, stats, doctor, completions
-- MCP: all 6 tools working (search, stats, callers, callees, read, add_note)
-- GPU and CPU paths verified
+**Hybrid CAGRA complete.** MCP starts instantly (HNSW), upgrades to GPU in background.
 
 Pronunciation: cqs = "seeks" (it seeks code semantically).
 
@@ -16,7 +12,7 @@ Pronunciation: cqs = "seeks" (it seeks code semantically).
 - E5-base-v2 model with "passage: " / "query: " prefixes
 - Schema v9 with windowing (parent_id, window_idx)
 - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
-- MCP: CPU (22ms warm) or GPU (12ms warm) + HNSW
+- MCP: hybrid startup (HNSW 30ms, CAGRA upgrades in background)
 
 ## Build & Run
 

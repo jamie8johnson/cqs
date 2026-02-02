@@ -150,7 +150,7 @@ Or manually in `~/.claude.json`:
 ```bash
 cqs serve --gpu --project /path/to/project
 ```
-GPU: ~12ms warm queries. CPU (default): ~22ms. Use GPU when query throughput matters more than cold start.
+GPU: ~12ms warm queries. CPU (default): ~22ms. Server starts instantly with HNSW, upgrades to GPU in background.
 
 **Step 2:** Add to your project's `CLAUDE.md` so Claude uses it automatically:
 
