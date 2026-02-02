@@ -222,3 +222,8 @@ mentions = ["mcp_test.rs", "store_test.rs", "MODEL_NAME"]
 sentiment = -0.4
 text = "cfg(feature) dead code trap: if a constant is defined outside a #[cfg(feature)] block but only used inside it, clippy reports dead_code when feature is disabled. Move constants inside the cfg block or gate with #[cfg(feature)] too."
 mentions = ["cli.rs", "CAGRA_THRESHOLD", "clippy"]
+
+[[note]]
+sentiment = -0.6
+text = "Don't make up numbers. Git history is right there: `git log --reverse --format='%ai' | head -1`. Check facts instead of guessing."
+mentions = ["git"]

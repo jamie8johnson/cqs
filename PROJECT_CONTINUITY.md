@@ -61,3 +61,7 @@ None active.
 ## Test Repo
 
 `/home/user001/rust` (rust-lang/rust, 36k files) - indexing in progress
+
+## Timeline
+
+Project started: 2026-01-30
