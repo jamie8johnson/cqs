@@ -164,6 +164,11 @@ text = "Fresh-eyes audit found real bug - schema version said 8, code used 9. Pr
 mentions = ["fresh-eyes", "store.rs", "audit"]
 
 [[note]]
+sentiment = 0.5
+text = "5-point sentiment scale (-1, -0.5, 0, 0.5, 1) beats 21-point (0.1 increments). Coarser is clearer - no false precision. When writing -0.6 vs -0.7, the distinction wasn't meaningful anyway."
+mentions = ["notes.toml", "sentiment"]
+
+[[note]]
 sentiment = -0.5
 text = "cuvs-sys crate uses find_package(cuvs), not source build. Needs libcuvs pre-installed via conda or manual RAPIDS build. Not self-contained like expected."
 mentions = ["cuvs", "Cargo.toml", "gpu-search"]

@@ -25,6 +25,13 @@ May be finishing - size hasn't grown recently.
 
 Codebase is solid.
 
+### Notes Simplified
+
+Migrated sentiment scale from 21-point (0.1 increments) to 5-point:
+- -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win)
+- Clearer signal, no false precision
+- Also added small positive notes (+0.5) to balance negativity bias
+
 ## Key Architecture
 
 - 769-dim embeddings (768 + sentiment)
