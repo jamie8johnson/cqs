@@ -1177,6 +1177,6 @@ fn uuid_simple() -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let random: u32 = rand::thread_rng().gen();
+    let random: u32 = rand::rng().random();
     format!("{:x}-{:08x}", nanos, random)
 }
