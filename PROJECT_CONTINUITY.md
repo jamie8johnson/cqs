@@ -2,12 +2,13 @@
 
 ## Right Now
 
-**Clean slate.** Recent work:
+**Clean slate.** Session work:
 - GPU MCP flag merged (`cqs serve --gpu`)
-- Full markdown review completed (model refs, docs paths updated)
-- 9-layer audit complete, codebase solid
+- Markdown review: model refs → E5-base-v2, docs paths fixed
+- Removed superseded files: hunches.toml, scars.toml, HUNCHES.md
+- Archived DESIGN.md → `docs/DESIGN_SPEC_27k_tokens.md`
 
-Ready for next task.
+Convention: large files get token count in filename (e.g., `_27k_tokens.md`).
 
 ## Key Architecture
 

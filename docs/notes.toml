@@ -267,3 +267,8 @@ mentions = ["cli.rs", "CAGRA_THRESHOLD", "clippy"]
 sentiment = -0.5
 text = "Don't make up numbers. Git history is right there: `git log --reverse --format='%ai' | head -1`. Check facts instead of guessing."
 mentions = ["git"]
+
+[[note]]
+sentiment = 0.5
+text = "Put token count in filename for large files (e.g., DESIGN_SPEC_27k_tokens.md). Claude sees it in glob results and knows to chunk or skip. Metadata in the filesystem."
+mentions = ["docs/", "workflow"]
