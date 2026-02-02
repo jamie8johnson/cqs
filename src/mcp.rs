@@ -279,6 +279,7 @@ impl McpServer {
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
         // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
+        // codeql[rust/uncontrolled-allocation-size]
         let _params: InitializeParams =
             params
                 .map(serde_json::from_value)
