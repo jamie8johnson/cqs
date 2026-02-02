@@ -3,10 +3,15 @@
 ## Right Now
 
 **Session work:**
-- Hybrid CAGRA startup (HNSW 30ms, CAGRA upgrades in background)
-- 60/40 code/notes split (notes are "did you know?" not main results)
-- Conda env vars for LD_LIBRARY_PATH (no more manual export)
-- Clarified: use `cqs_add_note` for notes, `cqs watch` for code
+- Published v0.1.17 to GitHub (crates.io blocked until 2026-02-02 05:18 UTC)
+- Merged 5 dependabot PRs (dirs, insta, rand 0.9, tower, notify)
+- Added `--bind` flag for HTTP transport with safety check
+- CodeQL suppression comment for allocation size alert
+- Simplified README claude block for external audience
+
+**1.0 progress:**
+- Schema v9 stable since 2026-02-01 (need 1 week = Feb 8)
+- Used on 2+ codebases (cqs + rust-lang/rust)
 
 Pronunciation: cqs = "seeks" (it seeks code semantically).
 
@@ -28,7 +33,7 @@ cargo build --release --features gpu-search
 ## Parked
 
 - CAGRA persistence (serialize/deserialize) - hybrid startup approach used instead
-- Republish to crates.io
+- API key auth for HTTP transport (for network exposure use cases)
 - Curator agent, fleet coordination
 
 ## Open Questions
