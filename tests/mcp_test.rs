@@ -26,7 +26,7 @@ fn setup_test_server() -> (TempDir, cqs::mcp::McpServer) {
         })
         .unwrap();
 
-    let server = cqs::mcp::McpServer::new(project_root).unwrap();
+    let server = cqs::mcp::McpServer::new(project_root, false).unwrap();
     (dir, server)
 }
 

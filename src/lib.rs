@@ -43,10 +43,10 @@
 //! ```no_run
 //! # async fn example() -> anyhow::Result<()> {
 //! // Stdio transport (for Claude Code)
-//! cqs::serve_stdio(".".into())?;
+//! cqs::serve_stdio(".".into(), false)?;  // false = CPU, true = GPU
 //!
-//! // HTTP transport
-//! cqs::serve_http(".".into(), 3000)?;
+//! // HTTP transport with GPU embedding
+//! cqs::serve_http(".".into(), 3000, true)?;
 //! # Ok(())
 //! # }
 //! ```

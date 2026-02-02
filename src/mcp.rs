@@ -144,11 +144,13 @@ pub struct McpServer {
     project_root: PathBuf,
     /// Vector index for O(log n) search (CAGRA or HNSW)
     index: Option<Box<dyn VectorIndex>>,
+    /// Use GPU for query embedding
+    use_gpu: bool,
 }
 
 impl McpServer {
     /// Create a new MCP server for the given project
-    pub fn new(project_root: PathBuf) -> Result<Self> {
+    pub fn new(project_root: PathBuf, use_gpu: bool) -> Result<Self> {
         let index_path = project_root.join(".cq/index.db");
         let cq_dir = project_root.join(".cq");
 
@@ -188,6 +190,7 @@ impl McpServer {
             embedder: None,
             project_root,
             index,
+            use_gpu,
         })
     }
 
@@ -210,12 +213,13 @@ impl McpServer {
     }
 
     /// Ensure embedder is loaded (lazy initialization)
-    ///
-    /// Uses CPU-only embedder for single-query embedding (faster than GPU
-    /// due to CUDA context overhead). GPU is used for batch indexing only.
     fn ensure_embedder(&mut self) -> Result<&mut Embedder> {
         if self.embedder.is_none() {
-            self.embedder = Some(Embedder::new_cpu()?);
+            self.embedder = Some(if self.use_gpu {
+                Embedder::new()?
+            } else {
+                Embedder::new_cpu()?
+            });
         }
         Ok(self.embedder.as_mut().unwrap())
     }
@@ -891,8 +895,8 @@ impl McpServer {
 }
 
 /// Run the MCP server with stdio transport
-pub fn serve_stdio(project_root: PathBuf) -> Result<()> {
-    let mut server = McpServer::new(project_root)?;
+pub fn serve_stdio(project_root: PathBuf, use_gpu: bool) -> Result<()> {
+    let mut server = McpServer::new(project_root, use_gpu)?;
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -956,8 +960,8 @@ struct HttpState {
 }
 
 /// Run the MCP server with HTTP transport
-pub fn serve_http(project_root: PathBuf, port: u16) -> Result<()> {
-    let server = McpServer::new(project_root)?;
+pub fn serve_http(project_root: PathBuf, port: u16, use_gpu: bool) -> Result<()> {
+    let server = McpServer::new(project_root, use_gpu)?;
     let state = Arc::new(HttpState {
         server: RwLock::new(server),
     });

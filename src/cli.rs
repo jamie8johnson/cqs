@@ -150,6 +150,9 @@ enum Commands {
         /// Project root
         #[arg(long)]
         project: Option<PathBuf>,
+        /// Use GPU for query embedding (faster after warmup)
+        #[arg(long)]
+        gpu: bool,
     },
     /// Generate shell completions
     Completions {
@@ -199,7 +202,8 @@ pub fn run() -> Result<()> {
             ref transport,
             port,
             ref project,
-        }) => cmd_serve(&cli, transport, port, project.clone()),
+            gpu,
+        }) => cmd_serve(&cli, transport, port, project.clone(), gpu),
         Some(Commands::Completions { shell }) => {
             cmd_completions(shell);
             Ok(())
@@ -1738,14 +1742,20 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
     Ok(note_embeddings.len())
 }
 
-fn cmd_serve(_cli: &Cli, transport: &str, port: u16, project: Option<PathBuf>) -> Result<()> {
+fn cmd_serve(
+    _cli: &Cli,
+    transport: &str,
+    port: u16,
+    project: Option<PathBuf>,
+    gpu: bool,
+) -> Result<()> {
     let root = project.unwrap_or_else(find_project_root);
 
     match transport {
-        "stdio" => cqs::serve_stdio(root),
-        "http" => cqs::serve_http(root, port),
+        "stdio" => cqs::serve_stdio(root, gpu),
+        "http" => cqs::serve_http(root, port, gpu),
         // Keep sse as alias for backwards compatibility
-        "sse" => cqs::serve_http(root, port),
+        "sse" => cqs::serve_http(root, port, gpu),
         _ => {
             bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
         }
