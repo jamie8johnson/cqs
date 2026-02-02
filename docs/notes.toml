@@ -149,6 +149,21 @@ text = "Copilot+ PC is a hardware contract for AI workloads - guarantees NPU wit
 mentions = ["embedder.rs", "ort", "DirectML"]
 
 [[note]]
+sentiment = 0.5
+text = "Tears actually work. Context resumes correctly after compaction - read PROJECT_CONTINUITY.md and pick up where we left off. The system serves its purpose."
+mentions = ["PROJECT_CONTINUITY.md", "tears", "context"]
+
+[[note]]
+sentiment = 0.5
+text = "MCP 0.13s query latency is real-time usable. Was 1.3s before optimization (CPU embedder init per query). 10x improvement from caching embedder instance."
+mentions = ["mcp.rs", "embedder.rs", "latency"]
+
+[[note]]
+sentiment = 0.6
+text = "Fresh-eyes audit found real bug - schema version said 8, code used 9. Process validated itself. The discipline works."
+mentions = ["fresh-eyes", "store.rs", "audit"]
+
+[[note]]
 sentiment = -0.3
 text = "cuvs-sys crate uses find_package(cuvs), not source build. Needs libcuvs pre-installed via conda or manual RAPIDS build. Not self-contained like expected."
 mentions = ["cuvs", "Cargo.toml", "gpu-search"]
