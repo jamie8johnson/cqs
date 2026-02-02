@@ -159,6 +159,26 @@ text = "WSL has RTX A6000 (49GB VRAM) available for GPU testing. Use conda cuvs 
 mentions = ["cagra.rs", "gpu-search"]
 
 [[note]]
+sentiment = 0.2
+text = "CI catches what local builds miss. Feature flags differ between dev (gpu-search enabled) and CI (default features). Clippy on CI found dead code invisible locally."
+mentions = ["CI", "clippy", "features"]
+
+[[note]]
+sentiment = 0.2
+text = "PowerShell workaround for WSL git credentials is reliable. `powershell.exe -Command \"cd C:\\Projects\\cq; git push\"` - ugly but works every time."
+mentions = ["WSL", "git", "PowerShell"]
+
+[[note]]
+sentiment = 0.4
+text = "9-layer audit methodology is thorough: security, memory, concurrency, algorithms, architecture, performance, deps, tests, error handling. Systematic beats ad-hoc."
+mentions = ["fresh-eyes", "audit"]
+
+[[note]]
+sentiment = 0.4
+text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback loop. Worth the setup."
+mentions = [".githooks", "cargo fmt"]
+
+[[note]]
 sentiment = 0.3
 text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 12.0, WSL2"
 mentions = ["hardware", "benchmarking"]
