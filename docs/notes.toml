@@ -272,3 +272,23 @@ mentions = ["git"]
 sentiment = 0.5
 text = "Put token count in filename for large files (e.g., DESIGN_SPEC_27k_tokens.md). Claude sees it in glob results and knows to chunk or skip. Metadata in the filesystem."
 mentions = ["docs/", "workflow"]
+
+[[note]]
+sentiment = 0.0
+text = "WSL cargo target is at /home/user001/.cargo-target/cq (not ./target/). Set in .cargo/config.toml to avoid permission issues on /mnt/c/. Remember when running release binaries."
+mentions = ["WSL", ".cargo/config.toml", "target"]
+
+[[note]]
+sentiment = 0.5
+text = "cqs pronounced \"seeks\" - semantic search that seeks code by behavior, not text matching. grep for known strings, cqs for \"how does X work?\""
+mentions = ["README.md", "cqs"]
+
+[[note]]
+sentiment = 0.5
+text = "Notes surface heavily in search results because they contain dense semantic content about architecture decisions. That's intentional - observations are indexed to be found when conceptually relevant."
+mentions = ["notes.toml", "store.rs", "search"]
+
+[[note]]
+sentiment = 0.5
+text = "--name-boost 0.8 for precision when you know partial function name. Default 0.2 favors semantic. Crank it up when searching for specific identifiers vs concepts."
+mentions = ["cli.rs", "name_boost", "hybrid search"]

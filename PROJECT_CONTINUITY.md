@@ -2,13 +2,13 @@
 
 ## Right Now
 
-**Clean slate.** Session work:
-- GPU MCP flag merged (`cqs serve --gpu`)
-- Markdown review: model refs → E5-base-v2, docs paths fixed
-- Removed superseded files: hunches.toml, scars.toml, HUNCHES.md
-- Archived DESIGN.md → `docs/DESIGN_SPEC_27k_tokens.md`
+**Testing complete.** All passing:
+- Unit tests (12), doc tests (8), clippy, fmt
+- CLI: search, filters, callers/callees, stats, doctor, completions
+- MCP: all 6 tools working (search, stats, callers, callees, read, add_note)
+- GPU and CPU paths verified
 
-Convention: large files get token count in filename (e.g., `_27k_tokens.md`).
+Pronunciation: cqs = "seeks" (it seeks code semantically).
 
 ## Key Architecture
 

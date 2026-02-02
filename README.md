@@ -1,4 +1,4 @@
-# cqs
+# cqs ("seeks")
 
 Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included.
 
@@ -69,7 +69,8 @@ cqs --path "**/*.go" "interface"
 cqs --lang typescript --path "src/api/*" "authentication"
 
 # Hybrid search tuning
-cqs --name-boost 0.5 "parse"    # Boost name matches (default: 0.2)
+cqs --name-boost 0.2 "retry logic"   # Semantic-heavy (default)
+cqs --name-boost 0.8 "serve_http"    # Name-heavy for known identifiers
 
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result
