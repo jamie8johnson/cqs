@@ -302,3 +302,8 @@ mentions = ["mcp.rs", "cagra.rs", "hnsw.rs", "startup"]
 sentiment = 0.5
 text = "Conda env vars for LD_LIBRARY_PATH: `conda env config vars set LD_LIBRARY_PATH=\"...\"` in cuvs env. Auto-sets on activate. No more manual export."
 mentions = ["conda", "LD_LIBRARY_PATH", "WSL", "cuvs"]
+
+[[note]]
+sentiment = 0.0
+text = "Run `cqs watch` in background terminal to keep notes.toml indexed. Manual edits without watch = stale search results."
+mentions = ["cqs watch", "notes.toml", "indexing"]
