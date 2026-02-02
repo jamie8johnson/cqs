@@ -144,6 +144,9 @@ enum Commands {
         /// Transport type: stdio, http
         #[arg(long, default_value = "stdio")]
         transport: String,
+        /// Bind address for HTTP transport
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
         /// Port for HTTP transport
         #[arg(long, default_value = "3000")]
         port: u16,
@@ -153,6 +156,9 @@ enum Commands {
         /// Use GPU for query embedding (faster after warmup)
         #[arg(long)]
         gpu: bool,
+        /// Required when binding to non-localhost (exposes codebase to network)
+        #[arg(long, hide = true)]
+        dangerously_allow_network_bind: bool,
     },
     /// Generate shell completions
     Completions {
@@ -200,10 +206,20 @@ pub fn run() -> Result<()> {
         }) => cmd_watch(&cli, debounce, no_ignore),
         Some(Commands::Serve {
             ref transport,
+            ref bind,
             port,
             ref project,
             gpu,
-        }) => cmd_serve(&cli, transport, port, project.clone(), gpu),
+            dangerously_allow_network_bind,
+        }) => cmd_serve(
+            &cli,
+            transport,
+            bind,
+            port,
+            project.clone(),
+            gpu,
+            dangerously_allow_network_bind,
+        ),
         Some(Commands::Completions { shell }) => {
             cmd_completions(shell);
             Ok(())
@@ -1745,17 +1761,29 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
 fn cmd_serve(
     _cli: &Cli,
     transport: &str,
+    bind: &str,
     port: u16,
     project: Option<PathBuf>,
     gpu: bool,
+    dangerously_allow_network_bind: bool,
 ) -> Result<()> {
+    // Block non-localhost bind unless explicitly allowed
+    let is_localhost = bind == "127.0.0.1" || bind == "localhost" || bind == "::1";
+    if !is_localhost && !dangerously_allow_network_bind {
+        bail!(
+            "Binding to '{}' would expose your codebase to the network.\n\
+             If this is intentional, add --dangerously-allow-network-bind",
+            bind
+        );
+    }
+
     let root = project.unwrap_or_else(find_project_root);
 
     match transport {
         "stdio" => cqs::serve_stdio(root, gpu),
-        "http" => cqs::serve_http(root, port, gpu),
+        "http" => cqs::serve_http(root, bind, port, gpu),
         // Keep sse as alias for backwards compatibility
-        "sse" => cqs::serve_http(root, port, gpu),
+        "sse" => cqs::serve_http(root, bind, port, gpu),
         _ => {
             bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
         }

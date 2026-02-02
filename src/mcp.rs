@@ -986,7 +986,7 @@ struct HttpState {
 }
 
 /// Run the MCP server with HTTP transport
-pub fn serve_http(project_root: PathBuf, port: u16, use_gpu: bool) -> Result<()> {
+pub fn serve_http(project_root: PathBuf, bind: &str, port: u16, use_gpu: bool) -> Result<()> {
     let server = McpServer::new(project_root, use_gpu)?;
     let state = Arc::new(HttpState {
         server: RwLock::new(server),
@@ -1008,7 +1008,17 @@ pub fn serve_http(project_root: PathBuf, port: u16, use_gpu: bool) -> Result<()>
         .layer(middleware)
         .with_state(state);
 
-    let addr = format!("127.0.0.1:{}", port);
+    let addr = format!("{}:{}", bind, port);
+
+    // Warn if binding to non-localhost
+    if bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
+        eprintln!(
+            "WARNING: Binding to {} exposes your codebase to the network!",
+            bind
+        );
+        eprintln!("         Ensure proper authentication is in place.");
+    }
+
     eprintln!("MCP HTTP server listening on http://{}", addr);
     eprintln!("MCP Protocol Version: {}", MCP_PROTOCOL_VERSION);
 
