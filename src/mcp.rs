@@ -143,13 +143,17 @@ pub struct McpServer {
     embedder: Option<Embedder>,
     project_root: PathBuf,
     /// Vector index for O(log n) search (CAGRA or HNSW)
-    index: Option<Box<dyn VectorIndex>>,
+    /// Wrapped in Arc<RwLock> to allow background CAGRA upgrade
+    index: Arc<RwLock<Option<Box<dyn VectorIndex>>>>,
     /// Use GPU for query embedding
     use_gpu: bool,
 }
 
 impl McpServer {
     /// Create a new MCP server for the given project
+    ///
+    /// Loads HNSW index immediately for fast startup, then spawns background
+    /// thread to build CAGRA GPU index. Queries use HNSW until CAGRA is ready.
     pub fn new(project_root: PathBuf, use_gpu: bool) -> Result<Self> {
         let index_path = project_root.join(".cq/index.db");
         let cq_dir = project_root.join(".cq");
@@ -160,30 +164,19 @@ impl McpServer {
 
         let store = Store::open(&index_path).context("Failed to open index")?;
 
-        // Load vector index: CAGRA (GPU) > HNSW (CPU)
-        let index: Option<Box<dyn VectorIndex>> = {
-            #[cfg(feature = "gpu-search")]
-            {
-                if crate::cagra::CagraIndex::gpu_available() {
-                    match crate::cagra::CagraIndex::build_from_store(&store) {
-                        Ok(idx) => {
-                            tracing::info!("MCP: Using CAGRA GPU index ({} vectors)", idx.len());
-                            Some(Box::new(idx) as Box<dyn VectorIndex>)
-                        }
-                        Err(e) => {
-                            tracing::warn!("MCP: Failed to build CAGRA index: {}", e);
-                            Self::load_hnsw_index(&cq_dir)
-                        }
-                    }
-                } else {
-                    Self::load_hnsw_index(&cq_dir)
-                }
-            }
-            #[cfg(not(feature = "gpu-search"))]
-            {
-                Self::load_hnsw_index(&cq_dir)
-            }
-        };
+        // Load HNSW first (fast) - wrap in Arc<RwLock> for background upgrade
+        let hnsw = Self::load_hnsw_index(&cq_dir);
+        let index = Arc::new(RwLock::new(hnsw));
+
+        // Spawn background CAGRA build if GPU available
+        #[cfg(feature = "gpu-search")]
+        if crate::cagra::CagraIndex::gpu_available() {
+            let index_clone = Arc::clone(&index);
+            let index_path_clone = index_path.clone();
+            std::thread::spawn(move || {
+                Self::build_cagra_background(index_clone, &index_path_clone);
+            });
+        }
 
         Ok(Self {
             store,
@@ -192,6 +185,36 @@ impl McpServer {
             index,
             use_gpu,
         })
+    }
+
+    /// Build CAGRA index in background and swap it in when ready
+    #[cfg(feature = "gpu-search")]
+    fn build_cagra_background(
+        index: Arc<RwLock<Option<Box<dyn VectorIndex>>>>,
+        index_path: &std::path::Path,
+    ) {
+        tracing::info!("MCP: Building CAGRA GPU index in background...");
+
+        // Open a separate store connection for the background thread
+        let store = match Store::open(index_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("MCP: Failed to open store for CAGRA build: {}", e);
+                return;
+            }
+        };
+
+        match crate::cagra::CagraIndex::build_from_store(&store) {
+            Ok(cagra) => {
+                let len = cagra.len();
+                let mut guard = index.write().unwrap_or_else(|e| e.into_inner());
+                *guard = Some(Box::new(cagra) as Box<dyn VectorIndex>);
+                tracing::info!("MCP: Upgraded to CAGRA GPU index ({} vectors)", len);
+            }
+            Err(e) => {
+                tracing::warn!("MCP: CAGRA build failed, keeping HNSW: {}", e);
+            }
+        }
     }
 
     /// Load HNSW index if available
@@ -467,12 +490,14 @@ impl McpServer {
         let threshold = args.threshold.unwrap_or(0.3);
 
         // Use unified search with vector index if available
+        // Read-lock the index (allows background CAGRA build to upgrade it)
+        let index_guard = self.index.read().unwrap_or_else(|e| e.into_inner());
         let results = self.store.search_unified_with_index(
             &query_embedding,
             &filter,
             limit,
             threshold,
-            self.index.as_deref(),
+            index_guard.as_deref(),
         )?;
 
         let json_results: Vec<_> = results
