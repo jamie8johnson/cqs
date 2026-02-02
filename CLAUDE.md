@@ -85,7 +85,9 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 - Before context gets tight
 
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
-* `docs/notes.toml` -- observations with sentiment (indexed by cqs, use `cqs_add_note`)
+* `docs/notes.toml` -- observations with sentiment (indexed by cqs)
+
+**Use `cqs_add_note` to add notes** - it indexes immediately. Direct file edits require `cqs watch` or `cqs index` to become searchable.
 
 Don't log activity - git history has that.
 
