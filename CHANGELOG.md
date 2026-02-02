@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-02-01
+
 ### Added
 - `--gpu` flag for `cqs serve` to enable GPU-accelerated query embedding
   - CPU (default): cold 0.52s, warm 22ms
@@ -16,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hybrid CAGRA/HNSW startup: HNSW loads instantly (~30ms), CAGRA builds in background
   - Server ready immediately, upgrades to GPU index transparently
   - Eliminates 1.2s blocking startup delay
+
+### Fixed
+- Search results now prioritize code over notes (60/40 split)
+  - Notes enhance but don't dominate results
+  - Reserve 60% of slots for code, notes fill the rest
 
 ## [0.1.16] - 2026-02-01
 
@@ -215,7 +222,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/jamie8johnson/cqs/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/jamie8johnson/cqs/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/jamie8johnson/cqs/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/jamie8johnson/cqs/compare/v0.1.13...v0.1.14
