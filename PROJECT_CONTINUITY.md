@@ -17,9 +17,7 @@ Pronunciation: cqs = "seeks" (it seeks code semantically).
 ## Build & Run
 
 ```bash
-source /home/user001/miniconda3/etc/profile.d/conda.sh
-conda activate cuvs
-export LD_LIBRARY_PATH="/home/user001/.cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu/d3c01924b801c77ff17d300b24e6dcd46d378348a921a48d96f115f87074fbb1:/home/user001/miniconda3/envs/cuvs/lib:$LD_LIBRARY_PATH"
+conda activate cuvs  # LD_LIBRARY_PATH set automatically via conda env vars
 cargo build --release --features gpu-search
 ```
 

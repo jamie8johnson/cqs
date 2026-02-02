@@ -297,3 +297,8 @@ mentions = ["cli.rs", "name_boost", "hybrid search"]
 sentiment = 1.0
 text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Eliminated blocking startup delay."
 mentions = ["mcp.rs", "cagra.rs", "hnsw.rs", "startup"]
+
+[[note]]
+sentiment = 0.5
+text = "Conda env vars for LD_LIBRARY_PATH: `conda env config vars set LD_LIBRARY_PATH=\"...\"` in cuvs env. Auto-sets on activate. No more manual export."
+mentions = ["conda", "LD_LIBRARY_PATH", "WSL", "cuvs"]
