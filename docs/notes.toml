@@ -212,3 +212,13 @@ mentions = ["embedder.rs", "E5", "CUDA", "ort"]
 sentiment = -0.7
 text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_LIBRARY_PATH, it would create circular symlinks in the source directory, corrupting the ort cache. Fixed by skipping dirs containing ort_cache path."
 mentions = ["embedder.rs", "ort", "symlink"]
+
+[[note]]
+sentiment = -0.5
+text = "Test fixtures must use same constants as production code. mcp_test.rs and store_test.rs hardcoded 'nomic-embed-text-v1.5' and schema v8 - broke when we switched to E5/v9. Tests should use ModelInfo::default() or re-export constants."
+mentions = ["mcp_test.rs", "store_test.rs", "MODEL_NAME", "CURRENT_SCHEMA_VERSION"]
+
+[[note]]
+sentiment = -0.4
+text = "cfg(feature) dead code trap: if a constant is defined outside a #[cfg(feature)] block but only used inside it, clippy reports dead_code when feature is disabled. Move constants inside the cfg block or gate with #[cfg(feature)] too."
+mentions = ["cli.rs", "CAGRA_THRESHOLD", "clippy"]
