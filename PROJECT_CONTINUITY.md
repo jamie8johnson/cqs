@@ -7,14 +7,12 @@
 ### Index Rebuild Running
 
 rust-lang/rust indexing with E5-base-v2:
-- Started: ~18:35 UTC (7.5+ hours ago)
-- Index size: 1.1GB (was 800MB earlier)
-- CPU time: 318 mins
+- Index size: 1.1GB (stable)
+- CPU time: 332 mins
 - RAM: ~6.5GB
-- GPU: 4% util, 9.6GB VRAM (I/O bound phase)
-- PID: 25486
+- PID: 25486 (still running)
 
-DB locked - still writing. Let it finish.
+May be finishing - size hasn't grown recently.
 
 ### Full Audit Complete
 

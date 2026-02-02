@@ -214,9 +214,9 @@ text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_L
 mentions = ["embedder.rs", "ort", "symlink"]
 
 [[note]]
-sentiment = -0.5
-text = "Test fixtures must use same constants as production code. mcp_test.rs and store_test.rs hardcoded 'nomic-embed-text-v1.5' and schema v8 - broke when we switched to E5/v9. Tests should use ModelInfo::default() or re-export constants."
-mentions = ["mcp_test.rs", "store_test.rs", "MODEL_NAME", "CURRENT_SCHEMA_VERSION"]
+sentiment = -0.3
+text = "Test fixtures hardcoded 'nomic-embed-text-v1.5' and schema v8 - broke when we switched to E5/v9. Considered exporting constants but decided: hardcode is fine, fix when it breaks, note reminds us. Not every paper cut needs abstraction."
+mentions = ["mcp_test.rs", "store_test.rs", "MODEL_NAME"]
 
 [[note]]
 sentiment = -0.4
