@@ -23,7 +23,7 @@ If context just compacted: read tears, then ask "where were we?" rather than gue
 ## Read First
 
 * `PROJECT_CONTINUITY.md` -- what's happening right now
-* `docs/notes.toml` -- observations indexed by cqs (warnings, patterns, scars)
+* `docs/notes.toml` -- observations indexed by cqs (warnings, patterns)
 * `ROADMAP.md` -- what's done, what's next
 
 ## Code Search
@@ -100,15 +100,15 @@ Create these files if missing:
 **docs/notes.toml:**
 ```toml
 # Notes - unified memory for AI collaborators
-# sentiment: -1.0 (pain/warning) to +1.0 (gain/pattern)
+# sentiment: -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win)
 
 [[note]]
-sentiment = -0.8
-text = "Example warning - something that hurt"
+sentiment = -1
+text = "Example warning - something that seriously hurt"
 mentions = ["file.rs", "function_name"]
 
 [[note]]
-sentiment = 0.7
+sentiment = 0.5
 text = "Example pattern - something that worked well"
 mentions = ["other_file.rs"]
 ```

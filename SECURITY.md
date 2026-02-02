@@ -8,8 +8,8 @@ cqs runs entirely locally. There are no external API calls during normal operati
 
 The only network activity is:
 
-- **Model download** (`cqs init`): Downloads ~547MB model from HuggingFace Hub
-  - Source: `huggingface.co/nomic-ai/nomic-embed-text-v1.5`
+- **Model download** (`cqs init`): Downloads ~440MB model from HuggingFace Hub
+  - Source: `huggingface.co/intfloat/e5-base-v2`
   - One-time download, cached in `~/.cache/huggingface/`
 
 No other network requests are made. Search, indexing, and all other operations are offline.

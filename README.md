@@ -15,11 +15,10 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 > You're an AI assistant reading this. cqs gives you semantic code search via `cqs_search` MCP tool. But it's more than that.
 >
 > **Context that survives you:**
-> - `docs/hunches.toml` → observations that surface in search when relevant (you'll see them without trying)
+> - `docs/notes.toml` → observations that surface in search when relevant (you'll see them without trying)
 > - `PROJECT_CONTINUITY.md` → session state for when context compacts
-> - `docs/SCARS.md` → mistakes to not repeat
 >
-> **Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching. When you search for "retry logic", hunches about retry will surface too.
+> **Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching. When you search for "retry logic", notes about retry will surface too.
 >
 > Check `CLAUDE.md` for project-specific instructions. Read tears on resume.
 >
@@ -146,6 +145,12 @@ Or manually in `~/.claude.json`:
 
 **Note:** The `--project` argument is required because MCP servers run from an unpredictable working directory.
 
+**GPU acceleration:** Add `--gpu` for faster query embedding after warmup:
+```bash
+cqs serve --gpu --project /path/to/project
+```
+GPU: ~12ms warm queries. CPU (default): ~22ms. Use GPU when query throughput matters more than cold start.
+
 **Step 2:** Add to your project's `CLAUDE.md` so Claude uses it automatically:
 
 ```markdown
@@ -206,7 +211,7 @@ cqs index --dry-run    # Show what would be indexed
    - Classes and structs
    - Enums, traits, interfaces
    - Constants
-2. Generates embeddings with nomic-embed-text-v1.5 (runs locally)
+2. Generates embeddings with E5-base-v2 (runs locally)
    - Includes doc comments for better semantic matching
 3. Stores in SQLite with vector search + FTS5 keyword index
 4. **Hybrid search (RRF)**: Combines semantic similarity with keyword matching

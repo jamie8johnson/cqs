@@ -188,10 +188,15 @@
   - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
   - 9-layer fresh-eyes audit completed
 
+- [x] GPU query embedding for MCP server
+  - `cqs serve --gpu` flag for GPU-accelerated queries
+  - CPU: cold 0.52s, warm 22ms
+  - GPU: cold 1.15s, warm 12ms (~45% faster warm)
+
 ### Planned
 
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
-- [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs nomic)
+- [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs E5)
 - [ ] Template experiments (no prefix, body keywords) - run eval to compare
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--gpu` flag for `cqs serve` to enable GPU-accelerated query embedding
+  - CPU (default): cold 0.52s, warm 22ms
+  - GPU: cold 1.15s, warm 12ms (~45% faster warm queries)
+
 ## [0.1.16] - 2026-02-01
 
 ### Added

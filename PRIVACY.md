@@ -23,8 +23,8 @@ This data never leaves your machine.
 
 The embedding model is downloaded once from HuggingFace:
 
-- Model: `nomic-ai/nomic-embed-text-v1.5`
-- Size: ~547MB
+- Model: `intfloat/e5-base-v2`
+- Size: ~440MB
 - Cached in: `~/.cache/huggingface/`
 
 HuggingFace may log download requests per their privacy policy. After download, the model runs offline.

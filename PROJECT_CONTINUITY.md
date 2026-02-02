@@ -67,7 +67,7 @@ None active.
 
 ## Test Repo
 
-`/home/user001/rust` (rust-lang/rust, 36k files) - indexing in progress
+`/home/user001/rust` (rust-lang/rust, 36k files) - indexed with E5-base-v2
 
 ## Timeline
 
