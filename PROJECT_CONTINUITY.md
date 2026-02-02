@@ -2,35 +2,12 @@
 
 ## Right Now
 
-**GPU MCP flag merged** - `cqs serve --gpu` for GPU query embedding
+**Clean slate.** Recent work:
+- GPU MCP flag merged (`cqs serve --gpu`)
+- Full markdown review completed (model refs, docs paths updated)
+- 9-layer audit complete, codebase solid
 
-Benchmarks:
-- CPU MCP: cold 0.52s, warm 22ms
-- GPU MCP: cold 1.15s, warm 12ms (~45% faster warm)
-
-Default is CPU for lower cold-start latency.
-
-### Index Rebuild
-
-rust-lang/rust indexing with E5-base-v2 complete (~2h).
-
-### Full Audit Complete
-
-9-layer fresh-eyes audit found:
-- 1 bug: schema version mismatch (fixed)
-- 1 dead code warning (fixed)
-- Test model names outdated (fixed)
-- 5 unmaintained deps (transitive, low risk, ignored)
-- Test coverage gaps: embedder.rs, cagra.rs, cli.rs (low risk)
-
-Codebase is solid.
-
-### Notes Simplified
-
-Migrated sentiment scale from 21-point (0.1 increments) to 5-point:
-- -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win)
-- Clearer signal, no false precision
-- Also added small positive notes (+0.5) to balance negativity bias
+Ready for next task.
 
 ## Key Architecture
 
