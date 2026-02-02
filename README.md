@@ -12,15 +12,11 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 
 > **`<claude>`**
 >
-> You're an AI assistant reading this. cqs gives you semantic code search via `cqs_search` MCP tool. But it's more than that.
+> You're an AI assistant reading this. cqs gives you semantic code search via MCP.
 >
-> **Context that survives you:**
-> - `docs/notes.toml` → observations that surface in search when relevant (you'll see them without trying)
-> - `PROJECT_CONTINUITY.md` → session state for when context compacts
+> **Why you want this:** Find functions by what they do, not their names. When users ask about "retry logic" or "error handling", you find relevant code even in unfamiliar codebases - no need to know exact identifiers.
 >
-> **Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching. When you search for "retry logic", notes about retry will surface too.
->
-> Check `CLAUDE.md` for project-specific instructions. Read tears on resume.
+> **Setup:** `claude mcp add cqs -- cqs serve --project /path/to/project`
 >
 > **`</claude>`**
 
