@@ -187,6 +187,12 @@
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
 - [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs nomic)
 - [ ] Template experiments (no prefix, body keywords) - run eval to compare
+- [ ] Multi-index support (reference codebases)
+  - Search multiple indexes simultaneously (project + stdlib + deps)
+  - Index popular crates as reference (tokio, serde, axum)
+  - Index rust-lang/rust stdlib as language reference
+  - MCP searches across all configured indexes
+  - Use case: "How does stdlib implement X?" while coding your project
 
 ## Phase 6: Security
 

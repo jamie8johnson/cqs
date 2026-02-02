@@ -165,3 +165,128 @@ Fix options:
 2. File issue on hnsw_rs to switch bincode → postcard/rmp-serde
 3. Fork hnsw_rs
 """
+
+[[hunch]]
+date = "2026-02-01"
+title = "Natural language carries valence"
+severity = "high"
+confidence = "high"
+resolution = "accepted"
+mentions = ["scar.rs", "embedder.rs"]
+description = """
+Don't need explicit pain/gain fields. Words like "failed", "broke", "wasted"
+carry negative valence. Words like "worked", "clean", "saved" carry positive.
+The embedding model learned this from training data. Schema can simplify to
+just 'text' field - the semantics encode the sentiment.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "769th dimension for valence"
+severity = "med"
+confidence = "med"
+resolution = "open"
+mentions = ["embedder.rs", "store.rs", "hnsw.rs"]
+description = """
+Could append a valence float (-1 to +1) as 769th embedding dimension.
+Similarity search then weights by sentiment automatically. "What went wrong"
+queries would naturally surface negative-valence notes. Requires dimension
+change across all embedding storage (768 → 769), breaking schema change.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "Git as team sync layer"
+severity = "med"
+confidence = "high"
+resolution = "accepted"
+mentions = ["scars.toml", "tears"]
+description = """
+Team knowledge sharing needs no infrastructure. Commit scars.toml to repo.
+Git push/pull handles sync. Access control = repo permissions. History = blame.
+Conflict resolution = merge. Async team memory without building anything new.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "Locality is the feature"
+severity = "high"
+confidence = "high"
+resolution = "accepted"
+mentions = ["CLAUDE.md", "tears"]
+description = """
+cqs indexes YOUR codebase. Scars are YOUR team's memory. Not portable,
+not general-purpose - that's the design. Context persistence for AI
+collaborators is inherently local. The value is specificity to one project,
+one workflow, one history. "Personal tool" is the point, not a limitation.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "cuVS CAGRA for GPU-native search"
+severity = "med"
+confidence = "high"
+resolution = "open"
+mentions = ["hnsw.rs", "Cargo.toml"]
+description = """
+NVIDIA cuVS with CAGRA algorithm: 8-12x faster index builds, 4-8x faster
+search vs CPU HNSW. Rust bindings exist (cuvs crate). Requires CUDA + libcuvs
+system library. Feature-flagged as gpu-search. For GPU-equipped infrastructure,
+this is the path. hnsw_rs remains default for CPU-only users.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "Prediction errors are the sparse signal"
+severity = "med"
+confidence = "high"
+resolution = "accepted"
+mentions = ["scar.rs", "tears"]
+description = """
+Scars (pain) and wins (gain) are both prediction errors - where the model
+expected X but got Y. That's why they're high-value: they mark where
+understanding needs updating. Don't index everything, index where predictions
+failed. Sparse, high-signal edge of knowledge.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "Scale changes economics"
+severity = "med"
+confidence = "high"
+resolution = "accepted"
+mentions = ["embedder.rs", "cli.rs"]
+description = """
+90% savings at 1 instance = nice. 90% savings at 1M instances = $90k/month.
+cqs as local tool has different economics than cqs as MCP server at scale.
+Watch mode, embedding efficiency, GPU utilization all matter more when
+multiplied by thousands of concurrent users.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "cqs is MCP server first, CLI second"
+severity = "high"
+confidence = "high"
+resolution = "accepted"
+mentions = ["mcp.rs", "cli.rs"]
+description = """
+Primary consumer is Claude via MCP tools, not human via CLI. Design for AI
+consumption: notes formatted for embedding, search results for parsing,
+cqs_add_note for writes. Human only touches for setup (init, watch, serve).
+The whole thing is Claude infrastructure.
+"""
+
+[[hunch]]
+date = "2026-02-01"
+title = "Fleet model: append-only with curator impulse"
+severity = "med"
+confidence = "med"
+resolution = "open"
+mentions = ["notes.toml", "mcp.rs"]
+description = """
+Multiple Claudes share notes.toml via Git. Anyone appends via cqs_add_note.
+No dedicated curator agent - curation is an impulse any Claude can have.
+Append-only avoids merge conflicts. Truth emerges from accumulation.
+Old notes get contradicted by new notes. Natural selection.
+"""

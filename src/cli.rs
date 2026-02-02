@@ -2,13 +2,16 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
+use crossbeam_channel::{bounded, select, Receiver, Sender};
 use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -16,12 +19,14 @@ use rayon::prelude::*;
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::hnsw::HnswIndex;
-use cqs::hunch::parse_hunches;
+use cqs::note::parse_notes;
 use cqs::parser::{Chunk, Parser as CqParser};
 use cqs::store::{ModelInfo, SearchFilter, Store, UnifiedResult};
 
 // Constants
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
+const MAX_TOKENS_PER_WINDOW: usize = 480; // Max tokens before windowing (E5 has 512 limit)
+const WINDOW_OVERLAP_TOKENS: usize = 64; // Overlap between windows
 
 // Exit codes
 #[repr(i32)]
@@ -103,14 +108,6 @@ pub struct Cli {
     /// Show debug info
     #[arg(short, long)]
     verbose: bool,
-
-    /// Exclude hunches from search results
-    #[arg(long)]
-    no_hunches: bool,
-
-    /// Include resolved hunches in search results
-    #[arg(long)]
-    include_resolved: bool,
 }
 
 #[derive(Subcommand)]
@@ -332,38 +329,6 @@ fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Ve
     Ok(files)
 }
 
-/// Parse files in parallel
-/// `root` is joined with relative paths for filesystem access
-/// `files` contains relative paths which are stored in chunks for portability
-fn parse_files(parser: &CqParser, root: &Path, files: &[PathBuf]) -> Vec<cqs::parser::Chunk> {
-    files
-        .par_iter()
-        .flat_map(|rel_path| {
-            let abs_path = root.join(rel_path);
-            match parser.parse_file(&abs_path) {
-                Ok(mut chunks) => {
-                    // Rewrite paths to be relative for storage
-                    for chunk in &mut chunks {
-                        chunk.file = rel_path.clone();
-                        // Rebuild ID with relative path
-                        chunk.id = format!(
-                            "{}:{}:{}",
-                            rel_path.display(),
-                            chunk.line_start,
-                            &chunk.content_hash[..8]
-                        );
-                    }
-                    chunks
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
-                    vec![]
-                }
-            }
-        })
-        .collect()
-}
-
 /// Check if a process with the given PID exists
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
@@ -482,7 +447,7 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
     // Check model
     match Embedder::new() {
         Ok(mut embedder) => {
-            println!("  {} Model: nomic-embed-text-v1.5", "[✓]".green());
+            println!("  {} Model: intfloat/e5-base-v2", "[✓]".green());
             println!("  {} Tokenizer: loaded", "[✓]".green());
             println!("  {} Execution: {}", "[✓]".green(), embedder.provider());
 
@@ -550,6 +515,470 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Apply windowing to chunks that exceed the token limit.
+/// Long chunks are split into overlapping windows; short chunks pass through unchanged.
+fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
+    let mut result = Vec::with_capacity(chunks.len());
+
+    for chunk in chunks {
+        match embedder.split_into_windows(
+            &chunk.content,
+            MAX_TOKENS_PER_WINDOW,
+            WINDOW_OVERLAP_TOKENS,
+        ) {
+            Ok(windows) if windows.len() == 1 => {
+                // Fits in one window - pass through unchanged
+                result.push(chunk);
+            }
+            Ok(windows) => {
+                // Split into multiple windows
+                let parent_id = chunk.id.clone();
+                for (window_content, window_idx) in windows {
+                    let window_hash = blake3::hash(window_content.as_bytes()).to_hex().to_string();
+                    result.push(Chunk {
+                        id: format!("{}:w{}", parent_id, window_idx),
+                        file: chunk.file.clone(),
+                        language: chunk.language,
+                        chunk_type: chunk.chunk_type,
+                        name: chunk.name.clone(),
+                        signature: chunk.signature.clone(),
+                        content: window_content,
+                        doc: if window_idx == 0 {
+                            chunk.doc.clone()
+                        } else {
+                            None
+                        }, // Doc only on first window
+                        line_start: chunk.line_start,
+                        line_end: chunk.line_end,
+                        content_hash: window_hash,
+                        parent_id: Some(parent_id.clone()),
+                        window_idx: Some(window_idx),
+                    });
+                }
+            }
+            Err(e) => {
+                // Tokenization failed - pass through unchanged and hope for the best
+                tracing::warn!("Windowing failed for {}: {}, passing through", chunk.id, e);
+                result.push(chunk);
+            }
+        }
+    }
+
+    result
+}
+
+/// Message types for the pipelined indexer
+struct ParsedBatch {
+    chunks: Vec<Chunk>,
+    file_mtime: i64,
+}
+
+struct EmbeddedBatch {
+    chunk_embeddings: Vec<(Chunk, Embedding)>,
+    cached_count: usize,
+    file_mtime: i64,
+}
+
+/// Stats returned from pipelined indexing
+struct PipelineStats {
+    total_embedded: usize,
+    total_cached: usize,
+}
+
+/// Run the indexing pipeline with 3 concurrent stages:
+/// 1. Parser: Parse files in parallel batches
+/// 2. Embedder: Embed chunks (GPU)
+/// 3. Writer: Write to SQLite
+fn run_index_pipeline(
+    root: &Path,
+    files: Vec<PathBuf>,
+    store_path: &Path,
+    force: bool,
+    quiet: bool,
+) -> Result<PipelineStats> {
+    use cqs::nl::generate_nl_description;
+
+    let batch_size = 32; // Embedding batch size (backed off from 64 - crashed at 2%)
+    let file_batch_size = 100_000; // Files to parse per batch (all at once)
+    let channel_depth = 256; // Pipeline buffer depth (larger = smoother utilization)
+
+    // Channels
+    let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
+    let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
+        bounded(channel_depth);
+    // GPU failure channel - GPU requeues failed batches here for CPU to handle async
+    let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
+
+    // Shared state for progress
+    let total_files = files.len();
+    let parsed_count = Arc::new(AtomicUsize::new(0));
+    let embedded_count = Arc::new(AtomicUsize::new(0));
+
+    // Clone for threads
+    let root_clone = root.to_path_buf();
+    let parsed_count_clone = Arc::clone(&parsed_count);
+    let store_path_for_parser = store_path.to_path_buf();
+    let store_path_for_embedder = store_path.to_path_buf();
+
+    // Stage 1: Parser thread - parse files in parallel batches
+    let parser_handle = thread::spawn(move || -> Result<()> {
+        let parser = CqParser::new()?;
+        let store = Store::open(&store_path_for_parser)?;
+        let root = root_clone;
+
+        for file_batch in files.chunks(file_batch_size) {
+            if check_interrupted() {
+                break;
+            }
+
+            // Parse files in parallel
+            let chunks: Vec<Chunk> = file_batch
+                .par_iter()
+                .flat_map(|rel_path| {
+                    let abs_path = root.join(rel_path);
+                    match parser.parse_file(&abs_path) {
+                        Ok(mut chunks) => {
+                            // Rewrite paths to be relative for storage
+                            for chunk in &mut chunks {
+                                chunk.file = rel_path.clone();
+                                chunk.id = format!(
+                                    "{}:{}:{}",
+                                    rel_path.display(),
+                                    chunk.line_start,
+                                    &chunk.content_hash[..8]
+                                );
+                            }
+                            chunks
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                            vec![]
+                        }
+                    }
+                })
+                .collect();
+
+            // Filter by needs_reindex unless forced
+            let chunks: Vec<Chunk> = if force {
+                chunks
+            } else {
+                chunks
+                    .into_iter()
+                    .filter(|c| {
+                        let abs_path = root.join(&c.file);
+                        store.needs_reindex(&abs_path).unwrap_or(true)
+                    })
+                    .collect()
+            };
+
+            parsed_count_clone.fetch_add(file_batch.len(), Ordering::Relaxed);
+
+            if !chunks.is_empty() {
+                // Get mtime from first chunk's file
+                let file_mtime = chunks
+                    .first()
+                    .and_then(|c| root.join(&c.file).metadata().ok())
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+
+                // Send in embedding-sized batches
+                for chunk_batch in chunks.chunks(batch_size) {
+                    if parse_tx
+                        .send(ParsedBatch {
+                            chunks: chunk_batch.to_vec(),
+                            file_mtime,
+                        })
+                        .is_err()
+                    {
+                        break; // Receiver dropped
+                    }
+                }
+            }
+        }
+        Ok(())
+    });
+
+    // Clone for embedders (GPU and CPU run in parallel)
+    let embedded_count_gpu = Arc::clone(&embedded_count);
+    let embedded_count_cpu = Arc::clone(&embedded_count);
+    let parse_rx_cpu = parse_rx.clone(); // CPU also grabs regular batches
+    let embed_tx_cpu = embed_tx.clone();
+    let store_path_for_cpu = store_path.to_path_buf();
+
+    // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
+    let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
+        let mut embedder = Embedder::new()?;
+        embedder.warm()?;
+        let store = Store::open(&store_path_for_embedder)?;
+
+        for batch in parse_rx {
+            if check_interrupted() {
+                break;
+            }
+
+            // Apply windowing to split long chunks into overlapping windows
+            let windowed_chunks = apply_windowing(batch.chunks, &embedder);
+            let batch = ParsedBatch {
+                chunks: windowed_chunks,
+                file_mtime: batch.file_mtime,
+            };
+
+            // Check for existing embeddings by content hash
+            let hashes: Vec<&str> = batch
+                .chunks
+                .iter()
+                .map(|c| c.content_hash.as_str())
+                .collect();
+            let existing = store.get_embeddings_by_hashes(&hashes);
+
+            // Separate into cached vs to_embed
+            let mut to_embed: Vec<&Chunk> = Vec::new();
+            let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+
+            for chunk in &batch.chunks {
+                if let Some(emb) = existing.get(&chunk.content_hash) {
+                    cached.push((chunk.clone(), emb.clone()));
+                } else {
+                    to_embed.push(chunk);
+                }
+            }
+
+            // Embed new chunks on GPU
+            if to_embed.is_empty() {
+                // All cached, send directly
+                let cached_count = cached.len();
+                embedded_count_gpu.fetch_add(cached_count, Ordering::Relaxed);
+                if embed_tx
+                    .send(EmbeddedBatch {
+                        chunk_embeddings: cached,
+                        cached_count,
+                        file_mtime: batch.file_mtime,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            } else {
+                let texts: Vec<String> = to_embed
+                    .iter()
+                    .map(|c| generate_nl_description(c))
+                    .collect();
+                let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
+
+                // Pre-filter long batches to CPU (GPU hits CUDNN limits >8k chars)
+                if max_len > 8000 {
+                    eprintln!(
+                        "Routing long batch to CPU: {} chunks, max_len={}",
+                        to_embed.len(),
+                        max_len
+                    );
+                    if fail_tx.send(batch).is_err() {
+                        break;
+                    }
+                    continue;
+                }
+
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                match embedder.embed_documents(&text_refs) {
+                    Ok(embs) => {
+                        let new_embeddings: Vec<Embedding> =
+                            embs.into_iter().map(|e| e.with_sentiment(0.0)).collect();
+                        let cached_count = cached.len();
+                        let mut chunk_embeddings = cached;
+                        chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
+                        embedded_count_gpu.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+                        if embed_tx
+                            .send(EmbeddedBatch {
+                                chunk_embeddings,
+                                cached_count,
+                                file_mtime: batch.file_mtime,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_e) => {
+                        // GPU failed - log details and requeue to CPU
+                        let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
+                        let files: Vec<_> = to_embed
+                            .iter()
+                            .map(|c| c.file.display().to_string())
+                            .collect();
+                        eprintln!(
+                            "GPU failed, requeueing {} chunks to CPU (max_len={}, files={:?})",
+                            batch.chunks.len(),
+                            max_len,
+                            files
+                        );
+                        if fail_tx.send(batch).is_err() {
+                            break; // CPU thread gone
+                        }
+                    }
+                }
+            }
+        }
+        drop(fail_tx); // Signal CPU thread to finish when done
+        Ok(())
+    });
+
+    // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
+    let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
+        let mut embedder = Embedder::new_cpu()?;
+        let store = Store::open(&store_path_for_cpu)?;
+
+        loop {
+            if check_interrupted() {
+                break;
+            }
+
+            // Race: GPU and CPU both grab from parse_rx, CPU also handles routed long batches
+            let batch = select! {
+                recv(fail_rx) -> msg => match msg {
+                    Ok(b) => b,
+                    Err(_) => match parse_rx_cpu.recv() {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    },
+                },
+                recv(parse_rx_cpu) -> msg => match msg {
+                    Ok(b) => b,
+                    Err(_) => match fail_rx.recv() {
+                        Ok(b) => b,
+                        Err(_) => break,
+                    },
+                },
+            };
+
+            // Apply windowing to split long chunks into overlapping windows
+            let windowed_chunks = apply_windowing(batch.chunks, &embedder);
+            let batch = ParsedBatch {
+                chunks: windowed_chunks,
+                file_mtime: batch.file_mtime,
+            };
+
+            // Check for existing embeddings by content hash
+            let hashes: Vec<&str> = batch
+                .chunks
+                .iter()
+                .map(|c| c.content_hash.as_str())
+                .collect();
+            let existing = store.get_embeddings_by_hashes(&hashes);
+
+            // Separate into cached vs to_embed
+            let mut to_embed: Vec<&Chunk> = Vec::new();
+            let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+
+            for chunk in &batch.chunks {
+                if let Some(emb) = existing.get(&chunk.content_hash) {
+                    cached.push((chunk.clone(), emb.clone()));
+                } else {
+                    to_embed.push(chunk);
+                }
+            }
+
+            // Embed new chunks (CPU only)
+            let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
+                vec![]
+            } else {
+                let texts: Vec<String> = to_embed
+                    .iter()
+                    .map(|c| generate_nl_description(c))
+                    .collect();
+                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                embedder
+                    .embed_documents(&text_refs)?
+                    .into_iter()
+                    .map(|e| e.with_sentiment(0.0))
+                    .collect()
+            };
+
+            let cached_count = cached.len();
+            let mut chunk_embeddings = cached;
+            chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
+
+            embedded_count_cpu.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+
+            if embed_tx_cpu
+                .send(EmbeddedBatch {
+                    chunk_embeddings,
+                    cached_count,
+                    file_mtime: batch.file_mtime,
+                })
+                .is_err()
+            {
+                break; // Receiver dropped
+            }
+        }
+        Ok(())
+    });
+
+    // Stage 3: Writer (main thread) - write to SQLite
+    let store = Store::open(store_path)?;
+    let parser = CqParser::new()?;
+    let mut total_embedded = 0;
+    let mut total_cached = 0;
+
+    let progress = if quiet {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(total_files as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                .unwrap(),
+        );
+        pb
+    };
+
+    for batch in embed_rx {
+        if check_interrupted() {
+            break;
+        }
+
+        store.upsert_chunks_batch(&batch.chunk_embeddings, batch.file_mtime)?;
+
+        // Extract and store function calls
+        for (chunk, _) in &batch.chunk_embeddings {
+            let calls = parser.extract_calls_from_chunk(chunk);
+            if !calls.is_empty() {
+                store.upsert_calls(&chunk.id, &calls)?;
+            }
+        }
+
+        total_embedded += batch.chunk_embeddings.len();
+        total_cached += batch.cached_count;
+
+        let parsed = parsed_count.load(Ordering::Relaxed);
+        let embedded = embedded_count.load(Ordering::Relaxed);
+        progress.set_position(parsed as u64);
+        progress.set_message(format!(
+            "parsed:{} embedded:{} written:{}",
+            parsed, embedded, total_embedded
+        ));
+    }
+
+    progress.finish_with_message("done");
+
+    // Wait for threads to finish
+    parser_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("Parser thread panicked"))??;
+    gpu_embedder_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("GPU embedder thread panicked"))??;
+    cpu_embedder_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("CPU embedder thread panicked"))??;
+
+    Ok(PipelineStats {
+        total_embedded,
+        total_cached,
+    })
+}
+
 fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -591,16 +1020,6 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         return Ok(());
     }
 
-    if !cli.quiet {
-        println!("Parsing...");
-    }
-
-    let chunks = parse_files(&parser, &root, &files);
-
-    if !cli.quiet {
-        println!("Found {} chunks", chunks.len());
-    }
-
     // Initialize or open store
     let store = if index_path.exists() && !force {
         Store::open(&index_path)?
@@ -614,117 +1033,14 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         store
     };
 
-    // Filter by needs_reindex unless forced
-    let chunks_to_embed: Vec<_> = if force {
-        chunks.into_iter().collect()
-    } else {
-        chunks
-            .into_iter()
-            .filter(|c| {
-                // Join with root for filesystem access
-                let abs_path = root.join(&c.file);
-                store.needs_reindex(&abs_path).unwrap_or(true)
-            })
-            .collect()
-    };
-
-    if chunks_to_embed.is_empty() {
-        if !cli.quiet {
-            println!("Index is up to date.");
-        }
-        return Ok(());
-    }
-
     if !cli.quiet {
-        println!("Embedding {} chunks...", chunks_to_embed.len());
+        println!("Indexing {} files (pipelined)...", files.len());
     }
 
-    let mut embedder = Embedder::new()?;
-
-    if !cli.quiet {
-        println!("Using {}", embedder.provider());
-    }
-
-    let progress = if cli.quiet {
-        ProgressBar::hidden()
-    } else {
-        let pb = ProgressBar::new(chunks_to_embed.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
-                .unwrap(),
-        );
-        pb
-    };
-
-    let batch_size = embedder.batch_size();
-    let mut total_embedded = 0;
-    let mut total_cached = 0;
-
-    for batch in chunks_to_embed.chunks(batch_size) {
-        if check_interrupted() {
-            eprintln!("Committing partial index...");
-            break;
-        }
-
-        // Check for existing embeddings by content hash (skip re-embedding unchanged chunks)
-        let hashes: Vec<&str> = batch.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store.get_embeddings_by_hashes(&hashes);
-
-        // Separate into cached (reuse embedding) vs to_embed (need new embedding)
-        let mut to_embed: Vec<&Chunk> = Vec::new();
-        let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
-
-        for chunk in batch {
-            if let Some(emb) = existing.get(&chunk.content_hash) {
-                cached.push((chunk.clone(), emb.clone()));
-            } else {
-                to_embed.push(chunk);
-            }
-        }
-
-        // Embed only new chunks
-        let new_embeddings = if to_embed.is_empty() {
-            vec![]
-        } else {
-            let texts: Vec<String> = to_embed
-                .iter()
-                .map(|c| generate_nl_description(c))
-                .collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            embedder.embed_documents(&text_refs)?
-        };
-
-        // Get file mtime (use first file's mtime for the batch)
-        let file_mtime = batch
-            .first()
-            .and_then(|c| root.join(&c.file).metadata().ok())
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-
-        // Combine cached + new embeddings
-        let batch_cached_count = cached.len();
-        let mut chunk_embeddings: Vec<(Chunk, Embedding)> = cached;
-        chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
-
-        store.upsert_chunks_batch(&chunk_embeddings, file_mtime)?;
-
-        // Extract and store function calls for call graph
-        for (chunk, _) in &chunk_embeddings {
-            let calls = parser.extract_calls_from_chunk(chunk);
-            if !calls.is_empty() {
-                store.upsert_calls(&chunk.id, &calls)?;
-            }
-        }
-
-        total_embedded += chunk_embeddings.len();
-        total_cached += batch_cached_count;
-        progress.set_position(total_embedded as u64);
-    }
-
-    progress.finish_with_message("done");
+    // Run the 3-stage pipeline: parse → embed → write
+    let stats = run_index_pipeline(&root, files.clone(), &index_path, force, cli.quiet)?;
+    let total_embedded = stats.total_embedded;
+    let total_cached = stats.total_cached;
 
     // Prune missing files
     let existing_files: HashSet<_> = files.into_iter().collect();
@@ -792,29 +1108,37 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
     }
 
-    // Index hunches if hunches.toml exists
+    // Index notes if notes.toml exists
     if !check_interrupted() {
-        let hunches_path = root.join("docs/hunches.toml");
-        if hunches_path.exists() {
-            // Check if hunches need reindexing
-            let needs_reindex = force || store.hunches_need_reindex(&hunches_path).unwrap_or(true);
+        let notes_path = root.join("docs/notes.toml");
+        if notes_path.exists() {
+            // Check if notes need reindexing
+            let needs_reindex = force || store.notes_need_reindex(&notes_path).unwrap_or(true);
 
             if needs_reindex {
                 if !cli.quiet {
-                    println!("Indexing hunches...");
+                    println!("Indexing notes...");
                 }
 
-                match parse_hunches(&hunches_path) {
-                    Ok(hunches) => {
-                        if !hunches.is_empty() {
-                            // Embed hunch descriptions
+                match parse_notes(&notes_path) {
+                    Ok(notes) => {
+                        if !notes.is_empty() {
+                            // Embed note content with sentiment
+                            let mut embedder = Embedder::new()?;
                             let texts: Vec<String> =
-                                hunches.iter().map(|h| h.embedding_text()).collect();
+                                notes.iter().map(|n| n.embedding_text()).collect();
                             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                            let embeddings = embedder.embed_documents(&text_refs)?;
+                            let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+                            // Add sentiment as 769th dimension
+                            let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
+                                .into_iter()
+                                .zip(notes.iter())
+                                .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+                                .collect();
 
                             // Get file mtime
-                            let file_mtime = hunches_path
+                            let file_mtime = notes_path
                                 .metadata()
                                 .and_then(|m| m.modified())
                                 .ok()
@@ -822,88 +1146,51 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
                                 .map(|d| d.as_secs() as i64)
                                 .unwrap_or(0);
 
-                            // Delete old hunches and insert new
-                            store.delete_hunches_by_file(&hunches_path)?;
-                            let hunch_embeddings: Vec<_> =
-                                hunches.into_iter().zip(embeddings).collect();
-                            store.upsert_hunches_batch(
-                                &hunch_embeddings,
-                                &hunches_path,
-                                file_mtime,
-                            )?;
+                            // Delete old notes and insert new
+                            store.delete_notes_by_file(&notes_path)?;
+                            let note_embeddings: Vec<_> =
+                                notes.into_iter().zip(embeddings_with_sentiment).collect();
+                            store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
 
                             if !cli.quiet {
-                                let (total, open, high) = store.hunch_stats()?;
+                                let (total, warnings, patterns) = store.note_stats()?;
                                 println!(
-                                    "  Hunches: {} total ({} open, {} high-severity)",
-                                    total, open, high
+                                    "  Notes: {} total ({} warnings, {} patterns)",
+                                    total, warnings, patterns
                                 );
                             }
                         }
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to parse hunches: {}", e);
+                        tracing::warn!("Failed to parse notes: {}", e);
                     }
                 }
             } else if !cli.quiet {
-                println!("Hunches up to date.");
-            }
-        }
-    }
-
-    // Index scars if scars.toml exists
-    if !check_interrupted() {
-        let scars_path = root.join("docs/scars.toml");
-        if scars_path.exists() {
-            // Check if scars need reindexing
-            let needs_reindex = force || store.scars_need_reindex(&scars_path).unwrap_or(true);
-
-            if needs_reindex {
-                if !cli.quiet {
-                    println!("Indexing scars...");
-                }
-
-                match cqs::scar::parse_scars(&scars_path) {
-                    Ok(scars) => {
-                        if !scars.is_empty() {
-                            // Embed scar content
-                            let texts: Vec<String> =
-                                scars.iter().map(|s| s.embedding_text()).collect();
-                            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-                            let embeddings = embedder.embed_documents(&text_refs)?;
-
-                            // Get file mtime
-                            let file_mtime = scars_path
-                                .metadata()
-                                .and_then(|m| m.modified())
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs() as i64)
-                                .unwrap_or(0);
-
-                            // Delete old scars and insert new
-                            store.delete_scars_by_file(&scars_path)?;
-                            let scar_embeddings: Vec<_> =
-                                scars.into_iter().zip(embeddings).collect();
-                            store.upsert_scars_batch(&scar_embeddings, &scars_path, file_mtime)?;
-
-                            if !cli.quiet {
-                                let count = store.scar_count()?;
-                                println!("  Scars: {} total", count);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse scars: {}", e);
-                    }
-                }
-            } else if !cli.quiet {
-                println!("Scars up to date.");
+                println!("Notes up to date.");
             }
         }
     }
 
     Ok(())
+}
+
+/// Load HNSW index if available, wrapped as trait object
+fn load_hnsw_index(cq_dir: &std::path::Path) -> Option<Box<dyn cqs::index::VectorIndex>> {
+    if HnswIndex::exists(cq_dir, "index") {
+        match HnswIndex::load(cq_dir, "index") {
+            Ok(index) => {
+                tracing::info!("Using HNSW index ({} vectors)", index.len());
+                Some(Box::new(index))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::debug!("No HNSW index found, using brute-force search");
+        None
+    }
 }
 
 fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
@@ -937,101 +1224,55 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
     };
 
-    // Determine if we should include hunches
-    let include_hunches = !cli.no_hunches;
-
-    // Try HNSW search first (much faster for large indexes)
-    let code_results = if HnswIndex::exists(&cq_dir, "index") {
-        match HnswIndex::load(&cq_dir, "index") {
-            Ok(hnsw) => {
-                if cli.verbose {
-                    eprintln!("Using HNSW index ({} vectors)", hnsw.len());
+    // Load vector index for O(log n) search
+    let index: Option<Box<dyn cqs::index::VectorIndex>> = {
+        #[cfg(feature = "gpu-search")]
+        {
+            // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
+            //
+            // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
+            // Only worth it when search time savings exceed rebuild cost.
+            // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
+            const CAGRA_THRESHOLD: usize = 5000;
+            let chunk_count = store.chunk_count().unwrap_or(0);
+            if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
+                match cqs::cagra::CagraIndex::build_from_store(&store) {
+                    Ok(idx) => {
+                        tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
+                        Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
+                        load_hnsw_index(&cq_dir)
+                    }
                 }
-                // Get more candidates from HNSW to allow for filtering
-                let oversample = if filter.languages.is_some() || filter.path_pattern.is_some() {
-                    cli.limit * 10
+            } else {
+                if chunk_count < CAGRA_THRESHOLD {
+                    tracing::debug!(
+                        "Index too small for CAGRA ({} < {}), using HNSW",
+                        chunk_count,
+                        CAGRA_THRESHOLD
+                    );
                 } else {
-                    cli.limit * 2
-                };
-                let hnsw_results = hnsw.search(&query_embedding, oversample);
-
-                // Use HNSW candidates for filtered search (10-100x faster than brute-force)
-                if filter.languages.is_some()
-                    || filter.path_pattern.is_some()
-                    || filter.name_boost > 0.0
-                {
-                    // Extract candidate IDs from HNSW results
-                    let candidate_ids: Vec<&str> =
-                        hnsw_results.iter().map(|r| r.id.as_str()).collect();
-                    store.search_by_candidate_ids(
-                        &candidate_ids,
-                        &query_embedding,
-                        &filter,
-                        cli.limit,
-                        cli.threshold,
-                    )?
-                } else {
-                    // No filters - use HNSW results directly, just filter by threshold
-                    hnsw_results
-                        .into_iter()
-                        .filter(|r| r.score >= cli.threshold)
-                        .take(cli.limit)
-                        .filter_map(|r| {
-                            // Look up chunk details from store
-                            // This is a simplified approach - ideally we'd batch this
-                            store.get_chunk_by_id(&r.id).ok().flatten().map(|chunk| {
-                                cqs::store::SearchResult {
-                                    chunk,
-                                    score: r.score,
-                                }
-                            })
-                        })
-                        .collect()
+                    tracing::debug!("GPU not available, using HNSW");
                 }
-            }
-            Err(e) => {
-                if cli.verbose {
-                    eprintln!("HNSW load failed, using brute-force: {}", e);
-                }
-                store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
+                load_hnsw_index(&cq_dir)
             }
         }
-    } else {
-        // No HNSW index, use brute-force
-        store.search_filtered(&query_embedding, &filter, cli.limit, cli.threshold)?
+        #[cfg(not(feature = "gpu-search"))]
+        {
+            load_hnsw_index(&cq_dir)
+        }
     };
 
-    // Search hunches if requested
-    let hunch_results = if include_hunches {
-        store.search_hunches(
-            &query_embedding,
-            cli.limit,
-            cli.threshold,
-            cli.include_resolved,
-        )?
-    } else {
-        vec![]
-    };
-
-    // Search scars (always included - limbic memory is always relevant)
-    let scar_results = store.search_scars(&query_embedding, cli.limit, cli.threshold)?;
-
-    // Merge results
-    let results: Vec<UnifiedResult> = {
-        let mut unified: Vec<UnifiedResult> = code_results
-            .into_iter()
-            .map(UnifiedResult::Code)
-            .chain(hunch_results.into_iter().map(UnifiedResult::Hunch))
-            .chain(scar_results.into_iter().map(UnifiedResult::Scar))
-            .collect();
-        unified.sort_by(|a, b| {
-            b.score()
-                .partial_cmp(&a.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        unified.truncate(cli.limit);
-        unified
-    };
+    // Use unified search with vector index if available
+    let results = store.search_unified_with_index(
+        &query_embedding,
+        &filter,
+        cli.limit,
+        cli.threshold,
+        index.as_deref(),
+    )?;
 
     if results.is_empty() {
         if cli.json {
@@ -1247,9 +1488,10 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
         root.display()
     );
     println!(
-        "Supported extensions: {}",
+        "Code extensions: {}",
         supported_ext.iter().cloned().collect::<Vec<_>>().join(", ")
     );
+    println!("Also watching: docs/notes.toml");
 
     let (tx, rx) = mpsc::channel();
 
@@ -1260,22 +1502,33 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 
     // Track pending changes for debouncing
     let mut pending_files: HashSet<PathBuf> = HashSet::new();
+    let mut pending_notes = false; // Track if notes.toml changed
     let mut last_event = std::time::Instant::now();
     let debounce = Duration::from_millis(debounce_ms);
+    let notes_path = root.join("docs/notes.toml");
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 for path in event.paths {
+                    // Skip .cq directory
+                    if path.starts_with(&cq_dir) {
+                        continue;
+                    }
+
+                    // Check if it's notes.toml
+                    if path == notes_path {
+                        pending_notes = true;
+                        last_event = std::time::Instant::now();
+                        continue;
+                    }
+
                     // Skip if not a supported extension
                     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
                     if !supported_ext.contains(ext) {
                         continue;
                     }
-                    // Skip .cq directory
-                    if path.starts_with(&cq_dir) {
-                        continue;
-                    }
+
                     // Convert to relative path
                     if let Ok(rel) = path.strip_prefix(&root) {
                         pending_files.insert(rel.to_path_buf());
@@ -1290,24 +1543,54 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Check if we should process pending changes
-                if !pending_files.is_empty() && last_event.elapsed() >= debounce {
-                    let files: Vec<PathBuf> = pending_files.drain().collect();
-                    if !cli.quiet {
-                        println!("\n{} file(s) changed, reindexing...", files.len());
-                        for f in &files {
-                            println!("  {}", f.display());
+                let should_process = (!pending_files.is_empty() || pending_notes)
+                    && last_event.elapsed() >= debounce;
+
+                if should_process {
+                    // Reindex code files if any changed
+                    if !pending_files.is_empty() {
+                        let files: Vec<PathBuf> = pending_files.drain().collect();
+                        if !cli.quiet {
+                            println!("\n{} file(s) changed, reindexing...", files.len());
+                            for f in &files {
+                                println!("  {}", f.display());
+                            }
+                        }
+
+                        match reindex_files(
+                            &root,
+                            &index_path,
+                            &files,
+                            &parser,
+                            no_ignore,
+                            cli.quiet,
+                        ) {
+                            Ok(count) => {
+                                if !cli.quiet {
+                                    println!("Indexed {} chunk(s)", count);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Reindex error: {}", e);
+                            }
                         }
                     }
 
-                    // Reindex changed files
-                    match reindex_files(&root, &index_path, &files, &parser, no_ignore, cli.quiet) {
-                        Ok(count) => {
-                            if !cli.quiet {
-                                println!("Indexed {} chunk(s)", count);
-                            }
+                    // Reindex notes if notes.toml changed
+                    if pending_notes {
+                        pending_notes = false;
+                        if !cli.quiet {
+                            println!("\nNotes changed, reindexing...");
                         }
-                        Err(e) => {
-                            eprintln!("Reindex error: {}", e);
+                        match reindex_notes(&root, &index_path, cli.quiet) {
+                            Ok(count) => {
+                                if !cli.quiet {
+                                    println!("Indexed {} note(s)", count);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Notes reindex error: {}", e);
+                            }
                         }
                     }
                 }
@@ -1370,10 +1653,14 @@ fn reindex_files(
         return Ok(0);
     }
 
-    // Generate embeddings
+    // Generate embeddings with neutral sentiment for code chunks
     let texts: Vec<String> = chunks.iter().map(generate_nl_description).collect();
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings = embedder.embed_documents(&text_refs)?;
+    let embeddings: Vec<Embedding> = embedder
+        .embed_documents(&text_refs)?
+        .into_iter()
+        .map(|e| e.with_sentiment(0.0))
+        .collect();
 
     // Delete old chunks for these files and insert new ones
     for rel_path in files {
@@ -1397,6 +1684,58 @@ fn reindex_files(
     }
 
     Ok(chunks.len())
+}
+
+/// Reindex notes from docs/notes.toml
+fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
+    let notes_path = root.join("docs/notes.toml");
+    if !notes_path.exists() {
+        return Ok(0);
+    }
+
+    let notes = parse_notes(&notes_path)?;
+    if notes.is_empty() {
+        return Ok(0);
+    }
+
+    let mut embedder = Embedder::new()?;
+    let store = Store::open(index_path)?;
+
+    // Embed note content with sentiment prefix
+    let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+    // Add sentiment as 769th dimension
+    let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
+        .into_iter()
+        .zip(notes.iter())
+        .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+        .collect();
+
+    // Get file mtime
+    let file_mtime = notes_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Delete old notes and insert new
+    store.delete_notes_by_file(&notes_path)?;
+    let note_embeddings: Vec<_> = notes.into_iter().zip(embeddings_with_sentiment).collect();
+    store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
+
+    if !quiet {
+        let (total, warnings, patterns) = store.note_stats()?;
+        println!(
+            "  Notes: {} total ({} warnings, {} patterns)",
+            total, warnings, patterns
+        );
+    }
+
+    Ok(note_embeddings.len())
 }
 
 fn cmd_serve(_cli: &Cli, transport: &str, port: u16, project: Option<PathBuf>) -> Result<()> {
@@ -1457,7 +1796,7 @@ fn read_context_lines(
 // NL generation moved to cqs::nl module
 use cqs::nl::generate_nl_description;
 
-/// Display unified search results (code + hunches)
+/// Display unified search results (code + notes)
 fn display_unified_results(
     results: &[UnifiedResult],
     root: &Path,
@@ -1532,53 +1871,32 @@ fn display_unified_results(
                     println!();
                 }
             }
-            UnifiedResult::Hunch(r) => {
-                // Format: [hunch:severity] title [score]
-                let severity_color = match r.hunch.severity {
-                    cqs::hunch::Severity::High => "high".red(),
-                    cqs::hunch::Severity::Med => "med".yellow(),
-                    cqs::hunch::Severity::Low => "low".dimmed(),
+            UnifiedResult::Note(r) => {
+                // Format: [note:sentiment] text [score]
+                let sentiment_indicator = if r.note.sentiment < -0.3 {
+                    format!("v={:.1}", r.note.sentiment).red()
+                } else if r.note.sentiment > 0.3 {
+                    format!("v={:.1}", r.note.sentiment).green()
+                } else {
+                    format!("v={:.1}", r.note.sentiment).dimmed()
                 };
 
-                let resolution_marker = match r.hunch.resolution {
-                    cqs::hunch::Resolution::Open => "",
-                    cqs::hunch::Resolution::Resolved => " ✓",
-                    cqs::hunch::Resolution::Accepted => " ⚡",
-                };
+                let header = format!("[note] {} [{:.2}]", sentiment_indicator, r.score);
 
-                let header = format!(
-                    "[hunch:{}] {}{} [{:.2}]",
-                    severity_color, r.hunch.title, resolution_marker, r.score
-                );
-
-                println!("{}", header.magenta());
+                println!("{}", header.blue());
 
                 if !no_content {
                     println!("{}", "─".repeat(50));
-                    // Show truncated description
-                    let desc_lines: Vec<&str> = r.hunch.description.lines().collect();
-                    if desc_lines.len() <= 5 {
-                        println!("{}", r.hunch.description);
+                    // Show truncated text
+                    let text_lines: Vec<&str> = r.note.text.lines().collect();
+                    if text_lines.len() <= 3 {
+                        println!("{}", r.note.text);
                     } else {
-                        for line in desc_lines.iter().take(4) {
+                        for line in text_lines.iter().take(3) {
                             println!("{}", line);
                         }
                         println!("    ...");
                     }
-                    println!();
-                }
-            }
-            UnifiedResult::Scar(r) => {
-                // Format: [scar] title [score]
-                let header = format!("[scar] {} [{:.2}]", r.scar.title, r.score);
-
-                println!("{}", header.red());
-
-                if !no_content {
-                    println!("{}", "─".repeat(50));
-                    println!("{} {}", "Tried:".bold(), r.scar.tried);
-                    println!("{} {}", "Pain:".bold(), r.scar.pain);
-                    println!("{} {}", "Learned:".bold(), r.scar.learned);
                     println!();
                 }
             }
@@ -1606,27 +1924,12 @@ fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> Resul
                 "score": r.score,
                 "content": r.chunk.content,
             }),
-            UnifiedResult::Hunch(r) => serde_json::json!({
-                "type": "hunch",
-                "id": r.hunch.id,
-                "date": r.hunch.date,
-                "title": r.hunch.title,
-                "description": r.hunch.description,
-                "severity": r.hunch.severity.to_string(),
-                "confidence": r.hunch.confidence.to_string(),
-                "resolution": r.hunch.resolution.to_string(),
-                "mentions": r.hunch.mentions,
-                "score": r.score,
-            }),
-            UnifiedResult::Scar(r) => serde_json::json!({
-                "type": "scar",
-                "id": r.scar.id,
-                "date": r.scar.date,
-                "title": r.scar.title,
-                "tried": r.scar.tried,
-                "pain": r.scar.pain,
-                "learned": r.scar.learned,
-                "mentions": r.scar.mentions,
+            UnifiedResult::Note(r) => serde_json::json!({
+                "type": "note",
+                "id": r.note.id,
+                "text": r.note.text,
+                "sentiment": r.note.sentiment,
+                "mentions": r.note.mentions,
                 "score": r.score,
             }),
         })

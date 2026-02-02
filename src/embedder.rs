@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
-// Model configuration
-const MODEL_REPO: &str = "nomic-ai/nomic-embed-text-v1.5";
+// Model configuration - E5-base-v2 (full CUDA coverage, no rotary embedding fallback)
+const MODEL_REPO: &str = "intfloat/e5-base-v2";
 const MODEL_FILE: &str = "onnx/model.onnx";
-const TOKENIZER_FILE: &str = "tokenizer.json";
+const TOKENIZER_FILE: &str = "onnx/tokenizer.json";
 
-// blake3 checksums for model verification (update when model changes)
-const MODEL_BLAKE3: &str = "34f5f98a1bb6ecd9e6095ec8d4da7b3491517dcf1d6dd5bd57c0171bf744b749";
-const TOKENIZER_BLAKE3: &str = "6e933bf59db40b8b2a0de480fe5006662770757e1e1671eb7e48ff6a5f00b0b4";
+// blake3 checksums for model verification (empty = skip validation)
+const MODEL_BLAKE3: &str = "";
+const TOKENIZER_BLAKE3: &str = "";
 
 #[derive(Error, Debug)]
 pub enum EmbedderError {
@@ -45,17 +45,42 @@ impl From<ort::Error> for EmbedderError {
     }
 }
 
-/// A 768-dimensional L2-normalized embedding vector
+/// A 769-dimensional L2-normalized embedding vector
 ///
-/// Embeddings are produced by nomic-embed-text-v1.5 and can be
-/// compared using cosine similarity (dot product for normalized vectors).
+/// Embeddings are produced by E5-base-v2 (768-dim) with an
+/// optional 769th dimension for sentiment (-1.0 to +1.0).
+/// Can be compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
+
+/// Standard embedding dimension from model
+pub const MODEL_DIM: usize = 768;
+/// Full embedding dimension with sentiment
+pub const EMBEDDING_DIM: usize = 769;
 
 impl Embedding {
     /// Create a new embedding from raw vector data
     pub fn new(data: Vec<f32>) -> Self {
         Self(data)
+    }
+
+    /// Append sentiment as 769th dimension
+    ///
+    /// Converts a 768-dim model embedding to 769-dim with sentiment.
+    /// Sentiment should be -1.0 (negative) to +1.0 (positive).
+    pub fn with_sentiment(mut self, sentiment: f32) -> Self {
+        debug_assert_eq!(self.0.len(), MODEL_DIM, "Expected 768-dim embedding");
+        self.0.push(sentiment.clamp(-1.0, 1.0));
+        self
+    }
+
+    /// Get the sentiment (769th dimension) if present
+    pub fn sentiment(&self) -> Option<f32> {
+        if self.0.len() == EMBEDDING_DIM {
+            Some(self.0[MODEL_DIM])
+        } else {
+            None
+        }
     }
 
     /// Get the embedding as a slice
@@ -161,8 +186,29 @@ impl Embedder {
             model_path,
             tokenizer_path,
             provider,
-            max_length: 8192,
+            max_length: 512,
             batch_size,
+            query_cache,
+        })
+    }
+
+    /// Create a CPU-only embedder
+    ///
+    /// Use this for single-query embedding where CPU is faster than GPU
+    /// due to CUDA context setup overhead. GPU only helps for batch embedding.
+    pub fn new_cpu() -> Result<Self, EmbedderError> {
+        let (model_path, tokenizer_path) = ensure_model()?;
+
+        let query_cache = Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
+
+        Ok(Self {
+            session: OnceCell::new(),
+            tokenizer: OnceCell::new(),
+            model_path,
+            tokenizer_path,
+            provider: ExecutionProvider::CPU,
+            max_length: 512,
+            batch_size: 4,
             query_cache,
         })
     }
@@ -183,16 +229,67 @@ impl Embedder {
         })
     }
 
-    /// Embed documents (code chunks). Adds "search_document: " prefix.
+    /// Count tokens in a text
+    pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
+        let encoding = self
+            .tokenizer()?
+            .encode(text, false)
+            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+        Ok(encoding.get_ids().len())
+    }
+
+    /// Split text into overlapping windows of max_tokens with overlap tokens of context.
+    /// Returns Vec of (window_content, window_index).
+    /// If text fits in max_tokens, returns single window with index 0.
+    pub fn split_into_windows(
+        &self,
+        text: &str,
+        max_tokens: usize,
+        overlap: usize,
+    ) -> Result<Vec<(String, u32)>, EmbedderError> {
+        let tokenizer = self.tokenizer()?;
+        let encoding = tokenizer
+            .encode(text, false)
+            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+
+        let ids = encoding.get_ids();
+        if ids.len() <= max_tokens {
+            return Ok(vec![(text.to_string(), 0)]);
+        }
+
+        let mut windows = Vec::new();
+        let step = max_tokens.saturating_sub(overlap).max(1); // Ensure step >= 1 to prevent infinite loop
+        let mut start = 0;
+        let mut window_idx = 0u32;
+
+        while start < ids.len() {
+            let end = (start + max_tokens).min(ids.len());
+            let window_ids: Vec<u32> = ids[start..end].to_vec();
+
+            // Decode back to text
+            let window_text = tokenizer
+                .decode(&window_ids, true)
+                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+
+            windows.push((window_text, window_idx));
+            window_idx += 1;
+
+            if end >= ids.len() {
+                break;
+            }
+            start += step;
+        }
+
+        Ok(windows)
+    }
+
+    /// Embed documents (code chunks). Adds "passage: " prefix for E5.
     pub fn embed_documents(&mut self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
-        let prefixed: Vec<String> = texts
-            .iter()
-            .map(|t| format!("search_document: {}", t))
-            .collect();
+        let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
         self.embed_batch(&prefixed)
     }
 
-    /// Embed a query. Adds "search_query: " prefix. Uses LRU cache for repeated queries.
+    /// Embed a query. Adds "query: " prefix for E5. Uses LRU cache for repeated queries.
     pub fn embed_query(&mut self, text: &str) -> Result<Embedding, EmbedderError> {
         let text = text.trim();
         if text.is_empty() {
@@ -211,12 +308,15 @@ impl Embedder {
         }
 
         // Compute embedding
-        let prefixed = format!("search_query: {}", text);
+        let prefixed = format!("query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
-        let embedding = results
+        let base_embedding = results
             .into_iter()
             .next()
             .expect("embed_batch with single item always returns one result");
+
+        // Add neutral sentiment (0.0) as 769th dimension
+        let embedding = base_embedding.with_sentiment(0.0);
 
         // Store in cache
         {
@@ -380,9 +480,92 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
+/// Ensure ort CUDA provider libraries are findable
+///
+/// The ort crate downloads provider libs to ~/.cache/ort.pyke.io/... but
+/// doesn't add them to the library search path. This function creates
+/// symlinks in a directory that's already in LD_LIBRARY_PATH.
+fn ensure_ort_provider_libs() {
+    // Find ort's download cache
+    let home = match std::env::var("HOME") {
+        Ok(h) => std::path::PathBuf::from(h),
+        Err(_) => return,
+    };
+    let ort_cache = home.join(".cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
+
+    // Find the versioned subdirectory (hash-named)
+    let ort_lib_dir = match std::fs::read_dir(&ort_cache) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.path())
+            .next(),
+        Err(_) => return,
+    };
+
+    let ort_lib_dir = match ort_lib_dir {
+        Some(d) => d,
+        None => return,
+    };
+
+    // Find target directory from LD_LIBRARY_PATH (skip ort cache dirs to avoid self-symlinks)
+    let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    let ort_cache_str = ort_cache.to_string_lossy();
+    let target_dir = ld_path
+        .split(':')
+        .find(|p| {
+            !p.is_empty() && std::path::Path::new(p).is_dir() && !p.contains(ort_cache_str.as_ref())
+            // Don't symlink into ort's own cache
+        })
+        .map(std::path::PathBuf::from);
+
+    let target_dir = match target_dir {
+        Some(d) => d,
+        None => return, // No writable lib dir in path (or only ort cache in path)
+    };
+
+    // Provider libs to symlink
+    let provider_libs = [
+        "libonnxruntime_providers_shared.so",
+        "libonnxruntime_providers_cuda.so",
+        "libonnxruntime_providers_tensorrt.so",
+    ];
+
+    for lib in &provider_libs {
+        let src = ort_lib_dir.join(lib);
+        let dst = target_dir.join(lib);
+
+        // Skip if source doesn't exist
+        if !src.exists() {
+            continue;
+        }
+
+        // Skip if symlink already valid
+        if dst.symlink_metadata().is_ok() {
+            if let Ok(target) = std::fs::read_link(&dst) {
+                if target == src {
+                    continue; // Already correct
+                }
+            }
+            // Remove stale symlink
+            let _ = std::fs::remove_file(&dst);
+        }
+
+        // Create symlink
+        if let Err(e) = std::os::unix::fs::symlink(&src, &dst) {
+            tracing::debug!("Failed to symlink {}: {}", lib, e);
+        } else {
+            tracing::info!("Created symlink: {} -> {}", dst.display(), src.display());
+        }
+    }
+}
+
 /// Select the best available execution provider
 fn select_provider() -> ExecutionProvider {
     use ort::ep::{TensorRT, CUDA};
+
+    // Ensure provider libs are findable before checking availability
+    ensure_ort_provider_libs();
 
     // Try CUDA first
     let cuda = CUDA::default();

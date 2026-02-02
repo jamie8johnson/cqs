@@ -5,7 +5,8 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Uses nomic-embed-text-v1.5 embeddings (768-dim)
+//! - **Semantic search**: Uses nomic-embed-text-v1.5 embeddings (769-dim: 768 model + sentiment)
+//! - **Notes with sentiment**: Unified memory system for AI collaborators
 //! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **MCP integration**: Works with Claude Code and other AI assistants
@@ -53,15 +54,22 @@
 pub mod config;
 pub mod embedder;
 pub mod hnsw;
-pub mod hunch;
+pub mod index;
 pub mod mcp;
 pub mod nl;
+pub mod note;
 pub mod parser;
-pub mod scar;
 pub mod store;
+
+#[cfg(feature = "gpu-search")]
+pub mod cagra;
 
 pub use embedder::Embedder;
 pub use hnsw::HnswIndex;
+pub use index::{IndexResult, VectorIndex};
 pub use mcp::{serve_http, serve_stdio};
 pub use parser::Parser;
 pub use store::Store;
+
+#[cfg(feature = "gpu-search")]
+pub use cagra::CagraIndex;

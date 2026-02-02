@@ -380,6 +380,8 @@ impl Parser {
             line_start,
             line_end,
             content_hash,
+            parent_id: None,
+            window_idx: None,
         })
     }
 
@@ -693,7 +695,7 @@ impl Parser {
 /// Each chunk represents a single code element extracted by tree-sitter.
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    /// Unique identifier: `{file}:{line_start}:{content_hash}`
+    /// Unique identifier: `{file}:{line_start}:{content_hash}` or `{parent_id}:w{window_idx}`
     pub id: String,
     /// Source file path (relative to project root)
     pub file: std::path::PathBuf,
@@ -705,7 +707,7 @@ pub struct Chunk {
     pub name: String,
     /// Function signature or declaration line
     pub signature: String,
-    /// Full source code content
+    /// Full source code content (may be windowed portion of original)
     pub content: String,
     /// Documentation comment if present
     pub doc: Option<String>,
@@ -715,6 +717,10 @@ pub struct Chunk {
     pub line_end: u32,
     /// BLAKE3 hash of content for change detection
     pub content_hash: String,
+    /// Parent chunk ID if this is a windowed portion of a larger chunk
+    pub parent_id: Option<String>,
+    /// Window index (0, 1, 2...) if this is a windowed portion
+    pub window_idx: Option<u32>,
 }
 
 /// Supported programming languages

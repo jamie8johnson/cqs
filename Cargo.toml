@@ -26,6 +26,8 @@ ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4"
 ndarray = "0.17"
+# cuVS requires ndarray 0.15, import separately for gpu-search
+ndarray_015 = { package = "ndarray", version = "0.15", optional = true }
 
 # Async
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync", "time", "macros", "signal"] }
@@ -43,9 +45,10 @@ r2d2 = "0.8"
 r2d2_sqlite = "0.24"
 keyring = { version = "2", optional = true }
 
-# Vector search (HNSW)
+# Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
 simsimd = "6"
+cuvs = { version = "25.12", optional = true }
 
 # Text processing
 regex = "1"
@@ -63,6 +66,7 @@ notify = { version = "6", features = ["serde"] }
 fs4 = "0.12"
 ctrlc = "3"
 rayon = "1"
+crossbeam-channel = "0.5"
 chrono = "0.4"
 globset = "0.4"
 colored = "2"
@@ -80,6 +84,7 @@ once_cell = "1"
 [features]
 default = []
 encrypt = ["rusqlite/bundled-sqlcipher", "keyring"]
+gpu-search = ["cuvs", "ndarray_015"]
 
 [dev-dependencies]
 tempfile = "3"

@@ -23,11 +23,14 @@ fn create_test_chunk(name: &str, content: &str) -> Chunk {
         line_start: 1,
         line_end: 5,
         content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+        parent_id: None,
+        window_idx: None,
     }
 }
 
 fn create_mock_embedding(seed: f32) -> Embedding {
     // Create a simple mock embedding (not L2 normalized, but good enough for testing)
+    // 769 dims = 768 model + 1 sentiment
     let mut v = vec![seed; 768];
     // Normalize
     let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -36,6 +39,8 @@ fn create_mock_embedding(seed: f32) -> Embedding {
             *x /= norm;
         }
     }
+    // Add sentiment dimension (769th)
+    v.push(0.0);
     Embedding::new(v)
 }
 
@@ -51,8 +56,8 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 7); // v7: Scars
-    assert_eq!(stats.model_name, "nomic-embed-text-v1.5");
+    assert_eq!(stats.schema_version, 9); // v9: Windowing with parent_id, window_idx
+    assert_eq!(stats.model_name, "intfloat/e5-base-v2");
 }
 
 #[test]
