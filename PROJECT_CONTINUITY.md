@@ -2,7 +2,11 @@
 
 ## Right Now
 
-**Hybrid CAGRA complete.** MCP starts instantly (HNSW), upgrades to GPU in background.
+**Session work:**
+- Hybrid CAGRA startup (HNSW 30ms, CAGRA upgrades in background)
+- 60/40 code/notes split (notes are "did you know?" not main results)
+- Conda env vars for LD_LIBRARY_PATH (no more manual export)
+- Clarified: use `cqs_add_note` for notes, `cqs watch` for code
 
 Pronunciation: cqs = "seeks" (it seeks code semantically).
 
