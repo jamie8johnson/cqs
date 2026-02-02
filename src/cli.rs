@@ -1225,16 +1225,15 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     };
 
     // Load vector index for O(log n) search
-    // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
-    //
-    // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
-    // Only worth it when search time savings exceed rebuild cost.
-    // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
-    const CAGRA_THRESHOLD: usize = 5000;
-
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {
         #[cfg(feature = "gpu-search")]
         {
+            // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
+            //
+            // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
+            // Only worth it when search time savings exceed rebuild cost.
+            // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
+            const CAGRA_THRESHOLD: usize = 5000;
             let chunk_count = store.chunk_count().unwrap_or(0);
             if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
                 match cqs::cagra::CagraIndex::build_from_store(&store) {
