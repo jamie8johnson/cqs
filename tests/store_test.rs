@@ -56,8 +56,8 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 8); // v8: Notes with 769-dim embeddings
-    assert_eq!(stats.model_name, "nomic-embed-text-v1.5");
+    assert_eq!(stats.schema_version, 9); // v9: Windowing with parent_id, window_idx
+    assert_eq!(stats.model_name, "intfloat/e5-base-v2");
 }
 
 #[test]

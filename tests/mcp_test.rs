@@ -20,7 +20,7 @@ fn setup_test_server() -> (TempDir, cqs::mcp::McpServer) {
     let store = cqs::store::Store::open(&index_path).unwrap();
     store
         .init(&cqs::store::ModelInfo {
-            name: "nomic-embed-text-v1.5".into(),
+            name: "intfloat/e5-base-v2".into(),
             dimensions: 769, // 768 model + 1 sentiment
             version: "1.0".into(),
         })

@@ -447,7 +447,7 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
     // Check model
     match Embedder::new() {
         Ok(mut embedder) => {
-            println!("  {} Model: nomic-embed-text-v1.5", "[✓]".green());
+            println!("  {} Model: intfloat/e5-base-v2", "[✓]".green());
             println!("  {} Tokenizer: loaded", "[✓]".green());
             println!("  {} Execution: {}", "[✓]".green(), embedder.provider());
 
