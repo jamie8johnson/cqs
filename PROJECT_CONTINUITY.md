@@ -2,17 +2,17 @@
 
 ## Right Now
 
-**E5-base-v2 merged to main** - PR #46 complete
+**GPU MCP flag merged** - `cqs serve --gpu` for GPU query embedding
 
-### Index Rebuild Running
+Benchmarks:
+- CPU MCP: cold 0.52s, warm 22ms
+- GPU MCP: cold 1.15s, warm 12ms (~45% faster warm)
 
-rust-lang/rust indexing with E5-base-v2:
-- Index size: 1.1GB (stable)
-- CPU time: 332 mins
-- RAM: ~6.5GB
-- PID: 25486 (still running)
+Default is CPU for lower cold-start latency.
 
-May be finishing - size hasn't grown recently.
+### Index Rebuild
+
+rust-lang/rust indexing with E5-base-v2 complete (~2h).
 
 ### Full Audit Complete
 
@@ -38,7 +38,7 @@ Migrated sentiment scale from 21-point (0.1 increments) to 5-point:
 - E5-base-v2 model with "passage: " / "query: " prefixes
 - Schema v9 with windowing (parent_id, window_idx)
 - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
-- MCP: CPU embed + HNSW (0.13s/query)
+- MCP: CPU (22ms warm) or GPU (12ms warm) + HNSW
 
 ## Build & Run
 
