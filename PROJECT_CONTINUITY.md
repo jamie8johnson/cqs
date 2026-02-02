@@ -29,7 +29,7 @@ cargo build --release --features gpu-search
 
 ## Parked
 
-- CAGRA persistence (serialize/deserialize) - would fix 1.5s startup
+- CAGRA persistence (serialize/deserialize) - hybrid startup approach used instead
 - Republish to crates.io
 - Curator agent, fleet coordination
 

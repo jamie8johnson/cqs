@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CPU (default): cold 0.52s, warm 22ms
   - GPU: cold 1.15s, warm 12ms (~45% faster warm queries)
 
+### Changed
+- Hybrid CAGRA/HNSW startup: HNSW loads instantly (~30ms), CAGRA builds in background
+  - Server ready immediately, upgrades to GPU index transparently
+  - Eliminates 1.2s blocking startup delay
+
 ## [0.1.16] - 2026-02-01
 
 ### Added

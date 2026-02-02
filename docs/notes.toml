@@ -292,3 +292,8 @@ mentions = ["notes.toml", "store.rs", "search"]
 sentiment = 0.5
 text = "--name-boost 0.8 for precision when you know partial function name. Default 0.2 favors semantic. Crank it up when searching for specific identifiers vs concepts."
 mentions = ["cli.rs", "name_boost", "hybrid search"]
+
+[[note]]
+sentiment = 1.0
+text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Eliminated blocking startup delay."
+mentions = ["mcp.rs", "cagra.rs", "hnsw.rs", "startup"]
