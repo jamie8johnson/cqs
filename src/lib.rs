@@ -55,10 +55,12 @@ pub mod config;
 pub mod embedder;
 pub mod hnsw;
 pub mod index;
+pub mod language;
 pub mod mcp;
 pub mod nl;
 pub mod note;
 pub mod parser;
+pub mod source;
 pub mod store;
 
 #[cfg(feature = "gpu-search")]

@@ -334,9 +334,9 @@ fn test_recall_at_5() {
                 .expect("Failed to embed chunk");
             let embedding = &embeddings[0];
 
-            // Store chunk (mtime 0 since these are test fixtures)
+            // Store chunk (no mtime since these are test fixtures)
             store
-                .upsert_chunk(chunk, embedding, 0)
+                .upsert_chunk(chunk, embedding, None)
                 .expect("Failed to store chunk");
             chunk_count += 1;
         }

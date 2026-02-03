@@ -1,11 +1,13 @@
-//! SQLite storage for chunks and embeddings
+//! SQLite storage for chunks and embeddings (sqlx async with sync wrappers)
+//!
+//! Provides sync methods that internally use tokio runtime to execute async sqlx operations.
+//! This allows callers to use the Store synchronously while benefiting from sqlx's async features.
 
-use r2d2::Pool;
-use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, params_from_iter};
+use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+use tokio::runtime::Runtime;
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
@@ -16,21 +18,21 @@ use crate::parser::{Chunk, ChunkType, Language};
 // v3: NL-based embeddings (code->NL translation before embedding)
 // v4: Call graph (function call relationships)
 // v5: Full call graph (captures calls from large functions)
-// v6: Hunches (soft observations indexed for semantic search)
-// v7: Scars (failed approaches - limbic memory)
+// v6-7: (deprecated hunches/scars, replaced by notes in v8)
 // v8: Notes (unified memory with sentiment, 769-dim embeddings)
 // v9: Windowing (parent_id, window_idx for chunking long functions)
-const CURRENT_SCHEMA_VERSION: i32 = 9;
+// v10: Multi-source support (file -> origin, file_mtime -> source_mtime, + source_type)
+const CURRENT_SCHEMA_VERSION: i32 = 10;
 const MODEL_NAME: &str = "intfloat/e5-base-v2";
 
 #[derive(Error, Debug)]
 pub enum StoreError {
     #[error("Database error: {0}")]
-    Database(#[from] rusqlite::Error),
+    Database(#[from] sqlx::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Connection pool error: {0}")]
-    Pool(#[from] r2d2::Error),
+    #[error("Runtime error: {0}")]
+    Runtime(String),
     #[error("Schema version mismatch: index is v{0}, cq expects v{1}. Run 'cq index --force' to rebuild.")]
     SchemaMismatch(i32, i32),
     #[error("Index created by newer cq version (schema v{0}). Please upgrade cq.")]
@@ -43,9 +45,9 @@ pub enum StoreError {
 
 /// Thread-safe SQLite store for chunks and embeddings
 ///
-/// Uses r2d2 connection pooling for concurrent reads and WAL mode
-/// for crash safety. All methods take `&self` and are safe to call
-/// from multiple threads.
+/// Uses sqlx connection pooling for concurrent reads and WAL mode
+/// for crash safety. All methods are synchronous but internally use
+/// an async runtime to execute sqlx operations.
 ///
 /// # Example
 ///
@@ -59,14 +61,15 @@ pub enum StoreError {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Store {
-    pool: Pool<SqliteConnectionManager>,
+    pool: SqlitePool,
+    rt: Runtime,
 }
 
 /// Raw row from chunks table (for internal use)
 #[derive(Clone)]
 struct ChunkRow {
     id: String,
-    file: String,
+    origin: String,
     language: String,
     chunk_type: String,
     name: String,
@@ -76,13 +79,6 @@ struct ChunkRow {
     line_start: u32,
     line_end: u32,
     parent_id: Option<String>,
-}
-
-/// Minimal struct for scoring phase - ID, embedding, and optionally name
-struct ChunkScore {
-    id: String,
-    embedding: Vec<u8>,
-    name: Option<String>,
 }
 
 /// Chunk metadata returned from search results
@@ -116,7 +112,7 @@ impl From<ChunkRow> for ChunkSummary {
     fn from(row: ChunkRow) -> Self {
         ChunkSummary {
             id: row.id,
-            file: PathBuf::from(row.file),
+            file: PathBuf::from(row.origin),
             language: row.language.parse().unwrap_or(Language::Rust),
             chunk_type: row.chunk_type.parse().unwrap_or(ChunkType::Function),
             name: row.name,
@@ -374,27 +370,41 @@ pub fn normalize_for_fts(text: &str) -> String {
 impl Store {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let manager = SqliteConnectionManager::file(path).with_init(|conn| {
-            // Enable WAL mode for better concurrent read performance
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-            // Wait up to 5s if database is locked
-            conn.pragma_update(None, "busy_timeout", 5000)?;
-            // NORMAL sync is safe with WAL and faster than FULL
-            conn.pragma_update(None, "synchronous", "NORMAL")?;
-            // 64MB page cache (negative = KB, so -65536 = 64MB)
-            conn.pragma_update(None, "cache_size", -65536)?;
-            // Keep temp tables in memory
-            conn.pragma_update(None, "temp_store", "MEMORY")?;
-            // Memory-map up to 256MB for read performance
-            conn.pragma_update(None, "mmap_size", 268435456)?;
-            Ok(())
-        });
+        let rt = Runtime::new().map_err(|e| StoreError::Runtime(e.to_string()))?;
 
-        let pool = Pool::builder()
-            .max_size(4) // Allow up to 4 concurrent connections
-            .build(manager)?;
+        let db_url = format!("sqlite://{}?mode=rwc", path.display());
 
-        let store = Self { pool };
+        let pool = rt.block_on(async {
+            SqlitePoolOptions::new()
+                .max_connections(4)
+                .after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        sqlx::query("PRAGMA journal_mode = WAL")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA busy_timeout = 5000")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA synchronous = NORMAL")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA cache_size = -65536")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA temp_store = MEMORY")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA mmap_size = 268435456")
+                            .execute(&mut *conn)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .connect(&db_url)
+                .await
+        })?;
+
+        let store = Self { pool, rt };
 
         // Check schema version compatibility
         store.check_schema_version()?;
@@ -408,162 +418,195 @@ impl Store {
 
     /// Create a new index
     pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            // Create tables - execute each statement separately
+            // sqlx::query() only handles single statements
+            let schema = include_str!("schema.sql");
+            for statement in schema.split(';') {
+                // Strip leading comment-only lines, keep the SQL
+                let stmt: String = statement
+                    .lines()
+                    .skip_while(|line| {
+                        let trimmed = line.trim();
+                        trimmed.is_empty() || trimmed.starts_with("--")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let stmt = stmt.trim();
+                if stmt.is_empty() {
+                    continue;
+                }
+                sqlx::query(stmt).execute(&self.pool).await?;
+            }
 
-        // Create tables
-        conn.execute_batch(include_str!("schema.sql"))?;
+            // Store metadata
+            let now = chrono::Utc::now().to_rfc3339();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind("schema_version")
+                .bind(CURRENT_SCHEMA_VERSION.to_string())
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind("model_name")
+                .bind(&model_info.name)
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind("dimensions")
+                .bind(model_info.dimensions.to_string())
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind("created_at")
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+                .bind("cq_version")
+                .bind(env!("CARGO_PKG_VERSION"))
+                .execute(&self.pool)
+                .await?;
 
-        // Store metadata
-        let now = chrono::Utc::now().to_rfc3339();
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
-            ["schema_version", &CURRENT_SCHEMA_VERSION.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
-            ["model_name", &model_info.name],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
-            ["dimensions", &model_info.dimensions.to_string()],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
-            ["created_at", &now],
-        )?;
-        conn.execute(
-            "INSERT INTO metadata (key, value) VALUES (?1, ?2)",
-            ["cq_version", env!("CARGO_PKG_VERSION")],
-        )?;
-
-        Ok(())
+            Ok(())
+        })
     }
 
     fn check_schema_version(&self) -> Result<(), StoreError> {
-        let conn = self.pool.get()?;
-        let version: i32 = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'schema_version'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
+        self.rt.block_on(async {
+            // Try to read schema version - if table doesn't exist, it's a new database
+            let row: Option<(String,)> =
+                match sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_optional(&self.pool)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => {
+                        // New database, no tables yet - that's fine
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                };
 
-        if version > CURRENT_SCHEMA_VERSION {
-            return Err(StoreError::SchemaNewerThanCq(version));
-        }
-        if version < CURRENT_SCHEMA_VERSION && version > 0 {
-            return Err(StoreError::SchemaMismatch(version, CURRENT_SCHEMA_VERSION));
-        }
-        Ok(())
+            let version: i32 = row.and_then(|(s,)| s.parse().ok()).unwrap_or(0);
+
+            if version > CURRENT_SCHEMA_VERSION {
+                return Err(StoreError::SchemaNewerThanCq(version));
+            }
+            if version < CURRENT_SCHEMA_VERSION && version > 0 {
+                return Err(StoreError::SchemaMismatch(version, CURRENT_SCHEMA_VERSION));
+            }
+            Ok(())
+        })
     }
 
     fn check_model_version(&self) -> Result<(), StoreError> {
-        let conn = self.pool.get()?;
-        let stored_model: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'model_name'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
+        self.rt.block_on(async {
+            // Try to read model name - if table doesn't exist, it's a new database
+            let row: Option<(String,)> =
+                match sqlx::query_as("SELECT value FROM metadata WHERE key = 'model_name'")
+                    .fetch_optional(&self.pool)
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(sqlx::Error::Database(e)) if e.message().contains("no such table") => {
+                        // New database, no tables yet - that's fine
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e.into()),
+                };
 
-        if !stored_model.is_empty() && stored_model != MODEL_NAME {
-            return Err(StoreError::ModelMismatch(
-                stored_model,
-                MODEL_NAME.to_string(),
-            ));
-        }
-        Ok(())
+            let stored_model = row.map(|(s,)| s).unwrap_or_default();
+
+            if !stored_model.is_empty() && stored_model != MODEL_NAME {
+                return Err(StoreError::ModelMismatch(
+                    stored_model,
+                    MODEL_NAME.to_string(),
+                ));
+            }
+            Ok(())
+        })
     }
 
     /// Warn if index was created by a different version of cqs (informational only)
     fn check_cq_version(&self) {
-        let conn = match self.pool.get() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        let stored_version: String = conn
-            .query_row(
-                "SELECT value FROM metadata WHERE key = 'cq_version'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
+        let _ = self.rt.block_on(async {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'cq_version'")
+                    .fetch_optional(&self.pool)
+                    .await
+                    .ok()
+                    .flatten();
 
-        let current_version = env!("CARGO_PKG_VERSION");
-        if !stored_version.is_empty() && stored_version != current_version {
-            tracing::info!(
-                "Index created by cqs v{}, running v{}",
-                stored_version,
-                current_version
-            );
-        }
+            let stored_version = row.map(|(s,)| s).unwrap_or_default();
+            let current_version = env!("CARGO_PKG_VERSION");
+
+            if !stored_version.is_empty() && stored_version != current_version {
+                tracing::info!(
+                    "Index created by cqs v{}, running v{}",
+                    stored_version,
+                    current_version
+                );
+            }
+            Ok::<_, StoreError>(())
+        });
     }
 
     /// Insert or update chunks in batch (10x faster than individual inserts)
     pub fn upsert_chunks_batch(
         &self,
         chunks: &[(Chunk, Embedding)],
-        file_mtime: i64,
+        source_mtime: Option<i64>,
     ) -> Result<usize, StoreError> {
-        let mut conn = self.pool.get()?;
-        let tx = conn.transaction()?;
-
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO chunks (id, file, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, file_mtime, created_at, updated_at, parent_id, window_idx)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-            )?;
-
-            // FTS5: delete old entry, insert new (UPSERT not supported in FTS5)
-            let mut fts_delete = tx.prepare_cached("DELETE FROM chunks_fts WHERE id = ?1")?;
-            let mut fts_insert = tx.prepare_cached(
-                "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
 
             let now = chrono::Utc::now().to_rfc3339();
             for (chunk, embedding) in chunks {
-                stmt.execute(params![
-                    chunk.id,
-                    chunk.file.to_string_lossy(),
-                    chunk.language.to_string(),
-                    chunk.chunk_type.to_string(),
-                    chunk.name,
-                    chunk.signature,
-                    chunk.content,
-                    chunk.content_hash,
-                    chunk.doc,
-                    chunk.line_start,
-                    chunk.line_end,
-                    embedding_to_bytes(embedding),
-                    file_mtime,
-                    &now,
-                    &now,
-                    chunk.parent_id,
-                    chunk.window_idx,
-                ])?;
+                sqlx::query(
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                )
+                .bind(&chunk.id)
+                .bind(chunk.file.to_string_lossy().to_string())
+                .bind("file")
+                .bind(chunk.language.to_string())
+                .bind(chunk.chunk_type.to_string())
+                .bind(&chunk.name)
+                .bind(&chunk.signature)
+                .bind(&chunk.content)
+                .bind(&chunk.content_hash)
+                .bind(&chunk.doc)
+                .bind(chunk.line_start as i64)
+                .bind(chunk.line_end as i64)
+                .bind(embedding_to_bytes(embedding))
+                .bind(source_mtime)
+                .bind(&now)
+                .bind(&now)
+                .bind(&chunk.parent_id)
+                .bind(chunk.window_idx.map(|i| i as i64))
+                .execute(&mut *tx)
+                .await?;
 
-                // Update FTS5 index with normalized text
-                let _ = fts_delete.execute(params![chunk.id]);
-                fts_insert.execute(params![
-                    chunk.id,
-                    normalize_for_fts(&chunk.name),
-                    normalize_for_fts(&chunk.signature),
-                    normalize_for_fts(&chunk.content),
-                    chunk
-                        .doc
-                        .as_ref()
-                        .map(|d| normalize_for_fts(d))
-                        .unwrap_or_default(),
-                ])?;
+                let _ = sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                    .bind(&chunk.id)
+                    .execute(&mut *tx)
+                    .await;
+
+                sqlx::query(
+                    "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .bind(&chunk.id)
+                .bind(normalize_for_fts(&chunk.name))
+                .bind(normalize_for_fts(&chunk.signature))
+                .bind(normalize_for_fts(&chunk.content))
+                .bind(chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default())
+                .execute(&mut *tx)
+                .await?;
             }
-        }
 
-        tx.commit()?;
-        Ok(chunks.len())
+            tx.commit().await?;
+            Ok(chunks.len())
+        })
     }
 
     /// Insert or update a single chunk
@@ -571,9 +614,9 @@ impl Store {
         &self,
         chunk: &Chunk,
         embedding: &Embedding,
-        file_mtime: i64,
+        source_mtime: Option<i64>,
     ) -> Result<(), StoreError> {
-        self.upsert_chunks_batch(&[(chunk.clone(), embedding.clone())], file_mtime)?;
+        self.upsert_chunks_batch(&[(chunk.clone(), embedding.clone())], source_mtime)?;
         Ok(())
     }
 
@@ -586,53 +629,44 @@ impl Store {
             .map_err(|_| std::io::Error::other("time error"))?
             .as_secs() as i64;
 
-        let conn = self.pool.get()?;
-        let stored_mtime: Option<i64> = conn
-            .query_row(
-                "SELECT file_mtime FROM chunks WHERE file = ?1 LIMIT 1",
-                [path.to_string_lossy()],
-                |r| r.get(0),
-            )
-            .ok();
+        self.rt.block_on(async {
+            let row: Option<(Option<i64>,)> =
+                sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
+                    .bind(path.to_string_lossy().to_string())
+                    .fetch_optional(&self.pool)
+                    .await?;
 
-        match stored_mtime {
-            Some(mtime) if mtime >= current_mtime => Ok(false),
-            _ => Ok(true),
-        }
+            match row {
+                Some((Some(mtime),)) if mtime >= current_mtime => Ok(false),
+                _ => Ok(true),
+            }
+        })
     }
 
     /// Search FTS5 index for keyword matches.
-    /// Returns chunk IDs ranked by FTS5 relevance (BM25).
-    /// Query is normalized before searching.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
-        let conn = self.pool.get()?;
-
-        // Normalize query for FTS matching
         let normalized_query = normalize_for_fts(query);
         if normalized_query.is_empty() {
             return Ok(vec![]);
         }
 
-        // FTS5 MATCH query - search across all indexed columns
-        // bm25() returns negative scores (more negative = better match)
-        let sql = "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2";
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
+            )
+            .bind(&normalized_query)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut stmt = conn.prepare(sql)?;
-        let results: Vec<String> = stmt
-            .query_map(params![normalized_query, limit as i64], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(results)
+            Ok(rows.into_iter().map(|(id,)| id).collect())
+        })
     }
 
     /// Compute RRF (Reciprocal Rank Fusion) scores for combining two ranked lists.
-    /// Formula: score = Σ 1/(k + rank), where k=60 (standard constant).
-    /// Returns IDs sorted by fused score (descending).
     fn rrf_fuse(semantic_ids: &[String], fts_ids: &[String], limit: usize) -> Vec<(String, f32)> {
         const K: f32 = 60.0;
 
-        // Use &str keys to avoid cloning in hot loop
         let mut scores: HashMap<&str, f32> = HashMap::new();
 
         for (rank, id) in semantic_ids.iter().enumerate() {
@@ -645,7 +679,6 @@ impl Store {
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
 
-        // Clone only at the end for the result
         let mut sorted: Vec<(String, f32)> = scores
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
@@ -676,174 +709,172 @@ impl Store {
         let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
             .entered();
 
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            // Build WHERE clause from filter
+            let mut conditions = Vec::new();
+            let mut bind_values: Vec<String> = Vec::new();
 
-        // Build WHERE clause from filter with parameterized query
-        let mut conditions = Vec::new();
-        let mut params_vec: Vec<String> = Vec::new();
-
-        if let Some(ref langs) = filter.languages {
-            // Build placeholders: ?,?,?
-            let placeholders: Vec<_> = langs.iter().map(|_| "?").collect();
-            conditions.push(format!("language IN ({})", placeholders.join(",")));
-            // Collect param values
-            for lang in langs {
-                params_vec.push(lang.to_string());
-            }
-        }
-
-        let where_clause = if conditions.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", conditions.join(" AND "))
-        };
-
-        // Check if we need hybrid scoring (weighted combination)
-        let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
-
-        // Check if RRF is enabled
-        let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
-
-        // For RRF, we need more candidates to fuse
-        let semantic_limit = if use_rrf { limit * 3 } else { limit };
-
-        // Phase 1: Score matching chunks (load id + embedding, optionally name)
-        let sql = if use_hybrid {
-            format!("SELECT id, embedding, name FROM chunks{}", where_clause)
-        } else {
-            format!("SELECT id, embedding FROM chunks{}", where_clause)
-        };
-        let mut stmt = conn.prepare(&sql)?;
-
-        let mut scored: Vec<(String, f32)> = stmt
-            .query_map(params_from_iter(params_vec.iter()), |row| {
-                Ok(ChunkScore {
-                    id: row.get(0)?,
-                    embedding: row.get(1)?,
-                    name: if use_hybrid { row.get(2).ok() } else { None },
-                })
-            })?
-            .filter_map(|r| match r {
-                Ok(chunk) => Some(chunk),
-                Err(e) => {
-                    tracing::warn!("Skipped chunk due to DB error: {}", e);
-                    None
+            if let Some(ref langs) = filter.languages {
+                let placeholders: Vec<_> = (0..langs.len())
+                    .map(|i| format!("?{}", bind_values.len() + i + 1))
+                    .collect();
+                conditions.push(format!("language IN ({})", placeholders.join(",")));
+                for lang in langs {
+                    bind_values.push(lang.to_string());
                 }
-            })
-            .filter_map(|chunk| {
-                let embedding = embedding_slice(&chunk.embedding)?;
-                let embedding_score = cosine_similarity(query.as_slice(), embedding);
+            }
 
-                // Compute hybrid score if enabled
-                let score = if use_hybrid {
-                    let name = chunk.name.as_deref().unwrap_or("");
-                    let name_score = name_match_score(&filter.query_text, name);
-                    (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
-                } else {
-                    embedding_score
-                };
+            let where_clause = if conditions.is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {}", conditions.join(" AND "))
+            };
 
-                // Apply path filter in Rust (glob matching)
-                if let Some(ref pattern) = filter.path_pattern {
-                    if let Ok(glob_pattern) =
-                        globset::Glob::new(pattern).map(|g| g.compile_matcher())
-                    {
-                        // Extract file path from chunk id (format: path:line:hash)
-                        let file_part = chunk.id.split(':').next().unwrap_or("");
-                        if !glob_pattern.is_match(file_part) {
-                            return None;
+            let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+            let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
+            let semantic_limit = if use_rrf { limit * 3 } else { limit };
+
+            let sql = if use_hybrid {
+                format!("SELECT id, embedding, name FROM chunks{}", where_clause)
+            } else {
+                format!("SELECT id, embedding FROM chunks{}", where_clause)
+            };
+
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for val in &bind_values {
+                    q = q.bind(val);
+                }
+                q.fetch_all(&self.pool).await?
+            };
+
+            let mut scored: Vec<(String, f32)> = rows
+                .iter()
+                .filter_map(|row| {
+                    let id: String = row.get(0);
+                    let embedding_bytes: Vec<u8> = row.get(1);
+                    let name: Option<String> = if use_hybrid { row.get(2) } else { None };
+
+                    let embedding = embedding_slice(&embedding_bytes)?;
+                    let embedding_score = cosine_similarity(query.as_slice(), embedding);
+
+                    let score = if use_hybrid {
+                        let n = name.as_deref().unwrap_or("");
+                        let name_score = name_match_score(&filter.query_text, n);
+                        (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
+                    } else {
+                        embedding_score
+                    };
+
+                    if let Some(ref pattern) = filter.path_pattern {
+                        if let Ok(glob_pattern) =
+                            globset::Glob::new(pattern).map(|g| g.compile_matcher())
+                        {
+                            let file_part = id.split(':').next().unwrap_or("");
+                            if !glob_pattern.is_match(file_part) {
+                                return None;
+                            }
                         }
                     }
-                }
 
-                if score >= threshold {
-                    Some((chunk.id, score))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Sort and take top-N (or more for RRF)
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(semantic_limit);
-
-        // Apply RRF if enabled
-        let final_scored: Vec<(String, f32)> = if use_rrf {
-            // Get FTS5 results
-            let fts_ids = self.search_fts(&filter.query_text, semantic_limit)?;
-            let semantic_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
-
-            // Fuse rankings
-            Self::rrf_fuse(&semantic_ids, &fts_ids, limit)
-        } else {
-            scored.truncate(limit);
-            scored
-        };
-
-        if final_scored.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Phase 2: Fetch full content only for top-N results
-        let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
-        let placeholders: String = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
-             FROM chunks WHERE id IN ({})",
-            placeholders
-        );
-
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: HashMap<String, ChunkRow> = stmt
-            .query_map(rusqlite::params_from_iter(&ids), |row| {
-                Ok(ChunkRow {
-                    id: row.get(0)?,
-                    file: row.get(1)?,
-                    language: row.get(2)?,
-                    chunk_type: row.get(3)?,
-                    name: row.get(4)?,
-                    signature: row.get(5)?,
-                    content: row.get(6)?,
-                    doc: row.get(7)?,
-                    line_start: row.get(8)?,
-                    line_end: row.get(9)?,
-                    parent_id: row.get(10)?,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .map(|row| (row.id.clone(), row))
-            .collect();
-
-        // Reassemble results in score order, deduplicating by parent_id
-        // (windowed chunks from the same function collapse to highest-scoring window)
-        let mut seen_parents: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let results: Vec<SearchResult> = final_scored
-            .into_iter()
-            .filter_map(|(id, score)| {
-                rows.get(&id).and_then(|row| {
-                    // Use parent_id if set, otherwise use id as the dedup key
-                    let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                    if seen_parents.insert(dedup_key) {
-                        Some(SearchResult {
-                            chunk: ChunkSummary::from(row.clone()),
-                            score,
-                        })
+                    if score >= threshold {
+                        Some((id, score))
                     } else {
-                        None // Already saw a higher-scoring chunk from this parent
+                        None
                     }
                 })
-            })
-            .collect();
+                .collect();
 
-        Ok(results)
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(semantic_limit);
+
+            let final_scored: Vec<(String, f32)> = if use_rrf {
+                let fts_ids = {
+                    let normalized_query = normalize_for_fts(&filter.query_text);
+                    if normalized_query.is_empty() {
+                        vec![]
+                    } else {
+                        let fts_rows: Vec<(String,)> = sqlx::query_as(
+                            "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
+                        )
+                        .bind(&normalized_query)
+                        .bind(semantic_limit as i64)
+                        .fetch_all(&self.pool)
+                        .await?;
+                        fts_rows.into_iter().map(|(id,)| id).collect()
+                    }
+                };
+                let semantic_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+                Self::rrf_fuse(&semantic_ids, &fts_ids, limit)
+            } else {
+                scored.truncate(limit);
+                scored
+            };
+
+            if final_scored.is_empty() {
+                return Ok(vec![]);
+            }
+
+            // Phase 2: Fetch full content only for top-N results
+            let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
+            let placeholders: String = (1..=ids.len()).map(|i| format!("?{}", i)).collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+                 FROM chunks WHERE id IN ({})",
+                placeholders
+            );
+
+            let detail_rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for id in &ids {
+                    q = q.bind(*id);
+                }
+                q.fetch_all(&self.pool).await?
+            };
+
+            let rows_map: HashMap<String, ChunkRow> = detail_rows
+                .into_iter()
+                .map(|row| {
+                    let chunk_row = ChunkRow {
+                        id: row.get(0),
+                        origin: row.get(1),
+                        language: row.get(2),
+                        chunk_type: row.get(3),
+                        name: row.get(4),
+                        signature: row.get(5),
+                        content: row.get(6),
+                        doc: row.get(7),
+                        line_start: row.get::<i64, _>(8) as u32,
+                        line_end: row.get::<i64, _>(9) as u32,
+                        parent_id: row.get(10),
+                    };
+                    (chunk_row.id.clone(), chunk_row)
+                })
+                .collect();
+
+            let mut seen_parents: HashSet<String> = HashSet::new();
+            let results: Vec<SearchResult> = final_scored
+                .into_iter()
+                .filter_map(|(id, score)| {
+                    rows_map.get(&id).and_then(|row| {
+                        let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                        if seen_parents.insert(dedup_key) {
+                            Some(SearchResult {
+                                chunk: ChunkSummary::from(row.clone()),
+                                score,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+
+            Ok(results)
+        })
     }
 
     /// Search with optional vector index for O(log n) candidate retrieval
-    ///
-    /// If a vector index is provided (HNSW, CAGRA, etc.), uses it to get
-    /// top candidates first, then filters and scores them. Falls back to
-    /// brute-force if no index.
     pub fn search_filtered_with_index(
         &self,
         query: &Embedding,
@@ -852,11 +883,9 @@ impl Store {
         threshold: f32,
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        // If index available, use it for candidate retrieval
         if let Some(idx) = index {
             let _span = tracing::info_span!("search_index_guided", limit = limit).entered();
 
-            // Get more candidates than needed to account for filtering
             let candidate_count = (limit * 5).max(100);
             let index_results = idx.search(query, candidate_count);
 
@@ -871,222 +900,234 @@ impl Store {
             return self.search_by_candidate_ids(&candidate_ids, query, filter, limit, threshold);
         }
 
-        // No index, fall back to brute-force
         self.search_filtered(query, filter, limit, threshold)
     }
 
-    /// Delete all chunks for a file
-    pub fn delete_by_file(&self, file: &Path) -> Result<u32, StoreError> {
-        let conn = self.pool.get()?;
-        // Delete from FTS5 first (need the IDs)
-        conn.execute(
-            "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE file = ?1)",
-            [file.to_string_lossy()],
-        )?;
-        let deleted = conn.execute(
-            "DELETE FROM chunks WHERE file = ?1",
-            [file.to_string_lossy()],
-        )?;
-        Ok(deleted as u32)
+    /// Delete all chunks for an origin (file path or source identifier)
+    pub fn delete_by_origin(&self, origin: &Path) -> Result<u32, StoreError> {
+        let origin_str = origin.to_string_lossy().to_string();
+
+        self.rt.block_on(async {
+            sqlx::query(
+                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
+            )
+            .bind(&origin_str)
+            .execute(&self.pool)
+            .await?;
+
+            let result = sqlx::query("DELETE FROM chunks WHERE origin = ?1")
+                .bind(&origin_str)
+                .execute(&self.pool)
+                .await?;
+
+            Ok(result.rows_affected() as u32)
+        })
     }
 
     /// Delete chunks for files that no longer exist
     pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare("SELECT DISTINCT file FROM chunks")?;
-        let indexed_files: Vec<String> = stmt
-            .query_map([], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
+            )
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut deleted = 0u32;
-        for file in indexed_files {
-            let path = PathBuf::from(&file);
-            if !existing_files.contains(&path) {
-                // Delete from FTS5 first
-                conn.execute(
-                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE file = ?1)",
-                    [&file],
-                )?;
-                deleted += conn.execute("DELETE FROM chunks WHERE file = ?1", [&file])? as u32;
+            let mut deleted = 0u32;
+            for (origin,) in rows {
+                let path = PathBuf::from(&origin);
+                if !existing_files.contains(&path) {
+                    sqlx::query(
+                        "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
+                    )
+                    .bind(&origin)
+                    .execute(&self.pool)
+                    .await?;
+
+                    let result = sqlx::query("DELETE FROM chunks WHERE origin = ?1")
+                        .bind(&origin)
+                        .execute(&self.pool)
+                        .await?;
+
+                    deleted += result.rows_affected() as u32;
+                }
             }
-        }
-        Ok(deleted)
+            Ok(deleted)
+        })
     }
 
     /// Get embedding by content hash (for reuse when content unchanged)
     pub fn get_by_content_hash(&self, hash: &str) -> Option<Embedding> {
-        let conn = self.pool.get().ok()?;
-        conn.query_row(
-            "SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1",
-            [hash],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .ok()
-        .map(|bytes| Embedding::new(bytes_to_embedding(&bytes)))
+        self.rt.block_on(async {
+            let row: Option<(Vec<u8>,)> =
+                sqlx::query_as("SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1")
+                    .bind(hash)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .ok()?;
+
+            row.map(|(bytes,)| Embedding::new(bytes_to_embedding(&bytes)))
+        })
     }
 
     /// Get embeddings for chunks with matching content hashes (batch lookup).
-    /// Returns a map of content_hash -> Embedding for hashes that exist in the index.
-    /// Used to skip re-embedding unchanged chunks during incremental indexing.
     pub fn get_embeddings_by_hashes(&self, hashes: &[&str]) -> HashMap<String, Embedding> {
         if hashes.is_empty() {
             return HashMap::new();
         }
-        let conn = match self.pool.get() {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("Failed to get connection for hash lookup: {}", e);
-                return HashMap::new();
-            }
-        };
 
-        // Build IN clause: WHERE content_hash IN (?, ?, ...)
-        let placeholders: Vec<&str> = (0..hashes.len()).map(|_| "?").collect();
-        let sql = format!(
-            "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
-            placeholders.join(", ")
-        );
+        self.rt.block_on(async {
+            let placeholders: String = (1..=hashes.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
+                placeholders
+            );
 
-        let mut stmt = match conn.prepare(&sql) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!("Failed to prepare hash lookup query: {}", e);
-                return HashMap::new();
-            }
-        };
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for hash in hashes {
+                    q = q.bind(*hash);
+                }
+                match q.fetch_all(&self.pool).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("Failed to fetch embeddings by hash: {}", e);
+                        return HashMap::new();
+                    }
+                }
+            };
 
-        let mut result = HashMap::new();
-        if let Ok(rows) = stmt.query_map(params_from_iter(hashes.iter()), |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-        }) {
-            for row in rows.flatten() {
-                result.insert(row.0, Embedding::new(bytes_to_embedding(&row.1)));
+            let mut result = HashMap::new();
+            for row in rows {
+                let hash: String = row.get(0);
+                let bytes: Vec<u8> = row.get(1);
+                result.insert(hash, Embedding::new(bytes_to_embedding(&bytes)));
             }
-        }
-        result
+            result
+        })
     }
 
     /// Get the number of chunks in the index
     pub fn chunk_count(&self) -> Result<usize, StoreError> {
-        let conn = self.pool.get()?;
-        let count: u64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
-        Ok(count as usize)
+        self.rt.block_on(async {
+            let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
+                .fetch_one(&self.pool)
+                .await?;
+            Ok(row.0 as usize)
+        })
     }
 
     /// Get index statistics
     pub fn stats(&self) -> Result<IndexStats, StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let (total_chunks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
+                .fetch_one(&self.pool)
+                .await?;
 
-        let total_chunks: u64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+            let (total_files,): (i64,) =
+                sqlx::query_as("SELECT COUNT(DISTINCT origin) FROM chunks")
+                    .fetch_one(&self.pool)
+                    .await?;
 
-        let total_files: u64 =
-            conn.query_row("SELECT COUNT(DISTINCT file) FROM chunks", [], |r| r.get(0))?;
+            let lang_rows: Vec<(String, i64)> =
+                sqlx::query_as("SELECT language, COUNT(*) FROM chunks GROUP BY language")
+                    .fetch_all(&self.pool)
+                    .await?;
 
-        // Chunks by language
-        let mut stmt = conn.prepare("SELECT language, COUNT(*) FROM chunks GROUP BY language")?;
-        let chunks_by_language: HashMap<Language, u64> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .filter_map(|(lang, count)| lang.parse().ok().map(|l| (l, count)))
-            .collect();
+            let chunks_by_language: HashMap<Language, u64> = lang_rows
+                .into_iter()
+                .filter_map(|(lang, count)| lang.parse().ok().map(|l| (l, count as u64)))
+                .collect();
 
-        // Chunks by type
-        let mut stmt =
-            conn.prepare("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")?;
-        let chunks_by_type: HashMap<ChunkType, u64> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .filter_map(|(ct, count)| ct.parse().ok().map(|c| (c, count)))
-            .collect();
+            let type_rows: Vec<(String, i64)> =
+                sqlx::query_as("SELECT chunk_type, COUNT(*) FROM chunks GROUP BY chunk_type")
+                    .fetch_all(&self.pool)
+                    .await?;
 
-        // Metadata
-        let model_name: String = conn
-            .query_row(
+            let chunks_by_type: HashMap<ChunkType, u64> = type_rows
+                .into_iter()
+                .filter_map(|(ct, count)| ct.parse().ok().map(|c| (c, count as u64)))
+                .collect();
+
+            let model_name: String = sqlx::query_as::<_, (String,)>(
                 "SELECT value FROM metadata WHERE key = 'model_name'",
-                [],
-                |r| r.get(0),
             )
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|(s,)| s)
             .unwrap_or_default();
-        let created_at: String = conn
-            .query_row(
+
+            let created_at: String = sqlx::query_as::<_, (String,)>(
                 "SELECT value FROM metadata WHERE key = 'created_at'",
-                [],
-                |r| r.get(0),
             )
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|(s,)| s)
             .unwrap_or_default();
-        let updated_at: String = conn
-            .query_row(
+
+            let updated_at: String = sqlx::query_as::<_, (String,)>(
                 "SELECT value FROM metadata WHERE key = 'updated_at'",
-                [],
-                |r| r.get(0),
             )
-            .unwrap_or_else(|_| created_at.clone());
-        let schema_version: i32 = conn
-            .query_row(
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|(s,)| s)
+            .unwrap_or_else(|| created_at.clone());
+
+            let schema_version: i32 = sqlx::query_as::<_, (String,)>(
                 "SELECT value FROM metadata WHERE key = 'schema_version'",
-                [],
-                |r| r.get::<_, String>(0),
             )
-            .ok()
-            .and_then(|s| s.parse().ok())
+            .fetch_optional(&self.pool)
+            .await?
+            .and_then(|(s,)| s.parse().ok())
             .unwrap_or(0);
 
-        // Index file size - handled by caller since we don't know the path here
-        let index_size_bytes = 0;
-
-        Ok(IndexStats {
-            total_chunks,
-            total_files,
-            chunks_by_language,
-            chunks_by_type,
-            index_size_bytes,
-            created_at,
-            updated_at,
-            model_name,
-            schema_version,
+            Ok(IndexStats {
+                total_chunks: total_chunks as u64,
+                total_files: total_files as u64,
+                chunks_by_language,
+                chunks_by_type,
+                index_size_bytes: 0,
+                created_at,
+                updated_at,
+                model_name,
+                schema_version,
+            })
         })
     }
 
     /// Get a single chunk by its ID
     pub fn get_chunk_by_id(&self, id: &str) -> Result<Option<ChunkSummary>, StoreError> {
-        let conn = self.pool.get()?;
-        let row = conn.query_row(
-            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
-             FROM chunks WHERE id = ?1",
-            [id],
-            |row| {
-                Ok(ChunkRow {
-                    id: row.get(0)?,
-                    file: row.get(1)?,
-                    language: row.get(2)?,
-                    chunk_type: row.get(3)?,
-                    name: row.get(4)?,
-                    signature: row.get(5)?,
-                    content: row.get(6)?,
-                    doc: row.get(7)?,
-                    line_start: row.get(8)?,
-                    line_end: row.get(9)?,
-                    parent_id: row.get(10)?,
-                })
-            },
-        );
+        self.rt.block_on(async {
+            let row: Option<_> = sqlx::query(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+                 FROM chunks WHERE id = ?1",
+            )
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
 
-        match row {
-            Ok(r) => Ok(Some(ChunkSummary::from(r))),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+            Ok(row.map(|r| {
+                ChunkSummary::from(ChunkRow {
+                    id: r.get(0),
+                    origin: r.get(1),
+                    language: r.get(2),
+                    chunk_type: r.get(3),
+                    name: r.get(4),
+                    signature: r.get(5),
+                    content: r.get(6),
+                    doc: r.get(7),
+                    line_start: r.get::<i64, _>(8) as u32,
+                    line_end: r.get::<i64, _>(9) as u32,
+                    parent_id: r.get(10),
+                })
+            }))
+        })
     }
 
     /// Search within a set of candidate IDs (for HNSW-guided filtered search)
-    ///
-    /// Instead of scanning all chunks, only fetches and scores the given candidates.
-    /// This is 10-100x faster than brute-force when filters are combined with HNSW.
     pub fn search_by_candidate_ids(
         &self,
         candidate_ids: &[&str],
@@ -1099,233 +1140,224 @@ impl Store {
             return Ok(vec![]);
         }
 
-        let conn = self.pool.get()?;
-
-        // Check if we need hybrid scoring
         let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
 
-        // Fetch candidate chunks with embedding and metadata
-        let placeholders: String = candidate_ids
-            .iter()
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT id, file, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding, parent_id
-             FROM chunks WHERE id IN ({})",
-            placeholders
-        );
+        self.rt.block_on(async {
+            let placeholders: String = (1..=candidate_ids.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding, parent_id
+                 FROM chunks WHERE id IN ({})",
+                placeholders
+            );
 
-        let mut stmt = conn.prepare(&sql)?;
-        let rows: Vec<(ChunkRow, Vec<u8>)> = stmt
-            .query_map(rusqlite::params_from_iter(candidate_ids), |row| {
-                Ok((
-                    ChunkRow {
-                        id: row.get(0)?,
-                        file: row.get(1)?,
-                        language: row.get(2)?,
-                        chunk_type: row.get(3)?,
-                        name: row.get(4)?,
-                        signature: row.get(5)?,
-                        content: row.get(6)?,
-                        doc: row.get(7)?,
-                        line_start: row.get(8)?,
-                        line_end: row.get(9)?,
-                        parent_id: row.get(11)?,
-                    },
-                    row.get::<_, Vec<u8>>(10)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for id in candidate_ids {
+                    q = q.bind(*id);
+                }
+                q.fetch_all(&self.pool).await?
+            };
 
-        // Score and filter candidates
-        let mut scored: Vec<(ChunkRow, f32)> = rows
-            .into_iter()
-            .filter_map(|(row, embedding_bytes)| {
-                // Apply language filter
-                if let Some(ref langs) = filter.languages {
-                    let row_lang: Result<Language, _> = row.language.parse();
-                    if let Ok(lang) = row_lang {
-                        if !langs.contains(&lang) {
+            let mut scored: Vec<(ChunkRow, f32)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let chunk_row = ChunkRow {
+                        id: row.get(0),
+                        origin: row.get(1),
+                        language: row.get(2),
+                        chunk_type: row.get(3),
+                        name: row.get(4),
+                        signature: row.get(5),
+                        content: row.get(6),
+                        doc: row.get(7),
+                        line_start: row.get::<i64, _>(8) as u32,
+                        line_end: row.get::<i64, _>(9) as u32,
+                        parent_id: row.get(11),
+                    };
+                    let embedding_bytes: Vec<u8> = row.get(10);
+
+                    if let Some(ref langs) = filter.languages {
+                        let row_lang: Result<Language, _> = chunk_row.language.parse();
+                        if let Ok(lang) = row_lang {
+                            if !langs.contains(&lang) {
+                                return None;
+                            }
+                        } else {
                             return None;
                         }
+                    }
+
+                    if let Some(ref pattern) = filter.path_pattern {
+                        if let Ok(glob_pattern) =
+                            globset::Glob::new(pattern).map(|g| g.compile_matcher())
+                        {
+                            if !glob_pattern.is_match(&chunk_row.origin) {
+                                return None;
+                            }
+                        }
+                    }
+
+                    let embedding = match embedding_slice(&embedding_bytes) {
+                        Some(e) => e,
+                        None => return None,
+                    };
+                    let embedding_score = cosine_similarity(query.as_slice(), embedding);
+
+                    let score = if use_hybrid {
+                        let name_score = name_match_score(&filter.query_text, &chunk_row.name);
+                        (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
                     } else {
-                        return None;
+                        embedding_score
+                    };
+
+                    if score >= threshold {
+                        Some((chunk_row, score))
+                    } else {
+                        None
                     }
-                }
+                })
+                .collect();
 
-                // Apply path pattern filter
-                if let Some(ref pattern) = filter.path_pattern {
-                    if let Ok(glob_pattern) =
-                        globset::Glob::new(pattern).map(|g| g.compile_matcher())
-                    {
-                        if !glob_pattern.is_match(&row.file) {
-                            return None;
-                        }
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            let mut seen_parents: HashSet<String> = HashSet::new();
+            let results: Vec<SearchResult> = scored
+                .into_iter()
+                .filter_map(|(row, score)| {
+                    let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                    if seen_parents.insert(dedup_key) {
+                        Some(SearchResult {
+                            chunk: ChunkSummary::from(row),
+                            score,
+                        })
+                    } else {
+                        None
                     }
-                }
+                })
+                .take(limit)
+                .collect();
 
-                // Compute similarity score (zero-copy)
-                let embedding = match embedding_slice(&embedding_bytes) {
-                    Some(e) => e,
-                    None => return None,
-                };
-                let embedding_score = cosine_similarity(query.as_slice(), embedding);
-
-                // Compute hybrid score if enabled
-                let score = if use_hybrid {
-                    let name_score = name_match_score(&filter.query_text, &row.name);
-                    (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
-                } else {
-                    embedding_score
-                };
-
-                if score >= threshold {
-                    Some((row, score))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Sort by score descending
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Deduplicate by parent_id (windowed chunks from same function collapse to highest-scoring)
-        let mut seen_parents: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let results: Vec<SearchResult> = scored
-            .into_iter()
-            .filter_map(|(row, score)| {
-                let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                if seen_parents.insert(dedup_key) {
-                    Some(SearchResult {
-                        chunk: ChunkSummary::from(row),
-                        score,
-                    })
-                } else {
-                    None
-                }
-            })
-            .take(limit)
-            .collect();
-
-        Ok(results)
+            Ok(results)
+        })
     }
 
     /// Get all chunk IDs and embeddings (for HNSW index building)
     pub fn all_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
-        let conn = self.pool.get()?;
-        let mut stmt = conn.prepare("SELECT id, embedding FROM chunks")?;
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM chunks")
+                .fetch_all(&self.pool)
+                .await?;
 
-        let results: Vec<(String, Embedding)> = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let bytes: Vec<u8> = row.get(1)?;
-                Ok((id, Embedding::new(bytes_to_embedding(&bytes))))
-            })?
-            .filter_map(|r| match r {
-                Ok(pair) => Some(pair),
-                Err(e) => {
-                    tracing::warn!("Skipped chunk due to DB error: {}", e);
-                    None
-                }
-            })
-            .collect();
+            let results: Vec<(String, Embedding)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let id: String = row.get(0);
+                    let bytes: Vec<u8> = row.get(1);
+                    Some((id, Embedding::new(bytes_to_embedding(&bytes))))
+                })
+                .collect();
 
-        Ok(results)
+            Ok(results)
+        })
     }
 
     // ============ Call Graph Methods ============
 
     /// Insert or replace call sites for a chunk
-    ///
-    /// Deletes existing calls for the chunk, then inserts new ones.
     pub fn upsert_calls(
         &self,
         chunk_id: &str,
         calls: &[crate::parser::CallSite],
     ) -> Result<(), StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
+                .bind(chunk_id)
+                .execute(&self.pool)
+                .await?;
 
-        // Delete existing calls for this chunk
-        conn.execute("DELETE FROM calls WHERE caller_id = ?1", [chunk_id])?;
+            for call in calls {
+                sqlx::query(
+                    "INSERT INTO calls (caller_id, callee_name, line_number) VALUES (?1, ?2, ?3)",
+                )
+                .bind(chunk_id)
+                .bind(&call.callee_name)
+                .bind(call.line_number as i64)
+                .execute(&self.pool)
+                .await?;
+            }
 
-        // Insert new calls
-        let mut stmt = conn.prepare_cached(
-            "INSERT INTO calls (caller_id, callee_name, line_number) VALUES (?1, ?2, ?3)",
-        )?;
-
-        for call in calls {
-            stmt.execute(params![chunk_id, call.callee_name, call.line_number])?;
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Find all chunks that call a given function name
     pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
+                        c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                 FROM chunks c
+                 JOIN calls ca ON c.id = ca.caller_id
+                 WHERE ca.callee_name = ?1
+                 ORDER BY c.origin, c.line_start",
+            )
+            .bind(callee_name)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT c.id, c.file, c.language, c.chunk_type, c.name, c.signature,
-                    c.content, c.doc, c.line_start, c.line_end, c.parent_id
-             FROM chunks c
-             JOIN calls ca ON c.id = ca.caller_id
-             WHERE ca.callee_name = ?1
-             ORDER BY c.file, c.line_start",
-        )?;
-
-        let rows: Vec<ChunkSummary> = stmt
-            .query_map([callee_name], |row| {
-                Ok(ChunkRow {
-                    id: row.get(0)?,
-                    file: row.get(1)?,
-                    language: row.get(2)?,
-                    chunk_type: row.get(3)?,
-                    name: row.get(4)?,
-                    signature: row.get(5)?,
-                    content: row.get(6)?,
-                    doc: row.get(7)?,
-                    line_start: row.get(8)?,
-                    line_end: row.get(9)?,
-                    parent_id: row.get(10)?,
+            let chunks: Vec<ChunkSummary> = rows
+                .into_iter()
+                .map(|row| {
+                    ChunkSummary::from(ChunkRow {
+                        id: row.get(0),
+                        origin: row.get(1),
+                        language: row.get(2),
+                        chunk_type: row.get(3),
+                        name: row.get(4),
+                        signature: row.get(5),
+                        content: row.get(6),
+                        doc: row.get(7),
+                        line_start: row.get::<i64, _>(8) as u32,
+                        line_end: row.get::<i64, _>(9) as u32,
+                        parent_id: row.get(10),
+                    })
                 })
-            })?
-            .filter_map(|r| r.ok())
-            .map(ChunkSummary::from)
-            .collect();
+                .collect();
 
-        Ok(rows)
+            Ok(chunks)
+        })
     }
 
     /// Get all function names called by a given chunk
     pub fn get_callees(&self, chunk_id: &str) -> Result<Vec<String>, StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT callee_name FROM calls WHERE caller_id = ?1 ORDER BY line_number",
+            )
+            .bind(chunk_id)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT callee_name FROM calls WHERE caller_id = ?1 ORDER BY line_number",
-        )?;
-
-        let callees: Vec<String> = stmt
-            .query_map([chunk_id], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(callees)
+            Ok(rows.into_iter().map(|(s,)| s).collect())
+        })
     }
 
     /// Get call graph statistics
     pub fn call_stats(&self) -> Result<(u64, u64), StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let (total_calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM calls")
+                .fetch_one(&self.pool)
+                .await?;
+            let (unique_callees,): (i64,) =
+                sqlx::query_as("SELECT COUNT(DISTINCT callee_name) FROM calls")
+                    .fetch_one(&self.pool)
+                    .await?;
 
-        let total_calls: u64 = conn.query_row("SELECT COUNT(*) FROM calls", [], |r| r.get(0))?;
-        let unique_callees: u64 =
-            conn.query_row("SELECT COUNT(DISTINCT callee_name) FROM calls", [], |r| {
-                r.get(0)
-            })?;
-
-        Ok((total_calls, unique_callees))
+            Ok((total_calls as u64, unique_callees as u64))
+        })
     }
 
     // ============ Full Call Graph Methods (v5) ============
@@ -1336,103 +1368,104 @@ impl Store {
         file: &Path,
         function_calls: &[crate::parser::FunctionCalls],
     ) -> Result<(), StoreError> {
-        let conn = self.pool.get()?;
-        let file_str = file.to_string_lossy();
+        let file_str = file.to_string_lossy().to_string();
 
-        // Delete existing calls for this file
-        conn.execute("DELETE FROM function_calls WHERE file = ?1", [&file_str])?;
+        self.rt.block_on(async {
+            sqlx::query("DELETE FROM function_calls WHERE file = ?1")
+                .bind(&file_str)
+                .execute(&self.pool)
+                .await?;
 
-        // Insert new calls
-        let mut stmt = conn.prepare_cached(
-            "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
-
-        for fc in function_calls {
-            for call in &fc.calls {
-                stmt.execute(params![
-                    &file_str,
-                    &fc.name,
-                    fc.line_start,
-                    &call.callee_name,
-                    call.line_number,
-                ])?;
+            for fc in function_calls {
+                for call in &fc.calls {
+                    sqlx::query(
+                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line)
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
+                    .bind(&file_str)
+                    .bind(&fc.name)
+                    .bind(fc.line_start as i64)
+                    .bind(&call.callee_name)
+                    .bind(call.line_number as i64)
+                    .execute(&self.pool)
+                    .await?;
+                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        })
     }
 
     /// Find all callers of a function (from full call graph)
-    ///
-    /// This searches the function_calls table, which includes callers from
-    /// large functions that exceed the 100-line chunk limit.
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let rows: Vec<(String, String, i64)> = sqlx::query_as(
+                "SELECT DISTINCT file, caller_name, caller_line
+                 FROM function_calls
+                 WHERE callee_name = ?1
+                 ORDER BY file, caller_line",
+            )
+            .bind(callee_name)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT file, caller_name, caller_line
-             FROM function_calls
-             WHERE callee_name = ?1
-             ORDER BY file, caller_line",
-        )?;
-
-        let rows: Vec<CallerInfo> = stmt
-            .query_map([callee_name], |row| {
-                Ok(CallerInfo {
-                    file: PathBuf::from(row.get::<_, String>(0)?),
-                    name: row.get(1)?,
-                    line: row.get(2)?,
+            let callers: Vec<CallerInfo> = rows
+                .into_iter()
+                .map(|(file, name, line)| CallerInfo {
+                    file: PathBuf::from(file),
+                    name,
+                    line: line as u32,
                 })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
+                .collect();
 
-        Ok(rows)
+            Ok(callers)
+        })
     }
 
     /// Get all callees of a function (from full call graph)
     pub fn get_callees_full(&self, caller_name: &str) -> Result<Vec<(String, u32)>, StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT DISTINCT callee_name, call_line
+                 FROM function_calls
+                 WHERE caller_name = ?1
+                 ORDER BY call_line",
+            )
+            .bind(caller_name)
+            .fetch_all(&self.pool)
+            .await?;
 
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT callee_name, call_line
-             FROM function_calls
-             WHERE caller_name = ?1
-             ORDER BY call_line",
-        )?;
-
-        let callees: Vec<(String, u32)> = stmt
-            .query_map([caller_name], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(callees)
+            Ok(rows
+                .into_iter()
+                .map(|(name, line)| (name, line as u32))
+                .collect())
+        })
     }
 
     /// Get full call graph statistics
     pub fn function_call_stats(&self) -> Result<(u64, u64, u64), StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let (total_calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM function_calls")
+                .fetch_one(&self.pool)
+                .await?;
+            let (unique_callers,): (i64,) =
+                sqlx::query_as("SELECT COUNT(DISTINCT caller_name) FROM function_calls")
+                    .fetch_one(&self.pool)
+                    .await?;
+            let (unique_callees,): (i64,) =
+                sqlx::query_as("SELECT COUNT(DISTINCT callee_name) FROM function_calls")
+                    .fetch_one(&self.pool)
+                    .await?;
 
-        let total_calls: u64 =
-            conn.query_row("SELECT COUNT(*) FROM function_calls", [], |r| r.get(0))?;
-        let unique_callers: u64 = conn.query_row(
-            "SELECT COUNT(DISTINCT caller_name) FROM function_calls",
-            [],
-            |r| r.get(0),
-        )?;
-        let unique_callees: u64 = conn.query_row(
-            "SELECT COUNT(DISTINCT callee_name) FROM function_calls",
-            [],
-            |r| r.get(0),
-        )?;
-
-        Ok((total_calls, unique_callers, unique_callees))
+            Ok((
+                total_calls as u64,
+                unique_callers as u64,
+                unique_callees as u64,
+            ))
+        })
     }
 
     /// Unified search across code chunks and notes
-    ///
-    /// Returns results sorted by score, interleaving code and notes.
     pub fn search_unified(
         &self,
         query: &Embedding,
@@ -1440,27 +1473,20 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<UnifiedResult>, StoreError> {
-        // Search code chunks
         let code_results = self.search_filtered(query, filter, limit, threshold)?;
-
-        // Search notes (unified memory)
         let note_results = self.search_notes(query, limit, threshold)?;
 
-        // Merge with minimum code guarantee (notes enhance but don't dominate)
-        // Reserve 60% of slots for code if available, notes fill the rest
-        let min_code_slots = (limit * 3) / 5; // 3 out of 5
+        let min_code_slots = (limit * 3) / 5;
         let code_count = code_results.len().min(limit);
         let reserved_code = code_count.min(min_code_slots);
         let note_slots = limit.saturating_sub(reserved_code);
 
-        // Take top code results (already sorted by score)
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
             .take(limit)
             .map(UnifiedResult::Code)
             .collect();
 
-        // Add notes up to remaining slots
         let notes_to_add: Vec<UnifiedResult> = note_results
             .into_iter()
             .take(note_slots)
@@ -1468,7 +1494,6 @@ impl Store {
             .collect();
         unified.extend(notes_to_add);
 
-        // Re-sort by score for final ranking
         unified.sort_by(|a, b| {
             b.score()
                 .partial_cmp(&a.score())
@@ -1480,9 +1505,6 @@ impl Store {
     }
 
     /// Unified search with optional vector index
-    ///
-    /// Like search_unified, but uses vector index (HNSW, CAGRA, etc.) for
-    /// O(log n) candidate retrieval when available.
     pub fn search_unified_with_index(
         &self,
         query: &Embedding,
@@ -1491,28 +1513,21 @@ impl Store {
         threshold: f32,
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<UnifiedResult>, StoreError> {
-        // Search code chunks with index if available
         let code_results =
             self.search_filtered_with_index(query, filter, limit, threshold, index)?;
-
-        // Search notes (no HNSW for notes - they're typically few)
         let note_results = self.search_notes(query, limit, threshold)?;
 
-        // Merge with minimum code guarantee (notes enhance but don't dominate)
-        // Reserve 60% of slots for code if available, notes fill the rest
-        let min_code_slots = (limit * 3) / 5; // 3 out of 5
+        let min_code_slots = (limit * 3) / 5;
         let code_count = code_results.len().min(limit);
         let reserved_code = code_count.min(min_code_slots);
         let note_slots = limit.saturating_sub(reserved_code);
 
-        // Take top code results (already sorted by score)
         let mut unified: Vec<UnifiedResult> = code_results
             .into_iter()
             .take(limit)
             .map(UnifiedResult::Code)
             .collect();
 
-        // Add notes up to remaining slots
         let notes_to_add: Vec<UnifiedResult> = note_results
             .into_iter()
             .take(note_slots)
@@ -1520,7 +1535,6 @@ impl Store {
             .collect();
         unified.extend(notes_to_add);
 
-        // Re-sort by score for final ranking
         unified.sort_by(|a, b| {
             b.score()
                 .partial_cmp(&a.score())
@@ -1540,44 +1554,46 @@ impl Store {
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
-        let mut conn = self.pool.get()?;
-        let tx = conn.transaction()?;
-        let source_str = source_file.to_string_lossy();
+        let source_str = source_file.to_string_lossy().to_string();
 
-        {
-            let mut stmt = tx.prepare_cached(
-                "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )?;
-
-            let mut fts_delete = tx.prepare_cached("DELETE FROM notes_fts WHERE id = ?1")?;
-            let mut fts_insert =
-                tx.prepare_cached("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")?;
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
 
             let now = chrono::Utc::now().to_rfc3339();
             for (note, embedding) in notes {
                 let mentions_json = serde_json::to_string(&note.mentions).unwrap_or_default();
 
-                stmt.execute(params![
-                    note.id,
-                    note.text,
-                    note.sentiment,
-                    mentions_json,
-                    embedding_to_bytes(embedding),
-                    &source_str,
-                    file_mtime,
-                    &now,
-                    &now,
-                ])?;
+                sqlx::query(
+                    "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .bind(&note.id)
+                .bind(&note.text)
+                .bind(note.sentiment)
+                .bind(&mentions_json)
+                .bind(embedding_to_bytes(embedding))
+                .bind(&source_str)
+                .bind(file_mtime)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
 
-                // Update FTS5 index
-                let _ = fts_delete.execute(params![note.id]);
-                fts_insert.execute(params![note.id, normalize_for_fts(&note.text),])?;
+                let _ = sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
+                    .bind(&note.id)
+                    .execute(&mut *tx)
+                    .await;
+
+                sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
+                    .bind(&note.id)
+                    .bind(normalize_for_fts(&note.text))
+                    .execute(&mut *tx)
+                    .await?;
             }
-        }
 
-        tx.commit()?;
-        Ok(notes.len())
+            tx.commit().await?;
+            Ok(notes.len())
+        })
     }
 
     /// Search notes by embedding similarity
@@ -1587,57 +1603,72 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<NoteSearchResult>, StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let rows: Vec<_> =
+                sqlx::query("SELECT id, text, sentiment, mentions, embedding FROM notes")
+                    .fetch_all(&self.pool)
+                    .await?;
 
-        let sql = "SELECT id, text, sentiment, mentions, embedding FROM notes";
+            let mut scored: Vec<(NoteSummary, f32)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let id: String = row.get(0);
+                    let text: String = row.get(1);
+                    let sentiment: f64 = row.get(2);
+                    let mentions_json: String = row.get(3);
+                    let embedding_bytes: Vec<u8> = row.get(4);
 
-        let mut stmt = conn.prepare(sql)?;
-        let mut scored: Vec<(NoteSummary, f32)> = stmt
-            .query_map([], |row| {
-                let mentions_json: String = row.get(3)?;
-                let mentions: Vec<String> =
-                    serde_json::from_str(&mentions_json).unwrap_or_default();
+                    let mentions: Vec<String> =
+                        serde_json::from_str(&mentions_json).unwrap_or_default();
 
-                Ok((
-                    NoteSummary {
-                        id: row.get(0)?,
-                        text: row.get(1)?,
-                        sentiment: row.get(2)?,
-                        mentions,
-                    },
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .filter_map(|(summary, embedding_bytes)| {
-                let embedding = embedding_slice(&embedding_bytes)?;
-                let score = cosine_similarity(query.as_slice(), embedding);
-                (score >= threshold).then_some((summary, score))
-            })
-            .collect();
+                    let embedding = embedding_slice(&embedding_bytes)?;
+                    let score = cosine_similarity(query.as_slice(), embedding);
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
+                    if score >= threshold {
+                        Some((
+                            NoteSummary {
+                                id,
+                                text,
+                                sentiment: sentiment as f32,
+                                mentions,
+                            },
+                            score,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
-        Ok(scored
-            .into_iter()
-            .map(|(note, score)| NoteSearchResult { note, score })
-            .collect())
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(limit);
+
+            Ok(scored
+                .into_iter()
+                .map(|(note, score)| NoteSearchResult { note, score })
+                .collect())
+        })
     }
 
     /// Delete all notes from a source file
     pub fn delete_notes_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
-        let conn = self.pool.get()?;
-        let source_str = source_file.to_string_lossy();
+        let source_str = source_file.to_string_lossy().to_string();
 
-        // Delete from FTS5 first
-        conn.execute(
-            "DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes WHERE source_file = ?1)",
-            [&source_str],
-        )?;
+        self.rt.block_on(async {
+            sqlx::query(
+                "DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes WHERE source_file = ?1)",
+            )
+            .bind(&source_str)
+            .execute(&self.pool)
+            .await?;
 
-        let deleted = conn.execute("DELETE FROM notes WHERE source_file = ?1", [&source_str])?;
-        Ok(deleted as u32)
+            let result = sqlx::query("DELETE FROM notes WHERE source_file = ?1")
+                .bind(&source_str)
+                .execute(&self.pool)
+                .await?;
+
+            Ok(result.rows_affected() as u32)
+        })
     }
 
     /// Check if notes file needs reindexing
@@ -1649,52 +1680,51 @@ impl Store {
             .map_err(|_| std::io::Error::other("time error"))?
             .as_secs() as i64;
 
-        let conn = self.pool.get()?;
-        let stored_mtime: Option<i64> = conn
-            .query_row(
-                "SELECT file_mtime FROM notes WHERE source_file = ?1 LIMIT 1",
-                [source_file.to_string_lossy()],
-                |r| r.get(0),
-            )
-            .ok();
+        self.rt.block_on(async {
+            let row: Option<(i64,)> =
+                sqlx::query_as("SELECT file_mtime FROM notes WHERE source_file = ?1 LIMIT 1")
+                    .bind(source_file.to_string_lossy().to_string())
+                    .fetch_optional(&self.pool)
+                    .await?;
 
-        match stored_mtime {
-            Some(mtime) if mtime >= current_mtime => Ok(false),
-            _ => Ok(true),
-        }
+            match row {
+                Some((mtime,)) if mtime >= current_mtime => Ok(false),
+                _ => Ok(true),
+            }
+        })
     }
 
     /// Get note count
     pub fn note_count(&self) -> Result<u64, StoreError> {
-        let conn = self.pool.get()?;
-        let count: u64 = conn
-            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
-            .unwrap_or(0);
-        Ok(count)
+        self.rt.block_on(async {
+            let row: Option<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM notes")
+                .fetch_optional(&self.pool)
+                .await?;
+            Ok(row.map(|(c,)| c as u64).unwrap_or(0))
+        })
     }
 
     /// Get note statistics
     pub fn note_stats(&self) -> Result<(u64, u64, u64), StoreError> {
-        let conn = self.pool.get()?;
+        self.rt.block_on(async {
+            let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap_or((0,));
 
-        let total: u64 = conn
-            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
-            .unwrap_or(0);
-        let warnings: u64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM notes WHERE sentiment < -0.3",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        let patterns: u64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM notes WHERE sentiment > 0.3",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
+            let (warnings,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < -0.3")
+                    .fetch_one(&self.pool)
+                    .await
+                    .unwrap_or((0,));
 
-        Ok((total, warnings, patterns))
+            let (patterns,): (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment > 0.3")
+                    .fetch_one(&self.pool)
+                    .await
+                    .unwrap_or((0,));
+
+            Ok((total as u64, warnings as u64, patterns as u64))
+        })
     }
 }

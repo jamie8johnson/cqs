@@ -307,3 +307,13 @@ mentions = ["conda", "LD_LIBRARY_PATH", "WSL", "cuvs"]
 sentiment = 0.0
 text = "Run `cqs watch` in background terminal to keep notes.toml indexed. Manual edits without watch = stale search results."
 mentions = ["cqs watch", "notes.toml", "indexing"]
+
+[[note]]
+sentiment = 0.5
+text = "--bind flag added with safety check. Non-localhost requires --dangerously-allow-network-bind. API key auth parked - reverse proxy with real auth is better for serious network exposure."
+mentions = ["cli.rs", "mcp.rs", "--bind", "auth"]
+
+[[note]]
+sentiment = 0.5
+text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API so cli.rs/mcp.rs didn't need changes. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
+mentions = ["src/store.rs", "Cargo.toml"]

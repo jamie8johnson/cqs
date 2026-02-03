@@ -279,7 +279,6 @@ impl McpServer {
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
         // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
-        // codeql[rust/uncontrolled-allocation-size]
         let _params: InitializeParams =
             params
                 .map(serde_json::from_value)
@@ -392,7 +391,7 @@ impl McpServer {
             },
             Tool {
                 name: "cqs_read".into(),
-                description: "Read a file with relevant context (hunches, observations) injected as comments. Use instead of raw file read to get contextual awareness.".into(),
+                description: "Read a file with relevant context (notes, observations) injected as comments. Use instead of raw file read to get contextual awareness.".into(),
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
