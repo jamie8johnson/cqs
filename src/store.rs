@@ -1253,10 +1253,10 @@ impl Store {
 
             let results: Vec<(String, Embedding)> = rows
                 .into_iter()
-                .filter_map(|row| {
+                .map(|row| {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    Some((id, Embedding::new(bytes_to_embedding(&bytes))))
+                    (id, Embedding::new(bytes_to_embedding(&bytes)))
                 })
                 .collect();
 
