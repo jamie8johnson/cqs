@@ -844,8 +844,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8) as u32,
-                        line_end: row.get::<i64, _>(9) as u32,
+                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
+                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
                         parent_id: row.get(10),
                     };
                     (chunk_row.id.clone(), chunk_row)
@@ -1173,8 +1173,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8) as u32,
-                        line_end: row.get::<i64, _>(9) as u32,
+                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
+                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
                         parent_id: row.get(11),
                     };
                     let embedding_bytes: Vec<u8> = row.get(10);
@@ -1320,8 +1320,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8) as u32,
-                        line_end: row.get::<i64, _>(9) as u32,
+                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
+                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
                         parent_id: row.get(10),
                     })
                 })
@@ -1414,7 +1414,7 @@ impl Store {
                 .map(|(file, name, line)| CallerInfo {
                     file: PathBuf::from(file),
                     name,
-                    line: line as u32,
+                    line: line.clamp(0, u32::MAX as i64) as u32,
                 })
                 .collect();
 
@@ -1437,7 +1437,7 @@ impl Store {
 
             Ok(rows
                 .into_iter()
-                .map(|(name, line)| (name, line as u32))
+                .map(|(name, line)| (name, line.clamp(0, u32::MAX as i64) as u32))
                 .collect())
         })
     }

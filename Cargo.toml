@@ -10,7 +10,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 
 # Parsing (tree-sitter) - core is required, grammars are optional

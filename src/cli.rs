@@ -156,6 +156,9 @@ enum Commands {
         /// Use GPU for query embedding (faster after warmup)
         #[arg(long)]
         gpu: bool,
+        /// API key for HTTP authentication (required for non-localhost bind)
+        #[arg(long, env = "CQS_API_KEY")]
+        api_key: Option<String>,
         /// Required when binding to non-localhost (exposes codebase to network)
         #[arg(long, hide = true)]
         dangerously_allow_network_bind: bool,
@@ -210,6 +213,7 @@ pub fn run() -> Result<()> {
             port,
             ref project,
             gpu,
+            ref api_key,
             dangerously_allow_network_bind,
         }) => cmd_serve(
             &cli,
@@ -218,6 +222,7 @@ pub fn run() -> Result<()> {
             port,
             project.clone(),
             gpu,
+            api_key.clone(),
             dangerously_allow_network_bind,
         ),
         Some(Commands::Completions { shell }) => {
@@ -1757,6 +1762,7 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
     Ok(note_embeddings.len())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_serve(
     _cli: &Cli,
     transport: &str,
@@ -1764,6 +1770,7 @@ fn cmd_serve(
     port: u16,
     project: Option<PathBuf>,
     gpu: bool,
+    api_key: Option<String>,
     dangerously_allow_network_bind: bool,
 ) -> Result<()> {
     // Block non-localhost bind unless explicitly allowed
@@ -1776,13 +1783,21 @@ fn cmd_serve(
         );
     }
 
+    // Require API key for non-localhost HTTP binds
+    if !is_localhost && transport == "http" && api_key.is_none() {
+        bail!(
+            "API key required for non-localhost HTTP bind.\n\
+             Set --api-key <key> or CQS_API_KEY environment variable."
+        );
+    }
+
     let root = project.unwrap_or_else(find_project_root);
 
     match transport {
         "stdio" => cqs::serve_stdio(root, gpu),
-        "http" => cqs::serve_http(root, bind, port, gpu),
+        "http" => cqs::serve_http(root, bind, port, gpu, api_key),
         // Keep sse as alias for backwards compatibility
-        "sse" => cqs::serve_http(root, bind, port, gpu),
+        "sse" => cqs::serve_http(root, bind, port, gpu, api_key),
         _ => {
             bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
         }
