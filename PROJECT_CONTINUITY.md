@@ -2,39 +2,16 @@
 
 ## Right Now
 
-**MAJOR REFACTOR 6/6 COMPLETE** - Clean architecture for SQL Server support
+**9-layer audit complete** - 1 action item
 
-Plan file: `/home/user001/.claude/plans/snuggly-orbiting-journal.md`
+PR #58 merged: API key auth for HTTP transport + saturating casts.
 
-**All tasks done:**
-1. Schema v10: origin/source_type - DONE
-2. Migrate rusqlite → sqlx (async) - DONE
-3. Language registry module - DONE
-4. Source trait + FileSystemSource - DONE
-5. Async indexing pipeline - NOT NEEDED (sync wrappers in store.rs)
-6. Feature flags for languages - DONE
-
-The sqlx migration preserves sync API via internal `Runtime::block_on()` wrappers.
-This means cli.rs and mcp.rs didn't need changes - store.rs is ~1700 lines of async sqlx
-with sync methods that callers use exactly as before.
-
-**Fresh-eyes review done** - no critical issues. Minor notes:
-- `function_calls` table still uses `file` (not `origin`) - intentional, call graph is file-centric
-- Removed dead `hunches` and `scars` tables from schema (notes replaced them in v8)
-
-**Key files changed this session:**
-- `src/store.rs` - complete rewrite: rusqlite → sqlx with sync wrappers
-- `Cargo.toml` - replaced rusqlite/r2d2 with sqlx
+**Dependency vulnerability:**
+- `bytes` 1.11.0 has RUSTSEC-2026-0007 (integer overflow)
+- Fix: `cargo update -p bytes` (needs >=1.11.1)
 
 **Waiting on:**
 - awesome-mcp-servers PR #1783
-
-**1.0 progress:**
-- Schema v10 done (breaking change)
-- sqlx migration done
-- All refactor tasks complete
-
-Pronunciation: cqs = "seeks" (it seeks code semantically).
 
 ## Key Architecture
 
@@ -46,6 +23,7 @@ Pronunciation: cqs = "seeks" (it seeks code semantically).
 - `src/source/` - Source trait abstracts file/database sources
 - Feature flags: lang-rust, lang-python, lang-typescript, lang-javascript, lang-go
 - Storage: sqlx async SQLite with sync wrappers (4 connection pool, WAL mode)
+- HTTP auth: `--api-key` or `CQS_API_KEY` env var (required for non-localhost)
 
 ## Build & Run
 
@@ -57,7 +35,6 @@ cargo build --release --features gpu-search
 ## Parked
 
 - CAGRA persistence - hybrid startup approach used instead
-- API key auth for HTTP transport
 - Curator agent, fleet coordination
 
 ## Open Questions
