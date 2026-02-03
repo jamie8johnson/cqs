@@ -196,6 +196,9 @@ impl McpServer {
         tracing::info!("MCP: Building CAGRA GPU index in background...");
 
         // Open a separate store connection for the background thread
+        // SAFETY: Allocation bounded by local SQLite store, not external user input.
+        // The store contains embeddings we indexed ourselves from local files.
+        // lgtm[rust/uncontrolled-allocation-size]
         let store = match Store::open(index_path) {
             Ok(s) => s,
             Err(e) => {
