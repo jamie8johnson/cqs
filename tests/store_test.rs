@@ -56,7 +56,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 9); // v9: Windowing with parent_id, window_idx
+    assert_eq!(stats.schema_version, 10); // v10: Multi-source support
     assert_eq!(stats.model_name, "intfloat/e5-base-v2");
 }
 
@@ -71,7 +71,7 @@ fn test_upsert_and_search() {
     // Insert a chunk
     let chunk = create_test_chunk("add", "fn add(a: i32, b: i32) -> i32 { a + b }");
     let embedding = create_mock_embedding(1.0);
-    store.upsert_chunk(&chunk, &embedding, 12345).unwrap();
+    store.upsert_chunk(&chunk, &embedding, Some(12345)).unwrap();
 
     // Search should find it
     let results = store.search(&embedding, 5, 0.0).unwrap();
@@ -96,10 +96,10 @@ fn test_search_with_threshold() {
     let chunk2 = create_test_chunk("subtract", "fn subtract(a, b) { a - b }");
 
     store
-        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk2, &create_mock_embedding(-1.0), 12345)
+        .upsert_chunk(&chunk2, &create_mock_embedding(-1.0), Some(12345))
         .unwrap();
 
     // Search with query similar to chunk1
@@ -122,7 +122,7 @@ fn test_search_limit() {
     for i in 0..10 {
         let chunk = create_test_chunk(&format!("fn{}", i), &format!("fn fn{}() {{}}", i));
         let emb = create_mock_embedding(1.0 + i as f32 * 0.01);
-        store.upsert_chunk(&chunk, &emb, 12345).unwrap();
+        store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
     }
 
     // Search with limit
@@ -143,7 +143,7 @@ fn test_search_filtered_by_language() {
     // Insert Rust chunk
     let rust_chunk = create_test_chunk("rust_fn", "fn rust_fn() {}");
     store
-        .upsert_chunk(&rust_chunk, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&rust_chunk, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
 
     // Insert Python chunk
@@ -151,7 +151,7 @@ fn test_search_filtered_by_language() {
     py_chunk.language = Language::Python;
     py_chunk.file = PathBuf::from("test.py");
     store
-        .upsert_chunk(&py_chunk, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&py_chunk, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
 
     // Search for Rust only
@@ -183,10 +183,10 @@ fn test_prune_missing() {
     chunk2.id = format!("other.rs:1:{}", &chunk2.content_hash[..8]);
 
     store
-        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk2, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&chunk2, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
 
     // Prune with only test.rs existing
@@ -212,7 +212,7 @@ fn test_get_by_content_hash() {
     let content = "fn test() { 42 }";
     let chunk = create_test_chunk("test", content);
     let embedding = create_mock_embedding(0.5);
-    store.upsert_chunk(&chunk, &embedding, 12345).unwrap();
+    store.upsert_chunk(&chunk, &embedding, Some(12345)).unwrap();
 
     // Should find embedding by content hash
     let found = store.get_by_content_hash(&chunk.content_hash);
@@ -237,8 +237,8 @@ fn test_get_embeddings_by_hashes() {
     let emb1 = create_mock_embedding(0.1);
     let emb2 = create_mock_embedding(0.2);
 
-    store.upsert_chunk(&chunk1, &emb1, 12345).unwrap();
-    store.upsert_chunk(&chunk2, &emb2, 12345).unwrap();
+    store.upsert_chunk(&chunk1, &emb1, Some(12345)).unwrap();
+    store.upsert_chunk(&chunk2, &emb2, Some(12345)).unwrap();
 
     // Query both hashes + one non-existent
     let hashes = vec![
@@ -277,13 +277,13 @@ fn test_stats() {
     chunk3.chunk_type = ChunkType::Method;
 
     store
-        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&chunk1, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk2, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&chunk2, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk3, &create_mock_embedding(1.0), 12345)
+        .upsert_chunk(&chunk3, &create_mock_embedding(1.0), Some(12345))
         .unwrap();
 
     let stats = store.stats().unwrap();
@@ -324,13 +324,13 @@ fn test_fts_search() {
     let chunk3 = create_test_chunk("calculateTotal", "fn calculateTotal() { /* math */ }");
 
     store
-        .upsert_chunk(&chunk1, &create_mock_embedding(0.1), 12345)
+        .upsert_chunk(&chunk1, &create_mock_embedding(0.1), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk2, &create_mock_embedding(0.2), 12345)
+        .upsert_chunk(&chunk2, &create_mock_embedding(0.2), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk3, &create_mock_embedding(0.3), 12345)
+        .upsert_chunk(&chunk3, &create_mock_embedding(0.3), Some(12345))
         .unwrap();
 
     // FTS search for "config" should find parseConfigFile
@@ -378,10 +378,10 @@ fn test_rrf_search() {
     );
 
     store
-        .upsert_chunk(&chunk1, &create_mock_embedding(0.5), 12345)
+        .upsert_chunk(&chunk1, &create_mock_embedding(0.5), Some(12345))
         .unwrap();
     store
-        .upsert_chunk(&chunk2, &create_mock_embedding(0.5), 12345)
+        .upsert_chunk(&chunk2, &create_mock_embedding(0.5), Some(12345))
         .unwrap();
 
     // Search with RRF enabled

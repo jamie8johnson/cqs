@@ -2,16 +2,37 @@
 
 ## Right Now
 
-**Session work:**
-- Published v0.1.17 to GitHub (crates.io blocked until 2026-02-02 05:18 UTC)
-- Merged 5 dependabot PRs (dirs, insta, rand 0.9, tower, notify)
-- Added `--bind` flag for HTTP transport with safety check
-- CodeQL suppression comment for allocation size alert
-- Simplified README claude block for external audience
+**MAJOR REFACTOR 6/6 COMPLETE** - Clean architecture for SQL Server support
+
+Plan file: `/home/user001/.claude/plans/snuggly-orbiting-journal.md`
+
+**All tasks done:**
+1. Schema v10: origin/source_type - DONE
+2. Migrate rusqlite → sqlx (async) - DONE
+3. Language registry module - DONE
+4. Source trait + FileSystemSource - DONE
+5. Async indexing pipeline - NOT NEEDED (sync wrappers in store.rs)
+6. Feature flags for languages - DONE
+
+The sqlx migration preserves sync API via internal `Runtime::block_on()` wrappers.
+This means cli.rs and mcp.rs didn't need changes - store.rs is ~1700 lines of async sqlx
+with sync methods that callers use exactly as before.
+
+**Fresh-eyes review done** - no critical issues. Minor notes:
+- `function_calls` table still uses `file` (not `origin`) - intentional, call graph is file-centric
+- Removed dead `hunches` and `scars` tables from schema (notes replaced them in v8)
+
+**Key files changed this session:**
+- `src/store.rs` - complete rewrite: rusqlite → sqlx with sync wrappers
+- `Cargo.toml` - replaced rusqlite/r2d2 with sqlx
+
+**Waiting on:**
+- awesome-mcp-servers PR #1783
 
 **1.0 progress:**
-- Schema v9 stable since 2026-02-01 (need 1 week = Feb 8)
-- Used on 2+ codebases (cqs + rust-lang/rust)
+- Schema v10 done (breaking change)
+- sqlx migration done
+- All refactor tasks complete
 
 Pronunciation: cqs = "seeks" (it seeks code semantically).
 
@@ -19,9 +40,12 @@ Pronunciation: cqs = "seeks" (it seeks code semantically).
 
 - 769-dim embeddings (768 + sentiment)
 - E5-base-v2 model with "passage: " / "query: " prefixes
-- Schema v9 with windowing (parent_id, window_idx)
+- Schema v10: `origin` + `source_type` + `source_mtime` (nullable)
 - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
-- MCP: hybrid startup (HNSW 30ms, CAGRA upgrades in background)
+- `src/language/` - LanguageRegistry with LanguageDef structs
+- `src/source/` - Source trait abstracts file/database sources
+- Feature flags: lang-rust, lang-python, lang-typescript, lang-javascript, lang-go
+- Storage: sqlx async SQLite with sync wrappers (4 connection pool, WAL mode)
 
 ## Build & Run
 
@@ -32,8 +56,8 @@ cargo build --release --features gpu-search
 
 ## Parked
 
-- CAGRA persistence (serialize/deserialize) - hybrid startup approach used instead
-- API key auth for HTTP transport (for network exposure use cases)
+- CAGRA persistence - hybrid startup approach used instead
+- API key auth for HTTP transport
 - Curator agent, fleet coordination
 
 ## Open Questions

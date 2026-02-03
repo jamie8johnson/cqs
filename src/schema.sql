@@ -1,4 +1,8 @@
--- cq index schema v9
+-- cq index schema v10
+-- v10: Generalized for multiple sources (filesystem, SQL Server, etc.)
+--   file → origin (unique identifier like "file:src/main.rs" or "mssql:server/db/dbo.MyProc")
+--   file_mtime → source_mtime (nullable for sources without mtime)
+--   + source_type for fast filtering
 
 CREATE TABLE IF NOT EXISTS metadata (
     key TEXT PRIMARY KEY,
@@ -7,7 +11,8 @@ CREATE TABLE IF NOT EXISTS metadata (
 
 CREATE TABLE IF NOT EXISTS chunks (
     id TEXT PRIMARY KEY,
-    file TEXT NOT NULL,
+    origin TEXT NOT NULL,           -- unique source identifier
+    source_type TEXT NOT NULL,      -- "file", "mssql", etc.
     language TEXT NOT NULL,
     chunk_type TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -18,14 +23,15 @@ CREATE TABLE IF NOT EXISTS chunks (
     line_start INTEGER NOT NULL,
     line_end INTEGER NOT NULL,
     embedding BLOB NOT NULL,
-    file_mtime INTEGER NOT NULL,
+    source_mtime INTEGER,           -- nullable: not all sources have mtime
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     parent_id TEXT,           -- if windowed: ID of the logical parent chunk
     window_idx INTEGER        -- if windowed: 0, 1, 2... for each window
 );
 
-CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file);
+CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
+CREATE INDEX IF NOT EXISTS idx_chunks_source_type ON chunks(source_type);
 CREATE INDEX IF NOT EXISTS idx_chunks_content_hash ON chunks(content_hash);
 CREATE INDEX IF NOT EXISTS idx_chunks_name ON chunks(name);
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON chunks(language);
@@ -67,63 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file);
 CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name);
 CREATE INDEX IF NOT EXISTS idx_fcalls_callee ON function_calls(callee_name);
 
--- Hunches: soft observations and latent risks that surface in search
-CREATE TABLE IF NOT EXISTS hunches (
-    id TEXT PRIMARY KEY,           -- "hunch:2026-01-31-title-slug"
-    date TEXT NOT NULL,            -- ISO date (YYYY-MM-DD)
-    title TEXT NOT NULL,
-    description TEXT NOT NULL,
-    severity TEXT NOT NULL,        -- high, med, low
-    confidence TEXT NOT NULL,      -- high, med, low
-    resolution TEXT NOT NULL,      -- open, resolved, accepted
-    mentions TEXT,                 -- JSON array of mentioned paths/functions
-    embedding BLOB NOT NULL,
-    source_file TEXT NOT NULL,     -- path to HUNCHES.md
-    file_mtime INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_hunches_resolution ON hunches(resolution);
-CREATE INDEX IF NOT EXISTS idx_hunches_severity ON hunches(severity);
-
--- FTS5 for hunch keyword search
-CREATE VIRTUAL TABLE IF NOT EXISTS hunches_fts USING fts5(
-    id UNINDEXED,
-    title,
-    description,
-    tokenize='unicode61'
-);
-
--- Scars: failed approaches - limbic memory that surfaces when relevant
-CREATE TABLE IF NOT EXISTS scars (
-    id TEXT PRIMARY KEY,           -- "scar:2026-01-31-title-slug"
-    date TEXT NOT NULL,            -- ISO date (YYYY-MM-DD)
-    title TEXT NOT NULL,
-    tried TEXT NOT NULL,           -- what was attempted
-    pain TEXT NOT NULL,            -- what hurt
-    learned TEXT NOT NULL,         -- what to do instead
-    mentions TEXT,                 -- JSON array of mentioned paths/functions
-    embedding BLOB NOT NULL,
-    source_file TEXT NOT NULL,     -- path to scars.toml
-    file_mtime INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_scars_date ON scars(date);
-
--- FTS5 for scar keyword search
-CREATE VIRTUAL TABLE IF NOT EXISTS scars_fts USING fts5(
-    id UNINDEXED,
-    title,
-    tried,
-    pain,
-    learned,
-    tokenize='unicode61'
-);
-
--- Notes: unified memory entries (replaces separate scars/hunches in v9+)
+-- Notes: unified memory entries (sentiment-based, replaces deprecated hunches/scars)
 -- Sentiment field bakes valence into similarity search via 769th embedding dimension
 CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,           -- "note:0", "note:1", etc.

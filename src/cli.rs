@@ -958,7 +958,7 @@ fn run_index_pipeline(
             break;
         }
 
-        store.upsert_chunks_batch(&batch.chunk_embeddings, batch.file_mtime)?;
+        store.upsert_chunks_batch(&batch.chunk_embeddings, Some(batch.file_mtime))?;
 
         // Extract and store function calls
         for (chunk, _) in &batch.chunk_embeddings {
@@ -1684,7 +1684,7 @@ fn reindex_files(
 
     // Delete old chunks for these files and insert new ones
     for rel_path in files {
-        store.delete_by_file(rel_path)?;
+        store.delete_by_origin(rel_path)?;
     }
 
     for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
@@ -1694,8 +1694,7 @@ fn reindex_files(
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .map(|d| d.as_secs() as i64);
         store.upsert_chunk(chunk, embedding, mtime)?;
     }
 
