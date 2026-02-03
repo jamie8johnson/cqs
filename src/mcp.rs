@@ -982,13 +982,29 @@ const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Shared state for HTTP server
 struct HttpState {
     server: RwLock<McpServer>,
+    /// API key for authentication (None = no auth required)
+    api_key: Option<String>,
 }
 
 /// Run the MCP server with HTTP transport
-pub fn serve_http(project_root: PathBuf, bind: &str, port: u16, use_gpu: bool) -> Result<()> {
+///
+/// # Arguments
+/// * `api_key` - Optional API key for authentication. If provided, requests must include
+///   `Authorization: Bearer <key>` header.
+pub fn serve_http(
+    project_root: PathBuf,
+    bind: &str,
+    port: u16,
+    use_gpu: bool,
+    api_key: Option<String>,
+) -> Result<()> {
+    // Capture api_key presence before moving it into state
+    let has_api_key = api_key.is_some();
+
     let server = McpServer::new(project_root, use_gpu)?;
     let state = Arc::new(HttpState {
         server: RwLock::new(server),
+        api_key,
     });
 
     let cors = CorsLayer::new()
@@ -1010,16 +1026,20 @@ pub fn serve_http(project_root: PathBuf, bind: &str, port: u16, use_gpu: bool) -
     let addr = format!("{}:{}", bind, port);
 
     // Warn if binding to non-localhost
-    if bind != "127.0.0.1" && bind != "localhost" && bind != "::1" {
-        eprintln!(
-            "WARNING: Binding to {} exposes your codebase to the network!",
-            bind
-        );
-        eprintln!("         Ensure proper authentication is in place.");
+    let is_localhost = bind == "127.0.0.1" || bind == "localhost" || bind == "::1";
+    if !is_localhost {
+        if has_api_key {
+            eprintln!("WARNING: Binding to {} with API key authentication.", bind);
+        } else {
+            eprintln!("WARNING: Binding to {} WITHOUT authentication!", bind);
+        }
     }
 
     eprintln!("MCP HTTP server listening on http://{}", addr);
     eprintln!("MCP Protocol Version: {}", MCP_PROTOCOL_VERSION);
+    if has_api_key {
+        eprintln!("Authentication: API key required (Authorization: Bearer <key>)");
+    }
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -1039,8 +1059,12 @@ pub fn serve_http(project_root: PathBuf, bind: &str, port: u16, use_gpu: bool) -
 
 /// Handle POST /mcp - JSON-RPC requests (MCP 2025-11-25 compliant)
 ///
-/// # Security: Origin Validation
+/// # Security
 ///
+/// ## API Key Authentication
+/// If an API key is configured, requests must include `Authorization: Bearer <key>` header.
+///
+/// ## Origin Validation
 /// Validates the Origin header to prevent DNS rebinding attacks per MCP 2025-11-25 spec:
 /// - Localhost origins (http://localhost:*, http://127.0.0.1:*) are allowed
 /// - Empty/missing Origin header is allowed (some MCP clients don't send it)
@@ -1053,6 +1077,35 @@ async fn handle_mcp_post(
     headers: axum::http::HeaderMap,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
+    // Validate API key if configured
+    if let Some(ref expected_key) = state.api_key {
+        let auth_header = headers
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        let provided_key = auth_header.strip_prefix("Bearer ").unwrap_or("");
+
+        // Constant-time comparison to prevent timing attacks
+        if provided_key.len() != expected_key.len()
+            || !provided_key
+                .bytes()
+                .zip(expected_key.bytes())
+                .all(|(a, b)| a == b)
+        {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid or missing API key"
+                    }
+                })),
+            );
+        }
+    }
+
     // Validate Origin header to prevent DNS rebinding attacks (MCP 2025-11-25 security requirement)
     if let Some(origin) = headers.get("origin") {
         let origin_str = origin.to_str().unwrap_or("");
@@ -1135,8 +1188,38 @@ async fn handle_health() -> impl IntoResponse {
 
 /// Handle GET /mcp - SSE stream for server-to-client messages (MCP 2025-11-25)
 async fn handle_mcp_sse(
+    State(state): State<Arc<HttpState>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
+    // Validate API key if configured
+    if let Some(ref expected_key) = state.api_key {
+        let auth_header = headers
+            .get("authorization")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        let provided_key = auth_header.strip_prefix("Bearer ").unwrap_or("");
+
+        // Constant-time comparison to prevent timing attacks
+        if provided_key.len() != expected_key.len()
+            || !provided_key
+                .bytes()
+                .zip(expected_key.bytes())
+                .all(|(a, b)| a == b)
+        {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {
+                        "code": -32600,
+                        "message": "Invalid or missing API key"
+                    }
+                })),
+            ));
+        }
+    }
+
     // Validate Accept header includes text/event-stream
     let accept = headers
         .get("accept")
