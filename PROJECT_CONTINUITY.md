@@ -2,56 +2,58 @@
 
 ## Right Now
 
-**Post-Audit Cleanup** (2026-02-04)
+**Store Refactor Complete** (2026-02-04)
 
-### Just Merged
-- #128: MCP concurrency fix (CRITICAL - read locks)
-- #115-#120: First audit fixes
+Issue #125 implemented. Pending PR.
 
-### PRs Needing Rebase
-- #127: name_match_score + ensure_embedder (conflicts with #128)
-- #129: Error path tests
+## Session Summary
 
-### Open Issues (22 total)
-Tracking in #130: https://github.com/jamie8johnson/cqs/issues/130
+### Completed This Session
+- #125: Store god object refactor (1,916 lines → 6 files, largest 531)
 
-**Deferred to v0.3.0:**
-- #103: O(n) notes search
-- #107: Memory (all_embeddings)
-- #125: Store refactor
-- #106: ort stable release
-- #122: Embedder session lock (documented limitation)
+### Merged PRs (Previous)
+- #132: embedder.rs + cli.rs unit tests (#62)
+- #128: MCP concurrency (CRITICAL)
+- #115-#120: First audit batch
+- #131: name_match_score + config tests
 
-## Key Changes This Session
+### Open Issues (8)
+| Issue | Description | Status |
+|-------|-------------|--------|
+| #130 | Tracking | Keep |
+| #126 | Error tests | Partial |
+| #125 | Store refactor | **DONE** |
+| #107 | Memory | v0.3.0 |
+| #106 | ort stable | External |
+| #103 | O(n) notes | v0.3.0 |
+| #70 | Cleanup | Low |
+| #63 | paste dep | External |
 
-1. **MCP Concurrency** (#128)
-   - `McpServer.embedder`: `Option` → `OnceLock`
-   - `McpServer.audit_mode`: direct → `Mutex`
-   - `handle_request(&mut self)` → `handle_request(&self)`
-   - HTTP handler: `write()` → `read()` lock
-   - Embedder methods: `&mut self` → `&self`
+## Store Refactor (#125)
 
-2. **Audit PRs Merged** (#115-#120)
-   - Glob compiled once (was per-chunk)
-   - Off-by-one line numbers fixed
-   - CAGRA mutex poison recovery
-   - Config parse errors logged
-   - Batch INSERT for calls
-   - deny.toml added
-   - CagraIndex resources behind Mutex
-   - HNSW safety tests
-   - ChunkType consolidated
-   - Parser unit tests (21)
+Split `src/store.rs` (1,916 lines) into:
+```
+src/store/
+  mod.rs       468 lines  (Store struct, open/init, FTS, RRF)
+  chunks.rs    352 lines  (chunk CRUD)
+  notes.rs     197 lines  (note CRUD)
+  calls.rs     220 lines  (call graph)
+  helpers.rs   245 lines  (types, embedding conversion)
+src/search.rs  531 lines  (search algorithms, scoring)
+```
+
+Largest file: 531 lines (down from 1,916, 3.6x reduction)
 
 ## Architecture
 
-- 769-dim embeddings, E5-base-v2
-- VectorIndex: CAGRA (GPU) > HNSW (CPU)
-- Schema v10, SQLite WAL mode
-- MCP: concurrent via interior mutability
+- 769-dim embeddings (768 model + 1 sentiment)
+- CAGRA (GPU) > HNSW (CPU)
+- Schema v10, WAL mode
+- MCP: interior mutability
+- Store: split into focused modules
 
-## Next Steps
+## Next
 
-1. Rebase #127, #129 and merge
-2. Work on remaining open issues
-3. Update CHANGELOG for merged PRs
+1. Create PR for #125
+2. CHANGELOG
+3. v0.3.0: memory (#107), notes HNSW (#103)
