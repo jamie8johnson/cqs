@@ -9,6 +9,7 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+use subtle::ConstantTimeEq;
 
 use anyhow::{bail, Context, Result};
 use axum::{
@@ -1090,8 +1091,10 @@ fn validate_api_key(
     let provided = auth_header.strip_prefix("Bearer ").unwrap_or("");
 
     // Constant-time comparison to prevent timing attacks
+    // Note: Length comparison still leaks length, but this is acceptable for API keys
+    // since attackers can't exploit length timing without knowing the key format.
     let valid = provided.len() == expected.len()
-        && provided.bytes().zip(expected.bytes()).all(|(a, b)| a == b);
+        && bool::from(provided.as_bytes().ct_eq(expected.as_bytes()));
 
     if valid {
         Ok(())
