@@ -39,6 +39,17 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 
 Tools: `cqs_search`, `cqs_stats` (run `cqs watch` to keep index fresh)
 
+## Audit Mode
+
+Before audits, fresh-eyes reviews, clear-eyes reviews, or unbiased code assessment:
+`cqs_audit_mode(true)` to exclude notes and force direct code examination.
+
+After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
+
+**Triggers:** audit, fresh eyes, clear eyes, unbiased review, independent review, security audit
+
+Audit mode prevents false confidence from stale notes - forces you to examine code directly instead of trusting prior observations.
+
 ## Completion Checklist
 
 Before marking any feature "done":

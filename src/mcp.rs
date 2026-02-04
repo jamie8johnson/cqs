@@ -9,6 +9,8 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
+
+use chrono::{DateTime, Utc};
 use subtle::ConstantTimeEq;
 
 use anyhow::{bail, Context, Result};
@@ -138,6 +140,59 @@ struct SearchArgs {
     semantic_only: Option<bool>,
 }
 
+/// Audit mode arguments
+#[derive(Deserialize)]
+struct AuditModeArgs {
+    enabled: Option<bool>,
+    expires_in: Option<String>,
+}
+
+/// Audit mode state - excludes notes from search/read during audits
+#[derive(Default)]
+struct AuditMode {
+    enabled: bool,
+    expires_at: Option<DateTime<Utc>>,
+}
+
+impl AuditMode {
+    /// Check if audit mode is currently active (enabled and not expired)
+    fn is_active(&self) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        match self.expires_at {
+            Some(expires) => Utc::now() < expires,
+            None => true,
+        }
+    }
+
+    /// Get remaining time as human-readable string, or None if expired/disabled
+    fn remaining(&self) -> Option<String> {
+        if !self.is_active() {
+            return None;
+        }
+        let expires = self.expires_at?;
+        let remaining = expires - Utc::now();
+        let minutes = remaining.num_minutes();
+        if minutes <= 0 {
+            None
+        } else if minutes < 60 {
+            Some(format!("{}m", minutes))
+        } else {
+            Some(format!("{}h {}m", minutes / 60, minutes % 60))
+        }
+    }
+
+    /// Format status line for inclusion in responses
+    fn status_line(&self) -> Option<String> {
+        let remaining = self.remaining()?;
+        Some(format!(
+            "(audit mode: notes excluded, {} remaining)",
+            remaining
+        ))
+    }
+}
+
 /// MCP Server
 pub struct McpServer {
     store: Store,
@@ -148,6 +203,8 @@ pub struct McpServer {
     index: Arc<RwLock<Option<Box<dyn VectorIndex>>>>,
     /// Use GPU for query embedding
     use_gpu: bool,
+    /// Audit mode state
+    audit_mode: AuditMode,
 }
 
 impl McpServer {
@@ -185,6 +242,7 @@ impl McpServer {
             project_root,
             index,
             use_gpu,
+            audit_mode: AuditMode::default(),
         })
     }
 
@@ -429,6 +487,24 @@ impl McpServer {
                     "required": ["text"]
                 }),
             },
+            Tool {
+                name: "cqs_audit_mode".into(),
+                description: "Toggle audit mode to exclude notes from search and read results. Use before code audits or fresh-eyes reviews to prevent prior observations from influencing analysis.".into(),
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "enabled": {
+                            "type": "boolean",
+                            "description": "Enable or disable audit mode. Omit to query current state."
+                        },
+                        "expires_in": {
+                            "type": "string",
+                            "description": "Duration until auto-expire (e.g., '30m', '1h'). Default: 30m",
+                            "default": "30m"
+                        }
+                    }
+                }),
+            },
         ];
 
         Ok(serde_json::to_value(ToolsListResult { tools })?)
@@ -454,8 +530,9 @@ impl McpServer {
             "cqs_callees" => self.tool_callees(arguments),
             "cqs_read" => self.tool_read(arguments),
             "cqs_add_note" => self.tool_add_note(arguments),
+            "cqs_audit_mode" => self.tool_audit_mode(arguments),
             _ => bail!(
-                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note",
+                "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_audit_mode",
                 name
             ),
         }
@@ -482,16 +559,31 @@ impl McpServer {
         let limit = args.limit.unwrap_or(5).min(20);
         let threshold = args.threshold.unwrap_or(0.3);
 
-        // Use unified search with vector index if available
         // Read-lock the index (allows background CAGRA build to upgrade it)
         let index_guard = self.index.read().unwrap_or_else(|e| e.into_inner());
-        let results = self.store.search_unified_with_index(
-            &query_embedding,
-            &filter,
-            limit,
-            threshold,
-            index_guard.as_deref(),
-        )?;
+
+        // Check audit mode - if active, use code-only search
+        let audit_active = self.audit_mode.is_active();
+        let results: Vec<UnifiedResult> = if audit_active {
+            // Code-only search when audit mode is active
+            let code_results = self.store.search_filtered_with_index(
+                &query_embedding,
+                &filter,
+                limit,
+                threshold,
+                index_guard.as_deref(),
+            )?;
+            code_results.into_iter().map(UnifiedResult::Code).collect()
+        } else {
+            // Unified search including notes
+            self.store.search_unified_with_index(
+                &query_embedding,
+                &filter,
+                limit,
+                threshold,
+                index_guard.as_deref(),
+            )?
+        };
 
         let json_results: Vec<_> = results
             .iter()
@@ -524,11 +616,16 @@ impl McpServer {
             })
             .collect();
 
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "results": json_results,
             "query": args.query,
             "total": results.len(),
         });
+
+        // Add audit mode status if active
+        if let Some(status) = self.audit_mode.status_line() {
+            result["audit_mode"] = serde_json::json!(status);
+        }
 
         // MCP tools/call requires content array format
         Ok(serde_json::json!({
@@ -675,53 +772,63 @@ impl McpServer {
         let content = std::fs::read_to_string(&file_path)
             .context(format!("Failed to read file: {}", path))?;
 
-        // Find relevant notes by searching for this file path
-        let notes_path = self.project_root.join("docs/notes.toml");
+        // Check audit mode - if active, skip note injection
+        let audit_active = self.audit_mode.is_active();
         let mut context_header = String::new();
 
-        if notes_path.exists() {
-            if let Ok(notes) = parse_notes(&notes_path) {
-                // Find notes that mention this file
-                let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        // Add audit mode status line if active
+        if let Some(status) = self.audit_mode.status_line() {
+            context_header.push_str(&format!("// {}\n//\n", status));
+        }
 
-                let relevant: Vec<_> = notes
-                    .iter()
-                    .filter(|n| {
-                        n.mentions
-                            .iter()
-                            .any(|m| m == file_name || m == path || path.contains(m))
-                    })
-                    .collect();
+        // Find relevant notes by searching for this file path (skip if audit mode active)
+        if !audit_active {
+            let notes_path = self.project_root.join("docs/notes.toml");
 
-                if !relevant.is_empty() {
-                    context_header.push_str(
-                        "// ┌─────────────────────────────────────────────────────────────┐\n",
-                    );
-                    context_header.push_str(
-                        "// │ [cqs] Context from notes.toml                              │\n",
-                    );
-                    context_header.push_str(
-                        "// └─────────────────────────────────────────────────────────────┘\n",
-                    );
+            if notes_path.exists() {
+                if let Ok(notes) = parse_notes(&notes_path) {
+                    // Find notes that mention this file
+                    let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-                    for n in relevant {
-                        let sentiment_label = if n.sentiment() < -0.3 {
-                            "WARNING"
-                        } else if n.sentiment() > 0.3 {
-                            "PATTERN"
-                        } else {
-                            "NOTE"
-                        };
-                        // First line of text only
-                        if let Some(first_line) = n.text.lines().next() {
-                            context_header.push_str(&format!(
-                                "// [{}] {}\n",
-                                sentiment_label,
-                                first_line.trim()
-                            ));
+                    let relevant: Vec<_> = notes
+                        .iter()
+                        .filter(|n| {
+                            n.mentions
+                                .iter()
+                                .any(|m| m == file_name || m == path || path.contains(m))
+                        })
+                        .collect();
+
+                    if !relevant.is_empty() {
+                        context_header.push_str(
+                            "// ┌─────────────────────────────────────────────────────────────┐\n",
+                        );
+                        context_header.push_str(
+                            "// │ [cqs] Context from notes.toml                              │\n",
+                        );
+                        context_header.push_str(
+                            "// └─────────────────────────────────────────────────────────────┘\n",
+                        );
+
+                        for n in relevant {
+                            let sentiment_label = if n.sentiment() < -0.3 {
+                                "WARNING"
+                            } else if n.sentiment() > 0.3 {
+                                "PATTERN"
+                            } else {
+                                "NOTE"
+                            };
+                            // First line of text only
+                            if let Some(first_line) = n.text.lines().next() {
+                                context_header.push_str(&format!(
+                                    "// [{}] {}\n",
+                                    sentiment_label,
+                                    first_line.trim()
+                                ));
+                            }
                         }
+                        context_header.push_str("//\n");
                     }
-                    context_header.push_str("//\n");
                 }
             }
         }
@@ -865,6 +972,73 @@ impl McpServer {
                 "text": serde_json::to_string_pretty(&result)?
             }]
         }))
+    }
+
+    fn tool_audit_mode(&mut self, arguments: Value) -> Result<Value> {
+        let args: AuditModeArgs = serde_json::from_value(arguments)?;
+
+        // If no enabled argument, just query current state
+        if args.enabled.is_none() {
+            let result = if self.audit_mode.is_active() {
+                serde_json::json!({
+                    "audit_mode": true,
+                    "remaining": self.audit_mode.remaining(),
+                    "expires_at": self.audit_mode.expires_at.map(|t| t.to_rfc3339()),
+                })
+            } else {
+                serde_json::json!({
+                    "audit_mode": false,
+                })
+            };
+
+            return Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&result)?
+                }]
+            }));
+        }
+
+        let enabled = args.enabled.unwrap();
+
+        if enabled {
+            // Parse expires_in duration (default 30m)
+            let expires_in = args.expires_in.as_deref().unwrap_or("30m");
+            let duration = parse_duration(expires_in)?;
+            let expires_at = Utc::now() + duration;
+
+            self.audit_mode.enabled = true;
+            self.audit_mode.expires_at = Some(expires_at);
+
+            let result = serde_json::json!({
+                "audit_mode": true,
+                "message": "Audit mode enabled. Notes excluded from search and read.",
+                "remaining": self.audit_mode.remaining(),
+                "expires_at": expires_at.to_rfc3339(),
+            });
+
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&result)?
+                }]
+            }))
+        } else {
+            self.audit_mode.enabled = false;
+            self.audit_mode.expires_at = None;
+
+            let result = serde_json::json!({
+                "audit_mode": false,
+                "message": "Audit mode disabled. Notes included in search and read.",
+            });
+
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&result)?
+                }]
+            }))
+        }
     }
 
     /// Index notes into the database (embed and store)
@@ -1067,6 +1241,42 @@ fn validate_query_length(query: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Parse duration string like "30m", "1h", "2h30m" into chrono::Duration
+fn parse_duration(s: &str) -> Result<chrono::Duration> {
+    let s = s.trim().to_lowercase();
+    let mut total_minutes: i64 = 0;
+    let mut current_num = String::new();
+
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            current_num.push(c);
+        } else if c == 'h' {
+            let hours: i64 = current_num.parse().unwrap_or(0);
+            total_minutes += hours * 60;
+            current_num.clear();
+        } else if c == 'm' {
+            let mins: i64 = current_num.parse().unwrap_or(0);
+            total_minutes += mins;
+            current_num.clear();
+        }
+    }
+
+    // Handle bare number (assume minutes)
+    if !current_num.is_empty() {
+        let mins: i64 = current_num.parse().unwrap_or(0);
+        total_minutes += mins;
+    }
+
+    if total_minutes <= 0 {
+        bail!(
+            "Invalid duration: '{}'. Use format like '30m', '1h', '2h30m'",
+            s
+        );
+    }
+
+    Ok(chrono::Duration::minutes(total_minutes))
 }
 
 /// Error type for HTTP validation failures (JSON-RPC error response)
