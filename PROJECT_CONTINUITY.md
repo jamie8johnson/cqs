@@ -2,26 +2,28 @@
 
 ## Right Now
 
-**v0.1.18** - Audit fixes in progress.
+**v0.1.18** - Audit fixes complete.
 
-**PRs merged (2026-02-03):**
-- #87: Fixed #74 timing attack (subtle::ConstantTimeEq)
-- #88: Fixed #75 rsa vuln (sqlx default-features)
+**PRs merged (2026-02-03/04):**
+- #88: Fixed #74 timing attack (subtle::ConstantTimeEq)
+- #87: Fixed #75 rsa vuln (sqlx default-features)
 - #89: Fixed #64,82-84 quick wins batch
+- #90: Security tests (#76)
+- #91: FTS5 special char tests (#81)
+- #92: Split cli.rs into cli/ module (#78)
+- #93: Unit tests for embedder/cli (#77, #79)
+- #94: MCP edge case tests + IPv6 (#68)
+- #95: Property tests + security docs (#67, #69, #80, #86)
 
-**Open issues:**
-- #76 HIGH: Security tests for validate_api_key
-- #77 HIGH: cli.rs tests
-- #78 HIGH: Split cli.rs (~2000 lines)
-- #79 HIGH: embedder.rs tests
-- #80 MEDIUM: Symlink docs
-- #81 MEDIUM: FTS5 escape
-- #85 LOW: HNSW SAFETY comments (already present)
-- #86 LOW: Threat model docs
+**Closed issues (this session):**
+#64, #66, #67, #68, #69, #74, #75, #76, #77, #78, #79, #80, #81, #82, #83, #84, #85, #86
 
-**Previous issues:** #62-70 (first audit), #65 SAFETY comments (done)
+**Remaining open:**
+- #62: Broader test coverage (partial - embedder/cli done, cache/GPU init remain)
+- #70: Low-priority cleanup (ongoing)
+- #63: Monitor paste dep (external, no action)
 
-**Plan:** See `~/.claude/plans/snuggly-orbiting-journal.md`
+**Tests:** 145 total (was ~75 before audit)
 
 **5 unmaintained deps:** bincode, derivative, instant, number_prefix, paste (all transitive)
 
@@ -34,6 +36,10 @@
 - Length comparison leaks length
 - Use `subtle::ConstantTimeEq` crate
 
+**Property tests find real bugs:**
+- RRF bound calculation was wrong (duplicates can boost scores)
+- proptest found it immediately with minimal input
+
 ## Key Architecture
 
 - 769-dim embeddings (768 + sentiment)
@@ -42,9 +48,11 @@
 - VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
 - `src/language/` - LanguageRegistry with LanguageDef structs
 - `src/source/` - Source trait abstracts file/database sources
+- `src/cli/` - Split into mod.rs + display.rs
 - Feature flags: lang-rust, lang-python, lang-typescript, lang-javascript, lang-go
 - Storage: sqlx async SQLite with sync wrappers (4 connection pool, WAL mode)
 - HTTP auth: `--api-key` or `CQS_API_KEY` env var (required for non-localhost)
+- IPv6 localhost: `[::1]` now accepted in origin validation
 
 ## Build & Run
 
@@ -57,6 +65,7 @@ cargo build --release --features gpu-search
 
 - CAGRA persistence - hybrid startup approach used instead
 - Curator agent, fleet coordination
+- #62 broader test coverage - refactoring needed for testability
 
 ## Open Questions
 

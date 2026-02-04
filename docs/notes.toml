@@ -1,6 +1,7 @@
 # Notes - unified memory for AI collaborators
 # Surprises (prediction errors) worth remembering
-# sentiment: -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win)
+# sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
+#   -1 = serious pain, -0.5 = notable pain, 0 = neutral, 0.5 = notable gain, 1 = major win
 
 # === Pain (negative sentiment) ===
 
@@ -327,3 +328,13 @@ mentions = ["mcp.rs", "hnsw.rs", "discoverability"]
 sentiment = 0.5
 text = "Path traversal via checksum file: verify_hnsw_checksums read extensions from file, could be '../../../etc/passwd'. Fixed with HNSW_EXTENSIONS allowlist. Low severity (local read-only) but still worth hardening."
 mentions = ["hnsw.rs", "security", "path traversal"]
+
+[[note]]
+sentiment = 1
+text = "Skeptical 10-category audit complete. 16 issues closed. Property tests (proptest) added - found RRF bound bug immediately. Test count: 145. Security docs expanded with threat model, filesystem access, symlink behavior."
+mentions = ["SECURITY.md", "src/store.rs", "src/embedder.rs", "tests/mcp_test.rs"]
+
+[[note]]
+sentiment = 1
+text = "Post-audit assessment: codebase is solid. 145 tests, property tests found real bug, security documented honestly. Remaining gaps (cache/GPU testing) would need refactoring - adequate as-is. Ready for users."
+mentions = ["PROJECT_CONTINUITY.md"]
