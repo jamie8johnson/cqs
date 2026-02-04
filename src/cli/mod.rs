@@ -448,7 +448,7 @@ fn cmd_init(cli: &Cli) -> Result<()> {
         println!("Downloading model (~547MB)...");
     }
 
-    let mut embedder = Embedder::new().context("Failed to initialize embedder")?;
+    let embedder = Embedder::new().context("Failed to initialize embedder")?;
 
     if !cli.quiet {
         println!("Detecting hardware... {}", embedder.provider());
@@ -475,7 +475,7 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
 
     // Check model
     match Embedder::new() {
-        Ok(mut embedder) => {
+        Ok(embedder) => {
             println!("  {} Model: intfloat/e5-base-v2", "[✓]".green());
             println!("  {} Tokenizer: loaded", "[✓]".green());
             println!("  {} Execution: {}", "[✓]".green(), embedder.provider());
@@ -738,7 +738,7 @@ fn run_index_pipeline(
 
     // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
     let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let mut embedder = Embedder::new()?;
+        let embedder = Embedder::new()?;
         embedder.warm()?;
         let store = Store::open(&store_path_for_embedder)?;
 
@@ -855,7 +855,7 @@ fn run_index_pipeline(
 
     // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
     let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let mut embedder = Embedder::new_cpu()?;
+        let embedder = Embedder::new_cpu()?;
         let store = Store::open(&store_path_for_cpu)?;
 
         loop {
@@ -1153,7 +1153,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
                     Ok(notes) => {
                         if !notes.is_empty() {
                             // Embed note content with sentiment
-                            let mut embedder = Embedder::new()?;
+                            let embedder = Embedder::new()?;
                             let texts: Vec<String> =
                                 notes.iter().map(|n| n.embedding_text()).collect();
                             let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
@@ -1234,7 +1234,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     let store = Store::open(&index_path)?;
-    let mut embedder = Embedder::new()?;
+    let embedder = Embedder::new()?;
 
     let query_embedding = embedder.embed_query(query)?;
 
@@ -1650,7 +1650,7 @@ fn reindex_files(
     _no_ignore: bool,
     quiet: bool,
 ) -> Result<usize> {
-    let mut embedder = Embedder::new()?;
+    let embedder = Embedder::new()?;
     let store = Store::open(index_path)?;
 
     // Parse the changed files
@@ -1726,7 +1726,7 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
         return Ok(0);
     }
 
-    let mut embedder = Embedder::new()?;
+    let embedder = Embedder::new()?;
     let store = Store::open(index_path)?;
 
     // Embed note content with sentiment prefix

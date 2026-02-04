@@ -288,13 +288,13 @@ impl Embedder {
     }
 
     /// Embed documents (code chunks). Adds "passage: " prefix for E5.
-    pub fn embed_documents(&mut self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
+    pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
         self.embed_batch(&prefixed)
     }
 
     /// Embed a query. Adds "query: " prefix for E5. Uses LRU cache for repeated queries.
-    pub fn embed_query(&mut self, text: &str) -> Result<Embedding, EmbedderError> {
+    pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);
@@ -345,12 +345,12 @@ impl Embedder {
     }
 
     /// Warm up the model with a dummy inference
-    pub fn warm(&mut self) -> Result<(), EmbedderError> {
+    pub fn warm(&self) -> Result<(), EmbedderError> {
         let _ = self.embed_query("warmup")?;
         Ok(())
     }
 
-    fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Embedding>, EmbedderError> {
+    fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbedderError> {
         use ort::value::Tensor;
 
         let _span = tracing::info_span!("embed_batch", count = texts.len()).entered();
