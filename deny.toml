@@ -1,0 +1,66 @@
+# cargo-deny configuration
+# Run: cargo deny check
+# Install: cargo install cargo-deny
+
+[advisories]
+version = 2
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+notice = "warn"
+
+# Known unmaintained dependencies we accept (via transitive deps)
+ignore = [
+    # bincode 1.x - via hnsw_rs, mitigated by blake3 checksum verification
+    "RUSTSEC-2025-0141",
+    # derivative - via keyring -> secret-service -> zbus chain (optional feature)
+    "RUSTSEC-2024-0388",
+    # instant - via keyring -> zbus chain (optional feature)
+    "RUSTSEC-2024-0384",
+    # number_prefix - via indicatif (progress bars only)
+    "RUSTSEC-2025-0119",
+    # paste - via tokenizers (upstream dependency)
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+version = 2
+# Confidence threshold for detecting license
+confidence-threshold = 0.8
+# List of allowed licenses (SPDX identifiers)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CDLA-Permissive-2.0",
+]
+# Copyleft licenses that require careful consideration
+# copyleft = "warn"
+
+[bans]
+# Lint level for multiple versions of the same crate
+multiple-versions = "warn"
+# Lint level for crates with wildcard dependencies
+wildcards = "warn"
+# Allow-list specific crate duplicates we accept
+# skip = []
+
+[sources]
+# Only allow crates from crates.io
+unknown-registry = "deny"
+unknown-git = "deny"
+# Allow specific git sources if needed
+# allow-git = []
