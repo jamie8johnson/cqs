@@ -1117,6 +1117,67 @@ fn example() {
             assert!(names.contains(&"other"));
             assert!(names.contains(&"real_function"));
         }
+
+        #[test]
+        fn test_parse_file_calls() {
+            let content = r#"
+fn caller() {
+    helper();
+    other_func();
+}
+
+fn another() {
+    third();
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let function_calls = parser.parse_file_calls(file.path()).unwrap();
+
+            // Should return calls for both functions
+            assert_eq!(function_calls.len(), 2);
+
+            // First function
+            let caller = function_calls
+                .iter()
+                .find(|fc| fc.name == "caller")
+                .unwrap();
+            let caller_names: Vec<_> = caller
+                .calls
+                .iter()
+                .map(|c| c.callee_name.as_str())
+                .collect();
+            assert!(caller_names.contains(&"helper"));
+            assert!(caller_names.contains(&"other_func"));
+
+            // Second function
+            let another = function_calls
+                .iter()
+                .find(|fc| fc.name == "another")
+                .unwrap();
+            let another_names: Vec<_> = another
+                .calls
+                .iter()
+                .map(|c| c.callee_name.as_str())
+                .collect();
+            assert!(another_names.contains(&"third"));
+        }
+
+        #[test]
+        fn test_parse_file_calls_unsupported_extension() {
+            let file = write_temp_file("not code", "txt");
+            let parser = Parser::new().unwrap();
+            let result = parser.parse_file_calls(file.path());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_parse_file_calls_empty_file() {
+            let file = write_temp_file("", "rs");
+            let parser = Parser::new().unwrap();
+            let function_calls = parser.parse_file_calls(file.path()).unwrap();
+            assert!(function_calls.is_empty());
+        }
     }
 
     /// Test language detection

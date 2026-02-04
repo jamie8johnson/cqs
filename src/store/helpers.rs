@@ -29,9 +29,9 @@ pub enum StoreError {
     ModelMismatch(String, String),
 }
 
-/// Raw row from chunks table (used by search module)
+/// Raw row from chunks table (crate-internal, used by search module)
 #[derive(Clone)]
-pub struct ChunkRow {
+pub(crate) struct ChunkRow {
     pub id: String,
     pub origin: String,
     pub language: String,
