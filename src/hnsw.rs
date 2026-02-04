@@ -137,7 +137,10 @@ impl Drop for LoadedHnsw {
     }
 }
 
-// SAFETY: HnswIo and Hnsw are both Send+Sync when T and D are
+// SAFETY: LoadedHnsw is Send+Sync because:
+// - io_ptr points to HnswIo which only contains file paths and data buffers
+// - Hnsw<f32, DistCosine> contains data structures that are inherently thread-safe
+// - All mutable access is protected by external synchronization (RwLock in HnswIndex)
 unsafe impl Send for LoadedHnsw {}
 unsafe impl Sync for LoadedHnsw {}
 
@@ -355,9 +358,9 @@ impl HnswIndex {
         let hnsw_io = Box::new(HnswIo::new(dir, basename));
         let io_ptr = Box::into_raw(hnsw_io);
 
-        // SAFETY: io_ptr is valid, we just created it
+        // SAFETY: io_ptr is valid, we just created it from Box::into_raw above
         let hnsw: Hnsw<'_, f32, DistCosine> = unsafe { &mut *io_ptr }.load_hnsw().map_err(|e| {
-            // Clean up on error
+            // SAFETY: io_ptr was created from Box::into_raw, safe to reclaim on error path
             unsafe {
                 drop(Box::from_raw(io_ptr));
             }

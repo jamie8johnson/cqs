@@ -157,7 +157,7 @@ impl CagraIndex {
 
         // Take the index (cuVS search consumes it)
         let index = {
-            let mut guard = self.index.lock().unwrap();
+            let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
             guard.take()
         };
 
@@ -183,7 +183,7 @@ impl CagraIndex {
             Err(e) => {
                 tracing::error!("Failed to create search params: {}", e);
                 // Put index back
-                let mut guard = self.index.lock().unwrap();
+                let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
                 *guard = Some(index);
                 return Vec::new();
             }
@@ -198,7 +198,7 @@ impl CagraIndex {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("Failed to copy query to device: {}", e);
-                let mut guard = self.index.lock().unwrap();
+                let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
                 *guard = Some(index);
                 return Vec::new();
             }
@@ -213,7 +213,7 @@ impl CagraIndex {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to allocate neighbors on device: {}", e);
-                    let mut guard = self.index.lock().unwrap();
+                    let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
                     *guard = Some(index);
                     return Vec::new();
                 }
@@ -224,7 +224,7 @@ impl CagraIndex {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to allocate distances on device: {}", e);
-                    let mut guard = self.index.lock().unwrap();
+                    let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
                     *guard = Some(index);
                     return Vec::new();
                 }

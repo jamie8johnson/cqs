@@ -178,7 +178,9 @@ impl Embedder {
             _ => 16,
         };
 
-        let query_cache = Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
+        let query_cache = Mutex::new(LruCache::new(
+            NonZeroUsize::new(100).expect("100 is non-zero"),
+        ));
 
         Ok(Self {
             session: OnceCell::new(),
@@ -199,7 +201,9 @@ impl Embedder {
     pub fn new_cpu() -> Result<Self, EmbedderError> {
         let (model_path, tokenizer_path) = ensure_model()?;
 
-        let query_cache = Mutex::new(LruCache::new(NonZeroUsize::new(100).unwrap()));
+        let query_cache = Mutex::new(LruCache::new(
+            NonZeroUsize::new(100).expect("100 is non-zero"),
+        ));
 
         Ok(Self {
             session: OnceCell::new(),
@@ -299,7 +303,7 @@ impl Embedder {
         // Check cache first
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
-                tracing::warn!("Query cache lock poisoned, recovering");
+                tracing::debug!("Query cache lock poisoned, recovering");
                 poisoned.into_inner()
             });
             if let Some(cached) = cache.get(text) {
@@ -321,7 +325,7 @@ impl Embedder {
         // Store in cache
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
-                tracing::warn!("Query cache lock poisoned, recovering");
+                tracing::debug!("Query cache lock poisoned, recovering");
                 poisoned.into_inner()
             });
             cache.put(text.to_string(), embedding.clone());
