@@ -374,9 +374,10 @@ impl Parser {
             base_chunk_type
         };
 
-        // Content hash for deduplication
+        // Content hash for deduplication (BLAKE3 produces 64 hex chars)
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        let id = format!("{}:{}:{}", path.display(), line_start, &content_hash[..8]);
+        let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
+        let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
 
         Ok(Chunk {
             id,
@@ -643,8 +644,9 @@ impl Parser {
 
         while let Some(m) = matches.next() {
             // Find function node
+            let capture_names = chunk_query.capture_names();
             let func_node = m.captures.iter().find(|c| {
-                let name = chunk_query.capture_names()[c.index as usize];
+                let name = capture_names.get(c.index as usize).copied().unwrap_or("");
                 matches!(
                     name,
                     "function" | "struct" | "class" | "enum" | "trait" | "interface" | "const"

@@ -92,10 +92,16 @@ pub fn tokenize_identifier(s: &str) -> Vec<String> {
     words
 }
 
+/// Maximum output length for FTS normalization.
+/// Prevents memory exhaustion from pathological inputs where tokenization
+/// expands text (e.g., "ABCD" → "a b c d" doubles length).
+const MAX_FTS_OUTPUT_LEN: usize = 16384;
+
 /// Normalize code text for FTS5 indexing.
 ///
 /// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
 /// Used to make code searchable with natural language queries.
+/// Output is capped at 16KB to prevent memory issues with pathological inputs.
 ///
 /// # Example
 ///
@@ -119,6 +125,12 @@ pub fn normalize_for_fts(text: &str) -> String {
             }
             result.push_str(&tokens.join(" "));
             current_word.clear();
+
+            // Cap output to prevent memory issues
+            if result.len() >= MAX_FTS_OUTPUT_LEN {
+                result.truncate(MAX_FTS_OUTPUT_LEN);
+                return result;
+            }
         }
     }
     if !current_word.is_empty() {
@@ -127,6 +139,11 @@ pub fn normalize_for_fts(text: &str) -> String {
             result.push(' ');
         }
         result.push_str(&tokens.join(" "));
+    }
+
+    // Final cap check
+    if result.len() > MAX_FTS_OUTPUT_LEN {
+        result.truncate(MAX_FTS_OUTPUT_LEN);
     }
     result
 }
@@ -520,6 +537,28 @@ mod tests {
         assert_eq!(info.params[0], ("x".to_string(), "number".to_string()));
         assert_eq!(info.params[1], ("name".to_string(), "string".to_string()));
         assert_eq!(info.returns, Some("boolean".to_string()));
+    }
+
+    #[test]
+    fn test_normalize_for_fts_output_bounded() {
+        // Pathological input: all uppercase chars tokenize to "a b c d ..."
+        // which roughly doubles the length
+        let long_upper = "A".repeat(20000);
+        let result = normalize_for_fts(&long_upper);
+        assert!(
+            result.len() <= super::MAX_FTS_OUTPUT_LEN,
+            "FTS output should be capped at {} but was {}",
+            super::MAX_FTS_OUTPUT_LEN,
+            result.len()
+        );
+    }
+
+    #[test]
+    fn test_normalize_for_fts_normal_input_unchanged() {
+        // Normal inputs should work as expected
+        assert_eq!(normalize_for_fts("hello"), "hello");
+        assert_eq!(normalize_for_fts("HelloWorld"), "hello world");
+        assert_eq!(normalize_for_fts("get_user_name"), "get user name");
     }
 
     // ===== Fuzz tests =====
