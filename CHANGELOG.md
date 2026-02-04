@@ -16,8 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `EmbedderError` display formatting (2 tests)
   - `apply_config_defaults` behavior (3 tests)
   - `ExitCode` values (1 test)
+- Doc comments for CLI command functions (#70, #137)
+- Test helper module `tests/common/mod.rs` (#137)
+  - `TestStore` for automatic temp directory setup
+  - `test_chunk()` and `mock_embedding()` utilities
 
 ### Changed
+- Refactored `cmd_serve` to use `ServeConfig` struct (#138)
+  - Removes clippy `too_many_arguments` warning
+- Removed unused `ExitCode` variants (`IndexMissing`, `ModelMissing`) (#138)
 - **Refactored Store module** (#125, #133): Split 1,916-line god object into focused modules
   - `src/store/mod.rs` (468 lines) - Store struct, open/init, FTS5, RRF
   - `src/store/chunks.rs` (352 lines) - Chunk CRUD operations
@@ -36,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tokenizes before lowercasing instead of after
 
 ### Closed Issues
-- #62, #101, #102-#114, #121-#125
+- #62, #70, #101, #102-#114, #121-#125
 
 ## [0.2.1] - 2026-02-04
 
