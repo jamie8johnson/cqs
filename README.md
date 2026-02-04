@@ -24,6 +24,8 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 
 ## Install
 
+**Requires Rust 1.88+** (due to `ort` ONNX runtime dependency)
+
 ```bash
 cargo install cqs
 ```
