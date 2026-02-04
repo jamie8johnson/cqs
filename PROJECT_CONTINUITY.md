@@ -2,40 +2,48 @@
 
 ## Right Now
 
-**P1 fixes IN PROGRESS** (2026-02-04)
+**PR #151: P1 audit fixes** (2026-02-04)
+Branch: `fix/p1-audit-fixes` | CI pending
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Completed (~21 of 64)
+### P1 Completed (~28 of 64)
 
 | Fix | Location |
 |-----|----------|
 | Line number clamping helper | helpers.rs + 10 call sites |
-| Model name mismatches | lib.rs, embedder.rs, CI workflow |
-| DESIGN_SPEC model note | docs/DESIGN_SPEC_27k_tokens.md |
-| Go return type extraction | nl.rs |
-| display.rs bounds checking | cli/display.rs |
-| SQLite magic numbers | store/mod.rs (comments) |
+| Model name mismatches | lib.rs, embedder.rs (src already fixed) |
+| Go return type extraction | nl.rs (multi-return: `(string, error)`) |
+| display.rs bounds checking | cli/display.rs (already saturating) |
+| SQLite magic numbers | store/mod.rs (documented) |
 | get_by_content_hash error | store/chunks.rs |
 | FTS delete error logging | chunks.rs, notes.rs |
 | parse_duration strictness | mcp.rs |
-| parse_duration tests | mcp.rs (10 new tests) |
-| Call extraction underflow | parser.rs |
-| RRF test max bound | store/mod.rs |
-| TypeScript return type | nl.rs (documented) |
-| Dead code markers | verified correct |
+| parse_duration tests | mcp.rs (10 tests) |
+| Call extraction underflow | parser.rs (already saturating_sub) |
+| RRF test max bound | store/mod.rs (0.5 is fine) |
+| TypeScript return type | nl.rs (documented limitation) |
+| Dead code markers | verified correct (serde usage) |
 | Tracing RUST_LOG support | main.rs (EnvFilter) |
 | embed_batch empty check | embedder.rs |
-| Panic paths | verified appropriate use of .expect() |
-| cosine_similarity tests | search.rs (4 new tests) |
+| Panic paths | verified appropriate |
+| cosine_similarity tests | search.rs (4 tests) |
+| name_match_score tests | search.rs (5 tests) |
 | delete_by_origin test | tests/store_test.rs |
 | needs_reindex test | tests/store_test.rs |
-| name_match_score | already tested
+| AuditMode tests | mcp.rs (4 tests) |
+| Embedder tracing spans | embedder.rs (tokenize, inference) |
+| MCP tool call logging | mcp.rs |
+| Config loading debug | config.rs |
+| Language enum docs | parser.rs |
+| ParserError/NoteError docs | parser.rs, note.rs |
+| Project root markers | cli/mod.rs (documented) |
+| embedding_slice logging | helpers.rs (trace level)
 
-### Next P1 Items
-- Observability: tracing subscriber, embedder timing, MCP logging
-- Test coverage: token_count, cosine_similarity, delete_by_origin
-- API design: redundant HnswResult, SearchFilter validation
+### Remaining P1 (High Priority)
+- Test coverage: token_count, Source error paths, parse_file_calls
+- Module boundaries: CLI imports, ChunkRow exposure
+- API design: redundant types, validation
 
 ### Remaining Tiers
 | Tier | Count | Status |
