@@ -8,7 +8,7 @@
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use chrono::{DateTime, Utc};
 use subtle::ConstantTimeEq;
@@ -194,17 +194,21 @@ impl AuditMode {
 }
 
 /// MCP Server
+///
+/// Uses interior mutability (OnceLock, Mutex) to allow concurrent read access
+/// via RwLock read locks. This enables parallel request handling.
 pub struct McpServer {
     store: Store,
-    embedder: Option<Embedder>,
+    /// Lazily initialized embedder (thread-safe via OnceLock)
+    embedder: OnceLock<Embedder>,
     project_root: PathBuf,
     /// Vector index for O(log n) search (CAGRA or HNSW)
     /// Wrapped in Arc<RwLock> to allow background CAGRA upgrade
     index: Arc<RwLock<Option<Box<dyn VectorIndex>>>>,
     /// Use GPU for query embedding
     use_gpu: bool,
-    /// Audit mode state
-    audit_mode: AuditMode,
+    /// Audit mode state (interior mutability for concurrent access)
+    audit_mode: Mutex<AuditMode>,
 }
 
 impl McpServer {
@@ -238,11 +242,11 @@ impl McpServer {
 
         Ok(Self {
             store,
-            embedder: None,
+            embedder: OnceLock::new(),
             project_root,
             index,
             use_gpu,
-            audit_mode: AuditMode::default(),
+            audit_mode: Mutex::new(AuditMode::default()),
         })
     }
 
@@ -295,20 +299,33 @@ impl McpServer {
     }
 
     /// Ensure embedder is loaded (lazy initialization)
-    fn ensure_embedder(&mut self) -> Result<&mut Embedder> {
-        if self.embedder.is_none() {
-            self.embedder = Some(if self.use_gpu {
-                Embedder::new()?
-            } else {
-                Embedder::new_cpu()?
-            });
+    ///
+    /// Uses OnceLock for thread-safe lazy initialization without requiring &mut self.
+    /// This allows concurrent read access via RwLock read locks.
+    fn ensure_embedder(&self) -> Result<&Embedder> {
+        // Fast path: already initialized
+        if let Some(embedder) = self.embedder.get() {
+            return Ok(embedder);
         }
-        // unwrap is safe: we just set it to Some above if it was None
-        Ok(self.embedder.as_mut().unwrap())
+
+        // Slow path: initialize
+        let new_embedder = if self.use_gpu {
+            Embedder::new()?
+        } else {
+            Embedder::new_cpu()?
+        };
+
+        // Try to set (another thread might have raced us, that's OK)
+        let _ = self.embedder.set(new_embedder);
+
+        // Return reference (definitely initialized now, either by us or another thread)
+        Ok(self.embedder.get().expect("embedder just initialized"))
     }
 
     /// Handle a JSON-RPC request
-    pub fn handle_request(&mut self, request: JsonRpcRequest) -> JsonRpcResponse {
+    ///
+    /// Takes &self (not &mut self) to allow concurrent request handling via read locks.
+    pub fn handle_request(&self, request: JsonRpcRequest) -> JsonRpcResponse {
         let result = match request.method.as_str() {
             "initialize" => self.handle_initialize(request.params),
             "initialized" => Ok(Value::Null), // Notification, no response needed
@@ -510,7 +527,7 @@ impl McpServer {
         Ok(serde_json::to_value(ToolsListResult { tools })?)
     }
 
-    fn handle_tools_call(&mut self, params: Option<Value>) -> Result<Value> {
+    fn handle_tools_call(&self, params: Option<Value>) -> Result<Value> {
         let params = params.ok_or_else(|| anyhow::anyhow!("Missing params"))?;
 
         let name = params
@@ -538,7 +555,7 @@ impl McpServer {
         }
     }
 
-    fn tool_search(&mut self, arguments: Value) -> Result<Value> {
+    fn tool_search(&self, arguments: Value) -> Result<Value> {
         // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
         let args: SearchArgs = serde_json::from_value(arguments)?;
         validate_query_length(&args.query)?;
@@ -563,7 +580,11 @@ impl McpServer {
         let index_guard = self.index.read().unwrap_or_else(|e| e.into_inner());
 
         // Check audit mode - if active, use code-only search
-        let audit_active = self.audit_mode.is_active();
+        let audit_active = self
+            .audit_mode
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_active();
         let results: Vec<UnifiedResult> = if audit_active {
             // Code-only search when audit mode is active
             let code_results = self.store.search_filtered_with_index(
@@ -623,7 +644,12 @@ impl McpServer {
         });
 
         // Add audit mode status if active
-        if let Some(status) = self.audit_mode.status_line() {
+        if let Some(status) = self
+            .audit_mode
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .status_line()
+        {
             result["audit_mode"] = serde_json::json!(status);
         }
 
@@ -745,7 +771,7 @@ impl McpServer {
         }))
     }
 
-    fn tool_read(&mut self, arguments: Value) -> Result<Value> {
+    fn tool_read(&self, arguments: Value) -> Result<Value> {
         let path = arguments
             .get("path")
             .and_then(|p| p.as_str())
@@ -773,13 +799,15 @@ impl McpServer {
             .context(format!("Failed to read file: {}", path))?;
 
         // Check audit mode - if active, skip note injection
-        let audit_active = self.audit_mode.is_active();
+        let audit_guard = self.audit_mode.lock().unwrap_or_else(|e| e.into_inner());
+        let audit_active = audit_guard.is_active();
         let mut context_header = String::new();
 
         // Add audit mode status line if active
-        if let Some(status) = self.audit_mode.status_line() {
+        if let Some(status) = audit_guard.status_line() {
             context_header.push_str(&format!("// {}\n//\n", status));
         }
+        drop(audit_guard); // Release lock before file I/O
 
         // Find relevant notes by searching for this file path (skip if audit mode active)
         if !audit_active {
@@ -847,7 +875,7 @@ impl McpServer {
         }))
     }
 
-    fn tool_add_note(&mut self, arguments: Value) -> Result<Value> {
+    fn tool_add_note(&self, arguments: Value) -> Result<Value> {
         let text = arguments
             .get("text")
             .and_then(|t| t.as_str())
@@ -974,16 +1002,17 @@ impl McpServer {
         }))
     }
 
-    fn tool_audit_mode(&mut self, arguments: Value) -> Result<Value> {
+    fn tool_audit_mode(&self, arguments: Value) -> Result<Value> {
         let args: AuditModeArgs = serde_json::from_value(arguments)?;
+        let mut audit_mode = self.audit_mode.lock().unwrap_or_else(|e| e.into_inner());
 
         // If no enabled argument, just query current state
         if args.enabled.is_none() {
-            let result = if self.audit_mode.is_active() {
+            let result = if audit_mode.is_active() {
                 serde_json::json!({
                     "audit_mode": true,
-                    "remaining": self.audit_mode.remaining(),
-                    "expires_at": self.audit_mode.expires_at.map(|t| t.to_rfc3339()),
+                    "remaining": audit_mode.remaining(),
+                    "expires_at": audit_mode.expires_at.map(|t| t.to_rfc3339()),
                 })
             } else {
                 serde_json::json!({
@@ -1007,13 +1036,13 @@ impl McpServer {
             let duration = parse_duration(expires_in)?;
             let expires_at = Utc::now() + duration;
 
-            self.audit_mode.enabled = true;
-            self.audit_mode.expires_at = Some(expires_at);
+            audit_mode.enabled = true;
+            audit_mode.expires_at = Some(expires_at);
 
             let result = serde_json::json!({
                 "audit_mode": true,
                 "message": "Audit mode enabled. Notes excluded from search and read.",
-                "remaining": self.audit_mode.remaining(),
+                "remaining": audit_mode.remaining(),
                 "expires_at": expires_at.to_rfc3339(),
             });
 
@@ -1024,8 +1053,8 @@ impl McpServer {
                 }]
             }))
         } else {
-            self.audit_mode.enabled = false;
-            self.audit_mode.expires_at = None;
+            audit_mode.enabled = false;
+            audit_mode.expires_at = None;
 
             let result = serde_json::json!({
                 "audit_mode": false,
@@ -1043,7 +1072,7 @@ impl McpServer {
 
     /// Index notes into the database (embed and store)
     fn index_notes(
-        &mut self,
+        &self,
         notes: &[crate::note::Note],
         notes_path: &std::path::Path,
     ) -> Result<usize> {
@@ -1088,7 +1117,7 @@ impl McpServer {
 
 /// Run the MCP server with stdio transport
 pub fn serve_stdio(project_root: PathBuf, use_gpu: bool) -> Result<()> {
-    let mut server = McpServer::new(project_root, use_gpu)?;
+    let server = McpServer::new(project_root, use_gpu)?;
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -1429,7 +1458,9 @@ async fn handle_mcp_post(
     }
 
     let response = {
-        let mut server = match state.server.write() {
+        // Use read lock - McpServer uses interior mutability (OnceLock, Mutex)
+        // for state that needs modification, allowing concurrent request handling
+        let server = match state.server.read() {
             Ok(s) => s,
             Err(poisoned) => {
                 tracing::warn!("Server lock poisoned, recovering");
