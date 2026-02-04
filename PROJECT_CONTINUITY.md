@@ -6,7 +6,7 @@
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Status: 59 of 64 Closed
+### P1 Status: 62 of 64 Closed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -17,6 +17,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 5 | Commented debug code | Closed: doc examples, not debug |
 | 6 | CLI imports internal types | Closed: uses public API correctly |
 | 7 | ChunkRow exposed publicly | Fixed: pub(crate) |
+| 9 | normalize_for_fts location | Fixed: moved to nl.rs |
 | 11 | Missing doc comments | Fixed: parser.rs, note.rs, nl.rs |
 | 12 | Redundant HnswResult | Fixed: use IndexResult directly |
 | 13 | serve_http/stdio docs | Fixed: mcp.rs |
@@ -25,6 +26,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 16 | Language::FromStr error | Closed: works correctly |
 | 17 | Config::merge naming | Closed: well-documented |
 | 18 | Note index-based IDs | Fixed: content-hash IDs |
+| 19 | &Path vs PathBuf | Fixed: impl AsRef<Path> API |
 | 20 | VectorIndex &Embedding | Closed: type-safe design |
 | 21 | Swallowed .ok() patterns | Closed: intentional (mtime, etc) |
 | 22 | FTS delete errors | Fixed: logging added |
@@ -39,6 +41,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 32 | Parser errors detailed | Closed: already detailed |
 | 33 | HNSW checksum logging | Closed: appropriate levels |
 | 34 | Config loading silent | Fixed: debug logging |
+| 35 | token_count test | Fixed: 4 integration tests (#[ignore]) |
 | 36 | cosine_similarity tests | Fixed: 4 tests |
 | 37 | name_match_score tests | Fixed: 5 tests |
 | 38 | delete_by_origin test | Fixed: store_test.rs |
@@ -62,26 +65,20 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 63 | Callee skip list | Fixed: documented |
 | 64 | Sentiment thresholds | Fixed: documented |
 
-### Remaining P1: 5 items
+### Remaining P1: 2 items (deferred to P4)
 
 | # | Issue | Status |
 |---|-------|--------|
-| 8 | nl coupled to parser | Deferred: architectural (P4) |
-| 9 | normalize_for_fts location | Deferred: architectural (P4) |
-| 10 | CAGRA/HNSW scattered | Deferred: architectural (P4) |
-| 19 | &Path vs PathBuf | Deferred: minor ergonomic |
-| 35 | token_count test | Deferred: needs integration test |
-| 57 | Hardcoded language list | Closed: has sync comment |
-| 61 | SignatureStyle closed | Closed: intentional design |
-| 62 | RRF K constant | Closed: documented |
+| 8 | nl coupled to parser | Deferred: architectural |
+| 10 | CAGRA/HNSW scattered | Deferred: architectural |
 
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P1 | 5 deferred | Move to P4 |
+| P1 | 2 deferred | Move to P4 |
 | P2 | 58 | Pending |
 | P3 | 43 | Pending |
-| P4 | 19 + 5 = 24 | Create GitHub issues |
+| P4 | 19 + 2 = 21 | Create GitHub issues |
 
 ## Previous Session
 
