@@ -137,6 +137,30 @@ fn test_corrupted_id_map_json() {
 }
 
 #[test]
+fn test_id_map_size_mismatch_rejected() {
+    let tmp = TempDir::new().unwrap();
+
+    // Build and save a valid index with 3 vectors
+    let embeddings: Vec<_> = (1..=3)
+        .map(|i| (format!("chunk{}", i), make_embedding(i)))
+        .collect();
+    let index = HnswIndex::build(embeddings).unwrap();
+    index.save(tmp.path(), "test").unwrap();
+
+    // Modify id_map to have wrong count (2 instead of 3)
+    let id_map_path = tmp.path().join("test.hnsw.ids");
+    std::fs::write(&id_map_path, r#"["chunk1", "chunk2"]"#).unwrap();
+
+    // Loading should fail due to size mismatch
+    let result = HnswIndex::load(tmp.path(), "test");
+    // Note: checksum verification may catch this first, but if bypassed, size check will catch it
+    assert!(
+        result.is_err(),
+        "ID map size mismatch should cause load to fail"
+    );
+}
+
+#[test]
 fn test_dimension_mismatch_rejected() {
     // Try to build with wrong dimension embedding
     let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 769

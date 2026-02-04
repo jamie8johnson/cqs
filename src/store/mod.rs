@@ -242,6 +242,10 @@ impl Store {
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
         let normalized_query = normalize_for_fts(query);
         if normalized_query.is_empty() {
+            tracing::debug!(
+                original_query = %query,
+                "Query normalized to empty string, returning no FTS results"
+            );
             return Ok(vec![]);
         }
 
