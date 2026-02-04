@@ -1115,12 +1115,7 @@ fn validate_api_key(
 fn validate_origin_header(headers: &HeaderMap) -> Result<(), ValidationError> {
     if let Some(origin) = headers.get("origin") {
         let origin_str = origin.to_str().unwrap_or("");
-        if !origin_str.is_empty()
-            && !origin_str.starts_with("http://localhost")
-            && !origin_str.starts_with("http://127.0.0.1")
-            && !origin_str.starts_with("https://localhost")
-            && !origin_str.starts_with("https://127.0.0.1")
-        {
+        if !origin_str.is_empty() && !is_localhost_origin(origin_str) {
             return Err((
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({
@@ -1131,6 +1126,28 @@ fn validate_origin_header(headers: &HeaderMap) -> Result<(), ValidationError> {
         }
     }
     Ok(())
+}
+
+/// Check if origin is a valid localhost origin.
+/// Prevents bypass via subdomains like localhost.evil.com
+fn is_localhost_origin(origin: &str) -> bool {
+    // Check each allowed prefix and ensure it's followed by end, port, or path
+    let prefixes = [
+        "http://localhost",
+        "http://127.0.0.1",
+        "https://localhost",
+        "https://127.0.0.1",
+    ];
+
+    for prefix in prefixes {
+        if let Some(rest) = origin.strip_prefix(prefix) {
+            // After prefix, must be empty, start with ':', or start with '/'
+            if rest.is_empty() || rest.starts_with(':') || rest.starts_with('/') {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Require Accept header includes text/event-stream for SSE endpoints.
@@ -1276,4 +1293,181 @@ fn uuid_simple() -> String {
         .as_nanos();
     let random: u32 = rand::rng().random();
     format!("{:x}-{:08x}", nanos, random)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== validate_api_key tests =====
+
+    #[test]
+    fn test_api_key_no_key_configured() {
+        let headers = HeaderMap::new();
+        assert!(validate_api_key(&headers, None).is_ok());
+    }
+
+    #[test]
+    fn test_api_key_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer secret123".parse().unwrap());
+        assert!(validate_api_key(&headers, Some("secret123")).is_ok());
+    }
+
+    #[test]
+    fn test_api_key_invalid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer wrong".parse().unwrap());
+        let result = validate_api_key(&headers, Some("secret123"));
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_api_key_missing_header() {
+        let headers = HeaderMap::new();
+        let result = validate_api_key(&headers, Some("secret123"));
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_api_key_empty_provided() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer ".parse().unwrap());
+        let result = validate_api_key(&headers, Some("secret123"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_api_key_wrong_prefix() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Basic secret123".parse().unwrap());
+        let result = validate_api_key(&headers, Some("secret123"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_api_key_case_sensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer SECRET123".parse().unwrap());
+        let result = validate_api_key(&headers, Some("secret123"));
+        assert!(result.is_err());
+    }
+
+    // ===== validate_origin_header tests =====
+
+    #[test]
+    fn test_origin_missing() {
+        let headers = HeaderMap::new();
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_empty() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_localhost_http() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://localhost".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_localhost_with_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://localhost:3000".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_127_0_0_1() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://127.0.0.1".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_localhost_https() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://localhost".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_127_0_0_1_https() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://127.0.0.1:8443".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_external_rejected() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://evil.com".parse().unwrap());
+        let result = validate_origin_header(&headers);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_origin_localhost_in_subdomain_rejected() {
+        // localhost.evil.com must be rejected - DNS rebinding attack vector
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://localhost.evil.com".parse().unwrap());
+        let result = validate_origin_header(&headers);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_origin_localhost_with_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://localhost/api".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    // ===== require_accept_event_stream tests =====
+
+    #[test]
+    fn test_accept_event_stream_valid() {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "text/event-stream".parse().unwrap());
+        assert!(require_accept_event_stream(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_accept_event_stream_with_other_types() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "accept",
+            "application/json, text/event-stream".parse().unwrap(),
+        );
+        assert!(require_accept_event_stream(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_accept_missing() {
+        let headers = HeaderMap::new();
+        let result = require_accept_event_stream(&headers);
+        assert!(result.is_err());
+        let (status, _) = result.unwrap_err();
+        assert_eq!(status, StatusCode::NOT_ACCEPTABLE);
+    }
+
+    #[test]
+    fn test_accept_wrong_type() {
+        let mut headers = HeaderMap::new();
+        headers.insert("accept", "application/json".parse().unwrap());
+        let result = require_accept_event_stream(&headers);
+        assert!(result.is_err());
+    }
 }
