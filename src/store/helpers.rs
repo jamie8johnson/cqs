@@ -154,6 +154,7 @@ impl UnifiedResult {
 /// Filter and scoring options for search
 ///
 /// All fields are optional. Unset filters match all chunks.
+/// Use `validate()` to check constraints before searching.
 #[derive(Default)]
 pub struct SearchFilter {
     /// Filter by programming language(s)
@@ -174,6 +175,25 @@ pub struct SearchFilter {
     /// using the formula: score = Σ 1/(k + rank), where k=60.
     /// This typically improves recall for identifier-heavy queries.
     pub enable_rrf: bool,
+}
+
+impl SearchFilter {
+    /// Validate filter constraints
+    ///
+    /// Returns Ok(()) if valid, or Err with description of what's wrong.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        // name_boost must be in [0.0, 1.0]
+        if self.name_boost < 0.0 || self.name_boost > 1.0 {
+            return Err("name_boost must be between 0.0 and 1.0");
+        }
+
+        // query_text required when name_boost > 0 or enable_rrf
+        if (self.name_boost > 0.0 || self.enable_rrf) && self.query_text.is_empty() {
+            return Err("query_text required when name_boost > 0 or enable_rrf is true");
+        }
+
+        Ok(())
+    }
 }
 
 /// Model metadata for index initialization
@@ -261,4 +281,98 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
                 .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("4 bytes")))
                 .collect()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== SearchFilter validation tests =====
+
+    #[test]
+    fn test_search_filter_valid_default() {
+        let filter = SearchFilter::default();
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_valid_with_name_boost() {
+        let filter = SearchFilter {
+            name_boost: 0.2,
+            query_text: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_valid_with_rrf() {
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_invalid_name_boost_negative() {
+        let filter = SearchFilter {
+            name_boost: -0.1,
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("name_boost"));
+    }
+
+    #[test]
+    fn test_search_filter_invalid_name_boost_too_high() {
+        let filter = SearchFilter {
+            name_boost: 1.5,
+            query_text: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+    }
+
+    #[test]
+    fn test_search_filter_invalid_missing_query_text() {
+        let filter = SearchFilter {
+            name_boost: 0.5,
+            query_text: String::new(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("query_text"));
+    }
+
+    #[test]
+    fn test_search_filter_invalid_rrf_missing_query() {
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: String::new(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+    }
+
+    // ===== clamp_line_number tests =====
+
+    #[test]
+    fn test_clamp_line_number_normal() {
+        assert_eq!(clamp_line_number(1), 1);
+        assert_eq!(clamp_line_number(100), 100);
+    }
+
+    #[test]
+    fn test_clamp_line_number_negative() {
+        assert_eq!(clamp_line_number(-1), 0);
+        assert_eq!(clamp_line_number(-1000), 0);
+    }
+
+    #[test]
+    fn test_clamp_line_number_overflow() {
+        assert_eq!(clamp_line_number(i64::MAX), u32::MAX);
+        assert_eq!(clamp_line_number(u32::MAX as i64 + 1), u32::MAX);
+    }
 }
