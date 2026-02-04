@@ -6,7 +6,7 @@
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P2 Progress: 10 of 58 Fixed
+### P2 Progress: 15 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -16,10 +16,15 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 39 | Glob pattern validation | Fixed: SearchFilter.validate() |
 | 20 | No max query length | Already had: validate_query_length (8192) |
 | 17 | HNSW id_map size validation | Fixed: check count on load |
-| 4 | Parse failures default silently | Fixed: log warnings on parse failures |
-| 4 | Empty query no feedback | Fixed: debug log when normalized empty |
+| 11 | Parse failures default silently | Fixed: log warnings on parse failures |
+| 19 | Empty query no feedback | Fixed: debug log when normalized empty |
 | 8 | note_stats swallows errors | Fixed: propagate StoreError |
-| 3 | Glob pattern tests | Fixed: 3 new tests |
+| 21 | Content hash slicing | Fixed: .get(..8).unwrap_or() |
+| 22 | Parser capture index bounds | Fixed: .get().copied() |
+| 40 | FTS normalization unbounded | Fixed: 16KB output cap |
+| 2 | Inconsistent error handling | Fixed: StoreError::SystemTime |
+| 48 | stats() multiple queries | Fixed: batched metadata query |
+| - | Glob pattern tests | Fixed: 3 new tests + FTS bounds tests |
 
 ### P1 Status: 62 of 64 Closed
 
@@ -91,7 +96,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Tier | Count | Status |
 |------|-------|--------|
 | P1 | 2 deferred | Move to P4 |
-| P2 | 48 remaining | 10 fixed |
+| P2 | 43 remaining | 15 fixed |
 | P3 | 43 | Pending |
 | P4 | 19 + 2 = 21 | Pending |
 
