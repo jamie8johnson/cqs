@@ -323,3 +323,210 @@ mentions = ["test.rs"]
     // Should also contain file content
     assert!(content.contains("fn test()"));
 }
+
+// ===== MCP Protocol Edge Case Tests =====
+
+#[test]
+fn test_initialize_with_old_protocol_version() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Use an older protocol version - server should accept and respond with its version
+    let request = make_request(
+        "initialize",
+        Some(json!({
+            "protocolVersion": "2023-01-01",
+            "capabilities": {},
+            "clientInfo": {"name": "test", "version": "1.0"}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should succeed - server ignores client version and returns its own
+    assert!(response.error.is_none());
+    let result = response.result.unwrap();
+    // Server returns its supported version
+    assert!(result["protocolVersion"].is_string());
+}
+
+#[test]
+fn test_string_request_id() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: Some(json!("string-id-123")),
+        method: "tools/list".into(),
+        params: None,
+    };
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_none());
+    assert_eq!(response.id, Some(json!("string-id-123")));
+}
+
+#[test]
+fn test_null_request_id_notification() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Null ID is valid for notifications
+    let request = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: None,
+        method: "initialized".into(),
+        params: None,
+    };
+
+    let response = server.handle_request(request);
+
+    // Notification response - no error, result is null
+    assert!(response.error.is_none());
+}
+
+#[test]
+fn test_tools_call_wrong_param_type() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Pass a string for arguments instead of object
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_stats",
+            "arguments": "not an object"
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should handle gracefully - either succeed with default args or error
+    // The important thing is it doesn't panic
+    assert!(response.error.is_some() || response.result.is_some());
+}
+
+#[test]
+fn test_tools_call_null_arguments() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Null arguments should be treated as empty object
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_stats",
+            "arguments": null
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // cqs_stats has no required args, should succeed
+    assert!(
+        response.error.is_none(),
+        "Null arguments should work: {:?}",
+        response.error
+    );
+}
+
+#[test]
+fn test_tools_call_missing_name() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Missing required "name" field
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    // Should indicate missing field
+    assert!(
+        error.message.contains("Missing") || error.message.contains("name"),
+        "Error should mention missing name: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_empty_method() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request("", None);
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+}
+
+#[test]
+fn test_very_long_query_rejected() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Create a query longer than MAX_QUERY_LENGTH (10000 bytes)
+    let long_query = "a".repeat(15000);
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {"query": long_query}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should reject with error about query length
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("too long") || error.message.contains("Query"),
+        "Error should mention query length: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_initialize_without_params() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Initialize with no params - should use defaults
+    let request = make_request("initialize", None);
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_none());
+    let result = response.result.unwrap();
+    assert_eq!(result["serverInfo"]["name"], "cqs");
+}
+
+#[test]
+fn test_cqs_search_with_all_optional_params() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": "test query",
+                "limit": 10,
+                "threshold": 0.5,
+                "language": "rust",
+                "path_pattern": "src/**",
+                "name_boost": 0.3,
+                "semantic_only": true
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should succeed (even if no results found)
+    assert!(
+        response.error.is_none(),
+        "Search with all params failed: {:?}",
+        response.error
+    );
+}
