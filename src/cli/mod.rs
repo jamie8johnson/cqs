@@ -476,7 +476,7 @@ fn cmd_doctor(_cli: &Cli) -> Result<()> {
     // Check model
     match Embedder::new() {
         Ok(embedder) => {
-            println!("  {} Model: intfloat/e5-base-v2", "[✓]".green());
+            println!("  {} Model: {}", "[✓]".green(), cqs::store::MODEL_NAME);
             println!("  {} Tokenizer: loaded", "[✓]".green());
             println!("  {} Execution: {}", "[✓]".green(), embedder.provider());
 
