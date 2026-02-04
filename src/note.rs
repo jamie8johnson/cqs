@@ -16,6 +16,10 @@ use thiserror::Error;
 pub const SENTIMENT_NEGATIVE_THRESHOLD: f32 = -0.3;
 pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
 
+/// Maximum number of notes to parse from a single file.
+/// Prevents memory exhaustion from malicious or corrupted note files.
+const MAX_NOTES: usize = 10_000;
+
 /// Errors that can occur when parsing notes
 #[derive(Error, Debug)]
 pub enum NoteError {
@@ -104,12 +108,14 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 ///
 /// Note IDs are generated from a hash of the text content (first 8 hex chars).
 /// This ensures IDs are stable when notes are reordered in the file.
+/// Limited to MAX_NOTES (10k) to prevent memory exhaustion.
 pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     let file: NoteFile = toml::from_str(content)?;
 
     let notes = file
         .note
         .into_iter()
+        .take(MAX_NOTES)
         .map(|entry| {
             // Use content hash for stable IDs (reordering notes won't break references)
             let hash = blake3::hash(entry.text.as_bytes());
