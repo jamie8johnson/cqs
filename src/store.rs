@@ -1284,15 +1284,17 @@ impl Store {
                 .execute(&self.pool)
                 .await?;
 
-            for call in calls {
-                sqlx::query(
-                    "INSERT INTO calls (caller_id, callee_name, line_number) VALUES (?1, ?2, ?3)",
-                )
-                .bind(chunk_id)
-                .bind(&call.callee_name)
-                .bind(call.line_number as i64)
-                .execute(&self.pool)
-                .await?;
+            // Batch insert all calls at once (instead of N individual inserts)
+            if !calls.is_empty() {
+                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT INTO calls (caller_id, callee_name, line_number) ",
+                );
+                query_builder.push_values(calls.iter(), |mut b, call| {
+                    b.push_bind(chunk_id)
+                        .push_bind(&call.callee_name)
+                        .push_bind(call.line_number as i64);
+                });
+                query_builder.build().execute(&self.pool).await?;
             }
 
             Ok(())
@@ -1382,20 +1384,29 @@ impl Store {
                 .execute(&self.pool)
                 .await?;
 
-            for fc in function_calls {
-                for call in &fc.calls {
-                    sqlx::query(
-                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                    )
-                    .bind(&file_str)
-                    .bind(&fc.name)
-                    .bind(fc.line_start as i64)
-                    .bind(&call.callee_name)
-                    .bind(call.line_number as i64)
-                    .execute(&self.pool)
-                    .await?;
-                }
+            // Flatten all calls and batch insert (instead of N individual inserts)
+            let all_calls: Vec<_> = function_calls
+                .iter()
+                .flat_map(|fc| {
+                    fc.calls.iter().map(move |call| {
+                        (&fc.name, fc.line_start, &call.callee_name, call.line_number)
+                    })
+                })
+                .collect();
+
+            if !all_calls.is_empty() {
+                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
+                    sqlx::QueryBuilder::new(
+                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
+                    );
+                query_builder.push_values(all_calls.iter(), |mut b, (caller_name, caller_line, callee_name, call_line)| {
+                    b.push_bind(&file_str)
+                        .push_bind(*caller_name)
+                        .push_bind(*caller_line as i64)
+                        .push_bind(*callee_name)
+                        .push_bind(*call_line as i64);
+                });
+                query_builder.build().execute(&self.pool).await?;
             }
 
             Ok(())
