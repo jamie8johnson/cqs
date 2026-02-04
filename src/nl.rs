@@ -401,4 +401,69 @@ mod tests {
         assert_eq!(info.params[1], ("name".to_string(), "string".to_string()));
         assert_eq!(info.returns, Some("boolean".to_string()));
     }
+
+    // ===== Fuzz tests =====
+
+    mod fuzz {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Fuzz: tokenize_identifier should never panic
+            #[test]
+            fn fuzz_tokenize_identifier_no_panic(input in "\\PC{0,200}") {
+                let _ = tokenize_identifier(&input);
+            }
+
+            /// Fuzz: tokenize_identifier with identifier-like strings
+            #[test]
+            fn fuzz_tokenize_identifier_like(input in "[a-zA-Z_][a-zA-Z0-9_]{0,50}") {
+                let result = tokenize_identifier(&input);
+                // Result can be empty if input is all underscores/non-alpha
+                // Just verify it doesn't panic and returns valid tokens
+                for token in &result {
+                    prop_assert!(!token.is_empty(), "Empty token in result");
+                }
+            }
+
+            /// Fuzz: parse_jsdoc_tags should never panic
+            #[test]
+            fn fuzz_parse_jsdoc_tags_no_panic(input in "\\PC{0,500}") {
+                let _ = parse_jsdoc_tags(&input);
+            }
+
+            /// Fuzz: parse_jsdoc_tags with JSDoc-like structure
+            #[test]
+            fn fuzz_parse_jsdoc_structured(
+                desc in "[a-zA-Z ]{0,50}",
+                param_name in "[a-z]{1,10}",
+                param_type in "[a-zA-Z]{1,15}",
+                return_type in "[a-zA-Z]{1,15}"
+            ) {
+                let input = format!(
+                    "/**\n * {}\n * @param {{{}}} {} - Description\n * @returns {{{}}} Result\n */",
+                    desc, param_type, param_name, return_type
+                );
+                let info = parse_jsdoc_tags(&input);
+                // Should parse successfully for well-formed input
+                prop_assert!(info.params.len() <= 1);
+            }
+
+            /// Fuzz: extract_params_nl should never panic
+            #[test]
+            fn fuzz_extract_params_no_panic(sig in "\\PC{0,200}") {
+                let _ = extract_params_nl(&sig);
+            }
+
+            /// Fuzz: extract_return_nl should never panic for all languages
+            #[test]
+            fn fuzz_extract_return_no_panic(sig in "\\PC{0,200}") {
+                let _ = extract_return_nl(&sig, Language::Rust);
+                let _ = extract_return_nl(&sig, Language::Python);
+                let _ = extract_return_nl(&sig, Language::TypeScript);
+                let _ = extract_return_nl(&sig, Language::JavaScript);
+                let _ = extract_return_nl(&sig, Language::Go);
+            }
+        }
+    }
 }
