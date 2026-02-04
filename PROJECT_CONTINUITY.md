@@ -2,85 +2,56 @@
 
 ## Right Now
 
-**v0.2.0** - Security audit complete, preparing release.
+**Post-Audit Cleanup** (2026-02-04)
 
-**Audit PRs merged (2026-02-03/04):**
-- #88: Fixed #74 timing attack (subtle::ConstantTimeEq)
-- #87: Fixed #75 rsa vuln (sqlx default-features)
-- #89: Fixed #64,82-84 quick wins batch
-- #90: Security tests (#76)
-- #91: FTS5 special char tests (#81)
-- #92: Split cli.rs into cli/ module (#78)
-- #93: Unit tests for embedder/cli (#77, #79)
-- #94: MCP edge case tests + IPv6 (#68)
-- #95: Property tests + security docs (#67, #69, #80, #86)
+### Just Merged
+- #128: MCP concurrency fix (CRITICAL - read locks)
+- #115-#120: First audit fixes
 
-**Closed issues (audit):**
-#64, #66, #67, #68, #69, #74, #75, #76, #77, #78, #79, #80, #81, #82, #83, #84, #85, #86
+### PRs Needing Rebase
+- #127: name_match_score + ensure_embedder (conflicts with #128)
+- #129: Error path tests
 
-**Remaining open:**
-- #62: Broader test coverage (partial - embedder/cli done, cache/GPU init remain)
-- #70: Low-priority cleanup (ongoing)
-- #63: Monitor paste dep (external, no action)
+### Open Issues (22 total)
+Tracking in #130: https://github.com/jamie8johnson/cqs/issues/130
 
-**Tests:** 162 total (was ~75 before audit, 2x+)
+**Deferred to v0.3.0:**
+- #103: O(n) notes search
+- #107: Memory (all_embeddings)
+- #125: Store refactor
+- #106: ort stable release
+- #122: Embedder session lock (documented limitation)
 
-**5 unmaintained deps:** bincode, derivative, instant, number_prefix, paste (all transitive)
+## Key Changes This Session
 
-**Waiting on:** awesome-mcp-servers PR #1783
+1. **MCP Concurrency** (#128)
+   - `McpServer.embedder`: `Option` → `OnceLock`
+   - `McpServer.audit_mode`: direct → `Mutex`
+   - `handle_request(&mut self)` → `handle_request(&self)`
+   - HTTP handler: `write()` → `read()` lock
+   - Embedder methods: `&mut self` → `&self`
 
-## Learnings
+2. **Audit PRs Merged** (#115-#120)
+   - Glob compiled once (was per-chunk)
+   - Off-by-one line numbers fixed
+   - CAGRA mutex poison recovery
+   - Config parse errors logged
+   - Batch INSERT for calls
+   - deny.toml added
+   - CagraIndex resources behind Mutex
+   - HNSW safety tests
+   - ChunkType consolidated
+   - Parser unit tests (21)
 
-**"Constant-time" isn't - verify implementations:**
-- `.all()` short-circuits on first mismatch
-- Length comparison leaks length
-- Use `subtle::ConstantTimeEq` crate
+## Architecture
 
-**Property tests find real bugs:**
-- RRF bound calculation was wrong (duplicates can boost scores)
-- proptest found it immediately with minimal input
+- 769-dim embeddings, E5-base-v2
+- VectorIndex: CAGRA (GPU) > HNSW (CPU)
+- Schema v10, SQLite WAL mode
+- MCP: concurrent via interior mutability
 
-## Key Architecture
+## Next Steps
 
-- 769-dim embeddings (768 + sentiment)
-- E5-base-v2 model with "passage: " / "query: " prefixes
-- Schema v10: `origin` + `source_type` + `source_mtime` (nullable)
-- VectorIndex trait: CAGRA (GPU) > HNSW (CPU) > brute-force
-- `src/language/` - LanguageRegistry with LanguageDef structs
-- `src/source/` - Source trait abstracts file/database sources
-- `src/cli/` - Split into mod.rs + display.rs
-- Feature flags: lang-rust, lang-python, lang-typescript, lang-javascript, lang-go
-- Storage: sqlx async SQLite with sync wrappers (4 connection pool, WAL mode)
-- HTTP auth: `--api-key` or `CQS_API_KEY` env var (required for non-localhost)
-- IPv6 localhost: `[::1]` now accepted in origin validation
-
-## Build & Run
-
-```bash
-conda activate cuvs  # LD_LIBRARY_PATH set automatically via conda env vars
-cargo build --release --features gpu-search
-```
-
-## Parked
-
-- CAGRA persistence - hybrid startup approach used instead
-- Curator agent, fleet coordination
-- #62 broader test coverage - refactoring needed for testability
-
-## Open Questions
-
-None active.
-
-## Hardware
-
-- i9-11900K, 128GB physical / 92GB WSL limit
-- RTX A6000 (48GB VRAM), CUDA 12.0/13.0
-- WSL2
-
-## Test Repo
-
-`/home/user001/rust` (rust-lang/rust, 36k files) - indexed with E5-base-v2
-
-## Timeline
-
-Project started: 2026-01-30
+1. Rebase #127, #129 and merge
+2. Work on remaining open issues
+3. Update CHANGELOG for merged PRs

@@ -70,3 +70,56 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_load_valid_config() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+        std::fs::write(&config_path, "limit = 10\nthreshold = 0.5\n").unwrap();
+
+        let config = Config::load_file(&config_path).unwrap();
+        assert_eq!(config.limit, Some(10));
+        assert_eq!(config.threshold, Some(0.5));
+    }
+
+    #[test]
+    fn test_load_missing_file() {
+        let dir = TempDir::new().unwrap();
+        let config = Config::load_file(&dir.path().join("nonexistent.toml"));
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_load_malformed_toml() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+        std::fs::write(&config_path, "not valid [[[").unwrap();
+
+        let config = Config::load_file(&config_path);
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_merge_override() {
+        let base = Config {
+            limit: Some(10),
+            threshold: Some(0.5),
+            ..Default::default()
+        };
+        let override_cfg = Config {
+            limit: Some(20),
+            name_boost: Some(0.3),
+            ..Default::default()
+        };
+
+        let merged = base.merge(override_cfg);
+        assert_eq!(merged.limit, Some(20));
+        assert_eq!(merged.threshold, Some(0.5));
+        assert_eq!(merged.name_boost, Some(0.3));
+    }
+}
