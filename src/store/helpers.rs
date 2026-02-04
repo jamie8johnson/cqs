@@ -230,9 +230,17 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
 }
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)
+///
+/// Returns None if byte length doesn't match expected embedding size.
+/// Uses trace level logging to avoid impacting search performance.
 pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
     const EXPECTED_BYTES: usize = 769 * 4; // 768 model + 1 sentiment
     if bytes.len() != EXPECTED_BYTES {
+        tracing::trace!(
+            expected = EXPECTED_BYTES,
+            actual = bytes.len(),
+            "embedding byte length mismatch"
+        );
         return None;
     }
     Some(bytemuck::cast_slice(bytes))
