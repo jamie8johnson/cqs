@@ -526,7 +526,7 @@ impl Parser {
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let callee_name = source[cap.node.byte_range()].to_string();
-                let line_number = cap.node.start_position().row as u32 + 1 - line_offset + 1;
+                let line_number = cap.node.start_position().row as u32 + 1 - line_offset;
 
                 // Skip common noise (self, this, super, etc.)
                 if !should_skip_callee(&callee_name) {

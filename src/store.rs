@@ -748,6 +748,13 @@ impl Store {
                 q.fetch_all(&self.pool).await?
             };
 
+            // Compile glob pattern once outside the loop (not per-chunk)
+            let glob_matcher = filter
+                .path_pattern
+                .as_ref()
+                .and_then(|p| globset::Glob::new(p).ok())
+                .map(|g| g.compile_matcher());
+
             let mut scored: Vec<(String, f32)> = rows
                 .iter()
                 .filter_map(|row| {
@@ -766,14 +773,10 @@ impl Store {
                         embedding_score
                     };
 
-                    if let Some(ref pattern) = filter.path_pattern {
-                        if let Ok(glob_pattern) =
-                            globset::Glob::new(pattern).map(|g| g.compile_matcher())
-                        {
-                            let file_part = id.split(':').next().unwrap_or("");
-                            if !glob_pattern.is_match(file_part) {
-                                return None;
-                            }
+                    if let Some(ref matcher) = glob_matcher {
+                        let file_part = id.split(':').next().unwrap_or("");
+                        if !matcher.is_match(file_part) {
+                            return None;
                         }
                     }
 
@@ -1161,6 +1164,13 @@ impl Store {
                 q.fetch_all(&self.pool).await?
             };
 
+            // Compile glob pattern once outside the loop (not per-chunk)
+            let glob_matcher = filter
+                .path_pattern
+                .as_ref()
+                .and_then(|p| globset::Glob::new(p).ok())
+                .map(|g| g.compile_matcher());
+
             let mut scored: Vec<(ChunkRow, f32)> = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -1190,13 +1200,9 @@ impl Store {
                         }
                     }
 
-                    if let Some(ref pattern) = filter.path_pattern {
-                        if let Ok(glob_pattern) =
-                            globset::Glob::new(pattern).map(|g| g.compile_matcher())
-                        {
-                            if !glob_pattern.is_match(&chunk_row.origin) {
-                                return None;
-                            }
+                    if let Some(ref matcher) = glob_matcher {
+                        if !matcher.is_match(&chunk_row.origin) {
+                            return None;
                         }
                     }
 

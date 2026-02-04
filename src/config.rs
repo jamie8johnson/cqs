@@ -41,8 +41,22 @@ impl Config {
 
     /// Load configuration from a specific file
     fn load_file(path: &Path) -> Option<Self> {
-        let content = std::fs::read_to_string(path).ok()?;
-        toml::from_str(&content).ok()
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                tracing::warn!("Failed to read config {}: {}", path.display(), e);
+                return None;
+            }
+        };
+
+        match toml::from_str(&content) {
+            Ok(config) => Some(config),
+            Err(e) => {
+                tracing::warn!("Failed to parse config {}: {}", path.display(), e);
+                None
+            }
+        }
     }
 
     /// Merge two configs (other overrides self where present)
