@@ -101,15 +101,19 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 }
 
 /// Parse notes from a string (for testing)
+///
+/// Note IDs are generated from a hash of the text content (first 8 hex chars).
+/// This ensures IDs are stable when notes are reordered in the file.
 pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     let file: NoteFile = toml::from_str(content)?;
 
     let notes = file
         .note
         .into_iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let id = format!("note:{}", i);
+        .map(|entry| {
+            // Use content hash for stable IDs (reordering notes won't break references)
+            let hash = blake3::hash(entry.text.as_bytes());
+            let id = format!("note:{}", &hash.to_hex()[..8]);
 
             Note {
                 id,
@@ -182,6 +186,38 @@ text = "way too positive"
         let content = "# Just a comment\n";
         let notes = parse_notes_str(content).unwrap();
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn test_stable_ids_across_reordering() {
+        // Original order
+        let content1 = r#"
+[[note]]
+text = "first note"
+
+[[note]]
+text = "second note"
+"#;
+
+        // Reversed order
+        let content2 = r#"
+[[note]]
+text = "second note"
+
+[[note]]
+text = "first note"
+"#;
+
+        let notes1 = parse_notes_str(content1).unwrap();
+        let notes2 = parse_notes_str(content2).unwrap();
+
+        // IDs should be stable based on content, not order
+        assert_eq!(notes1[0].id, notes2[1].id); // "first note" has same ID
+        assert_eq!(notes1[1].id, notes2[0].id); // "second note" has same ID
+
+        // Verify ID format (note:8-hex-chars)
+        assert!(notes1[0].id.starts_with("note:"));
+        assert_eq!(notes1[0].id.len(), 5 + 8); // "note:" + 8 hex chars
     }
 
     // ===== Fuzz tests =====
