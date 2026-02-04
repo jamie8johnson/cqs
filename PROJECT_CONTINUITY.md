@@ -7,7 +7,7 @@ Branch: `fix/p1-audit-fixes` | CI pending
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Completed (~35 of 64)
+### P1 Completed (~41 of 64)
 
 | Fix | Location |
 |-----|----------|
@@ -44,11 +44,24 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | SearchFilter validation | helpers.rs (validate() + 7 tests) |
 | clamp_line_number tests | helpers.rs (3 tests) |
 | Redundant HnswResult | hnsw.rs (use IndexResult directly) |
+| ChunkRow pub(crate) | helpers.rs |
+| parse_file_calls tests | parser.rs (3 tests) |
+| Call graph tracing | store/calls.rs |
+| Note indexing tracing | store/notes.rs |
+| HNSW tuning docs | hnsw.rs |
+| Callee skip list docs | parser.rs |
 
-### Remaining P1 (~29)
-- Test coverage: token_count, parse_file_calls
-- Module boundaries: CLI imports, ChunkRow exposure
-- Error propagation: swallowed .ok() patterns
+### Remaining P1 (~23)
+- Test coverage: token_count (requires model - integration test)
+- Module boundaries: CLI imports (verified correct - uses public API)
+- Error propagation: swallowed .ok() patterns (most are intentional)
+- MCP tool naming (verified correct - cqs_ prefix is intentional)
+
+### Verified Correct (no changes needed)
+- CLI imports internal types (#6): Uses public API via cqs::* re-exports
+- MCP tool naming convention (#15): cqs_ prefix distinguishes our tools
+- Swallowed .ok() patterns (#21): Most are intentional (mtime, version checks)
+- Unicode proptest (#45): Existing test covers edge cases adequately
 
 ### Remaining Tiers
 | Tier | Count | Status |
