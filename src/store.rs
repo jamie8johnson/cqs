@@ -1845,5 +1845,52 @@ mod tests {
                 common_score, max_single
             );
         }
+
+        // ===== FTS fuzz tests =====
+
+        /// Fuzz: normalize_for_fts should never panic
+        #[test]
+        fn fuzz_normalize_for_fts_no_panic(input in "\\PC{0,500}") {
+            let _ = normalize_for_fts(&input);
+        }
+
+        /// Fuzz: normalize_for_fts output should only contain safe chars
+        #[test]
+        fn fuzz_normalize_for_fts_safe_output(input in "\\PC{0,200}") {
+            let result = normalize_for_fts(&input);
+            // Output should only contain alphanumeric, spaces, and underscores
+            for c in result.chars() {
+                prop_assert!(
+                    c.is_alphanumeric() || c == ' ' || c == '_',
+                    "Unexpected char '{}' (U+{:04X}) in output: {}",
+                    c, c as u32, result
+                );
+            }
+        }
+
+        /// Fuzz: normalize_for_fts with FTS5 special chars
+        #[test]
+        fn fuzz_normalize_for_fts_special_chars(
+            prefix in "[a-z]{0,10}",
+            special in prop::sample::select(vec!['*', '"', ':', '^', '(', ')', '-', '+']),
+            suffix in "[a-z]{0,10}"
+        ) {
+            let input = format!("{}{}{}", prefix, special, suffix);
+            let result = normalize_for_fts(&input);
+            // Special chars should be stripped
+            prop_assert!(
+                !result.contains(special),
+                "Special char '{}' should be stripped from: {} -> {}",
+                special, input, result
+            );
+        }
+
+        /// Fuzz: normalize_for_fts handles unicode
+        #[test]
+        fn fuzz_normalize_for_fts_unicode(input in "[\\p{L}\\p{N}\\s]{0,100}") {
+            let result = normalize_for_fts(&input);
+            // Should not panic, result should be valid UTF-8 (guaranteed by String)
+            prop_assert!(result.len() <= input.len() * 4); // reasonable bound
+        }
     }
 }

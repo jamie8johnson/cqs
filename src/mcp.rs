@@ -1493,4 +1493,59 @@ mod tests {
         let result = require_accept_event_stream(&headers);
         assert!(result.is_err());
     }
+
+    // ===== Fuzz tests =====
+
+    mod fuzz {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Fuzz: JsonRpcRequest parsing should never panic
+            #[test]
+            fn fuzz_jsonrpc_parse_no_panic(input in "\\PC{0,1000}") {
+                let _ = serde_json::from_str::<JsonRpcRequest>(&input);
+            }
+
+            /// Fuzz: JsonRpcRequest with JSON-like structure
+            #[test]
+            fn fuzz_jsonrpc_structured(
+                jsonrpc in "(1\\.0|2\\.0|[0-9]\\.[0-9])",
+                id in prop::option::of(0i64..1000),
+                method in "[a-z/_]{1,30}",
+            ) {
+                let json = match id {
+                    Some(id) => format!(
+                        r#"{{"jsonrpc":"{}","id":{},"method":"{}"}}"#,
+                        jsonrpc, id, method
+                    ),
+                    None => format!(
+                        r#"{{"jsonrpc":"{}","method":"{}"}}"#,
+                        jsonrpc, method
+                    ),
+                };
+                let _ = serde_json::from_str::<JsonRpcRequest>(&json);
+            }
+
+            /// Fuzz: is_localhost_origin should never panic
+            #[test]
+            fn fuzz_is_localhost_origin_no_panic(input in "\\PC{0,200}") {
+                let _ = is_localhost_origin(&input);
+            }
+
+            /// Fuzz: origin validation with URL-like strings
+            #[test]
+            fn fuzz_origin_url_like(
+                scheme in "(http|https|ftp|ws)",
+                host in "[a-z0-9.-]{1,50}",
+                port in prop::option::of(1u16..65535),
+            ) {
+                let origin = match port {
+                    Some(p) => format!("{}://{}:{}", scheme, host, p),
+                    None => format!("{}://{}", scheme, host),
+                };
+                let _ = is_localhost_origin(&origin);
+            }
+        }
+    }
 }

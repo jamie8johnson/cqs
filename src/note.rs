@@ -171,4 +171,46 @@ text = "way too positive"
         let notes = parse_notes_str(content).unwrap();
         assert!(notes.is_empty());
     }
+
+    // ===== Fuzz tests =====
+
+    mod fuzz {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Fuzz: parse_notes_str should never panic on arbitrary input
+            #[test]
+            fn fuzz_parse_notes_str_no_panic(input in "\\PC{0,500}") {
+                // We don't care about the result, just that it doesn't panic
+                let _ = parse_notes_str(&input);
+            }
+
+            /// Fuzz: parse_notes_str with TOML-like structure
+            #[test]
+            fn fuzz_parse_notes_toml_like(
+                sentiment in -10.0f64..10.0,
+                text in "[a-zA-Z0-9 ]{0,100}",
+                mention in "[a-z.]{1,20}"
+            ) {
+                let input = format!(
+                    "[[note]]\nsentiment = {}\ntext = \"{}\"\nmentions = [\"{}\"]",
+                    sentiment, text, mention
+                );
+                let _ = parse_notes_str(&input);
+            }
+
+            /// Fuzz: deeply nested/repeated structures
+            #[test]
+            fn fuzz_parse_notes_repeated(count in 0usize..50) {
+                let input: String = (0..count)
+                    .map(|i| format!("[[note]]\ntext = \"note {}\"\n", i))
+                    .collect();
+                let result = parse_notes_str(&input);
+                if let Ok(notes) = result {
+                    prop_assert!(notes.len() <= count);
+                }
+            }
+        }
+    }
 }
