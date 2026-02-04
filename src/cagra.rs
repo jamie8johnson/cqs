@@ -168,14 +168,14 @@ impl CagraIndex {
 
         // Lock resources for the entire search operation (CUDA contexts aren't thread-safe)
         let resources = self.resources.lock().unwrap_or_else(|poisoned| {
-            tracing::warn!("CAGRA resources mutex poisoned, recovering");
+            tracing::debug!("CAGRA resources mutex poisoned, recovering");
             poisoned.into_inner()
         });
 
         // Take the index (cuVS search consumes it)
         let index = {
             let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                tracing::warn!("CAGRA index mutex poisoned, recovering");
+                tracing::debug!("CAGRA index mutex poisoned, recovering");
                 poisoned.into_inner()
             });
             guard.take()
@@ -204,7 +204,7 @@ impl CagraIndex {
                 tracing::error!("Failed to create search params: {}", e);
                 // Put index back
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                    tracing::warn!("CAGRA index mutex poisoned, recovering");
+                    tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
                 });
                 *guard = Some(index);
@@ -223,7 +223,7 @@ impl CagraIndex {
                     e
                 );
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                    tracing::warn!("CAGRA index mutex poisoned, recovering");
+                    tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
                 });
                 *guard = Some(index);
@@ -237,7 +237,7 @@ impl CagraIndex {
             Err(e) => {
                 tracing::error!("Failed to copy query to device: {}", e);
                 let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                    tracing::warn!("CAGRA index mutex poisoned, recovering");
+                    tracing::debug!("CAGRA index mutex poisoned, recovering");
                     poisoned.into_inner()
                 });
                 *guard = Some(index);
@@ -255,7 +255,7 @@ impl CagraIndex {
                 Err(e) => {
                     tracing::error!("Failed to allocate neighbors on device: {}", e);
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                        tracing::warn!("CAGRA index mutex poisoned, recovering");
+                        tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
                     });
                     *guard = Some(index);
@@ -269,7 +269,7 @@ impl CagraIndex {
                 Err(e) => {
                     tracing::error!("Failed to allocate distances on device: {}", e);
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                        tracing::warn!("CAGRA index mutex poisoned, recovering");
+                        tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
                     });
                     *guard = Some(index);
