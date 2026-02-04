@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `cqs_audit_mode` MCP tool for bias-free code reviews (#101)
+  - Excludes notes from search/read results during audits
+  - Auto-expires after configurable duration (default 30m)
+- Unit tests for embedder.rs and cli.rs (#62, #132)
+  - `pad_2d_i64` edge cases (4 tests)
+  - `EmbedderError` display formatting (2 tests)
+  - `apply_config_defaults` behavior (3 tests)
+  - `ExitCode` values (1 test)
+
+### Changed
+- **Refactored Store module** (#125, #133): Split 1,916-line god object into focused modules
+  - `src/store/mod.rs` (468 lines) - Store struct, open/init, FTS5, RRF
+  - `src/store/chunks.rs` (352 lines) - Chunk CRUD operations
+  - `src/store/notes.rs` (197 lines) - Note CRUD and search
+  - `src/store/calls.rs` (220 lines) - Call graph storage/queries
+  - `src/store/helpers.rs` (245 lines) - Types, embedding conversion
+  - `src/search.rs` (531 lines) - Search algorithms, scoring
+  - Largest file reduced from 1,916 to 531 lines (3.6x reduction)
+
+### Fixed
+- **CRITICAL**: MCP server concurrency issues (#128)
+  - Embedder: `Option<T>` → `OnceLock<T>` for thread-safe lazy init
+  - Audit mode: direct field → `Mutex<T>` for safe concurrent access
+  - HTTP handler: `write()` → `read()` lock (concurrent reads safe)
+- `name_match_score` now preserves camelCase boundaries (#131, #133)
+  - Tokenizes before lowercasing instead of after
+
+### Closed Issues
+- #62, #101, #102-#114, #121-#125
+
 ## [0.2.1] - 2026-02-04
 
 ### Added
