@@ -868,3 +868,335 @@ pub struct CallSite {
     /// Line number where the call occurs (1-indexed)
     pub line_number: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    /// Test should_skip_callee filtering
+    mod skip_callee_tests {
+        use super::*;
+
+        #[test]
+        fn test_skips_self_variants() {
+            assert!(should_skip_callee("self"));
+            assert!(should_skip_callee("Self"));
+            assert!(should_skip_callee("this"));
+            assert!(should_skip_callee("super"));
+        }
+
+        #[test]
+        fn test_skips_common_noise() {
+            assert!(should_skip_callee("new"));
+            assert!(should_skip_callee("toString"));
+            assert!(should_skip_callee("valueOf"));
+        }
+
+        #[test]
+        fn test_allows_normal_functions() {
+            assert!(!should_skip_callee("process"));
+            assert!(!should_skip_callee("calculate"));
+            assert!(!should_skip_callee("Self_")); // Not exact match
+            assert!(!should_skip_callee("myself"));
+            assert!(!should_skip_callee("newValue"));
+        }
+
+        #[test]
+        fn test_case_sensitive() {
+            // These are exact matches only
+            assert!(!should_skip_callee("SELF"));
+            assert!(!should_skip_callee("This"));
+            assert!(!should_skip_callee("NEW"));
+        }
+    }
+
+    /// Test signature extraction
+    mod signature_tests {
+        use super::*;
+
+        fn parser() -> Parser {
+            Parser::new().unwrap()
+        }
+
+        #[test]
+        fn test_rust_signature_stops_at_brace() {
+            let p = parser();
+            let content = "fn process(x: i32) -> Result<(), Error> {\n    body\n}";
+            let sig = p.extract_signature(content, Language::Rust);
+            assert_eq!(sig, "fn process(x: i32) -> Result<(), Error>");
+        }
+
+        #[test]
+        fn test_rust_signature_normalizes_whitespace() {
+            let p = parser();
+            let content = "fn   process(  x: i32  )   -> i32 {";
+            let sig = p.extract_signature(content, Language::Rust);
+            assert_eq!(sig, "fn process( x: i32 ) -> i32");
+        }
+
+        #[test]
+        fn test_python_signature_stops_at_colon() {
+            let p = parser();
+            let content = "def calculate(x, y):\n    return x + y";
+            let sig = p.extract_signature(content, Language::Python);
+            assert_eq!(sig, "def calculate(x, y)");
+        }
+
+        #[test]
+        fn test_go_signature_stops_at_brace() {
+            let p = parser();
+            let content = "func (s *Server) Handle(r Request) error {\n\treturn nil\n}";
+            let sig = p.extract_signature(content, Language::Go);
+            assert_eq!(sig, "func (s *Server) Handle(r Request) error");
+        }
+
+        #[test]
+        fn test_typescript_signature_stops_at_brace() {
+            let p = parser();
+            let content = "function processData(input: string): Promise<Result> {\n  return ok;\n}";
+            let sig = p.extract_signature(content, Language::TypeScript);
+            assert_eq!(sig, "function processData(input: string): Promise<Result>");
+        }
+
+        #[test]
+        fn test_signature_without_terminator() {
+            let p = parser();
+            // No brace - returns whole content normalized
+            let content = "fn abstract_decl()";
+            let sig = p.extract_signature(content, Language::Rust);
+            assert_eq!(sig, "fn abstract_decl()");
+        }
+    }
+
+    /// Test chunk parsing integration
+    mod parse_tests {
+        use super::*;
+
+        fn write_temp_file(content: &str, ext: &str) -> NamedTempFile {
+            let mut file = tempfile::Builder::new()
+                .suffix(&format!(".{}", ext))
+                .tempfile()
+                .unwrap();
+            file.write_all(content.as_bytes()).unwrap();
+            file.flush().unwrap();
+            file
+        }
+
+        #[test]
+        fn test_parse_rust_function() {
+            let content = r#"
+/// Adds two numbers
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].name, "add");
+            assert_eq!(chunks[0].chunk_type, ChunkType::Function);
+            assert!(chunks[0].doc.as_ref().unwrap().contains("Adds two numbers"));
+        }
+
+        #[test]
+        fn test_parse_rust_method_in_impl() {
+            let content = r#"
+struct Counter { value: i32 }
+
+impl Counter {
+    fn increment(&mut self) {
+        self.value += 1;
+    }
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            // Should have struct and method
+            let method = chunks.iter().find(|c| c.name == "increment").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+        }
+
+        #[test]
+        fn test_parse_python_class_method() {
+            let content = r#"
+class Calculator:
+    """A simple calculator."""
+
+    def add(self, a, b):
+        """Add two numbers."""
+        return a + b
+"#;
+            let file = write_temp_file(content, "py");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
+            assert_eq!(class.chunk_type, ChunkType::Class);
+
+            let method = chunks.iter().find(|c| c.name == "add").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+        }
+
+        #[test]
+        fn test_parse_go_method_vs_function() {
+            let content = r#"
+package main
+
+func standalone() {
+    println("standalone")
+}
+
+func (s *Server) method() {
+    println("method")
+}
+"#;
+            let file = write_temp_file(content, "go");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let standalone = chunks.iter().find(|c| c.name == "standalone").unwrap();
+            assert_eq!(standalone.chunk_type, ChunkType::Function);
+
+            let method = chunks.iter().find(|c| c.name == "method").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+        }
+
+        #[test]
+        fn test_parse_typescript_interface() {
+            let content = r#"
+interface User {
+    name: string;
+    age: number;
+}
+"#;
+            let file = write_temp_file(content, "ts");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].name, "User");
+            assert_eq!(chunks[0].chunk_type, ChunkType::Interface);
+        }
+    }
+
+    /// Test call extraction
+    mod call_extraction_tests {
+        use super::*;
+
+        fn write_temp_file(content: &str, ext: &str) -> NamedTempFile {
+            let mut file = tempfile::Builder::new()
+                .suffix(&format!(".{}", ext))
+                .tempfile()
+                .unwrap();
+            file.write_all(content.as_bytes()).unwrap();
+            file.flush().unwrap();
+            file
+        }
+
+        #[test]
+        fn test_extract_rust_calls() {
+            let content = r#"
+fn caller() {
+    helper();
+    other.method();
+    Module::function();
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let calls = parser.extract_calls_from_chunk(&chunks[0]);
+
+            let names: Vec<_> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+            assert!(names.contains(&"helper"));
+            assert!(names.contains(&"method"));
+            assert!(names.contains(&"function"));
+        }
+
+        #[test]
+        fn test_extract_python_calls() {
+            let content = r#"
+def caller():
+    helper()
+    obj.method()
+"#;
+            let file = write_temp_file(content, "py");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let calls = parser.extract_calls_from_chunk(&chunks[0]);
+
+            let names: Vec<_> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+            assert!(names.contains(&"helper"));
+            assert!(names.contains(&"method"));
+        }
+
+        #[test]
+        fn test_skips_self_calls() {
+            let content = r#"
+fn example() {
+    self.method();
+    this.other();
+    real_function();
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let calls = parser.extract_calls_from_chunk(&chunks[0]);
+
+            let names: Vec<_> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+            // self/this should be filtered, but method/other should remain
+            assert!(!names.contains(&"self"));
+            assert!(!names.contains(&"this"));
+            assert!(names.contains(&"method"));
+            assert!(names.contains(&"other"));
+            assert!(names.contains(&"real_function"));
+        }
+    }
+
+    /// Test language detection
+    mod language_tests {
+        use super::*;
+
+        #[test]
+        fn test_from_extension() {
+            assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
+            assert_eq!(Language::from_extension("py"), Some(Language::Python));
+            assert_eq!(Language::from_extension("pyi"), Some(Language::Python));
+            assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
+            assert_eq!(Language::from_extension("tsx"), Some(Language::TypeScript));
+            assert_eq!(Language::from_extension("js"), Some(Language::JavaScript));
+            assert_eq!(Language::from_extension("jsx"), Some(Language::JavaScript));
+            assert_eq!(Language::from_extension("mjs"), Some(Language::JavaScript));
+            assert_eq!(Language::from_extension("cjs"), Some(Language::JavaScript));
+            assert_eq!(Language::from_extension("go"), Some(Language::Go));
+            assert_eq!(Language::from_extension("unknown"), None);
+        }
+
+        #[test]
+        fn test_from_str() {
+            assert_eq!("rust".parse::<Language>().unwrap(), Language::Rust);
+            assert_eq!("PYTHON".parse::<Language>().unwrap(), Language::Python);
+            assert_eq!(
+                "TypeScript".parse::<Language>().unwrap(),
+                Language::TypeScript
+            );
+            assert!("invalid".parse::<Language>().is_err());
+        }
+
+        #[test]
+        fn test_display() {
+            assert_eq!(Language::Rust.to_string(), "rust");
+            assert_eq!(Language::Python.to_string(), "python");
+            assert_eq!(Language::TypeScript.to_string(), "typescript");
+            assert_eq!(Language::JavaScript.to_string(), "javascript");
+            assert_eq!(Language::Go.to_string(), "go");
+        }
+    }
+}
