@@ -5,12 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-02-04
 
 ### Added
 - `cqs_audit_mode` MCP tool for bias-free code reviews (#101)
   - Excludes notes from search/read results during audits
   - Auto-expires after configurable duration (default 30m)
+- Error path test coverage (#126, #149)
+  - HNSW corruption tests: checksum mismatch, truncation, missing files
+  - Schema validation tests: future/old version rejection, model mismatch
+  - MCP edge cases: unicode queries, concurrent requests, nested JSON
 - Unit tests for embedder.rs and cli.rs (#62, #132)
   - `pad_2d_i64` edge cases (4 tests)
   - `EmbedderError` display formatting (2 tests)
@@ -43,7 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tokenizes before lowercasing instead of after
 
 ### Closed Issues
-- #62, #70, #101, #102-#114, #121-#125
+- #62, #70, #101, #102-#114, #121-#126, #142-#146, #148
 
 ## [0.2.1] - 2026-02-04
 
@@ -324,7 +328,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.2.0...HEAD
+[0.3.0]: https://github.com/jamie8johnson/cqs/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/jamie8johnson/cqs/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/jamie8johnson/cqs/compare/v0.1.18...v0.2.0
 [0.1.18]: https://github.com/jamie8johnson/cqs/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/jamie8johnson/cqs/compare/v0.1.16...v0.1.17
