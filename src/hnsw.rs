@@ -74,14 +74,8 @@ pub enum HnswError {
     },
 }
 
-/// Search result from HNSW index
-#[derive(Debug, Clone)]
-pub struct HnswResult {
-    /// Chunk ID (matches Store chunk IDs)
-    pub id: String,
-    /// Cosine similarity score (0.0 to 1.0)
-    pub score: f32,
-}
+// Note: Uses crate::index::IndexResult instead of a separate HnswResult type
+// since they have identical structure (id: String, score: f32)
 
 /// Valid HNSW file extensions (prevents path traversal via malicious checksum file)
 const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
@@ -245,7 +239,7 @@ impl HnswIndex {
     ///
     /// # Returns
     /// Vector of (chunk_id, score) pairs, sorted by descending score
-    pub fn search(&self, query: &Embedding, k: usize) -> Vec<HnswResult> {
+    pub fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
         if self.id_map.is_empty() {
             return Vec::new();
         }
@@ -276,7 +270,7 @@ impl HnswIndex {
                     // Convert distance to similarity score
                     // Cosine distance is 1 - cosine_similarity, so we convert back
                     let score = 1.0 - n.distance;
-                    Some(HnswResult {
+                    Some(IndexResult {
                         id: self.id_map[idx].clone(),
                         score,
                     })
@@ -422,12 +416,6 @@ impl HnswIndex {
 impl VectorIndex for HnswIndex {
     fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
         self.search(query, k)
-            .into_iter()
-            .map(|r| IndexResult {
-                id: r.id,
-                score: r.score,
-            })
-            .collect()
     }
 
     fn len(&self) -> usize {
