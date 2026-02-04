@@ -7,7 +7,7 @@
 //! - Stdio transport: trusted client (Claude Code) with reasonable message sizes
 
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use chrono::{DateTime, Utc};
@@ -216,7 +216,8 @@ impl McpServer {
     ///
     /// Loads HNSW index immediately for fast startup, then spawns background
     /// thread to build CAGRA GPU index. Queries use HNSW until CAGRA is ready.
-    pub fn new(project_root: PathBuf, use_gpu: bool) -> Result<Self> {
+    pub fn new(project_root: impl AsRef<Path>, use_gpu: bool) -> Result<Self> {
+        let project_root = project_root.as_ref();
         let index_path = project_root.join(".cq/index.db");
         let cq_dir = project_root.join(".cq");
 
@@ -243,7 +244,7 @@ impl McpServer {
         Ok(Self {
             store,
             embedder: OnceLock::new(),
-            project_root,
+            project_root: project_root.to_path_buf(),
             index,
             use_gpu,
             audit_mode: Mutex::new(AuditMode::default()),
@@ -1126,7 +1127,7 @@ impl McpServer {
 /// # Arguments
 /// * `project_root` - Root directory of the project to index
 /// * `use_gpu` - Whether to use GPU acceleration for embeddings
-pub fn serve_stdio(project_root: PathBuf, use_gpu: bool) -> Result<()> {
+pub fn serve_stdio(project_root: impl AsRef<Path>, use_gpu: bool) -> Result<()> {
     let server = McpServer::new(project_root, use_gpu)?;
 
     let stdin = std::io::stdin();
@@ -1204,7 +1205,7 @@ struct HttpState {
 /// * `use_gpu` - Whether to use GPU acceleration for embeddings
 /// * `api_key` - Optional API key; if set, requests need `Authorization: Bearer <key>`
 pub fn serve_http(
-    project_root: PathBuf,
+    project_root: impl AsRef<Path>,
     bind: &str,
     port: u16,
     use_gpu: bool,

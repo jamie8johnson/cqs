@@ -7,9 +7,9 @@ use sqlx::Row;
 use super::helpers::{
     embedding_slice, embedding_to_bytes, NoteSearchResult, NoteSummary, StoreError,
 };
-use super::normalize_for_fts;
 use super::Store;
 use crate::embedder::Embedding;
+use crate::nl::normalize_for_fts;
 use crate::note::Note;
 use crate::search::cosine_similarity;
 

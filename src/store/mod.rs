@@ -30,7 +30,7 @@ pub use helpers::{
     UnifiedResult, CURRENT_SCHEMA_VERSION, MODEL_NAME,
 };
 
-use crate::nl::tokenize_identifier;
+use crate::nl::normalize_for_fts;
 
 /// Thread-safe SQLite store for chunks and embeddings
 ///
@@ -298,37 +298,6 @@ impl Store {
     ) -> Vec<(String, f32)> {
         Self::rrf_fuse(semantic_ids, fts_ids, limit)
     }
-}
-
-// ============ FTS Normalization ============
-
-/// Normalize code text for FTS5 indexing.
-/// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
-/// Example: "parseConfigFile" -> "parse config file"
-pub fn normalize_for_fts(text: &str) -> String {
-    let mut result = String::new();
-    let mut current_word = String::new();
-
-    for c in text.chars() {
-        if c.is_alphanumeric() || c == '_' {
-            current_word.push(c);
-        } else if !current_word.is_empty() {
-            let tokens = tokenize_identifier(&current_word);
-            if !result.is_empty() && !tokens.is_empty() {
-                result.push(' ');
-            }
-            result.push_str(&tokens.join(" "));
-            current_word.clear();
-        }
-    }
-    if !current_word.is_empty() {
-        let tokens = tokenize_identifier(&current_word);
-        if !result.is_empty() && !tokens.is_empty() {
-            result.push(' ');
-        }
-        result.push_str(&tokens.join(" "));
-    }
-    result
 }
 
 #[cfg(test)]

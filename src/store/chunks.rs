@@ -9,9 +9,9 @@ use super::helpers::{
     bytes_to_embedding, clamp_line_number, embedding_to_bytes, ChunkRow, ChunkSummary, IndexStats,
     StoreError,
 };
-use super::normalize_for_fts;
 use super::Store;
 use crate::embedder::Embedding;
+use crate::nl::normalize_for_fts;
 use crate::parser::{Chunk, ChunkType, Language};
 
 impl Store {

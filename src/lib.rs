@@ -42,12 +42,14 @@
 //!
 //! ```no_run
 //! # fn example() -> anyhow::Result<()> {
+//! use std::path::PathBuf;
+//!
 //! // Stdio transport (for Claude Code)
-//! cqs::serve_stdio(".".into(), false)?;  // false = CPU, true = GPU
+//! cqs::serve_stdio(PathBuf::from("."), false)?;  // false = CPU, true = GPU
 //!
 //! // HTTP transport with GPU embedding (None = no auth)
 //! // Note: serve_http blocks the current thread
-//! cqs::serve_http(".".into(), "127.0.0.1", 3000, true, None)?;
+//! cqs::serve_http(".", "127.0.0.1", 3000, true, None)?;
 //! # Ok(())
 //! # }
 //! ```

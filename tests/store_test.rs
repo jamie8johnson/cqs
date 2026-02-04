@@ -3,8 +3,9 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
+use cqs::nl::normalize_for_fts;
 use cqs::parser::{ChunkType, Language};
-use cqs::store::{normalize_for_fts, SearchFilter};
+use cqs::store::SearchFilter;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
