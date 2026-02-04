@@ -530,3 +530,258 @@ fn test_cqs_search_with_all_optional_params() {
         response.error
     );
 }
+
+// ===== Additional Error Path Tests =====
+
+#[test]
+fn test_cqs_add_note_missing_text() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "sentiment": 0.5
+                // missing "text" field
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("text") || error.message.contains("Missing"),
+        "Error should mention missing text: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_add_note_empty_text() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": ""
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("empty"),
+        "Error should mention empty text: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_add_note_text_too_long() {
+    let (_dir, mut server) = setup_test_server();
+
+    let long_text = "a".repeat(3000); // Max is 2000
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": long_text
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("too long") || error.message.contains("2000"),
+        "Error should mention text length limit: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_audit_mode_invalid_duration() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_audit_mode",
+            "arguments": {
+                "enabled": true,
+                "expires_in": "not_a_duration"
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("duration") || error.message.contains("parse"),
+        "Error should mention duration parse failure: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_audit_mode_query_state() {
+    let (_dir, mut server) = setup_test_server();
+
+    // Query current state (no enabled argument)
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_audit_mode",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "Query audit mode failed: {:?}",
+        response.error
+    );
+    let result = response.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    // Should contain audit_mode state
+    assert!(
+        text.contains("audit_mode"),
+        "Response should contain audit_mode: {}",
+        text
+    );
+}
+
+#[test]
+fn test_cqs_callers_missing_name() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_callers",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("name") || error.message.contains("Missing"),
+        "Error should mention missing name: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_callees_missing_name() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_callees",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("name") || error.message.contains("Missing"),
+        "Error should mention missing name: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_search_empty_query() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": ""
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Empty query should fail or return empty results
+    // The important thing is graceful handling
+    if let Some(error) = response.error {
+        assert!(
+            error.message.contains("empty") || error.message.contains("query"),
+            "Error should mention empty query: {}",
+            error.message
+        );
+    }
+}
+
+#[test]
+fn test_cqs_search_missing_query() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("query") || error.message.contains("Missing"),
+        "Error should mention missing query: {}",
+        error.message
+    );
+}
+
+#[test]
+fn test_cqs_read_missing_path() {
+    let (_dir, mut server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_read",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some());
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("path") || error.message.contains("Missing"),
+        "Error should mention missing path: {}",
+        error.message
+    );
+}
