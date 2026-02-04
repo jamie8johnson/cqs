@@ -7,7 +7,7 @@ Branch: `fix/p1-audit-fixes` | CI pending
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Completed (~45 of 64)
+### P1 Completed (~47 of 64)
 
 | Fix | Location |
 |-----|----------|
@@ -54,8 +54,9 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Chunk size limit docs | parser.rs |
 | CLI constant docs | cli/mod.rs |
 | Sentiment threshold docs | note.rs |
+| Stable note IDs | note.rs (content-hash based) |
 
-### Remaining P1 (~19)
+### Remaining P1 (~17)
 - Test coverage: token_count (requires model - integration test)
 - Some module boundary items need architectural changes (P4)
 - Remaining items are either verified correct or need architectural decisions
@@ -68,6 +69,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 - Context line edge case (#54): Already uses saturating_sub
 - Config::merge naming (#17): Well-documented and tested
 - Language::FromStr error (#16): Works correctly, architectural refinement
+- VectorIndex takes &Embedding (#20): Type-safe design choice
 
 ### Remaining Tiers
 | Tier | Count | Status |
