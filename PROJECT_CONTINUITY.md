@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**#70 Low Priority Items Complete** (2026-02-04)
+**Session Complete** (2026-02-04)
 
-All cleanup items finished. Ready to close #70.
+Housekeeping done. Deferred items tracked in #139.
 
 ## Session Summary
 
@@ -13,24 +13,23 @@ All cleanup items finished. Ready to close #70.
 - #134: CHANGELOG update
 - #135: Lock poisoning DEBUG logs (#70)
 - #136: MODEL_NAME constant (#70)
+- #137: Doc comments + test helper (#70 closed)
+- #138: Final housekeeping (mut warnings, ExitCode, ServeConfig)
 
-### Pending
-- #137 (branch: chore/cleanup-70-final): Doc comments + test helper
+## Deferred Items (#139)
 
-## #70 All Items Complete
+| Item | Difficulty | Notes |
+|------|------------|-------|
+| r2d2 pool size tuning | 2 hr | Needs benchmarking |
+| Schema migrations | 1 day | Implement incremental migration |
+| hnsw_rs lifetime fix | 1 day+ | Upstream or major refactor |
+| bincode replacement | 2 days | Breaking change, mitigated |
 
-- [x] Add doc comments to internal helpers (CLI commands)
-- [x] Add structured tracing fields (already good)
-- [x] Add temp directory test helper (tests/common/mod.rs)
-- [x] Consistent error capitalization (verified)
-- [x] Move hardcoded model names to constants
-- [x] Remove commented-out code (none found)
-- [x] Lock poisoning logs to DEBUG
-
-## Open Issues (6)
+## Open Issues (7)
 
 | Issue | Description | Status |
 |-------|-------------|--------|
+| #139 | Deferred housekeeping | Tracking |
 | #130 | Tracking | Keep |
 | #126 | Error tests | Partial |
 | #107 | Memory | v0.3.0 |
@@ -43,3 +42,4 @@ All cleanup items finished. Ready to close #70.
 - 769-dim embeddings (768 + sentiment)
 - Store: split into focused modules (6 files)
 - Schema v10, WAL mode
+- tests/common/mod.rs for test fixtures
