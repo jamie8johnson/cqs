@@ -7,7 +7,7 @@ Branch: `fix/p1-audit-fixes` | CI pending
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Completed (~28 of 64)
+### P1 Completed (~35 of 64)
 
 | Fix | Location |
 |-----|----------|
@@ -38,12 +38,17 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Language enum docs | parser.rs |
 | ParserError/NoteError docs | parser.rs, note.rs |
 | Project root markers | cli/mod.rs (documented) |
-| embedding_slice logging | helpers.rs (trace level)
+| embedding_slice logging | helpers.rs (trace level) |
+| ChunkType::FromStr tests | language/mod.rs (4 tests) |
+| FileSystemSource tests | source/filesystem.rs (5 tests) |
+| SearchFilter validation | helpers.rs (validate() + 7 tests) |
+| clamp_line_number tests | helpers.rs (3 tests) |
+| Redundant HnswResult | hnsw.rs (use IndexResult directly) |
 
-### Remaining P1 (High Priority)
-- Test coverage: token_count, Source error paths, parse_file_calls
+### Remaining P1 (~29)
+- Test coverage: token_count, parse_file_calls
 - Module boundaries: CLI imports, ChunkRow exposure
-- API design: redundant types, validation
+- Error propagation: swallowed .ok() patterns
 
 ### Remaining Tiers
 | Tier | Count | Status |
