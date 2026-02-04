@@ -223,7 +223,7 @@ fn extract_params_nl(signature: &str) -> Option<String> {
 /// Extract return type from signature as natural language.
 fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
     match lang {
-        Language::Rust | Language::Go => {
+        Language::Rust => {
             if let Some(arrow) = signature.find("->") {
                 let ret = signature[arrow + 2..].trim();
                 if ret.is_empty() {
@@ -233,7 +233,23 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
                 return Some(format!("Returns {}", ret_words));
             }
         }
+        Language::Go => {
+            // Go: `func name(params) returnType {` - return type between ) and {
+            if let Some(paren) = signature.rfind(')') {
+                let after_paren = signature[paren + 1..].trim();
+                // Strip trailing { if present
+                let ret = after_paren.trim_end_matches('{').trim();
+                if ret.is_empty() {
+                    return None;
+                }
+                let ret_words = tokenize_identifier(ret).join(" ");
+                return Some(format!("Returns {}", ret_words));
+            }
+        }
         Language::TypeScript => {
+            // Note: rfind may match incorrectly on complex signatures like
+            // `function foo(): (x: number) => string` - proper parsing would require
+            // tracking parenthesis depth. This handles the common case.
             if let Some(colon) = signature.rfind("):") {
                 let ret = signature[colon + 2..].trim();
                 if ret.is_empty() {

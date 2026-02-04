@@ -2,33 +2,44 @@
 
 ## Right Now
 
-**20-category audit TRIAGED** (2026-02-04)
+**P1 fixes IN PROGRESS** (2026-02-04)
 
-- Design: `docs/plans/2026-02-04-20-category-audit-design.md`
-- Findings: `docs/audit-findings.md`
-- **Triage: `docs/audit-triage.md`**
+Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-**184 unique issues** (after de-duplication from 202 raw):
+### P1 Completed (~18 of 64)
 
-| Tier | Count | Criteria |
-|------|-------|----------|
-| P1 | 64 | Easy + Batch 1-2 (fix immediately) |
-| P2 | 58 | Easy + Batch 3-4, Medium + Batch 1 |
-| P3 | 43 | Medium + Batch 2-3 |
-| P4 | 19 | Hard, defer to issues |
+| Fix | Location |
+|-----|----------|
+| Line number clamping helper | helpers.rs + 10 call sites |
+| Model name mismatches | lib.rs, embedder.rs, CI workflow |
+| DESIGN_SPEC model note | docs/DESIGN_SPEC_27k_tokens.md |
+| Go return type extraction | nl.rs |
+| display.rs bounds checking | cli/display.rs |
+| SQLite magic numbers | store/mod.rs (comments) |
+| get_by_content_hash error | store/chunks.rs |
+| FTS delete error logging | chunks.rs, notes.rs |
+| parse_duration strictness | mcp.rs |
+| parse_duration tests | mcp.rs (10 new tests) |
+| Call extraction underflow | parser.rs |
+| RRF test max bound | store/mod.rs |
+| TypeScript return type | nl.rs (documented) |
+| Dead code markers | verified correct |
+| Tracing RUST_LOG support | main.rs (EnvFilter) |
+| embed_batch empty check | embedder.rs |
+| Panic paths | verified appropriate use of .expect()
 
-### Duplicate Clusters Identified
-- A: Language/Query duplication (5→1)
-- B: Model name mismatch (5→1)
-- C: Note search O(n) (3→1)
-- D: Embedder cold start (3→1)
-- E: HNSW file I/O (2→1)
-- F: Runtime/Store duplication (3→1)
+### Next P1 Items
+- Observability: tracing subscriber, embedder timing, MCP logging
+- Test coverage: token_count, cosine_similarity, delete_by_origin
+- API design: redundant HnswResult, SearchFilter validation
 
-### Next Steps
-1. **Start fixing P1** - model names, Go return type, display.rs bounds
-2. After P1+P2: assess diminishing returns
-3. Create GitHub issues for P4
+### Remaining Tiers
+| Tier | Count | Status |
+|------|-------|--------|
+| P1 | ~50 remaining | In progress |
+| P2 | 58 | Pending |
+| P3 | 43 | Pending |
+| P4 | 19 | Create GitHub issues |
 
 Reconciled overlapping categories into clean taxonomy:
 

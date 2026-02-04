@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Uses nomic-embed-text-v1.5 embeddings (769-dim: 768 model + sentiment)
+//! - **Semantic search**: Uses E5-base-v2 embeddings (769-dim: 768 model + sentiment)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
 //! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback

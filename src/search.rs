@@ -10,7 +10,9 @@ use sqlx::Row;
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
 use crate::nl::tokenize_identifier;
-use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult};
+use crate::store::helpers::{
+    clamp_line_number, embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult,
+};
 use crate::store::{normalize_for_fts, Store, StoreError};
 
 /// Cosine similarity for L2-normalized vectors (just dot product)
@@ -238,8 +240,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
                     };
                     (chunk_row.id.clone(), chunk_row)
@@ -350,8 +352,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(11),
                     };
                     let embedding_bytes: Vec<u8> = row.get(10);

@@ -132,7 +132,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using nomic-embed-text-v1.5
+/// Text embedding generator using E5-base-v2
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -314,10 +314,9 @@ impl Embedder {
         // Compute embedding
         let prefixed = format!("query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
-        let base_embedding = results
-            .into_iter()
-            .next()
-            .expect("embed_batch with single item always returns one result");
+        let base_embedding = results.into_iter().next().ok_or_else(|| {
+            EmbedderError::InferenceFailed("embed_batch returned empty result".to_string())
+        })?;
 
         // Add neutral sentiment (0.0) as 769th dimension
         let embedding = base_embedding.with_sentiment(0.0);

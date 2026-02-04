@@ -46,10 +46,13 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-                let _ = sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
+                if let Err(e) = sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
                     .bind(&note.id)
                     .execute(&mut *tx)
-                    .await;
+                    .await
+                {
+                    tracing::warn!("Failed to delete from notes_fts: {}", e);
+                }
 
                 sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
                     .bind(&note.id)

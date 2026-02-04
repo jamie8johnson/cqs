@@ -3,6 +3,10 @@
 **Version:** 0.13.0-draft
 **Updated:** 2026-01-31T07:30:00Z
 
+> **Note:** This spec references nomic-embed-text-v1.5. The codebase now uses E5-base-v2
+> (see `src/embedder.rs`). Token limits changed from 8192 to 512, prefixes changed to
+> "query: " / "passage: ". Core architecture remains accurate.
+
 Semantic search over local codebases using embeddings. Find patterns, not files.
 
 ---

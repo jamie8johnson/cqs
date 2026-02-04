@@ -207,6 +207,17 @@ pub struct IndexStats {
     pub schema_version: i32,
 }
 
+// ============ Line Number Conversion ============
+
+/// Clamp i64 to valid u32 line number range
+///
+/// SQLite returns i64, but line numbers are u32. This safely clamps
+/// to avoid truncation issues on extreme values.
+#[inline]
+pub fn clamp_line_number(n: i64) -> u32 {
+    n.clamp(0, u32::MAX as i64) as u32
+}
+
 // ============ Embedding Serialization ============
 
 /// Convert embedding to bytes for storage

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use sqlx::Row;
 
-use super::helpers::{CallerInfo, ChunkRow, ChunkSummary, StoreError};
+use super::helpers::{clamp_line_number, CallerInfo, ChunkRow, ChunkSummary, StoreError};
 use super::Store;
 
 impl Store {
@@ -64,8 +64,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
                     })
                 })
@@ -167,7 +167,7 @@ impl Store {
                 .map(|(file, name, line)| CallerInfo {
                     file: PathBuf::from(file),
                     name,
-                    line: line.clamp(0, u32::MAX as i64) as u32,
+                    line: clamp_line_number(line),
                 })
                 .collect();
 
@@ -190,7 +190,7 @@ impl Store {
 
             Ok(rows
                 .into_iter()
-                .map(|(name, line)| (name, line.clamp(0, u32::MAX as i64) as u32))
+                .map(|(name, line)| (name, clamp_line_number(line)))
                 .collect())
         })
     }

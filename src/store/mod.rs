@@ -61,26 +61,33 @@ impl Store {
 
         let db_url = format!("sqlite://{}?mode=rwc", path.display());
 
+        // SQLite connection pool with WAL mode for concurrent reads
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
-                .max_connections(4)
+                .max_connections(4) // 4 = typical CLI parallelism (index, search, watch)
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
+                        // WAL mode: concurrent reads, single writer
                         sqlx::query("PRAGMA journal_mode = WAL")
                             .execute(&mut *conn)
                             .await?;
+                        // 5000ms busy timeout before SQLITE_BUSY
                         sqlx::query("PRAGMA busy_timeout = 5000")
                             .execute(&mut *conn)
                             .await?;
+                        // NORMAL sync: fsync on WAL checkpoint only (safe with WAL)
                         sqlx::query("PRAGMA synchronous = NORMAL")
                             .execute(&mut *conn)
                             .await?;
+                        // 64MB page cache (negative = KB, -65536 = 64MB)
                         sqlx::query("PRAGMA cache_size = -65536")
                             .execute(&mut *conn)
                             .await?;
+                        // Keep temp tables in memory
                         sqlx::query("PRAGMA temp_store = MEMORY")
                             .execute(&mut *conn)
                             .await?;
+                        // 256MB memory-mapped I/O for faster reads
                         sqlx::query("PRAGMA mmap_size = 268435456")
                             .execute(&mut *conn)
                             .await?;
@@ -344,6 +351,8 @@ mod tests {
         }
 
         /// Property: RRF scores are bounded
+        /// Note: Duplicates in input lists can accumulate extra points.
+        /// Max theoretical: sum of 1/(K+r+1) for all appearances across both lists.
         #[test]
         fn prop_rrf_scores_bounded(
             semantic in prop::collection::vec("[a-z]{1,5}", 0..20),
@@ -351,7 +360,9 @@ mod tests {
             limit in 1usize..50
         ) {
             let result = Store::rrf_fuse_test(&semantic, &fts, limit);
-            let max_possible = 1.0;
+            // Conservative upper bound: sum of first N terms of 1/(K+r+1) for both lists
+            // where N is max list length (20). With duplicates, actual max is ~0.3
+            let max_possible = 0.5; // generous bound accounting for duplicates
             for (id, score) in &result {
                 prop_assert!(
                     *score <= max_possible,
