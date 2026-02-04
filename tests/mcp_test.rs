@@ -42,7 +42,7 @@ fn make_request(method: &str, params: Option<Value>) -> JsonRpcRequest {
 
 #[test]
 fn test_initialize() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request(
         "initialize",
@@ -74,7 +74,7 @@ fn test_initialize() {
 
 #[test]
 fn test_tools_list() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request("tools/list", None);
     let response = server.handle_request(request);
@@ -101,7 +101,7 @@ fn test_tools_list() {
 
 #[test]
 fn test_tools_call_stats() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request(
         "tools/call",
@@ -136,7 +136,7 @@ fn test_tools_call_stats() {
 
 #[test]
 fn test_unknown_method() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request("unknown/method", None);
     let response = server.handle_request(request);
@@ -149,7 +149,7 @@ fn test_unknown_method() {
 
 #[test]
 fn test_tools_call_unknown_tool() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request(
         "tools/call",
@@ -168,7 +168,7 @@ fn test_tools_call_unknown_tool() {
 
 #[test]
 fn test_tools_call_missing_params() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request("tools/call", None);
     let response = server.handle_request(request);
@@ -180,7 +180,7 @@ fn test_tools_call_missing_params() {
 
 #[test]
 fn test_initialized_notification() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // initialized is a notification, should return null
     let request = make_request("initialized", None);
@@ -192,7 +192,7 @@ fn test_initialized_notification() {
 
 #[test]
 fn test_response_has_id() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -209,7 +209,7 @@ fn test_response_has_id() {
 
 #[test]
 fn test_cqs_read_valid_file() {
-    let (dir, mut server) = setup_test_server();
+    let (dir, server) = setup_test_server();
 
     // Create a test file
     let test_file = dir.path().join("test.rs");
@@ -237,7 +237,7 @@ fn test_cqs_read_valid_file() {
 
 #[test]
 fn test_cqs_read_path_traversal_blocked() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Try to read /etc/passwd via path traversal
     let request = make_request(
@@ -262,7 +262,7 @@ fn test_cqs_read_path_traversal_blocked() {
 
 #[test]
 fn test_cqs_read_file_not_found() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request(
         "tools/call",
@@ -281,7 +281,7 @@ fn test_cqs_read_file_not_found() {
 
 #[test]
 fn test_cqs_read_with_notes() {
-    let (dir, mut server) = setup_test_server();
+    let (dir, server) = setup_test_server();
 
     // Create docs directory and notes.toml
     let docs_dir = dir.path().join("docs");
@@ -328,7 +328,7 @@ mentions = ["test.rs"]
 
 #[test]
 fn test_initialize_with_old_protocol_version() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Use an older protocol version - server should accept and respond with its version
     let request = make_request(
@@ -351,7 +351,7 @@ fn test_initialize_with_old_protocol_version() {
 
 #[test]
 fn test_string_request_id() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = JsonRpcRequest {
         jsonrpc: "2.0".into(),
@@ -368,7 +368,7 @@ fn test_string_request_id() {
 
 #[test]
 fn test_null_request_id_notification() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Null ID is valid for notifications
     let request = JsonRpcRequest {
@@ -386,7 +386,7 @@ fn test_null_request_id_notification() {
 
 #[test]
 fn test_tools_call_wrong_param_type() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Pass a string for arguments instead of object
     let request = make_request(
@@ -406,7 +406,7 @@ fn test_tools_call_wrong_param_type() {
 
 #[test]
 fn test_tools_call_null_arguments() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Null arguments should be treated as empty object
     let request = make_request(
@@ -429,7 +429,7 @@ fn test_tools_call_null_arguments() {
 
 #[test]
 fn test_tools_call_missing_name() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Missing required "name" field
     let request = make_request(
@@ -453,7 +453,7 @@ fn test_tools_call_missing_name() {
 
 #[test]
 fn test_empty_method() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request("", None);
     let response = server.handle_request(request);
@@ -463,7 +463,7 @@ fn test_empty_method() {
 
 #[test]
 fn test_very_long_query_rejected() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Create a query longer than MAX_QUERY_LENGTH (10000 bytes)
     let long_query = "a".repeat(15000);
@@ -490,7 +490,7 @@ fn test_very_long_query_rejected() {
 
 #[test]
 fn test_initialize_without_params() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     // Initialize with no params - should use defaults
     let request = make_request("initialize", None);
@@ -503,7 +503,7 @@ fn test_initialize_without_params() {
 
 #[test]
 fn test_cqs_search_with_all_optional_params() {
-    let (_dir, mut server) = setup_test_server();
+    let (_dir, server) = setup_test_server();
 
     let request = make_request(
         "tools/call",

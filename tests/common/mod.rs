@@ -29,7 +29,9 @@ impl TestStore {
         let dir = TempDir::new().expect("Failed to create temp dir");
         let db_path = dir.path().join("index.db");
         let store = Store::open(&db_path).expect("Failed to open store");
-        store.init(&ModelInfo::default()).expect("Failed to init store");
+        store
+            .init(&ModelInfo::default())
+            .expect("Failed to init store");
         Self { store, _dir: dir }
     }
 
