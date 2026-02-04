@@ -154,7 +154,7 @@ impl Store {
             .metadata()?
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| std::io::Error::other("time error"))?
+            .map_err(|_| StoreError::SystemTime)?
             .as_secs() as i64;
 
         self.rt.block_on(async {
