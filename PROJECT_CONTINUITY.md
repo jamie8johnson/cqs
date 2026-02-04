@@ -2,11 +2,20 @@
 
 ## Right Now
 
-**20-category audit designed** (2026-02-04)
+**20-category audit COMPLETE** (2026-02-04)
 
-Design committed: `docs/plans/2026-02-04-20-category-audit-design.md`
+- Design: `docs/plans/2026-02-04-20-category-audit-design.md`
+- Findings: `docs/audit-findings.md`
 
-Ready to execute. Next step: run Batch 1 (5 agents).
+**202 findings** across 20 categories:
+- ~130 easy, ~55 medium, ~17 hard
+- Ready for Phase 2: Triage and prioritize
+- Then Phase 3: Fix by priority tier
+
+### Next Steps
+1. Review findings, de-duplicate overlaps
+2. Assign P1-P4 tiers
+3. Start fixing P1 (easy wins in Batch 1-2)
 
 Reconciled overlapping categories into clean taxonomy:
 
