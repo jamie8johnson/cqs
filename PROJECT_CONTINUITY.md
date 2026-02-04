@@ -6,7 +6,7 @@
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Completed (~18 of 64)
+### P1 Completed (~21 of 64)
 
 | Fix | Location |
 |-----|----------|
@@ -26,7 +26,11 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Dead code markers | verified correct |
 | Tracing RUST_LOG support | main.rs (EnvFilter) |
 | embed_batch empty check | embedder.rs |
-| Panic paths | verified appropriate use of .expect()
+| Panic paths | verified appropriate use of .expect() |
+| cosine_similarity tests | search.rs (4 new tests) |
+| delete_by_origin test | tests/store_test.rs |
+| needs_reindex test | tests/store_test.rs |
+| name_match_score | already tested
 
 ### Next P1 Items
 - Observability: tracing subscriber, embedder timing, MCP logging

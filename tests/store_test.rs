@@ -113,6 +113,51 @@ fn test_search_filtered_by_language() {
 }
 
 #[test]
+fn test_needs_reindex_not_indexed() {
+    let store = TestStore::new();
+
+    // Create a temp file that's not indexed
+    let dir = tempfile::TempDir::new().unwrap();
+    let file_path = dir.path().join("new_file.rs");
+    std::fs::write(&file_path, "fn test() {}").unwrap();
+
+    // File not in index should need reindexing
+    let needs = store.needs_reindex(&file_path).unwrap();
+    assert!(needs, "File not in index should need reindexing");
+}
+
+#[test]
+fn test_delete_by_origin() {
+    let store = TestStore::new();
+
+    // Insert chunks from two files
+    let chunk1 = test_chunk("fn1", "fn fn1() {}");
+    let mut chunk2 = test_chunk("fn2", "fn fn2() {}");
+    chunk2.file = PathBuf::from("other.rs");
+    chunk2.id = format!("other.rs:1:{}", &chunk2.content_hash[..8]);
+
+    store
+        .upsert_chunk(&chunk1, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // Delete chunks from test.rs
+    let deleted = store.delete_by_origin(&PathBuf::from("test.rs")).unwrap();
+    assert_eq!(deleted, 1);
+
+    // Only chunk2 should remain
+    let results = store.search(&mock_embedding(1.0), 10, 0.0).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].chunk.name, "fn2");
+
+    // Deleting again should return 0
+    let deleted_again = store.delete_by_origin(&PathBuf::from("test.rs")).unwrap();
+    assert_eq!(deleted_again, 0);
+}
+
+#[test]
 fn test_prune_missing() {
     let store = TestStore::new();
 

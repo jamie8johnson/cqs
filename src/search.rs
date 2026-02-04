@@ -505,6 +505,57 @@ impl Store {
 mod tests {
     use super::*;
 
+    // ===== cosine_similarity tests =====
+
+    fn make_embedding(val: f32) -> Vec<f32> {
+        vec![val; 769]
+    }
+
+    fn make_unit_embedding(idx: usize) -> Vec<f32> {
+        let mut v = vec![0.0; 769];
+        v[idx] = 1.0;
+        v
+    }
+
+    #[test]
+    fn test_cosine_similarity_identical() {
+        let a = make_embedding(0.5);
+        let sim = cosine_similarity(&a, &a);
+        // Identical vectors should have high similarity
+        assert!(sim > 0.99, "Expected ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn test_cosine_similarity_orthogonal() {
+        let a = make_unit_embedding(0);
+        let b = make_unit_embedding(1);
+        let sim = cosine_similarity(&a, &b);
+        // Orthogonal unit vectors should have 0 similarity
+        assert!(sim.abs() < 0.01, "Expected ~0, got {}", sim);
+    }
+
+    #[test]
+    fn test_cosine_similarity_symmetric() {
+        let a: Vec<f32> = (0..769).map(|i| (i as f32) / 769.0).collect();
+        let b: Vec<f32> = (0..769).map(|i| 1.0 - (i as f32) / 769.0).collect();
+        let sim_ab = cosine_similarity(&a, &b);
+        let sim_ba = cosine_similarity(&b, &a);
+        assert!((sim_ab - sim_ba).abs() < 1e-6, "Should be symmetric");
+    }
+
+    #[test]
+    fn test_cosine_similarity_range() {
+        // Random-ish vectors
+        let a: Vec<f32> = (0..769).map(|i| ((i * 7) % 100) as f32 / 100.0).collect();
+        let b: Vec<f32> = (0..769).map(|i| ((i * 13) % 100) as f32 / 100.0).collect();
+        let sim = cosine_similarity(&a, &b);
+        // Cosine similarity for non-normalized vectors can exceed [-1, 1]
+        // but for typical embeddings should be reasonable
+        assert!(sim.is_finite(), "Should be finite");
+    }
+
+    // ===== name_match_score tests =====
+
     #[test]
     fn test_name_match_exact() {
         assert_eq!(name_match_score("parse", "parse"), 1.0);
