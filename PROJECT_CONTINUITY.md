@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**v0.1.18** - Audit fixes complete.
+**v0.2.0** - Security audit complete, preparing release.
 
-**PRs merged (2026-02-03/04):**
+**Audit PRs merged (2026-02-03/04):**
 - #88: Fixed #74 timing attack (subtle::ConstantTimeEq)
 - #87: Fixed #75 rsa vuln (sqlx default-features)
 - #89: Fixed #64,82-84 quick wins batch
@@ -15,7 +15,7 @@
 - #94: MCP edge case tests + IPv6 (#68)
 - #95: Property tests + security docs (#67, #69, #80, #86)
 
-**Closed issues (this session):**
+**Closed issues (audit):**
 #64, #66, #67, #68, #69, #74, #75, #76, #77, #78, #79, #80, #81, #82, #83, #84, #85, #86
 
 **Remaining open:**
