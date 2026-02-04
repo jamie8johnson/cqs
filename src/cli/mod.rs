@@ -695,11 +695,13 @@ fn run_index_pipeline(
                             // Rewrite paths to be relative for storage
                             for chunk in &mut chunks {
                                 chunk.file = rel_path.clone();
+                                let hash_prefix =
+                                    chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
                                 chunk.id = format!(
                                     "{}:{}:{}",
                                     rel_path.display(),
                                     chunk.line_start,
-                                    &chunk.content_hash[..8]
+                                    hash_prefix
                                 );
                             }
                             chunks
