@@ -1137,6 +1137,8 @@ fn is_localhost_origin(origin: &str) -> bool {
         "http://127.0.0.1",
         "https://localhost",
         "https://127.0.0.1",
+        "http://[::1]",
+        "https://[::1]",
     ];
 
     for prefix in prefixes {
@@ -1432,6 +1434,27 @@ mod tests {
     fn test_origin_localhost_with_path() {
         let mut headers = HeaderMap::new();
         headers.insert("origin", "http://localhost/api".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_ipv6_localhost() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://[::1]".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_ipv6_localhost_with_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "http://[::1]:3000".parse().unwrap());
+        assert!(validate_origin_header(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_origin_ipv6_localhost_https() {
+        let mut headers = HeaderMap::new();
+        headers.insert("origin", "https://[::1]:8443".parse().unwrap());
         assert!(validate_origin_header(&headers).is_ok());
     }
 
