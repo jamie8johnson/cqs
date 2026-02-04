@@ -641,10 +641,14 @@ impl Parser {
         let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());
 
         let mut results = Vec::new();
+        // Reuse these allocations across iterations
+        let mut call_cursor = tree_sitter::QueryCursor::new();
+        let mut calls = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let capture_names = chunk_query.capture_names();
 
         while let Some(m) = matches.next() {
             // Find function node
-            let capture_names = chunk_query.capture_names();
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
                 matches!(
@@ -669,10 +673,9 @@ impl Parser {
             let line_start = node.start_position().row as u32 + 1;
 
             // Extract calls within this function (no size limit!)
-            let mut call_cursor = tree_sitter::QueryCursor::new();
             call_cursor.set_byte_range(node.byte_range());
+            calls.clear();
 
-            let mut calls = Vec::new();
             let mut call_matches =
                 call_cursor.matches(call_query, tree.root_node(), source.as_bytes());
 
@@ -691,14 +694,14 @@ impl Parser {
             }
 
             // Deduplicate
-            let mut seen = std::collections::HashSet::new();
+            seen.clear();
             calls.retain(|c| seen.insert(c.callee_name.clone()));
 
             if !calls.is_empty() {
                 results.push(FunctionCalls {
                     name,
                     line_start,
-                    calls,
+                    calls: std::mem::take(&mut calls),
                 });
             }
         }

@@ -132,6 +132,8 @@ impl Store {
     }
 
     /// Delete chunks for files that no longer exist
+    ///
+    /// Batches deletes in groups of 100 to balance memory usage and query efficiency.
     pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(
@@ -140,25 +142,48 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            let mut deleted = 0u32;
-            for (origin,) in rows {
-                let path = PathBuf::from(&origin);
-                if !existing_files.contains(&path) {
-                    sqlx::query(
-                        "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
-                    )
-                    .bind(&origin)
-                    .execute(&self.pool)
-                    .await?;
+            // Collect missing origins
+            let missing: Vec<String> = rows
+                .into_iter()
+                .filter(|(origin,)| !existing_files.contains(&PathBuf::from(origin)))
+                .map(|(origin,)| origin)
+                .collect();
 
-                    let result = sqlx::query("DELETE FROM chunks WHERE origin = ?1")
-                        .bind(&origin)
-                        .execute(&self.pool)
-                        .await?;
-
-                    deleted += result.rows_affected() as u32;
-                }
+            if missing.is_empty() {
+                return Ok(0);
             }
+
+            // Batch delete in chunks of 100 (SQLite has ~999 param limit)
+            const BATCH_SIZE: usize = 100;
+            let mut deleted = 0u32;
+
+            for batch in missing.chunks(BATCH_SIZE) {
+                let placeholders: Vec<String> =
+                    (1..=batch.len()).map(|i| format!("?{}", i)).collect();
+                let placeholder_str = placeholders.join(",");
+
+                // Delete from FTS first
+                let fts_query = format!(
+                    "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin IN ({}))",
+                    placeholder_str
+                );
+                let mut fts_stmt = sqlx::query(&fts_query);
+                for origin in batch {
+                    fts_stmt = fts_stmt.bind(origin);
+                }
+                fts_stmt.execute(&self.pool).await?;
+
+                // Delete from chunks
+                let chunks_query =
+                    format!("DELETE FROM chunks WHERE origin IN ({})", placeholder_str);
+                let mut chunks_stmt = sqlx::query(&chunks_query);
+                for origin in batch {
+                    chunks_stmt = chunks_stmt.bind(origin);
+                }
+                let result = chunks_stmt.execute(&self.pool).await?;
+                deleted += result.rows_affected() as u32;
+            }
+
             Ok(deleted)
         })
     }
