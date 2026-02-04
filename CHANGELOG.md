@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `--api-key` flag and `CQS_API_KEY` env var for HTTP transport authentication
+  - Required for non-localhost network exposure
+  - Constant-time comparison to prevent timing attacks
+- `--bind` flag to specify listen address (default: 127.0.0.1)
+  - Non-localhost binding requires `--dangerously-allow-network-bind` and `--api-key`
+
+### Changed
+- Migrated from rusqlite to sqlx async SQLite (schema v10)
+- Extracted validation functions for better code discoverability
+  - `validate_api_key`, `validate_origin_header`, `validate_query_length`
+  - `verify_hnsw_checksums` with extension allowlist
+- Replaced `unwrap()` with `expect()` for better panic messages
+- Added SAFETY comments to all unsafe blocks
+
+### Fixed
+- Path traversal vulnerability in HNSW checksum verification
+- Integer overflow in saturating i64→u32 casts for database fields
+
+### Security
+- Updated `bytes` to 1.11.1 (RUSTSEC-2026-0007 integer overflow fix)
+- HNSW checksum verification now validates extensions against allowlist
+
 ## [0.1.17] - 2026-02-01
 
 ### Added

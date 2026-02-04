@@ -180,6 +180,26 @@ Endpoints:
 - `GET /mcp` - SSE stream for server-to-client messages
 - `GET /health` - Health check
 
+**Authentication:** For network-exposed servers, API key authentication is required:
+
+```bash
+# Via flag
+cqs serve --transport http --api-key SECRET --project /path/to/project
+
+# Via environment variable
+export CQS_API_KEY=SECRET
+cqs serve --transport http --project /path/to/project
+```
+
+Clients must include `Authorization: Bearer SECRET` header.
+
+**Network binding:** By default, cqs binds to localhost only. To expose on a network:
+
+```bash
+# Requires both flags for safety
+cqs serve --transport http --bind 0.0.0.0 --dangerously-allow-network-bind --api-key SECRET
+```
+
 Implements MCP Streamable HTTP spec 2025-11-25 with Origin validation and protocol version headers.
 
 ## Supported Languages
