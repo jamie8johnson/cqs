@@ -296,14 +296,15 @@ fn find_project_root() -> PathBuf {
     let mut current = cwd.as_path();
 
     loop {
-        // Check for project markers
+        // Check for project markers (build files and VCS root)
+        // Listed in priority order: if multiple exist, first match wins
         let markers = [
-            "Cargo.toml",
-            "package.json",
-            "pyproject.toml",
-            "setup.py",
-            "go.mod",
-            ".git",
+            "Cargo.toml",     // Rust
+            "package.json",   // Node.js
+            "pyproject.toml", // Python (modern)
+            "setup.py",       // Python (legacy)
+            "go.mod",         // Go
+            ".git",           // Git repository root (fallback)
         ];
 
         for marker in &markers {
