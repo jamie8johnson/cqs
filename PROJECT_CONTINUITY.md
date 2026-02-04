@@ -23,7 +23,7 @@
 - #70: Low-priority cleanup (ongoing)
 - #63: Monitor paste dep (external, no action)
 
-**Tests:** 145 total (was ~75 before audit)
+**Tests:** 162 total (was ~75 before audit, 2x+)
 
 **5 unmaintained deps:** bincode, derivative, instant, number_prefix, paste (all transitive)
 
