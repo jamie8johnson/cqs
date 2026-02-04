@@ -1727,4 +1727,123 @@ impl Store {
             Ok((total as u64, warnings as u64, patterns as u64))
         })
     }
+
+    /// Exposed for property testing only
+    #[cfg(test)]
+    pub(crate) fn rrf_fuse_test(
+        semantic_ids: &[String],
+        fts_ids: &[String],
+        limit: usize,
+    ) -> Vec<(String, f32)> {
+        Self::rrf_fuse(semantic_ids, fts_ids, limit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // ===== Property-based tests for RRF =====
+
+    proptest! {
+        /// Property: RRF scores are always positive
+        #[test]
+        fn prop_rrf_scores_positive(
+            semantic in prop::collection::vec("[a-z]{1,5}", 0..20),
+            fts in prop::collection::vec("[a-z]{1,5}", 0..20),
+            limit in 1usize..50
+        ) {
+            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            for (_, score) in &result {
+                prop_assert!(*score > 0.0, "RRF score should be positive: {}", score);
+            }
+        }
+
+        /// Property: RRF scores are bounded by sum of all possible contributions
+        #[test]
+        fn prop_rrf_scores_bounded(
+            semantic in prop::collection::vec("[a-z]{1,5}", 0..20),
+            fts in prop::collection::vec("[a-z]{1,5}", 0..20),
+            limit in 1usize..50
+        ) {
+            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            // Max theoretical contribution: sum of 1/(K+i+1) for all positions
+            // With K=60, even 40 contributions sum to < 1
+            let max_possible = 1.0;
+            for (id, score) in &result {
+                prop_assert!(
+                    *score <= max_possible,
+                    "RRF score {} for '{}' exceeds max {}",
+                    score, id, max_possible
+                );
+            }
+        }
+
+        /// Property: RRF respects limit
+        #[test]
+        fn prop_rrf_respects_limit(
+            semantic in prop::collection::vec("[a-z]{1,5}", 0..30),
+            fts in prop::collection::vec("[a-z]{1,5}", 0..30),
+            limit in 1usize..20
+        ) {
+            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            prop_assert!(
+                result.len() <= limit,
+                "Result length {} exceeds limit {}",
+                result.len(), limit
+            );
+        }
+
+        /// Property: RRF results are sorted by score descending
+        #[test]
+        fn prop_rrf_sorted_descending(
+            semantic in prop::collection::vec("[a-z]{1,5}", 1..20),
+            fts in prop::collection::vec("[a-z]{1,5}", 1..20),
+            limit in 1usize..50
+        ) {
+            let result = Store::rrf_fuse_test(&semantic, &fts, limit);
+            for window in result.windows(2) {
+                prop_assert!(
+                    window[0].1 >= window[1].1,
+                    "Results not sorted: {} < {}",
+                    window[0].1, window[1].1
+                );
+            }
+        }
+
+        /// Property: Items appearing in both lists get higher scores than single-list items
+        #[test]
+        fn prop_rrf_rewards_overlap(
+            common_id in "[a-z]{3}",
+            only_semantic in prop::collection::vec("[A-Z]{3}", 1..5),
+            only_fts in prop::collection::vec("[0-9]{3}", 1..5)
+        ) {
+            // Put common_id first in both lists
+            let mut semantic = vec![common_id.clone()];
+            semantic.extend(only_semantic);
+            let mut fts = vec![common_id.clone()];
+            fts.extend(only_fts);
+
+            let result = Store::rrf_fuse_test(&semantic, &fts, 100);
+
+            // Find common_id score and max single-list score
+            let common_score = result.iter()
+                .find(|(id, _)| id == &common_id)
+                .map(|(_, s)| *s)
+                .unwrap_or(0.0);
+
+            let max_single = result.iter()
+                .filter(|(id, _)| id != &common_id)
+                .map(|(_, s)| *s)
+                .fold(0.0f32, |a, b| a.max(b));
+
+            // Common item should have highest score (appears in both at rank 0)
+            prop_assert!(
+                common_score >= max_single,
+                "Common item score {} should be >= single-list max {}",
+                common_score, max_single
+            );
+        }
+    }
 }

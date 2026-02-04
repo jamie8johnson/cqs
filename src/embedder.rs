@@ -767,4 +767,62 @@ mod tests {
         assert_eq!(EMBEDDING_DIM, 769);
         assert_eq!(EMBEDDING_DIM, MODEL_DIM + 1);
     }
+
+    // ===== Property-based tests =====
+
+    mod proptests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            /// Property: normalize_l2 produces unit vectors (magnitude ≈ 1) or zero vectors
+            #[test]
+            fn prop_normalize_l2_unit_or_zero(v in prop::collection::vec(-1e6f32..1e6f32, 1..100)) {
+                let normalized = normalize_l2(v.clone());
+
+                // Compute magnitude
+                let magnitude: f32 = normalized.iter().map(|x| x * x).sum::<f32>().sqrt();
+
+                // Check: either zero vector (input was zero) or unit vector
+                let input_is_zero = v.iter().all(|&x| x == 0.0);
+                if input_is_zero {
+                    prop_assert!(magnitude < 1e-6, "Zero input should give zero output");
+                } else {
+                    prop_assert!(
+                        (magnitude - 1.0).abs() < 1e-4,
+                        "Non-zero input should give unit vector, got magnitude {}",
+                        magnitude
+                    );
+                }
+            }
+
+            /// Property: normalize_l2 preserves vector direction (dot product with original > 0)
+            #[test]
+            fn prop_normalize_l2_preserves_direction(v in prop::collection::vec(1.0f32..100.0, 1..50)) {
+                let normalized = normalize_l2(v.clone());
+
+                // Dot product with original should be positive (same direction)
+                let dot: f32 = v.iter().zip(normalized.iter()).map(|(a, b)| a * b).sum();
+                prop_assert!(dot > 0.0, "Direction should be preserved");
+            }
+
+            /// Property: sentiment clamping keeps values in [-1, 1]
+            #[test]
+            fn prop_sentiment_clamped(sentiment in -10.0f32..10.0f32) {
+                let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(sentiment);
+                if let Some(s) = emb.sentiment() {
+                    prop_assert!(s >= -1.0 && s <= 1.0, "Sentiment {} out of range", s);
+                }
+            }
+
+            /// Property: Embedding length is preserved through operations
+            #[test]
+            fn prop_embedding_length_preserved(len in 1usize..1000) {
+                let emb = Embedding::new(vec![0.5; len]);
+                prop_assert_eq!(emb.len(), len);
+                prop_assert_eq!(emb.as_slice().len(), len);
+                prop_assert_eq!(emb.as_vec().len(), len);
+            }
+        }
+    }
 }
