@@ -59,6 +59,16 @@ The HNSW disaster: built an index, wrote save/load, marked "done" - but search n
 - No `unwrap()` except in tests
 - GPU detection at runtime, graceful CPU fallback
 
+## Documentation
+
+When updating docs, keep these in sync:
+- `README.md` - user-facing, install/usage
+- `CONTRIBUTING.md` - dev setup, architecture overview
+- `SECURITY.md` - threat model, filesystem access
+- `CHANGELOG.md` - version history
+
+**CONTRIBUTING.md has an Architecture Overview section** - update it when adding/moving/renaming source files.
+
 ## WSL Workarounds
 
 Git/GitHub operations need PowerShell (Windows has credentials):
