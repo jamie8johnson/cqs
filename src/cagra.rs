@@ -49,10 +49,16 @@ pub enum CagraError {
 ///
 /// Wraps cuVS CAGRA with interior mutability to handle the consuming `search()` API.
 /// The index is rebuilt from cached data when needed.
+///
+/// # Thread Safety
+///
+/// Both `resources` and `index` are protected by Mutex to ensure safe concurrent access.
+/// CUDA contexts (managed by cuVS Resources) are not inherently thread-safe, so we
+/// serialize all GPU operations.
 #[cfg(feature = "gpu-search")]
 pub struct CagraIndex {
-    /// cuVS resources (CUDA context, streams, etc.)
-    resources: cuvs::Resources,
+    /// cuVS resources (CUDA context, streams, etc.) - protected by Mutex for thread safety
+    resources: Mutex<cuvs::Resources>,
     /// Cached embedding data as ndarray for rebuilding index after search
     dataset: Array2<f32>,
     /// Mapping from internal index to chunk ID
@@ -114,7 +120,7 @@ impl CagraIndex {
         tracing::info!("CAGRA index built successfully");
 
         Ok(Self {
-            resources,
+            resources: Mutex::new(resources),
             dataset,
             id_map,
             index: Mutex::new(Some(index)),
@@ -122,11 +128,16 @@ impl CagraIndex {
     }
 
     /// Rebuild index from cached embeddings (needed after search consumes it)
-    fn rebuild_index(&self) -> Result<cuvs::cagra::Index, CagraError> {
+    ///
+    /// Caller must hold the resources lock.
+    fn rebuild_index_with_resources(
+        &self,
+        resources: &cuvs::Resources,
+    ) -> Result<cuvs::cagra::Index, CagraError> {
         let build_params =
             cuvs::cagra::IndexParams::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
 
-        cuvs::cagra::Index::build(&self.resources, &build_params, &self.dataset)
+        cuvs::cagra::Index::build(resources, &build_params, &self.dataset)
             .map_err(|e| CagraError::Cuvs(e.to_string()))
     }
 
@@ -155,9 +166,18 @@ impl CagraIndex {
             return Vec::new();
         }
 
+        // Lock resources for the entire search operation (CUDA contexts aren't thread-safe)
+        let resources = self.resources.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("CAGRA resources mutex poisoned, recovering");
+            poisoned.into_inner()
+        });
+
         // Take the index (cuVS search consumes it)
         let index = {
-            let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+            let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                tracing::warn!("CAGRA index mutex poisoned, recovering");
+                poisoned.into_inner()
+            });
             guard.take()
         };
 
@@ -165,7 +185,7 @@ impl CagraIndex {
             Some(idx) => idx,
             None => {
                 // Rebuild if it was consumed
-                match self.rebuild_index() {
+                match self.rebuild_index_with_resources(&resources) {
                     Ok(idx) => idx,
                     Err(e) => {
                         tracing::error!("Failed to rebuild CAGRA index: {}", e);
@@ -183,7 +203,10 @@ impl CagraIndex {
             Err(e) => {
                 tracing::error!("Failed to create search params: {}", e);
                 // Put index back
-                let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::warn!("CAGRA index mutex poisoned, recovering");
+                    poisoned.into_inner()
+                });
                 *guard = Some(index);
                 return Vec::new();
             }
@@ -199,18 +222,24 @@ impl CagraIndex {
                     EMBEDDING_DIM,
                     e
                 );
-                let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::warn!("CAGRA index mutex poisoned, recovering");
+                    poisoned.into_inner()
+                });
                 *guard = Some(index);
                 return Vec::new();
             }
         };
 
         // Copy query to device
-        let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&self.resources) {
+        let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("Failed to copy query to device: {}", e);
-                let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::warn!("CAGRA index mutex poisoned, recovering");
+                    poisoned.into_inner()
+                });
                 *guard = Some(index);
                 return Vec::new();
             }
@@ -221,22 +250,28 @@ impl CagraIndex {
         let distances_host: Array2<f32> = Array2::zeros((1, k));
 
         let neighbors_device =
-            match cuvs::ManagedTensor::from(&neighbors_host).to_device(&self.resources) {
+            match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to allocate neighbors on device: {}", e);
-                    let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+                    let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                        tracing::warn!("CAGRA index mutex poisoned, recovering");
+                        poisoned.into_inner()
+                    });
                     *guard = Some(index);
                     return Vec::new();
                 }
             };
 
         let distances_device =
-            match cuvs::ManagedTensor::from(&distances_host).to_device(&self.resources) {
+            match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
                 Ok(t) => t,
                 Err(e) => {
                     tracing::error!("Failed to allocate distances on device: {}", e);
-                    let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+                    let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                        tracing::warn!("CAGRA index mutex poisoned, recovering");
+                        poisoned.into_inner()
+                    });
                     *guard = Some(index);
                     return Vec::new();
                 }
@@ -244,7 +279,7 @@ impl CagraIndex {
 
         // Perform search (consumes index)
         if let Err(e) = index.search(
-            &self.resources,
+            &resources,
             &search_params,
             &query_device,
             &neighbors_device,
@@ -258,16 +293,17 @@ impl CagraIndex {
         let mut neighbors_result: Array2<u32> = Array2::zeros((1, k));
         let mut distances_result: Array2<f32> = Array2::zeros((1, k));
 
-        if let Err(e) = neighbors_device.to_host(&self.resources, &mut neighbors_result) {
+        if let Err(e) = neighbors_device.to_host(&resources, &mut neighbors_result) {
             tracing::error!("Failed to copy neighbors from device: {}", e);
             return Vec::new();
         }
-        if let Err(e) = distances_device.to_host(&self.resources, &mut distances_result) {
+        if let Err(e) = distances_device.to_host(&resources, &mut distances_result) {
             tracing::error!("Failed to copy distances from device: {}", e);
             return Vec::new();
         }
 
         // Note: index was consumed by search, will be rebuilt on next search
+        // Resources lock is released when this function returns
 
         // Convert results
         let mut results = Vec::with_capacity(k);
@@ -307,7 +343,10 @@ impl VectorIndex for CagraIndex {
     }
 }
 
-// SAFETY: Resources and Index are thread-safe when accessed through Mutex
+// SAFETY: CagraIndex is thread-safe because:
+// - `resources` is protected by Mutex (CUDA contexts require serialized access)
+// - `index` is protected by Mutex
+// - `dataset` and `id_map` are immutable after construction
 #[cfg(feature = "gpu-search")]
 unsafe impl Send for CagraIndex {}
 #[cfg(feature = "gpu-search")]
