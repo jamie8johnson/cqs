@@ -14,6 +14,8 @@ impl Store {
         chunk_id: &str,
         calls: &[crate::parser::CallSite],
     ) -> Result<(), StoreError> {
+        tracing::trace!(chunk_id, call_count = calls.len(), "upserting chunk calls");
+
         self.rt.block_on(async {
             sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
                 .bind(chunk_id)
@@ -39,6 +41,8 @@ impl Store {
 
     /// Find all chunks that call a given function name
     pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+        tracing::debug!(callee_name, "querying callers from chunks");
+
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
                 "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
@@ -113,6 +117,13 @@ impl Store {
         function_calls: &[crate::parser::FunctionCalls],
     ) -> Result<(), StoreError> {
         let file_str = file.to_string_lossy().to_string();
+        let total_calls: usize = function_calls.iter().map(|fc| fc.calls.len()).sum();
+        tracing::trace!(
+            file = %file_str,
+            functions = function_calls.len(),
+            total_calls,
+            "upserting function calls"
+        );
 
         self.rt.block_on(async {
             sqlx::query("DELETE FROM function_calls WHERE file = ?1")
@@ -151,6 +162,8 @@ impl Store {
 
     /// Find all callers of a function (from full call graph)
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
+        tracing::debug!(callee_name, "querying callers from full call graph");
+
         self.rt.block_on(async {
             let rows: Vec<(String, String, i64)> = sqlx::query_as(
                 "SELECT DISTINCT file, caller_name, caller_line

@@ -22,6 +22,11 @@ impl Store {
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
         let source_str = source_file.to_string_lossy().to_string();
+        tracing::debug!(
+            source = %source_str,
+            count = notes.len(),
+            "upserting notes batch"
+        );
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -73,6 +78,8 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<NoteSearchResult>, StoreError> {
+        tracing::debug!(limit, threshold, "searching notes");
+
         self.rt.block_on(async {
             let rows: Vec<_> =
                 sqlx::query("SELECT id, text, sentiment, mentions, embedding FROM notes")
