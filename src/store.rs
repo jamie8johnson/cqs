@@ -321,9 +321,11 @@ pub fn name_match_score(query: &str, name: &str) -> f32 {
     let overlap = query_words
         .iter()
         .filter(|w| {
-            name_words
-                .iter()
-                .any(|nw| nw.contains(w.as_str()) || w.contains(nw.as_str()))
+            name_words.iter().any(|nw| {
+                // Short-circuit: check length before expensive substring search
+                (nw.len() >= w.len() && nw.contains(w.as_str()))
+                    || (w.len() >= nw.len() && w.contains(nw.as_str()))
+            })
         })
         .count() as f32;
     let total = query_words.len().max(1) as f32;
