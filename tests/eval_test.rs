@@ -299,7 +299,7 @@ fn fixture_path(lang: Language) -> PathBuf {
 fn test_recall_at_5() {
     // Initialize embedder
     eprintln!("Initializing embedder...");
-    let mut embedder = Embedder::new().expect("Failed to initialize embedder");
+    let embedder = Embedder::new().expect("Failed to initialize embedder");
 
     // Initialize parser
     let parser = Parser::new().expect("Failed to initialize parser");

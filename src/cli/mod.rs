@@ -31,6 +31,17 @@ const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
 const MAX_TOKENS_PER_WINDOW: usize = 480; // Max tokens before windowing (E5 has 512 limit)
 const WINDOW_OVERLAP_TOKENS: usize = 64; // Overlap between windows
 
+/// Configuration for the MCP server
+struct ServeConfig {
+    transport: String,
+    bind: String,
+    port: u16,
+    project: Option<PathBuf>,
+    gpu: bool,
+    api_key: Option<String>,
+    dangerously_allow_network_bind: bool,
+}
+
 // Exit codes
 #[repr(i32)]
 #[allow(dead_code)]
@@ -38,8 +49,6 @@ pub enum ExitCode {
     Success = 0,
     GeneralError = 1,
     NoResults = 2,
-    IndexMissing = 3,
-    ModelMissing = 4,
     Interrupted = 130,
 }
 
@@ -223,16 +232,15 @@ pub fn run() -> Result<()> {
             gpu,
             ref api_key,
             dangerously_allow_network_bind,
-        }) => cmd_serve(
-            &cli,
-            transport,
-            bind,
+        }) => cmd_serve(ServeConfig {
+            transport: transport.clone(),
+            bind: bind.clone(),
             port,
-            project.clone(),
+            project: project.clone(),
             gpu,
-            api_key.clone(),
+            api_key: api_key.clone(),
             dangerously_allow_network_bind,
-        ),
+        }),
         Some(Commands::Completions { shell }) => {
             cmd_completions(shell);
             Ok(())
@@ -1787,44 +1795,38 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
 }
 
 /// Start the MCP server for IDE integration
-#[allow(clippy::too_many_arguments)]
-fn cmd_serve(
-    _cli: &Cli,
-    transport: &str,
-    bind: &str,
-    port: u16,
-    project: Option<PathBuf>,
-    gpu: bool,
-    api_key: Option<String>,
-    dangerously_allow_network_bind: bool,
-) -> Result<()> {
+fn cmd_serve(config: ServeConfig) -> Result<()> {
     // Block non-localhost bind unless explicitly allowed
-    let is_localhost = bind == "127.0.0.1" || bind == "localhost" || bind == "::1";
-    if !is_localhost && !dangerously_allow_network_bind {
+    let is_localhost =
+        config.bind == "127.0.0.1" || config.bind == "localhost" || config.bind == "::1";
+    if !is_localhost && !config.dangerously_allow_network_bind {
         bail!(
             "Binding to '{}' would expose your codebase to the network.\n\
              If this is intentional, add --dangerously-allow-network-bind",
-            bind
+            config.bind
         );
     }
 
     // Require API key for non-localhost HTTP binds
-    if !is_localhost && transport == "http" && api_key.is_none() {
+    if !is_localhost && config.transport == "http" && config.api_key.is_none() {
         bail!(
             "API key required for non-localhost HTTP bind.\n\
              Set --api-key <key> or CQS_API_KEY environment variable."
         );
     }
 
-    let root = project.unwrap_or_else(find_project_root);
+    let root = config.project.unwrap_or_else(find_project_root);
 
-    match transport {
-        "stdio" => cqs::serve_stdio(root, gpu),
-        "http" => cqs::serve_http(root, bind, port, gpu, api_key),
+    match config.transport.as_str() {
+        "stdio" => cqs::serve_stdio(root, config.gpu),
+        "http" => cqs::serve_http(root, &config.bind, config.port, config.gpu, config.api_key),
         // Keep sse as alias for backwards compatibility
-        "sse" => cqs::serve_http(root, bind, port, gpu, api_key),
+        "sse" => cqs::serve_http(root, &config.bind, config.port, config.gpu, config.api_key),
         _ => {
-            bail!("Unknown transport: {}. Use 'stdio' or 'http'.", transport);
+            bail!(
+                "Unknown transport: {}. Use 'stdio' or 'http'.",
+                config.transport
+            );
         }
     }
 }
@@ -2137,8 +2139,6 @@ mod tests {
         assert_eq!(ExitCode::Success as i32, 0);
         assert_eq!(ExitCode::GeneralError as i32, 1);
         assert_eq!(ExitCode::NoResults as i32, 2);
-        assert_eq!(ExitCode::IndexMissing as i32, 3);
-        assert_eq!(ExitCode::ModelMissing as i32, 4);
         assert_eq!(ExitCode::Interrupted as i32, 130);
     }
 

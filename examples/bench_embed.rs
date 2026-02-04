@@ -4,7 +4,7 @@ use std::time::Instant;
 fn main() {
     println!("Initializing embedder...");
     let start = Instant::now();
-    let mut embedder = Embedder::new().unwrap();
+    let embedder = Embedder::new().unwrap();
     println!("Init: {:?}", start.elapsed());
     println!("Provider: {}", embedder.provider());
 
