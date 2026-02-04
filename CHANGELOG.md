@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-04
+
+### Added
+- Minimum Supported Rust Version (MSRV) declared: 1.88 (required by `ort` dependency)
+- `homepage` and `readme` fields in Cargo.toml
+
+### Changed
+- Exclude internal files from crate package (AI context, audit docs, dev tooling)
+
 ## [0.2.0] - 2026-02-03
 
 ### Security
