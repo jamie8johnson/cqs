@@ -901,4 +901,53 @@ mod tests {
             }
         }
     }
+
+    // ===== Integration tests (require model) =====
+
+    mod integration {
+        use super::*;
+
+        #[test]
+        #[ignore] // Requires model - run with: cargo test --lib integration -- --ignored
+        fn test_token_count_empty() {
+            let embedder = Embedder::new().expect("Failed to create embedder");
+            let count = embedder.token_count("").expect("token_count failed");
+            assert_eq!(count, 0);
+        }
+
+        #[test]
+        #[ignore]
+        fn test_token_count_simple() {
+            let embedder = Embedder::new().expect("Failed to create embedder");
+            let count = embedder
+                .token_count("hello world")
+                .expect("token_count failed");
+            // E5-base-v2 tokenizer: "hello" and "world" are single tokens
+            assert!(
+                count >= 2 && count <= 4,
+                "Expected 2-4 tokens, got {}",
+                count
+            );
+        }
+
+        #[test]
+        #[ignore]
+        fn test_token_count_code() {
+            let embedder = Embedder::new().expect("Failed to create embedder");
+            let code = "fn main() { println!(\"Hello\"); }";
+            let count = embedder.token_count(code).expect("token_count failed");
+            // Code typically tokenizes to more tokens than words
+            assert!(count > 5, "Expected >5 tokens for code, got {}", count);
+        }
+
+        #[test]
+        #[ignore]
+        fn test_token_count_unicode() {
+            let embedder = Embedder::new().expect("Failed to create embedder");
+            let text = "こんにちは世界"; // "Hello world" in Japanese
+            let count = embedder.token_count(text).expect("token_count failed");
+            // Unicode text may tokenize differently
+            assert!(count > 0, "Expected >0 tokens for unicode, got {}", count);
+        }
+    }
 }

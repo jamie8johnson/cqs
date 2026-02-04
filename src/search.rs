@@ -9,11 +9,12 @@ use sqlx::Row;
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
+use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
 use crate::store::helpers::{
     clamp_line_number, embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult,
 };
-use crate::store::{normalize_for_fts, Store, StoreError};
+use crate::store::{Store, StoreError};
 
 /// Cosine similarity for L2-normalized vectors (just dot product)
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)

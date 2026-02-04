@@ -92,6 +92,45 @@ pub fn tokenize_identifier(s: &str) -> Vec<String> {
     words
 }
 
+/// Normalize code text for FTS5 indexing.
+///
+/// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
+/// Used to make code searchable with natural language queries.
+///
+/// # Example
+///
+/// ```
+/// use cqs::nl::normalize_for_fts;
+///
+/// assert_eq!(normalize_for_fts("parseConfigFile"), "parse config file");
+/// assert_eq!(normalize_for_fts("fn get_user() {}"), "fn get user");
+/// ```
+pub fn normalize_for_fts(text: &str) -> String {
+    let mut result = String::new();
+    let mut current_word = String::new();
+
+    for c in text.chars() {
+        if c.is_alphanumeric() || c == '_' {
+            current_word.push(c);
+        } else if !current_word.is_empty() {
+            let tokens = tokenize_identifier(&current_word);
+            if !result.is_empty() && !tokens.is_empty() {
+                result.push(' ');
+            }
+            result.push_str(&tokens.join(" "));
+            current_word.clear();
+        }
+    }
+    if !current_word.is_empty() {
+        let tokens = tokenize_identifier(&current_word);
+        if !result.is_empty() && !tokens.is_empty() {
+            result.push(' ');
+        }
+        result.push_str(&tokens.join(" "));
+    }
+    result
+}
+
 /// Generate natural language description from chunk metadata.
 ///
 /// Produces text like: "A function named parse config. Takes path parameter. Returns config."
