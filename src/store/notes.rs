@@ -186,21 +186,18 @@ impl Store {
         self.rt.block_on(async {
             let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
                 .fetch_one(&self.pool)
-                .await
-                .unwrap_or((0,));
+                .await?;
 
             // Thresholds match crate::note::SENTIMENT_*_THRESHOLD constants
             let (warnings,): (i64,) =
                 sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < -0.3")
                     .fetch_one(&self.pool)
-                    .await
-                    .unwrap_or((0,));
+                    .await?;
 
             let (patterns,): (i64,) =
                 sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment > 0.3")
                     .fetch_one(&self.pool)
-                    .await
-                    .unwrap_or((0,));
+                    .await?;
 
             Ok((total as u64, warnings as u64, patterns as u64))
         })
