@@ -40,7 +40,7 @@ futures = "0.3"
 tokio-stream = "0.1"
 
 # Storage (sqlx async SQLite)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 keyring = { version = "2", optional = true }
 
 # Vector search (HNSW default, cuVS optional)
