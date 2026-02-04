@@ -391,6 +391,20 @@ impl HnswIndex {
         // - Hnsw only reads from the data owned by HnswIo
         let hnsw: Hnsw<'static, f32, DistCosine> = unsafe { std::mem::transmute(hnsw) };
 
+        // Validate id_map size matches HNSW vector count
+        let hnsw_count = hnsw.get_nb_point();
+        if hnsw_count != id_map.len() {
+            // SAFETY: io_ptr was created from Box::into_raw, safe to reclaim
+            unsafe {
+                drop(Box::from_raw(io_ptr));
+            }
+            return Err(HnswError::Internal(format!(
+                "ID map size mismatch: HNSW has {} vectors but id_map has {}",
+                hnsw_count,
+                id_map.len()
+            )));
+        }
+
         let loaded = LoadedHnsw {
             io_ptr,
             hnsw: ManuallyDrop::new(hnsw),

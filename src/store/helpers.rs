@@ -74,11 +74,27 @@ pub struct ChunkSummary {
 
 impl From<ChunkRow> for ChunkSummary {
     fn from(row: ChunkRow) -> Self {
+        let language = row.language.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                chunk_id = %row.id,
+                stored_value = %row.language,
+                "Failed to parse language from database, defaulting to Rust"
+            );
+            Language::Rust
+        });
+        let chunk_type = row.chunk_type.parse().unwrap_or_else(|_| {
+            tracing::warn!(
+                chunk_id = %row.id,
+                stored_value = %row.chunk_type,
+                "Failed to parse chunk_type from database, defaulting to Function"
+            );
+            ChunkType::Function
+        });
         ChunkSummary {
             id: row.id,
             file: PathBuf::from(row.origin),
-            language: row.language.parse().unwrap_or(Language::Rust),
-            chunk_type: row.chunk_type.parse().unwrap_or(ChunkType::Function),
+            language,
+            chunk_type,
             name: row.name,
             signature: row.signature,
             content: row.content,
