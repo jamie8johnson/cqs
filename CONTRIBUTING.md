@@ -81,14 +81,25 @@ When reporting bugs, please include:
 
 ```
 src/
-  cli.rs      - Command-line interface (clap)
-  parser.rs   - tree-sitter code parsing, call extraction
-  embedder.rs - ONNX model embedding generation
-  store.rs    - SQLite storage, FTS5 keyword search, RRF hybrid fusion, call graph
-  hnsw.rs     - HNSW index for fast O(log n) vector search
-  mcp.rs      - MCP server implementation
-  nl.rs       - NL description generation, JSDoc parsing
-  lib.rs      - Public API
+  cli/          - Command-line interface (clap)
+    mod.rs      - Argument parsing, command dispatch
+    display.rs  - Output formatting, result display
+  language/     - Tree-sitter language support
+    mod.rs      - LanguageRegistry, LanguageDef trait
+    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs
+  source/       - Source abstraction layer
+    mod.rs      - Source trait
+    filesystem.rs - File-based source implementation
+  parser.rs     - tree-sitter code parsing, call extraction
+  embedder.rs   - ONNX model embedding generation
+  store.rs      - SQLite storage, FTS5 keyword search, RRF hybrid fusion
+  hnsw.rs       - HNSW index for fast O(log n) vector search
+  cagra.rs      - GPU-accelerated CAGRA index (optional)
+  mcp.rs        - MCP server implementation (stdio + HTTP)
+  nl.rs         - NL description generation, JSDoc parsing
+  note.rs       - Developer notes with sentiment
+  config.rs     - Configuration file support
+  lib.rs        - Public API
 ```
 
 ## Questions?
