@@ -637,3 +637,134 @@ fn normalize_l2(mut v: Vec<f32>) -> Vec<f32> {
     }
     v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== Embedding tests =====
+
+    #[test]
+    fn test_embedding_new() {
+        let data = vec![1.0, 2.0, 3.0];
+        let emb = Embedding::new(data.clone());
+        assert_eq!(emb.as_slice(), &data);
+    }
+
+    #[test]
+    fn test_embedding_len() {
+        let emb = Embedding::new(vec![1.0; 768]);
+        assert_eq!(emb.len(), 768);
+    }
+
+    #[test]
+    fn test_embedding_is_empty() {
+        let empty = Embedding::new(vec![]);
+        assert!(empty.is_empty());
+
+        let non_empty = Embedding::new(vec![1.0]);
+        assert!(!non_empty.is_empty());
+    }
+
+    #[test]
+    fn test_embedding_with_sentiment() {
+        let emb = Embedding::new(vec![0.5; MODEL_DIM]);
+        let emb_with_sentiment = emb.with_sentiment(0.8);
+
+        assert_eq!(emb_with_sentiment.len(), EMBEDDING_DIM);
+        assert_eq!(emb_with_sentiment.sentiment(), Some(0.8));
+    }
+
+    #[test]
+    fn test_embedding_sentiment_clamped() {
+        // Sentiment > 1.0 should be clamped
+        let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(2.0);
+        assert_eq!(emb.sentiment(), Some(1.0));
+
+        // Sentiment < -1.0 should be clamped
+        let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(-2.0);
+        assert_eq!(emb.sentiment(), Some(-1.0));
+    }
+
+    #[test]
+    fn test_embedding_sentiment_none_without_769_dims() {
+        let emb = Embedding::new(vec![0.5; 768]);
+        assert_eq!(emb.sentiment(), None);
+
+        let emb = Embedding::new(vec![0.5; 100]);
+        assert_eq!(emb.sentiment(), None);
+    }
+
+    #[test]
+    fn test_embedding_into_inner() {
+        let data = vec![1.0, 2.0, 3.0];
+        let emb = Embedding::new(data.clone());
+        assert_eq!(emb.into_inner(), data);
+    }
+
+    #[test]
+    fn test_embedding_as_vec() {
+        let data = vec![1.0, 2.0, 3.0];
+        let emb = Embedding::new(data.clone());
+        assert_eq!(emb.as_vec(), &data);
+    }
+
+    // ===== normalize_l2 tests =====
+
+    #[test]
+    fn test_normalize_l2_unit_vector() {
+        let v = normalize_l2(vec![1.0, 0.0, 0.0]);
+        assert!((v[0] - 1.0).abs() < 1e-6);
+        assert!((v[1] - 0.0).abs() < 1e-6);
+        assert!((v[2] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_normalize_l2_produces_unit_vector() {
+        let v = normalize_l2(vec![3.0, 4.0]);
+        // Should produce [0.6, 0.8] (3-4-5 triangle)
+        assert!((v[0] - 0.6).abs() < 1e-6);
+        assert!((v[1] - 0.8).abs() < 1e-6);
+
+        // Verify it's a unit vector (magnitude = 1)
+        let magnitude: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((magnitude - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_normalize_l2_zero_vector() {
+        // Zero vector should remain zero (no division by zero)
+        let v = normalize_l2(vec![0.0, 0.0, 0.0]);
+        assert_eq!(v, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_normalize_l2_empty_vector() {
+        let v = normalize_l2(vec![]);
+        assert!(v.is_empty());
+    }
+
+    // ===== ExecutionProvider tests =====
+
+    #[test]
+    fn test_execution_provider_display() {
+        assert_eq!(format!("{}", ExecutionProvider::CPU), "CPU");
+        assert_eq!(
+            format!("{}", ExecutionProvider::CUDA { device_id: 0 }),
+            "CUDA (device 0)"
+        );
+        assert_eq!(
+            format!("{}", ExecutionProvider::TensorRT { device_id: 1 }),
+            "TensorRT (device 1)"
+        );
+    }
+
+    // ===== Constants tests =====
+
+    #[test]
+    fn test_model_dimensions() {
+        assert_eq!(MODEL_DIM, 768);
+        assert_eq!(EMBEDDING_DIM, 769);
+        assert_eq!(EMBEDDING_DIM, MODEL_DIM + 1);
+    }
+}

@@ -1812,3 +1812,244 @@ fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    // ===== Default values tests =====
+
+    #[test]
+    fn test_cli_defaults() {
+        let cli = Cli::try_parse_from(["cqs"]).unwrap();
+        assert_eq!(cli.limit, 5);
+        assert!((cli.threshold - 0.3).abs() < 0.001);
+        assert!((cli.name_boost - 0.2).abs() < 0.001);
+        assert!(!cli.json);
+        assert!(!cli.quiet);
+        assert!(!cli.verbose);
+        assert!(cli.query.is_none());
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_cli_query_argument() {
+        let cli = Cli::try_parse_from(["cqs", "parse config"]).unwrap();
+        assert_eq!(cli.query, Some("parse config".to_string()));
+    }
+
+    #[test]
+    fn test_cli_limit_flag() {
+        let cli = Cli::try_parse_from(["cqs", "-n", "10", "query"]).unwrap();
+        assert_eq!(cli.limit, 10);
+
+        let cli = Cli::try_parse_from(["cqs", "--limit", "20", "query"]).unwrap();
+        assert_eq!(cli.limit, 20);
+    }
+
+    #[test]
+    fn test_cli_threshold_flag() {
+        let cli = Cli::try_parse_from(["cqs", "-t", "0.5", "query"]).unwrap();
+        assert!((cli.threshold - 0.5).abs() < 0.001);
+
+        let cli = Cli::try_parse_from(["cqs", "--threshold", "0.8", "query"]).unwrap();
+        assert!((cli.threshold - 0.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_cli_language_filter() {
+        let cli = Cli::try_parse_from(["cqs", "-l", "rust", "query"]).unwrap();
+        assert_eq!(cli.lang, Some("rust".to_string()));
+
+        let cli = Cli::try_parse_from(["cqs", "--lang", "python", "query"]).unwrap();
+        assert_eq!(cli.lang, Some("python".to_string()));
+    }
+
+    #[test]
+    fn test_cli_path_filter() {
+        let cli = Cli::try_parse_from(["cqs", "-p", "src/**", "query"]).unwrap();
+        assert_eq!(cli.path, Some("src/**".to_string()));
+    }
+
+    #[test]
+    fn test_cli_json_flag() {
+        let cli = Cli::try_parse_from(["cqs", "--json", "query"]).unwrap();
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn test_cli_context_flag() {
+        let cli = Cli::try_parse_from(["cqs", "-C", "3", "query"]).unwrap();
+        assert_eq!(cli.context, Some(3));
+
+        let cli = Cli::try_parse_from(["cqs", "--context", "5", "query"]).unwrap();
+        assert_eq!(cli.context, Some(5));
+    }
+
+    #[test]
+    fn test_cli_quiet_verbose_flags() {
+        let cli = Cli::try_parse_from(["cqs", "-q", "query"]).unwrap();
+        assert!(cli.quiet);
+
+        let cli = Cli::try_parse_from(["cqs", "-v", "query"]).unwrap();
+        assert!(cli.verbose);
+    }
+
+    // ===== Subcommand tests =====
+
+    #[test]
+    fn test_cmd_init() {
+        let cli = Cli::try_parse_from(["cqs", "init"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Init)));
+    }
+
+    #[test]
+    fn test_cmd_index() {
+        let cli = Cli::try_parse_from(["cqs", "index"]).unwrap();
+        match cli.command {
+            Some(Commands::Index {
+                force,
+                dry_run,
+                no_ignore,
+            }) => {
+                assert!(!force);
+                assert!(!dry_run);
+                assert!(!no_ignore);
+            }
+            _ => panic!("Expected Index command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_index_with_flags() {
+        let cli = Cli::try_parse_from(["cqs", "index", "--force", "--dry-run"]).unwrap();
+        match cli.command {
+            Some(Commands::Index { force, dry_run, .. }) => {
+                assert!(force);
+                assert!(dry_run);
+            }
+            _ => panic!("Expected Index command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_stats() {
+        let cli = Cli::try_parse_from(["cqs", "stats"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Stats)));
+    }
+
+    #[test]
+    fn test_cmd_watch() {
+        let cli = Cli::try_parse_from(["cqs", "watch"]).unwrap();
+        match cli.command {
+            Some(Commands::Watch {
+                debounce,
+                no_ignore,
+            }) => {
+                assert_eq!(debounce, 500); // default
+                assert!(!no_ignore);
+            }
+            _ => panic!("Expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_watch_custom_debounce() {
+        let cli = Cli::try_parse_from(["cqs", "watch", "--debounce", "1000"]).unwrap();
+        match cli.command {
+            Some(Commands::Watch { debounce, .. }) => {
+                assert_eq!(debounce, 1000);
+            }
+            _ => panic!("Expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_serve_defaults() {
+        let cli = Cli::try_parse_from(["cqs", "serve"]).unwrap();
+        match cli.command {
+            Some(Commands::Serve {
+                transport,
+                bind,
+                port,
+                gpu,
+                api_key,
+                ..
+            }) => {
+                assert_eq!(transport, "stdio");
+                assert_eq!(bind, "127.0.0.1");
+                assert_eq!(port, 3000);
+                assert!(!gpu);
+                assert!(api_key.is_none());
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_serve_http() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "serve",
+            "--transport",
+            "http",
+            "--port",
+            "8080",
+            "--gpu",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Serve {
+                transport,
+                port,
+                gpu,
+                ..
+            }) => {
+                assert_eq!(transport, "http");
+                assert_eq!(port, 8080);
+                assert!(gpu);
+            }
+            _ => panic!("Expected Serve command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_callers() {
+        let cli = Cli::try_parse_from(["cqs", "callers", "my_function"]).unwrap();
+        match cli.command {
+            Some(Commands::Callers { name, json }) => {
+                assert_eq!(name, "my_function");
+                assert!(!json);
+            }
+            _ => panic!("Expected Callers command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_callees_json() {
+        let cli = Cli::try_parse_from(["cqs", "callees", "my_function", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Callees { name, json }) => {
+                assert_eq!(name, "my_function");
+                assert!(json);
+            }
+            _ => panic!("Expected Callees command"),
+        }
+    }
+
+    // ===== Error cases =====
+
+    #[test]
+    fn test_invalid_limit_rejected() {
+        let result = Cli::try_parse_from(["cqs", "-n", "not_a_number"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_missing_subcommand_arg_rejected() {
+        // callers requires a name argument
+        let result = Cli::try_parse_from(["cqs", "callers"]);
+        assert!(result.is_err());
+    }
+}
