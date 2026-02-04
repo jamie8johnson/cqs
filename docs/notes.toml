@@ -338,3 +338,8 @@ mentions = ["SECURITY.md", "src/store.rs", "src/embedder.rs", "tests/mcp_test.rs
 sentiment = 1
 text = "Post-audit assessment: codebase is solid. 145 tests, property tests found real bug, security documented honestly. Remaining gaps (cache/GPU testing) would need refactoring - adequate as-is. Ready for users."
 mentions = ["PROJECT_CONTINUITY.md"]
+
+[[note]]
+sentiment = 1.0
+text = "Proptest fuzz targets added (17 tests). Covers TOML parser, tokenizer, JSDoc, FTS sanitization, JSON-RPC, origin validation. Total tests now 162 - more than doubled from pre-audit 75."
+mentions = ["src/note.rs", "src/nl.rs", "src/store.rs", "src/mcp.rs", "proptest"]

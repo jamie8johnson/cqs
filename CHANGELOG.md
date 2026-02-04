@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-03
+
+### Security
+- **CRITICAL**: Fixed timing attack in API key validation using `subtle::ConstantTimeEq`
+- Removed `rsa` vulnerability (RUSTSEC-2023-0071) by disabling unused sqlx default features
+
+### Added
+- IPv6 localhost support in origin validation (`http://[::1]`, `https://[::1]`)
+- Property-based tests (9 total) for RRF fusion, embedder normalization, search bounds
+- Fuzz tests (17 total) across nl.rs, note.rs, store.rs, mcp.rs for parser robustness
+- MCP protocol edge case tests (malformed JSON-RPC, oversized payloads, unicode)
+- FTS5 special character tests (wildcards, quotes, colons)
+- Expanded SECURITY.md with threat model, trust boundaries, attack surface documentation
+- Discrete sentiment scale documentation in CLAUDE.md
+
+### Changed
+- Split cli.rs into cli/ module (mod.rs + display.rs) for maintainability
+- Test count: 75 → 162 (2x+ increase)
+- `proptest` added to dev-dependencies
+
+### Fixed
+- RRF score bound calculation (duplicates can boost scores above naive maximum)
+- `unwrap()` → `expect()` with descriptive messages (10 locations)
+- CAGRA initialization returns empty vec instead of panic on failure
+- Symlink logging in embedder (warns instead of silently skipping)
+- clamp fix in `get_chunk_by_id` for edge cases
+
+### Closed Issues
+- #64, #66, #67, #68, #69, #74, #75, #76, #77, #78, #79, #80, #81, #82, #83, #84, #85, #86
+
 ## [0.1.18] - 2026-02-03
 
 ### Added
@@ -247,7 +277,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jamie8johnson/cqs/compare/v0.1.18...v0.2.0
 [0.1.18]: https://github.com/jamie8johnson/cqs/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/jamie8johnson/cqs/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/jamie8johnson/cqs/compare/v0.1.15...v0.1.16
