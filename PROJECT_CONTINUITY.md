@@ -2,9 +2,19 @@
 
 ## Right Now
 
-**P1 audit complete** (2026-02-04) - PR #151 merged
+**P2 audit in progress** (2026-02-04)
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
+
+### P2 Progress: 5 of 58 Fixed
+
+| # | Issue | Resolution |
+|---|-------|------------|
+| 1 | Unicode string slicing panic | Fixed: char_indices for text_preview |
+| 15 | Non-atomic note append | Fixed: sync_all after write |
+| 38 | TOML injection in mentions | Fixed: escape backslashes + simplified text |
+| 39 | Glob pattern validation | Fixed: SearchFilter.validate() |
+| 20 | No max query length | Already had: validate_query_length (8192) |
 
 ### P1 Status: 62 of 64 Closed
 
@@ -76,9 +86,9 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Tier | Count | Status |
 |------|-------|--------|
 | P1 | 2 deferred | Move to P4 |
-| P2 | 58 | Pending |
+| P2 | 53 remaining | 5 fixed |
 | P3 | 43 | Pending |
-| P4 | 19 + 2 = 21 | Create GitHub issues |
+| P4 | 19 + 2 = 21 | Pending |
 
 ## Previous Session
 
@@ -103,4 +113,4 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 - Store: split into focused modules (6 files)
 - Schema v10, WAL mode
 - tests/common/mod.rs for test fixtures
-- 267 tests
+- 271 tests
