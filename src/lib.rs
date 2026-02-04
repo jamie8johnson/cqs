@@ -41,11 +41,12 @@
 //! Start the MCP server for AI assistant integration:
 //!
 //! ```no_run
-//! # async fn example() -> anyhow::Result<()> {
+//! # fn example() -> anyhow::Result<()> {
 //! // Stdio transport (for Claude Code)
 //! cqs::serve_stdio(".".into(), false)?;  // false = CPU, true = GPU
 //!
 //! // HTTP transport with GPU embedding (None = no auth)
+//! // Note: serve_http blocks the current thread
 //! cqs::serve_http(".".into(), "127.0.0.1", 3000, true, None)?;
 //! # Ok(())
 //! # }

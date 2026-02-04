@@ -359,10 +359,12 @@ impl Embedder {
         }
 
         // Tokenize (lazy init tokenizer)
-        let encodings = self
-            .tokenizer()?
-            .encode_batch(texts.to_vec(), true)
-            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+        let encodings = {
+            let _tokenize = tracing::debug_span!("tokenize").entered();
+            self.tokenizer()?
+                .encode_batch(texts.to_vec(), true)
+                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?
+        };
 
         // Prepare inputs - INT64 (i64) for ONNX model
         let input_ids: Vec<Vec<i64>> = encodings
@@ -395,6 +397,7 @@ impl Embedder {
 
         // Run inference (lazy init session)
         let mut session = self.session()?;
+        let _inference = tracing::debug_span!("inference", max_len).entered();
         let outputs = session.run(ort::inputs![
             "input_ids" => input_ids_tensor,
             "attention_mask" => attention_mask_tensor,

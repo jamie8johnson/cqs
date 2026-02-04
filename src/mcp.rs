@@ -541,6 +541,8 @@ impl McpServer {
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
 
+        tracing::debug!(tool = name, "MCP tool call");
+
         match name {
             "cqs_search" => self.tool_search(arguments),
             "cqs_stats" => self.tool_stats(),
@@ -1763,6 +1765,41 @@ mod tests {
         headers.insert("accept", "application/json".parse().unwrap());
         let result = require_accept_event_stream(&headers);
         assert!(result.is_err());
+    }
+
+    // ===== AuditMode tests =====
+
+    #[test]
+    fn test_audit_mode_default_inactive() {
+        let mode = AuditMode::default();
+        assert!(!mode.is_active());
+    }
+
+    #[test]
+    fn test_audit_mode_enabled_active() {
+        let mode = AuditMode {
+            enabled: true,
+            expires_at: None,
+        };
+        assert!(mode.is_active());
+    }
+
+    #[test]
+    fn test_audit_mode_expired_inactive() {
+        let mode = AuditMode {
+            enabled: true,
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+        };
+        assert!(!mode.is_active());
+    }
+
+    #[test]
+    fn test_audit_mode_not_expired_active() {
+        let mode = AuditMode {
+            enabled: true,
+            expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        };
+        assert!(mode.is_active());
     }
 
     // ===== parse_duration tests =====
