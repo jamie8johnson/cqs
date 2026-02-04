@@ -93,7 +93,7 @@ impl Store {
             .metadata()?
             .modified()?
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| std::io::Error::other("time error"))?
+            .map_err(|_| StoreError::SystemTime)?
             .as_secs() as i64;
 
         self.rt.block_on(async {
@@ -237,16 +237,20 @@ impl Store {
     }
 
     /// Get index statistics
+    ///
+    /// Uses batched queries to minimize database round trips:
+    /// 1. Single query for counts with GROUP BY using CTEs
+    /// 2. Single query for all metadata keys
     pub fn stats(&self) -> Result<IndexStats, StoreError> {
         self.rt.block_on(async {
-            let (total_chunks,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
-                .fetch_one(&self.pool)
-                .await?;
-
-            let (total_files,): (i64,) =
-                sqlx::query_as("SELECT COUNT(DISTINCT origin) FROM chunks")
-                    .fetch_one(&self.pool)
-                    .await?;
+            // Combined counts query using CTEs (3 queries → 1)
+            let (total_chunks, total_files): (i64, i64) = sqlx::query_as(
+                "SELECT
+                    (SELECT COUNT(*) FROM chunks),
+                    (SELECT COUNT(DISTINCT origin) FROM chunks)",
+            )
+            .fetch_one(&self.pool)
+            .await?;
 
             let lang_rows: Vec<(String, i64)> =
                 sqlx::query_as("SELECT language, COUNT(*) FROM chunks GROUP BY language")
@@ -268,37 +272,25 @@ impl Store {
                 .filter_map(|(ct, count)| ct.parse().ok().map(|c| (c, count as u64)))
                 .collect();
 
-            let model_name: String = sqlx::query_as::<_, (String,)>(
-                "SELECT value FROM metadata WHERE key = 'model_name'",
+            // Batch metadata query (4 queries → 1)
+            let metadata_rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT key, value FROM metadata WHERE key IN ('model_name', 'created_at', 'updated_at', 'schema_version')",
             )
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|(s,)| s)
-            .unwrap_or_default();
+            .fetch_all(&self.pool)
+            .await?;
 
-            let created_at: String = sqlx::query_as::<_, (String,)>(
-                "SELECT value FROM metadata WHERE key = 'created_at'",
-            )
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|(s,)| s)
-            .unwrap_or_default();
+            let metadata: HashMap<String, String> = metadata_rows.into_iter().collect();
 
-            let updated_at: String = sqlx::query_as::<_, (String,)>(
-                "SELECT value FROM metadata WHERE key = 'updated_at'",
-            )
-            .fetch_optional(&self.pool)
-            .await?
-            .map(|(s,)| s)
-            .unwrap_or_else(|| created_at.clone());
-
-            let schema_version: i32 = sqlx::query_as::<_, (String,)>(
-                "SELECT value FROM metadata WHERE key = 'schema_version'",
-            )
-            .fetch_optional(&self.pool)
-            .await?
-            .and_then(|(s,)| s.parse().ok())
-            .unwrap_or(0);
+            let model_name = metadata.get("model_name").cloned().unwrap_or_default();
+            let created_at = metadata.get("created_at").cloned().unwrap_or_default();
+            let updated_at = metadata
+                .get("updated_at")
+                .cloned()
+                .unwrap_or_else(|| created_at.clone());
+            let schema_version: i32 = metadata
+                .get("schema_version")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
 
             Ok(IndexStats {
                 total_chunks: total_chunks as u64,

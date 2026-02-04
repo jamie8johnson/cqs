@@ -17,6 +17,8 @@ pub enum StoreError {
     Database(#[from] sqlx::Error),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("System time error: file mtime before Unix epoch")]
+    SystemTime,
     #[error("Runtime error: {0}")]
     Runtime(String),
     #[error("Schema version mismatch: index is v{0}, cq expects v{1}. Run 'cq index --force' to rebuild.")]
