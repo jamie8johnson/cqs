@@ -1,5 +1,7 @@
 //! CLI implementation for cq
 
+mod display;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -19,9 +21,10 @@ use rayon::prelude::*;
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::hnsw::HnswIndex;
+use cqs::nl::generate_nl_description;
 use cqs::note::parse_notes;
 use cqs::parser::{Chunk, Parser as CqParser};
-use cqs::store::{ModelInfo, SearchFilter, Store, UnifiedResult};
+use cqs::store::{ModelInfo, SearchFilter, Store};
 
 // Constants
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
@@ -1310,9 +1313,9 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     if cli.json {
-        display_unified_results_json(&results, query)?;
+        display::display_unified_results_json(&results, query)?;
     } else {
-        display_unified_results(&results, &root, cli.no_content, cli.context)?;
+        display::display_unified_results(&results, &root, cli.no_content, cli.context)?;
     }
 
     Ok(())
@@ -1808,192 +1811,4 @@ fn cmd_serve(
 fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
-}
-
-// === Output helpers ===
-
-/// Read context lines before and after a range in a file
-fn read_context_lines(
-    file: &Path,
-    line_start: u32,
-    line_end: u32,
-    context: usize,
-) -> Result<(Vec<String>, Vec<String>)> {
-    let content = std::fs::read_to_string(file)?;
-    let lines: Vec<&str> = content.lines().collect();
-
-    let start_idx = (line_start as usize).saturating_sub(1);
-    let end_idx = (line_end as usize).saturating_sub(1);
-
-    // Context before
-    let context_start = start_idx.saturating_sub(context);
-    let before: Vec<String> = lines[context_start..start_idx]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-    // Context after
-    let context_end = (end_idx + context + 1).min(lines.len());
-    let after: Vec<String> = if end_idx + 1 < lines.len() {
-        lines[(end_idx + 1)..context_end]
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        vec![]
-    };
-
-    Ok((before, after))
-}
-
-// NL generation moved to cqs::nl module
-use cqs::nl::generate_nl_description;
-
-/// Display unified search results (code + notes)
-fn display_unified_results(
-    results: &[UnifiedResult],
-    root: &Path,
-    no_content: bool,
-    context: Option<usize>,
-) -> Result<()> {
-    for result in results {
-        match result {
-            UnifiedResult::Code(r) => {
-                // Paths are stored relative; strip_prefix handles legacy absolute paths
-                let rel_path = r.chunk.file.strip_prefix(root).unwrap_or(&r.chunk.file);
-
-                let header = format!(
-                    "{}:{} ({} {}) [{}] [{:.2}]",
-                    rel_path.display(),
-                    r.chunk.line_start,
-                    r.chunk.chunk_type,
-                    r.chunk.name,
-                    r.chunk.language,
-                    r.score
-                );
-
-                println!("{}", header.cyan());
-
-                if !no_content {
-                    println!("{}", "─".repeat(50));
-
-                    // Read context if requested
-                    if let Some(n) = context {
-                        if n > 0 {
-                            let abs_path = root.join(&r.chunk.file);
-                            if let Ok((before, _)) = read_context_lines(
-                                &abs_path,
-                                r.chunk.line_start,
-                                r.chunk.line_end,
-                                n,
-                            ) {
-                                for line in &before {
-                                    println!("{}", format!("  {}", line).dimmed());
-                                }
-                            }
-                        }
-                    }
-
-                    // Show signature or truncated content
-                    if r.chunk.content.lines().count() <= 10 {
-                        println!("{}", r.chunk.content);
-                    } else {
-                        for line in r.chunk.content.lines().take(8) {
-                            println!("{}", line);
-                        }
-                        println!("    ...");
-                    }
-
-                    // Print after context if requested
-                    if let Some(n) = context {
-                        if n > 0 {
-                            let abs_path = root.join(&r.chunk.file);
-                            if let Ok((_, after)) = read_context_lines(
-                                &abs_path,
-                                r.chunk.line_start,
-                                r.chunk.line_end,
-                                n,
-                            ) {
-                                for line in &after {
-                                    println!("{}", format!("  {}", line).dimmed());
-                                }
-                            }
-                        }
-                    }
-
-                    println!();
-                }
-            }
-            UnifiedResult::Note(r) => {
-                // Format: [note:sentiment] text [score]
-                let sentiment_indicator = if r.note.sentiment < -0.3 {
-                    format!("v={:.1}", r.note.sentiment).red()
-                } else if r.note.sentiment > 0.3 {
-                    format!("v={:.1}", r.note.sentiment).green()
-                } else {
-                    format!("v={:.1}", r.note.sentiment).dimmed()
-                };
-
-                let header = format!("[note] {} [{:.2}]", sentiment_indicator, r.score);
-
-                println!("{}", header.blue());
-
-                if !no_content {
-                    println!("{}", "─".repeat(50));
-                    // Show truncated text
-                    let text_lines: Vec<&str> = r.note.text.lines().collect();
-                    if text_lines.len() <= 3 {
-                        println!("{}", r.note.text);
-                    } else {
-                        for line in text_lines.iter().take(3) {
-                            println!("{}", line);
-                        }
-                        println!("    ...");
-                    }
-                    println!();
-                }
-            }
-        }
-    }
-
-    println!("{} results", results.len());
-    Ok(())
-}
-
-/// Display unified results as JSON
-fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> Result<()> {
-    let json_results: Vec<_> = results
-        .iter()
-        .map(|r| match r {
-            UnifiedResult::Code(r) => serde_json::json!({
-                "type": "code",
-                "file": r.chunk.file.to_string_lossy(),
-                "line_start": r.chunk.line_start,
-                "line_end": r.chunk.line_end,
-                "name": r.chunk.name,
-                "signature": r.chunk.signature,
-                "language": r.chunk.language.to_string(),
-                "chunk_type": r.chunk.chunk_type.to_string(),
-                "score": r.score,
-                "content": r.chunk.content,
-            }),
-            UnifiedResult::Note(r) => serde_json::json!({
-                "type": "note",
-                "id": r.note.id,
-                "text": r.note.text,
-                "sentiment": r.note.sentiment,
-                "mentions": r.note.mentions,
-                "score": r.score,
-            }),
-        })
-        .collect();
-
-    let output = serde_json::json!({
-        "results": json_results,
-        "query": query,
-        "total": results.len(),
-    });
-
-    println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
 }
