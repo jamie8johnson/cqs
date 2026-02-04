@@ -12,10 +12,13 @@ pub const SENTIMENT_NEGATIVE_THRESHOLD: f32 = -0.3;
 /// Sentiment threshold for classifying as positive/pattern (above this)
 pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
 
+/// Errors that can occur when parsing notes
 #[derive(Error, Debug)]
 pub enum NoteError {
+    /// File read/write error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Invalid TOML syntax or structure
     #[error("TOML parse error: {0}")]
     Toml(#[from] toml::de::Error),
 }

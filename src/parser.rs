@@ -8,14 +8,19 @@ use tree_sitter::StreamingIterator;
 // Re-export ChunkType from language module (source of truth)
 pub use crate::language::ChunkType;
 
+/// Errors that can occur during code parsing
 #[derive(Error, Debug)]
 pub enum ParserError {
+    /// File extension not recognized as a supported language
     #[error("Unsupported file type: {0}")]
     UnsupportedFileType(String),
+    /// Tree-sitter failed to parse the file contents
     #[error("Failed to parse: {0}")]
     ParseFailed(String),
+    /// Tree-sitter query compilation failed (indicates bug in query string)
     #[error("Failed to compile query for {0}: {1}")]
     QueryCompileFailed(String, String),
+    /// File read error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -731,10 +736,15 @@ pub struct Chunk {
 /// Supported programming languages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
+    /// Rust (.rs files)
     Rust,
+    /// Python (.py, .pyi files)
     Python,
+    /// TypeScript (.ts, .tsx files)
     TypeScript,
+    /// JavaScript (.js, .jsx, .mjs, .cjs files)
     JavaScript,
+    /// Go (.go files)
     Go,
 }
 
