@@ -7,9 +7,13 @@ use serde::Deserialize;
 use std::path::Path;
 use thiserror::Error;
 
-/// Sentiment threshold for classifying as negative/warning (below this)
+/// Sentiment thresholds for classification
+///
+/// 0.3 chosen to separate neutral observations from significant notes:
+/// - Values near 0 are neutral observations
+/// - Values beyond ±0.3 indicate meaningful sentiment (warning/pattern)
+/// - Matches discrete values: -1, -0.5, 0, 0.5, 1 (see CLAUDE.md)
 pub const SENTIMENT_NEGATIVE_THRESHOLD: f32 = -0.3;
-/// Sentiment threshold for classifying as positive/pattern (above this)
 pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
 
 /// Errors that can occur when parsing notes

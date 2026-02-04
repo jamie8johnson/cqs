@@ -286,9 +286,11 @@ impl Parser {
         while let Some(m) = matches.next() {
             match self.extract_chunk(&source, m, query, language, path) {
                 Ok(chunk) => {
-                    // Skip chunks over 100 lines or 100KB (handles minified files)
+                    // Skip chunks over 100 lines or 100KB
+                    // Large functions are too noisy for semantic search (diluted embeddings)
+                    // and are covered by the full call graph for caller/callee queries
                     let lines = chunk.line_end - chunk.line_start;
-                    const MAX_CHUNK_BYTES: usize = 100_000;
+                    const MAX_CHUNK_BYTES: usize = 100_000; // 100KB handles minified code
                     if lines > 100 {
                         tracing::debug!("Skipping {} ({} lines > 100 max)", chunk.id, lines);
                         continue;

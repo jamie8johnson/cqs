@@ -26,10 +26,15 @@ use cqs::note::parse_notes;
 use cqs::parser::{Chunk, Parser as CqParser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 
-// Constants
+// Indexing limits
+//
+// These values balance quality with memory/time constraints:
+// - MAX_FILE_SIZE: Skip files >1MB (likely generated code, vendor bundles)
+// - MAX_TOKENS_PER_WINDOW: E5-base-v2 has 512 token limit; we use 480 for safety
+// - WINDOW_OVERLAP_TOKENS: 64 tokens overlap provides context continuity
 const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
-const MAX_TOKENS_PER_WINDOW: usize = 480; // Max tokens before windowing (E5 has 512 limit)
-const WINDOW_OVERLAP_TOKENS: usize = 64; // Overlap between windows
+const MAX_TOKENS_PER_WINDOW: usize = 480; // E5-base-v2 has 512 limit
+const WINDOW_OVERLAP_TOKENS: usize = 64; // Context overlap for windowed chunks
 
 /// Configuration for the MCP server
 struct ServeConfig {
