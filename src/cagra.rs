@@ -190,8 +190,20 @@ impl CagraIndex {
         };
 
         // Prepare query as 2D array (1 query x EMBEDDING_DIM)
-        let query_host = Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec())
-            .expect("query shape");
+        let query_host = match Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec())
+        {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!(
+                    "Invalid query shape (expected {} dims): {}",
+                    EMBEDDING_DIM,
+                    e
+                );
+                let mut guard = self.index.lock().expect("CAGRA index mutex poisoned");
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
 
         // Copy query to device
         let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&self.resources) {
