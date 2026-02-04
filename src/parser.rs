@@ -557,6 +557,13 @@ impl Parser {
 }
 
 /// Check if a callee name should be skipped (common noise)
+///
+/// These are filtered because they don't provide meaningful call graph information:
+/// - `self`, `this`, `Self`, `super`: Object references, not real function calls
+/// - `new`: Constructor pattern, not a named function
+/// - `toString`, `valueOf`: Ubiquitous JS/TS methods that add noise
+///
+/// Case-sensitive to avoid false positives (e.g., "This" as a variable name).
 fn should_skip_callee(name: &str) -> bool {
     matches!(
         name,

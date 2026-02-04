@@ -43,7 +43,18 @@ use thiserror::Error;
 use crate::embedder::Embedding;
 use crate::index::{IndexResult, VectorIndex};
 
-/// HNSW index parameters
+// HNSW tuning parameters
+//
+// These values are optimized for code search workloads (10k-100k chunks):
+// - M=24: Higher connectivity for better recall on semantic similarity
+// - ef_construction=200: Thorough graph construction (one-time cost)
+// - ef_search=100: Good accuracy/speed tradeoff for interactive search
+//
+// For different workloads, consider:
+// - Smaller codebases (<5k): M=16, ef_construction=100, ef_search=50
+// - Larger codebases (>100k): M=32, ef_construction=400, ef_search=200
+// - Batch processing: Lower ef_search for speed
+// - Maximum accuracy: Higher ef_search (up to ef_construction)
 const MAX_NB_CONNECTION: usize = 24; // M parameter - connections per node
 const MAX_LAYER: usize = 16; // Maximum layers in the graph
 const EF_CONSTRUCTION: usize = 200; // Construction-time search width
