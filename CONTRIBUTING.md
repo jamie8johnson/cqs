@@ -92,9 +92,15 @@ src/
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation
+  store/        - SQLite storage layer
+    mod.rs      - Store struct, open/init, FTS5, RRF fusion
+    chunks.rs   - Chunk CRUD operations
+    notes.rs    - Note CRUD and search
+    calls.rs    - Call graph storage and queries
+    helpers.rs  - Types, embedding conversion functions
   parser.rs     - tree-sitter code parsing, call extraction
   embedder.rs   - ONNX model embedding generation
-  store.rs      - SQLite storage, FTS5 keyword search, RRF hybrid fusion
+  search.rs     - Search algorithms, cosine similarity, scoring
   hnsw.rs       - HNSW index for fast O(log n) vector search
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   mcp.rs        - MCP server implementation (stdio + HTTP)
