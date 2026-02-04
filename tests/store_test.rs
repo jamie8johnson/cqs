@@ -431,3 +431,43 @@ fn test_normalize_for_fts() {
     // Single word
     assert_eq!(normalize_for_fts("parse"), "parse");
 }
+
+#[test]
+fn test_normalize_for_fts_strips_fts5_special_chars() {
+    // FTS5 special characters should be filtered out to prevent query manipulation
+    // See: https://www.sqlite.org/fts5.html#full_text_query_syntax
+
+    // Wildcards - stripped
+    assert_eq!(normalize_for_fts("test*"), "test");
+    assert_eq!(normalize_for_fts("*test*"), "test");
+
+    // Phrase quotes - stripped
+    assert_eq!(normalize_for_fts("\"exact phrase\""), "exact phrase");
+
+    // Column filters - colon stripped
+    assert_eq!(normalize_for_fts("content:test"), "content test");
+    assert_eq!(normalize_for_fts("name:foo"), "name foo");
+
+    // Boolean-like words become harmless lowercase tokens
+    // (FTS5 default mode doesn't treat AND/OR as operators anyway)
+    assert_eq!(normalize_for_fts("-excluded"), "excluded");
+    assert_eq!(normalize_for_fts("+required"), "required");
+
+    // Grouping parens - stripped
+    assert_eq!(normalize_for_fts("(test)"), "test");
+
+    // Boost/caret - stripped, number becomes separate token
+    assert_eq!(normalize_for_fts("test^2"), "test 2");
+
+    // Slash - stripped
+    assert_eq!(normalize_for_fts("test/other"), "test other");
+
+    // Mixed potentially malicious input - all special chars stripped
+    // Note: ALL_CAPS words get split letter-by-letter by tokenize_identifier
+    // (designed for camelCase, treats each capital as word boundary)
+    assert_eq!(normalize_for_fts("*\"content:*\""), "content");
+    assert_eq!(
+        normalize_for_fts("test; DROP TABLE--"),
+        "test d r o p t a b l e"
+    );
+}
