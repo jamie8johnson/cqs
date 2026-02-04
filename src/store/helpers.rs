@@ -192,6 +192,16 @@ impl SearchFilter {
             return Err("query_text required when name_boost > 0 or enable_rrf is true");
         }
 
+        // path_pattern must be valid glob syntax if provided
+        if let Some(ref pattern) = self.path_pattern {
+            if pattern.len() > 500 {
+                return Err("path_pattern too long (max 500 chars)");
+            }
+            if globset::Glob::new(pattern).is_err() {
+                return Err("path_pattern is not a valid glob pattern");
+            }
+        }
+
         Ok(())
     }
 }
@@ -354,6 +364,35 @@ mod tests {
             ..Default::default()
         };
         assert!(filter.validate().is_err());
+    }
+
+    #[test]
+    fn test_search_filter_valid_path_pattern() {
+        let filter = SearchFilter {
+            path_pattern: Some("src/**/*.rs".to_string()),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_invalid_path_pattern_syntax() {
+        let filter = SearchFilter {
+            path_pattern: Some("[invalid".to_string()),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("glob"));
+    }
+
+    #[test]
+    fn test_search_filter_path_pattern_too_long() {
+        let filter = SearchFilter {
+            path_pattern: Some("a".repeat(501)),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("too long"));
     }
 
     // ===== clamp_line_number tests =====

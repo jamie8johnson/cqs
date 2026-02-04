@@ -890,7 +890,7 @@ impl McpServer {
             bail!("Note text cannot be empty");
         }
         if text.len() > 2000 {
-            bail!("Note text too long: {} chars (max 2000)", text.len());
+            bail!("Note text too long: {} bytes (max 2000)", text.len());
         }
 
         let sentiment: f32 = arguments
@@ -909,7 +909,7 @@ impl McpServer {
             })
             .unwrap_or_default();
 
-        // Build TOML entry
+        // Build TOML entry - escape all strings properly
         let mentions_toml = if mentions.is_empty() {
             String::new()
         } else {
@@ -917,19 +917,22 @@ impl McpServer {
                 "\nmentions = [{}]",
                 mentions
                     .iter()
-                    .map(|m| format!("\"{}\"", m.replace('\"', "\\\"")))
+                    .map(|m| { format!("\"{}\"", m.replace('\\', "\\\\").replace('\"', "\\\"")) })
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         };
 
-        // Escape text for TOML (handle quotes and newlines)
-        let text_escaped = text.replace('\\', "\\\\").replace('\"', "\\\"");
-        let text_toml = if text.contains('\n') {
-            format!("\"\"\"{}\"\"\"", text_escaped)
-        } else {
-            format!("\"{}\"", text_escaped)
-        };
+        // Escape text for TOML - use single-line strings with escape sequences
+        // (avoids triple-quote edge cases)
+        let text_toml = format!(
+            "\"{}\"",
+            text.replace('\\', "\\\\")
+                .replace('\"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t")
+        );
 
         let entry = format!(
             "\n[[note]]\nsentiment = {:.1}\ntext = {}{}\n",
@@ -962,6 +965,7 @@ impl McpServer {
                 .context("Failed to open notes.toml")?;
             file.write_all(entry.as_bytes())
                 .context("Failed to write note")?;
+            file.sync_all().context("Failed to sync note to disk")?;
         }
 
         // Re-parse and re-index all notes so the new one is immediately searchable
@@ -992,7 +996,7 @@ impl McpServer {
             "status": "added",
             "type": sentiment_label,
             "sentiment": sentiment,
-            "text_preview": if text.len() > 100 { format!("{}...", &text[..100]) } else { text.to_string() },
+            "text_preview": text.char_indices().nth(100).map(|(i, _)| format!("{}...", &text[..i])).unwrap_or_else(|| text.to_string()),
             "file": "docs/notes.toml",
             "indexed": indexed > 0,
             "total_notes": indexed
