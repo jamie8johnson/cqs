@@ -70,6 +70,9 @@ pub struct HnswResult {
     pub score: f32,
 }
 
+/// Valid HNSW file extensions (prevents path traversal via malicious checksum file)
+const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
+
 /// Verify HNSW index file checksums using blake3.
 ///
 /// Returns Ok if checksums match or no checksum file exists (with warning).
@@ -86,6 +89,11 @@ fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
     let checksum_content = std::fs::read_to_string(&checksum_path)?;
     for line in checksum_content.lines() {
         if let Some((ext, expected)) = line.split_once(':') {
+            // Only allow known extensions to prevent path traversal
+            if !HNSW_EXTENSIONS.contains(&ext) {
+                tracing::warn!("Ignoring unknown extension in checksum file: {}", ext);
+                continue;
+            }
             let path = dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
                 let data = std::fs::read(&path)?;
