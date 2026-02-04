@@ -58,16 +58,24 @@ pub enum SignatureStyle {
     UntilColon,
 }
 
-/// Type of code element
+/// Type of code element extracted by the parser
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkType {
+    /// Standalone function
     Function,
+    /// Method (function inside a class/struct/impl)
     Method,
+    /// Class definition (Python, TypeScript, JavaScript)
     Class,
+    /// Struct definition (Rust, Go)
     Struct,
+    /// Enum definition
     Enum,
+    /// Trait definition (Rust)
     Trait,
+    /// Interface definition (TypeScript, Go)
     Interface,
+    /// Constant or static variable
     Constant,
 }
 
@@ -98,7 +106,10 @@ impl std::str::FromStr for ChunkType {
             "trait" => Ok(ChunkType::Trait),
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
-            _ => anyhow::bail!("Unknown chunk type: '{}'", s),
+            _ => anyhow::bail!(
+                "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant",
+                s
+            ),
         }
     }
 }
