@@ -2,40 +2,48 @@
 
 ## Right Now
 
-**Session Complete** (2026-02-04)
+**Error path tests complete** (2026-02-04)
 
-Housekeeping done. Deferred items tracked in #139.
+Added tests for #126 (Error path coverage):
+- `tests/hnsw_test.rs` - 6 tests for corruption/error detection
+- `tests/store_test.rs` - 3 tests for schema/model validation
+- `tests/mcp_test.rs` - 7 new edge case tests
+
+Closed 6 issues that were already fixed by Store refactor (#133):
+#142, #143, #144, #145, #146, #148
 
 ## Session Summary
 
-### Merged This Session
-- #133: Store god object refactor (#125 closed)
-- #134: CHANGELOG update
-- #135: Lock poisoning DEBUG logs (#70)
-- #136: MODEL_NAME constant (#70)
-- #137: Doc comments + test helper (#70 closed)
-- #138: Final housekeeping (mut warnings, ExitCode, ServeConfig)
+### This Session
+- Closed 6 stale issues (already fixed by Store refactor)
+- Added 16 new error path tests across 3 files
+- Test count: 169 total (up from 153)
 
-## Deferred Items (#139)
+### Issues Closed (Already Fixed)
+| # | Title | Why Fixed |
+|---|-------|-----------|
+| #142 | Glob pattern per-chunk | search.rs:140 - compiled outside loop |
+| #143 | Off-by-one line | parser.rs:532 - correct calculation |
+| #144 | CAGRA mutex expect() | cagra.rs - uses unwrap_or_else |
+| #145 | Silent config errors | config.rs - has tracing::warn |
+| #146 | Parser unit tests | parser.rs:819+ - tests exist |
+| #148 | N+1 calls insert | store/calls.rs - uses QueryBuilder batch |
 
-| Item | Difficulty | Notes |
-|------|------------|-------|
-| r2d2 pool size tuning | 2 hr | Needs benchmarking |
-| Schema migrations | 1 day | Implement incremental migration |
-| hnsw_rs lifetime fix | 1 day+ | Upstream or major refactor |
-| bincode replacement | 2 days | Breaking change, mitigated |
+## Open Issues (8)
 
-## Open Issues (7)
+### Medium (1-4 hr)
+- #126: Error path tests (IN PROGRESS - tests added, needs PR)
 
-| Issue | Description | Status |
-|-------|-------------|--------|
-| #139 | Deferred housekeeping | Tracking |
-| #130 | Tracking | Keep |
-| #126 | Error tests | Partial |
-| #107 | Memory | v0.3.0 |
-| #106 | ort stable | External |
-| #103 | O(n) notes | v0.3.0 |
-| #63 | paste dep | External |
+### Hard (1+ day)
+- #147: Duplicate types
+- #103: O(n) note search
+- #107: Memory OOM
+- #139: Deferred housekeeping
+
+### External/Waiting
+- #106: ort stable
+- #63: paste dep
+- #130: Tracking issue
 
 ## Architecture
 

@@ -391,3 +391,128 @@ fn test_normalize_for_fts_strips_fts5_special_chars() {
         "test d r o p t a b l e"
     );
 }
+
+// ===== Schema Error Path Tests =====
+
+#[test]
+fn test_future_schema_version_rejected() {
+    // Manually create a database with a schema version higher than current
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("future.db");
+
+    // Create database with future schema version
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+    }
+
+    // Now manually update the schema version to a future value
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("sqlite://{}", db_path.display()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE metadata SET value = '999' WHERE key = 'schema_version'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    });
+
+    // Re-opening should fail with "newer than cq" error
+    let result = cqs::store::Store::open(&db_path);
+    match result {
+        Ok(_) => panic!("Future schema version should be rejected"),
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("newer") || err_msg.contains("upgrade"),
+                "Error should mention newer version: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_old_schema_version_rejected() {
+    // Create a database with an old schema version
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("old.db");
+
+    // Create database
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+    }
+
+    // Manually downgrade the schema version
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("sqlite://{}", db_path.display()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    });
+
+    // Re-opening should fail with schema mismatch
+    let result = cqs::store::Store::open(&db_path);
+    match result {
+        Ok(_) => panic!("Old schema version should be rejected"),
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("mismatch") || err_msg.contains("--force"),
+                "Error should mention mismatch or rebuild: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_model_mismatch_rejected() {
+    // Create a database with a different model name
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("model.db");
+
+    // Create database
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+    }
+
+    // Change the model name to something different
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect(&format!("sqlite://{}", db_path.display()))
+            .await
+            .unwrap();
+        sqlx::query("UPDATE metadata SET value = 'different-model' WHERE key = 'model_name'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    });
+
+    // Re-opening should fail with model mismatch
+    let result = cqs::store::Store::open(&db_path);
+    match result {
+        Ok(_) => panic!("Model mismatch should be rejected"),
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("mismatch") || err_msg.contains("Model"),
+                "Error should mention model mismatch: {}",
+                err_msg
+            );
+        }
+    }
+}

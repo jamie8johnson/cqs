@@ -36,6 +36,7 @@ impl TestStore {
     }
 
     /// Create a test store with custom model info
+    #[allow(dead_code)]
     pub fn with_model(model: &ModelInfo) -> Self {
         let dir = TempDir::new().expect("Failed to create temp dir");
         let db_path = dir.path().join("index.db");
