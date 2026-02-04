@@ -1119,8 +1119,8 @@ impl Store {
                     signature: r.get(5),
                     content: r.get(6),
                     doc: r.get(7),
-                    line_start: r.get::<i64, _>(8) as u32,
-                    line_end: r.get::<i64, _>(9) as u32,
+                    line_start: r.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
+                    line_end: r.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
                     parent_id: r.get(10),
                 })
             }))

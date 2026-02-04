@@ -954,7 +954,7 @@ fn run_index_pipeline(
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
-                .unwrap(),
+                .expect("valid progress bar template"),
         );
         pb
     };

@@ -552,7 +552,9 @@ fn ensure_ort_provider_libs() {
                 }
             }
             // Remove stale symlink
-            let _ = std::fs::remove_file(&dst);
+            if let Err(e) = std::fs::remove_file(&dst) {
+                tracing::debug!("Failed to remove stale symlink {}: {}", dst.display(), e);
+            }
         }
 
         // Create symlink
