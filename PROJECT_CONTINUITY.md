@@ -2,26 +2,37 @@
 
 ## Right Now
 
-**Clean** - Validation extraction + path traversal fix complete.
+**v0.1.18** - Audit fixes in progress.
 
-PRs merged:
-- #58: API key auth for HTTP transport + saturating casts
-- #59: bytes 1.11.1 fix (RUSTSEC-2026-0007)
-- #60: Extract validation functions + fix HNSW path traversal
+**PRs merged (2026-02-03):**
+- #87: Fixed #74 timing attack (subtle::ConstantTimeEq)
+- #88: Fixed #75 rsa vuln (sqlx default-features)
+- #89: Fixed #64,82-84 quick wins batch
 
-**Waiting on:**
-- awesome-mcp-servers PR #1783
+**Open issues:**
+- #76 HIGH: Security tests for validate_api_key
+- #77 HIGH: cli.rs tests
+- #78 HIGH: Split cli.rs (~2000 lines)
+- #79 HIGH: embedder.rs tests
+- #80 MEDIUM: Symlink docs
+- #81 MEDIUM: FTS5 escape
+- #85 LOW: HNSW SAFETY comments (already present)
+- #86 LOW: Threat model docs
+
+**Previous issues:** #62-70 (first audit), #65 SAFETY comments (done)
+
+**Plan:** See `~/.claude/plans/snuggly-orbiting-journal.md`
+
+**5 unmaintained deps:** bincode, derivative, instant, number_prefix, paste (all transitive)
+
+**Waiting on:** awesome-mcp-servers PR #1783
 
 ## Learnings
 
-**Named functions are more discoverable:**
-- "validate bearer token" → `validate_api_key` at 0.74 (after extraction)
-- Inline code in handlers is harder for semantic search to find
-- Extracting security-critical code into named functions improves auditability
-
-**Path traversal fixed:**
-- `verify_hnsw_checksums` now validates extensions against allowlist
-- Only `hnsw.graph`, `hnsw.data`, `hnsw.ids` accepted
+**"Constant-time" isn't - verify implementations:**
+- `.all()` short-circuits on first mismatch
+- Length comparison leaks length
+- Use `subtle::ConstantTimeEq` crate
 
 ## Key Architecture
 
