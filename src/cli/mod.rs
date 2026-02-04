@@ -1566,6 +1566,8 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
     // Track pending changes for debouncing
+    // Cap at 10k files to prevent unbounded memory growth during rapid changes
+    const MAX_PENDING_FILES: usize = 10_000;
     let mut pending_files: HashSet<PathBuf> = HashSet::new();
     let mut pending_notes = false; // Track if notes.toml changed
     let mut last_event = std::time::Instant::now();
@@ -1596,7 +1598,9 @@ fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 
                     // Convert to relative path
                     if let Ok(rel) = path.strip_prefix(&root) {
-                        pending_files.insert(rel.to_path_buf());
+                        if pending_files.len() < MAX_PENDING_FILES {
+                            pending_files.insert(rel.to_path_buf());
+                        }
                         last_event = std::time::Instant::now();
                     }
                 }
