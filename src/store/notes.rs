@@ -182,6 +182,7 @@ impl Store {
                 .await
                 .unwrap_or((0,));
 
+            // Thresholds match crate::note::SENTIMENT_*_THRESHOLD constants
             let (warnings,): (i64,) =
                 sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < -0.3")
                     .fetch_one(&self.pool)

@@ -409,6 +409,7 @@ impl McpServer {
                         },
                         "language": {
                             "type": "string",
+                            // Keep in sync with crate::parser::Language variants
                             "enum": ["rust", "python", "typescript", "javascript", "go"],
                             "description": "Filter by language (optional)"
                         },

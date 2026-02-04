@@ -264,6 +264,8 @@ impl Store {
         fts_ids: &[String],
         limit: usize,
     ) -> Vec<(String, f32)> {
+        // K=60 is the standard RRF constant from the original paper.
+        // Higher K reduces the impact of rank differences (smoother fusion).
         const K: f32 = 60.0;
 
         let mut scores: HashMap<&str, f32> = HashMap::new();

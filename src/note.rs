@@ -7,6 +7,11 @@ use serde::Deserialize;
 use std::path::Path;
 use thiserror::Error;
 
+/// Sentiment threshold for classifying as negative/warning (below this)
+pub const SENTIMENT_NEGATIVE_THRESHOLD: f32 = -0.3;
+/// Sentiment threshold for classifying as positive/pattern (above this)
+pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
+
 #[derive(Error, Debug)]
 pub enum NoteError {
     #[error("IO error: {0}")]
@@ -56,9 +61,9 @@ impl Note {
     /// - Positive sentiment: "Pattern: "
     /// - Neutral: no prefix
     pub fn embedding_text(&self) -> String {
-        let prefix = if self.sentiment < -0.3 {
+        let prefix = if self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD {
             "Warning: "
-        } else if self.sentiment > 0.3 {
+        } else if self.sentiment > SENTIMENT_POSITIVE_THRESHOLD {
             "Pattern: "
         } else {
             ""
@@ -73,12 +78,12 @@ impl Note {
 
     /// Check if this is a warning (negative sentiment)
     pub fn is_warning(&self) -> bool {
-        self.sentiment < -0.3
+        self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD
     }
 
     /// Check if this is a pattern (positive sentiment)
     pub fn is_pattern(&self) -> bool {
-        self.sentiment > 0.3
+        self.sentiment > SENTIMENT_POSITIVE_THRESHOLD
     }
 }
 
