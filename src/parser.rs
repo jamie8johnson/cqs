@@ -5,6 +5,9 @@ use std::path::Path;
 use thiserror::Error;
 use tree_sitter::StreamingIterator;
 
+// Re-export ChunkType from language module (source of truth)
+pub use crate::language::ChunkType;
+
 #[derive(Error, Debug)]
 pub enum ParserError {
     #[error("Unsupported file type: {0}")]
@@ -798,62 +801,6 @@ impl std::str::FromStr for Language {
             "go" => Ok(Language::Go),
             _ => anyhow::bail!(
                 "Unknown language: '{}'. Valid options: rust, python, typescript, javascript, go",
-                s
-            ),
-        }
-    }
-}
-
-/// Type of code element extracted by the parser
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChunkType {
-    /// Standalone function
-    Function,
-    /// Method (function inside a class/struct/impl)
-    Method,
-    /// Class definition (Python, TypeScript, JavaScript)
-    Class,
-    /// Struct definition (Rust, Go)
-    Struct,
-    /// Enum definition
-    Enum,
-    /// Trait definition (Rust)
-    Trait,
-    /// Interface definition (TypeScript, Go)
-    Interface,
-    /// Constant or static variable
-    Constant,
-}
-
-impl std::fmt::Display for ChunkType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChunkType::Function => write!(f, "function"),
-            ChunkType::Method => write!(f, "method"),
-            ChunkType::Class => write!(f, "class"),
-            ChunkType::Struct => write!(f, "struct"),
-            ChunkType::Enum => write!(f, "enum"),
-            ChunkType::Trait => write!(f, "trait"),
-            ChunkType::Interface => write!(f, "interface"),
-            ChunkType::Constant => write!(f, "constant"),
-        }
-    }
-}
-
-impl std::str::FromStr for ChunkType {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "function" => Ok(ChunkType::Function),
-            "method" => Ok(ChunkType::Method),
-            "class" => Ok(ChunkType::Class),
-            "struct" => Ok(ChunkType::Struct),
-            "enum" => Ok(ChunkType::Enum),
-            "trait" => Ok(ChunkType::Trait),
-            "interface" => Ok(ChunkType::Interface),
-            "constant" => Ok(ChunkType::Constant),
-            _ => anyhow::bail!(
-                "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant",
                 s
             ),
         }
