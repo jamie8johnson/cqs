@@ -89,6 +89,17 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 
 **Use `cqs_add_note` to add notes** - it indexes immediately. Direct file edits require `cqs watch` or `cqs index` to become searchable.
 
+**Sentiment is DISCRETE** - only 5 valid values:
+| Value | Meaning |
+|-------|---------|
+| `-1` | Serious pain (broke something, lost time) |
+| `-0.5` | Notable pain (friction, annoyance) |
+| `0` | Neutral observation |
+| `0.5` | Notable gain (useful pattern) |
+| `1` | Major win (saved significant time/effort) |
+
+Do NOT use values like 0.7 or 0.8. Pick the closest discrete value.
+
 Don't log activity - git history has that.
 
 *Etymology: PIE \*teks- (weave/construct), collapses with \*der- (rip) and \*dakru- (crying). Portuguese "tear" = loom. Context is woven, then cut—Clotho spins, Lachesis measures, Atropos snips. Construction, destruction, loss.*
@@ -102,7 +113,7 @@ Create these files if missing:
 **docs/notes.toml:**
 ```toml
 # Notes - unified memory for AI collaborators
-# sentiment: -1 (serious pain), -0.5 (notable pain), 0 (neutral), 0.5 (notable gain), 1 (major win)
+# sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
 
 [[note]]
 sentiment = -1
