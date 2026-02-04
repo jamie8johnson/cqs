@@ -7,7 +7,7 @@ Branch: `fix/p1-audit-fixes` | CI pending
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P1 Completed (~41 of 64)
+### P1 Completed (~45 of 64)
 
 | Fix | Location |
 |-----|----------|
@@ -50,18 +50,24 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Note indexing tracing | store/notes.rs |
 | HNSW tuning docs | hnsw.rs |
 | Callee skip list docs | parser.rs |
+| serve_http/stdio docs | mcp.rs |
+| Chunk size limit docs | parser.rs |
+| CLI constant docs | cli/mod.rs |
+| Sentiment threshold docs | note.rs |
 
-### Remaining P1 (~23)
+### Remaining P1 (~19)
 - Test coverage: token_count (requires model - integration test)
-- Module boundaries: CLI imports (verified correct - uses public API)
-- Error propagation: swallowed .ok() patterns (most are intentional)
-- MCP tool naming (verified correct - cqs_ prefix is intentional)
+- Some module boundary items need architectural changes (P4)
+- Remaining items are either verified correct or need architectural decisions
 
 ### Verified Correct (no changes needed)
 - CLI imports internal types (#6): Uses public API via cqs::* re-exports
 - MCP tool naming convention (#15): cqs_ prefix distinguishes our tools
 - Swallowed .ok() patterns (#21): Most are intentional (mtime, version checks)
 - Unicode proptest (#45): Existing test covers edge cases adequately
+- Context line edge case (#54): Already uses saturating_sub
+- Config::merge naming (#17): Well-documented and tested
+- Language::FromStr error (#16): Works correctly, architectural refinement
 
 ### Remaining Tiers
 | Tier | Count | Status |
