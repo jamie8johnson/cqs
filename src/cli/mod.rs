@@ -46,6 +46,10 @@ pub enum ExitCode {
 // Signal handling
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+/// Install Ctrl+C handler for graceful shutdown
+///
+/// First Ctrl+C sets INTERRUPTED flag, allowing current batch to finish.
+/// Second Ctrl+C force-exits with code 130.
 fn setup_signal_handler() {
     ctrlc::set_handler(|| {
         if INTERRUPTED.swap(true, Ordering::SeqCst) {
@@ -57,6 +61,7 @@ fn setup_signal_handler() {
     .expect("Failed to set Ctrl+C handler");
 }
 
+/// Check if user requested interruption via Ctrl+C
 fn check_interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
 }
@@ -424,6 +429,9 @@ fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
 
 // === Commands ===
 
+/// Initialize cq in a project directory
+///
+/// Creates `.cq/` directory, downloads the embedding model, and warms up the embedder.
 fn cmd_init(cli: &Cli) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -466,6 +474,9 @@ fn cmd_init(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Run diagnostic checks on cq installation and index
+///
+/// Reports runtime info, embedding provider, model status, and index statistics.
 fn cmd_doctor(_cli: &Cli) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -1008,6 +1019,10 @@ fn run_index_pipeline(
     })
 }
 
+/// Index codebase files for semantic search
+///
+/// Parses source files, generates embeddings, and stores them in the index database.
+/// Uses incremental indexing by default (only re-embeds changed files).
 fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -1222,6 +1237,7 @@ fn load_hnsw_index(cq_dir: &std::path::Path) -> Option<Box<dyn cqs::index::Vecto
     }
 }
 
+/// Execute a semantic search query and display results
 fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
 
@@ -1321,6 +1337,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     Ok(())
 }
 
+/// Display index statistics (chunk counts, languages, types)
 fn cmd_stats(cli: &Cli) -> Result<()> {
     let root = find_project_root();
     let index_path = root.join(".cq/index.db");
@@ -1411,6 +1428,7 @@ fn cmd_stats(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
+/// Find functions that call the specified function
 fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     let root = find_project_root();
     let index_path = root.join(".cq/index.db");
@@ -1462,6 +1480,7 @@ fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Find functions called by the specified function
 fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     let root = find_project_root();
     let index_path = root.join(".cq/index.db");
@@ -1500,6 +1519,7 @@ fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// Watch for file changes and re-index automatically
 fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -1766,6 +1786,7 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
     Ok(note_embeddings.len())
 }
 
+/// Start the MCP server for IDE integration
 #[allow(clippy::too_many_arguments)]
 fn cmd_serve(
     _cli: &Cli,
@@ -1808,6 +1829,7 @@ fn cmd_serve(
     }
 }
 
+/// Generate shell completion scripts for the specified shell
 fn cmd_completions(shell: clap_complete::Shell) {
     use clap::CommandFactory;
     clap_complete::generate(shell, &mut Cli::command(), "cqs", &mut std::io::stdout());
