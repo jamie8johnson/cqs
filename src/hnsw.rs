@@ -70,6 +70,40 @@ pub struct HnswResult {
     pub score: f32,
 }
 
+/// Verify HNSW index file checksums using blake3.
+///
+/// Returns Ok if checksums match or no checksum file exists (with warning).
+fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
+    let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
+
+    if !checksum_path.exists() {
+        tracing::warn!(
+            "No checksum file for HNSW index - run 'cqs index --force' to add checksums"
+        );
+        return Ok(());
+    }
+
+    let checksum_content = std::fs::read_to_string(&checksum_path)?;
+    for line in checksum_content.lines() {
+        if let Some((ext, expected)) = line.split_once(':') {
+            let path = dir.join(format!("{}.{}", basename, ext));
+            if path.exists() {
+                let data = std::fs::read(&path)?;
+                let actual = blake3::hash(&data).to_hex().to_string();
+                if actual != expected {
+                    return Err(HnswError::ChecksumMismatch {
+                        file: path.display().to_string(),
+                        expected: expected.to_string(),
+                        actual,
+                    });
+                }
+            }
+        }
+    }
+    tracing::debug!("HNSW checksums verified");
+    Ok(())
+}
+
 /// Self-referential wrapper for loaded HNSW
 ///
 /// HnswIo owns the data, Hnsw borrows from it. We manage lifetimes manually:
@@ -291,39 +325,13 @@ impl HnswIndex {
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
         let data_path = dir.join(format!("{}.hnsw.data", basename));
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
-        let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
 
         if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
             return Err(HnswError::NotFound(dir.display().to_string()));
         }
 
         tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
-
-        // Verify checksums before deserializing (mitigates bincode risks)
-        if checksum_path.exists() {
-            let checksum_content = std::fs::read_to_string(&checksum_path)?;
-            for line in checksum_content.lines() {
-                if let Some((ext, expected)) = line.split_once(':') {
-                    let path = dir.join(format!("{}.{}", basename, ext));
-                    if path.exists() {
-                        let data = std::fs::read(&path)?;
-                        let actual = blake3::hash(&data).to_hex().to_string();
-                        if actual != expected {
-                            return Err(HnswError::ChecksumMismatch {
-                                file: path.display().to_string(),
-                                expected: expected.to_string(),
-                                actual,
-                            });
-                        }
-                    }
-                }
-            }
-            tracing::debug!("HNSW checksums verified");
-        } else {
-            tracing::warn!(
-                "No checksum file for HNSW index - run 'cqs index --force' to add checksums"
-            );
-        }
+        verify_hnsw_checksums(dir, basename)?;
 
         // Load ID map
         let id_map_json = std::fs::read_to_string(&id_map_path)?;

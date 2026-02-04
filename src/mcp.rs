@@ -462,16 +462,7 @@ impl McpServer {
     fn tool_search(&mut self, arguments: Value) -> Result<Value> {
         // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
         let args: SearchArgs = serde_json::from_value(arguments)?;
-
-        // Validate query length (prevent excessive embedding computation)
-        const MAX_QUERY_LENGTH: usize = 8192;
-        if args.query.len() > MAX_QUERY_LENGTH {
-            bail!(
-                "Query too long: {} bytes (max {})",
-                args.query.len(),
-                MAX_QUERY_LENGTH
-            );
-        }
+        validate_query_length(&args.query)?;
 
         let embedder = self.ensure_embedder()?;
         let query_embedding = embedder.embed_query(&args.query)?;
@@ -1057,6 +1048,106 @@ pub fn serve_http(
     Ok(())
 }
 
+// ============================================================================
+// Validation helpers
+// ============================================================================
+
+/// Maximum query length to prevent excessive embedding computation
+const MAX_QUERY_LENGTH: usize = 8192;
+
+/// Validate query length to prevent excessive embedding computation.
+fn validate_query_length(query: &str) -> Result<()> {
+    if query.len() > MAX_QUERY_LENGTH {
+        bail!(
+            "Query too long: {} bytes (max {})",
+            query.len(),
+            MAX_QUERY_LENGTH
+        );
+    }
+    Ok(())
+}
+
+/// Error type for HTTP validation failures (JSON-RPC error response)
+type ValidationError = (StatusCode, Json<Value>);
+
+/// Validate Bearer token using constant-time comparison.
+///
+/// Returns Ok(()) if valid or no key configured, Err with 401 response otherwise.
+fn validate_api_key(
+    headers: &HeaderMap,
+    expected_key: Option<&str>,
+) -> Result<(), ValidationError> {
+    let Some(expected) = expected_key else {
+        return Ok(());
+    };
+
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+
+    let provided = auth_header.strip_prefix("Bearer ").unwrap_or("");
+
+    // Constant-time comparison to prevent timing attacks
+    let valid = provided.len() == expected.len()
+        && provided.bytes().zip(expected.bytes()).all(|(a, b)| a == b);
+
+    if valid {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": {"code": -32600, "message": "Invalid or missing API key"}
+            })),
+        ))
+    }
+}
+
+/// Validate Origin header for DNS rebinding protection (MCP 2025-11-25 spec).
+///
+/// Allows localhost origins only. Empty/missing Origin is allowed.
+fn validate_origin_header(headers: &HeaderMap) -> Result<(), ValidationError> {
+    if let Some(origin) = headers.get("origin") {
+        let origin_str = origin.to_str().unwrap_or("");
+        if !origin_str.is_empty()
+            && !origin_str.starts_with("http://localhost")
+            && !origin_str.starts_with("http://127.0.0.1")
+            && !origin_str.starts_with("https://localhost")
+            && !origin_str.starts_with("https://127.0.0.1")
+        {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32600, "message": "Invalid origin"}
+                })),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Require Accept header includes text/event-stream for SSE endpoints.
+fn require_accept_event_stream(headers: &HeaderMap) -> Result<(), ValidationError> {
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if !accept.contains("text/event-stream") {
+        return Err((
+            StatusCode::NOT_ACCEPTABLE,
+            Json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "error": {"code": -32600, "message": "Accept header must include text/event-stream"}
+            })),
+        ));
+    }
+    Ok(())
+}
+
 /// Handle POST /mcp - JSON-RPC requests (MCP 2025-11-25 compliant)
 ///
 /// # Security
@@ -1077,56 +1168,11 @@ async fn handle_mcp_post(
     headers: axum::http::HeaderMap,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    // Validate API key if configured
-    if let Some(ref expected_key) = state.api_key {
-        let auth_header = headers
-            .get("authorization")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-
-        let provided_key = auth_header.strip_prefix("Bearer ").unwrap_or("");
-
-        // Constant-time comparison to prevent timing attacks
-        if provided_key.len() != expected_key.len()
-            || !provided_key
-                .bytes()
-                .zip(expected_key.bytes())
-                .all(|(a, b)| a == b)
-        {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32600,
-                        "message": "Invalid or missing API key"
-                    }
-                })),
-            );
-        }
+    if let Err(e) = validate_api_key(&headers, state.api_key.as_deref()) {
+        return e;
     }
-
-    // Validate Origin header to prevent DNS rebinding attacks (MCP 2025-11-25 security requirement)
-    if let Some(origin) = headers.get("origin") {
-        let origin_str = origin.to_str().unwrap_or("");
-        // Allow localhost origins only
-        if !origin_str.is_empty()
-            && !origin_str.starts_with("http://localhost")
-            && !origin_str.starts_with("http://127.0.0.1")
-            && !origin_str.starts_with("https://localhost")
-            && !origin_str.starts_with("https://127.0.0.1")
-        {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32600,
-                        "message": "Invalid origin"
-                    }
-                })),
-            );
-        }
+    if let Err(e) = validate_origin_header(&headers) {
+        return e;
     }
 
     // Check MCP-Protocol-Version header (optional, default to 2025-03-26 per spec)
@@ -1191,53 +1237,8 @@ async fn handle_mcp_sse(
     State(state): State<Arc<HttpState>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    // Validate API key if configured
-    if let Some(ref expected_key) = state.api_key {
-        let auth_header = headers
-            .get("authorization")
-            .and_then(|h| h.to_str().ok())
-            .unwrap_or("");
-
-        let provided_key = auth_header.strip_prefix("Bearer ").unwrap_or("");
-
-        // Constant-time comparison to prevent timing attacks
-        if provided_key.len() != expected_key.len()
-            || !provided_key
-                .bytes()
-                .zip(expected_key.bytes())
-                .all(|(a, b)| a == b)
-        {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "error": {
-                        "code": -32600,
-                        "message": "Invalid or missing API key"
-                    }
-                })),
-            ));
-        }
-    }
-
-    // Validate Accept header includes text/event-stream
-    let accept = headers
-        .get("accept")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if !accept.contains("text/event-stream") {
-        return Err((
-            StatusCode::NOT_ACCEPTABLE,
-            Json(serde_json::json!({
-                "jsonrpc": "2.0",
-                "error": {
-                    "code": -32600,
-                    "message": "Accept header must include text/event-stream"
-                }
-            })),
-        ));
-    }
+    validate_api_key(&headers, state.api_key.as_deref())?;
+    require_accept_event_stream(&headers)?;
 
     // Create SSE stream with priming event per MCP 2025-11-25 spec:
     // "The server SHOULD immediately send an SSE event consisting of an event
