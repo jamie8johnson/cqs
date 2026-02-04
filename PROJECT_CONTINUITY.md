@@ -2,16 +2,26 @@
 
 ## Right Now
 
-**9-layer audit complete** - 1 action item
+**Clean** - Validation extraction + path traversal fix complete.
 
-PR #58 merged: API key auth for HTTP transport + saturating casts.
-
-**Dependency vulnerability:**
-- `bytes` 1.11.0 has RUSTSEC-2026-0007 (integer overflow)
-- Fix: `cargo update -p bytes` (needs >=1.11.1)
+PRs merged:
+- #58: API key auth for HTTP transport + saturating casts
+- #59: bytes 1.11.1 fix (RUSTSEC-2026-0007)
+- #60: Extract validation functions + fix HNSW path traversal
 
 **Waiting on:**
 - awesome-mcp-servers PR #1783
+
+## Learnings
+
+**Named functions are more discoverable:**
+- "validate bearer token" → `validate_api_key` at 0.74 (after extraction)
+- Inline code in handlers is harder for semantic search to find
+- Extracting security-critical code into named functions improves auditability
+
+**Path traversal fixed:**
+- `verify_hnsw_checksums` now validates extensions against allowlist
+- Only `hnsw.graph`, `hnsw.data`, `hnsw.ids` accepted
 
 ## Key Architecture
 

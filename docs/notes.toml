@@ -97,9 +97,9 @@ text = "store.search() and hnsw.search() both match callee name 'search'. No typ
 mentions = ["store.rs", "parser.rs"]
 
 [[note]]
-sentiment = -0.5
-text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Index files loaded without checksum. Attacker with local write access could craft malicious files. Add blake3 checksum."
-mentions = ["hnsw.rs", "hnsw_rs", "bincode"]
+sentiment = 0.0
+text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Mitigated with blake3 checksums on save/load. verify_hnsw_checksums validates extension allowlist to prevent path traversal."
+mentions = ["hnsw.rs", "hnsw_rs", "bincode", "blake3"]
 
 # === Gain (positive sentiment) ===
 
@@ -317,3 +317,13 @@ mentions = ["cli.rs", "mcp.rs", "--bind", "auth"]
 sentiment = 0.5
 text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API so cli.rs/mcp.rs didn't need changes. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
 mentions = ["src/store.rs", "Cargo.toml"]
+
+[[note]]
+sentiment = 0.5
+text = "Inline validation code is hard to find via semantic search. Extract into named functions: validate_api_key, validate_origin_header, etc. 'validate bearer token' query now finds validate_api_key at 0.74 score."
+mentions = ["mcp.rs", "hnsw.rs", "discoverability"]
+
+[[note]]
+sentiment = 0.5
+text = "Path traversal via checksum file: verify_hnsw_checksums read extensions from file, could be '../../../etc/passwd'. Fixed with HNSW_EXTENSIONS allowlist. Low severity (local read-only) but still worth hardening."
+mentions = ["hnsw.rs", "security", "path traversal"]
