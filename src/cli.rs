@@ -357,7 +357,8 @@ fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Ve
 /// Check if a process with the given PID exists
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
-    // kill with signal 0 checks if process exists without sending a signal
+    // SAFETY: kill(pid, 0) is safe - it only checks if process exists without
+    // sending any signal. The pid is u32 cast to i32 which is valid for PIDs.
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 

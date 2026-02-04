@@ -244,6 +244,7 @@ impl McpServer {
                 Embedder::new_cpu()?
             });
         }
+        // unwrap is safe: we just set it to Some above if it was None
         Ok(self.embedder.as_mut().unwrap())
     }
 
