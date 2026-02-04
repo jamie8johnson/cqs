@@ -530,3 +530,187 @@ fn test_cqs_search_with_all_optional_params() {
         response.error
     );
 }
+
+// ===== Additional Edge Case Tests =====
+
+#[test]
+fn test_deeply_nested_json() {
+    let (_dir, server) = setup_test_server();
+
+    // Create deeply nested JSON to test parser limits
+    let mut nested = json!({"inner": "value"});
+    for _ in 0..50 {
+        nested = json!({"level": nested});
+    }
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_stats",
+            "arguments": nested
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should handle gracefully - either succeed or return an error (not panic)
+    // cqs_stats ignores extra arguments, so it may succeed
+    assert!(
+        response.error.is_some() || response.result.is_some(),
+        "Should handle deeply nested JSON without panic"
+    );
+}
+
+#[test]
+fn test_unicode_in_query() {
+    let (_dir, server) = setup_test_server();
+
+    // Test various unicode characters in search query
+    let unicode_queries = [
+        "函数名称",                      // Chinese
+        "функция",                       // Russian
+        "関数",                          // Japanese
+        "🔍 search emoji",               // Emoji
+        "café résumé naïve",             // Accented Latin
+        "αβγδ Greek letters",            // Greek
+        "test\u{200B}hidden\u{FEFF}bom", // Zero-width chars and BOM
+    ];
+
+    for query in &unicode_queries {
+        let request = make_request(
+            "tools/call",
+            Some(json!({
+                "name": "cqs_search",
+                "arguments": {"query": query}
+            })),
+        );
+
+        let response = server.handle_request(request);
+
+        // Should handle all unicode gracefully (not panic, may return empty results)
+        assert!(
+            response.error.is_none()
+                || response
+                    .error
+                    .as_ref()
+                    .is_some_and(|e| !e.message.contains("panic")),
+            "Unicode query '{}' should not cause panic: {:?}",
+            query,
+            response.error
+        );
+    }
+}
+
+#[test]
+fn test_concurrent_requests() {
+    use std::sync::Arc;
+    use std::thread;
+
+    let (dir, server) = setup_test_server();
+    let server = Arc::new(server);
+
+    // Create a test file so cqs_read has something to read
+    std::fs::write(dir.path().join("concurrent_test.rs"), "fn main() {}").unwrap();
+
+    // Spawn multiple threads making concurrent requests
+    let handles: Vec<_> = (0..4)
+        .map(|i| {
+            let server = Arc::clone(&server);
+            thread::spawn(move || {
+                // Each thread makes multiple requests
+                for j in 0..5 {
+                    let request = JsonRpcRequest {
+                        jsonrpc: "2.0".into(),
+                        id: Some(json!(format!("thread-{}-req-{}", i, j))),
+                        method: "tools/call".into(),
+                        params: Some(json!({
+                            "name": "cqs_stats",
+                            "arguments": {}
+                        })),
+                    };
+
+                    let response = server.handle_request(request);
+                    assert!(
+                        response.error.is_none(),
+                        "Concurrent request failed: {:?}",
+                        response.error
+                    );
+                }
+            })
+        })
+        .collect();
+
+    // Wait for all threads
+    for handle in handles {
+        handle
+            .join()
+            .expect("Thread panicked during concurrent test");
+    }
+}
+
+#[test]
+fn test_special_characters_in_path() {
+    let (dir, server) = setup_test_server();
+
+    // Test reading files with special characters in path
+    // Create file with special name (but safe for filesystem)
+    let special_name = "test-file_v2.0.rs";
+    std::fs::write(dir.path().join(special_name), "fn special() {}").unwrap();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_read",
+            "arguments": {"path": special_name}
+        })),
+    );
+
+    let response = server.handle_request(request);
+    assert!(
+        response.error.is_none(),
+        "Special chars in filename should work: {:?}",
+        response.error
+    );
+}
+
+#[test]
+fn test_empty_query_string() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {"query": ""}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Empty query should either return error or empty results (not panic)
+    assert!(
+        response.error.is_some() || response.result.is_some(),
+        "Empty query should be handled gracefully"
+    );
+}
+
+#[test]
+fn test_whitespace_only_query() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {"query": "   \t\n   "}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Whitespace-only query should be handled gracefully
+    assert!(
+        response.error.is_some() || response.result.is_some(),
+        "Whitespace query should be handled gracefully"
+    );
+}

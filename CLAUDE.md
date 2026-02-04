@@ -50,6 +50,20 @@ After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
 
 Audit mode prevents false confidence from stale notes - forces you to examine code directly instead of trusting prior observations.
 
+## Audit → Issue Pipeline
+
+After comprehensive audits, create GitHub issues for findings:
+
+1. **Enable audit mode** - `cqs_audit_mode(true)` before starting
+2. **Run parallel audits** - 9 categories, each as a separate agent
+3. **Cross-reference** - check existing issues to avoid duplicates
+4. **Create issues** - for untracked findings with severity labels
+5. **Sort by difficulty** - helps prioritize quick wins
+
+**Categories:** Security, Memory, Concurrency, Algorithms, Architecture, Performance, Dependencies, Tests, Error Handling
+
+**Why:** Findings get lost when context compacts. Issues make work visible to future sessions and other contributors.
+
 ## Completion Checklist
 
 Before marking any feature "done":
