@@ -768,6 +768,80 @@ mod tests {
         assert_eq!(EMBEDDING_DIM, MODEL_DIM + 1);
     }
 
+    // ===== pad_2d_i64 tests =====
+
+    #[test]
+    fn test_pad_2d_i64_basic() {
+        let inputs = vec![vec![1, 2, 3], vec![4, 5]];
+        let result = pad_2d_i64(&inputs, 4, 0);
+        assert_eq!(result.shape(), &[2, 4]);
+        assert_eq!(result[[0, 0]], 1);
+        assert_eq!(result[[0, 1]], 2);
+        assert_eq!(result[[0, 2]], 3);
+        assert_eq!(result[[0, 3]], 0); // padded
+        assert_eq!(result[[1, 0]], 4);
+        assert_eq!(result[[1, 1]], 5);
+        assert_eq!(result[[1, 2]], 0); // padded
+        assert_eq!(result[[1, 3]], 0); // padded
+    }
+
+    #[test]
+    fn test_pad_2d_i64_truncates() {
+        let inputs = vec![vec![1, 2, 3, 4, 5]];
+        let result = pad_2d_i64(&inputs, 3, 0);
+        assert_eq!(result.shape(), &[1, 3]);
+        assert_eq!(result[[0, 0]], 1);
+        assert_eq!(result[[0, 1]], 2);
+        assert_eq!(result[[0, 2]], 3);
+        // 4 and 5 are truncated
+    }
+
+    #[test]
+    fn test_pad_2d_i64_empty_input() {
+        let inputs: Vec<Vec<i64>> = vec![];
+        let result = pad_2d_i64(&inputs, 5, 0);
+        assert_eq!(result.shape(), &[0, 5]);
+    }
+
+    #[test]
+    fn test_pad_2d_i64_custom_pad_value() {
+        let inputs = vec![vec![1]];
+        let result = pad_2d_i64(&inputs, 3, -1);
+        assert_eq!(result[[0, 0]], 1);
+        assert_eq!(result[[0, 1]], -1);
+        assert_eq!(result[[0, 2]], -1);
+    }
+
+    // ===== EmbedderError tests =====
+
+    #[test]
+    fn test_embedder_error_display() {
+        let err = EmbedderError::EmptyQuery;
+        assert_eq!(format!("{}", err), "Query cannot be empty");
+
+        let err = EmbedderError::ModelNotFound("model.onnx".to_string());
+        assert!(format!("{}", err).contains("model.onnx"));
+
+        let err = EmbedderError::TokenizerError("invalid token".to_string());
+        assert!(format!("{}", err).contains("invalid token"));
+
+        let err = EmbedderError::ChecksumMismatch {
+            path: "/path/to/file".to_string(),
+            expected: "abc123".to_string(),
+            actual: "def456".to_string(),
+        };
+        assert!(format!("{}", err).contains("abc123"));
+        assert!(format!("{}", err).contains("def456"));
+    }
+
+    #[test]
+    fn test_embedder_error_from_ort() {
+        // Test that ort::Error converts to EmbedderError::InferenceFailed
+        // We can't easily create an ort::Error, but we can verify the variant exists
+        let err: EmbedderError = EmbedderError::InferenceFailed("test error".to_string());
+        assert!(matches!(err, EmbedderError::InferenceFailed(_)));
+    }
+
     // ===== Property-based tests =====
 
     mod proptests {

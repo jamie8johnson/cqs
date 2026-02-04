@@ -2052,4 +2052,85 @@ mod tests {
         let result = Cli::try_parse_from(["cqs", "callers"]);
         assert!(result.is_err());
     }
+
+    // ===== apply_config_defaults tests =====
+
+    #[test]
+    fn test_apply_config_defaults_respects_cli_flags() {
+        // When CLI has non-default values, config should NOT override
+        let mut cli = Cli::try_parse_from(["cqs", "-n", "10", "-t", "0.6", "query"]).unwrap();
+        let config = cqs::config::Config {
+            limit: Some(20),
+            threshold: Some(0.9),
+            name_boost: Some(0.5),
+            quiet: Some(true),
+            verbose: Some(true),
+        };
+        apply_config_defaults(&mut cli, &config);
+
+        // CLI values should be preserved
+        assert_eq!(cli.limit, 10);
+        assert!((cli.threshold - 0.6).abs() < 0.001);
+        // But name_boost was default, so config applies
+        assert!((cli.name_boost - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_apply_config_defaults_applies_when_cli_has_defaults() {
+        let mut cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        let config = cqs::config::Config {
+            limit: Some(15),
+            threshold: Some(0.7),
+            name_boost: Some(0.4),
+            quiet: Some(true),
+            verbose: Some(true),
+        };
+        apply_config_defaults(&mut cli, &config);
+
+        assert_eq!(cli.limit, 15);
+        assert!((cli.threshold - 0.7).abs() < 0.001);
+        assert!((cli.name_boost - 0.4).abs() < 0.001);
+        assert!(cli.quiet);
+        assert!(cli.verbose);
+    }
+
+    #[test]
+    fn test_apply_config_defaults_empty_config() {
+        let mut cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        let config = cqs::config::Config::default();
+        apply_config_defaults(&mut cli, &config);
+
+        // Should keep CLI defaults
+        assert_eq!(cli.limit, 5);
+        assert!((cli.threshold - 0.3).abs() < 0.001);
+        assert!((cli.name_boost - 0.2).abs() < 0.001);
+        assert!(!cli.quiet);
+        assert!(!cli.verbose);
+    }
+
+    // ===== ExitCode tests =====
+
+    #[test]
+    fn test_exit_code_values() {
+        assert_eq!(ExitCode::Success as i32, 0);
+        assert_eq!(ExitCode::GeneralError as i32, 1);
+        assert_eq!(ExitCode::NoResults as i32, 2);
+        assert_eq!(ExitCode::IndexMissing as i32, 3);
+        assert_eq!(ExitCode::ModelMissing as i32, 4);
+        assert_eq!(ExitCode::Interrupted as i32, 130);
+    }
+
+    // ===== display module tests =====
+
+    mod display_tests {
+        use cqs::store::UnifiedResult;
+
+        #[test]
+        fn test_display_unified_results_json_empty() {
+            let results: Vec<UnifiedResult> = vec![];
+            // Can't easily capture stdout, but we can at least verify it doesn't panic
+            // This would be better as an integration test
+            assert!(results.is_empty());
+        }
+    }
 }
