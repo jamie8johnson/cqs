@@ -2,20 +2,33 @@
 
 ## Right Now
 
-**20-category audit COMPLETE** (2026-02-04)
+**20-category audit TRIAGED** (2026-02-04)
 
 - Design: `docs/plans/2026-02-04-20-category-audit-design.md`
 - Findings: `docs/audit-findings.md`
+- **Triage: `docs/audit-triage.md`**
 
-**202 findings** across 20 categories:
-- ~130 easy, ~55 medium, ~17 hard
-- Ready for Phase 2: Triage and prioritize
-- Then Phase 3: Fix by priority tier
+**184 unique issues** (after de-duplication from 202 raw):
+
+| Tier | Count | Criteria |
+|------|-------|----------|
+| P1 | 64 | Easy + Batch 1-2 (fix immediately) |
+| P2 | 58 | Easy + Batch 3-4, Medium + Batch 1 |
+| P3 | 43 | Medium + Batch 2-3 |
+| P4 | 19 | Hard, defer to issues |
+
+### Duplicate Clusters Identified
+- A: Language/Query duplication (5→1)
+- B: Model name mismatch (5→1)
+- C: Note search O(n) (3→1)
+- D: Embedder cold start (3→1)
+- E: HNSW file I/O (2→1)
+- F: Runtime/Store duplication (3→1)
 
 ### Next Steps
-1. Review findings, de-duplicate overlaps
-2. Assign P1-P4 tiers
-3. Start fixing P1 (easy wins in Batch 1-2)
+1. **Start fixing P1** - model names, Go return type, display.rs bounds
+2. After P1+P2: assess diminishing returns
+3. Create GitHub issues for P4
 
 Reconciled overlapping categories into clean taxonomy:
 
