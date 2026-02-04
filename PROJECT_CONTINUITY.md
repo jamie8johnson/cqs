@@ -6,7 +6,7 @@
 
 Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-### P2 Progress: 5 of 58 Fixed
+### P2 Progress: 10 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -15,6 +15,11 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 38 | TOML injection in mentions | Fixed: escape backslashes + simplified text |
 | 39 | Glob pattern validation | Fixed: SearchFilter.validate() |
 | 20 | No max query length | Already had: validate_query_length (8192) |
+| 17 | HNSW id_map size validation | Fixed: check count on load |
+| 4 | Parse failures default silently | Fixed: log warnings on parse failures |
+| 4 | Empty query no feedback | Fixed: debug log when normalized empty |
+| 8 | note_stats swallows errors | Fixed: propagate StoreError |
+| 3 | Glob pattern tests | Fixed: 3 new tests |
 
 ### P1 Status: 62 of 64 Closed
 
@@ -86,7 +91,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Tier | Count | Status |
 |------|-------|--------|
 | P1 | 2 deferred | Move to P4 |
-| P2 | 53 remaining | 5 fixed |
+| P2 | 48 remaining | 10 fixed |
 | P3 | 43 | Pending |
 | P4 | 19 + 2 = 21 | Pending |
 
@@ -113,4 +118,4 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 - Store: split into focused modules (6 files)
 - Schema v10, WAL mode
 - tests/common/mod.rs for test fixtures
-- 271 tests
+- 272 tests
