@@ -1119,6 +1119,13 @@ impl McpServer {
 }
 
 /// Run the MCP server with stdio transport
+///
+/// Reads JSON-RPC requests from stdin and writes responses to stdout.
+/// Used by Claude Code for direct integration.
+///
+/// # Arguments
+/// * `project_root` - Root directory of the project to index
+/// * `use_gpu` - Whether to use GPU acceleration for embeddings
 pub fn serve_stdio(project_root: PathBuf, use_gpu: bool) -> Result<()> {
     let server = McpServer::new(project_root, use_gpu)?;
 
@@ -1187,9 +1194,15 @@ struct HttpState {
 
 /// Run the MCP server with HTTP transport
 ///
+/// Listens for JSON-RPC requests on the specified address.
+/// Supports CORS and optional API key authentication.
+///
 /// # Arguments
-/// * `api_key` - Optional API key for authentication. If provided, requests must include
-///   `Authorization: Bearer <key>` header.
+/// * `project_root` - Root directory of the project to index
+/// * `bind` - Address to bind to (e.g., "127.0.0.1")
+/// * `port` - Port to listen on (e.g., 3000)
+/// * `use_gpu` - Whether to use GPU acceleration for embeddings
+/// * `api_key` - Optional API key; if set, requests need `Authorization: Bearer <key>`
 pub fn serve_http(
     project_root: PathBuf,
     bind: &str,
