@@ -234,16 +234,60 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
             }
         }
         Language::Go => {
-            // Go: `func name(params) returnType {` - return type between ) and {
-            if let Some(paren) = signature.rfind(')') {
-                let after_paren = signature[paren + 1..].trim();
-                // Strip trailing { if present
-                let ret = after_paren.trim_end_matches('{').trim();
-                if ret.is_empty() {
-                    return None;
+            // Go: `func name(params) returnType {` or `func (recv) name(params) returnType {`
+            // Return type is between the params close-paren and the opening brace
+            // For multiple returns: `func name() (string, error) {`
+
+            // Strip trailing { first
+            let sig = signature.trim_end_matches('{').trim();
+
+            // Find where params end by counting parens from the right
+            // The params close-paren is the last ) NOT inside a return type (...)
+            // Strategy: find the last ')' that's not part of a multi-return
+
+            // Simple approach: if last char is ), then return type is wrapped in ()
+            // Otherwise return type is plain text after the last )
+            if sig.ends_with(')') {
+                // Check if it's a multi-return like (string, error) or just empty params ()
+                // Find the matching ( for the final )
+                let mut depth = 0;
+                let mut start_idx = None;
+                for (i, c) in sig.char_indices().rev() {
+                    match c {
+                        ')' => depth += 1,
+                        '(' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                start_idx = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
-                let ret_words = tokenize_identifier(ret).join(" ");
-                return Some(format!("Returns {}", ret_words));
+                if let Some(start) = start_idx {
+                    // Check if there's a ) before this ( - that would be the params close
+                    let before = &sig[..start].trim();
+                    if before.ends_with(')') {
+                        // Multi-return: extract the (...)
+                        let ret = &sig[start..];
+                        if !ret.is_empty() {
+                            return Some(format!("Returns {}", ret));
+                        }
+                    }
+                }
+                // Either no multi-return or empty params - fall through to return None
+                return None;
+            } else {
+                // Plain return type after last )
+                if let Some(paren) = sig.rfind(')') {
+                    let ret = sig[paren + 1..].trim();
+                    if ret.is_empty() {
+                        return None;
+                    }
+                    let ret_words = tokenize_identifier(ret).join(" ");
+                    return Some(format!("Returns {}", ret_words));
+                }
             }
         }
         Language::TypeScript => {
@@ -332,6 +376,27 @@ mod tests {
         assert_eq!(
             extract_return_nl("function foo()", Language::JavaScript),
             None
+        );
+    }
+
+    #[test]
+    fn test_extract_return_nl_go() {
+        // Go: return type between ) and {
+        assert_eq!(
+            extract_return_nl("func foo() string {", Language::Go),
+            Some("Returns string".to_string())
+        );
+        // Multiple return values
+        assert_eq!(
+            extract_return_nl("func foo() (string, error) {", Language::Go),
+            Some("Returns (string, error)".to_string())
+        );
+        // No return type
+        assert_eq!(extract_return_nl("func foo() {", Language::Go), None);
+        // Method with receiver
+        assert_eq!(
+            extract_return_nl("func (s *Server) Start() error {", Language::Go),
+            Some("Returns error".to_string())
         );
     }
 
