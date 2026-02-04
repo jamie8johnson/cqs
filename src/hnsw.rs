@@ -326,8 +326,10 @@ impl HnswIndex {
         std::fs::write(&id_map_path, &id_map_json)?;
 
         // Compute and save checksums for all files (mitigates bincode deserialization risks)
-        let mut checksums = Vec::new();
-        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids"] {
+        // For .ids we hash the in-memory data to avoid re-reading the file
+        let ids_hash = blake3::hash(id_map_json.as_bytes());
+        let mut checksums = vec![format!("hnsw.ids:{}", ids_hash.to_hex())];
+        for ext in &["hnsw.graph", "hnsw.data"] {
             let path = dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
                 let data = std::fs::read(&path)?;

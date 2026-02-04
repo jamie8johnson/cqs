@@ -917,7 +917,16 @@ impl McpServer {
                 "\nmentions = [{}]",
                 mentions
                     .iter()
-                    .map(|m| { format!("\"{}\"", m.replace('\\', "\\\\").replace('\"', "\\\"")) })
+                    .map(|m| {
+                        format!(
+                            "\"{}\"",
+                            m.replace('\\', "\\\\")
+                                .replace('\"', "\\\"")
+                                .replace('\n', "\\n")
+                                .replace('\r', "\\r")
+                                .replace('\t', "\\t")
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             )
