@@ -1463,7 +1463,7 @@ async fn handle_mcp_post(
         let server = match state.server.read() {
             Ok(s) => s,
             Err(poisoned) => {
-                tracing::warn!("Server lock poisoned, recovering");
+                tracing::debug!("Server lock poisoned, recovering");
                 poisoned.into_inner()
             }
         };
