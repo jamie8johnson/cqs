@@ -175,4 +175,54 @@ mod tests {
         assert!(mtime.is_some());
         assert!(mtime.unwrap() > 0);
     }
+
+    #[test]
+    fn test_filesystem_source_skips_large_files() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Create a file larger than the limit
+        let large_content = "x".repeat(100);
+        fs::write(root.join("large.rs"), &large_content).unwrap();
+        fs::write(root.join("small.rs"), "fn small() {}").unwrap();
+
+        let source = FileSystemSource::new(root).with_max_file_size(50);
+        let items = source.enumerate().unwrap();
+
+        // Only small file should be included
+        assert_eq!(items.len(), 1);
+        assert!(items[0].origin.ends_with("small.rs"));
+    }
+
+    #[test]
+    fn test_filesystem_source_mtime_nonexistent() {
+        let dir = TempDir::new().unwrap();
+        let source = FileSystemSource::new(dir.path());
+
+        // Non-existent file returns None, not error
+        let mtime = source.get_mtime("does_not_exist.rs").unwrap();
+        assert!(mtime.is_none());
+    }
+
+    #[test]
+    fn test_filesystem_source_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let source = FileSystemSource::new(dir.path());
+        let items = source.enumerate().unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_filesystem_source_root() {
+        let dir = TempDir::new().unwrap();
+        let source = FileSystemSource::new(dir.path());
+        assert_eq!(source.root(), dir.path());
+    }
+
+    #[test]
+    fn test_filesystem_source_type() {
+        let dir = TempDir::new().unwrap();
+        let source = FileSystemSource::new(dir.path());
+        assert_eq!(source.source_type(), "file");
+    }
 }

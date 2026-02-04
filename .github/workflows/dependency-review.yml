@@ -52,21 +52,21 @@ jobs:
     name: Check Embedding Model
     runs-on: ubuntu-latest
     steps:
-      - name: Check nomic-embed-text model
+      - name: Check E5-base-v2 model
         run: |
           echo "## Embedding Model" >> $GITHUB_STEP_SUMMARY
 
           # Check HuggingFace API for model info
-          MODEL_INFO=$(curl -s https://huggingface.co/api/models/nomic-ai/nomic-embed-text-v1.5)
+          MODEL_INFO=$(curl -s https://huggingface.co/api/models/intfloat/e5-base-v2)
           LAST_MODIFIED=$(echo "$MODEL_INFO" | jq -r '.lastModified // "unknown"')
 
-          echo "Model: **nomic-ai/nomic-embed-text-v1.5**" >> $GITHUB_STEP_SUMMARY
+          echo "Model: **intfloat/e5-base-v2**" >> $GITHUB_STEP_SUMMARY
           echo "Last modified: **$LAST_MODIFIED**" >> $GITHUB_STEP_SUMMARY
 
           # Check if there's a newer version
-          MODELS=$(curl -s "https://huggingface.co/api/models?author=nomic-ai&search=embed-text")
+          MODELS=$(curl -s "https://huggingface.co/api/models?author=intfloat&search=e5")
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Available nomic embedding models:" >> $GITHUB_STEP_SUMMARY
+          echo "Available E5 embedding models:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "$MODELS" | jq -r '.[].id' | grep -i embed-text | head -5 >> $GITHUB_STEP_SUMMARY
+          echo "$MODELS" | jq -r '.[].id' | grep -i e5 | head -5 >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

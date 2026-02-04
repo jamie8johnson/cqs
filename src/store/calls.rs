@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use sqlx::Row;
 
-use super::helpers::{CallerInfo, ChunkRow, ChunkSummary, StoreError};
+use super::helpers::{clamp_line_number, CallerInfo, ChunkRow, ChunkSummary, StoreError};
 use super::Store;
 
 impl Store {
@@ -14,6 +14,8 @@ impl Store {
         chunk_id: &str,
         calls: &[crate::parser::CallSite],
     ) -> Result<(), StoreError> {
+        tracing::trace!(chunk_id, call_count = calls.len(), "upserting chunk calls");
+
         self.rt.block_on(async {
             sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
                 .bind(chunk_id)
@@ -39,6 +41,8 @@ impl Store {
 
     /// Find all chunks that call a given function name
     pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+        tracing::debug!(callee_name, "querying callers from chunks");
+
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
                 "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
@@ -64,8 +68,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
                     })
                 })
@@ -113,6 +117,13 @@ impl Store {
         function_calls: &[crate::parser::FunctionCalls],
     ) -> Result<(), StoreError> {
         let file_str = file.to_string_lossy().to_string();
+        let total_calls: usize = function_calls.iter().map(|fc| fc.calls.len()).sum();
+        tracing::trace!(
+            file = %file_str,
+            functions = function_calls.len(),
+            total_calls,
+            "upserting function calls"
+        );
 
         self.rt.block_on(async {
             sqlx::query("DELETE FROM function_calls WHERE file = ?1")
@@ -151,6 +162,8 @@ impl Store {
 
     /// Find all callers of a function (from full call graph)
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
+        tracing::debug!(callee_name, "querying callers from full call graph");
+
         self.rt.block_on(async {
             let rows: Vec<(String, String, i64)> = sqlx::query_as(
                 "SELECT DISTINCT file, caller_name, caller_line
@@ -167,7 +180,7 @@ impl Store {
                 .map(|(file, name, line)| CallerInfo {
                     file: PathBuf::from(file),
                     name,
-                    line: line.clamp(0, u32::MAX as i64) as u32,
+                    line: clamp_line_number(line),
                 })
                 .collect();
 
@@ -190,7 +203,7 @@ impl Store {
 
             Ok(rows
                 .into_iter()
-                .map(|(name, line)| (name, line.clamp(0, u32::MAX as i64) as u32))
+                .map(|(name, line)| (name, clamp_line_number(line)))
                 .collect())
         })
     }

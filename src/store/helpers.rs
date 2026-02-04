@@ -29,9 +29,9 @@ pub enum StoreError {
     ModelMismatch(String, String),
 }
 
-/// Raw row from chunks table (used by search module)
+/// Raw row from chunks table (crate-internal, used by search module)
 #[derive(Clone)]
-pub struct ChunkRow {
+pub(crate) struct ChunkRow {
     pub id: String,
     pub origin: String,
     pub language: String,
@@ -154,6 +154,7 @@ impl UnifiedResult {
 /// Filter and scoring options for search
 ///
 /// All fields are optional. Unset filters match all chunks.
+/// Use `validate()` to check constraints before searching.
 #[derive(Default)]
 pub struct SearchFilter {
     /// Filter by programming language(s)
@@ -174,6 +175,25 @@ pub struct SearchFilter {
     /// using the formula: score = Σ 1/(k + rank), where k=60.
     /// This typically improves recall for identifier-heavy queries.
     pub enable_rrf: bool,
+}
+
+impl SearchFilter {
+    /// Validate filter constraints
+    ///
+    /// Returns Ok(()) if valid, or Err with description of what's wrong.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        // name_boost must be in [0.0, 1.0]
+        if self.name_boost < 0.0 || self.name_boost > 1.0 {
+            return Err("name_boost must be between 0.0 and 1.0");
+        }
+
+        // query_text required when name_boost > 0 or enable_rrf
+        if (self.name_boost > 0.0 || self.enable_rrf) && self.query_text.is_empty() {
+            return Err("query_text required when name_boost > 0 or enable_rrf is true");
+        }
+
+        Ok(())
+    }
 }
 
 /// Model metadata for index initialization
@@ -207,6 +227,17 @@ pub struct IndexStats {
     pub schema_version: i32,
 }
 
+// ============ Line Number Conversion ============
+
+/// Clamp i64 to valid u32 line number range
+///
+/// SQLite returns i64, but line numbers are u32. This safely clamps
+/// to avoid truncation issues on extreme values.
+#[inline]
+pub fn clamp_line_number(n: i64) -> u32 {
+    n.clamp(0, u32::MAX as i64) as u32
+}
+
 // ============ Embedding Serialization ============
 
 /// Convert embedding to bytes for storage
@@ -219,9 +250,17 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
 }
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)
+///
+/// Returns None if byte length doesn't match expected embedding size.
+/// Uses trace level logging to avoid impacting search performance.
 pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
     const EXPECTED_BYTES: usize = 769 * 4; // 768 model + 1 sentiment
     if bytes.len() != EXPECTED_BYTES {
+        tracing::trace!(
+            expected = EXPECTED_BYTES,
+            actual = bytes.len(),
+            "embedding byte length mismatch"
+        );
         return None;
     }
     Some(bytemuck::cast_slice(bytes))
@@ -242,4 +281,98 @@ pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
                 .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("4 bytes")))
                 .collect()
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== SearchFilter validation tests =====
+
+    #[test]
+    fn test_search_filter_valid_default() {
+        let filter = SearchFilter::default();
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_valid_with_name_boost() {
+        let filter = SearchFilter {
+            name_boost: 0.2,
+            query_text: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_valid_with_rrf() {
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_ok());
+    }
+
+    #[test]
+    fn test_search_filter_invalid_name_boost_negative() {
+        let filter = SearchFilter {
+            name_boost: -0.1,
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("name_boost"));
+    }
+
+    #[test]
+    fn test_search_filter_invalid_name_boost_too_high() {
+        let filter = SearchFilter {
+            name_boost: 1.5,
+            query_text: "test".to_string(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+    }
+
+    #[test]
+    fn test_search_filter_invalid_missing_query_text() {
+        let filter = SearchFilter {
+            name_boost: 0.5,
+            query_text: String::new(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+        assert!(filter.validate().unwrap_err().contains("query_text"));
+    }
+
+    #[test]
+    fn test_search_filter_invalid_rrf_missing_query() {
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: String::new(),
+            ..Default::default()
+        };
+        assert!(filter.validate().is_err());
+    }
+
+    // ===== clamp_line_number tests =====
+
+    #[test]
+    fn test_clamp_line_number_normal() {
+        assert_eq!(clamp_line_number(1), 1);
+        assert_eq!(clamp_line_number(100), 100);
+    }
+
+    #[test]
+    fn test_clamp_line_number_negative() {
+        assert_eq!(clamp_line_number(-1), 0);
+        assert_eq!(clamp_line_number(-1000), 0);
+    }
+
+    #[test]
+    fn test_clamp_line_number_overflow() {
+        assert_eq!(clamp_line_number(i64::MAX), u32::MAX);
+        assert_eq!(clamp_line_number(u32::MAX as i64 + 1), u32::MAX);
+    }
 }

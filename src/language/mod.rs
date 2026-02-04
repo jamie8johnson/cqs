@@ -248,4 +248,67 @@ mod tests {
         // Just verify grammar is valid by checking ABI version
         assert!(grammar.abi_version() > 0);
     }
+
+    // ===== ChunkType tests =====
+
+    #[test]
+    fn test_chunk_type_from_str_valid() {
+        assert_eq!(
+            "function".parse::<ChunkType>().unwrap(),
+            ChunkType::Function
+        );
+        assert_eq!("method".parse::<ChunkType>().unwrap(), ChunkType::Method);
+        assert_eq!("class".parse::<ChunkType>().unwrap(), ChunkType::Class);
+        assert_eq!("struct".parse::<ChunkType>().unwrap(), ChunkType::Struct);
+        assert_eq!("enum".parse::<ChunkType>().unwrap(), ChunkType::Enum);
+        assert_eq!("trait".parse::<ChunkType>().unwrap(), ChunkType::Trait);
+        assert_eq!(
+            "interface".parse::<ChunkType>().unwrap(),
+            ChunkType::Interface
+        );
+        assert_eq!(
+            "constant".parse::<ChunkType>().unwrap(),
+            ChunkType::Constant
+        );
+    }
+
+    #[test]
+    fn test_chunk_type_from_str_case_insensitive() {
+        assert_eq!(
+            "FUNCTION".parse::<ChunkType>().unwrap(),
+            ChunkType::Function
+        );
+        assert_eq!("Method".parse::<ChunkType>().unwrap(), ChunkType::Method);
+        assert_eq!("CLASS".parse::<ChunkType>().unwrap(), ChunkType::Class);
+    }
+
+    #[test]
+    fn test_chunk_type_from_str_invalid() {
+        let result = "invalid".parse::<ChunkType>();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown chunk type"));
+    }
+
+    #[test]
+    fn test_chunk_type_display_roundtrip() {
+        // Verify Display and FromStr are inverses
+        let types = [
+            ChunkType::Function,
+            ChunkType::Method,
+            ChunkType::Class,
+            ChunkType::Struct,
+            ChunkType::Enum,
+            ChunkType::Trait,
+            ChunkType::Interface,
+            ChunkType::Constant,
+        ];
+        for ct in types {
+            let s = ct.to_string();
+            let parsed: ChunkType = s.parse().unwrap();
+            assert_eq!(ct, parsed);
+        }
+    }
 }

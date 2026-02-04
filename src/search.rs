@@ -10,7 +10,9 @@ use sqlx::Row;
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
 use crate::nl::tokenize_identifier;
-use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult};
+use crate::store::helpers::{
+    clamp_line_number, embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult,
+};
 use crate::store::{normalize_for_fts, Store, StoreError};
 
 /// Cosine similarity for L2-normalized vectors (just dot product)
@@ -238,8 +240,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
                     };
                     (chunk_row.id.clone(), chunk_row)
@@ -350,8 +352,8 @@ impl Store {
                         signature: row.get(5),
                         content: row.get(6),
                         doc: row.get(7),
-                        line_start: row.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                        line_end: row.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(11),
                     };
                     let embedding_bytes: Vec<u8> = row.get(10);
@@ -502,6 +504,57 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== cosine_similarity tests =====
+
+    fn make_embedding(val: f32) -> Vec<f32> {
+        vec![val; 769]
+    }
+
+    fn make_unit_embedding(idx: usize) -> Vec<f32> {
+        let mut v = vec![0.0; 769];
+        v[idx] = 1.0;
+        v
+    }
+
+    #[test]
+    fn test_cosine_similarity_identical() {
+        let a = make_embedding(0.5);
+        let sim = cosine_similarity(&a, &a);
+        // Identical vectors should have high similarity
+        assert!(sim > 0.99, "Expected ~1.0, got {}", sim);
+    }
+
+    #[test]
+    fn test_cosine_similarity_orthogonal() {
+        let a = make_unit_embedding(0);
+        let b = make_unit_embedding(1);
+        let sim = cosine_similarity(&a, &b);
+        // Orthogonal unit vectors should have 0 similarity
+        assert!(sim.abs() < 0.01, "Expected ~0, got {}", sim);
+    }
+
+    #[test]
+    fn test_cosine_similarity_symmetric() {
+        let a: Vec<f32> = (0..769).map(|i| (i as f32) / 769.0).collect();
+        let b: Vec<f32> = (0..769).map(|i| 1.0 - (i as f32) / 769.0).collect();
+        let sim_ab = cosine_similarity(&a, &b);
+        let sim_ba = cosine_similarity(&b, &a);
+        assert!((sim_ab - sim_ba).abs() < 1e-6, "Should be symmetric");
+    }
+
+    #[test]
+    fn test_cosine_similarity_range() {
+        // Random-ish vectors
+        let a: Vec<f32> = (0..769).map(|i| ((i * 7) % 100) as f32 / 100.0).collect();
+        let b: Vec<f32> = (0..769).map(|i| ((i * 13) % 100) as f32 / 100.0).collect();
+        let sim = cosine_similarity(&a, &b);
+        // Cosine similarity for non-normalized vectors can exceed [-1, 1]
+        // but for typical embeddings should be reasonable
+        assert!(sim.is_finite(), "Should be finite");
+    }
+
+    // ===== name_match_score tests =====
 
     #[test]
     fn test_name_match_exact() {

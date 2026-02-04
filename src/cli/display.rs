@@ -17,15 +17,21 @@ pub fn read_context_lines(
     let content = std::fs::read_to_string(file)?;
     let lines: Vec<&str> = content.lines().collect();
 
-    let start_idx = (line_start as usize).saturating_sub(1);
-    let end_idx = (line_end as usize).saturating_sub(1);
+    let start_idx = (line_start as usize).saturating_sub(1).min(lines.len());
+    let end_idx = (line_end as usize)
+        .saturating_sub(1)
+        .min(lines.len().saturating_sub(1));
 
     // Context before
     let context_start = start_idx.saturating_sub(context);
-    let before: Vec<String> = lines[context_start..start_idx]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let before: Vec<String> = if start_idx <= lines.len() {
+        lines[context_start..start_idx]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        vec![]
+    };
 
     // Context after
     let context_end = (end_idx + context + 1).min(lines.len());

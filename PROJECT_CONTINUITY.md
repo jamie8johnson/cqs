@@ -2,32 +2,120 @@
 
 ## Right Now
 
-**Error path tests complete** (2026-02-04)
+**PR #151: P1 audit fixes** (2026-02-04)
+Branch: `fix/p1-audit-fixes` | CI pending
 
-Added tests for #126 (Error path coverage):
-- `tests/hnsw_test.rs` - 6 tests for corruption/error detection
-- `tests/store_test.rs` - 3 tests for schema/model validation
-- `tests/mcp_test.rs` - 7 new edge case tests
+Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
-Closed 6 issues that were already fixed by Store refactor (#133):
-#142, #143, #144, #145, #146, #148
+### P1 Completed (~47 of 64)
 
-## Session Summary
+| Fix | Location |
+|-----|----------|
+| Line number clamping helper | helpers.rs + 10 call sites |
+| Model name mismatches | lib.rs, embedder.rs (src already fixed) |
+| Go return type extraction | nl.rs (multi-return: `(string, error)`) |
+| display.rs bounds checking | cli/display.rs (already saturating) |
+| SQLite magic numbers | store/mod.rs (documented) |
+| get_by_content_hash error | store/chunks.rs |
+| FTS delete error logging | chunks.rs, notes.rs |
+| parse_duration strictness | mcp.rs |
+| parse_duration tests | mcp.rs (10 tests) |
+| Call extraction underflow | parser.rs (already saturating_sub) |
+| RRF test max bound | store/mod.rs (0.5 is fine) |
+| TypeScript return type | nl.rs (documented limitation) |
+| Dead code markers | verified correct (serde usage) |
+| Tracing RUST_LOG support | main.rs (EnvFilter) |
+| embed_batch empty check | embedder.rs |
+| Panic paths | verified appropriate |
+| cosine_similarity tests | search.rs (4 tests) |
+| name_match_score tests | search.rs (5 tests) |
+| delete_by_origin test | tests/store_test.rs |
+| needs_reindex test | tests/store_test.rs |
+| AuditMode tests | mcp.rs (4 tests) |
+| Embedder tracing spans | embedder.rs (tokenize, inference) |
+| MCP tool call logging | mcp.rs |
+| Config loading debug | config.rs |
+| Language enum docs | parser.rs |
+| ParserError/NoteError docs | parser.rs, note.rs |
+| Project root markers | cli/mod.rs (documented) |
+| embedding_slice logging | helpers.rs (trace level) |
+| ChunkType::FromStr tests | language/mod.rs (4 tests) |
+| FileSystemSource tests | source/filesystem.rs (5 tests) |
+| SearchFilter validation | helpers.rs (validate() + 7 tests) |
+| clamp_line_number tests | helpers.rs (3 tests) |
+| Redundant HnswResult | hnsw.rs (use IndexResult directly) |
+| ChunkRow pub(crate) | helpers.rs |
+| parse_file_calls tests | parser.rs (3 tests) |
+| Call graph tracing | store/calls.rs |
+| Note indexing tracing | store/notes.rs |
+| HNSW tuning docs | hnsw.rs |
+| Callee skip list docs | parser.rs |
+| serve_http/stdio docs | mcp.rs |
+| Chunk size limit docs | parser.rs |
+| CLI constant docs | cli/mod.rs |
+| Sentiment threshold docs | note.rs |
+| Stable note IDs | note.rs (content-hash based) |
 
-### This Session
-- Closed 6 stale issues (already fixed by Store refactor)
-- Added 16 new error path tests across 3 files
-- Test count: 169 total (up from 153)
+### Remaining P1 (~17)
+- Test coverage: token_count (requires model - integration test)
+- Some module boundary items need architectural changes (P4)
+- Remaining items are either verified correct or need architectural decisions
 
-### Issues Closed (Already Fixed)
-| # | Title | Why Fixed |
-|---|-------|-----------|
-| #142 | Glob pattern per-chunk | search.rs:140 - compiled outside loop |
-| #143 | Off-by-one line | parser.rs:532 - correct calculation |
-| #144 | CAGRA mutex expect() | cagra.rs - uses unwrap_or_else |
-| #145 | Silent config errors | config.rs - has tracing::warn |
-| #146 | Parser unit tests | parser.rs:819+ - tests exist |
-| #148 | N+1 calls insert | store/calls.rs - uses QueryBuilder batch |
+### Verified Correct (no changes needed)
+- CLI imports internal types (#6): Uses public API via cqs::* re-exports
+- MCP tool naming convention (#15): cqs_ prefix distinguishes our tools
+- Swallowed .ok() patterns (#21): Most are intentional (mtime, version checks)
+- Unicode proptest (#45): Existing test covers edge cases adequately
+- Context line edge case (#54): Already uses saturating_sub
+- Config::merge naming (#17): Well-documented and tested
+- Language::FromStr error (#16): Works correctly, architectural refinement
+- VectorIndex takes &Embedding (#20): Type-safe design choice
+
+### Remaining Tiers
+| Tier | Count | Status |
+|------|-------|--------|
+| P1 | ~50 remaining | In progress |
+| P2 | 58 | Pending |
+| P3 | 43 | Pending |
+| P4 | 19 | Create GitHub issues |
+
+Reconciled overlapping categories into clean taxonomy:
+
+### Security (2)
+1. Input Security - injection, path traversal, untrusted data
+2. Data Security - file permissions, secrets, access control
+
+### Reliability (4)
+3. Memory Management - leaks, OOM protection, resource limits
+4. Concurrency Safety - races, deadlocks, thread safety
+5. Panic Paths - unwrap/expect usage, unwind safety
+6. Error Propagation - Result chains, context, recovery
+
+### Correctness (4)
+7. Algorithm Correctness - off-by-one, boundary conditions, logic
+8. Data Integrity - corruption detection, validation, migrations
+9. Edge Cases - empty, huge, unicode, malformed inputs
+10. Platform Behavior - OS differences, path handling, WSL
+
+### Performance (3)
+11. Algorithmic Complexity - O(n²), unnecessary iterations
+12. I/O Efficiency - batching, caching, disk/network patterns
+13. Resource Footprint - memory usage, startup time, idle cost
+
+### Architecture (3)
+14. Module Boundaries - coupling, cohesion, dependency direction
+15. API Design - consistency, ergonomics, stability
+16. Extensibility - adding features without surgery
+
+### Maintainability (4)
+17. Code Hygiene - dead code, TODOs, duplication, complexity
+18. Documentation - accuracy, completeness, staleness
+19. Test Coverage - gaps, meaningful assertions, integration
+20. Observability - logging coverage, tracing, debuggability
+
+## Previous Session
+
+**Error path tests complete** - Added 16 tests, closed 6 stale issues (#142-146, #148)
 
 ## Open Issues (8)
 

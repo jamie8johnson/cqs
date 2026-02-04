@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use sqlx::Row;
 
 use super::helpers::{
-    bytes_to_embedding, embedding_to_bytes, ChunkRow, ChunkSummary, IndexStats, StoreError,
+    bytes_to_embedding, clamp_line_number, embedding_to_bytes, ChunkRow, ChunkSummary, IndexStats,
+    StoreError,
 };
 use super::normalize_for_fts;
 use super::Store;
@@ -50,10 +51,13 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-                let _ = sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                if let Err(e) = sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
                     .bind(&chunk.id)
                     .execute(&mut *tx)
-                    .await;
+                    .await
+                {
+                    tracing::warn!("Failed to delete from chunks_fts: {}", e);
+                }
 
                 sqlx::query(
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -160,14 +164,23 @@ impl Store {
     }
 
     /// Get embedding by content hash (for reuse when content unchanged)
+    ///
+    /// Note: Prefer `get_embeddings_by_hashes` for batch lookups in production.
     pub fn get_by_content_hash(&self, hash: &str) -> Option<Embedding> {
         self.rt.block_on(async {
-            let row: Option<(Vec<u8>,)> =
-                sqlx::query_as("SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1")
-                    .bind(hash)
-                    .fetch_optional(&self.pool)
-                    .await
-                    .ok()?;
+            let row: Option<(Vec<u8>,)> = match sqlx::query_as(
+                "SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1",
+            )
+            .bind(hash)
+            .fetch_optional(&self.pool)
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("Failed to fetch embedding by content_hash: {}", e);
+                    return None;
+                }
+            };
 
             row.map(|(bytes,)| Embedding::new(bytes_to_embedding(&bytes)))
         })
@@ -322,8 +335,8 @@ impl Store {
                     signature: r.get(5),
                     content: r.get(6),
                     doc: r.get(7),
-                    line_start: r.get::<i64, _>(8).clamp(0, u32::MAX as i64) as u32,
-                    line_end: r.get::<i64, _>(9).clamp(0, u32::MAX as i64) as u32,
+                    line_start: clamp_line_number(r.get::<i64, _>(8)),
+                    line_end: clamp_line_number(r.get::<i64, _>(9)),
                     parent_id: r.get(10),
                 })
             }))

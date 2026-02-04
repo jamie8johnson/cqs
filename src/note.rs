@@ -7,10 +7,22 @@ use serde::Deserialize;
 use std::path::Path;
 use thiserror::Error;
 
+/// Sentiment thresholds for classification
+///
+/// 0.3 chosen to separate neutral observations from significant notes:
+/// - Values near 0 are neutral observations
+/// - Values beyond ±0.3 indicate meaningful sentiment (warning/pattern)
+/// - Matches discrete values: -1, -0.5, 0, 0.5, 1 (see CLAUDE.md)
+pub const SENTIMENT_NEGATIVE_THRESHOLD: f32 = -0.3;
+pub const SENTIMENT_POSITIVE_THRESHOLD: f32 = 0.3;
+
+/// Errors that can occur when parsing notes
 #[derive(Error, Debug)]
 pub enum NoteError {
+    /// File read/write error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Invalid TOML syntax or structure
     #[error("TOML parse error: {0}")]
     Toml(#[from] toml::de::Error),
 }
@@ -56,9 +68,9 @@ impl Note {
     /// - Positive sentiment: "Pattern: "
     /// - Neutral: no prefix
     pub fn embedding_text(&self) -> String {
-        let prefix = if self.sentiment < -0.3 {
+        let prefix = if self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD {
             "Warning: "
-        } else if self.sentiment > 0.3 {
+        } else if self.sentiment > SENTIMENT_POSITIVE_THRESHOLD {
             "Pattern: "
         } else {
             ""
@@ -73,12 +85,12 @@ impl Note {
 
     /// Check if this is a warning (negative sentiment)
     pub fn is_warning(&self) -> bool {
-        self.sentiment < -0.3
+        self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD
     }
 
     /// Check if this is a pattern (positive sentiment)
     pub fn is_pattern(&self) -> bool {
-        self.sentiment > 0.3
+        self.sentiment > SENTIMENT_POSITIVE_THRESHOLD
     }
 }
 
@@ -89,15 +101,19 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 }
 
 /// Parse notes from a string (for testing)
+///
+/// Note IDs are generated from a hash of the text content (first 8 hex chars).
+/// This ensures IDs are stable when notes are reordered in the file.
 pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     let file: NoteFile = toml::from_str(content)?;
 
     let notes = file
         .note
         .into_iter()
-        .enumerate()
-        .map(|(i, entry)| {
-            let id = format!("note:{}", i);
+        .map(|entry| {
+            // Use content hash for stable IDs (reordering notes won't break references)
+            let hash = blake3::hash(entry.text.as_bytes());
+            let id = format!("note:{}", &hash.to_hex()[..8]);
 
             Note {
                 id,
@@ -170,6 +186,38 @@ text = "way too positive"
         let content = "# Just a comment\n";
         let notes = parse_notes_str(content).unwrap();
         assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn test_stable_ids_across_reordering() {
+        // Original order
+        let content1 = r#"
+[[note]]
+text = "first note"
+
+[[note]]
+text = "second note"
+"#;
+
+        // Reversed order
+        let content2 = r#"
+[[note]]
+text = "second note"
+
+[[note]]
+text = "first note"
+"#;
+
+        let notes1 = parse_notes_str(content1).unwrap();
+        let notes2 = parse_notes_str(content2).unwrap();
+
+        // IDs should be stable based on content, not order
+        assert_eq!(notes1[0].id, notes2[1].id); // "first note" has same ID
+        assert_eq!(notes1[1].id, notes2[0].id); // "second note" has same ID
+
+        // Verify ID format (note:8-hex-chars)
+        assert!(notes1[0].id.starts_with("note:"));
+        assert_eq!(notes1[0].id.len(), 5 + 8); // "note:" + 8 hex chars
     }
 
     // ===== Fuzz tests =====

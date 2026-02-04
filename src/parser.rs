@@ -8,14 +8,19 @@ use tree_sitter::StreamingIterator;
 // Re-export ChunkType from language module (source of truth)
 pub use crate::language::ChunkType;
 
+/// Errors that can occur during code parsing
 #[derive(Error, Debug)]
 pub enum ParserError {
+    /// File extension not recognized as a supported language
     #[error("Unsupported file type: {0}")]
     UnsupportedFileType(String),
+    /// Tree-sitter failed to parse the file contents
     #[error("Failed to parse: {0}")]
     ParseFailed(String),
+    /// Tree-sitter query compilation failed (indicates bug in query string)
     #[error("Failed to compile query for {0}: {1}")]
     QueryCompileFailed(String, String),
+    /// File read error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -281,9 +286,11 @@ impl Parser {
         while let Some(m) = matches.next() {
             match self.extract_chunk(&source, m, query, language, path) {
                 Ok(chunk) => {
-                    // Skip chunks over 100 lines or 100KB (handles minified files)
+                    // Skip chunks over 100 lines or 100KB
+                    // Large functions are too noisy for semantic search (diluted embeddings)
+                    // and are covered by the full call graph for caller/callee queries
                     let lines = chunk.line_end - chunk.line_start;
-                    const MAX_CHUNK_BYTES: usize = 100_000;
+                    const MAX_CHUNK_BYTES: usize = 100_000; // 100KB handles minified code
                     if lines > 100 {
                         tracing::debug!("Skipping {} ({} lines > 100 max)", chunk.id, lines);
                         continue;
@@ -529,7 +536,9 @@ impl Parser {
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let callee_name = source[cap.node.byte_range()].to_string();
-                let line_number = cap.node.start_position().row as u32 + 1 - line_offset;
+                // saturating_sub prevents underflow if line_offset > position
+                let line_number =
+                    (cap.node.start_position().row as u32 + 1).saturating_sub(line_offset);
 
                 // Skip common noise (self, this, super, etc.)
                 if !should_skip_callee(&callee_name) {
@@ -550,6 +559,13 @@ impl Parser {
 }
 
 /// Check if a callee name should be skipped (common noise)
+///
+/// These are filtered because they don't provide meaningful call graph information:
+/// - `self`, `this`, `Self`, `super`: Object references, not real function calls
+/// - `new`: Constructor pattern, not a named function
+/// - `toString`, `valueOf`: Ubiquitous JS/TS methods that add noise
+///
+/// Case-sensitive to avoid false positives (e.g., "This" as a variable name).
 fn should_skip_callee(name: &str) -> bool {
     matches!(
         name,
@@ -729,10 +745,15 @@ pub struct Chunk {
 /// Supported programming languages
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Language {
+    /// Rust (.rs files)
     Rust,
+    /// Python (.py, .pyi files)
     Python,
+    /// TypeScript (.ts, .tsx files)
     TypeScript,
+    /// JavaScript (.js, .jsx, .mjs, .cjs files)
     JavaScript,
+    /// Go (.go files)
     Go,
 }
 
@@ -1104,6 +1125,67 @@ fn example() {
             assert!(names.contains(&"method"));
             assert!(names.contains(&"other"));
             assert!(names.contains(&"real_function"));
+        }
+
+        #[test]
+        fn test_parse_file_calls() {
+            let content = r#"
+fn caller() {
+    helper();
+    other_func();
+}
+
+fn another() {
+    third();
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let function_calls = parser.parse_file_calls(file.path()).unwrap();
+
+            // Should return calls for both functions
+            assert_eq!(function_calls.len(), 2);
+
+            // First function
+            let caller = function_calls
+                .iter()
+                .find(|fc| fc.name == "caller")
+                .unwrap();
+            let caller_names: Vec<_> = caller
+                .calls
+                .iter()
+                .map(|c| c.callee_name.as_str())
+                .collect();
+            assert!(caller_names.contains(&"helper"));
+            assert!(caller_names.contains(&"other_func"));
+
+            // Second function
+            let another = function_calls
+                .iter()
+                .find(|fc| fc.name == "another")
+                .unwrap();
+            let another_names: Vec<_> = another
+                .calls
+                .iter()
+                .map(|c| c.callee_name.as_str())
+                .collect();
+            assert!(another_names.contains(&"third"));
+        }
+
+        #[test]
+        fn test_parse_file_calls_unsupported_extension() {
+            let file = write_temp_file("not code", "txt");
+            let parser = Parser::new().unwrap();
+            let result = parser.parse_file_calls(file.path());
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn test_parse_file_calls_empty_file() {
+            let file = write_temp_file("", "rs");
+            let parser = Parser::new().unwrap();
+            let function_calls = parser.parse_file_calls(file.path()).unwrap();
+            assert!(function_calls.is_empty());
         }
     }
 

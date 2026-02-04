@@ -132,7 +132,7 @@ impl std::fmt::Display for ExecutionProvider {
     }
 }
 
-/// Text embedding generator using nomic-embed-text-v1.5
+/// Text embedding generator using E5-base-v2
 ///
 /// Automatically downloads the model from HuggingFace Hub on first use.
 /// Detects GPU availability and uses CUDA/TensorRT when available.
@@ -314,10 +314,9 @@ impl Embedder {
         // Compute embedding
         let prefixed = format!("query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
-        let base_embedding = results
-            .into_iter()
-            .next()
-            .expect("embed_batch with single item always returns one result");
+        let base_embedding = results.into_iter().next().ok_or_else(|| {
+            EmbedderError::InferenceFailed("embed_batch returned empty result".to_string())
+        })?;
 
         // Add neutral sentiment (0.0) as 769th dimension
         let embedding = base_embedding.with_sentiment(0.0);
@@ -360,10 +359,12 @@ impl Embedder {
         }
 
         // Tokenize (lazy init tokenizer)
-        let encodings = self
-            .tokenizer()?
-            .encode_batch(texts.to_vec(), true)
-            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+        let encodings = {
+            let _tokenize = tracing::debug_span!("tokenize").entered();
+            self.tokenizer()?
+                .encode_batch(texts.to_vec(), true)
+                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?
+        };
 
         // Prepare inputs - INT64 (i64) for ONNX model
         let input_ids: Vec<Vec<i64>> = encodings
@@ -396,6 +397,7 @@ impl Embedder {
 
         // Run inference (lazy init session)
         let mut session = self.session()?;
+        let _inference = tracing::debug_span!("inference", max_len).entered();
         let outputs = session.run(ort::inputs![
             "input_ids" => input_ids_tensor,
             "attention_mask" => attention_mask_tensor,

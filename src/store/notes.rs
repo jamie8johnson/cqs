@@ -22,6 +22,11 @@ impl Store {
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
         let source_str = source_file.to_string_lossy().to_string();
+        tracing::debug!(
+            source = %source_str,
+            count = notes.len(),
+            "upserting notes batch"
+        );
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -46,10 +51,13 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-                let _ = sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
+                if let Err(e) = sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
                     .bind(&note.id)
                     .execute(&mut *tx)
-                    .await;
+                    .await
+                {
+                    tracing::warn!("Failed to delete from notes_fts: {}", e);
+                }
 
                 sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
                     .bind(&note.id)
@@ -70,6 +78,8 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<NoteSearchResult>, StoreError> {
+        tracing::debug!(limit, threshold, "searching notes");
+
         self.rt.block_on(async {
             let rows: Vec<_> =
                 sqlx::query("SELECT id, text, sentiment, mentions, embedding FROM notes")
@@ -179,6 +189,7 @@ impl Store {
                 .await
                 .unwrap_or((0,));
 
+            // Thresholds match crate::note::SENTIMENT_*_THRESHOLD constants
             let (warnings,): (i64,) =
                 sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < -0.3")
                     .fetch_one(&self.pool)

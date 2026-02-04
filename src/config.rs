@@ -51,7 +51,10 @@ impl Config {
         };
 
         match toml::from_str(&content) {
-            Ok(config) => Some(config),
+            Ok(config) => {
+                tracing::debug!("Loaded config from {}", path.display());
+                Some(config)
+            }
             Err(e) => {
                 tracing::warn!("Failed to parse config {}: {}", path.display(), e);
                 None

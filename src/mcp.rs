@@ -409,6 +409,7 @@ impl McpServer {
                         },
                         "language": {
                             "type": "string",
+                            // Keep in sync with crate::parser::Language variants
                             "enum": ["rust", "python", "typescript", "javascript", "go"],
                             "description": "Filter by language (optional)"
                         },
@@ -539,6 +540,8 @@ impl McpServer {
             .get("arguments")
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
+
+        tracing::debug!(tool = name, "MCP tool call");
 
         match name {
             "cqs_search" => self.tool_search(arguments),
@@ -1116,6 +1119,13 @@ impl McpServer {
 }
 
 /// Run the MCP server with stdio transport
+///
+/// Reads JSON-RPC requests from stdin and writes responses to stdout.
+/// Used by Claude Code for direct integration.
+///
+/// # Arguments
+/// * `project_root` - Root directory of the project to index
+/// * `use_gpu` - Whether to use GPU acceleration for embeddings
 pub fn serve_stdio(project_root: PathBuf, use_gpu: bool) -> Result<()> {
     let server = McpServer::new(project_root, use_gpu)?;
 
@@ -1184,9 +1194,15 @@ struct HttpState {
 
 /// Run the MCP server with HTTP transport
 ///
+/// Listens for JSON-RPC requests on the specified address.
+/// Supports CORS and optional API key authentication.
+///
 /// # Arguments
-/// * `api_key` - Optional API key for authentication. If provided, requests must include
-///   `Authorization: Bearer <key>` header.
+/// * `project_root` - Root directory of the project to index
+/// * `bind` - Address to bind to (e.g., "127.0.0.1")
+/// * `port` - Port to listen on (e.g., 3000)
+/// * `use_gpu` - Whether to use GPU acceleration for embeddings
+/// * `api_key` - Optional API key; if set, requests need `Authorization: Bearer <key>`
 pub fn serve_http(
     project_root: PathBuf,
     bind: &str,
@@ -1282,19 +1298,48 @@ fn parse_duration(s: &str) -> Result<chrono::Duration> {
         if c.is_ascii_digit() {
             current_num.push(c);
         } else if c == 'h' {
-            let hours: i64 = current_num.parse().unwrap_or(0);
+            if current_num.is_empty() {
+                bail!("Invalid duration '{}': missing number before 'h'", s);
+            }
+            let hours: i64 = current_num.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid duration '{}': '{}' is not a valid number",
+                    s,
+                    current_num
+                )
+            })?;
             total_minutes += hours * 60;
             current_num.clear();
         } else if c == 'm' {
-            let mins: i64 = current_num.parse().unwrap_or(0);
+            if current_num.is_empty() {
+                bail!("Invalid duration '{}': missing number before 'm'", s);
+            }
+            let mins: i64 = current_num.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid duration '{}': '{}' is not a valid number",
+                    s,
+                    current_num
+                )
+            })?;
             total_minutes += mins;
             current_num.clear();
+        } else if !c.is_whitespace() {
+            bail!(
+                "Invalid duration '{}': unexpected character '{}'. Use format like '30m', '1h', '2h30m'",
+                s, c
+            );
         }
     }
 
     // Handle bare number (assume minutes)
     if !current_num.is_empty() {
-        let mins: i64 = current_num.parse().unwrap_or(0);
+        let mins: i64 = current_num.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid duration '{}': '{}' is not a valid number",
+                s,
+                current_num
+            )
+        })?;
         total_minutes += mins;
     }
 
@@ -1733,6 +1778,129 @@ mod tests {
         headers.insert("accept", "application/json".parse().unwrap());
         let result = require_accept_event_stream(&headers);
         assert!(result.is_err());
+    }
+
+    // ===== AuditMode tests =====
+
+    #[test]
+    fn test_audit_mode_default_inactive() {
+        let mode = AuditMode::default();
+        assert!(!mode.is_active());
+    }
+
+    #[test]
+    fn test_audit_mode_enabled_active() {
+        let mode = AuditMode {
+            enabled: true,
+            expires_at: None,
+        };
+        assert!(mode.is_active());
+    }
+
+    #[test]
+    fn test_audit_mode_expired_inactive() {
+        let mode = AuditMode {
+            enabled: true,
+            expires_at: Some(Utc::now() - chrono::Duration::hours(1)),
+        };
+        assert!(!mode.is_active());
+    }
+
+    #[test]
+    fn test_audit_mode_not_expired_active() {
+        let mode = AuditMode {
+            enabled: true,
+            expires_at: Some(Utc::now() + chrono::Duration::hours(1)),
+        };
+        assert!(mode.is_active());
+    }
+
+    // ===== parse_duration tests =====
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(
+            parse_duration("30m").unwrap(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(parse_duration("1m").unwrap(), chrono::Duration::minutes(1));
+        assert_eq!(
+            parse_duration("120m").unwrap(),
+            chrono::Duration::minutes(120)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_duration("1h").unwrap(), chrono::Duration::minutes(60));
+        assert_eq!(
+            parse_duration("2h").unwrap(),
+            chrono::Duration::minutes(120)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_combined() {
+        assert_eq!(
+            parse_duration("1h30m").unwrap(),
+            chrono::Duration::minutes(90)
+        );
+        assert_eq!(
+            parse_duration("2h15m").unwrap(),
+            chrono::Duration::minutes(135)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_bare_number() {
+        // Bare number = minutes
+        assert_eq!(parse_duration("30").unwrap(), chrono::Duration::minutes(30));
+    }
+
+    #[test]
+    fn test_parse_duration_whitespace() {
+        assert_eq!(
+            parse_duration("  30m  ").unwrap(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(
+            parse_duration("1h 30m").unwrap(),
+            chrono::Duration::minutes(90)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_case_insensitive() {
+        assert_eq!(
+            parse_duration("30M").unwrap(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(parse_duration("1H").unwrap(), chrono::Duration::minutes(60));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid_character() {
+        assert!(parse_duration("30x").is_err());
+        assert!(parse_duration("abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_zero() {
+        assert!(parse_duration("0m").is_err());
+        assert!(parse_duration("0").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_empty() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("   ").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_missing_number() {
+        assert!(parse_duration("m").is_err());
+        assert!(parse_duration("h").is_err());
+        assert!(parse_duration("hm").is_err());
     }
 
     // ===== Fuzz tests =====
