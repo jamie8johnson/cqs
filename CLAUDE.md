@@ -50,19 +50,29 @@ After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
 
 Audit mode prevents false confidence from stale notes - forces you to examine code directly instead of trusting prior observations.
 
-## Audit → Issue Pipeline
+## 20-Category Audit
 
-After comprehensive audits, create GitHub issues for findings:
+Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
-1. **Enable audit mode** - `cqs_audit_mode(true)` before starting
-2. **Run parallel audits** - 9 categories, each as a separate agent
-3. **Cross-reference** - check existing issues to avoid duplicates
-4. **Create issues** - for untracked findings with severity labels
-5. **Sort by difficulty** - helps prioritize quick wins
+**Quick reference:**
+- 20 categories in 4 batches of 5 (avoids context overflow)
+- Maintainability/readability prioritized in batch order
+- Collect all findings first, then fix by impact × effort
+- Stop at diminishing returns
 
-**Categories:** Security, Memory, Concurrency, Algorithms, Architecture, Performance, Dependencies, Tests, Error Handling
+**Batches:**
+1. Readability foundation: Code Hygiene, Module Boundaries, Documentation, API Design, Error Propagation
+2. Understandable behavior: Observability, Test Coverage, Panic Paths, Algorithm Correctness, Extensibility
+3. Data & platform: Data Integrity, Edge Cases, Platform Behavior, Memory Management, Concurrency Safety
+4. Security & performance: Input Security, Data Security, Algorithmic Complexity, I/O Efficiency, Resource Footprint
 
-**Why:** Findings get lost when context compacts. Issues make work visible to future sessions and other contributors.
+**Execution:**
+1. Enable audit mode before each batch
+2. Dispatch 5 agents in parallel
+3. Aggregate findings to `docs/audit-findings.md`
+4. After all batches: triage, prioritize, fix
+
+**Why:** Findings get lost when context compacts. Issues make work visible to future sessions.
 
 ## Completion Checklist
 

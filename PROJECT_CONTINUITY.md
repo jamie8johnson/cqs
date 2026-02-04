@@ -2,32 +2,49 @@
 
 ## Right Now
 
-**Error path tests complete** (2026-02-04)
+**20-category audit designed** (2026-02-04)
 
-Added tests for #126 (Error path coverage):
-- `tests/hnsw_test.rs` - 6 tests for corruption/error detection
-- `tests/store_test.rs` - 3 tests for schema/model validation
-- `tests/mcp_test.rs` - 7 new edge case tests
+Design committed: `docs/plans/2026-02-04-20-category-audit-design.md`
 
-Closed 6 issues that were already fixed by Store refactor (#133):
-#142, #143, #144, #145, #146, #148
+Ready to execute. Next step: run Batch 1 (5 agents).
 
-## Session Summary
+Reconciled overlapping categories into clean taxonomy:
 
-### This Session
-- Closed 6 stale issues (already fixed by Store refactor)
-- Added 16 new error path tests across 3 files
-- Test count: 169 total (up from 153)
+### Security (2)
+1. Input Security - injection, path traversal, untrusted data
+2. Data Security - file permissions, secrets, access control
 
-### Issues Closed (Already Fixed)
-| # | Title | Why Fixed |
-|---|-------|-----------|
-| #142 | Glob pattern per-chunk | search.rs:140 - compiled outside loop |
-| #143 | Off-by-one line | parser.rs:532 - correct calculation |
-| #144 | CAGRA mutex expect() | cagra.rs - uses unwrap_or_else |
-| #145 | Silent config errors | config.rs - has tracing::warn |
-| #146 | Parser unit tests | parser.rs:819+ - tests exist |
-| #148 | N+1 calls insert | store/calls.rs - uses QueryBuilder batch |
+### Reliability (4)
+3. Memory Management - leaks, OOM protection, resource limits
+4. Concurrency Safety - races, deadlocks, thread safety
+5. Panic Paths - unwrap/expect usage, unwind safety
+6. Error Propagation - Result chains, context, recovery
+
+### Correctness (4)
+7. Algorithm Correctness - off-by-one, boundary conditions, logic
+8. Data Integrity - corruption detection, validation, migrations
+9. Edge Cases - empty, huge, unicode, malformed inputs
+10. Platform Behavior - OS differences, path handling, WSL
+
+### Performance (3)
+11. Algorithmic Complexity - O(n²), unnecessary iterations
+12. I/O Efficiency - batching, caching, disk/network patterns
+13. Resource Footprint - memory usage, startup time, idle cost
+
+### Architecture (3)
+14. Module Boundaries - coupling, cohesion, dependency direction
+15. API Design - consistency, ergonomics, stability
+16. Extensibility - adding features without surgery
+
+### Maintainability (4)
+17. Code Hygiene - dead code, TODOs, duplication, complexity
+18. Documentation - accuracy, completeness, staleness
+19. Test Coverage - gaps, meaningful assertions, integration
+20. Observability - logging coverage, tracing, debuggability
+
+## Previous Session
+
+**Error path tests complete** - Added 16 tests, closed 6 stale issues (#142-146, #148)
 
 ## Open Issues (8)
 
