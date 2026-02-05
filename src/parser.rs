@@ -258,6 +258,9 @@ impl Parser {
             Err(e) => return Err(e.into()),
         };
 
+        // Normalize line endings (CRLF -> LF) for consistent hashing across platforms
+        let source = source.replace("\r\n", "\n");
+
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         let language = Language::from_extension(ext)
@@ -612,6 +615,9 @@ impl Parser {
             }
             Err(e) => return Err(e.into()),
         };
+
+        // Normalize line endings (CRLF -> LF) for consistency
+        let source = source.replace("\r\n", "\n");
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let language = Language::from_extension(ext)

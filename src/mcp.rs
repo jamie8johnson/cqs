@@ -234,7 +234,10 @@ impl McpServer {
         let hnsw = Self::load_hnsw_index(&cq_dir);
         let index = Arc::new(RwLock::new(hnsw));
 
-        // Spawn background CAGRA build if GPU available
+        // Spawn background CAGRA build if GPU available.
+        // Thread is intentionally detached - it holds only an Arc reference and will
+        // complete gracefully when the main process exits. Joining on Drop would block
+        // shutdown unnecessarily for potentially long GPU operations.
         #[cfg(feature = "gpu-search")]
         if crate::cagra::CagraIndex::gpu_available() {
             let index_clone = Arc::clone(&index);
@@ -550,9 +553,10 @@ impl McpServer {
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
 
-        tracing::debug!(tool = name, "MCP tool call");
+        let start = std::time::Instant::now();
+        tracing::debug!(tool = name, "MCP tool call started");
 
-        match name {
+        let result = match name {
             "cqs_search" => self.tool_search(arguments),
             "cqs_stats" => self.tool_stats(),
             "cqs_callers" => self.tool_callers(arguments),
@@ -564,7 +568,15 @@ impl McpServer {
                 "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_audit_mode",
                 name
             ),
-        }
+        };
+
+        let elapsed = start.elapsed();
+        tracing::info!(
+            tool = name,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "MCP tool call completed"
+        );
+        result
     }
 
     fn tool_search(&self, arguments: Value) -> Result<Value> {
@@ -1241,8 +1253,11 @@ pub fn serve_stdio(project_root: impl AsRef<Path>, use_gpu: bool) -> Result<()> 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Shared state for HTTP server
+///
+/// McpServer uses interior mutability (Arc<RwLock> for index, Mutex for audit_mode),
+/// so no outer lock is needed. All McpServer methods take &self.
 struct HttpState {
-    server: RwLock<McpServer>,
+    server: McpServer,
     /// API key for authentication (None = no auth required)
     api_key: Option<String>,
 }
@@ -1269,10 +1284,7 @@ pub fn serve_http(
     let has_api_key = api_key.is_some();
 
     let server = McpServer::new(project_root, use_gpu)?;
-    let state = Arc::new(HttpState {
-        server: RwLock::new(server),
-        api_key,
-    });
+    let state = Arc::new(HttpState { server, api_key });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1308,6 +1320,9 @@ pub fn serve_http(
         eprintln!("Authentication: API key required (Authorization: Bearer <key>)");
     }
 
+    // Note: Creates separate runtime from Store's internal runtime.
+    // Sharing would require exposing Store.rt or restructuring the API.
+    // Two runtimes is acceptable - one for SQLx ops, one for HTTP serving.
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -1557,18 +1572,7 @@ async fn handle_mcp_post(
         }
     }
 
-    let response = {
-        // Use read lock - McpServer uses interior mutability (OnceLock, Mutex)
-        // for state that needs modification, allowing concurrent request handling
-        let server = match state.server.read() {
-            Ok(s) => s,
-            Err(poisoned) => {
-                tracing::debug!("Server lock poisoned, recovering");
-                poisoned.into_inner()
-            }
-        };
-        server.handle_request(request)
-    };
+    let response = state.server.handle_request(request);
 
     // Return 202 Accepted for notifications (no response needed)
     if response.id.is_none()

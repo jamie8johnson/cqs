@@ -28,54 +28,90 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     }) as f32
 }
 
-/// Compute name match score for hybrid search
-pub fn name_match_score(query: &str, name: &str) -> f32 {
-    let query_lower = query.to_lowercase();
-    let name_lower = name.to_lowercase();
+/// Pre-tokenized query for efficient name matching in loops
+///
+/// Create once before iterating over search results, then call `score()` for each name.
+/// Avoids re-tokenizing the query for every result.
+pub struct NameMatcher {
+    query_lower: String,
+    query_words: Vec<String>,
+}
 
-    // Exact match
-    if name_lower == query_lower {
-        return 1.0;
+impl NameMatcher {
+    /// Create a new matcher with pre-tokenized query
+    pub fn new(query: &str) -> Self {
+        Self {
+            query_lower: query.to_lowercase(),
+            query_words: tokenize_identifier(query)
+                .into_iter()
+                .map(|w| w.to_lowercase())
+                .collect(),
+        }
     }
 
-    // Name contains query as substring
-    if name_lower.contains(&query_lower) {
-        return 0.8;
-    }
+    /// Compute name match score against pre-tokenized query
+    pub fn score(&self, name: &str) -> f32 {
+        let name_lower = name.to_lowercase();
 
-    // Query contains name as substring
-    if query_lower.contains(&name_lower) {
-        return 0.6;
-    }
+        // Exact match
+        if name_lower == self.query_lower {
+            return 1.0;
+        }
 
-    // Word overlap (split on camelCase, snake_case)
-    // Tokenize original (with casing), then lowercase each token
-    let query_words: Vec<String> = tokenize_identifier(query)
-        .into_iter()
-        .map(|w| w.to_lowercase())
-        .collect();
-    let name_words: Vec<String> = tokenize_identifier(name)
-        .into_iter()
-        .map(|w| w.to_lowercase())
-        .collect();
+        // Name contains query as substring
+        if name_lower.contains(&self.query_lower) {
+            return 0.8;
+        }
 
-    if query_words.is_empty() || name_words.is_empty() {
-        return 0.0;
-    }
+        // Query contains name as substring
+        if self.query_lower.contains(&name_lower) {
+            return 0.6;
+        }
 
-    let overlap = query_words
-        .iter()
-        .filter(|w| {
-            name_words.iter().any(|nw| {
-                // Short-circuit: check length before expensive substring search
-                (nw.len() >= w.len() && nw.contains(w.as_str()))
-                    || (w.len() >= nw.len() && w.contains(nw.as_str()))
+        // Word overlap
+        if self.query_words.is_empty() {
+            return 0.0;
+        }
+
+        let name_words: Vec<String> = tokenize_identifier(name)
+            .into_iter()
+            .map(|w| w.to_lowercase())
+            .collect();
+
+        if name_words.is_empty() {
+            return 0.0;
+        }
+
+        // Fast path: build HashSet for O(1) exact match lookup
+        let name_word_set: HashSet<&str> = name_words.iter().map(String::as_str).collect();
+
+        let overlap = self
+            .query_words
+            .iter()
+            .filter(|w| {
+                // Fast path: exact word match
+                if name_word_set.contains(w.as_str()) {
+                    return true;
+                }
+                // Slow path: substring matching (only if no exact match)
+                name_words.iter().any(|nw| {
+                    // Short-circuit: check length before expensive substring search
+                    (nw.len() > w.len() && nw.contains(w.as_str()))
+                        || (w.len() > nw.len() && w.contains(nw.as_str()))
+                })
             })
-        })
-        .count() as f32;
-    let total = query_words.len().max(1) as f32;
+            .count() as f32;
+        let total = self.query_words.len().max(1) as f32;
 
-    (overlap / total) * 0.5 // Max 0.5 for partial word overlap
+        (overlap / total) * 0.5 // Max 0.5 for partial word overlap
+    }
+}
+
+/// Compute name match score for hybrid search
+///
+/// For repeated calls with the same query, use `NameMatcher::new(query).score(name)` instead.
+pub fn name_match_score(query: &str, name: &str) -> f32 {
+    NameMatcher::new(query).score(name)
 }
 
 impl Store {
@@ -146,6 +182,13 @@ impl Store {
                 .and_then(|p| globset::Glob::new(p).ok())
                 .map(|g| g.compile_matcher());
 
+            // Pre-tokenize query for name matching (avoids re-tokenizing per result)
+            let name_matcher = if use_hybrid {
+                Some(NameMatcher::new(&filter.query_text))
+            } else {
+                None
+            };
+
             let mut scored: Vec<(String, f32)> = rows
                 .iter()
                 .filter_map(|row| {
@@ -156,9 +199,9 @@ impl Store {
                     let embedding = embedding_slice(&embedding_bytes)?;
                     let embedding_score = cosine_similarity(query.as_slice(), embedding);
 
-                    let score = if use_hybrid {
+                    let score = if let Some(ref matcher) = name_matcher {
                         let n = name.as_deref().unwrap_or("");
-                        let name_score = name_match_score(&filter.query_text, n);
+                        let name_score = matcher.score(n);
                         (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
                     } else {
                         embedding_score
@@ -341,6 +384,13 @@ impl Store {
                 .and_then(|p| globset::Glob::new(p).ok())
                 .map(|g| g.compile_matcher());
 
+            // Pre-tokenize query for name matching (avoids re-tokenizing per result)
+            let name_matcher = if use_hybrid {
+                Some(NameMatcher::new(&filter.query_text))
+            } else {
+                None
+            };
+
             let mut scored: Vec<(ChunkRow, f32)> = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -383,8 +433,8 @@ impl Store {
                     };
                     let embedding_score = cosine_similarity(query.as_slice(), embedding);
 
-                    let score = if use_hybrid {
-                        let name_score = name_match_score(&filter.query_text, &chunk_row.name);
+                    let score = if let Some(ref matcher) = name_matcher {
+                        let name_score = matcher.score(&chunk_row.name);
                         (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
                     } else {
                         embedding_score

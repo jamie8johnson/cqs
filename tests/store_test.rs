@@ -122,9 +122,12 @@ fn test_needs_reindex_not_indexed() {
     let file_path = dir.path().join("new_file.rs");
     std::fs::write(&file_path, "fn test() {}").unwrap();
 
-    // File not in index should need reindexing
+    // File not in index should need reindexing (returns Some(mtime))
     let needs = store.needs_reindex(&file_path).unwrap();
-    assert!(needs, "File not in index should need reindexing");
+    assert!(
+        needs.is_some(),
+        "File not in index should need reindexing (return Some(mtime))"
+    );
 }
 
 #[test]

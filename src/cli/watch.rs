@@ -1,5 +1,6 @@
 //! Watch mode - monitor for file changes and reindex
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -55,6 +56,9 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
 
+    // Lazy-initialized embedder (avoids 500ms startup delay unless changes occur)
+    let embedder: OnceCell<Embedder> = OnceCell::new();
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
@@ -107,11 +111,23 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             }
                         }
 
+                        // Initialize embedder on first use (lazy ~500ms init)
+                        let emb = match embedder.get() {
+                            Some(e) => e,
+                            None => match Embedder::new() {
+                                Ok(e) => embedder.get_or_init(|| e),
+                                Err(e) => {
+                                    eprintln!("Failed to initialize embedder: {}", e);
+                                    continue;
+                                }
+                            },
+                        };
                         match reindex_files(
                             &root,
                             &index_path,
                             &files,
                             &parser,
+                            emb,
                             no_ignore,
                             cli.quiet,
                         ) {
@@ -132,7 +148,17 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                         if !cli.quiet {
                             println!("\nNotes changed, reindexing...");
                         }
-                        match reindex_notes(&root, &index_path, cli.quiet) {
+                        let emb = match embedder.get() {
+                            Some(e) => e,
+                            None => match Embedder::new() {
+                                Ok(e) => embedder.get_or_init(|| e),
+                                Err(e) => {
+                                    eprintln!("Failed to initialize embedder: {}", e);
+                                    continue;
+                                }
+                            },
+                        };
+                        match reindex_notes(&root, &index_path, emb, cli.quiet) {
                             Ok(count) => {
                                 if !cli.quiet {
                                     println!("Indexed {} note(s)", count);
@@ -168,10 +194,10 @@ fn reindex_files(
     index_path: &Path,
     files: &[PathBuf],
     parser: &CqParser,
+    embedder: &Embedder,
     _no_ignore: bool,
     quiet: bool,
 ) -> Result<usize> {
-    let embedder = Embedder::new()?;
     let store = Store::open(index_path)?;
 
     // Parse the changed files
@@ -236,7 +262,12 @@ fn reindex_files(
 }
 
 /// Reindex notes from docs/notes.toml
-fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
+fn reindex_notes(
+    root: &Path,
+    index_path: &Path,
+    embedder: &Embedder,
+    quiet: bool,
+) -> Result<usize> {
     let notes_path = root.join("docs/notes.toml");
     if !notes_path.exists() {
         return Ok(0);
@@ -247,7 +278,6 @@ fn reindex_notes(root: &Path, index_path: &Path, quiet: bool) -> Result<usize> {
         return Ok(0);
     }
 
-    let embedder = Embedder::new()?;
     let store = Store::open(index_path)?;
 
     // Embed note content with sentiment prefix
