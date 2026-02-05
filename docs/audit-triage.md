@@ -284,9 +284,9 @@ After de-duplication: **~225 unique findings**
 #### Code Hygiene (4 medium)
 | # | Finding | Location |
 |---|---------|----------|
-| H6 | cmd_index ~200 lines deep nesting | `src/cli/mod.rs:280-480` |
-| H7 | GPU/CPU embedder patterns duplicated | `src/cli/mod.rs` |
-| H8 | Embedding batch processing duplicated | `src/cli/mod.rs`, `src/cli/watch.rs` |
+| H6 | cmd_index ~200 lines deep nesting | `src/cli/mod.rs:280-480` | ✅ Now 140 lines with helpers |
+| H7 | GPU/CPU embedder patterns duplicated | `src/cli/mod.rs` | ✅ Consolidated in pipeline.rs |
+| H8 | Embedding batch processing duplicated | `src/cli/mod.rs`, `src/cli/watch.rs` | ✅ Intentional - watch uses simpler path |
 | H10 | Source trait over-engineered | `src/source/mod.rs` |
 
 #### Module Boundaries (5 medium)
