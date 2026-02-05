@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.6] - 2026-02-05
 
 ### Added
 - **Schema migration framework** (#188, #215)
@@ -453,6 +453,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[0.4.6]: https://github.com/jamie8johnson/cqs/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/jamie8johnson/cqs/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/jamie8johnson/cqs/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/jamie8johnson/cqs/compare/v0.4.2...v0.4.3
