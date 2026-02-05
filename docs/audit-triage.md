@@ -308,9 +308,9 @@ After de-duplication: **~225 unique findings**
 #### API Design (5 medium)
 | # | Finding | Location |
 |---|---------|----------|
-| A3 | &Path vs PathBuf inconsistency | Multiple |
+| A3 | &Path vs PathBuf inconsistency | Multiple | ✅ 91% consistent, exceptions are optimal |
 | A4 | **Two Language enums** (dedup) | `src/parser.rs:760`, `src/language/mod.rs` |
-| A5 | Error type inconsistency | Multiple |
+| A5 | Error type inconsistency | Multiple | ✅ Convention followed: thiserror in lib, anyhow in CLI |
 | A6 | SearchFilter missing builder pattern | `src/store/helpers.rs:247-287` | ✅ Has builder methods |
 | A12 | Exposed internal types | `src/store/mod.rs:27-31` |
 
