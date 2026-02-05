@@ -6,8 +6,8 @@ use std::path::Path;
 use thiserror::Error;
 use tree_sitter::StreamingIterator;
 
-// Re-export ChunkType from language module (source of truth)
-pub use crate::language::ChunkType;
+// Re-export from language module (source of truth)
+pub use crate::language::{ChunkType, Language, SignatureStyle};
 
 /// Errors that can occur during code parsing
 #[derive(Error, Debug)]
@@ -24,233 +24,7 @@ pub enum ParserError {
     /// File read error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    /// Unknown language string in Language::from_str
-    #[error(
-        "Unknown language: '{0}'. Valid options: rust, python, typescript, javascript, go, c, java"
-    )]
-    UnknownLanguage(String),
 }
-
-// Tree-sitter query patterns per language
-
-/// Rust: functions, structs, enums, traits, constants
-const RUST_QUERY: &str = r#"
-(function_item
-  name: (identifier) @name) @function
-
-(struct_item
-  name: (type_identifier) @name) @struct
-
-(enum_item
-  name: (type_identifier) @name) @enum
-
-(trait_item
-  name: (type_identifier) @name) @trait
-
-(const_item
-  name: (identifier) @name) @const
-
-(static_item
-  name: (identifier) @name) @const
-"#;
-
-/// Python: functions and classes
-const PYTHON_QUERY: &str = r#"
-(function_definition
-  name: (identifier) @name) @function
-
-(class_definition
-  name: (identifier) @name) @class
-"#;
-
-/// TypeScript: functions, methods, arrow functions, classes, interfaces, enums
-const TYPESCRIPT_QUERY: &str = r#"
-(function_declaration
-  name: (identifier) @name) @function
-
-(method_definition
-  name: (property_identifier) @name) @function
-
-;; Arrow function assigned to variable: const foo = () => {}
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (arrow_function) @function))
-
-;; Arrow function assigned with var/let
-(variable_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (arrow_function) @function))
-
-(class_declaration
-  name: (type_identifier) @name) @class
-
-(interface_declaration
-  name: (type_identifier) @name) @interface
-
-(enum_declaration
-  name: (identifier) @name) @enum
-"#;
-
-/// JavaScript: functions, methods, arrow functions, classes
-const JAVASCRIPT_QUERY: &str = r#"
-(function_declaration
-  name: (identifier) @name) @function
-
-(method_definition
-  name: (property_identifier) @name) @function
-
-;; Arrow function assigned to variable: const foo = () => {}
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (arrow_function) @function))
-
-;; Arrow function assigned with var/let
-(variable_declaration
-  (variable_declarator
-    name: (identifier) @name
-    value: (arrow_function) @function))
-
-(class_declaration
-  name: (identifier) @name) @class
-"#;
-
-/// Go: functions, methods, structs, interfaces, constants
-const GO_QUERY: &str = r#"
-(function_declaration
-  name: (identifier) @name) @function
-
-(method_declaration
-  name: (field_identifier) @name) @function
-
-(type_declaration
-  (type_spec
-    name: (type_identifier) @name
-    type: (struct_type))) @struct
-
-(type_declaration
-  (type_spec
-    name: (type_identifier) @name
-    type: (interface_type))) @interface
-
-(const_declaration
-  (const_spec
-    name: (identifier) @name)) @const
-"#;
-
-// Call extraction queries per language
-
-/// Rust: function calls, method calls, macro invocations
-const RUST_CALL_QUERY: &str = r#"
-(call_expression
-  function: (identifier) @callee)
-
-(call_expression
-  function: (field_expression
-    field: (field_identifier) @callee))
-
-(call_expression
-  function: (scoped_identifier
-    name: (identifier) @callee))
-
-(macro_invocation
-  macro: (identifier) @callee)
-"#;
-
-/// Python: function and method calls
-const PYTHON_CALL_QUERY: &str = r#"
-(call
-  function: (identifier) @callee)
-
-(call
-  function: (attribute
-    attribute: (identifier) @callee))
-"#;
-
-/// TypeScript/JavaScript: function and method calls
-const TS_JS_CALL_QUERY: &str = r#"
-(call_expression
-  function: (identifier) @callee)
-
-(call_expression
-  function: (member_expression
-    property: (property_identifier) @callee))
-"#;
-
-/// Go: function and method calls
-const GO_CALL_QUERY: &str = r#"
-(call_expression
-  function: (identifier) @callee)
-
-(call_expression
-  function: (selector_expression
-    field: (field_identifier) @callee))
-"#;
-
-/// C: functions, structs, enums, typedefs
-const C_QUERY: &str = r#"
-(function_definition
-  declarator: (function_declarator
-    declarator: (identifier) @name)) @function
-
-(struct_specifier
-  name: (type_identifier) @name
-  body: (field_declaration_list)) @struct
-
-(enum_specifier
-  name: (type_identifier) @name
-  body: (enumerator_list)) @enum
-
-(type_definition
-  declarator: (type_identifier) @name) @const
-
-(declaration
-  declarator: (init_declarator
-    declarator: (function_declarator
-      declarator: (identifier) @name))) @function
-"#;
-
-/// C: function calls
-const C_CALL_QUERY: &str = r#"
-(call_expression
-  function: (identifier) @callee)
-
-(call_expression
-  function: (field_expression
-    field: (field_identifier) @callee))
-"#;
-
-/// Java: methods, constructors, classes, interfaces, enums, records
-const JAVA_QUERY: &str = r#"
-(method_declaration
-  name: (identifier) @name) @function
-
-(constructor_declaration
-  name: (identifier) @name) @function
-
-(class_declaration
-  name: (identifier) @name) @class
-
-(interface_declaration
-  name: (identifier) @name) @interface
-
-(enum_declaration
-  name: (identifier) @name) @enum
-
-(record_declaration
-  name: (identifier) @name) @struct
-"#;
-
-/// Java: method calls and object creation
-const JAVA_CALL_QUERY: &str = r#"
-(method_invocation
-  name: (identifier) @callee)
-
-(object_creation_expression
-  type: (type_identifier) @callee)
-"#;
 
 /// Code parser using tree-sitter grammars
 ///
@@ -282,17 +56,9 @@ impl Parser {
         let mut queries = HashMap::new();
         let mut call_queries = HashMap::new();
 
-        // Initialize empty OnceCells for each language
-        // Queries will be compiled on first access
-        for lang in [
-            Language::Rust,
-            Language::Python,
-            Language::TypeScript,
-            Language::JavaScript,
-            Language::Go,
-            Language::C,
-            Language::Java,
-        ] {
+        // Initialize empty OnceCells for each registered language
+        for def in crate::language::REGISTRY.all() {
+            let lang: Language = def.name.parse().expect("registry/enum mismatch");
             queries.insert(lang, OnceCell::new());
             call_queries.insert(lang, OnceCell::new());
         }
@@ -505,17 +271,10 @@ impl Parser {
     }
 
     fn extract_signature(&self, content: &str, language: Language) -> String {
-        // Extract up to first { or : (language dependent)
-        let sig_end = match language {
-            Language::Rust
-            | Language::Go
-            | Language::TypeScript
-            | Language::JavaScript
-            | Language::C
-            | Language::Java => content.find('{').unwrap_or(content.len()),
-            Language::Python => content.find(':').unwrap_or(content.len()),
+        let sig_end = match language.def().signature_style {
+            SignatureStyle::UntilBrace => content.find('{').unwrap_or(content.len()),
+            SignatureStyle::UntilColon => content.find(':').unwrap_or(content.len()),
         };
-
         let sig = &content[..sig_end];
         // Normalize whitespace
         sig.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -527,6 +286,8 @@ impl Parser {
         source: &str,
         language: Language,
     ) -> Option<String> {
+        let doc_nodes = language.def().doc_nodes;
+
         // Walk backwards through siblings looking for comments
         let mut comments = Vec::new();
         let mut current = node.prev_sibling();
@@ -534,20 +295,12 @@ impl Parser {
         while let Some(sibling) = current {
             let kind = sibling.kind();
 
-            let is_doc = match language {
-                Language::Rust => kind == "line_comment" || kind == "block_comment",
-                Language::Python => kind == "string" || kind == "comment",
-                Language::TypeScript | Language::JavaScript => kind == "comment",
-                Language::Go | Language::C => kind == "comment",
-                Language::Java => kind == "line_comment" || kind == "block_comment",
-            };
-
-            if is_doc {
+            if doc_nodes.contains(&kind) {
                 let text = &source[sibling.byte_range()];
                 comments.push(text.to_string());
                 current = sibling.prev_sibling();
             } else if kind.contains("comment") {
-                // Keep looking
+                // Keep looking past non-doc comments
                 current = sibling.prev_sibling();
             } else {
                 break;
@@ -577,45 +330,27 @@ impl Parser {
     }
 
     fn infer_chunk_type(&self, node: tree_sitter::Node, language: Language) -> ChunkType {
-        // For Go, the node type itself determines function vs method
-        if language == Language::Go {
-            return if node.kind() == "method_declaration" {
-                ChunkType::Method
-            } else {
-                ChunkType::Function
-            };
+        let def = language.def();
+
+        // Check if the node itself is a method kind (e.g., Go's "method_declaration")
+        if def.method_node_kinds.contains(&node.kind()) {
+            return ChunkType::Method;
         }
 
-        // C has no methods - everything is a function
-        if language == Language::C {
-            return ChunkType::Function;
-        }
-
-        // For other languages, check if function is inside a class/impl/struct body
+        // Walk parents looking for method containers (e.g., impl blocks, class bodies)
         let mut current = node.parent();
         while let Some(parent) = current {
-            let kind = parent.kind();
-            let is_method_container = match language {
-                Language::Rust => kind == "impl_item" || kind == "trait_item",
-                Language::Python => kind == "class_definition",
-                Language::TypeScript | Language::JavaScript => {
-                    kind == "class_body" || kind == "class_declaration"
-                }
-                Language::Java => kind == "class_body" || kind == "class_declaration",
-                Language::Go | Language::C => unreachable!(),
-            };
-            if is_method_container {
+            if def.method_containers.contains(&parent.kind()) {
                 return ChunkType::Method;
             }
             current = parent.parent();
         }
+
         ChunkType::Function
     }
 
-    pub fn supported_extensions(&self) -> &[&str] {
-        &[
-            "rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "c", "h", "java",
-        ]
+    pub fn supported_extensions(&self) -> Vec<&'static str> {
+        crate::language::REGISTRY.supported_extensions().collect()
     }
 
     /// Extract function calls from a chunk's source code
@@ -677,35 +412,7 @@ impl Parser {
 
         calls
     }
-}
 
-/// Check if a callee name should be skipped (common noise)
-///
-/// These are filtered because they don't provide meaningful call graph information:
-/// - `self`, `this`, `Self`, `super`: Object references, not real function calls
-/// - `new`: Constructor pattern, not a named function
-/// - `toString`, `valueOf`: Ubiquitous JS/TS methods that add noise
-///
-/// Case-sensitive to avoid false positives (e.g., "This" as a variable name).
-fn should_skip_callee(name: &str) -> bool {
-    matches!(
-        name,
-        "self" | "this" | "super" | "Self" | "new" | "toString" | "valueOf"
-    )
-}
-
-/// A function with its call sites (for full call graph coverage)
-#[derive(Debug, Clone)]
-pub struct FunctionCalls {
-    /// Function name
-    pub name: String,
-    /// Starting line number (1-indexed)
-    pub line_start: u32,
-    /// Function calls made by this function
-    pub calls: Vec<CallSite>,
-}
-
-impl Parser {
     /// Extract function calls from a parsed chunk
     ///
     /// Convenience method that extracts calls from the chunk's content.
@@ -830,6 +537,32 @@ impl Parser {
 // Note: Default impl intentionally omitted to prevent hidden panics.
 // Use Parser::new() which returns Result for proper error handling.
 
+/// Check if a callee name should be skipped (common noise)
+///
+/// These are filtered because they don't provide meaningful call graph information:
+/// - `self`, `this`, `Self`, `super`: Object references, not real function calls
+/// - `new`: Constructor pattern, not a named function
+/// - `toString`, `valueOf`: Ubiquitous JS/TS methods that add noise
+///
+/// Case-sensitive to avoid false positives (e.g., "This" as a variable name).
+fn should_skip_callee(name: &str) -> bool {
+    matches!(
+        name,
+        "self" | "this" | "super" | "Self" | "new" | "toString" | "valueOf"
+    )
+}
+
+/// A function with its call sites (for full call graph coverage)
+#[derive(Debug, Clone)]
+pub struct FunctionCalls {
+    /// Function name
+    pub name: String,
+    /// Starting line number (1-indexed)
+    pub line_start: u32,
+    /// Function calls made by this function
+    pub calls: Vec<CallSite>,
+}
+
 /// A parsed code chunk (function, method, class, etc.)
 ///
 /// Chunks are the basic unit of indexing and search in cqs.
@@ -862,105 +595,6 @@ pub struct Chunk {
     pub parent_id: Option<String>,
     /// Window index (0, 1, 2...) if this is a windowed portion
     pub window_idx: Option<u32>,
-}
-
-/// Supported programming languages
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Language {
-    /// Rust (.rs files)
-    Rust,
-    /// Python (.py, .pyi files)
-    Python,
-    /// TypeScript (.ts, .tsx files)
-    TypeScript,
-    /// JavaScript (.js, .jsx, .mjs, .cjs files)
-    JavaScript,
-    /// Go (.go files)
-    Go,
-    /// C (.c, .h files)
-    C,
-    /// Java (.java files)
-    Java,
-}
-
-impl Language {
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext {
-            "rs" => Some(Language::Rust),
-            "py" | "pyi" => Some(Language::Python),
-            "ts" | "tsx" => Some(Language::TypeScript),
-            "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
-            "go" => Some(Language::Go),
-            "c" | "h" => Some(Language::C),
-            "java" => Some(Language::Java),
-            _ => None,
-        }
-    }
-
-    pub fn grammar(&self) -> tree_sitter::Language {
-        match self {
-            Language::Rust => tree_sitter_rust::LANGUAGE.into(),
-            Language::Python => tree_sitter_python::LANGUAGE.into(),
-            Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-            Language::Go => tree_sitter_go::LANGUAGE.into(),
-            Language::C => tree_sitter_c::LANGUAGE.into(),
-            Language::Java => tree_sitter_java::LANGUAGE.into(),
-        }
-    }
-
-    pub fn query_pattern(&self) -> &'static str {
-        match self {
-            Language::Rust => RUST_QUERY,
-            Language::Python => PYTHON_QUERY,
-            Language::TypeScript => TYPESCRIPT_QUERY,
-            Language::JavaScript => JAVASCRIPT_QUERY,
-            Language::Go => GO_QUERY,
-            Language::C => C_QUERY,
-            Language::Java => JAVA_QUERY,
-        }
-    }
-
-    pub fn call_query_pattern(&self) -> &'static str {
-        match self {
-            Language::Rust => RUST_CALL_QUERY,
-            Language::Python => PYTHON_CALL_QUERY,
-            Language::TypeScript | Language::JavaScript => TS_JS_CALL_QUERY,
-            Language::Go => GO_CALL_QUERY,
-            Language::C => C_CALL_QUERY,
-            Language::Java => JAVA_CALL_QUERY,
-        }
-    }
-}
-
-impl std::fmt::Display for Language {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Language::Rust => write!(f, "rust"),
-            Language::Python => write!(f, "python"),
-            Language::TypeScript => write!(f, "typescript"),
-            Language::JavaScript => write!(f, "javascript"),
-            Language::Go => write!(f, "go"),
-            Language::C => write!(f, "c"),
-            Language::Java => write!(f, "java"),
-        }
-    }
-}
-
-impl std::str::FromStr for Language {
-    type Err = ParserError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "rust" => Ok(Language::Rust),
-            "python" => Ok(Language::Python),
-            "typescript" => Ok(Language::TypeScript),
-            "javascript" => Ok(Language::JavaScript),
-            "go" => Ok(Language::Go),
-            "c" => Ok(Language::C),
-            "java" => Ok(Language::Java),
-            _ => Err(ParserError::UnknownLanguage(s.to_string())),
-        }
-    }
 }
 
 /// A function call site extracted from code
@@ -1417,53 +1051,6 @@ fn another() {
             let parser = Parser::new().unwrap();
             let function_calls = parser.parse_file_calls(file.path()).unwrap();
             assert!(function_calls.is_empty());
-        }
-    }
-
-    /// Test language detection
-    mod language_tests {
-        use super::*;
-
-        #[test]
-        fn test_from_extension() {
-            assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
-            assert_eq!(Language::from_extension("py"), Some(Language::Python));
-            assert_eq!(Language::from_extension("pyi"), Some(Language::Python));
-            assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
-            assert_eq!(Language::from_extension("tsx"), Some(Language::TypeScript));
-            assert_eq!(Language::from_extension("js"), Some(Language::JavaScript));
-            assert_eq!(Language::from_extension("jsx"), Some(Language::JavaScript));
-            assert_eq!(Language::from_extension("mjs"), Some(Language::JavaScript));
-            assert_eq!(Language::from_extension("cjs"), Some(Language::JavaScript));
-            assert_eq!(Language::from_extension("go"), Some(Language::Go));
-            assert_eq!(Language::from_extension("c"), Some(Language::C));
-            assert_eq!(Language::from_extension("h"), Some(Language::C));
-            assert_eq!(Language::from_extension("java"), Some(Language::Java));
-            assert_eq!(Language::from_extension("unknown"), None);
-        }
-
-        #[test]
-        fn test_from_str() {
-            assert_eq!("rust".parse::<Language>().unwrap(), Language::Rust);
-            assert_eq!("PYTHON".parse::<Language>().unwrap(), Language::Python);
-            assert_eq!(
-                "TypeScript".parse::<Language>().unwrap(),
-                Language::TypeScript
-            );
-            assert_eq!("c".parse::<Language>().unwrap(), Language::C);
-            assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
-            assert!("invalid".parse::<Language>().is_err());
-        }
-
-        #[test]
-        fn test_display() {
-            assert_eq!(Language::Rust.to_string(), "rust");
-            assert_eq!(Language::Python.to_string(), "python");
-            assert_eq!(Language::TypeScript.to_string(), "typescript");
-            assert_eq!(Language::JavaScript.to_string(), "javascript");
-            assert_eq!(Language::Go.to_string(), "go");
-            assert_eq!(Language::C.to_string(), "c");
-            assert_eq!(Language::Java.to_string(), "java");
         }
     }
 }

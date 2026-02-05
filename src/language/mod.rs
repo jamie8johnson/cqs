@@ -50,6 +50,10 @@ pub struct LanguageDef {
     pub type_map: &'static [(&'static str, ChunkType)],
     /// Node types that contain doc comments
     pub doc_nodes: &'static [&'static str],
+    /// Node kinds that are themselves methods (e.g., Go's "method_declaration")
+    pub method_node_kinds: &'static [&'static str],
+    /// Parent node kinds that make a child function a method (e.g., Rust's "impl_item")
+    pub method_containers: &'static [&'static str],
 }
 
 /// How to extract function signatures
@@ -130,6 +134,107 @@ impl std::str::FromStr for ChunkType {
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
             _ => Err(ParseChunkTypeError {
+                input: s.to_string(),
+            }),
+        }
+    }
+}
+
+/// Supported programming languages
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Language {
+    /// Rust (.rs files)
+    Rust,
+    /// Python (.py, .pyi files)
+    Python,
+    /// TypeScript (.ts, .tsx files)
+    TypeScript,
+    /// JavaScript (.js, .jsx, .mjs, .cjs files)
+    JavaScript,
+    /// Go (.go files)
+    Go,
+    /// C (.c, .h files)
+    C,
+    /// Java (.java files)
+    Java,
+}
+
+impl Language {
+    /// Get the language definition from the registry
+    pub fn def(&self) -> &'static LanguageDef {
+        REGISTRY
+            .get(&self.to_string())
+            .expect("language not in registry — check feature flags")
+    }
+
+    /// Look up a language by file extension
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        REGISTRY
+            .from_extension(ext)
+            .and_then(|def| def.name.parse().ok())
+    }
+
+    /// Get the tree-sitter grammar for this language
+    pub fn grammar(&self) -> tree_sitter::Language {
+        (self.def().grammar)()
+    }
+
+    /// Get the chunk extraction query pattern
+    pub fn query_pattern(&self) -> &'static str {
+        self.def().chunk_query
+    }
+
+    /// Get the call extraction query pattern
+    pub fn call_query_pattern(&self) -> &'static str {
+        self.def().call_query.unwrap_or("")
+    }
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Language::Rust => write!(f, "rust"),
+            Language::Python => write!(f, "python"),
+            Language::TypeScript => write!(f, "typescript"),
+            Language::JavaScript => write!(f, "javascript"),
+            Language::Go => write!(f, "go"),
+            Language::C => write!(f, "c"),
+            Language::Java => write!(f, "java"),
+        }
+    }
+}
+
+/// Error returned when parsing an invalid Language string
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseLanguageError {
+    /// The invalid input string
+    pub input: String,
+}
+
+impl std::fmt::Display for ParseLanguageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Unknown language: '{}'. Valid options: rust, python, typescript, javascript, go, c, java",
+            self.input
+        )
+    }
+}
+
+impl std::error::Error for ParseLanguageError {}
+
+impl std::str::FromStr for Language {
+    type Err = ParseLanguageError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "rust" => Ok(Language::Rust),
+            "python" => Ok(Language::Python),
+            "typescript" => Ok(Language::TypeScript),
+            "javascript" => Ok(Language::JavaScript),
+            "go" => Ok(Language::Go),
+            "c" => Ok(Language::C),
+            "java" => Ok(Language::Java),
+            _ => Err(ParseLanguageError {
                 input: s.to_string(),
             }),
         }
@@ -290,6 +395,58 @@ mod tests {
         let grammar = (rust.grammar)();
         // Just verify grammar is valid by checking ABI version
         assert!(grammar.abi_version() > 0);
+    }
+
+    // ===== Language tests =====
+
+    #[test]
+    fn test_from_extension() {
+        assert_eq!(Language::from_extension("rs"), Some(Language::Rust));
+        assert_eq!(Language::from_extension("py"), Some(Language::Python));
+        assert_eq!(Language::from_extension("pyi"), Some(Language::Python));
+        assert_eq!(Language::from_extension("ts"), Some(Language::TypeScript));
+        assert_eq!(Language::from_extension("tsx"), Some(Language::TypeScript));
+        assert_eq!(Language::from_extension("js"), Some(Language::JavaScript));
+        assert_eq!(Language::from_extension("jsx"), Some(Language::JavaScript));
+        assert_eq!(Language::from_extension("mjs"), Some(Language::JavaScript));
+        assert_eq!(Language::from_extension("cjs"), Some(Language::JavaScript));
+        assert_eq!(Language::from_extension("go"), Some(Language::Go));
+        assert_eq!(Language::from_extension("c"), Some(Language::C));
+        assert_eq!(Language::from_extension("h"), Some(Language::C));
+        assert_eq!(Language::from_extension("java"), Some(Language::Java));
+        assert_eq!(Language::from_extension("unknown"), None);
+    }
+
+    #[test]
+    fn test_language_from_str() {
+        assert_eq!("rust".parse::<Language>().unwrap(), Language::Rust);
+        assert_eq!("PYTHON".parse::<Language>().unwrap(), Language::Python);
+        assert_eq!(
+            "TypeScript".parse::<Language>().unwrap(),
+            Language::TypeScript
+        );
+        assert_eq!("c".parse::<Language>().unwrap(), Language::C);
+        assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
+        assert!("invalid".parse::<Language>().is_err());
+    }
+
+    #[test]
+    fn test_language_display() {
+        assert_eq!(Language::Rust.to_string(), "rust");
+        assert_eq!(Language::Python.to_string(), "python");
+        assert_eq!(Language::TypeScript.to_string(), "typescript");
+        assert_eq!(Language::JavaScript.to_string(), "javascript");
+        assert_eq!(Language::Go.to_string(), "go");
+        assert_eq!(Language::C.to_string(), "c");
+        assert_eq!(Language::Java.to_string(), "java");
+    }
+
+    #[test]
+    fn test_language_def_bridge() {
+        // Verify def() returns the correct LanguageDef for each language
+        assert_eq!(Language::Rust.def().name, "rust");
+        assert_eq!(Language::Python.def().name, "python");
+        assert_eq!(Language::Go.def().name, "go");
     }
 
     // ===== ChunkType tests =====

@@ -2,29 +2,23 @@
 
 ## Right Now
 
-**Agent teams smoke-tested** (2026-02-05)
+**Parser/registry refactor complete** (2026-02-05)
 
-- Teams research preview is enabled and working
-- Smoke test passed: spawnTeam → TaskCreate → spawn teammate → task execution → message → shutdown → cleanup
-- Added "Agent Teams" section to CLAUDE.md with conventions (naming, model selection, cleanup, self-contained prompts)
-- Updated 20-Category Audit execution to use teams (one team per batch, 5 teammates per batch)
-- Built cqs binary to `/home/user001/.cargo-target/cq/debug/cqs` — MCP server needs Claude Code restart to connect
+Consolidated parser.rs duplication with language/ registry. parser.rs: 1469 → 1056 lines (28% reduction).
 
-### Pending
-- CLAUDE.md has uncommitted changes (Agent Teams section + audit execution update)
-- Restart Claude Code to pick up cqs MCP server
+### Completed This Session
+- **PR triage**: Merged #52, #54, #53, #51, #220. Closed #164, #50.
+- **Phase 1**: Model eval — E5-base-v2 stays (100% Recall@5). PR #221 merged.
+- **Phase 2**: Skipped (E5 wins).
+- **Phase 3**: C and Java language support. PR #222 merged.
+- **Refactor**: Parser/registry consolidation. Language enum moved to language/mod.rs. Query constants deleted from parser.rs. Methods delegate to REGISTRY via Language::def(). infer_chunk_type data-driven via LanguageDef fields.
 
-### What shipped in v0.4.6
-- Schema migration framework (#188)
-- CLI integration tests (#206)
-- Server transport tests (#205)
-- Stress tests (#207)
-- `--api-key-file` with zeroize (#202)
-- Lazy grammar loading (#208)
-- Pipeline resource sharing (#204)
-- Atomic HNSW writes (#186)
-- Note search warning at WARN level (#203)
-- Fixed flaky HNSW test (top-3 → top-5)
+### What's Next (per approved plan)
+- **Phase 4**: Template experiments in nl.rs
+- **Phase 5**: Multi-index (5 sub-phases)
+
+### Open PRs
+None. (Refactor uncommitted — needs PR.)
 
 ## Parked
 
@@ -42,6 +36,8 @@ Nothing active.
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - Unified HNSW index (chunks + notes with prefix)
+- Language enum + LanguageDef registry in language/mod.rs (source of truth)
+- Parser re-exports Language, ChunkType from language module
 - Store: split into focused modules (7 files including migrations)
 - CLI: mod.rs + display.rs + watch.rs + pipeline.rs
-- 290+ tests (including CLI, server, stress tests)
+- 326+ tests (including CLI, server, stress tests)

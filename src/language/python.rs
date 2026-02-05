@@ -27,8 +27,8 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
     ("class", ChunkType::Class),
 ];
 
-/// Doc comment node types (docstrings are expression_statements containing strings)
-const DOC_NODES: &[&str] = &["expression_statement"];
+/// Doc comment node types (sibling comments and standalone strings before a definition)
+const DOC_NODES: &[&str] = &["string", "comment"];
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "python",
@@ -39,6 +39,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     signature_style: SignatureStyle::UntilColon,
     type_map: TYPE_MAP,
     doc_nodes: DOC_NODES,
+    method_node_kinds: &[],
+    method_containers: &["class_definition"],
 };
 
 pub fn definition() -> &'static LanguageDef {
