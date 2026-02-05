@@ -238,13 +238,18 @@ impl Store {
     }
 
     fn check_cq_version(&self) {
-        let _ = self.rt.block_on(async {
+        if let Err(e) = self.rt.block_on(async {
             let row: Option<(String,)> =
-                sqlx::query_as("SELECT value FROM metadata WHERE key = 'cq_version'")
+                match sqlx::query_as("SELECT value FROM metadata WHERE key = 'cq_version'")
                     .fetch_optional(&self.pool)
                     .await
-                    .ok()
-                    .flatten();
+                {
+                    Ok(row) => row,
+                    Err(e) => {
+                        tracing::debug!(error = %e, "Failed to read cq_version from metadata");
+                        return Ok::<_, StoreError>(());
+                    }
+                };
 
             let stored_version = row.map(|(s,)| s).unwrap_or_default();
             let current_version = env!("CARGO_PKG_VERSION");
@@ -257,7 +262,9 @@ impl Store {
                 );
             }
             Ok::<_, StoreError>(())
-        });
+        }) {
+            tracing::debug!(error = %e, "check_cq_version failed");
+        }
     }
 
     /// Search FTS5 index for keyword matches.
