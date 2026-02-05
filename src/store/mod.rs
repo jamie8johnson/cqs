@@ -14,8 +14,11 @@ mod calls;
 mod chunks;
 mod notes;
 
-// Public module for search.rs access to ChunkRow
-pub mod helpers;
+/// Helper types and embedding conversion functions.
+///
+/// This module is `pub(crate)` - external consumers should use the re-exported
+/// types from `cqs::store` instead of accessing `cqs::store::helpers` directly.
+pub(crate) mod helpers;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,12 +26,46 @@ use std::path::Path;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use tokio::runtime::Runtime;
 
-// Re-export public types
-pub use helpers::{
-    bytes_to_embedding, embedding_slice, embedding_to_bytes, CallerInfo, ChunkSummary, IndexStats,
-    ModelInfo, NoteSearchResult, NoteSummary, SearchFilter, SearchResult, StoreError,
-    UnifiedResult, CURRENT_SCHEMA_VERSION, EXPECTED_DIMENSIONS, MODEL_NAME,
-};
+// Re-export public types with documentation
+
+/// Information about a function caller (from call graph).
+pub use helpers::CallerInfo;
+
+/// Summary of an indexed code chunk (function, class, etc.).
+pub use helpers::ChunkSummary;
+
+/// Statistics about the index (chunk counts, languages, etc.).
+pub use helpers::IndexStats;
+
+/// Embedding model metadata.
+pub use helpers::ModelInfo;
+
+/// A note search result with similarity score.
+pub use helpers::NoteSearchResult;
+
+/// Summary of a note (text, sentiment, mentions).
+pub use helpers::NoteSummary;
+
+/// Filter and scoring options for search.
+pub use helpers::SearchFilter;
+
+/// A code chunk search result with similarity score.
+pub use helpers::SearchResult;
+
+/// Store operation errors.
+pub use helpers::StoreError;
+
+/// Unified search result (code chunk or note).
+pub use helpers::UnifiedResult;
+
+/// Current database schema version.
+pub use helpers::CURRENT_SCHEMA_VERSION;
+
+/// Expected embedding dimensions (768 model + 1 sentiment).
+pub use helpers::EXPECTED_DIMENSIONS;
+
+/// Name of the embedding model used.
+pub use helpers::MODEL_NAME;
 
 // Internal use
 use helpers::{clamp_line_number, ChunkRow};
@@ -62,14 +99,21 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let rt = Runtime::new().map_err(|e| StoreError::Runtime(e.to_string()))?;
 
-        let db_url = format!("sqlite://{}?mode=rwc", path.display());
+        // Convert path to forward slashes for URL compatibility (Windows backslashes don't work)
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let db_url = format!("sqlite://{}?mode=rwc", path_str);
 
         // SQLite connection pool with WAL mode for concurrent reads
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
                 .max_connections(4) // 4 = typical CLI parallelism (index, search, watch)
+                .idle_timeout(std::time::Duration::from_secs(300)) // Close idle connections after 5 min
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
+                        // Enable foreign key enforcement (off by default in SQLite)
+                        sqlx::query("PRAGMA foreign_keys = ON")
+                            .execute(&mut *conn)
+                            .await?;
                         // WAL mode: concurrent reads, single writer
                         sqlx::query("PRAGMA journal_mode = WAL")
                             .execute(&mut *conn)
@@ -399,6 +443,11 @@ impl Store {
     }
 
     /// Compute RRF (Reciprocal Rank Fusion) scores for combining two ranked lists.
+    ///
+    /// Allocates a new HashMap per search. Pre-allocated buffer was considered but:
+    /// - Input size varies (limit*3 semantic + limit*3 FTS = up to 6*limit entries)
+    /// - HashMap with ~30-100 entries costs ~1KB, negligible vs embedding costs (~3KB)
+    /// - Thread-local buffer would add complexity for ~0.1ms savings on typical searches
     pub(crate) fn rrf_fuse(
         semantic_ids: &[String],
         fts_ids: &[String],
@@ -440,6 +489,26 @@ impl Store {
         limit: usize,
     ) -> Vec<(String, f32)> {
         Self::rrf_fuse(semantic_ids, fts_ids, limit)
+    }
+
+    /// Gracefully close the store, performing WAL checkpoint.
+    ///
+    /// This ensures all WAL changes are written to the main database file,
+    /// reducing startup time for subsequent opens and freeing disk space
+    /// used by WAL files.
+    ///
+    /// Safe to skip (pool will close connections on drop), but recommended
+    /// for clean shutdown in long-running processes.
+    pub fn close(self) -> Result<(), StoreError> {
+        self.rt.block_on(async {
+            // TRUNCATE mode: checkpoint and delete WAL file
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await?;
+            tracing::debug!("WAL checkpoint completed");
+            self.pool.close().await;
+            Ok(())
+        })
     }
 }
 

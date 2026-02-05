@@ -174,7 +174,8 @@ pub fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> R
         .map(|r| match r {
             UnifiedResult::Code(r) => serde_json::json!({
                 "type": "code",
-                "file": r.chunk.file.to_string_lossy(),
+                // Normalize to forward slashes for consistent JSON output across platforms
+                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
                 "line_start": r.chunk.line_start,
                 "line_end": r.chunk.line_end,
                 "name": r.chunk.name,

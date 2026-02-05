@@ -201,9 +201,8 @@ pub struct Embedder {
     session: OnceCell<Mutex<Session>>,
     /// Lazy-loaded tokenizer
     tokenizer: OnceCell<tokenizers::Tokenizer>,
-    /// Cached model paths
-    model_path: PathBuf,
-    tokenizer_path: PathBuf,
+    /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
+    model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
     max_length: usize,
     batch_size: usize,
@@ -211,15 +210,19 @@ pub struct Embedder {
     query_cache: Mutex<LruCache<String, Embedding>>,
 }
 
+/// Default query cache size (entries). Each entry is ~3KB (768 floats + key).
+const DEFAULT_QUERY_CACHE_SIZE: usize = 32;
+
 impl Embedder {
-    /// Create a new embedder, downloading the model if necessary
+    /// Create a new embedder with lazy model loading
     ///
     /// Automatically detects GPU and uses CUDA/TensorRT when available.
     /// Falls back to CPU if no GPU is found.
     ///
-    /// Note: ONNX session is lazy-loaded on first embedding request (~500ms).
+    /// Note: Model download and ONNX session are lazy-loaded on first
+    /// embedding request. This avoids HuggingFace API calls for commands
+    /// that don't need embeddings.
     pub fn new() -> Result<Self, EmbedderError> {
-        let (model_path, tokenizer_path) = ensure_model()?;
         let provider = select_provider();
 
         let batch_size = match provider {
@@ -228,14 +231,14 @@ impl Embedder {
         };
 
         let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(100).expect("100 is non-zero"),
+            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
+                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
         ));
 
         Ok(Self {
             session: OnceCell::new(),
             tokenizer: OnceCell::new(),
-            model_path,
-            tokenizer_path,
+            model_paths: OnceCell::new(),
             provider,
             max_length: 512,
             batch_size,
@@ -243,22 +246,20 @@ impl Embedder {
         })
     }
 
-    /// Create a CPU-only embedder
+    /// Create a CPU-only embedder with lazy model loading
     ///
     /// Use this for single-query embedding where CPU is faster than GPU
     /// due to CUDA context setup overhead. GPU only helps for batch embedding.
     pub fn new_cpu() -> Result<Self, EmbedderError> {
-        let (model_path, tokenizer_path) = ensure_model()?;
-
         let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(100).expect("100 is non-zero"),
+            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
+                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
         ));
 
         Ok(Self {
             session: OnceCell::new(),
             tokenizer: OnceCell::new(),
-            model_path,
-            tokenizer_path,
+            model_paths: OnceCell::new(),
             provider: ExecutionProvider::CPU,
             max_length: 512,
             batch_size: 4,
@@ -266,18 +267,25 @@ impl Embedder {
         })
     }
 
+    /// Get or initialize model paths (lazy download)
+    fn model_paths(&self) -> Result<&(PathBuf, PathBuf), EmbedderError> {
+        self.model_paths.get_or_try_init(ensure_model)
+    }
+
     /// Get or initialize the ONNX session
     fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, EmbedderError> {
+        let (model_path, _) = self.model_paths()?;
         let session = self
             .session
-            .get_or_try_init(|| create_session(&self.model_path, self.provider).map(Mutex::new))?;
+            .get_or_try_init(|| create_session(model_path, self.provider).map(Mutex::new))?;
         Ok(session.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// Get or initialize the tokenizer
     fn tokenizer(&self) -> Result<&tokenizers::Tokenizer, EmbedderError> {
+        let (_, tokenizer_path) = self.model_paths()?;
         self.tokenizer.get_or_try_init(|| {
-            tokenizers::Tokenizer::from_file(&self.tokenizer_path)
+            tokenizers::Tokenizer::from_file(tokenizer_path)
                 .map_err(|e| EmbedderError::TokenizerError(e.to_string()))
         })
     }
@@ -555,18 +563,19 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
-/// Ensure ort CUDA provider libraries are findable
+/// Ensure ort CUDA provider libraries are findable (Unix only)
 ///
 /// The ort crate downloads provider libs to ~/.cache/ort.pyke.io/... but
 /// doesn't add them to the library search path. This function creates
 /// symlinks in a directory that's already in LD_LIBRARY_PATH.
+#[cfg(unix)]
 fn ensure_ort_provider_libs() {
-    // Find ort's download cache
-    let home = match std::env::var("HOME") {
-        Ok(h) => std::path::PathBuf::from(h),
-        Err(_) => return,
+    // Find ort's download cache using cross-platform API
+    let cache_dir = match dirs::cache_dir() {
+        Some(c) => c,
+        None => return,
     };
-    let ort_cache = home.join(".cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
+    let ort_cache = cache_dir.join("ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
 
     // Find the versioned subdirectory (hash-named)
     let ort_lib_dir = match std::fs::read_dir(&ort_cache) {
@@ -589,6 +598,7 @@ fn ensure_ort_provider_libs() {
     };
 
     // Find target directory from LD_LIBRARY_PATH (skip ort cache dirs to avoid self-symlinks)
+    // Note: LD_LIBRARY_PATH uses colon separator on Unix
     let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     let ort_cache_str = ort_cache.to_string_lossy();
     let target_dir = ld_path
@@ -642,8 +652,25 @@ fn ensure_ort_provider_libs() {
     }
 }
 
-/// Select the best available execution provider
+/// No-op on non-Unix platforms (CUDA provider libs handled differently)
+#[cfg(not(unix))]
+fn ensure_ort_provider_libs() {
+    // Windows/other platforms: CUDA libraries are typically in PATH already
+}
+
+/// Cached GPU provider detection result
+static CACHED_PROVIDER: OnceCell<ExecutionProvider> = OnceCell::new();
+
+/// Select the best available execution provider (cached)
+///
+/// Provider detection is expensive (checks CUDA/TensorRT availability).
+/// Result is cached in a static OnceCell for subsequent calls.
 fn select_provider() -> ExecutionProvider {
+    *CACHED_PROVIDER.get_or_init(detect_provider)
+}
+
+/// Detect the best available execution provider
+fn detect_provider() -> ExecutionProvider {
     use ort::ep::{TensorRT, CUDA};
 
     // Ensure provider libs are findable before checking availability

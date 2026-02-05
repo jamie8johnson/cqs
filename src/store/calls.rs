@@ -17,9 +17,11 @@ impl Store {
         tracing::trace!(chunk_id, call_count = calls.len(), "upserting chunk calls");
 
         self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
             sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
                 .bind(chunk_id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
 
             // Batch insert all calls at once (instead of N individual inserts)
@@ -32,10 +34,11 @@ impl Store {
                         .push_bind(&call.callee_name)
                         .push_bind(call.line_number as i64);
                 });
-                query_builder.build().execute(&self.pool).await?;
+                query_builder.build().execute(&mut *tx).await?;
                 tracing::debug!(chunk_id, call_count = calls.len(), "Inserted chunk calls");
             }
 
+            tx.commit().await?;
             Ok(())
         })
     }
@@ -127,9 +130,11 @@ impl Store {
         );
 
         self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
             sqlx::query("DELETE FROM function_calls WHERE file = ?1")
                 .bind(&file_str)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
 
             // Flatten all calls and batch insert (instead of N individual inserts)
@@ -154,7 +159,7 @@ impl Store {
                         .push_bind(*callee_name)
                         .push_bind(*call_line as i64);
                 });
-                query_builder.build().execute(&self.pool).await?;
+                query_builder.build().execute(&mut *tx).await?;
                 tracing::info!(
                     file = %file_str,
                     functions = function_calls.len(),
@@ -163,6 +168,7 @@ impl Store {
                 );
             }
 
+            tx.commit().await?;
             Ok(())
         })
     }

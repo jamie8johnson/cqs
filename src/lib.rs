@@ -59,6 +59,7 @@ pub mod embedder;
 pub mod hnsw;
 pub mod index;
 pub mod language;
+pub mod math;
 pub mod mcp;
 pub mod nl;
 pub mod note;
@@ -70,12 +71,13 @@ pub mod store;
 #[cfg(feature = "gpu-search")]
 pub mod cagra;
 
-pub use embedder::Embedder;
+pub use embedder::{Embedder, Embedding};
 pub use hnsw::HnswIndex;
 pub use index::{IndexResult, VectorIndex};
 pub use mcp::{serve_http, serve_stdio};
-pub use parser::Parser;
-pub use store::Store;
+pub use note::parse_notes;
+pub use parser::{Chunk, Parser};
+pub use store::{ModelInfo, SearchFilter, Store};
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;

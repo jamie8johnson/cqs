@@ -35,7 +35,18 @@ impl FileSystemSource {
         &self.root
     }
 
-    /// Enumerate files matching supported extensions
+    /// Enumerate files matching supported extensions.
+    ///
+    /// # Memory Usage
+    ///
+    /// Collects all matching file paths into a Vec. For repositories with
+    /// millions of source files, this could use significant memory (~100 bytes
+    /// per path). In practice, even very large codebases (Linux kernel: ~70k
+    /// source files) use only ~7MB for the path list, which is acceptable.
+    ///
+    /// An iterator-based approach was considered but adds complexity for
+    /// minimal gain in typical use cases. The walker already respects
+    /// .gitignore rules, which filters out most files.
     fn enumerate_files(&self) -> Result<Vec<PathBuf>, SourceError> {
         let mut files = Vec::new();
 

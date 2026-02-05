@@ -40,6 +40,26 @@ use crate::note::parse_notes;
 use crate::parser::Language;
 use crate::store::{SearchFilter, Store, UnifiedResult};
 
+/// Strip Windows UNC path prefix (\\?\) if present.
+///
+/// Windows `canonicalize()` returns UNC paths that can cause issues with
+/// path comparison and display. This strips the prefix for consistency.
+#[cfg(windows)]
+fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path
+    }
+}
+
+/// No-op on non-Windows platforms
+#[cfg(not(windows))]
+fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    path
+}
+
 /// JSON-RPC request
 #[derive(Deserialize)]
 pub struct JsonRpcRequest {
@@ -364,17 +384,51 @@ impl McpServer {
                 result: Some(value),
                 error: None,
             },
-            Err(e) => JsonRpcResponse {
-                jsonrpc: "2.0".into(),
-                id: request.id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32000,
-                    message: e.to_string(),
-                    data: None,
-                }),
-            },
+            Err(e) => {
+                // Sanitize error message to avoid exposing internal paths.
+                // Log the full error for debugging, return sanitized version to client.
+                let full_error = e.to_string();
+                tracing::debug!(error = %full_error, "Request error");
+                let sanitized = self.sanitize_error_message(&full_error);
+                JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: sanitized,
+                        data: None,
+                    }),
+                }
+            }
         }
+    }
+
+    /// Sanitize error messages to avoid exposing internal filesystem paths.
+    ///
+    /// Replaces absolute paths (starting with / or drive letter) with relative paths
+    /// or generic descriptions to prevent information leakage to clients.
+    fn sanitize_error_message(&self, error: &str) -> String {
+        // Strip the project root path if present
+        let project_str = self.project_root.to_string_lossy();
+        let sanitized = error.replace(project_str.as_ref(), "<project>");
+
+        // Also strip common absolute path patterns that might leak from dependencies
+        // Match Unix paths: /home/user/... /tmp/... etc.
+        // Match Windows paths: C:\Users\... D:\...
+        // Note: Using [^\s:] instead of [^\s:"'] to avoid raw string escaping issues
+        let re_unix = regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc)/[^\s:]+").ok();
+        let re_windows =
+            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files)[^\s:]*").ok();
+
+        let mut result = sanitized;
+        if let Some(re) = re_unix {
+            result = re.replace_all(&result, "<path>").to_string();
+        }
+        if let Some(re) = re_windows {
+            result = re.replace_all(&result, "<path>").to_string();
+        }
+        result
     }
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
@@ -605,7 +659,7 @@ impl McpServer {
         let args: SearchArgs = serde_json::from_value(arguments)?;
         validate_query_length(&args.query)?;
 
-        let limit = args.limit.unwrap_or(5).min(20);
+        let limit = args.limit.unwrap_or(5).clamp(1, 20);
         let threshold = args.threshold.unwrap_or(0.3);
 
         // Definition search mode - find by name only, skip embedding
@@ -617,9 +671,11 @@ impl McpServer {
                 .map(|r| {
                     serde_json::json!({
                         "type": "code",
+                        // Normalize to forward slashes for consistent JSON output across platforms
                         "file": r.chunk.file.strip_prefix(&self.project_root)
                             .unwrap_or(&r.chunk.file)
-                            .to_string_lossy(),
+                            .to_string_lossy()
+                            .replace('\\', "/"),
                         "line_start": r.chunk.line_start,
                         "line_end": r.chunk.line_end,
                         "name": r.chunk.name,
@@ -661,15 +717,15 @@ impl McpServer {
             e.into_inner()
         });
 
-        // Check audit mode - if active, use code-only search
-        let audit_active = self
-            .audit_mode
-            .lock()
-            .unwrap_or_else(|e| {
+        // Check audit mode - capture both is_active and status_line in a single lock
+        // acquisition to avoid TOCTOU (state could change between separate locks)
+        let (audit_active, audit_status) = {
+            let guard = self.audit_mode.lock().unwrap_or_else(|e| {
                 tracing::debug!("Audit mode lock poisoned (prior panic), recovering");
                 e.into_inner()
-            })
-            .is_active();
+            });
+            (guard.is_active(), guard.status_line())
+        };
         let results: Vec<UnifiedResult> = if audit_active {
             // Code-only search when audit mode is active
             let code_results = self.store.search_filtered_with_index(
@@ -697,9 +753,11 @@ impl McpServer {
                 UnifiedResult::Code(r) => {
                     serde_json::json!({
                         "type": "code",
+                        // Normalize to forward slashes for consistent JSON output across platforms
                         "file": r.chunk.file.strip_prefix(&self.project_root)
                             .unwrap_or(&r.chunk.file)
-                            .to_string_lossy(),
+                            .to_string_lossy()
+                            .replace('\\', "/"),
                         "line_start": r.chunk.line_start,
                         "line_end": r.chunk.line_end,
                         "name": r.chunk.name,
@@ -728,16 +786,8 @@ impl McpServer {
             "total": results.len(),
         });
 
-        // Add audit mode status if active
-        if let Some(status) = self
-            .audit_mode
-            .lock()
-            .unwrap_or_else(|e| {
-                tracing::debug!("Audit mode lock poisoned (prior panic), recovering");
-                e.into_inner()
-            })
-            .status_line()
-        {
+        // Add audit mode status if active (using value captured earlier)
+        if let Some(status) = audit_status {
             result["audit_mode"] = serde_json::json!(status);
         }
 
@@ -883,21 +933,34 @@ impl McpServer {
             bail!("File not found: {}", path);
         }
 
-        // Path traversal protection
-        let canonical = file_path
-            .canonicalize()
-            .context("Failed to canonicalize path")?;
-        let project_canonical = self
-            .project_root
-            .canonicalize()
-            .context("Failed to canonicalize project root")?;
+        // Path traversal protection (strip UNC prefix on Windows for consistent comparison)
+        let canonical = strip_unc_prefix(
+            file_path
+                .canonicalize()
+                .context("Failed to canonicalize path")?,
+        );
+        let project_canonical = strip_unc_prefix(
+            self.project_root
+                .canonicalize()
+                .context("Failed to canonicalize project root")?,
+        );
         if !canonical.starts_with(&project_canonical) {
             bail!("Path traversal not allowed: {}", path);
         }
 
+        // File size limit to prevent memory exhaustion (10MB)
+        const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+        let metadata = std::fs::metadata(&file_path).context("Failed to read file metadata")?;
+        if metadata.len() > MAX_FILE_SIZE {
+            bail!(
+                "File too large: {} bytes (max {} bytes)",
+                metadata.len(),
+                MAX_FILE_SIZE
+            );
+        }
+
         // Read file content
-        let content = std::fs::read_to_string(&file_path)
-            .context(format!("Failed to read file: {}", path))?;
+        let content = std::fs::read_to_string(&file_path).context("Failed to read file")?;
 
         // Check audit mode - if active, skip note injection
         let audit_guard = self.audit_mode.lock().unwrap_or_else(|e| {
@@ -1063,6 +1126,16 @@ impl McpServer {
                 "# Notes - unified memory for AI collaborators\n# sentiment: -1.0 (pain) to +1.0 (gain)\n",
             )
             .context("Failed to create notes.toml")?;
+
+            // Set restrictive permissions on Unix (0600 = owner read/write only).
+            // Notes may contain sensitive observations about the codebase.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o600);
+                std::fs::set_permissions(&notes_path, perms)
+                    .context("Failed to set notes.toml permissions")?;
+            }
         }
 
         // Append entry
@@ -1317,6 +1390,11 @@ pub fn serve_http(
     let server = McpServer::new(project_root, use_gpu)?;
     let state = Arc::new(HttpState { server, api_key });
 
+    // CORS layer allows any origin for preflight requests (OPTIONS).
+    // Actual origin validation happens in validate_origin_header() which rejects
+    // non-localhost origins with 403 Forbidden. This two-layer approach is intentional:
+    // - CORS preflight must succeed for browsers to send the actual request
+    // - Application-level validation then enforces localhost-only access
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -1448,6 +1526,16 @@ fn parse_duration(s: &str) -> Result<chrono::Duration> {
         bail!(
             "Invalid duration: '{}'. Use format like '30m', '1h', '2h30m'",
             s
+        );
+    }
+
+    // Cap at 24 hours to prevent overflow and unreasonable values
+    const MAX_MINUTES: i64 = 24 * 60;
+    if total_minutes > MAX_MINUTES {
+        bail!(
+            "Duration too long: {} minutes (max {} minutes / 24 hours)",
+            total_minutes,
+            MAX_MINUTES
         );
     }
 
@@ -1623,6 +1711,16 @@ async fn handle_mcp_post(
 }
 
 /// Handle GET /health
+///
+/// # Security Note: Version Exposure
+///
+/// This endpoint exposes the service version. This is intentional for:
+/// - Operational monitoring and debugging
+/// - Client compatibility checks
+/// - Standard health check patterns (Kubernetes, load balancers)
+///
+/// For a localhost-only service with origin validation, version exposure is
+/// acceptable. If exposed publicly, consider removing version or requiring auth.
 async fn handle_health() -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "ok",

@@ -9,10 +9,10 @@ use super::helpers::{
 };
 use super::Store;
 use crate::embedder::Embedding;
+use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::note::Note;
 use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
-use crate::search::cosine_similarity;
 
 /// Score a note row and return (NoteSummary, score) if it meets the threshold.
 ///
@@ -28,7 +28,10 @@ fn score_note_row(
     let mentions_json: String = row.get(3);
     let embedding_bytes: Vec<u8> = row.get(4);
 
-    let mentions: Vec<String> = serde_json::from_str(&mentions_json).unwrap_or_default();
+    let mentions: Vec<String> = serde_json::from_str(&mentions_json).unwrap_or_else(|e| {
+        tracing::warn!(note_id = %id, error = %e, "Failed to deserialize note mentions, using empty list");
+        Vec::new()
+    });
 
     let embedding = embedding_slice(&embedding_bytes)?;
     let score = cosine_similarity(query.as_slice(), embedding)?;

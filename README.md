@@ -271,6 +271,24 @@ cqs index --dry-run    # Show what would be indexed
    - Reciprocal Rank Fusion merges both rankings for best results
 5. Uses GPU if available, falls back to CPU
 
+## HNSW Index Tuning
+
+The HNSW (Hierarchical Navigable Small World) index provides fast approximate nearest neighbor search. Current parameters:
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| M (connections) | 16 | Max edges per node. Higher = better recall, more memory |
+| ef_construction | 200 | Search width during build. Higher = better index, slower build |
+| max_layers | 16 | Graph layers. ~log(N) is typical |
+| ef_search | 50 | Search width at query time. Higher = better recall, slower search |
+
+**Trade-offs:**
+- **Recall vs speed**: Higher ef_search improves recall but slows queries
+- **Index size**: ~4KB per vector with current settings
+- **Build time**: O(N * M * ef_construction) complexity
+
+For most codebases (<100k chunks), defaults work well. Large repos may benefit from tuning ef_search higher (100-200) if recall matters more than latency.
+
 ## Search Quality
 
 Hybrid search (RRF) combines semantic understanding with keyword matching:

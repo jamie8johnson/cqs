@@ -231,6 +231,61 @@ impl Default for SearchFilter {
 }
 
 impl SearchFilter {
+    /// Create a new SearchFilter with default values.
+    ///
+    /// Use builder methods to customize:
+    /// ```ignore
+    /// let filter = SearchFilter::new()
+    ///     .with_language(Language::Rust)
+    ///     .with_path_pattern("src/**/*.rs")
+    ///     .with_query("retry logic");
+    /// ```
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Filter results to a specific programming language.
+    pub fn with_language(mut self, lang: Language) -> Self {
+        self.languages = Some(vec![lang]);
+        self
+    }
+
+    /// Filter results to multiple programming languages.
+    pub fn with_languages(mut self, langs: Vec<Language>) -> Self {
+        self.languages = Some(langs);
+        self
+    }
+
+    /// Filter results by file path glob pattern.
+    pub fn with_path_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.path_pattern = Some(pattern.into());
+        self
+    }
+
+    /// Set the query text (required for name_boost > 0 or enable_rrf).
+    pub fn with_query(mut self, query: impl Into<String>) -> Self {
+        self.query_text = query.into();
+        self
+    }
+
+    /// Set name boost weight for hybrid search (0.0-1.0).
+    pub fn with_name_boost(mut self, boost: f32) -> Self {
+        self.name_boost = boost;
+        self
+    }
+
+    /// Enable or disable RRF hybrid search.
+    pub fn with_rrf(mut self, enabled: bool) -> Self {
+        self.enable_rrf = enabled;
+        self
+    }
+
+    /// Set note weight multiplier (0.0-1.0).
+    pub fn with_note_weight(mut self, weight: f32) -> Self {
+        self.note_weight = weight;
+        self
+    }
+
     /// Validate filter constraints
     ///
     /// Returns Ok(()) if valid, or Err with description of what's wrong.
@@ -254,6 +309,29 @@ impl SearchFilter {
         if let Some(ref pattern) = self.path_pattern {
             if pattern.len() > 500 {
                 return Err("path_pattern too long (max 500 chars)");
+            }
+            // Reject control characters (except tab/newline which glob might handle)
+            if pattern
+                .chars()
+                .any(|c| c.is_control() && c != '\t' && c != '\n')
+            {
+                return Err("path_pattern contains invalid control characters");
+            }
+            // Limit brace nesting depth to prevent exponential expansion
+            // e.g., "{a,{b,{c,{d,{e,...}}}}}" can cause O(2^n) expansion
+            const MAX_BRACE_DEPTH: usize = 10;
+            let mut depth = 0usize;
+            for c in pattern.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        if depth > MAX_BRACE_DEPTH {
+                            return Err("path_pattern has too many nested braces (max 10 levels)");
+                        }
+                    }
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
             }
             if globset::Glob::new(pattern).is_err() {
                 return Err("path_pattern is not a valid glob pattern");
@@ -321,8 +399,19 @@ pub fn clamp_line_number(n: i64) -> u32 {
 
 // ============ Embedding Serialization ============
 
-/// Convert embedding to bytes for storage
+/// Convert embedding to bytes for storage.
+///
+/// # Panics
+/// Panics if embedding is not exactly 769 dimensions (768 model + 1 sentiment).
+/// This is intentional - storing wrong-sized embeddings corrupts the index.
 pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
+    assert_eq!(
+        embedding.len(),
+        EXPECTED_DIMENSIONS as usize,
+        "Embedding dimension mismatch: expected {}, got {}. This indicates a bug in the embedder.",
+        EXPECTED_DIMENSIONS,
+        embedding.len()
+    );
     embedding
         .as_slice()
         .iter()

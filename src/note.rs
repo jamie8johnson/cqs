@@ -106,8 +106,9 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 
 /// Parse notes from a string (for testing)
 ///
-/// Note IDs are generated from a hash of the text content (first 8 hex chars).
+/// Note IDs are generated from a hash of the text content (first 16 hex chars = 64 bits).
 /// This ensures IDs are stable when notes are reordered in the file.
+/// With 16 hex chars, collision probability is ~0.003% at 10k notes (birthday paradox).
 /// Limited to MAX_NOTES (10k) to prevent memory exhaustion.
 pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
     let file: NoteFile = toml::from_str(content)?;
@@ -118,8 +119,9 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
         .take(MAX_NOTES)
         .map(|entry| {
             // Use content hash for stable IDs (reordering notes won't break references)
+            // 16 hex chars = 64 bits, collision probability ~0.003% at 10k notes
             let hash = blake3::hash(entry.text.as_bytes());
-            let id = format!("note:{}", &hash.to_hex()[..8]);
+            let id = format!("note:{}", &hash.to_hex()[..16]);
 
             Note {
                 id,
@@ -221,9 +223,9 @@ text = "first note"
         assert_eq!(notes1[0].id, notes2[1].id); // "first note" has same ID
         assert_eq!(notes1[1].id, notes2[0].id); // "second note" has same ID
 
-        // Verify ID format (note:8-hex-chars)
+        // Verify ID format (note:16-hex-chars)
         assert!(notes1[0].id.starts_with("note:"));
-        assert_eq!(notes1[0].id.len(), 5 + 8); // "note:" + 8 hex chars
+        assert_eq!(notes1[0].id.len(), 5 + 16); // "note:" + 16 hex chars
     }
 
     // ===== Fuzz tests =====
