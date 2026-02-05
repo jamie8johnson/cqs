@@ -52,6 +52,32 @@ After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
 
 Audit mode prevents false confidence from stale notes - forces you to examine code directly instead of trusting prior observations.
 
+## Agent Teams
+
+Use teams when dispatching 2+ agents that need coordination. Teams provide task lists, message passing, and structured shutdown.
+
+**When to use:**
+- Audit batches (5 parallel category reviewers)
+- Multi-file implementation with independent units
+- Research + implementation in parallel
+- Any work that benefits from task tracking across agents
+
+**Conventions:**
+- Name teams by purpose: `audit-batch-1`, `feat-streaming`, `refactor-errors`
+- Use `haiku` for simple/mechanical tasks, `sonnet` for judgment-heavy work, `opus` for complex reasoning
+- Always clean up teams when done (`Teammate cleanup`)
+- Teammates can't see your text output — use `SendMessage` to communicate
+
+**Task workflow:**
+1. `spawnTeam` — create team
+2. `TaskCreate` — define work items with clear acceptance criteria
+3. Spawn teammates via `Task` with `team_name` and `name`
+4. Teammates claim tasks, execute, report back
+5. `shutdown_request` each teammate when done
+6. `Teammate cleanup` to tear down
+
+**Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria. Teammates start with zero context — they can't see your conversation.
+
 ## 20-Category Audit
 
 Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
@@ -71,9 +97,10 @@ Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
 **Execution:**
 1. Enable audit mode before each batch
-2. Dispatch 5 agents in parallel
-3. Aggregate findings to `docs/audit-findings.md`
-4. After all batches: triage, prioritize, fix
+2. `spawnTeam` per batch, 5 teammates (one per category, haiku or sonnet)
+3. Each teammate writes findings to `docs/audit-findings.md` (append, don't overwrite)
+4. Shutdown team, cleanup before next batch
+5. After all batches: triage, prioritize, fix
 
 **Why:** Findings get lost when context compacts. Issues make work visible to future sessions.
 
