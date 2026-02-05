@@ -537,10 +537,14 @@ impl Store {
             .map(crate::store::UnifiedResult::Code)
             .collect();
 
+        // Apply note_weight to attenuate note scores before merging
         let notes_to_add: Vec<crate::store::UnifiedResult> = note_results
             .into_iter()
             .take(note_slots)
-            .map(crate::store::UnifiedResult::Note)
+            .map(|mut r| {
+                r.score *= filter.note_weight;
+                crate::store::UnifiedResult::Note(r)
+            })
             .collect();
         unified.extend(notes_to_add);
 

@@ -190,7 +190,6 @@ impl UnifiedResult {
 ///
 /// All fields are optional. Unset filters match all chunks.
 /// Use `validate()` to check constraints before searching.
-#[derive(Default)]
 pub struct SearchFilter {
     /// Filter by programming language(s)
     pub languages: Option<Vec<Language>>,
@@ -210,6 +209,25 @@ pub struct SearchFilter {
     /// using the formula: score = Σ 1/(k + rank), where k=60.
     /// This typically improves recall for identifier-heavy queries.
     pub enable_rrf: bool,
+    /// Weight multiplier for note scores in unified search (0.0-1.0)
+    ///
+    /// 1.0 = notes scored equally with code (default)
+    /// 0.5 = notes scored at half weight
+    /// 0.0 = notes excluded from results
+    pub note_weight: f32,
+}
+
+impl Default for SearchFilter {
+    fn default() -> Self {
+        Self {
+            languages: None,
+            path_pattern: None,
+            name_boost: 0.0,
+            query_text: String::new(),
+            enable_rrf: false,
+            note_weight: 1.0, // Notes weighted equally by default
+        }
+    }
 }
 
 impl SearchFilter {
@@ -220,6 +238,11 @@ impl SearchFilter {
         // name_boost must be in [0.0, 1.0]
         if self.name_boost < 0.0 || self.name_boost > 1.0 {
             return Err("name_boost must be between 0.0 and 1.0");
+        }
+
+        // note_weight must be in [0.0, 1.0]
+        if self.note_weight < 0.0 || self.note_weight > 1.0 {
+            return Err("note_weight must be between 0.0 and 1.0");
         }
 
         // query_text required when name_boost > 0 or enable_rrf

@@ -100,6 +100,10 @@ pub struct Cli {
     #[arg(long, default_value = "0.2")]
     name_boost: f32,
 
+    /// Weight for note scores in results (0.0-1.0, lower = notes rank below code)
+    #[arg(long, default_value = "1.0")]
+    note_weight: f32,
+
     /// Filter by language
     #[arg(short = 'l', long)]
     lang: Option<String>,
@@ -1336,6 +1340,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         name_boost: cli.name_boost,
         query_text: query.to_string(),
         enable_rrf: true, // Enable RRF hybrid search by default
+        note_weight: cli.note_weight,
     };
 
     // Load vector index for O(log n) search
