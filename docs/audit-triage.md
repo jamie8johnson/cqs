@@ -72,10 +72,10 @@ After de-duplication: **~225 unique findings**
 |---|---------|----------|--------|
 | E1 | Glob pattern parsing silent fail | `src/search.rs:252` | ✅ Fixed |
 | E2 | Second glob silent failure | `src/search.rs:386` | ✅ Fixed |
-| E3 | Directory iteration errors filtered | `src/embedder.rs:514` | Open |
-| E4 | File mtime retrieval swallows errors | `src/lib.rs:126-129` | Open |
+| E3 | Directory iteration errors filtered | `src/embedder.rs:514` | ✅ Errors logged at debug level |
+| E4 | File mtime retrieval swallows errors | `src/lib.rs:126-129` | ✅ Errors logged at trace level |
 | E6 | Schema version parsing defaults to 0 | `src/store/mod.rs:183` | ✅ Fixed |
-| E12 | MCP notes parse success assumed | `src/mcp/tools/notes.rs` | Open |
+| E12 | MCP notes parse success assumed | `src/mcp/tools/notes.rs` | ✅ Errors logged and included in response |
 | E14 | File enumeration skips canonicalization | `src/cli/files.rs:79-112` | ✅ Fixed |
 | E15 | Walker entry errors filtered | `src/cli/files.rs:57-63` | ✅ Fixed |
 | E16 | Embedding byte length inconsistent logging | `src/store/helpers.rs` | ✅ Fixed |
