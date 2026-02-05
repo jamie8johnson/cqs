@@ -193,6 +193,13 @@
   - CPU: cold 0.52s, warm 22ms
   - GPU: cold 1.15s, warm 12ms (~45% faster warm)
 
+- [x] 20-category audit (v0.4.4)
+  - ~243 findings across 20 categories
+  - P1-P3 fixed (PRs #199, #200, #201)
+  - P4 tracked in issues #202-208
+  - Audit mode added (`cqs_audit_mode` tool)
+  - `note_weight` parameter for search
+
 ### Planned
 
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
