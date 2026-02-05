@@ -2,24 +2,20 @@
 
 ## Right Now
 
-**Ready to resume P2 audit fixes** (2026-02-04)
+**v0.4.0 released** (2026-02-05)
 
-Definition search feature complete (PR #165). Use `name_only=true` in cqs_search for "where is X defined?" queries.
+Definition search feature complete and published. Ready to resume P2 audit fixes.
+
+### New in v0.4.0
+- `name_only=true` in cqs_search for definition lookups
+- CLI split: watch.rs extracted
+- P2 audit fixes (PRs #161-165)
 
 ### Next: Continue P2 Fixes
 
 P2 audit at 23/58. Resume from item #24 onward.
 
 Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 list.
-
-### Recent Merges
-
-| PR | Description |
-|----|-------------|
-| #165 | `name_only` definition search mode |
-| #163 | HNSW checksum efficiency, TOML injection fix |
-| #162 | Memory caps for watch/notes |
-| #161 | P2 performance and platform fixes |
 
 ### P2 Progress: 23 of 58 Fixed
 
@@ -45,25 +41,19 @@ Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 l
 | 49 | HashSet per function | Fixed: reuse across iterations |
 | 50 | HNSW checksum I/O | Fixed: hash ids from memory |
 | 52 | Stats loads HNSW for length | Fixed: count_vectors() reads ids only |
-| - | Glob pattern tests | Fixed: 3 new tests + FTS bounds tests |
-| - | CLI file split | watch.rs extracted (274 lines) |
-
-### P1 Status: 62 of 64 Closed
-
-2 deferred to P4 (architectural: nl/parser coupling, CAGRA/HNSW scattered).
 
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
 | P2 | 35 remaining | 23 fixed |
 | P3 | 43 | Pending |
-| P4 | 21 | Pending (includes 2 deferred P1) |
+| P4 | 21 | Pending |
 
 ## Previous Session
 
-- Definition search feature implemented and merged
-- CLI split: watch.rs extracted from mod.rs
-- P2 fixes batched into PRs #161-163
+- v0.4.0 released (GitHub + crates.io)
+- Definition search implemented (name_only mode)
+- CLI refactored (watch.rs extracted)
 
 ## Open Issues
 
