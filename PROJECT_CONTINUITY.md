@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**v0.4.4 releasing** (2026-02-05)
+**v0.4.4 released** (2026-02-05)
 
 **Audit complete.** Codebase in good shape after fresh-eyes review found and fixed dead code.
 
