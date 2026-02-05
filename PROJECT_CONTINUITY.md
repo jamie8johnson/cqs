@@ -2,26 +2,20 @@
 
 ## Right Now
 
-**v0.4.3 released** (2026-02-05)
+**v0.4.4 releasing** (2026-02-05)
 
-**Audit complete.** All P2-P4 items fixed or verified as design choices.
+**Audit complete.** Codebase in good shape after fresh-eyes review found and fixed dead code.
 
 ### Session Summary (2026-02-05)
-Fixed the two "hard" deferred issues:
-- **#107 Memory OOM** - Streaming HNSW build (PR #176)
-- **#103 O(n) note search** - Notes in unified HNSW (PR #177)
+Post-audit cleanup:
+- **CAGRA streaming** - GPU index now streams embeddings like HNSW (PR #180)
+- **Dead code removed** - `search_unified()` was never called (PR #182)
+- **`note_weight` parameter** - tune how prominently notes appear in results (PR #183)
 
-Then shipped v0.4.3 (PR #178) to GitHub + crates.io.
-
-**Also fixed:** CAGRA GPU index now uses streaming embeddings and includes notes (PR #180). Aligns CAGRA with HNSW approach - streams from SQLite to avoid double-buffering.
-
-### Key Changes in v0.4.3
-- `Store::embedding_batches()` - streams in 10k batches via LIMIT/OFFSET
-- `HnswIndex::build_batched()` - incremental build, O(batch_size) memory
-- Notes in HNSW with `note:` prefix - O(log n) search
-- `Store::note_embeddings()` and `search_notes_by_ids()`
-- HNSW build moved after note indexing
-- Index output: `HNSW index: 879 vectors (811 chunks, 68 notes)`
+### Key Changes in v0.4.4
+- `--note-weight 0.5` to make notes rank below code
+- CAGRA streams from SQLite, includes notes with `note:` prefix
+- Cleaner search.rs after dead code removal
 
 ## Open Issues
 
