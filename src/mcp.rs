@@ -138,6 +138,9 @@ struct SearchArgs {
     path_pattern: Option<String>,
     name_boost: Option<f32>,
     semantic_only: Option<bool>,
+    /// Definition search mode - find by name only, no semantic matching.
+    /// Use for "where is X defined?" queries. Much faster than semantic search.
+    name_only: Option<bool>,
 }
 
 /// Audit mode arguments
@@ -427,6 +430,11 @@ impl McpServer {
                             "type": "boolean",
                             "description": "Disable RRF hybrid search, use pure semantic similarity (default: false)",
                             "default": false
+                        },
+                        "name_only": {
+                            "type": "boolean",
+                            "description": "Definition search: find by name only, skip semantic matching. Use for 'where is X defined?' queries. Much faster.",
+                            "default": false
                         }
                     },
                     "required": ["query"]
@@ -564,6 +572,42 @@ impl McpServer {
         let args: SearchArgs = serde_json::from_value(arguments)?;
         validate_query_length(&args.query)?;
 
+        let limit = args.limit.unwrap_or(5).min(20);
+        let threshold = args.threshold.unwrap_or(0.3);
+
+        // Definition search mode - find by name only, skip embedding
+        if args.name_only.unwrap_or(false) {
+            let results = self.store.search_by_name(&args.query, limit)?;
+            let json_results: Vec<_> = results
+                .iter()
+                .filter(|r| r.score >= threshold)
+                .map(|r| {
+                    serde_json::json!({
+                        "type": "code",
+                        "file": r.chunk.file.strip_prefix(&self.project_root)
+                            .unwrap_or(&r.chunk.file)
+                            .to_string_lossy(),
+                        "line_start": r.chunk.line_start,
+                        "line_end": r.chunk.line_end,
+                        "name": r.chunk.name,
+                        "signature": r.chunk.signature,
+                        "language": r.chunk.language.to_string(),
+                        "chunk_type": r.chunk.chunk_type.to_string(),
+                        "score": r.score,
+                        "content": r.chunk.content,
+                    })
+                })
+                .collect();
+
+            return Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::to_string_pretty(&json_results)?
+                }]
+            }));
+        }
+
+        // Semantic search mode (default)
         let embedder = self.ensure_embedder()?;
         let query_embedding = embedder.embed_query(&args.query)?;
 
@@ -576,9 +620,6 @@ impl McpServer {
             query_text: args.query.clone(),
             enable_rrf: !args.semantic_only.unwrap_or(false), // RRF on by default, disable with semantic_only
         };
-
-        let limit = args.limit.unwrap_or(5).min(20);
-        let threshold = args.threshold.unwrap_or(0.3);
 
         // Read-lock the index (allows background CAGRA build to upgrade it)
         let index_guard = self.index.read().unwrap_or_else(|e| e.into_inner());
