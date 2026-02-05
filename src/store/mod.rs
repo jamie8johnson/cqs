@@ -12,6 +12,7 @@
 
 mod calls;
 mod chunks;
+mod migrations;
 mod notes;
 
 /// Helper types and embedding conversion functions.
@@ -265,11 +266,22 @@ impl Store {
                 return Err(StoreError::SchemaNewerThanCq(version));
             }
             if version < CURRENT_SCHEMA_VERSION && version > 0 {
-                return Err(StoreError::SchemaMismatch(
-                    path_str,
-                    version,
-                    CURRENT_SCHEMA_VERSION,
-                ));
+                // Attempt migration instead of failing
+                match migrations::migrate(&self.pool, version, CURRENT_SCHEMA_VERSION).await {
+                    Ok(()) => {
+                        tracing::info!(
+                            path = %path_str,
+                            from = version,
+                            to = CURRENT_SCHEMA_VERSION,
+                            "Schema migrated successfully"
+                        );
+                    }
+                    Err(StoreError::MigrationNotSupported(from, to)) => {
+                        // No migration available, fall back to original error
+                        return Err(StoreError::SchemaMismatch(path_str, from, to));
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             Ok(())
         })

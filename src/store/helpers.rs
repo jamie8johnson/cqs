@@ -33,6 +33,8 @@ pub enum StoreError {
     SchemaMismatch(String, i32, i32),
     #[error("Index created by newer cq version (schema v{0}). Please upgrade cq.")]
     SchemaNewerThanCq(i32),
+    #[error("No migration path from schema v{0} to v{1}. Run 'cq index --force' to rebuild.")]
+    MigrationNotSupported(i32, i32),
     #[error(
         "Model mismatch: index uses '{0}', current is '{1}'. Run 'cq index --force' to re-embed."
     )]
