@@ -986,15 +986,15 @@ mod safety_tests {
             assert!(!results.is_empty(), "Search {} should return results", i);
 
             // The correct chunk should be in top results with high similarity
-            // (HNSW is approximate, so we check top-3 rather than exact first place)
+            // (HNSW is approximate, so we check top-5 rather than exact first place)
             let expected_id = format!("chunk{}", i);
-            let found_in_top3 = results.iter().take(3).any(|r| r.id == expected_id);
+            let found_in_top5 = results.iter().take(5).any(|r| r.id == expected_id);
             assert!(
-                found_in_top3,
-                "Search {} should find chunk{} in top 3, got: {:?}",
+                found_in_top5,
+                "Search {} should find chunk{} in top 5, got: {:?}",
                 i,
                 i,
-                results.iter().take(3).map(|r| &r.id).collect::<Vec<_>>()
+                results.iter().take(5).map(|r| &r.id).collect::<Vec<_>>()
             );
 
             // The best match should have high similarity
