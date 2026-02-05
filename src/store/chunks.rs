@@ -57,13 +57,11 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-                if let Err(e) = sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                // Delete from FTS before insert - error must fail transaction to prevent desync
+                sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
                     .bind(&chunk.id)
                     .execute(&mut *tx)
-                    .await
-                {
-                    tracing::warn!("Failed to delete from chunks_fts: {}", e);
-                }
+                    .await?;
 
                 sqlx::query(
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -463,6 +461,11 @@ impl Store {
     ///
     /// # Returns
     /// Iterator yielding `Result<Vec<(String, Embedding)>, StoreError>`
+    ///
+    /// # Panics
+    /// **Must be called from sync context only.** This iterator internally uses
+    /// `block_on()` which will panic if called from within an async runtime.
+    /// This is used for HNSW building which runs in dedicated sync threads.
     pub fn embedding_batches(
         &self,
         batch_size: usize,

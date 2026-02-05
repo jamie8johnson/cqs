@@ -362,10 +362,16 @@ impl HnswIndex {
             hnsw.parallel_insert_data(&data_for_insert);
 
             total_inserted += batch.len();
-            tracing::debug!(
-                "Inserted batch: {} vectors (total: {})",
-                batch.len(),
-                total_inserted
+            let progress_pct = if capacity > 0 {
+                (total_inserted * 100) / capacity
+            } else {
+                100
+            };
+            tracing::info!(
+                "HNSW build progress: {} / ~{} vectors ({}%)",
+                total_inserted,
+                capacity,
+                progress_pct
             );
         }
 
@@ -453,6 +459,15 @@ impl HnswIndex {
     /// - `{basename}.hnsw.graph` - HNSW graph structure
     /// - `{basename}.hnsw.ids` - Chunk ID mapping (our addition)
     /// - `{basename}.hnsw.checksum` - Blake3 checksums for integrity
+    ///
+    /// # Crash safety
+    /// The ID map and checksum files are written atomically (write-to-temp, then rename).
+    /// The checksum file is written last, so if the process crashes during save:
+    /// - If checksum is missing/incomplete, load() will fail verification
+    /// - If graph/data are incomplete, load() will fail checksum verification
+    ///
+    /// Note: The underlying library writes graph/data non-atomically. However, the
+    /// checksum verification on load ensures we never use a corrupted index.
     pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError> {
         tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
 
@@ -503,11 +518,21 @@ impl HnswIndex {
         }
 
         // Save the ID map separately (the library doesn't store our string IDs)
+        // Use write-to-temp-then-rename for atomicity
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
+        let id_map_tmp = dir.join(format!("{}.hnsw.ids.tmp", basename));
         let id_map_json = serde_json::to_string(&self.id_map)
             .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
-        std::fs::write(&id_map_path, &id_map_json).map_err(|e| {
-            HnswError::Internal(format!("Failed to write {}: {}", id_map_path.display(), e))
+        std::fs::write(&id_map_tmp, &id_map_json).map_err(|e| {
+            HnswError::Internal(format!("Failed to write {}: {}", id_map_tmp.display(), e))
+        })?;
+        std::fs::rename(&id_map_tmp, &id_map_path).map_err(|e| {
+            HnswError::Internal(format!(
+                "Failed to rename {} to {}: {}",
+                id_map_tmp.display(),
+                id_map_path.display(),
+                e
+            ))
         })?;
 
         // Set restrictive permissions on index files (Unix only)
@@ -545,10 +570,17 @@ impl HnswIndex {
                 checksums.push(format!("{}:{}", ext, hash.to_hex()));
             }
         }
+        // Write checksum last with atomic rename - if this file is missing/corrupt,
+        // load will fail verification, preventing use of partial saves
         let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
-        std::fs::write(&checksum_path, checksums.join("\n")).map_err(|e| {
+        let checksum_tmp = dir.join(format!("{}.hnsw.checksum.tmp", basename));
+        std::fs::write(&checksum_tmp, checksums.join("\n")).map_err(|e| {
+            HnswError::Internal(format!("Failed to write {}: {}", checksum_tmp.display(), e))
+        })?;
+        std::fs::rename(&checksum_tmp, &checksum_path).map_err(|e| {
             HnswError::Internal(format!(
-                "Failed to write {}: {}",
+                "Failed to rename {} to {}: {}",
+                checksum_tmp.display(),
                 checksum_path.display(),
                 e
             ))
@@ -585,6 +617,25 @@ impl HnswIndex {
 
         tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
         verify_hnsw_checksums(dir, basename)?;
+
+        // Check ID map file size to prevent OOM (limit: 500MB for ~10M chunk IDs)
+        const MAX_ID_MAP_SIZE: u64 = 500 * 1024 * 1024;
+        let id_map_size = std::fs::metadata(&id_map_path)
+            .map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to stat ID map {}: {}",
+                    id_map_path.display(),
+                    e
+                ))
+            })?
+            .len();
+        if id_map_size > MAX_ID_MAP_SIZE {
+            return Err(HnswError::Internal(format!(
+                "ID map too large: {}MB > {}MB limit",
+                id_map_size / (1024 * 1024),
+                MAX_ID_MAP_SIZE / (1024 * 1024)
+            )));
+        }
 
         // Load ID map
         let id_map_json = std::fs::read_to_string(&id_map_path).map_err(|e| {
