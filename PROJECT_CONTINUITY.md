@@ -2,34 +2,33 @@
 
 ## Right Now
 
-**20-category audit in progress** (2026-02-05)
+**20-category audit complete** (2026-02-05)
 
-PR #190 addresses P1/P2 findings. Waiting for CI.
+All P1-P4 items addressed. Future work tracked in issues #202-208.
 
-### Session Summary (2026-02-05)
-20-category audit execution:
-- **202 findings** collected across 4 batches (in `docs/audit-findings.md`)
-- **Most easy items already fixed** in prior sessions
-- **P1/P2 fixes** in PR #190:
-  - Transaction wrappers for delete operations
-  - `debug_assert` → `assert` for dimension checks
-  - Logging for swallowed `.ok()?` patterns
-  - CHANGELOG historical note about model change
-- **P3/P4 deferred** to issues #186-189
+### Audit Summary
+- **~243 findings** across 20 categories
+- **P1 (~93)**: ✅ Complete - critical fixes merged
+- **P2 (~79)**: ✅ Complete - documentation and code hygiene
+- **P3 (~41)**: ✅ Complete - PR #201 (FTS error handling, limits, progress)
+- **P4 (~30)**: ✅ Complete - PR #209 (19 OK, 11 → issues)
 
-### Previous Session
-- CAGRA streaming (PR #180)
-- Dead `search_unified()` removed (PR #182)
-- `note_weight` parameter (PR #183)
-- v0.4.4 released
+### PRs This Session
+- #199: P1 fixes
+- #200: P2 documentation
+- #201: P3 code fixes
+- #209: P4 triage completion
 
 ## Open Issues
 
-### Audit Follow-up
-- #186: Non-atomic HNSW writes (P3)
-- #187: File permissions (P3)
-- #188: Schema migrations (P4)
-- #189: Test coverage (P4)
+### P4 Deferred (from audit)
+- #202: API key security (env visibility, memory sanitization)
+- #203: Note search O(n) optimization
+- #204: Pipeline resource sharing
+- #205: Server function tests
+- #206: CLI integration tests
+- #207: Stress tests
+- #208: Lazy grammar loading
 
 ### External/Waiting
 - #106: ort stable (currently 2.0.0-rc.11)
