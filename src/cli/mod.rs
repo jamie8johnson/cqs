@@ -711,15 +711,39 @@ fn run_index_pipeline(
                 })
                 .collect();
 
-            // Filter by needs_reindex unless forced
+            // Filter by needs_reindex unless forced, caching mtime per-file to avoid double reads
+            let mut file_mtimes: std::collections::HashMap<PathBuf, i64> =
+                std::collections::HashMap::new();
             let chunks: Vec<Chunk> = if force {
+                // Force mode: still need to get mtimes for storage
+                for c in &chunks {
+                    if !file_mtimes.contains_key(&c.file) {
+                        let abs_path = root.join(&c.file);
+                        let mtime = abs_path
+                            .metadata()
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        file_mtimes.insert(c.file.clone(), mtime);
+                    }
+                }
                 chunks
             } else {
                 chunks
                     .into_iter()
                     .filter(|c| {
                         let abs_path = root.join(&c.file);
-                        store.needs_reindex(&abs_path).unwrap_or(true)
+                        // needs_reindex returns Some(mtime) if reindex needed, None otherwise
+                        match store.needs_reindex(&abs_path) {
+                            Ok(Some(mtime)) => {
+                                file_mtimes.insert(c.file.clone(), mtime);
+                                true
+                            }
+                            Ok(None) => false,
+                            Err(_) => true, // Reindex on error
+                        }
                     })
                     .collect()
             };
@@ -727,13 +751,11 @@ fn run_index_pipeline(
             parsed_count_clone.fetch_add(file_batch.len(), Ordering::Relaxed);
 
             if !chunks.is_empty() {
-                // Get mtime from first chunk's file
+                // Use cached mtime from first chunk's file (already computed above)
                 let file_mtime = chunks
                     .first()
-                    .and_then(|c| root.join(&c.file).metadata().ok())
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
+                    .and_then(|c| file_mtimes.get(&c.file))
+                    .copied()
                     .unwrap_or(0);
 
                 // Send in embedding-sized batches

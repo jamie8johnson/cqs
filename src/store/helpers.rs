@@ -10,6 +10,8 @@ use crate::parser::{ChunkType, Language};
 // Schema version for migrations
 pub const CURRENT_SCHEMA_VERSION: i32 = 10;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
+/// Expected embedding dimensions (768 from model + 1 sentiment)
+pub const EXPECTED_DIMENSIONS: u32 = 769;
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -29,6 +31,10 @@ pub enum StoreError {
         "Model mismatch: index uses '{0}', current is '{1}'. Run 'cq index --force' to re-embed."
     )]
     ModelMismatch(String, String),
+    #[error(
+        "Dimension mismatch: index has {0}-dim embeddings, current model expects {1}. Run 'cq index --force' to rebuild."
+    )]
+    DimensionMismatch(u32, u32),
 }
 
 /// Raw row from chunks table (crate-internal, used by search module)
@@ -295,20 +301,20 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 }
 
 /// Convert embedding bytes to owned Vec (when ownership needed)
-pub fn bytes_to_embedding(bytes: &[u8]) -> Vec<f32> {
-    embedding_slice(bytes)
-        .map(|s| s.to_vec())
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                "Embedding byte length mismatch: expected {}, got {} (possible corruption)",
-                769 * 4,
-                bytes.len()
-            );
-            bytes
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("4 bytes")))
-                .collect()
-        })
+///
+/// Returns None if byte length doesn't match expected embedding size (769 * 4 bytes).
+/// This prevents silently using corrupted/truncated embeddings.
+pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
+    const EXPECTED_BYTES: usize = 769 * 4;
+    if bytes.len() != EXPECTED_BYTES {
+        tracing::warn!(
+            expected = EXPECTED_BYTES,
+            actual = bytes.len(),
+            "Embedding byte length mismatch (possible corruption), skipping"
+        );
+        return None;
+    }
+    Some(bytemuck::cast_slice::<u8, f32>(bytes).to_vec())
 }
 
 #[cfg(test)]

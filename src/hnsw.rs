@@ -579,7 +579,8 @@ mod safety_tests {
     fn make_embedding(seed: u32) -> Embedding {
         let mut v = vec![0.0f32; EMBEDDING_DIM];
         for (i, val) in v.iter_mut().enumerate() {
-            *val = ((seed as f32 * 0.1) + (i as f32 * 0.001)).sin();
+            // Use larger seed multiplier (1.0 vs 0.1) for better separation between adjacent seeds
+            *val = ((seed as f32 * 1.0) + (i as f32 * 0.001)).sin();
         }
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {

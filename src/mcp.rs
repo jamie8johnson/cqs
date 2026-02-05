@@ -1308,6 +1308,9 @@ pub fn serve_http(
         eprintln!("Authentication: API key required (Authorization: Bearer <key>)");
     }
 
+    // Note: Creates separate runtime from Store's internal runtime.
+    // Sharing would require exposing Store.rt or restructuring the API.
+    // Two runtimes is acceptable - one for SQLx ops, one for HTTP serving.
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(&addr).await?;

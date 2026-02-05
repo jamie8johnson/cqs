@@ -294,13 +294,19 @@ impl Embedder {
     }
 
     /// Embed a query. Adds "query: " prefix for E5. Uses LRU cache for repeated queries.
+    ///
+    /// # Concurrency Note
+    /// Intentionally releases lock during embedding computation (~100ms) to allow parallel queries.
+    /// This means two simultaneous queries for the same text may both compute embeddings, but this
+    /// is preferable to serializing all queries through a single lock. The duplicate work is rare
+    /// and the cache update is idempotent.
     pub fn embed_query(&self, text: &str) -> Result<Embedding, EmbedderError> {
         let text = text.trim();
         if text.is_empty() {
             return Err(EmbedderError::EmptyQuery);
         }
 
-        // Check cache first
+        // Check cache first (lock released after check to allow parallel computation)
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
                 tracing::debug!("Query cache lock poisoned, recovering");
@@ -311,7 +317,7 @@ impl Embedder {
             }
         }
 
-        // Compute embedding
+        // Compute embedding (outside lock - allows parallel queries)
         let prefixed = format!("query: {}", text);
         let results = self.embed_batch(&[prefixed])?;
         let base_embedding = results.into_iter().next().ok_or_else(|| {
@@ -321,7 +327,7 @@ impl Embedder {
         // Add neutral sentiment (0.0) as 769th dimension
         let embedding = base_embedding.with_sentiment(0.0);
 
-        // Store in cache
+        // Store in cache (idempotent - duplicate puts for same key are harmless)
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
                 tracing::debug!("Query cache lock poisoned, recovering");

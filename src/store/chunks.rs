@@ -87,8 +87,11 @@ impl Store {
         Ok(())
     }
 
-    /// Check if a file needs reindexing based on mtime
-    pub fn needs_reindex(&self, path: &Path) -> Result<bool, StoreError> {
+    /// Check if a file needs reindexing based on mtime.
+    ///
+    /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
+    /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
+    pub fn needs_reindex(&self, path: &Path) -> Result<Option<i64>, StoreError> {
         let current_mtime = path
             .metadata()?
             .modified()?
@@ -104,8 +107,8 @@ impl Store {
                     .await?;
 
             match row {
-                Some((Some(mtime),)) if mtime >= current_mtime => Ok(false),
-                _ => Ok(true),
+                Some((Some(stored_mtime),)) if stored_mtime >= current_mtime => Ok(None),
+                _ => Ok(Some(current_mtime)),
             }
         })
     }
@@ -207,7 +210,7 @@ impl Store {
                 }
             };
 
-            row.map(|(bytes,)| Embedding::new(bytes_to_embedding(&bytes)))
+            row.and_then(|(bytes,)| bytes_to_embedding(&bytes).map(Embedding::new))
         })
     }
 
@@ -245,7 +248,10 @@ impl Store {
             for row in rows {
                 let hash: String = row.get(0);
                 let bytes: Vec<u8> = row.get(1);
-                result.insert(hash, Embedding::new(bytes_to_embedding(&bytes)));
+                if let Some(embedding) = bytes_to_embedding(&bytes) {
+                    result.insert(hash, Embedding::new(embedding));
+                }
+                // Corrupted embeddings are skipped (warning logged by bytes_to_embedding)
             }
             result
         })
@@ -369,10 +375,10 @@ impl Store {
 
             let results: Vec<(String, Embedding)> = rows
                 .into_iter()
-                .map(|row| {
+                .filter_map(|row| {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    (id, Embedding::new(bytes_to_embedding(&bytes)))
+                    bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
                 })
                 .collect();
 

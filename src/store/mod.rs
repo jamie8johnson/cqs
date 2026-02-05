@@ -27,7 +27,7 @@ use tokio::runtime::Runtime;
 pub use helpers::{
     bytes_to_embedding, embedding_slice, embedding_to_bytes, CallerInfo, ChunkSummary, IndexStats,
     ModelInfo, NoteSearchResult, NoteSummary, SearchFilter, SearchResult, StoreError,
-    UnifiedResult, CURRENT_SCHEMA_VERSION, MODEL_NAME,
+    UnifiedResult, CURRENT_SCHEMA_VERSION, EXPECTED_DIMENSIONS, MODEL_NAME,
 };
 
 // Internal use
@@ -194,6 +194,7 @@ impl Store {
 
     fn check_model_version(&self) -> Result<(), StoreError> {
         self.rt.block_on(async {
+            // Check model name
             let row: Option<(String,)> =
                 match sqlx::query_as("SELECT value FROM metadata WHERE key = 'model_name'")
                     .fetch_optional(&self.pool)
@@ -214,6 +215,24 @@ impl Store {
                     MODEL_NAME.to_string(),
                 ));
             }
+
+            // Check embedding dimensions
+            let dim_row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'dimensions'")
+                    .fetch_optional(&self.pool)
+                    .await?;
+
+            if let Some((dim_str,)) = dim_row {
+                if let Ok(stored_dim) = dim_str.parse::<u32>() {
+                    if stored_dim != EXPECTED_DIMENSIONS {
+                        return Err(StoreError::DimensionMismatch(
+                            stored_dim,
+                            EXPECTED_DIMENSIONS,
+                        ));
+                    }
+                }
+            }
+
             Ok(())
         })
     }

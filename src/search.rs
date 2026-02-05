@@ -63,13 +63,21 @@ pub fn name_match_score(query: &str, name: &str) -> f32 {
         return 0.0;
     }
 
+    // Fast path: build HashSet for O(1) exact match lookup
+    let name_word_set: HashSet<&str> = name_words.iter().map(String::as_str).collect();
+
     let overlap = query_words
         .iter()
         .filter(|w| {
+            // Fast path: exact word match
+            if name_word_set.contains(w.as_str()) {
+                return true;
+            }
+            // Slow path: substring matching (only if no exact match)
             name_words.iter().any(|nw| {
                 // Short-circuit: check length before expensive substring search
-                (nw.len() >= w.len() && nw.contains(w.as_str()))
-                    || (w.len() >= nw.len() && w.contains(nw.as_str()))
+                (nw.len() > w.len() && nw.contains(w.as_str()))
+                    || (w.len() > nw.len() && w.contains(nw.as_str()))
             })
         })
         .count() as f32;
