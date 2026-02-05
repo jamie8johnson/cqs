@@ -6,7 +6,7 @@
 
 P2 audit fixes continuing. Most easy items addressed.
 
-### Recent Fixes (PR #168, #169)
+### Recent Fixes (PR #168, #169, #171)
 - GPU failures counter and index visibility
 - VectorIndex::name() for HNSW/CAGRA identification
 - Doc comments for IndexStats, UnifiedResult, CURRENT_SCHEMA_VERSION
@@ -14,16 +14,17 @@ P2 audit fixes continuing. Most easy items addressed.
 - Config TOML example in doc comment
 - check_cq_version logs errors instead of silent discard
 - NameMatcher for efficient query tokenization
+- Note indexing logic deduplicated (shared cqs::index_notes function)
+- Language::FromStr now returns ParserError::UnknownLanguage (thiserror)
+- --verbose flag wired to tracing subscriber (sets debug level)
 
 ### Next: Remaining P2 Items
 
 Remaining P2 items are mostly medium difficulty:
 - Search function naming consolidation
-- VectorIndex trait expansion
-- Tracing subscriber --verbose wiring
 - Schema migration paths
 
-### P2 Progress: ~45 of 58 Fixed
+### P2 Progress: ~48 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -66,7 +67,7 @@ Remaining P2 items are mostly medium difficulty:
 Also fixed: Flaky HNSW test (robust assertion), documented embedder cache + HTTP runtime tradeoffs.
 Config logging now shows loaded values (P1 #34).
 
-Additional fixes (PR #168, #169):
+Additional fixes (PR #168, #169, #171):
 | # | Issue | Resolution |
 |---|-------|------------|
 | 51 | GPU failures invisible | Fixed: counter + summary line |
@@ -74,11 +75,14 @@ Additional fixes (PR #168, #169):
 | 54 | Config merge naming | Fixed: renamed to override_with |
 | 55 | check_cq_version silent | Fixed: logs errors at debug level |
 | 56 | Missing doc comments | Fixed: IndexStats, UnifiedResult, CURRENT_SCHEMA_VERSION |
+| 57 | Duplicate note indexing logic | Fixed: shared cqs::index_notes() |
+| 58 | Language::FromStr uses anyhow | Fixed: ParserError::UnknownLanguage |
+| 59 | --verbose not wired to tracing | Fixed: sets debug level filter |
 
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P2 | ~13 remaining | ~45 fixed |
+| P2 | ~10 remaining | ~48 fixed |
 | P3 | 43 | Pending |
 | P4 | 21 | Pending |
 
