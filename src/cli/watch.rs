@@ -279,32 +279,7 @@ fn reindex_notes(
     }
 
     let store = Store::open(index_path)?;
-
-    // Embed note content with sentiment prefix
-    let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let base_embeddings = embedder.embed_documents(&text_refs)?;
-
-    // Add sentiment as 769th dimension
-    let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
-        .into_iter()
-        .zip(notes.iter())
-        .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
-        .collect();
-
-    // Get file mtime
-    let file_mtime = notes_path
-        .metadata()
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    // Delete old notes and insert new
-    store.delete_notes_by_file(&notes_path)?;
-    let note_embeddings: Vec<_> = notes.into_iter().zip(embeddings_with_sentiment).collect();
-    store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
+    let count = cqs::index_notes(&notes, &notes_path, embedder, &store)?;
 
     if !quiet {
         let (total, warnings, patterns) = store.note_stats()?;
@@ -314,5 +289,5 @@ fn reindex_notes(
         );
     }
 
-    Ok(note_embeddings.len())
+    Ok(count)
 }
