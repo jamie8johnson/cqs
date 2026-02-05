@@ -565,3 +565,68 @@ fn test_model_mismatch_rejected() {
         }
     }
 }
+
+// ===== Streaming Embeddings Tests =====
+
+#[test]
+fn test_embedding_batches() {
+    let store = TestStore::new();
+
+    // Insert 25 chunks
+    for i in 0..25 {
+        let chunk = test_chunk(&format!("fn{}", i), &format!("fn fn{}() {{}}", i));
+        let emb = mock_embedding(i as f32);
+        store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
+    }
+
+    // Fetch in batches of 10
+    let batches: Vec<_> = store.embedding_batches(10).collect();
+
+    // Should have 3 batches (10, 10, 5)
+    assert_eq!(batches.len(), 3, "Expected 3 batches for 25 chunks");
+
+    let batch1 = batches[0].as_ref().unwrap();
+    let batch2 = batches[1].as_ref().unwrap();
+    let batch3 = batches[2].as_ref().unwrap();
+
+    assert_eq!(batch1.len(), 10, "First batch should have 10 embeddings");
+    assert_eq!(batch2.len(), 10, "Second batch should have 10 embeddings");
+    assert_eq!(batch3.len(), 5, "Third batch should have 5 embeddings");
+
+    // Total embeddings should match chunk count
+    let total: usize = batches
+        .iter()
+        .filter_map(|b| b.as_ref().ok())
+        .map(|b| b.len())
+        .sum();
+    assert_eq!(total, 25);
+}
+
+#[test]
+fn test_embedding_batches_empty() {
+    let store = TestStore::new();
+
+    // No chunks inserted
+    let batches: Vec<_> = store.embedding_batches(10).collect();
+    assert!(batches.is_empty(), "Empty store should yield no batches");
+}
+
+#[test]
+fn test_embedding_batches_exact_multiple() {
+    let store = TestStore::new();
+
+    // Insert exactly 20 chunks (divisible by batch size)
+    for i in 0..20 {
+        let chunk = test_chunk(&format!("fn{}", i), &format!("fn fn{}() {{}}", i));
+        let emb = mock_embedding(i as f32);
+        store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
+    }
+
+    let batches: Vec<_> = store.embedding_batches(10).collect();
+    assert_eq!(batches.len(), 2, "20 chunks / 10 batch = 2 batches");
+
+    for batch in &batches {
+        let b = batch.as_ref().unwrap();
+        assert_eq!(b.len(), 10);
+    }
+}

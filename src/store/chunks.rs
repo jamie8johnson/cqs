@@ -367,6 +367,9 @@ impl Store {
     }
 
     /// Get all chunk IDs and embeddings (for HNSW index building)
+    ///
+    /// **Warning:** This loads all embeddings into memory at once.
+    /// For large indexes (>50k chunks), prefer `embedding_batches()` to avoid OOM.
     pub fn all_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM chunks")
@@ -384,5 +387,79 @@ impl Store {
 
             Ok(results)
         })
+    }
+
+    /// Stream embeddings in batches for memory-efficient HNSW building.
+    ///
+    /// Uses LIMIT/OFFSET pagination to avoid loading all embeddings at once.
+    /// Each batch contains up to `batch_size` embeddings (~30MB for 10k).
+    ///
+    /// # Arguments
+    /// * `batch_size` - Number of embeddings per batch (recommend 10_000)
+    ///
+    /// # Returns
+    /// Iterator yielding `Result<Vec<(String, Embedding)>, StoreError>`
+    pub fn embedding_batches(
+        &self,
+        batch_size: usize,
+    ) -> impl Iterator<Item = Result<Vec<(String, Embedding)>, StoreError>> + '_ {
+        EmbeddingBatchIterator {
+            store: self,
+            batch_size,
+            offset: 0,
+            done: false,
+        }
+    }
+}
+
+/// Iterator for streaming embeddings in batches
+struct EmbeddingBatchIterator<'a> {
+    store: &'a Store,
+    batch_size: usize,
+    offset: usize,
+    done: bool,
+}
+
+impl<'a> Iterator for EmbeddingBatchIterator<'a> {
+    type Item = Result<Vec<(String, Embedding)>, StoreError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        let result = self.store.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM chunks LIMIT ?1 OFFSET ?2")
+                .bind(self.batch_size as i64)
+                .bind(self.offset as i64)
+                .fetch_all(&self.store.pool)
+                .await?;
+
+            let batch: Vec<(String, Embedding)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let id: String = row.get(0);
+                    let bytes: Vec<u8> = row.get(1);
+                    bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
+                })
+                .collect();
+
+            Ok(batch)
+        });
+
+        match &result {
+            Ok(batch) if batch.is_empty() => {
+                self.done = true;
+                None
+            }
+            Ok(batch) => {
+                self.offset += batch.len();
+                Some(result)
+            }
+            Err(_) => {
+                self.done = true;
+                Some(result)
+            }
+        }
     }
 }

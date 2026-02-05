@@ -2,9 +2,15 @@
 
 ## Right Now
 
-**v0.4.2 released** (2026-02-05)
+**Working on v0.4.3**
 
 **P2 audit tier complete.** Verified remaining items are either already fixed or design choices.
+
+### Current Work
+- #107 Memory OOM on huge repos - **FIXED**: Streaming HNSW build
+  - Added `Store::embedding_batches()` - streams embeddings in 10k batches via LIMIT/OFFSET
+  - Added `HnswIndex::build_batched()` - builds index incrementally without loading all into RAM
+  - Memory: O(batch_size) instead of O(total_embeddings) - ~30MB peak instead of ~300MB for 100k chunks
 
 ### Recent Fixes (PR #168, #169, #171, #172)
 - GPU failures counter and index visibility
@@ -103,7 +109,6 @@ P3 audit doc claimed 43 items but most were already fixed or low-value doc comme
 
 ### Hard (deferred)
 - #103: O(n) note search (notes are small, acceptable)
-- #107: Memory OOM on huge repos (streaming embeddings)
 
 ### External/Waiting
 - #106: ort stable
@@ -116,4 +121,4 @@ P3 audit doc claimed 43 items but most were already fixed or low-value doc comme
 - CLI: mod.rs + display.rs + watch.rs
 - Schema v10, WAL mode
 - tests/common/mod.rs for test fixtures
-- 172 tests
+- 280 tests

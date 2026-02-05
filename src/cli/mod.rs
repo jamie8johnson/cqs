@@ -1160,14 +1160,18 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
     }
 
     // Build HNSW index for fast search
+    // Uses batched insertion to avoid OOM on large repos (>50k chunks)
     if !check_interrupted() {
         if !cli.quiet {
             println!("Building HNSW index...");
         }
 
-        let all_embeddings = store.all_embeddings()?;
-        if !all_embeddings.is_empty() {
-            let hnsw = HnswIndex::build(all_embeddings)?;
+        let chunk_count = store.chunk_count()?;
+        if chunk_count > 0 {
+            // Stream embeddings in 10k batches (~30MB each) instead of loading all at once
+            const HNSW_BATCH_SIZE: usize = 10_000;
+            let hnsw =
+                HnswIndex::build_batched(store.embedding_batches(HNSW_BATCH_SIZE), chunk_count)?;
             hnsw.save(&cq_dir, "index")?;
 
             if !cli.quiet {

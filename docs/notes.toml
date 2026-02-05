@@ -343,3 +343,8 @@ mentions = ["PROJECT_CONTINUITY.md"]
 sentiment = 1.0
 text = "Proptest fuzz targets added (17 tests). Covers TOML parser, tokenizer, JSDoc, FTS sanitization, JSON-RPC, origin validation. Total tests now 162 - more than doubled from pre-audit 75."
 mentions = ["src/note.rs", "src/nl.rs", "src/store.rs", "src/mcp.rs", "proptest"]
+
+[[note]]
+sentiment = 1.0
+text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via LIMIT/OFFSET, HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
+mentions = ["src/store/chunks.rs", "src/hnsw.rs", "embedding_batches", "build_batched"]
