@@ -60,7 +60,8 @@ Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
 - 20 categories in 4 batches of 5 (avoids context overflow)
 - Maintainability/readability prioritized in batch order
 - Collect all findings first, then fix by impact × effort
-- Stop at diminishing returns
+- Stop at diminishing returns during discovery
+- Once triaged, complete the tier. Don't suggest stopping mid-priority.
 
 **Batches:**
 1. Readability foundation: Code Hygiene, Module Boundaries, Documentation, API Design, Error Propagation
