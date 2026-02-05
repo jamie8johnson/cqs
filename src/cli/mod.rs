@@ -63,7 +63,7 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 /// Second Ctrl+C force-exits with code 130.
 fn setup_signal_handler() {
     ctrlc::set_handler(|| {
-        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+        if INTERRUPTED.swap(true, Ordering::AcqRel) {
             // Second Ctrl+C: force exit
             std::process::exit(ExitCode::Interrupted as i32);
         }
@@ -74,7 +74,7 @@ fn setup_signal_handler() {
 
 /// Check if user requested interruption via Ctrl+C
 pub(crate) fn check_interrupted() -> bool {
-    INTERRUPTED.load(Ordering::SeqCst)
+    INTERRUPTED.load(Ordering::Acquire)
 }
 
 #[derive(Parser)]
@@ -673,8 +673,8 @@ fn run_index_pipeline(
 
     // Stage 1: Parser thread - parse files in parallel batches
     let parser_handle = thread::spawn(move || -> Result<()> {
-        let parser = CqParser::new()?;
-        let store = Store::open(&store_path_for_parser)?;
+        let parser = CqParser::new().context("Failed to initialize parser")?;
+        let store = Store::open(&store_path_for_parser).context("Failed to open store")?;
         let root = root_clone;
 
         for file_batch in files.chunks(file_batch_size) {
@@ -784,9 +784,9 @@ fn run_index_pipeline(
 
     // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
     let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let embedder = Embedder::new()?;
-        embedder.warm()?;
-        let store = Store::open(&store_path_for_embedder)?;
+        let embedder = Embedder::new().context("Failed to initialize GPU embedder")?;
+        embedder.warm().context("Failed to warm GPU embedder")?;
+        let store = Store::open(&store_path_for_embedder).context("Failed to open store")?;
 
         for batch in parse_rx {
             if check_interrupted() {
@@ -901,8 +901,8 @@ fn run_index_pipeline(
 
     // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
     let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let embedder = Embedder::new_cpu()?;
-        let store = Store::open(&store_path_for_cpu)?;
+        let embedder = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
+        let store = Store::open(&store_path_for_cpu).context("Failed to open store")?;
 
         loop {
             if check_interrupted() {
@@ -991,8 +991,8 @@ fn run_index_pipeline(
     });
 
     // Stage 3: Writer (main thread) - write to SQLite
-    let store = Store::open(store_path)?;
-    let parser = CqParser::new()?;
+    let store = Store::open(store_path).context("Failed to open store for writing")?;
+    let parser = CqParser::new().context("Failed to initialize parser for call graph")?;
     let mut total_embedded = 0;
     let mut total_cached = 0;
 

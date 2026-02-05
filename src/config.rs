@@ -36,7 +36,16 @@ impl Config {
         let project_config = Self::load_file(&project_root.join(".cqs.toml")).unwrap_or_default();
 
         // Project overrides user
-        user_config.merge(project_config)
+        let merged = user_config.merge(project_config);
+        tracing::debug!(
+            limit = ?merged.limit,
+            threshold = ?merged.threshold,
+            name_boost = ?merged.name_boost,
+            quiet = ?merged.quiet,
+            verbose = ?merged.verbose,
+            "Effective config after merge"
+        );
+        merged
     }
 
     /// Load configuration from a specific file
@@ -50,9 +59,17 @@ impl Config {
             }
         };
 
-        match toml::from_str(&content) {
+        match toml::from_str::<Self>(&content) {
             Ok(config) => {
-                tracing::debug!("Loaded config from {}", path.display());
+                tracing::debug!(
+                    path = %path.display(),
+                    limit = ?config.limit,
+                    threshold = ?config.threshold,
+                    name_boost = ?config.name_boost,
+                    quiet = ?config.quiet,
+                    verbose = ?config.verbose,
+                    "Loaded config"
+                );
                 Some(config)
             }
             Err(e) => {

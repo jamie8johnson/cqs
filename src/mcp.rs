@@ -1253,8 +1253,11 @@ pub fn serve_stdio(project_root: impl AsRef<Path>, use_gpu: bool) -> Result<()> 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Shared state for HTTP server
+///
+/// McpServer uses interior mutability (Arc<RwLock> for index, Mutex for audit_mode),
+/// so no outer lock is needed. All McpServer methods take &self.
 struct HttpState {
-    server: RwLock<McpServer>,
+    server: McpServer,
     /// API key for authentication (None = no auth required)
     api_key: Option<String>,
 }
@@ -1281,10 +1284,7 @@ pub fn serve_http(
     let has_api_key = api_key.is_some();
 
     let server = McpServer::new(project_root, use_gpu)?;
-    let state = Arc::new(HttpState {
-        server: RwLock::new(server),
-        api_key,
-    });
+    let state = Arc::new(HttpState { server, api_key });
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -1572,18 +1572,7 @@ async fn handle_mcp_post(
         }
     }
 
-    let response = {
-        // Use read lock - McpServer uses interior mutability (OnceLock, Mutex)
-        // for state that needs modification, allowing concurrent request handling
-        let server = match state.server.read() {
-            Ok(s) => s,
-            Err(poisoned) => {
-                tracing::debug!("Server lock poisoned, recovering");
-                poisoned.into_inner()
-            }
-        };
-        server.handle_request(request)
-    };
+    let response = state.server.handle_request(request);
 
     // Return 202 Accepted for notifications (no response needed)
     if response.id.is_none()

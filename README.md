@@ -80,6 +80,31 @@ cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
 ```
 
+## Configuration
+
+Set default options via config files. CLI flags override config file values.
+
+**Config locations (later overrides earlier):**
+1. `~/.config/cqs/config.toml` - user defaults
+2. `.cqs.toml` in project root - project overrides
+
+**Example `.cqs.toml`:**
+
+```toml
+# Default result limit
+limit = 10
+
+# Minimum similarity threshold (0.0 - 1.0)
+threshold = 0.4
+
+# Name boost for hybrid search (0.0 = pure semantic, 1.0 = pure name)
+name_boost = 0.2
+
+# Output modes
+quiet = false
+verbose = false
+```
+
 ## Watch Mode
 
 Keep your index up to date automatically:
