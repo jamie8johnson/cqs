@@ -539,8 +539,24 @@ impl HnswIndex {
     /// Get vector count without loading the full index (fast, for stats)
     pub fn count_vectors(dir: &Path, basename: &str) -> Option<usize> {
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
-        let content = std::fs::read_to_string(&id_map_path).ok()?;
-        let ids: Vec<String> = serde_json::from_str(&content).ok()?;
+        let content = match std::fs::read_to_string(&id_map_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::debug!(
+                    "Could not read HNSW id map {}: {}",
+                    id_map_path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+        let ids: Vec<String> = match serde_json::from_str(&content) {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!("Corrupted HNSW id map {}: {}", id_map_path.display(), e);
+                return None;
+            }
+        };
         Some(ids.len())
     }
 

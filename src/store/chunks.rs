@@ -118,18 +118,21 @@ impl Store {
         let origin_str = origin.to_string_lossy().to_string();
 
         self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
             sqlx::query(
                 "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
             )
             .bind(&origin_str)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
             let result = sqlx::query("DELETE FROM chunks WHERE origin = ?1")
                 .bind(&origin_str)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
 
+            tx.commit().await?;
             Ok(result.rows_affected() as u32)
         })
     }

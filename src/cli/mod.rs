@@ -371,7 +371,13 @@ fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Ve
         })
         .filter_map(|e| {
             // Validate path stays within project root and convert to relative
-            let path = e.path().canonicalize().ok()?;
+            let path = match e.path().canonicalize() {
+                Ok(p) => p,
+                Err(err) => {
+                    tracing::debug!("Skipping {}: {}", e.path().display(), err);
+                    return None;
+                }
+            };
             if path.starts_with(&root) {
                 // Store relative path for portability and glob matching
                 Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
