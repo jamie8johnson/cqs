@@ -25,10 +25,11 @@ pub fn read_context_lines(
     let line_start = line_start.max(1);
     let line_end = line_end.max(line_start);
 
-    let start_idx = (line_start as usize).saturating_sub(1).min(lines.len());
-    let end_idx = (line_end as usize)
-        .saturating_sub(1)
-        .min(lines.len().saturating_sub(1));
+    // Convert 1-indexed lines to 0-indexed array indices, clamped to valid range.
+    // For an empty file (lines.len() == 0), both indices will be 0.
+    let max_idx = lines.len().saturating_sub(1);
+    let start_idx = (line_start as usize).saturating_sub(1).min(max_idx);
+    let end_idx = (line_end as usize).saturating_sub(1).min(max_idx);
 
     // Context before
     let context_start = start_idx.saturating_sub(context);
@@ -173,7 +174,8 @@ pub fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> R
         .map(|r| match r {
             UnifiedResult::Code(r) => serde_json::json!({
                 "type": "code",
-                "file": r.chunk.file.to_string_lossy(),
+                // Normalize to forward slashes for consistent JSON output across platforms
+                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
                 "line_start": r.chunk.line_start,
                 "line_end": r.chunk.line_end,
                 "name": r.chunk.name,

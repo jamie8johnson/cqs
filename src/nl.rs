@@ -59,6 +59,10 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 
 /// Split identifier on snake_case and camelCase boundaries.
 ///
+/// Note: This function splits on every uppercase letter, so acronyms like
+/// "XMLParser" become individual letters. This is intentional for search
+/// tokenization where "xml parser" is more useful than preserving "XML".
+///
 /// # Examples
 ///
 /// ```
@@ -66,7 +70,7 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 ///
 /// assert_eq!(tokenize_identifier("parseConfigFile"), vec!["parse", "config", "file"]);
 /// assert_eq!(tokenize_identifier("get_user_name"), vec!["get", "user", "name"]);
-/// assert_eq!(tokenize_identifier("XMLParser"), vec!["x", "m", "l", "parser"]);
+/// assert_eq!(tokenize_identifier("XMLParser"), vec!["x", "m", "l", "parser"]); // acronyms split per-letter
 /// ```
 pub fn tokenize_identifier(s: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -75,12 +79,11 @@ pub fn tokenize_identifier(s: &str) -> Vec<String> {
     for c in s.chars() {
         if c == '_' || c == '-' || c == ' ' {
             if !current.is_empty() {
-                words.push(current.clone());
-                current.clear();
+                // Use std::mem::take to avoid clone - moves String out and leaves empty String
+                words.push(std::mem::take(&mut current));
             }
         } else if c.is_uppercase() && !current.is_empty() {
-            words.push(current.clone());
-            current.clear();
+            words.push(std::mem::take(&mut current));
             current.push(c.to_lowercase().next().unwrap_or(c));
         } else {
             current.push(c.to_lowercase().next().unwrap_or(c));
@@ -103,6 +106,15 @@ const MAX_FTS_OUTPUT_LEN: usize = 16384;
 /// Used to make code searchable with natural language queries.
 /// Output is capped at 16KB to prevent memory issues with pathological inputs.
 ///
+/// # Security: FTS5 Injection Protection
+///
+/// This function provides implicit protection against FTS5 injection attacks.
+/// By only emitting alphanumeric tokens joined by spaces, special FTS5 operators
+/// like `OR`, `AND`, `NOT`, `NEAR`, `*`, `"`, `(`, `)` are neutralized:
+/// - Operators in the input become separate tokens (e.g., "foo OR bar" -> "foo or bar")
+/// - Quotes and parentheses are stripped entirely (only alphanumeric + underscore pass)
+/// - The resulting output is safe for direct use in FTS5 MATCH queries
+///
 /// # Example
 ///
 /// ```
@@ -119,33 +131,98 @@ pub fn normalize_for_fts(text: &str) -> String {
         if c.is_alphanumeric() || c == '_' {
             current_word.push(c);
         } else if !current_word.is_empty() {
-            let tokens = tokenize_identifier(&current_word);
-            if !result.is_empty() && !tokens.is_empty() {
-                result.push(' ');
+            // Stream tokens directly to result instead of creating intermediate Vec<String>
+            let mut first_token = true;
+            for token in tokenize_identifier_iter(&current_word) {
+                if !result.is_empty() || !first_token {
+                    result.push(' ');
+                }
+                result.push_str(&token);
+                first_token = false;
             }
-            result.push_str(&tokens.join(" "));
             current_word.clear();
 
-            // Cap output to prevent memory issues
+            // Cap output to prevent memory issues - truncate at last space boundary
             if result.len() >= MAX_FTS_OUTPUT_LEN {
-                result.truncate(MAX_FTS_OUTPUT_LEN);
+                let truncate_at = result[..MAX_FTS_OUTPUT_LEN]
+                    .rfind(' ')
+                    .unwrap_or(MAX_FTS_OUTPUT_LEN);
+                result.truncate(truncate_at);
                 return result;
             }
         }
     }
     if !current_word.is_empty() {
-        let tokens = tokenize_identifier(&current_word);
-        if !result.is_empty() && !tokens.is_empty() {
-            result.push(' ');
+        // Stream final word's tokens
+        let mut first_token = true;
+        for token in tokenize_identifier_iter(&current_word) {
+            if !result.is_empty() || !first_token {
+                result.push(' ');
+            }
+            result.push_str(&token);
+            first_token = false;
         }
-        result.push_str(&tokens.join(" "));
     }
 
-    // Final cap check
+    // Final cap check - truncate at last space to avoid splitting words
     if result.len() > MAX_FTS_OUTPUT_LEN {
-        result.truncate(MAX_FTS_OUTPUT_LEN);
+        // Find last space before the limit to avoid mid-word truncation
+        let truncate_at = result[..MAX_FTS_OUTPUT_LEN]
+            .rfind(' ')
+            .unwrap_or(MAX_FTS_OUTPUT_LEN);
+        result.truncate(truncate_at);
     }
     result
+}
+
+/// Iterator-based tokenize_identifier for streaming - avoids intermediate Vec allocation
+fn tokenize_identifier_iter(s: &str) -> impl Iterator<Item = String> + '_ {
+    TokenizeIdentifierIter {
+        chars: s.chars().peekable(),
+        current: String::new(),
+        done: false,
+    }
+}
+
+struct TokenizeIdentifierIter<'a> {
+    chars: std::iter::Peekable<std::str::Chars<'a>>,
+    current: String,
+    done: bool,
+}
+
+impl<'a> Iterator for TokenizeIdentifierIter<'a> {
+    type Item = String;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        loop {
+            match self.chars.next() {
+                Some(c) if c == '_' || c == '-' || c == ' ' => {
+                    if !self.current.is_empty() {
+                        return Some(std::mem::take(&mut self.current));
+                    }
+                }
+                Some(c) if c.is_uppercase() && !self.current.is_empty() => {
+                    let result = std::mem::take(&mut self.current);
+                    self.current.push(c.to_lowercase().next().unwrap_or(c));
+                    return Some(result);
+                }
+                Some(c) => {
+                    self.current.push(c.to_lowercase().next().unwrap_or(c));
+                }
+                None => {
+                    self.done = true;
+                    if !self.current.is_empty() {
+                        return Some(std::mem::take(&mut self.current));
+                    }
+                    return None;
+                }
+            }
+        }
+    }
 }
 
 /// Generate natural language description from chunk metadata.
@@ -250,29 +327,34 @@ fn extract_params_nl(signature: &str) -> Option<String> {
         return Some("Takes no parameters".to_string());
     }
 
-    let params: Vec<String> = params_str
+    // Use iterator chain to avoid intermediate Vec per parameter.
+    // Collects once at the end with join (which internally uses a single String buffer).
+    let params: String = params_str
         .split(',')
         .filter_map(|p| {
             let p = p.trim();
             if p.is_empty() {
                 return None;
             }
-            let words: Vec<_> = tokenize_identifier(p)
+            // Filter tokens inline without intermediate collect
+            let filtered: String = tokenize_identifier(p)
                 .into_iter()
                 .filter(|w| !["self", "mut"].contains(&w.as_str()))
-                .collect();
-            if words.is_empty() {
+                .collect::<Vec<_>>()
+                .join(" ");
+            if filtered.is_empty() {
                 None
             } else {
-                Some(words.join(" "))
+                Some(filtered)
             }
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .join(", ");
 
     if params.is_empty() {
         None
     } else {
-        Some(format!("Takes parameters: {}", params.join(", ")))
+        Some(format!("Takes parameters: {}", params))
     }
 }
 

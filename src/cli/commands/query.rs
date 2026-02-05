@@ -1,0 +1,131 @@
+//! Query command for cqs
+//!
+//! Executes semantic search queries.
+
+use std::path::Path;
+
+use anyhow::{bail, Context, Result};
+
+use cqs::{Embedder, HnswIndex, SearchFilter, Store};
+
+use crate::cli::{display, find_project_root, signal, Cli};
+
+/// Load HNSW index if available, wrapped as trait object
+fn load_hnsw_index(cq_dir: &Path) -> Option<Box<dyn cqs::index::VectorIndex>> {
+    if HnswIndex::exists(cq_dir, "index") {
+        match HnswIndex::load(cq_dir, "index") {
+            Ok(index) => {
+                tracing::info!("Using HNSW index ({} vectors)", index.len());
+                Some(Box::new(index))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
+                None
+            }
+        }
+    } else {
+        tracing::debug!("No HNSW index found, using brute-force search");
+        None
+    }
+}
+
+/// Execute a semantic search query and display results
+pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
+
+    let root = find_project_root();
+    let cq_dir = root.join(".cq");
+    let index_path = cq_dir.join("index.db");
+
+    if !index_path.exists() {
+        bail!("Index not found. Run 'cq init && cq index' first.");
+    }
+
+    let store = Store::open(&index_path)?;
+    let embedder = Embedder::new()?;
+
+    let query_embedding = embedder.embed_query(query)?;
+
+    let languages = match &cli.lang {
+        Some(l) => Some(vec![l.parse().context(
+            "Invalid language. Valid: rust, python, typescript, javascript, go",
+        )?]),
+        None => None,
+    };
+
+    let filter = SearchFilter {
+        languages,
+        path_pattern: cli.path.clone(),
+        name_boost: cli.name_boost,
+        query_text: query.to_string(),
+        enable_rrf: true, // Enable RRF hybrid search by default
+        note_weight: cli.note_weight,
+    };
+
+    // Load vector index for O(log n) search
+    let index: Option<Box<dyn cqs::index::VectorIndex>> = {
+        #[cfg(feature = "gpu-search")]
+        {
+            // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
+            //
+            // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
+            // Only worth it when search time savings exceed rebuild cost.
+            // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
+            const CAGRA_THRESHOLD: u64 = 5000;
+            let chunk_count = store.chunk_count().unwrap_or(0);
+            if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
+                match cqs::cagra::CagraIndex::build_from_store(&store) {
+                    Ok(idx) => {
+                        tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
+                        Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
+                        load_hnsw_index(&cq_dir)
+                    }
+                }
+            } else {
+                if chunk_count < CAGRA_THRESHOLD {
+                    tracing::debug!(
+                        "Index too small for CAGRA ({} < {}), using HNSW",
+                        chunk_count,
+                        CAGRA_THRESHOLD
+                    );
+                } else {
+                    tracing::debug!("GPU not available, using HNSW");
+                }
+                load_hnsw_index(&cq_dir)
+            }
+        }
+        #[cfg(not(feature = "gpu-search"))]
+        {
+            load_hnsw_index(&cq_dir)
+        }
+    };
+
+    // Use unified search with vector index if available
+    let results = store.search_unified_with_index(
+        &query_embedding,
+        &filter,
+        cli.limit,
+        cli.threshold,
+        index.as_deref(),
+    )?;
+
+    if results.is_empty() {
+        if cli.json {
+            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        } else {
+            println!("No results found.");
+        }
+        std::process::exit(signal::ExitCode::NoResults as i32);
+    }
+
+    if cli.json {
+        display::display_unified_results_json(&results, query)?;
+    } else {
+        display::display_unified_results(&results, &root, cli.no_content, cli.context)?;
+    }
+
+    Ok(())
+}

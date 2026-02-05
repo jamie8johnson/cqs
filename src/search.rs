@@ -3,32 +3,20 @@
 //! This module contains the SearchEngine for code and note search,
 //! as well as helper functions for similarity scoring.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use sqlx::Row;
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
+use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
 use crate::store::helpers::{
     clamp_line_number, embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult,
 };
 use crate::store::{Store, StoreError};
-
-/// Cosine similarity for L2-normalized vectors (just dot product)
-/// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
-///
-/// Panics if vectors have different lengths or unexpected dimensions.
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "Embedding dimension mismatch");
-    assert_eq!(a.len(), 769, "Expected 769-dim embeddings");
-    use simsimd::SpatialSimilarity;
-    f32::dot(a, b).unwrap_or_else(|| {
-        // Fallback for unsupported architectures
-        a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() as f64
-    }) as f32
-}
 
 /// Pre-tokenized query for efficient name matching in loops
 ///
@@ -70,11 +58,16 @@ impl NameMatcher {
             return 0.6;
         }
 
-        // Word overlap
+        // Word overlap scoring
         if self.query_words.is_empty() {
             return 0.0;
         }
 
+        // Trade-off: Building name_words Vec per result adds allocation overhead,
+        // but pre-indexing names would require storing tokenized names in the DB
+        // (increasing schema complexity and storage ~20%). Given name_words are
+        // typically 1-5 words and this only runs for top-N results after filtering,
+        // the per-result allocation is acceptable.
         let name_words: Vec<String> = tokenize_identifier(name)
             .into_iter()
             .map(|w| w.to_lowercase())
@@ -87,6 +80,11 @@ impl NameMatcher {
         // Fast path: build HashSet for O(1) exact match lookup
         let name_word_set: HashSet<&str> = name_words.iter().map(String::as_str).collect();
 
+        // O(m*n) substring matching trade-off:
+        // - m = query words (typically 1-5), n = name words (typically 1-5)
+        // - Worst case: ~25 comparisons per name, but short-circuits on exact match
+        // - Alternative (pre-indexing substring tries) would add complexity for minimal gain
+        //   since names are short and search results are already capped by limit
         let overlap = self
             .query_words
             .iter()
@@ -96,6 +94,9 @@ impl NameMatcher {
                     return true;
                 }
                 // Slow path: substring matching (only if no exact match)
+                // Intentionally excludes equal-length substrings: if lengths are equal
+                // but strings differ, they're not substrings of each other (would need
+                // exact match, handled above). This avoids redundant contains() calls.
                 name_words.iter().any(|nw| {
                     // Short-circuit: check length before expensive substring search
                     (nw.len() > w.len() && nw.contains(w.as_str()))
@@ -114,6 +115,72 @@ impl NameMatcher {
 /// For repeated calls with the same query, use `NameMatcher::new(query).score(name)` instead.
 pub fn name_match_score(query: &str, name: &str) -> f32 {
     NameMatcher::new(query).score(name)
+}
+
+/// Bounded min-heap for maintaining top-N search results by score.
+///
+/// Uses a min-heap internally so the smallest score is always at the top,
+/// allowing O(log N) eviction when the heap is full. This bounds memory to
+/// O(limit) instead of O(total_chunks) for the scoring phase.
+struct BoundedScoreHeap {
+    heap: BinaryHeap<Reverse<(OrderedFloat, String)>>,
+    capacity: usize,
+}
+
+/// Wrapper for f32 that implements Ord for use in BinaryHeap.
+/// Uses total_cmp for consistent ordering (NaN sorts to the end).
+#[derive(Clone, Copy, PartialEq)]
+struct OrderedFloat(f32);
+
+impl Eq for OrderedFloat {}
+
+impl PartialOrd for OrderedFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedFloat {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+impl BoundedScoreHeap {
+    fn new(capacity: usize) -> Self {
+        Self {
+            heap: BinaryHeap::with_capacity(capacity + 1),
+            capacity,
+        }
+    }
+
+    /// Push a scored result. If at capacity, evicts the lowest score.
+    fn push(&mut self, id: String, score: f32) {
+        // If below capacity, always insert
+        if self.heap.len() < self.capacity {
+            self.heap.push(Reverse((OrderedFloat(score), id)));
+            return;
+        }
+
+        // At capacity - only insert if better than current minimum
+        if let Some(Reverse((OrderedFloat(min_score), _))) = self.heap.peek() {
+            if score > *min_score {
+                self.heap.pop();
+                self.heap.push(Reverse((OrderedFloat(score), id)));
+            }
+        }
+    }
+
+    /// Drain into a sorted Vec (highest score first).
+    fn into_sorted_vec(self) -> Vec<(String, f32)> {
+        let mut results: Vec<_> = self
+            .heap
+            .into_iter()
+            .map(|Reverse((OrderedFloat(score), id))| (id, score))
+            .collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results
+    }
 }
 
 impl Store {
@@ -177,12 +244,20 @@ impl Store {
                 q.fetch_all(&self.pool).await?
             };
 
-            // Compile glob pattern once outside the loop (not per-chunk)
-            let glob_matcher = filter
-                .path_pattern
-                .as_ref()
-                .and_then(|p| globset::Glob::new(p).ok())
-                .map(|g| g.compile_matcher());
+            // Compile glob pattern once outside the loop (not per-chunk).
+            // Note: Invalid patterns are logged and silently ignored (returns all results).
+            // Callers should validate patterns upfront via SearchFilter::validate() if they
+            // want to reject invalid patterns. This lenient behavior is intentional to allow
+            // partial searches when users provide malformed patterns interactively.
+            let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
+                match globset::Glob::new(p) {
+                    Ok(g) => Some(g.compile_matcher()),
+                    Err(e) => {
+                        tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
+                        None
+                    }
+                }
+            });
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
             let name_matcher = if use_hybrid {
@@ -191,52 +266,61 @@ impl Store {
                 None
             };
 
-            let mut scored: Vec<(String, f32)> = rows
-                .iter()
-                .filter_map(|row| {
-                    let id: String = row.get(0);
-                    let embedding_bytes: Vec<u8> = row.get(1);
-                    let name: Option<String> = if use_hybrid { row.get(2) } else { None };
+            // Use bounded heap to maintain only top-N results during iteration.
+            // This bounds memory to O(semantic_limit) instead of O(total_chunks).
+            let mut score_heap = BoundedScoreHeap::new(semantic_limit);
 
-                    let embedding = embedding_slice(&embedding_bytes)?;
-                    let embedding_score = cosine_similarity(query.as_slice(), embedding);
+            for row in &rows {
+                let id: String = row.get(0);
+                let embedding_bytes: Vec<u8> = row.get(1);
+                let name: Option<String> = if use_hybrid { row.get(2) } else { None };
 
-                    let score = if let Some(ref matcher) = name_matcher {
-                        let n = name.as_deref().unwrap_or("");
-                        let name_score = matcher.score(n);
-                        (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
-                    } else {
-                        embedding_score
-                    };
+                let Some(embedding) = embedding_slice(&embedding_bytes) else {
+                    continue;
+                };
+                let Some(embedding_score) = cosine_similarity(query.as_slice(), embedding) else {
+                    continue;
+                };
 
-                    if let Some(ref matcher) = glob_matcher {
-                        let file_part = id.split(':').next().unwrap_or("");
-                        if !matcher.is_match(file_part) {
-                            return None;
-                        }
+                let score = if let Some(ref matcher) = name_matcher {
+                    let n = name.as_deref().unwrap_or("");
+                    let name_score = matcher.score(n);
+                    (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
+                } else {
+                    embedding_score
+                };
+
+                if let Some(ref matcher) = glob_matcher {
+                    let file_part = id.split(':').next().unwrap_or("");
+                    if !matcher.is_match(file_part) {
+                        continue;
                     }
+                }
 
-                    if score >= threshold {
-                        Some((id, score))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+                if score >= threshold {
+                    score_heap.push(id, score);
+                }
+            }
 
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            scored.truncate(semantic_limit);
+            let mut scored = score_heap.into_sorted_vec();
+
+            // Normalize query text once for FTS (not twice - search_fts is a separate code path)
+            let normalized_query = if use_rrf {
+                Some(normalize_for_fts(&filter.query_text))
+            } else {
+                None
+            };
 
             let final_scored: Vec<(String, f32)> = if use_rrf {
                 let fts_ids = {
-                    let normalized_query = normalize_for_fts(&filter.query_text);
+                    let normalized_query = normalized_query.as_ref().unwrap();
                     if normalized_query.is_empty() {
                         vec![]
                     } else {
                         let fts_rows: Vec<(String,)> = sqlx::query_as(
                             "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
                         )
-                        .bind(&normalized_query)
+                        .bind(normalized_query)
                         .bind(semantic_limit as i64)
                         .fetch_all(&self.pool)
                         .await?;
@@ -332,7 +416,7 @@ impl Store {
             let index_results = idx.search(query, candidate_count);
 
             if index_results.is_empty() {
-                tracing::debug!("Index returned no candidates, falling back to brute-force");
+                tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
                 return self.search_filtered(query, filter, limit, threshold);
             }
 
@@ -379,12 +463,20 @@ impl Store {
                 q.fetch_all(&self.pool).await?
             };
 
-            // Compile glob pattern once outside the loop (not per-chunk)
-            let glob_matcher = filter
-                .path_pattern
-                .as_ref()
-                .and_then(|p| globset::Glob::new(p).ok())
-                .map(|g| g.compile_matcher());
+            // Compile glob pattern once outside the loop (not per-chunk).
+            // Note: Invalid patterns are logged and silently ignored (returns all results).
+            // Callers should validate patterns upfront via SearchFilter::validate() if they
+            // want to reject invalid patterns. This lenient behavior is intentional to allow
+            // partial searches when users provide malformed patterns interactively.
+            let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
+                match globset::Glob::new(p) {
+                    Ok(g) => Some(g.compile_matcher()),
+                    Err(e) => {
+                        tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
+                        None
+                    }
+                }
+            });
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
             let name_matcher = if use_hybrid {
@@ -433,7 +525,7 @@ impl Store {
                         Some(e) => e,
                         None => return None,
                     };
-                    let embedding_score = cosine_similarity(query.as_slice(), embedding);
+                    let embedding_score = cosine_similarity(query.as_slice(), embedding)?;
 
                     let score = if let Some(ref matcher) = name_matcher {
                         let name_score = matcher.score(&chunk_row.name);
@@ -491,7 +583,7 @@ impl Store {
             let index_results = idx.search(query, candidate_count);
 
             if index_results.is_empty() {
-                tracing::debug!("Index returned no candidates, falling back to brute-force");
+                tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
                 (
                     self.search_filtered(query, filter, limit, threshold)?,
                     self.search_notes(query, limit, threshold)?,
@@ -565,54 +657,7 @@ impl Store {
 mod tests {
     use super::*;
 
-    // ===== cosine_similarity tests =====
-
-    fn make_embedding(val: f32) -> Vec<f32> {
-        vec![val; 769]
-    }
-
-    fn make_unit_embedding(idx: usize) -> Vec<f32> {
-        let mut v = vec![0.0; 769];
-        v[idx] = 1.0;
-        v
-    }
-
-    #[test]
-    fn test_cosine_similarity_identical() {
-        let a = make_embedding(0.5);
-        let sim = cosine_similarity(&a, &a);
-        // Identical vectors should have high similarity
-        assert!(sim > 0.99, "Expected ~1.0, got {}", sim);
-    }
-
-    #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = make_unit_embedding(0);
-        let b = make_unit_embedding(1);
-        let sim = cosine_similarity(&a, &b);
-        // Orthogonal unit vectors should have 0 similarity
-        assert!(sim.abs() < 0.01, "Expected ~0, got {}", sim);
-    }
-
-    #[test]
-    fn test_cosine_similarity_symmetric() {
-        let a: Vec<f32> = (0..769).map(|i| (i as f32) / 769.0).collect();
-        let b: Vec<f32> = (0..769).map(|i| 1.0 - (i as f32) / 769.0).collect();
-        let sim_ab = cosine_similarity(&a, &b);
-        let sim_ba = cosine_similarity(&b, &a);
-        assert!((sim_ab - sim_ba).abs() < 1e-6, "Should be symmetric");
-    }
-
-    #[test]
-    fn test_cosine_similarity_range() {
-        // Random-ish vectors
-        let a: Vec<f32> = (0..769).map(|i| ((i * 7) % 100) as f32 / 100.0).collect();
-        let b: Vec<f32> = (0..769).map(|i| ((i * 13) % 100) as f32 / 100.0).collect();
-        let sim = cosine_similarity(&a, &b);
-        // Cosine similarity for non-normalized vectors can exceed [-1, 1]
-        // but for typical embeddings should be reasonable
-        assert!(sim.is_finite(), "Should be finite");
-    }
+    // cosine_similarity tests are in src/math.rs
 
     // ===== name_match_score tests =====
 

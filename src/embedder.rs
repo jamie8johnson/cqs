@@ -58,10 +58,59 @@ pub const MODEL_DIM: usize = 768;
 /// Full embedding dimension with sentiment
 pub const EMBEDDING_DIM: usize = 769;
 
+/// Error returned when creating an embedding with invalid dimensions
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingDimensionError {
+    /// The actual dimension provided
+    pub actual: usize,
+    /// The expected dimension (769)
+    pub expected: usize,
+}
+
+impl std::fmt::Display for EmbeddingDimensionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Invalid embedding dimension: expected {}, got {}",
+            self.expected, self.actual
+        )
+    }
+}
+
+impl std::error::Error for EmbeddingDimensionError {}
+
 impl Embedding {
-    /// Create a new embedding from raw vector data
+    /// Create a new embedding from raw vector data (unchecked).
+    ///
+    /// This does not validate the dimension. For validated construction,
+    /// use `try_new()` which ensures 769-dimensional input.
     pub fn new(data: Vec<f32>) -> Self {
         Self(data)
+    }
+
+    /// Create a new embedding with dimension validation.
+    ///
+    /// Returns `Err` if the vector is not exactly 769 dimensions.
+    /// Use this when constructing embeddings from untrusted sources.
+    ///
+    /// # Example
+    /// ```
+    /// use cqs::embedder::Embedding;
+    ///
+    /// let valid = Embedding::try_new(vec![0.5; 769]);
+    /// assert!(valid.is_ok());
+    ///
+    /// let invalid = Embedding::try_new(vec![0.5; 768]);
+    /// assert!(invalid.is_err());
+    /// ```
+    pub fn try_new(data: Vec<f32>) -> Result<Self, EmbeddingDimensionError> {
+        if data.len() != EMBEDDING_DIM {
+            return Err(EmbeddingDimensionError {
+                actual: data.len(),
+                expected: EMBEDDING_DIM,
+            });
+        }
+        Ok(Self(data))
     }
 
     /// Append sentiment as 769th dimension
@@ -144,7 +193,7 @@ impl std::fmt::Display for ExecutionProvider {
 ///
 /// let mut embedder = Embedder::new()?;
 /// let embedding = embedder.embed_query("parse configuration file")?;
-/// println!("Embedding dimension: {}", embedding.len()); // 768
+/// println!("Embedding dimension: {}", embedding.len()); // 769
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Embedder {
@@ -152,9 +201,8 @@ pub struct Embedder {
     session: OnceCell<Mutex<Session>>,
     /// Lazy-loaded tokenizer
     tokenizer: OnceCell<tokenizers::Tokenizer>,
-    /// Cached model paths
-    model_path: PathBuf,
-    tokenizer_path: PathBuf,
+    /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
+    model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
     max_length: usize,
     batch_size: usize,
@@ -162,15 +210,19 @@ pub struct Embedder {
     query_cache: Mutex<LruCache<String, Embedding>>,
 }
 
+/// Default query cache size (entries). Each entry is ~3KB (768 floats + key).
+const DEFAULT_QUERY_CACHE_SIZE: usize = 32;
+
 impl Embedder {
-    /// Create a new embedder, downloading the model if necessary
+    /// Create a new embedder with lazy model loading
     ///
     /// Automatically detects GPU and uses CUDA/TensorRT when available.
     /// Falls back to CPU if no GPU is found.
     ///
-    /// Note: ONNX session is lazy-loaded on first embedding request (~500ms).
+    /// Note: Model download and ONNX session are lazy-loaded on first
+    /// embedding request. This avoids HuggingFace API calls for commands
+    /// that don't need embeddings.
     pub fn new() -> Result<Self, EmbedderError> {
-        let (model_path, tokenizer_path) = ensure_model()?;
         let provider = select_provider();
 
         let batch_size = match provider {
@@ -179,14 +231,14 @@ impl Embedder {
         };
 
         let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(100).expect("100 is non-zero"),
+            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
+                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
         ));
 
         Ok(Self {
             session: OnceCell::new(),
             tokenizer: OnceCell::new(),
-            model_path,
-            tokenizer_path,
+            model_paths: OnceCell::new(),
             provider,
             max_length: 512,
             batch_size,
@@ -194,22 +246,20 @@ impl Embedder {
         })
     }
 
-    /// Create a CPU-only embedder
+    /// Create a CPU-only embedder with lazy model loading
     ///
     /// Use this for single-query embedding where CPU is faster than GPU
     /// due to CUDA context setup overhead. GPU only helps for batch embedding.
     pub fn new_cpu() -> Result<Self, EmbedderError> {
-        let (model_path, tokenizer_path) = ensure_model()?;
-
         let query_cache = Mutex::new(LruCache::new(
-            NonZeroUsize::new(100).expect("100 is non-zero"),
+            NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
+                .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
         ));
 
         Ok(Self {
             session: OnceCell::new(),
             tokenizer: OnceCell::new(),
-            model_path,
-            tokenizer_path,
+            model_paths: OnceCell::new(),
             provider: ExecutionProvider::CPU,
             max_length: 512,
             batch_size: 4,
@@ -217,18 +267,25 @@ impl Embedder {
         })
     }
 
+    /// Get or initialize model paths (lazy download)
+    fn model_paths(&self) -> Result<&(PathBuf, PathBuf), EmbedderError> {
+        self.model_paths.get_or_try_init(ensure_model)
+    }
+
     /// Get or initialize the ONNX session
     fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, EmbedderError> {
+        let (model_path, _) = self.model_paths()?;
         let session = self
             .session
-            .get_or_try_init(|| create_session(&self.model_path, self.provider).map(Mutex::new))?;
+            .get_or_try_init(|| create_session(model_path, self.provider).map(Mutex::new))?;
         Ok(session.lock().unwrap_or_else(|p| p.into_inner()))
     }
 
     /// Get or initialize the tokenizer
     fn tokenizer(&self) -> Result<&tokenizers::Tokenizer, EmbedderError> {
+        let (_, tokenizer_path) = self.model_paths()?;
         self.tokenizer.get_or_try_init(|| {
-            tokenizers::Tokenizer::from_file(&self.tokenizer_path)
+            tokenizers::Tokenizer::from_file(tokenizer_path)
                 .map_err(|e| EmbedderError::TokenizerError(e.to_string()))
         })
     }
@@ -245,12 +302,24 @@ impl Embedder {
     /// Split text into overlapping windows of max_tokens with overlap tokens of context.
     /// Returns Vec of (window_content, window_index).
     /// If text fits in max_tokens, returns single window with index 0.
+    ///
+    /// # Panics
+    /// Panics if `overlap >= max_tokens / 2` as this creates exponential window count.
     pub fn split_into_windows(
         &self,
         text: &str,
         max_tokens: usize,
         overlap: usize,
     ) -> Result<Vec<(String, u32)>, EmbedderError> {
+        // Validate overlap to prevent exponential window explosion.
+        // overlap >= max_tokens/2 means step <= max_tokens/2, causing O(2n/max_tokens) windows
+        // instead of O(n/max_tokens). With overlap >= max_tokens, step becomes 1 token = disaster.
+        assert!(
+            overlap < max_tokens / 2,
+            "overlap ({overlap}) must be less than max_tokens/2 ({}) to prevent exponential windows",
+            max_tokens / 2
+        );
+
         let tokenizer = self.tokenizer()?;
         let encoding = tokenizer
             .encode(text, false)
@@ -262,10 +331,9 @@ impl Embedder {
         }
 
         let mut windows = Vec::new();
-        // Step size: tokens per window minus overlap. saturating_sub prevents underflow,
-        // .max(1) ensures forward progress (avoids infinite loop if overlap >= max_tokens).
-        // For best results: overlap < max_tokens/2 (ensures step > max_tokens/2).
-        let step = max_tokens.saturating_sub(overlap).max(1);
+        // Step size: tokens per window minus overlap.
+        // The assertion above guarantees step > max_tokens/2, ensuring linear window count.
+        let step = max_tokens - overlap;
         let mut start = 0;
         let mut window_idx = 0u32;
 
@@ -312,7 +380,7 @@ impl Embedder {
         // Check cache first (lock released after check to allow parallel computation)
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
-                tracing::debug!("Query cache lock poisoned, recovering");
+                tracing::warn!("Query cache lock poisoned (prior panic), recovering");
                 poisoned.into_inner()
             });
             if let Some(cached) = cache.get(text) {
@@ -333,7 +401,7 @@ impl Embedder {
         // Store in cache (idempotent - duplicate puts for same key are harmless)
         {
             let mut cache = self.query_cache.lock().unwrap_or_else(|poisoned| {
-                tracing::debug!("Query cache lock poisoned, recovering");
+                tracing::warn!("Query cache lock poisoned (prior panic), recovering");
                 poisoned.into_inner()
             });
             cache.put(text.to_string(), embedding.clone());
@@ -495,23 +563,29 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
-/// Ensure ort CUDA provider libraries are findable
+/// Ensure ort CUDA provider libraries are findable (Unix only)
 ///
 /// The ort crate downloads provider libs to ~/.cache/ort.pyke.io/... but
 /// doesn't add them to the library search path. This function creates
 /// symlinks in a directory that's already in LD_LIBRARY_PATH.
+#[cfg(unix)]
 fn ensure_ort_provider_libs() {
-    // Find ort's download cache
-    let home = match std::env::var("HOME") {
-        Ok(h) => std::path::PathBuf::from(h),
-        Err(_) => return,
+    // Find ort's download cache using cross-platform API
+    let cache_dir = match dirs::cache_dir() {
+        Some(c) => c,
+        None => return,
     };
-    let ort_cache = home.join(".cache/ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
+    let ort_cache = cache_dir.join("ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
 
     // Find the versioned subdirectory (hash-named)
     let ort_lib_dir = match std::fs::read_dir(&ort_cache) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .filter_map(|e| {
+                e.map_err(|err| {
+                    tracing::debug!(path = %ort_cache.display(), error = %err, "Failed to read directory entry");
+                })
+                .ok()
+            })
             .filter(|e| e.path().is_dir())
             .map(|e| e.path())
             .next(),
@@ -524,6 +598,7 @@ fn ensure_ort_provider_libs() {
     };
 
     // Find target directory from LD_LIBRARY_PATH (skip ort cache dirs to avoid self-symlinks)
+    // Note: LD_LIBRARY_PATH uses colon separator on Unix
     let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     let ort_cache_str = ort_cache.to_string_lossy();
     let target_dir = ld_path
@@ -577,8 +652,25 @@ fn ensure_ort_provider_libs() {
     }
 }
 
-/// Select the best available execution provider
+/// No-op on non-Unix platforms (CUDA provider libs handled differently)
+#[cfg(not(unix))]
+fn ensure_ort_provider_libs() {
+    // Windows/other platforms: CUDA libraries are typically in PATH already
+}
+
+/// Cached GPU provider detection result
+static CACHED_PROVIDER: OnceCell<ExecutionProvider> = OnceCell::new();
+
+/// Select the best available execution provider (cached)
+///
+/// Provider detection is expensive (checks CUDA/TensorRT availability).
+/// Result is cached in a static OnceCell for subsequent calls.
 fn select_provider() -> ExecutionProvider {
+    *CACHED_PROVIDER.get_or_init(detect_provider)
+}
+
+/// Detect the best available execution provider
+fn detect_provider() -> ExecutionProvider {
     use ort::ep::{TensorRT, CUDA};
 
     // Ensure provider libs are findable before checking availability

@@ -251,6 +251,8 @@ impl Parser {
     /// Returns an empty Vec for non-UTF8 files (with a warning logged).
     /// Returns an error for unsupported file types.
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
+        let _span = tracing::info_span!("parse_file", path = %path.display()).entered();
+
         // Gracefully handle non-UTF8 files
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -544,8 +546,10 @@ impl Parser {
             for cap in m.captures {
                 let callee_name = source[cap.node.byte_range()].to_string();
                 // saturating_sub prevents underflow if line_offset > position
-                let line_number =
-                    (cap.node.start_position().row as u32 + 1).saturating_sub(line_offset);
+                // .max(1) ensures we never produce line 0 (line numbers are 1-indexed)
+                let line_number = (cap.node.start_position().row as u32 + 1)
+                    .saturating_sub(line_offset)
+                    .max(1);
 
                 // Skip common noise (self, this, super, etc.)
                 if !should_skip_callee(&callee_name) {
@@ -730,7 +734,7 @@ impl Parser {
 pub struct Chunk {
     /// Unique identifier: `{file}:{line_start}:{content_hash}` or `{parent_id}:w{window_idx}`
     pub id: String,
-    /// Source file path (relative to project root)
+    /// Source file path (typically absolute during indexing, stored as provided)
     pub file: std::path::PathBuf,
     /// Programming language
     pub language: Language,

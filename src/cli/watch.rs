@@ -1,4 +1,19 @@
 //! Watch mode - monitor for file changes and reindex
+//!
+//! ## Memory Usage
+//!
+//! Watch mode holds several resources in memory while idle:
+//!
+//! - **Parser**: ~1MB for tree-sitter queries (allocated immediately)
+//! - **Store**: SQLite connection pool with up to 4 connections (allocated immediately)
+//! - **Embedder**: ~500MB for ONNX model (lazy-loaded on first file change)
+//!
+//! The Embedder is the largest resource and is only loaded when files actually change.
+//! Once loaded, it remains in memory for fast subsequent reindexing. This tradeoff
+//! favors responsiveness over memory efficiency for long-running watch sessions.
+//!
+//! For memory-constrained environments, consider running `cqs index` manually instead
+//! of using watch mode.
 
 use std::cell::OnceCell;
 use std::collections::HashSet;
@@ -8,6 +23,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use tracing::{info, info_span, warn};
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::nl::generate_nl_description;
@@ -20,7 +36,7 @@ use super::{check_interrupted, find_project_root, Cli};
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
 
-pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
+pub fn cmd_watch(cli: &Cli, debounce_ms: u64, _no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");
@@ -56,8 +72,13 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
 
-    // Lazy-initialized embedder (avoids 500ms startup delay unless changes occur)
+    // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
+    // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
     let embedder: OnceCell<Embedder> = OnceCell::new();
+
+    // Open store once and reuse across all reindex operations.
+    // Store uses connection pooling internally, so this is efficient.
+    let store = Store::open(&index_path)?;
 
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
@@ -91,9 +112,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                 }
             }
             Ok(Err(e)) => {
-                if !cli.quiet {
-                    eprintln!("Watch error: {}", e);
-                }
+                warn!(error = %e, "Watch error");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Check if we should process pending changes
@@ -117,27 +136,19 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             None => match Embedder::new() {
                                 Ok(e) => embedder.get_or_init(|| e),
                                 Err(e) => {
-                                    eprintln!("Failed to initialize embedder: {}", e);
+                                    warn!(error = %e, "Failed to initialize embedder");
                                     continue;
                                 }
                             },
                         };
-                        match reindex_files(
-                            &root,
-                            &index_path,
-                            &files,
-                            &parser,
-                            emb,
-                            no_ignore,
-                            cli.quiet,
-                        ) {
+                        match reindex_files(&root, &store, &files, &parser, emb, cli.quiet) {
                             Ok(count) => {
                                 if !cli.quiet {
                                     println!("Indexed {} chunk(s)", count);
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Reindex error: {}", e);
+                                warn!(error = %e, "Reindex error");
                             }
                         }
                     }
@@ -153,19 +164,19 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             None => match Embedder::new() {
                                 Ok(e) => embedder.get_or_init(|| e),
                                 Err(e) => {
-                                    eprintln!("Failed to initialize embedder: {}", e);
+                                    warn!(error = %e, "Failed to initialize embedder");
                                     continue;
                                 }
                             },
                         };
-                        match reindex_notes(&root, &index_path, emb, cli.quiet) {
+                        match reindex_notes(&root, &store, emb, cli.quiet) {
                             Ok(count) => {
                                 if !cli.quiet {
                                     println!("Indexed {} note(s)", count);
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Notes reindex error: {}", e);
+                                warn!(error = %e, "Notes reindex error");
                             }
                         }
                     }
@@ -191,14 +202,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 /// Reindex specific files
 fn reindex_files(
     root: &Path,
-    index_path: &Path,
+    store: &Store,
     files: &[PathBuf],
     parser: &CqParser,
     embedder: &Embedder,
-    _no_ignore: bool,
     quiet: bool,
 ) -> Result<usize> {
-    let store = Store::open(index_path)?;
+    let _span = info_span!("reindex_files", file_count = files.len()).entered();
+    info!(file_count = files.len(), "Reindexing files");
 
     // Parse the changed files
     let chunks: Vec<_> = files
@@ -262,12 +273,9 @@ fn reindex_files(
 }
 
 /// Reindex notes from docs/notes.toml
-fn reindex_notes(
-    root: &Path,
-    index_path: &Path,
-    embedder: &Embedder,
-    quiet: bool,
-) -> Result<usize> {
+fn reindex_notes(root: &Path, store: &Store, embedder: &Embedder, quiet: bool) -> Result<usize> {
+    let _span = info_span!("reindex_notes").entered();
+
     let notes_path = root.join("docs/notes.toml");
     if !notes_path.exists() {
         return Ok(0);
@@ -278,8 +286,7 @@ fn reindex_notes(
         return Ok(0);
     }
 
-    let store = Store::open(index_path)?;
-    let count = cqs::index_notes(&notes, &notes_path, embedder, &store)?;
+    let count = cqs::index_notes(&notes, &notes_path, embedder, store)?;
 
     if !quiet {
         let (total, warnings, patterns) = store.note_stats()?;

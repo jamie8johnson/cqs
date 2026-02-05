@@ -59,6 +59,7 @@ pub mod embedder;
 pub mod hnsw;
 pub mod index;
 pub mod language;
+pub mod math;
 pub mod mcp;
 pub mod nl;
 pub mod note;
@@ -70,12 +71,13 @@ pub mod store;
 #[cfg(feature = "gpu-search")]
 pub mod cagra;
 
-pub use embedder::Embedder;
+pub use embedder::{Embedder, Embedding};
 pub use hnsw::HnswIndex;
 pub use index::{IndexResult, VectorIndex};
 pub use mcp::{serve_http, serve_stdio};
-pub use parser::Parser;
-pub use store::Store;
+pub use note::parse_notes;
+pub use parser::{Chunk, Parser};
+pub use store::{ModelInfo, SearchFilter, Store};
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;
@@ -103,6 +105,8 @@ pub fn index_notes(
     embedder: &Embedder,
     store: &Store,
 ) -> anyhow::Result<usize> {
+    tracing::info!(path = %notes_path.display(), count = notes.len(), "Indexing notes");
+
     if notes.is_empty() {
         return Ok(0);
     }
@@ -123,8 +127,18 @@ pub fn index_notes(
     let file_mtime = notes_path
         .metadata()
         .and_then(|m| m.modified())
+        .map_err(|e| {
+            tracing::trace!(path = %notes_path.display(), error = %e, "Failed to get file mtime");
+            e
+        })
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| {
+                    tracing::trace!(path = %notes_path.display(), error = %e, "File mtime before Unix epoch");
+                })
+                .ok()
+        })
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 

@@ -13,7 +13,7 @@ cqs processes your code entirely on your machine. Nothing is transmitted externa
 When you run `cqs index`, the following is stored in `.cq/index.db`:
 
 - Code chunks (functions, methods)
-- Embedding vectors (768-dimensional floats)
+- Embedding vectors (769-dimensional floats: 768 from E5-base-v2 + 1 sentiment dimension)
 - File paths and line numbers
 - File modification times
 

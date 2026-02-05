@@ -1,321 +1,566 @@
 # Audit Triage
 
-Generated: 2026-02-04
+Generated: 2026-02-05
 
-Source: `docs/audit-findings.md` (202 raw findings)
+Based on findings from `docs/audit-findings.md` (fresh 20-category audit)
 
-## Duplicate Clusters
+## Priority Criteria
 
-These findings describe the same underlying issue across multiple categories:
-
-### Cluster A: Language/Query Duplication (5 findings → 1 issue)
-- Code Hygiene #1: Duplicated Tree-Sitter Query Constants (hard)
-- Code Hygiene #4: Unused LanguageRegistry Infrastructure (hard)
-- Module Boundaries #1: Duplicate Language Enum Definitions (medium)
-- Module Boundaries #8: Parser Module Contains Query Constants (medium)
-- Extensibility #1: Duplicate Language Enum (medium)
-
-**Root issue:** Dual language systems - parser.rs has own Language enum + queries while language/ module exists but is unused.
-**Tier:** P4 (hard architectural)
-
-### Cluster B: Model Name Mismatch (5 findings → 1 issue)
-- Documentation #1: lib.rs says nomic (easy)
-- Documentation #2: embedder.rs says nomic (easy)
-- Documentation #3: CHANGELOG says nomic (easy)
-- Documentation #15: DESIGN_SPEC says nomic (easy)
-- Documentation #17: CI workflow checks wrong model (medium)
-
-**Root issue:** Model changed from nomic-embed-text-v1.5 to E5-base-v2 but docs not updated.
-**Tier:** P1 (easy Batch 1, high visibility)
-
-### Cluster C: Note Search O(n) (3 findings → 1 issue)
-- Algorithmic Complexity #2: O(n) Brute-Force Note Search (medium)
-- I/O Efficiency #1: Note Search Full Table Scan (medium)
-- Edge Cases #8: No Limit on Notes in Memory (medium)
-
-**Root issue:** Notes not indexed in HNSW, always brute-force searched.
-**Tier:** P3 (medium Batch 3-4)
-
-### Cluster D: Embedder Cold Start (3 findings → 1 issue)
-- I/O Efficiency #5: No Embedder Caching Across CLI (hard)
-- Resource Footprint #3: ONNX Session Cold Start (hard)
-- Resource Footprint #11: Watch Creates Embedder Per Reindex (easy)
-
-**Root issue:** ONNX session initialized per-command instead of cached.
-**Tier:** P4 (hard)
-
-### Cluster E: HNSW File I/O (2 findings → 1 issue)
-- I/O Efficiency #3: Checksum reads files twice (easy)
-- I/O Efficiency #4: Save re-reads files for checksum (easy)
-
-**Root issue:** Checksum computed by re-reading files instead of hashing during write/load.
-**Tier:** P2 (easy Batch 4)
-
-### Cluster F: Runtime/Store Duplication (3 findings → 1 issue)
-- Resource Footprint #1: Tokio Runtime Per-Store (medium)
-- Resource Footprint #2: Separate HTTP Runtime (easy)
-- Resource Footprint #7: 4 Connections Per Store Pool (easy)
-
-**Root issue:** No shared runtime/store across components.
-**Tier:** P3 (medium Batch 4)
+| Tier | Criteria | Action |
+|------|----------|--------|
+| P1 | Easy + Batch 1-2 (high impact) | Fix immediately |
+| P2 | Easy + Batch 3-4, or Medium + Batch 1 | Fix next |
+| P3 | Medium + Batch 2-3 | Fix if time permits |
+| P4 | Medium + Batch 4, or Hard + any | Create issue, defer |
 
 ---
 
-## De-duplicated Count
+## De-duplication Notes
 
-- Raw findings: 202
-- Duplicate findings removed: 17
-- **Unique issues: 185**
+The following findings appear across multiple categories and should be fixed once:
+
+1. **Language enum duplication** - appears in Code Hygiene, Module Boundaries, API Design, Extensibility
+2. **cosine_similarity panic** - appears in API Design, Panic Paths, Algorithm Correctness
+3. **normalize_for_fts truncation** - appears in Algorithm Correctness, Edge Cases
+4. **HNSW checksum reads entire file** - appears in Memory Management, I/O Efficiency
+5. **all_embeddings() OOM risk** - appears in Memory Management, Edge Cases
+6. **O(n) brute-force note search** - appears in Algorithmic Complexity, I/O Efficiency
+7. **HNSW save reads files twice** - appears in Memory Management, I/O Efficiency
+8. **Call graph re-reads files** - appears in Algorithmic Complexity, I/O Efficiency
+9. **Multiple Store/runtime instances** - appears in Resource Footprint multiple times
+
+After de-duplication: **~225 unique findings**
 
 ---
 
 ## P1: Fix Immediately (Easy + Batch 1-2)
 
-High-impact maintainability/readability fixes.
+### Documentation (14 easy fixes - highest ROI)
 
-| # | Issue | Location | Category |
-|---|-------|----------|----------|
-| 1 | **Model name mismatches** (Cluster B) | lib.rs, embedder.rs, CHANGELOG, DESIGN_SPEC, CI | Documentation |
-| 2 | Line number clamping helper | 10 locations in store/, search.rs | Code Hygiene |
-| 3 | Dead code markers (#[allow(dead_code)]) | mcp.rs, cli/mod.rs | Code Hygiene |
-| 4 | Magic numbers in configuration | store/mod.rs, hnsw.rs | Code Hygiene |
-| 5 | Commented debug code | search.rs | Code Hygiene |
-| 6 | CLI imports internal types directly | cli/mod.rs:22-27 | Module Boundaries |
-| 7 | ChunkRow exposed publicly | store/helpers.rs | Module Boundaries |
-| 8 | nl module coupled to parser | nl.rs:6 | Module Boundaries |
-| 9 | normalize_for_fts in wrong module | store/mod.rs | Module Boundaries |
-| 10 | CAGRA/HNSW selection scattered | cli/mod.rs, cagra.rs | Module Boundaries |
-| 11 | Missing doc comments (8 items) | nl.rs, parser.rs, note.rs, config.rs, helpers.rs | Documentation |
-| 12 | Redundant HnswResult vs IndexResult | hnsw.rs, index.rs | API Design |
-| 13 | serve_http/stdio doc mismatch | mcp.rs | API Design |
-| 14 | SearchFilter validation missing | store/helpers.rs | API Design |
-| 15 | MCP tool naming convention | mcp.rs | API Design |
-| 16 | Language::FromStr error type | parser.rs | API Design |
-| 17 | Config::merge naming confusing | config.rs | API Design |
-| 18 | Note index-based IDs fragile | note.rs | API Design |
-| 19 | &Path vs PathBuf inconsistent | multiple files | API Design |
-| 20 | VectorIndex takes &Embedding not &[f32] | index.rs | API Design |
-| 21 | Swallowed .ok() patterns (9 items) | cli/mod.rs, store/*.rs, source/*.rs | Error Propagation |
-| 22 | FTS delete errors ignored | store/chunks.rs, notes.rs | Error Propagation |
-| 23 | parse_duration .unwrap_or(0) | mcp.rs | Error Propagation |
-| 24 | HNSW checksum warns not fails | hnsw.rs | Error Propagation |
-| 25 | Thread panic loses payload | cli/mod.rs | Error Propagation |
-| 26 | Tracing subscriber no log levels | main.rs | Observability |
-| 27 | Embedder batch timing missing | embedder.rs | Observability |
-| 28 | MCP tool calls not logged | mcp.rs | Observability |
-| 29 | Note indexing silent | store/notes.rs | Observability |
-| 30 | Call graph no progress | store/calls.rs | Observability |
-| 31 | Watch mode uses print not trace | cli/mod.rs | Observability |
-| 32 | Parser errors not detailed | parser.rs | Observability |
-| 33 | HNSW checksum asymmetric logging | hnsw.rs | Observability |
-| 34 | Config loading silent | config.rs | Observability |
-| 35 | Missing tests: token_count | embedder.rs | Test Coverage |
-| 36 | Missing tests: cosine_similarity | search.rs | Test Coverage |
-| 37 | Missing tests: name_match_score | search.rs | Test Coverage |
-| 38 | Missing tests: delete_by_origin | store/chunks.rs | Test Coverage |
-| 39 | Missing tests: needs_reindex | store/chunks.rs | Test Coverage |
-| 40 | Missing tests: parse_duration | mcp.rs | Test Coverage |
-| 41 | Missing tests: AuditMode | mcp.rs | Test Coverage |
-| 42 | Missing tests: Source error paths | source/filesystem.rs | Test Coverage |
-| 43 | Missing tests: parse_file_calls | parser.rs | Test Coverage |
-| 44 | Missing tests: ChunkType.from_str | language/mod.rs | Test Coverage |
-| 45 | Incomplete unicode proptest | store/mod.rs | Test Coverage |
-| 46 | display.rs bounds unchecked | cli/display.rs | Panic Paths |
-| 47 | Ctrl+C handler .expect() | cli/mod.rs | Panic Paths |
-| 48 | Progress bar .expect() | cli/mod.rs | Panic Paths |
-| 49 | Static regex .expect() | nl.rs | Panic Paths |
-| 50 | embed_batch .expect() single item | embedder.rs | Panic Paths |
-| 51 | NonZeroUsize .expect() on literals | embedder.rs | Panic Paths |
-| 52 | Call extraction line underflow | parser.rs | Algorithm Correctness |
-| 53 | RRF property test wrong max | store/mod.rs | Algorithm Correctness |
-| 54 | Context line edge case | cli/display.rs | Algorithm Correctness |
-| 55 | TypeScript return type parens | nl.rs | Algorithm Correctness |
-| 56 | **Go return type broken** | nl.rs | Algorithm Correctness |
-| 57 | Hardcoded language list in MCP | mcp.rs | Extensibility |
-| 58 | Hardcoded chunk/token limits | parser.rs, cli/mod.rs | Extensibility |
-| 59 | HNSW params not configurable | hnsw.rs | Extensibility |
-| 60 | Project root markers hardcoded | cli/mod.rs | Extensibility |
-| 61 | SignatureStyle enum closed | language/mod.rs | Extensibility |
-| 62 | RRF K constant hardcoded | store/mod.rs | Extensibility |
-| 63 | Callee skip list hardcoded | parser.rs | Extensibility |
-| 64 | Sentiment thresholds hardcoded | note.rs | Extensibility |
+| # | Finding | Location |
+|---|---------|----------|
+| D1 | PRIVACY.md: 768 dims → 769 | `PRIVACY.md:16` |
+| D2 | README.md: Outdated upgrade version | `README.md:34-36` |
+| D3 | SECURITY.md: Protocol version wrong | `SECURITY.md:56` |
+| D4 | ROADMAP.md: Schema v9 → v10 | `ROADMAP.md:227` |
+| D5 | Embedder docstring: 768 → 769 | `src/embedder.rs:147` |
+| D6 | CHANGELOG.md: E5 adoption version mismatch | `CHANGELOG.md:398` |
+| D8 | ModelInfo::default() stale version | `src/store/helpers.rs:278-279` |
+| D9 | Chunk.file doc says relative, is absolute | `src/parser.rs:733` |
+| D10 | ChunkSummary.file same issue | `src/store/helpers.rs:69` |
+| D11 | README.md: HTTP endpoint descriptions missing | `README.md:206-209` |
+| D13 | README missing cqs_read tool | `README.md:188-195` |
+| D14 | README missing cqs_audit_mode tool | `README.md:188-195` |
+| D15 | Config file missing note_weight | `README.md:91-106` |
+| D17 | nl.rs tokenize_identifier bad example | `src/nl.rs:69` |
 
-**Total P1: 64 unique issues**
+### Code Hygiene (7 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| H1 | ExitCode enum unused | `src/cli/mod.rs:49` |
+| H2 | run() incorrectly marked dead | `src/cli/mod.rs:217` |
+| H3 | InitializeParams fields unused | `src/mcp.rs:76-87` |
+| H4 | _no_ignore parameter unused | `src/cli/watch.rs:198` |
+| H9 | Note search scoring duplicated | `src/store/notes.rs:75-128, 235-310` |
+| H11 | Redundant .to_string() calls | Multiple files |
+| H12 | Magic sentiment thresholds | `src/store/notes.rs:196-203` |
+
+### Error Propagation (15 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| E1 | Glob pattern parsing silent fail | `src/search.rs:184` |
+| E2 | Second glob silent failure | `src/search.rs:386` |
+| E3 | Directory iteration errors filtered | `src/embedder.rs:514` |
+| E4 | File mtime retrieval swallows errors | `src/lib.rs:126-129` |
+| E6 | Schema version parsing defaults to 0 | `src/store/mod.rs:183` |
+| E12 | MCP notes parse success assumed | `src/mcp.rs:1053-1066` |
+| E14 | File enumeration skips canonicalization | `src/cli/mod.rs:374-379` |
+| E15 | Walker entry errors filtered | `src/cli/mod.rs:356` |
+| E16 | Embedding byte length inconsistent logging | `src/store/helpers.rs:339-344` |
+| E17 | Poisoned mutex at debug, not warn | `src/embedder.rs:314-316` |
+| E18 | Index guard poisoning not logged | `src/mcp.rs:646,652,716,756,878,1096` |
+| E19 | Generic "Failed to open index" missing path | `src/mcp.rs:234` |
+| E20 | Store schema mismatch error missing path | `src/store/helpers.rs:32-35` |
+
+### API Design (11 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| A1 | usize vs u64 for counts | `src/store/chunks.rs:264`, `src/store/notes.rs:178` |
+| A2 | needs_reindex return type mismatch | `src/store/chunks.rs:94`, `src/store/notes.rs:155` |
+| A7 | ChunkType::from_str returns anyhow | `src/language/mod.rs:97-114` |
+| A8 | Inconsistent search method naming | `src/store/mod.rs:271-361` |
+| A9 | VectorIndex trait shadows inherent | `src/index.rs:30`, `src/hnsw.rs:360` |
+| A10 | serve_http parameter ordering | `src/mcp.rs:1261` |
+| A11 | embedding_batches non-fused iterator | `src/store/chunks.rs:405-415` |
+| A13 | HnswIndex::build vs build_batched asymmetry | `src/hnsw.rs:195,268` |
+| A14 | Config fields all Option, no defaults | `src/config.rs:24-37` |
+| A15 | **cosine_similarity panics** (dedup) | `src/search.rs:23-25` |
+| A16 | Embedding::new() no validation | `src/embedder.rs:62-65` |
+
+### Module Boundaries (4 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| M3 | lib.rs contains index_notes logic | `src/lib.rs:100-141` |
+| M5 | Store depends on NL module | `src/store/chunks.rs:14`, `src/store/notes.rs:12` |
+| M7 | Parser re-exports internal ChunkType | `src/parser.rs:9` |
+| M11 | Index module is minimal (30 lines) | `src/index.rs:1-30` |
+
+### Observability (10 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| O2 | Watch mode lacks tracing spans | `src/cli/watch.rs:90-150` |
+| O3 | Parser has no timing spans | `src/parser.rs` |
+| O4 | Database pool creation silent | `src/store/mod.rs:50-80` |
+| O5 | GPU failures use eprintln | `src/cli/mod.rs:580-590` |
+| O6 | Index fallback at debug level | `src/search.rs:180-200` |
+| O11 | Call graph ops at trace only | `src/store/calls.rs` |
+| O12 | Config loading errors not structured | `src/config.rs:80-120` |
+| O13 | index_notes has no logging | `src/lib.rs:15-60` |
+| O16 | Schema migration silent on success | `src/store/mod.rs:100-150` |
+| O17 | Prune operation progress not visible | `src/store/chunks.rs:140-195` |
+
+### Test Coverage (6 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| T3 | Store call graph methods untested | `src/store/calls.rs:1-119` |
+| T4 | search_notes_by_ids untested | `src/store/notes.rs:235` |
+| T5 | note_embeddings untested | `src/store/notes.rs:212` |
+| T6 | note_stats untested | `src/store/notes.rs:188` |
+| T14 | HNSW search error paths untested | `src/hnsw.rs:103` |
+| T17 | Empty input edge cases missing | Multiple |
+
+### Panic Paths (4 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| P3 | Unwrap on enabled field in MCP | `src/mcp.rs:1120` |
+| P4 | Embedder initialization expect | `src/mcp.rs:332` |
+| P6 | Ctrl+C handler expect | `src/cli/mod.rs:72` |
+| P7 | Progress bar template expect | `src/cli/mod.rs:1028` |
+
+### Algorithm Correctness (9 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| AC1 | RRF formula documentation unclear | `src/store/mod.rs:376` |
+| AC4 | CAGRA itopk_size arbitrary constant | `src/cagra.rs:200` |
+| AC5 | Context line boundary off-by-one | `src/cli/display.rs:30-31` |
+| AC6 | Window splitting pathological case | `src/embedder.rs:268` |
+| AC7 | Name matching excludes equal-length | `src/search.rs:100-102` |
+| AC9 | Parser chunk size check boundary | `src/parser.rs:300` |
+| AC11 | Embedding batch iterator offset bug | `src/store/chunks.rs:459` |
+| AC12 | clamp_line_number allows 0 | `src/store/helpers.rs:317-319` |
+| AC13 | **FTS truncates mid-word** (dedup) | `src/nl.rs:130-133` |
+
+### Extensibility (13 easy fixes)
+
+| # | Finding | Location |
+|---|---------|----------|
+| X5 | **Language enum duplicate** (dedup) | `src/parser.rs`, `src/language/mod.rs` |
+| X6 | Closed ChunkType enum | `src/language/mod.rs:62-80` |
+| X8 | Hardcoded chunk size limits | `src/parser.rs:299-301` |
+| X9 | Hardcoded file size limit | `src/cli/mod.rs:32` |
+| X10 | Hardcoded token window params | `src/cli/mod.rs:33-34` |
+| X11 | Hardcoded SQLite pragmas | `src/store/mod.rs:69-96` |
+| X12 | Hardcoded RRF constant | `src/store/mod.rs:371` |
+| X13 | Hardcoded note limits | `src/note.rs:21` |
+| X14 | Hardcoded sentiment thresholds | `src/note.rs:16-17` |
+| X15 | Hardcoded query cache size | `src/embedder.rs:181-183` |
+| X16 | Hardcoded batch sizes | `src/embedder.rs:176-179` |
+| X17 | Hardcoded project root markers | `src/cli/mod.rs:315-322` |
+| X18 | Config file path hardcoded | `src/config.rs:43-47` |
+
+**P1 Total: ~93 findings**
 
 ---
 
-## P2: Fix Next (Easy + Batch 3-4, Medium + Batch 1)
+## P2: Fix Next (Easy + Batch 3-4, or Medium + Batch 1)
 
-| # | Issue | Location | Category |
-|---|-------|----------|----------|
-| 1 | **Unicode string slicing panic** | mcp.rs:991 | Edge Cases |
-| 2 | Inconsistent error handling style | store/mod.rs, notes.rs | Code Hygiene |
-| 3 | Feature flag query duplication | parser.rs | Code Hygiene |
-| 4 | MCP/CLI duplicate note indexing | mcp.rs, cli/mod.rs | Module Boundaries |
-| 5 | Embedder has ONNX setup logic | embedder.rs | Module Boundaries |
-| 6 | Config documentation missing README | README.md | Documentation |
-| 7 | CLI command docs incomplete | cli/mod.rs | Documentation |
-| 8 | Inconsistent search naming | search.rs, store/mod.rs | API Design |
-| 9 | Embedding dimension validation | embedder.rs | API Design |
-| 10 | Chunk ID format exposed | parser.rs | API Design |
-| 11 | Parse failures default silently | store/helpers.rs | Error Propagation |
-| 12 | Missing .context() on ? | cli/mod.rs | Error Propagation |
-| 13 | CAGRA failure not surfaced | mcp.rs | Error Propagation |
-| 14 | GPU failures no metrics | cli/mod.rs | Error Propagation |
-| 15 | Non-atomic note append | mcp.rs | Data Integrity |
-| 16 | Embedding dim not validated on load | store/helpers.rs | Data Integrity |
-| 17 | HNSW id_map size not validated | hnsw.rs | Data Integrity |
-| 18 | Model dimensions not validated | store/mod.rs | Data Integrity |
-| 19 | Empty query no feedback | store/mod.rs | Edge Cases |
-| 20 | No max query length | embedder.rs | Edge Cases |
-| 21 | Content hash slicing assumes hex | parser.rs, cli/mod.rs | Edge Cases |
-| 22 | Parser capture index bounds | parser.rs | Edge Cases |
-| 23 | Empty result no distinction | search.rs | Edge Cases |
-| 24 | Window calculation overflow | embedder.rs | Edge Cases |
-| 25 | Windows process_exists shell | cli/mod.rs | Platform Behavior |
-| 26 | Hardcoded forward slash | mcp.rs, cli/mod.rs | Platform Behavior |
-| 27 | No line ending normalization | parser.rs, filesystem.rs | Platform Behavior |
-| 28 | libc unconditional dependency | Cargo.toml | Platform Behavior |
-| 29 | Intermediate Vec allocations | embedder.rs | Memory Management |
-| 30 | Clone-heavy search results | search.rs | Memory Management |
-| 31 | Unbounded note parsing | note.rs | Memory Management |
-| 32 | Watch pending_files unbounded | cli/mod.rs | Memory Management |
-| 33 | CAGRA index not restored on error | cagra.rs | Concurrency Safety |
-| 34 | Embedder cache race | embedder.rs | Concurrency Safety |
-| 35 | MCP CAGRA opens separate Store | mcp.rs | Concurrency Safety |
-| 36 | INTERRUPTED memory ordering | cli/mod.rs | Concurrency Safety |
-| 37 | HTTP RwLock unnecessary | mcp.rs | Concurrency Safety |
-| 38 | TOML injection in mentions | mcp.rs | Input Security |
-| 39 | Glob pattern validation | search.rs | Input Security |
-| 40 | FTS normalization unbounded | store/mod.rs | Input Security |
-| 41 | Config from user path | config.rs | Input Security |
-| 42 | Notes path not validated | mcp.rs | Input Security |
-| 43 | No file permission controls | hnsw.rs, mcp.rs, cli/mod.rs | Data Security |
-| 44 | Database path in errors | store/mod.rs | Data Security |
-| 45 | name_match_score O(n*m) | search.rs | Algorithmic Complexity |
-| 46 | tokenize_identifier repeated | store/mod.rs | Algorithmic Complexity |
-| 47 | prune_missing individual deletes | store/chunks.rs | Algorithmic Complexity |
-| 48 | stats() multiple queries | store/chunks.rs | Algorithmic Complexity |
-| 49 | HashSet per function | parser.rs | Algorithmic Complexity |
-| 50 | **HNSW checksum I/O** (Cluster E) | hnsw.rs | I/O Efficiency |
-| 51 | File metadata read twice | cli/mod.rs, store/chunks.rs | I/O Efficiency |
-| 52 | Stats loads HNSW for length | cli/mod.rs | I/O Efficiency |
-| 53 | Metadata queries not batched | store/chunks.rs | I/O Efficiency |
-| 54 | Separate HTTP runtime | mcp.rs | Resource Footprint |
-| 55 | CAGRA thread not tracked | mcp.rs | Resource Footprint |
-| 56 | SQLite mmap 256MB | store/mod.rs | Resource Footprint |
-| 57 | 4 connections per Store | store/mod.rs | Resource Footprint |
-| 58 | Query cache size hardcoded | embedder.rs | Resource Footprint |
+### Easy Batch 3-4
 
-**Total P2: 58 unique issues**
+#### Data Integrity (10 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| DI2 | prune_missing not transactional | `src/store/chunks.rs:162-194` |
+| DI3 | upsert_calls not transactional | `src/store/calls.rs:17-40` |
+| DI4 | upsert_function_calls not transactional | `src/store/calls.rs:114-161` |
+| DI6 | No embedding size validation on insert | `src/store/helpers.rs:324-329` |
+| DI7 | Corrupted embeddings silently filtered | `src/store/chunks.rs:382-392` |
+| DI8 | ID map/HNSW count mismatch only checked on load | `src/hnsw.rs:503-515` |
+| DI9 | No foreign key enforcement | `src/store/mod.rs:68-96` |
+| DI10 | notes.toml ID collision with hash truncation | `src/note.rs:119-123` |
+| DI13 | Checksum doc limitation | `src/hnsw.rs:97-131` |
+| DI14 | Missing WAL checkpoint on shutdown | `src/store/mod.rs:55-114` |
+
+#### Edge Cases (5 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| EC6 | Duration parsing overflow | `src/mcp.rs:1347-1408` |
+| EC8 | Zero limit produces confusing results | `src/mcp.rs:595` |
+| EC9 | Empty mentions silently dropped | `src/store/notes.rs:36` |
+| EC11 | SearchFilter doesn't check control chars | `src/store/helpers.rs:254-260` |
+
+#### Platform Behavior (7 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| PB2 | Hardcoded Linux cache path | `src/embedder.rs:509` |
+| PB3 | $HOME environment variable assumption | `src/embedder.rs:505` |
+| PB5 | Colon path separator Linux-specific | `src/embedder.rs:529` |
+| PB6 | Path display in database URL | `src/store/mod.rs:65` |
+| PB7 | Chunk ID path separators | `src/cli/mod.rs:717-723` |
+| PB8 | JSON output path slashes | `src/cli/display.rs:176`, `src/mcp.rs:608` |
+| PB10 | Path canonicalization UNC paths | `src/cli/mod.rs:344`, `src/mcp.rs:862-865` |
+
+#### Memory Management (6 easy, deduped)
+| # | Finding | Location |
+|---|---------|----------|
+| MM3 | HnswIndex::build() loads all | `src/hnsw.rs:195-246` |
+| MM5 | Unbounded Vec in search results | `src/search.rs:194-228` |
+| MM6 | FileSystemSource collects all files | `src/source/filesystem.rs:39-76` |
+| MM7 | **HNSW checksum reads entire file** (dedup) | `src/hnsw.rs:117` |
+| MM9 | MCP tool_read() no file size limit | `src/mcp.rs:874` |
+| MM10 | embed_documents temporary Strings | `src/embedder.rs:294-296` |
+
+#### Concurrency Safety (1 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| CS4 | Audit mode TOCTOU | `src/mcp.rs:649-653, 713-718` |
+
+#### Input Security (4 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| IS1 | FTS5 sanitization implicit | `src/nl.rs:114-149` |
+| IS2 | Glob pattern complexity not limited | `src/store/helpers.rs:254-259` |
+| IS3 | path_pattern not validated before search | `src/search.rs:181-185` |
+| IS4 | Duration parsing no upper bound | `src/mcp.rs:1347-1409` |
+
+#### Data Security (5 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| DS1 | CORS allows any origin | `src/mcp.rs:1274-1277` |
+| DS4 | Notes file created without permissions | `src/mcp.rs:1028-1037` |
+| DS5 | Lock file may leak PID | `src/cli/mod.rs:421-435` |
+| DS7 | Error messages expose paths | `src/mcp.rs:354-364` |
+| DS9 | Health endpoint exposes version | `src/mcp.rs:1580-1586` |
+
+#### Algorithmic Complexity (7 easy)
+| # | Finding | Location |
+|---|---------|----------|
+| AC_2 | NameMatcher O(m*n) substring | `src/search.rs:93-105` |
+| AC_3 | normalize_for_fts allocations | `src/nl.rs:114-149` |
+| AC_4 | tokenize_identifier clone | `src/nl.rs:71-93` |
+| AC_5 | extract_params_nl allocations | `src/nl.rs:241-277` |
+| AC_7 | HashSet rebuilt per search result | `src/search.rs:78-88` |
+| AC_9 | RRF allocates HashMap per search | `src/store/mod.rs:364-392` |
+| AC_10 | prune_missing O(n) HashSet | `src/store/chunks.rs:140-195` |
+
+#### I/O Efficiency (5 easy, deduped)
+| # | Finding | Location |
+|---|---------|----------|
+| IO4 | FTS operations not batched | `src/store/chunks.rs:54-71` |
+| IO6 | Watch mode re-opens Store | `src/cli/watch.rs:115-124` |
+| IO7 | enumerate_files reads metadata twice | `src/cli/mod.rs:356-375` |
+| IO9 | FTS query normalized twice | `src/search.rs:232` |
+
+#### Resource Footprint (8 easy, deduped)
+| # | Finding | Location |
+|---|---------|----------|
+| RF2 | Eager model path resolution | `src/embedder.rs:172-174` |
+| RF3 | GPU provider detection every Embedder | `src/embedder.rs:584-599` |
+| RF5 | Large query cache default | `src/embedder.rs:181-183` |
+| RF6 | Parser recreated multiple times | `src/cli/mod.rs:695-1109` |
+| RF10 | HNSW loaded just for stats count | `src/cli/mod.rs:1474-1479` |
+| RF12 | No connection pool idle timeout | `src/store/mod.rs:69-70` |
+| RF13 | Watch mode holds resources when idle | `src/cli/watch.rs:60` |
+
+### Medium Batch 1
+
+#### Code Hygiene (4 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| H6 | cmd_index ~200 lines deep nesting | `src/cli/mod.rs:280-480` |
+| H7 | GPU/CPU embedder patterns duplicated | `src/cli/mod.rs` |
+| H8 | Embedding batch processing duplicated | `src/cli/mod.rs`, `src/cli/watch.rs` |
+| H10 | Source trait over-engineered | `src/source/mod.rs` |
+
+#### Module Boundaries (5 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| M4 | Store depends on Search module | `src/store/notes.rs:14` |
+| M6 | Store helpers exposes internal types | `src/store/mod.rs:8` |
+| M8 | **Parallel Language definitions** (dedup) | `src/parser.rs:760-772`, `src/language/mod.rs` |
+| M9 | CLI directly imports library internals | `src/cli/mod.rs:9-16` |
+| M10 | Search implements on Store type | `src/search.rs:1-300` |
+
+#### Documentation (3 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| D7 | Missing Store re-export doc comments | `src/store/mod.rs:27-31` |
+| D12 | HNSW tuning not in user docs | `src/hnsw.rs:46-57` |
+| D16 | README GPU timing may be outdated | `README.md:175-176` |
+
+#### API Design (5 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| A3 | &Path vs PathBuf inconsistency | Multiple |
+| A4 | **Two Language enums** (dedup) | `src/parser.rs:760`, `src/language/mod.rs` |
+| A5 | Error type inconsistency | Multiple |
+| A6 | SearchFilter missing builder pattern | `src/store/helpers.rs:189-218` |
+| A12 | Exposed internal types | `src/store/mod.rs:27-31` |
+
+#### Error Propagation (5 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| E5 | Language/chunk_type parsing errors discarded | `src/store/chunks.rs:296, 306` |
+| E7 | Multiple bare ? in HNSW load | `src/hnsw.rs:107,117,433,442,448,475` |
+| E10 | CAGRA index rebuild errors become empty | `src/cagra.rs:188-195` |
+| E11 | HNSW dimension mismatch returns empty | `src/hnsw.rs:364-372` |
+| E13 | lib.rs index_notes returns anyhow | `src/lib.rs:105` |
+
+**P2 Total: ~79 findings**
 
 ---
 
 ## P3: Fix If Time Permits (Medium + Batch 2-3)
 
-| # | Issue | Location | Category |
-|---|-------|----------|----------|
-| 1 | Store database ops no spans | store/*.rs | Observability |
-| 2 | HTTP request no tracing | mcp.rs | Observability |
-| 3 | RRF fusion no visibility | store/mod.rs | Observability |
-| 4 | Missing tests: split_into_windows | embedder.rs | Test Coverage |
-| 5 | Missing tests: note CRUD | store/notes.rs | Test Coverage |
-| 6 | Missing tests: call graph ops | store/calls.rs | Test Coverage |
-| 7 | Missing tests: gitignore | source/filesystem.rs | Test Coverage |
-| 8 | Missing tests: malformed files | parser.rs | Test Coverage |
-| 9 | OnceCell embedder race | mcp.rs | Panic Paths |
-| 10 | SQLx row.get() panics | search.rs, store/calls.rs | Panic Paths |
-| 11 | Unified search slot allocation | search.rs | Algorithm Correctness |
-| 12 | ChunkType enum manual updates | language/mod.rs, parser.rs | Extensibility |
-| 13 | Embedding model hardcoded | embedder.rs, store/helpers.rs | Extensibility |
-| 14 | VectorIndex trait minimal | index.rs | Extensibility |
-| 15 | HNSW/SQLite sync risk | cli/mod.rs | Data Integrity |
-| 16 | Non-atomic HNSW writes | hnsw.rs | Data Integrity |
-| 17 | Delete without transaction | store/chunks.rs, notes.rs | Data Integrity |
-| 18 | FTS table orphaned | store/chunks.rs | Data Integrity |
-| 19 | Debug-only dimension assert | search.rs | Edge Cases |
-| 20 | Signature extraction slicing | parser.rs | Edge Cases |
-| 21 | HNSW load no bounds check | hnsw.rs | Edge Cases |
-| 22 | **Note search O(n)** (Cluster C) | store/notes.rs | Edge Cases |
-| 23 | CAGRA neighbor cast | cagra.rs | Edge Cases |
-| 24 | FTS injection risk | store/mod.rs | Edge Cases |
-| 25 | Unix-only ONNX provider | embedder.rs | Platform Behavior |
-| 26 | Path separator in storage | store/chunks.rs, calls.rs | Platform Behavior |
-| 27 | SQLite URL Windows | store/mod.rs | Platform Behavior |
-| 28 | Unbounded file enumeration | cli/mod.rs | Memory Management |
-| 29 | Unbounded search results | search.rs | Memory Management |
-| 30 | File content in memory | parser.rs, filesystem.rs | Memory Management |
-| 31 | Pipeline channel buffers | cli/mod.rs | Memory Management |
-| 32 | Lock ordering CAGRA | cagra.rs | Concurrency Safety |
-| 33 | CLI pipeline producers | cli/mod.rs | Concurrency Safety |
-| 34 | HNSW ID map size unlimited | hnsw.rs | Input Security |
-| 35 | Windows tasklist injection | cli/mod.rs | Input Security |
-| 36 | API key plaintext memory | mcp.rs, cli/mod.rs | Data Security |
-| 37 | CORS allows any | mcp.rs | Data Security |
-| 38 | Call graph re-parses files | cli/mod.rs | I/O Efficiency |
-| 39 | upsert_calls per chunk | cli/mod.rs | I/O Efficiency |
-| 40 | FileSystemSource eager read | source/filesystem.rs | I/O Efficiency |
-| 41 | **Runtime/Store duplication** (Cluster F) | store/mod.rs, mcp.rs | Resource Footprint |
-| 42 | Three threads indexing | cli/mod.rs | Resource Footprint |
-| 43 | HNSW loaded per CLI query | cli/mod.rs | Resource Footprint |
+### Batch 2 Medium
 
-**Total P3: 43 unique issues**
+#### Observability (5 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| O1 | No request correlation IDs in MCP | `src/mcp.rs` |
+| O7 | Silent embedding dimension mismatch | `src/store/helpers.rs:45-60` |
+| O10 | HNSW build progress not logged | `src/hnsw.rs:100-200` |
+| O14 | No span for database transactions | `src/store/chunks.rs`, `src/store/notes.rs` |
+| O15 | CAGRA stream build no progress | `src/cagra.rs:150-250` |
+
+#### Test Coverage (8 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| T1 | index_notes() no tests | `src/lib.rs:37` |
+| T7 | embedding_batches() no direct test | `src/store/chunks.rs:405` |
+| T8 | prune_missing() edge cases untested | `src/store/chunks.rs:143` |
+| T10 | search_filtered() no unit tests | `src/search.rs:89` |
+| T11 | search_by_candidate_ids() no unit tests | `src/search.rs:144` |
+| T15 | Tests use weak assertions | `tests/store_test.rs` |
+| T16 | Unicode handling untested in FTS | `src/nl.rs`, `src/store/mod.rs` |
+| T20 | Parser call extraction coverage gaps | `src/parser.rs` |
+
+#### Panic Paths (3 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| PP1 | **cosine_similarity assert** (dedup) | `src/search.rs:24-25` |
+| PP2 | CAGRA array indexing no bounds check | `src/cagra.rs:314,318,321` |
+| PP5 | HNSW id_map index access | `src/hnsw.rs:392` |
+
+#### Algorithm Correctness (4 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| AC2 | Line offset can produce line 0 | `src/parser.rs:547-548` |
+| AC3 | Unified search note slot asymmetry | `src/search.rs:531-534` |
+| AC10 | Go return type extraction fails complex | `src/nl.rs:296-347` |
+
+#### Extensibility (4 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| X2 | Hardcoded embedding dimensions | `src/embedder.rs`, `src/hnsw.rs` |
+| X3 | Hardcoded HNSW parameters | `src/hnsw.rs:46-66` |
+| X4 | Closed Language enum | `src/parser.rs:759-773` |
+| X7 | Hardcoded query patterns | `src/parser.rs:33-138` |
+
+### Batch 3 Medium
+
+#### Data Integrity (4 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| DI1 | Non-atomic HNSW file writes | `src/hnsw.rs:409-448` |
+| DI5 | Schema init not transactional | `src/store/mod.rs:117-167` |
+| DI12 | CAGRA build no checkpoint recovery | `src/cagra.rs:369-431` |
+| DI15 | FTS and main table can become out of sync | `src/store/chunks.rs:54-71` |
+
+#### Edge Cases (5 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| EC1 | Signature extraction slices unsafe | `src/nl.rs:241-247` |
+| EC2 | Return type extraction similar | `src/nl.rs:283-288, 353-358` |
+| EC3 | Large file content loaded into memory | `src/parser.rs:255-262` |
+| EC5 | ID map JSON parsing could exceed memory | `src/hnsw.rs:475-477` |
+| EC12 | Tokenizer many allocations uppercase | `src/nl.rs:71-93` |
+
+#### Platform Behavior (3 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| PB1 | Unix-only symlink creation | `src/embedder.rs:572` |
+| PB4 | LD_LIBRARY_PATH Unix-specific | `src/embedder.rs:527` |
+| PB9 | WSL file watching reliability | `src/cli/watch.rs:49` |
+
+#### Memory Management (1 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| MM1 | All notes loaded for search | `src/store/notes.rs:84-127` |
+
+#### Concurrency Safety (4 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| CS3 | CAGRA nested mutex locks | `src/cagra.rs:169-213` |
+| CS5 | Store runtime blocking in iterator | `src/store/chunks.rs:418-468` |
+| CS6 | Pipeline channel work-stealing race | `src/cli/mod.rs:934-950` |
+| CS7 | McpServer index RwLock writer starvation | `src/mcp.rs:213,236-251,283` |
+
+**P3 Total: ~41 findings**
 
 ---
 
-## P4: Create Issue, Defer (Medium Batch 4, Hard any)
+## P4: Create Issue, Defer (Medium + Batch 4, Hard + any)
 
-| # | Issue | Location | Category |
-|---|-------|----------|----------|
-| 1 | **Language/Query duplication** (Cluster A) | parser.rs, language/*.rs | Code Hygiene |
-| 2 | Search logic split Store/search | search.rs, store/mod.rs | Module Boundaries |
-| 3 | Source trait unused | source/mod.rs | Module Boundaries |
-| 4 | HTTP API documentation | README.md, mcp.rs | Documentation |
-| 5 | Missing tests: embed_documents | embedder.rs | Test Coverage |
-| 6 | Missing tests: CLI integration | cli/mod.rs | Test Coverage |
-| 7 | HNSW LoadedHnsw unsafe Send+Sync | hnsw.rs | Concurrency Safety |
-| 8 | MCP tool registration not plugin | mcp.rs | Extensibility |
-| 9 | No indexing extension hooks | cli/mod.rs | Extensibility |
-| 10 | SQLite synchronous = NORMAL | store/mod.rs | Data Integrity |
-| 11 | **No schema migration path** | store/mod.rs | Data Integrity |
-| 12 | Deep directory trees | source/filesystem.rs | Edge Cases |
-| 13 | Case sensitivity assumptions | search.rs, cli/mod.rs | Platform Behavior |
-| 14 | GPU features assume Linux | embedder.rs, cagra.rs | Platform Behavior |
-| 15 | All embeddings in memory for HNSW | store/chunks.rs, cli/mod.rs | Memory Management |
-| 16 | CAGRA dataset duplication | cagra.rs | Memory Management |
-| 17 | Lock file race | cli/mod.rs | Data Security |
-| 18 | **Embedder cold start** (Cluster D) | embedder.rs, cli/mod.rs | Resource Footprint |
-| 19 | Large binary size (34MB) | Cargo.toml | Resource Footprint |
+### Medium Batch 4
 
-**Total P4: 19 unique issues**
+#### Input Security (1 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| IS5 | TOML escaping is manual | `src/mcp.rs:985-1021` |
+
+#### Data Security (3 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| DS2 | Index files no explicit permissions | `src/hnsw.rs:413,433,448` |
+| DS3 | SQLite database no explicit permissions | `src/store/mod.rs:66` |
+| DS6 | API key visible in environment | `src/cli/mod.rs:183` |
+
+#### Algorithmic Complexity (2 medium, deduped)
+| # | Finding | Location |
+|---|---------|----------|
+| AC_1 | **O(n) brute-force note search** (dedup) | `src/store/notes.rs:74-128` |
+| AC_8 | **Call graph re-reads files** (dedup) | `src/cli/mod.rs:1172-1198` |
+
+#### I/O Efficiency (2 medium, deduped)
+| # | Finding | Location |
+|---|---------|----------|
+| IO1 | **Note search O(n) full table scan** (dedup) | `src/store/notes.rs:75-128` |
+| IO8 | No connection reuse between stages | `src/cli/mod.rs:696-1016` |
+
+#### Resource Footprint (4 medium)
+| # | Finding | Location |
+|---|---------|----------|
+| RF1 | Multiple Tokio runtimes | `src/store/mod.rs:63`, `src/mcp.rs:1311` |
+| RF4 | Duplicate Embedder instances | `src/cli/mod.rs:807-809,925-927` |
+| RF8 | 64MB SQLite page cache per connection | `src/store/mod.rs:86` |
+| RF9 | 256MB mmap per connection | `src/store/mod.rs:94` |
+
+### Hard (any batch)
+
+#### Code Hygiene (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| H5 | run_index_pipeline ~400 lines | `src/cli/mod.rs:450-850` |
+
+#### Module Boundaries (2 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| M1 | CLI module is monolith (~1960 lines) | `src/cli/mod.rs:1-1960` |
+| M2 | MCP module is monolith (~2000 lines) | `src/mcp.rs:1-2000` |
+
+#### Observability (2 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| O8 | No metrics for search performance | `src/search.rs` |
+| O9 | No metrics for embedding generation | `src/embedder.rs` |
+
+#### Test Coverage (6 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| T2 | serve_stdio/serve_http no tests | `src/lib.rs:70,91` |
+| T9 | CLI commands no integration tests | `src/cli/mod.rs` |
+| T12 | search_unified_with_index no tests | `src/search.rs:186` |
+| T13 | Embedder tests require model download | `src/embedder.rs:198-250` |
+| T18 | Large data handling untested | `src/hnsw.rs`, `src/store/` |
+| T19 | LoadedHnsw concurrent access untested | `src/hnsw.rs:210` |
+
+#### Extensibility (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| X1 | Hardcoded embedding model | `src/embedder.rs:14-16` |
+
+#### Data Integrity (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| DI11 | No schema migration support | `src/store/mod.rs:169-193` |
+
+#### Edge Cases (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| EC4 | Unbounded recursion in extract_doc_comment | `src/parser.rs:427-449` |
+
+#### Memory Management (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| MM2 | CAGRA requires all embeddings in memory | `src/cagra.rs:369-431` |
+
+#### Concurrency Safety (2 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| CS1 | CagraIndex unsafe Send/Sync | `src/cagra.rs:354-357` |
+| CS2 | LoadedHnsw lifetime transmute | `src/hnsw.rs:139-163, 489-501` |
+
+#### Data Security (2 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| DS8 | Stdio transport no authentication | `src/mcp.rs:1181-1234` |
+| DS10 | API key stored in plain memory | `src/mcp.rs:1247` |
+
+#### Algorithmic Complexity (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| AC_6 | Brute-force search fallback O(n) | `src/search.rs:166-228` |
+
+#### Resource Footprint (1 hard)
+| # | Finding | Location |
+|---|---------|----------|
+| RF11 | All tree-sitter grammars compiled upfront | `src/parser.rs:214-246` |
+
+**P4 Total: ~30 findings**
 
 ---
 
 ## Summary
 
-| Tier | Count | Criteria |
-|------|-------|----------|
-| P1 | 64 | Easy + Batch 1-2 |
-| P2 | 58 | Easy + Batch 3-4, Medium + Batch 1 |
-| P3 | 43 | Medium + Batch 2-3 |
-| P4 | 19 | Medium + Batch 4, Hard |
-| **Total** | **184** | (after de-duplication) |
+| Priority | Count | Action |
+|----------|-------|--------|
+| P1 | ~93 | Fix immediately |
+| P2 | ~79 | Fix next |
+| P3 | ~41 | Fix if time permits |
+| P4 | ~30 | Create issue, defer |
+| **Total** | **~243** | (raw) / **~225** (after dedup) |
 
 ---
 
 ## Recommended Fix Order
 
-### Phase 1: Quick Wins (P1)
-1. **Model name fixes** - 5 locations, all easy, high visibility
-2. **Go return type** - one-liner, actual bug
-3. **display.rs bounds** - one-liner, prevents panic
-4. **Line number helper** - extract once, use 10 places
-5. **Doc comments batch** - 8 missing, easy adds
+1. **Start with Documentation (P1)** - Highest ROI, lowest risk, builds confidence
+2. **Code Hygiene easy fixes (P1)** - Remove dead code, fix attributes
+3. **Error Propagation (P1)** - Improve debuggability
+4. **API Design easy fixes (P1)** - Consistency improvements
+5. **Observability (P1)** - Better logging before deeper fixes
+6. **Data Integrity (P2)** - Transactions, validation
+7. **Re-assess at P2/P3 boundary** - Stop at diminishing returns
 
-### Phase 2: Medium Value (P2)
-1. **Unicode slicing panic** - user-facing crash
-2. **HNSW checksum I/O** - double file reads
-3. **Error swallowing patterns** - visibility improvements
+---
 
-### Diminishing Returns Check
-After P1+P2, assess: are P3 items worth the effort for maintainability goal?
+## Existing GitHub Issues
+
+Current open issues that overlap with audit findings:
+
+| Issue | Title | Overlaps With |
+|-------|-------|---------------|
+| #189 | [P4] Expand test coverage for core modules | T3, T4, T5, T6, T14, T17 and others |
+| #188 | [P4] Implement incremental schema migrations | DI11 (No schema migration support) |
+| #187 | [P3] Set explicit file permissions on .cq/ files | DS2, DS3, DS4 (file permissions) |
+| #186 | [P3] Non-atomic HNSW file writes | DI1 (Non-atomic HNSW file writes) |
+
+**Action:** Do not create duplicate issues for these findings. Mark as "covered by #NNN" when fixing.

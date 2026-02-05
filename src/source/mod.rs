@@ -42,6 +42,17 @@ pub struct SourceItem {
 ///
 /// Implementations provide content from various sources like filesystems,
 /// databases, or remote services.
+///
+/// # Extensibility
+///
+/// Currently only `FileSystemSource` is implemented. This trait exists to support
+/// future sources like:
+/// - Database stored procedures (SQL Server, PostgreSQL)
+/// - Remote repositories (GitHub, GitLab)
+/// - Archive files (tar, zip)
+///
+/// The trait is intentionally minimal - implement `enumerate()` to list items
+/// and `get_mtime()` for incremental indexing support.
 pub trait Source: Send + Sync {
     /// Source type identifier ("file", "mssql", etc.)
     fn source_type(&self) -> &'static str;

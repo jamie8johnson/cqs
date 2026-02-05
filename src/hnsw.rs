@@ -93,6 +93,12 @@ const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
 
 /// Verify HNSW index file checksums using blake3.
 ///
+/// **Security note:** These checksums detect accidental corruption (disk errors,
+/// incomplete writes), not malicious tampering. An attacker with write access
+/// to the index directory can update both the files and the checksum file.
+/// For tamper-proofing, the checksum file would need to be signed or stored
+/// separately in a trusted location.
+///
 /// Returns Ok if checksums match or no checksum file exists (with warning).
 fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
     let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
@@ -104,7 +110,9 @@ fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
         return Ok(());
     }
 
-    let checksum_content = std::fs::read_to_string(&checksum_path)?;
+    let checksum_content = std::fs::read_to_string(&checksum_path).map_err(|e| {
+        HnswError::Internal(format!("Failed to read {}: {}", checksum_path.display(), e))
+    })?;
     for line in checksum_content.lines() {
         if let Some((ext, expected)) = line.split_once(':') {
             // Only allow known extensions to prevent path traversal
@@ -114,7 +122,13 @@ fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
             }
             let path = dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
-                let data = std::fs::read(&path)?;
+                let data = std::fs::read(&path).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to read {} for checksum: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
                 let actual = blake3::hash(&data).to_hex().to_string();
                 if actual != expected {
                     return Err(HnswError::ChecksumMismatch {
@@ -185,10 +199,27 @@ enum HnswInner {
 }
 
 impl HnswIndex {
-    /// Build a new HNSW index from embeddings
+    /// Build a new HNSW index from embeddings (single-pass).
+    ///
+    /// # When to use `build` vs `build_batched`
+    ///
+    /// - **`build`**: Use when all embeddings fit comfortably in memory (<50k chunks,
+    ///   ~150MB for 50k × 769 × 4 bytes). Slightly higher graph quality since all
+    ///   vectors are available during construction.
+    ///
+    /// - **`build_batched`**: Use for large indexes (>50k chunks) or memory-constrained
+    ///   environments. Streams embeddings in batches to avoid OOM. Graph quality is
+    ///   marginally lower but negligible for practical search accuracy.
     ///
     /// **Warning:** This loads all embeddings into memory at once.
     /// For large indexes (>50k chunks), prefer `build_batched()` to avoid OOM.
+    ///
+    /// # Deprecation Notice
+    ///
+    /// This method is soft-deprecated for new code. Prefer `build_batched()` which:
+    /// - Streams embeddings in configurable batch sizes
+    /// - Avoids OOM on large indexes
+    /// - Has negligible quality difference in practice
     ///
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
@@ -349,11 +380,15 @@ impl HnswIndex {
         })
     }
 
-    /// Search for nearest neighbors
+    /// Search for nearest neighbors (inherent implementation).
+    ///
+    /// This is the actual search implementation. The `VectorIndex` trait method
+    /// delegates to this inherent method. Both methods have identical signatures
+    /// and behavior - use whichever is more convenient at the call site.
     ///
     /// # Arguments
-    /// * `query` - Query embedding
-    /// * `k` - Number of results to return
+    /// * `query` - Query embedding (769-dim: 768 model + 1 sentiment)
+    /// * `k` - Maximum number of results to return
     ///
     /// # Returns
     /// Vector of (chunk_id, score) pairs, sorted by descending score
@@ -406,23 +441,53 @@ impl HnswIndex {
     /// - `{basename}.hnsw.data` - Vector data
     /// - `{basename}.hnsw.graph` - HNSW graph structure
     /// - `{basename}.hnsw.ids` - Chunk ID mapping (our addition)
+    /// - `{basename}.hnsw.checksum` - Blake3 checksums for integrity
     pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError> {
         tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
 
+        // Verify ID map matches HNSW vector count before saving
+        let hnsw_count = match &self.inner {
+            HnswInner::Owned(hnsw) => hnsw.get_nb_point(),
+            HnswInner::Loaded(loaded) => loaded.hnsw.get_nb_point(),
+        };
+        assert_eq!(
+            hnsw_count,
+            self.id_map.len(),
+            "HNSW/ID map count mismatch on save: HNSW has {} vectors but id_map has {}. This is a bug.",
+            hnsw_count,
+            self.id_map.len()
+        );
+
         // Ensure directory exists
-        std::fs::create_dir_all(dir)?;
+        std::fs::create_dir_all(dir).map_err(|e| {
+            HnswError::Internal(format!(
+                "Failed to create directory {}: {}",
+                dir.display(),
+                e
+            ))
+        })?;
 
         // Save the HNSW graph and data using the library's file_dump
         match &self.inner {
             HnswInner::Owned(hnsw) => {
-                hnsw.file_dump(dir, basename)
-                    .map_err(|e| HnswError::Internal(format!("Failed to dump HNSW: {}", e)))?;
+                hnsw.file_dump(dir, basename).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to dump HNSW to {}/{}: {}",
+                        dir.display(),
+                        basename,
+                        e
+                    ))
+                })?;
             }
             HnswInner::Loaded(loaded) => {
-                loaded
-                    .hnsw
-                    .file_dump(dir, basename)
-                    .map_err(|e| HnswError::Internal(format!("Failed to dump HNSW: {}", e)))?;
+                loaded.hnsw.file_dump(dir, basename).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to dump HNSW to {}/{}: {}",
+                        dir.display(),
+                        basename,
+                        e
+                    ))
+                })?;
             }
         }
 
@@ -430,7 +495,26 @@ impl HnswIndex {
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
         let id_map_json = serde_json::to_string(&self.id_map)
             .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
-        std::fs::write(&id_map_path, &id_map_json)?;
+        std::fs::write(&id_map_path, &id_map_json).map_err(|e| {
+            HnswError::Internal(format!("Failed to write {}: {}", id_map_path.display(), e))
+        })?;
+
+        // Set restrictive permissions on index files (Unix only)
+        // These files contain code embeddings - not secrets, but defense-in-depth
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let restrictive = std::fs::Permissions::from_mode(0o600);
+            // Set permissions on files we control
+            let _ = std::fs::set_permissions(&id_map_path, restrictive.clone());
+            // Also set on library-written files
+            for ext in &["hnsw.graph", "hnsw.data"] {
+                let path = dir.join(format!("{}.{}", basename, ext));
+                if path.exists() {
+                    let _ = std::fs::set_permissions(&path, restrictive.clone());
+                }
+            }
+        }
 
         // Compute and save checksums for all files (mitigates bincode deserialization risks)
         // For .ids we hash the in-memory data to avoid re-reading the file
@@ -439,13 +523,33 @@ impl HnswIndex {
         for ext in &["hnsw.graph", "hnsw.data"] {
             let path = dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
-                let data = std::fs::read(&path)?;
+                let data = std::fs::read(&path).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to read {} for checksum: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
                 let hash = blake3::hash(&data);
                 checksums.push(format!("{}:{}", ext, hash.to_hex()));
             }
         }
         let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
-        std::fs::write(&checksum_path, checksums.join("\n"))?;
+        std::fs::write(&checksum_path, checksums.join("\n")).map_err(|e| {
+            HnswError::Internal(format!(
+                "Failed to write {}: {}",
+                checksum_path.display(),
+                e
+            ))
+        })?;
+
+        // Set permissions on checksum file too
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&checksum_path, std::fs::Permissions::from_mode(0o600));
+        }
 
         tracing::info!(
             "HNSW index saved: {} vectors (with checksums)",

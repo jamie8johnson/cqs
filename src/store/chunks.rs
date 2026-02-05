@@ -16,6 +16,12 @@ use crate::parser::{Chunk, ChunkType, Language};
 
 impl Store {
     /// Insert or update chunks in batch (10x faster than individual inserts)
+    ///
+    /// FTS operations (DELETE then INSERT per chunk) are not batched because:
+    /// - FTS5 doesn't support INSERT OR REPLACE, requiring DELETE+INSERT
+    /// - Batching DELETEs with WHERE IN requires dynamic SQL with varying params
+    /// - All operations run in a single transaction, so disk I/O is already batched
+    /// - FTS operations are fast (in-memory B-tree), not the bottleneck vs embeddings
     pub fn upsert_chunks_batch(
         &self,
         chunks: &[(Chunk, Embedding)],
@@ -140,6 +146,11 @@ impl Store {
     /// Delete chunks for files that no longer exist
     ///
     /// Batches deletes in groups of 100 to balance memory usage and query efficiency.
+    ///
+    /// Uses Rust HashSet for existence check rather than SQL WHERE NOT IN because:
+    /// - Existing files often number 10k+, exceeding SQLite's parameter limit (~999)
+    /// - Sending full file list to SQLite would require chunked queries anyway
+    /// - HashSet lookup is O(1), and we already have the set from enumerate_files()
     pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(
@@ -160,10 +171,13 @@ impl Store {
             }
 
             // Batch delete in chunks of 100 (SQLite has ~999 param limit)
+            // Each batch is wrapped in a transaction for atomicity
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
 
             for batch in missing.chunks(BATCH_SIZE) {
+                let mut tx = self.pool.begin().await?;
+
                 let placeholders: Vec<String> =
                     (1..=batch.len()).map(|i| format!("?{}", i)).collect();
                 let placeholder_str = placeholders.join(",");
@@ -177,7 +191,7 @@ impl Store {
                 for origin in batch {
                     fts_stmt = fts_stmt.bind(origin);
                 }
-                fts_stmt.execute(&self.pool).await?;
+                fts_stmt.execute(&mut *tx).await?;
 
                 // Delete from chunks
                 let chunks_query =
@@ -186,8 +200,14 @@ impl Store {
                 for origin in batch {
                     chunks_stmt = chunks_stmt.bind(origin);
                 }
-                let result = chunks_stmt.execute(&self.pool).await?;
+                let result = chunks_stmt.execute(&mut *tx).await?;
                 deleted += result.rows_affected() as u32;
+
+                tx.commit().await?;
+            }
+
+            if deleted > 0 {
+                tracing::info!(deleted, files = missing.len(), "Pruned chunks for missing files");
             }
 
             Ok(deleted)
@@ -261,12 +281,12 @@ impl Store {
     }
 
     /// Get the number of chunks in the index
-    pub fn chunk_count(&self) -> Result<usize, StoreError> {
+    pub fn chunk_count(&self) -> Result<u64, StoreError> {
         self.rt.block_on(async {
             let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
                 .fetch_one(&self.pool)
                 .await?;
-            Ok(row.0 as usize)
+            Ok(row.0 as u64)
         })
     }
 
@@ -293,7 +313,18 @@ impl Store {
 
             let chunks_by_language: HashMap<Language, u64> = lang_rows
                 .into_iter()
-                .filter_map(|(lang, count)| lang.parse().ok().map(|l| (l, count as u64)))
+                .filter_map(|(lang, count)| {
+                    lang.parse()
+                        .map_err(|_| {
+                            tracing::warn!(
+                                language = %lang,
+                                count,
+                                "Unknown language in database, skipping in stats"
+                            );
+                        })
+                        .ok()
+                        .map(|l| (l, count as u64))
+                })
                 .collect();
 
             let type_rows: Vec<(String, i64)> =
@@ -303,7 +334,18 @@ impl Store {
 
             let chunks_by_type: HashMap<ChunkType, u64> = type_rows
                 .into_iter()
-                .filter_map(|(ct, count)| ct.parse().ok().map(|c| (c, count as u64)))
+                .filter_map(|(ct, count)| {
+                    ct.parse()
+                        .map_err(|_| {
+                            tracing::warn!(
+                                chunk_type = %ct,
+                                count,
+                                "Unknown chunk_type in database, skipping in stats"
+                            );
+                        })
+                        .ok()
+                        .map(|c| (c, count as u64))
+                })
                 .collect();
 
             // Batch metadata query (4 queries → 1)
@@ -373,20 +415,39 @@ impl Store {
     ///
     /// **Warning:** This loads all embeddings into memory at once.
     /// For large indexes (>50k chunks), prefer `embedding_batches()` to avoid OOM.
+    ///
+    /// Logs a warning if any embeddings are skipped due to corruption (wrong size).
     pub fn all_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM chunks")
                 .fetch_all(&self.pool)
                 .await?;
 
+            let total_rows = rows.len();
+            let mut skipped = 0usize;
+
             let results: Vec<(String, Embedding)> = rows
                 .into_iter()
                 .filter_map(|row| {
                     let id: String = row.get(0);
                     let bytes: Vec<u8> = row.get(1);
-                    bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
+                    match bytes_to_embedding(&bytes) {
+                        Some(emb) => Some((id, Embedding::new(emb))),
+                        None => {
+                            skipped += 1;
+                            None
+                        }
+                    }
                 })
                 .collect();
+
+            if skipped > 0 {
+                tracing::warn!(
+                    skipped,
+                    total = total_rows,
+                    "Skipped corrupted embeddings (wrong size). Run 'cqs index --force' to rebuild."
+                );
+            }
 
             Ok(results)
         })
@@ -438,6 +499,11 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
                 .fetch_all(&self.store.pool)
                 .await?;
 
+            // Track actual rows fetched (before filtering) to correctly advance SQL OFFSET.
+            // If we used batch.len() (after filter_map), we'd under-count when some rows
+            // have invalid embeddings, causing duplicate fetches or missed rows.
+            let rows_fetched = rows.len();
+
             let batch: Vec<(String, Embedding)> = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -447,22 +513,32 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
                 })
                 .collect();
 
-            Ok(batch)
+            Ok((batch, rows_fetched))
         });
 
-        match &result {
-            Ok(batch) if batch.is_empty() => {
+        match result {
+            Ok((batch, rows_fetched)) if batch.is_empty() && rows_fetched == 0 => {
+                // No more rows in database
                 self.done = true;
                 None
             }
-            Ok(batch) => {
-                self.offset += batch.len();
-                Some(result)
+            Ok((batch, rows_fetched)) => {
+                self.offset += rows_fetched;
+                if batch.is_empty() {
+                    // Had rows but all filtered out - continue to next batch
+                    self.next()
+                } else {
+                    Some(Ok(batch))
+                }
             }
-            Err(_) => {
+            Err(e) => {
                 self.done = true;
-                Some(result)
+                Some(Err(e))
             }
         }
     }
 }
+
+// SAFETY: Once `done` is set to true, `next()` always returns None.
+// This is guaranteed by the check at the start of `next()`.
+impl<'a> std::iter::FusedIterator for EmbeddingBatchIterator<'a> {}

@@ -14,8 +14,11 @@ mod calls;
 mod chunks;
 mod notes;
 
-// Public module for search.rs access to ChunkRow
-pub mod helpers;
+/// Helper types and embedding conversion functions.
+///
+/// This module is `pub(crate)` - external consumers should use the re-exported
+/// types from `cqs::store` instead of accessing `cqs::store::helpers` directly.
+pub(crate) mod helpers;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -23,12 +26,46 @@ use std::path::Path;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use tokio::runtime::Runtime;
 
-// Re-export public types
-pub use helpers::{
-    bytes_to_embedding, embedding_slice, embedding_to_bytes, CallerInfo, ChunkSummary, IndexStats,
-    ModelInfo, NoteSearchResult, NoteSummary, SearchFilter, SearchResult, StoreError,
-    UnifiedResult, CURRENT_SCHEMA_VERSION, EXPECTED_DIMENSIONS, MODEL_NAME,
-};
+// Re-export public types with documentation
+
+/// Information about a function caller (from call graph).
+pub use helpers::CallerInfo;
+
+/// Summary of an indexed code chunk (function, class, etc.).
+pub use helpers::ChunkSummary;
+
+/// Statistics about the index (chunk counts, languages, etc.).
+pub use helpers::IndexStats;
+
+/// Embedding model metadata.
+pub use helpers::ModelInfo;
+
+/// A note search result with similarity score.
+pub use helpers::NoteSearchResult;
+
+/// Summary of a note (text, sentiment, mentions).
+pub use helpers::NoteSummary;
+
+/// Filter and scoring options for search.
+pub use helpers::SearchFilter;
+
+/// A code chunk search result with similarity score.
+pub use helpers::SearchResult;
+
+/// Store operation errors.
+pub use helpers::StoreError;
+
+/// Unified search result (code chunk or note).
+pub use helpers::UnifiedResult;
+
+/// Current database schema version.
+pub use helpers::CURRENT_SCHEMA_VERSION;
+
+/// Expected embedding dimensions (768 model + 1 sentiment).
+pub use helpers::EXPECTED_DIMENSIONS;
+
+/// Name of the embedding model used.
+pub use helpers::MODEL_NAME;
 
 // Internal use
 use helpers::{clamp_line_number, ChunkRow};
@@ -62,14 +99,21 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let rt = Runtime::new().map_err(|e| StoreError::Runtime(e.to_string()))?;
 
-        let db_url = format!("sqlite://{}?mode=rwc", path.display());
+        // Convert path to forward slashes for URL compatibility (Windows backslashes don't work)
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let db_url = format!("sqlite://{}?mode=rwc", path_str);
 
         // SQLite connection pool with WAL mode for concurrent reads
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
                 .max_connections(4) // 4 = typical CLI parallelism (index, search, watch)
+                .idle_timeout(std::time::Duration::from_secs(300)) // Close idle connections after 5 min
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
+                        // Enable foreign key enforcement (off by default in SQLite)
+                        sqlx::query("PRAGMA foreign_keys = ON")
+                            .execute(&mut *conn)
+                            .await?;
                         // WAL mode: concurrent reads, single writer
                         sqlx::query("PRAGMA journal_mode = WAL")
                             .execute(&mut *conn)
@@ -102,6 +146,23 @@ impl Store {
         })?;
 
         let store = Self { pool, rt };
+
+        // Set restrictive permissions on database files (Unix only)
+        // These files contain code embeddings - not secrets, but defense-in-depth
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let restrictive = std::fs::Permissions::from_mode(0o600);
+            // Main database file
+            let _ = std::fs::set_permissions(path, restrictive.clone());
+            // WAL and SHM files (may not exist yet, ignore errors)
+            let wal_path = path.with_extension("db-wal");
+            let shm_path = path.with_extension("db-shm");
+            let _ = std::fs::set_permissions(&wal_path, restrictive.clone());
+            let _ = std::fs::set_permissions(&shm_path, restrictive);
+        }
+
+        tracing::info!(path = %path.display(), "Database connected");
 
         // Check schema version compatibility
         store.check_schema_version()?;
@@ -162,6 +223,11 @@ impl Store {
                 .execute(&self.pool)
                 .await?;
 
+            tracing::info!(
+                schema_version = CURRENT_SCHEMA_VERSION,
+                "Schema initialized"
+            );
+
             Ok(())
         })
     }
@@ -180,7 +246,19 @@ impl Store {
                     Err(e) => return Err(e.into()),
                 };
 
-            let version: i32 = row.and_then(|(s,)| s.parse().ok()).unwrap_or(0);
+            let version: i32 = row
+                .and_then(|(s,)| {
+                    s.parse()
+                        .map_err(|e| {
+                            tracing::warn!(
+                                stored_value = %s,
+                                error = %e,
+                                "Failed to parse schema_version from metadata, defaulting to 0"
+                            );
+                        })
+                        .ok()
+                })
+                .unwrap_or(0);
 
             if version > CURRENT_SCHEMA_VERSION {
                 return Err(StoreError::SchemaNewerThanCq(version));
@@ -268,6 +346,25 @@ impl Store {
     }
 
     /// Search FTS5 index for keyword matches.
+    ///
+    /// # Search Method Overview
+    ///
+    /// The Store provides several search methods with different characteristics:
+    ///
+    /// - **`search_fts`**: Full-text keyword search using SQLite FTS5. Returns chunk IDs.
+    ///   Best for: Exact keyword matches, symbol lookup by name fragment.
+    ///
+    /// - **`search_by_name`**: Definition search by function/struct name. Uses FTS5 with
+    ///   heavy weighting on the name column. Returns full `SearchResult` with scores.
+    ///   Best for: "Where is X defined?" queries.
+    ///
+    /// - **`search_filtered`** (in search.rs): Semantic search with optional language/path
+    ///   filters. Can use RRF hybrid search combining semantic + FTS scores.
+    ///   Best for: Natural language queries like "retry with exponential backoff".
+    ///
+    /// - **`search_filtered_with_index`** (in search.rs): Like `search_filtered` but uses
+    ///   HNSW/CAGRA vector index for O(log n) candidate retrieval instead of brute force.
+    ///   Best for: Large indexes (>5k chunks) where brute force is slow.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
         let normalized_query = normalize_for_fts(query);
         if normalized_query.is_empty() {
@@ -361,6 +458,11 @@ impl Store {
     }
 
     /// Compute RRF (Reciprocal Rank Fusion) scores for combining two ranked lists.
+    ///
+    /// Allocates a new HashMap per search. Pre-allocated buffer was considered but:
+    /// - Input size varies (limit*3 semantic + limit*3 FTS = up to 6*limit entries)
+    /// - HashMap with ~30-100 entries costs ~1KB, negligible vs embedding costs (~3KB)
+    /// - Thread-local buffer would add complexity for ~0.1ms savings on typical searches
     pub(crate) fn rrf_fuse(
         semantic_ids: &[String],
         fts_ids: &[String],
@@ -373,11 +475,14 @@ impl Store {
         let mut scores: HashMap<&str, f32> = HashMap::new();
 
         for (rank, id) in semantic_ids.iter().enumerate() {
+            // RRF formula: 1 / (K + rank). The + 1.0 converts 0-indexed enumerate()
+            // to 1-indexed ranks (first result = rank 1, not rank 0).
             let contribution = 1.0 / (K + rank as f32 + 1.0);
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
 
         for (rank, id) in fts_ids.iter().enumerate() {
+            // Same conversion: enumerate's 0-index -> RRF's 1-indexed rank
             let contribution = 1.0 / (K + rank as f32 + 1.0);
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
@@ -399,6 +504,26 @@ impl Store {
         limit: usize,
     ) -> Vec<(String, f32)> {
         Self::rrf_fuse(semantic_ids, fts_ids, limit)
+    }
+
+    /// Gracefully close the store, performing WAL checkpoint.
+    ///
+    /// This ensures all WAL changes are written to the main database file,
+    /// reducing startup time for subsequent opens and freeing disk space
+    /// used by WAL files.
+    ///
+    /// Safe to skip (pool will close connections on drop), but recommended
+    /// for clean shutdown in long-running processes.
+    pub fn close(self) -> Result<(), StoreError> {
+        self.rt.block_on(async {
+            // TRUNCATE mode: checkpoint and delete WAL file
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await?;
+            tracing::debug!("WAL checkpoint completed");
+            self.pool.close().await;
+            Ok(())
+        })
     }
 }
 

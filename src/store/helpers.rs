@@ -66,7 +66,7 @@ pub(crate) struct ChunkRow {
 pub struct ChunkSummary {
     /// Unique identifier
     pub id: String,
-    /// Source file path (relative to project root)
+    /// Source file path (typically absolute, as stored during indexing)
     pub file: PathBuf,
     /// Programming language
     pub language: Language,
@@ -231,6 +231,61 @@ impl Default for SearchFilter {
 }
 
 impl SearchFilter {
+    /// Create a new SearchFilter with default values.
+    ///
+    /// Use builder methods to customize:
+    /// ```ignore
+    /// let filter = SearchFilter::new()
+    ///     .with_language(Language::Rust)
+    ///     .with_path_pattern("src/**/*.rs")
+    ///     .with_query("retry logic");
+    /// ```
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Filter results to a specific programming language.
+    pub fn with_language(mut self, lang: Language) -> Self {
+        self.languages = Some(vec![lang]);
+        self
+    }
+
+    /// Filter results to multiple programming languages.
+    pub fn with_languages(mut self, langs: Vec<Language>) -> Self {
+        self.languages = Some(langs);
+        self
+    }
+
+    /// Filter results by file path glob pattern.
+    pub fn with_path_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.path_pattern = Some(pattern.into());
+        self
+    }
+
+    /// Set the query text (required for name_boost > 0 or enable_rrf).
+    pub fn with_query(mut self, query: impl Into<String>) -> Self {
+        self.query_text = query.into();
+        self
+    }
+
+    /// Set name boost weight for hybrid search (0.0-1.0).
+    pub fn with_name_boost(mut self, boost: f32) -> Self {
+        self.name_boost = boost;
+        self
+    }
+
+    /// Enable or disable RRF hybrid search.
+    pub fn with_rrf(mut self, enabled: bool) -> Self {
+        self.enable_rrf = enabled;
+        self
+    }
+
+    /// Set note weight multiplier (0.0-1.0).
+    pub fn with_note_weight(mut self, weight: f32) -> Self {
+        self.note_weight = weight;
+        self
+    }
+
     /// Validate filter constraints
     ///
     /// Returns Ok(()) if valid, or Err with description of what's wrong.
@@ -255,6 +310,29 @@ impl SearchFilter {
             if pattern.len() > 500 {
                 return Err("path_pattern too long (max 500 chars)");
             }
+            // Reject control characters (except tab/newline which glob might handle)
+            if pattern
+                .chars()
+                .any(|c| c.is_control() && c != '\t' && c != '\n')
+            {
+                return Err("path_pattern contains invalid control characters");
+            }
+            // Limit brace nesting depth to prevent exponential expansion
+            // e.g., "{a,{b,{c,{d,{e,...}}}}}" can cause O(2^n) expansion
+            const MAX_BRACE_DEPTH: usize = 10;
+            let mut depth = 0usize;
+            for c in pattern.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        if depth > MAX_BRACE_DEPTH {
+                            return Err("path_pattern has too many nested braces (max 10 levels)");
+                        }
+                    }
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
+                }
+            }
             if globset::Glob::new(pattern).is_err() {
                 return Err("path_pattern is not a valid glob pattern");
             }
@@ -275,8 +353,8 @@ impl Default for ModelInfo {
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
-            dimensions: 769, // 768 from model + 1 sentiment
-            version: "1.5".to_string(),
+            dimensions: 769,          // 768 from model + 1 sentiment
+            version: "2".to_string(), // E5-base-v2
         }
     }
 }
@@ -309,19 +387,31 @@ pub struct IndexStats {
 
 // ============ Line Number Conversion ============
 
-/// Clamp i64 to valid u32 line number range
+/// Clamp i64 to valid u32 line number range (1-indexed)
 ///
-/// SQLite returns i64, but line numbers are u32. This safely clamps
-/// to avoid truncation issues on extreme values.
+/// SQLite returns i64, but line numbers are u32 and 1-indexed.
+/// This safely clamps to avoid truncation issues on extreme values,
+/// with minimum 1 since line 0 is invalid in 1-indexed systems.
 #[inline]
 pub fn clamp_line_number(n: i64) -> u32 {
-    n.clamp(0, u32::MAX as i64) as u32
+    n.clamp(1, u32::MAX as i64) as u32
 }
 
 // ============ Embedding Serialization ============
 
-/// Convert embedding to bytes for storage
+/// Convert embedding to bytes for storage.
+///
+/// # Panics
+/// Panics if embedding is not exactly 769 dimensions (768 model + 1 sentiment).
+/// This is intentional - storing wrong-sized embeddings corrupts the index.
 pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
+    assert_eq!(
+        embedding.len(),
+        EXPECTED_DIMENSIONS as usize,
+        "Embedding dimension mismatch: expected {}, got {}. This indicates a bug in the embedder.",
+        EXPECTED_DIMENSIONS,
+        embedding.len()
+    );
     embedding
         .as_slice()
         .iter()
@@ -339,7 +429,7 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
         tracing::trace!(
             expected = EXPECTED_BYTES,
             actual = bytes.len(),
-            "embedding byte length mismatch"
+            "Embedding byte length mismatch, skipping"
         );
         return None;
     }
@@ -350,13 +440,14 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 ///
 /// Returns None if byte length doesn't match expected embedding size (769 * 4 bytes).
 /// This prevents silently using corrupted/truncated embeddings.
+/// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
 pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
     const EXPECTED_BYTES: usize = 769 * 4;
     if bytes.len() != EXPECTED_BYTES {
-        tracing::warn!(
+        tracing::trace!(
             expected = EXPECTED_BYTES,
             actual = bytes.len(),
-            "Embedding byte length mismatch (possible corruption), skipping"
+            "Embedding byte length mismatch, skipping"
         );
         return None;
     }
@@ -475,8 +566,10 @@ mod tests {
 
     #[test]
     fn test_clamp_line_number_negative() {
-        assert_eq!(clamp_line_number(-1), 0);
-        assert_eq!(clamp_line_number(-1000), 0);
+        // Line numbers are 1-indexed, so negative/zero clamps to 1
+        assert_eq!(clamp_line_number(-1), 1);
+        assert_eq!(clamp_line_number(-1000), 1);
+        assert_eq!(clamp_line_number(0), 1);
     }
 
     #[test]

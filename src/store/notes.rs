@@ -9,9 +9,47 @@ use super::helpers::{
 };
 use super::Store;
 use crate::embedder::Embedding;
+use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::note::Note;
-use crate::search::cosine_similarity;
+use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
+
+/// Score a note row and return (NoteSummary, score) if it meets the threshold.
+///
+/// Shared scoring logic between brute-force search and ID-based search.
+fn score_note_row(
+    row: &sqlx::sqlite::SqliteRow,
+    query: &Embedding,
+    threshold: f32,
+) -> Option<(NoteSummary, f32)> {
+    let id: String = row.get(0);
+    let text: String = row.get(1);
+    let sentiment: f64 = row.get(2);
+    let mentions_json: String = row.get(3);
+    let embedding_bytes: Vec<u8> = row.get(4);
+
+    let mentions: Vec<String> = serde_json::from_str(&mentions_json).unwrap_or_else(|e| {
+        tracing::warn!(note_id = %id, error = %e, "Failed to deserialize note mentions, using empty list");
+        Vec::new()
+    });
+
+    let embedding = embedding_slice(&embedding_bytes)?;
+    let score = cosine_similarity(query.as_slice(), embedding)?;
+
+    if score >= threshold {
+        Some((
+            NoteSummary {
+                id,
+                text,
+                sentiment: sentiment as f32,
+                mentions,
+            },
+            score,
+        ))
+    } else {
+        None
+    }
+}
 
 impl Store {
     /// Insert or update notes in batch
@@ -87,34 +125,8 @@ impl Store {
                     .await?;
 
             let mut scored: Vec<(NoteSummary, f32)> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let id: String = row.get(0);
-                    let text: String = row.get(1);
-                    let sentiment: f64 = row.get(2);
-                    let mentions_json: String = row.get(3);
-                    let embedding_bytes: Vec<u8> = row.get(4);
-
-                    let mentions: Vec<String> =
-                        serde_json::from_str(&mentions_json).unwrap_or_default();
-
-                    let embedding = embedding_slice(&embedding_bytes)?;
-                    let score = cosine_similarity(query.as_slice(), embedding);
-
-                    if score >= threshold {
-                        Some((
-                            NoteSummary {
-                                id,
-                                text,
-                                sentiment: sentiment as f32,
-                                mentions,
-                            },
-                            score,
-                        ))
-                    } else {
-                        None
-                    }
-                })
+                .iter()
+                .filter_map(|row| score_note_row(row, query, threshold))
                 .collect();
 
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -151,8 +163,11 @@ impl Store {
         })
     }
 
-    /// Check if notes file needs reindexing
-    pub fn notes_need_reindex(&self, source_file: &Path) -> Result<bool, StoreError> {
+    /// Check if notes file needs reindexing based on mtime.
+    ///
+    /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
+    /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
+    pub fn notes_need_reindex(&self, source_file: &Path) -> Result<Option<i64>, StoreError> {
         let current_mtime = source_file
             .metadata()?
             .modified()?
@@ -168,8 +183,8 @@ impl Store {
                     .await?;
 
             match row {
-                Some((mtime,)) if mtime >= current_mtime => Ok(false),
-                _ => Ok(true),
+                Some((mtime,)) if mtime >= current_mtime => Ok(None),
+                _ => Ok(Some(current_mtime)),
             }
         })
     }
@@ -191,14 +206,15 @@ impl Store {
                 .fetch_one(&self.pool)
                 .await?;
 
-            // Thresholds match crate::note::SENTIMENT_*_THRESHOLD constants
             let (warnings,): (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < -0.3")
+                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < ?1")
+                    .bind(SENTIMENT_NEGATIVE_THRESHOLD)
                     .fetch_one(&self.pool)
                     .await?;
 
             let (patterns,): (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment > 0.3")
+                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment > ?1")
+                    .bind(SENTIMENT_POSITIVE_THRESHOLD)
                     .fetch_one(&self.pool)
                     .await?;
 
@@ -269,34 +285,8 @@ impl Store {
             };
 
             let mut scored: Vec<(NoteSummary, f32)> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let id: String = row.get(0);
-                    let text: String = row.get(1);
-                    let sentiment: f64 = row.get(2);
-                    let mentions_json: String = row.get(3);
-                    let embedding_bytes: Vec<u8> = row.get(4);
-
-                    let mentions: Vec<String> =
-                        serde_json::from_str(&mentions_json).unwrap_or_default();
-
-                    let embedding = super::helpers::embedding_slice(&embedding_bytes)?;
-                    let score = cosine_similarity(query.as_slice(), embedding);
-
-                    if score >= threshold {
-                        Some((
-                            NoteSummary {
-                                id,
-                                text,
-                                sentiment: sentiment as f32,
-                                mentions,
-                            },
-                            score,
-                        ))
-                    } else {
-                        None
-                    }
-                })
+                .iter()
+                .filter_map(|row| score_note_row(row, query, threshold))
                 .collect();
 
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));

@@ -395,7 +395,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release
 - Semantic code search for 5 languages (Rust, Python, TypeScript, JavaScript, Go)
 - tree-sitter parsing for function/method extraction
-- nomic-embed-text-v1.5 embeddings (768-dim) [later changed to E5-base-v2 in v0.2.0]
+- nomic-embed-text-v1.5 embeddings (768-dim) [later changed to E5-base-v2 in v0.1.16]
 - GPU acceleration (CUDA/TensorRT) with CPU fallback
 - SQLite storage with WAL mode
 - MCP server (stdio transport)

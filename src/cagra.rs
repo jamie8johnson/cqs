@@ -196,7 +196,11 @@ impl CagraIndex {
         };
 
         // Search parameters - set itopk_size large enough for our k
-        // CAGRA requires itopk_size > k, default is 64
+        // CAGRA requires itopk_size > k; default library value is 64.
+        // We use max(k*2, 128) for better recall at small k:
+        //   - k*2 gives headroom for filtering duplicates/invalids
+        //   - 128 minimum ensures enough candidates for the graph search
+        // Trade-off: larger itopk_size = better recall, more GPU memory/compute
         let itopk_size = (k * 2).max(128);
         let search_params = match cuvs::cagra::SearchParams::new() {
             Ok(params) => params.set_itopk_size(itopk_size),
@@ -370,7 +374,8 @@ impl CagraIndex {
         // Get counts first to pre-allocate
         let chunk_count = store
             .chunk_count()
-            .map_err(|e| CagraError::Cuvs(format!("Failed to count chunks: {}", e)))?;
+            .map_err(|e| CagraError::Cuvs(format!("Failed to count chunks: {}", e)))?
+            as usize;
         let note_count = store
             .note_count()
             .map_err(|e| CagraError::Cuvs(format!("Failed to count notes: {}", e)))?
