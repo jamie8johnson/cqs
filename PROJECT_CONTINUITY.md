@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**Working on v0.4.3**
+**v0.4.3 released** (2026-02-05)
 
 **P2 audit tier complete.** Verified remaining items are either already fixed or design choices.
 
