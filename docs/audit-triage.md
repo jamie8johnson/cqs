@@ -311,7 +311,7 @@ After de-duplication: **~225 unique findings**
 | A3 | &Path vs PathBuf inconsistency | Multiple |
 | A4 | **Two Language enums** (dedup) | `src/parser.rs:760`, `src/language/mod.rs` |
 | A5 | Error type inconsistency | Multiple |
-| A6 | SearchFilter missing builder pattern | `src/store/helpers.rs:189-218` |
+| A6 | SearchFilter missing builder pattern | `src/store/helpers.rs:247-287` | ✅ Has builder methods |
 | A12 | Exposed internal types | `src/store/mod.rs:27-31` |
 
 #### Error Propagation (5 medium)
