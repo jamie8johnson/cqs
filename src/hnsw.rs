@@ -484,7 +484,7 @@ impl HnswIndex {
             self.id_map.len()
         );
 
-        // Ensure directory exists
+        // Ensure target directory exists
         std::fs::create_dir_all(dir).map_err(|e| {
             HnswError::Internal(format!(
                 "Failed to create directory {}: {}",
@@ -493,23 +493,43 @@ impl HnswIndex {
             ))
         })?;
 
-        // Save the HNSW graph and data using the library's file_dump
+        // Use a temporary directory for atomic writes
+        // This ensures that if we crash mid-save, the old index remains intact
+        let temp_dir = dir.join(format!(".{}.tmp", basename));
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir).map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to clean up temp dir {}: {}",
+                    temp_dir.display(),
+                    e
+                ))
+            })?;
+        }
+        std::fs::create_dir_all(&temp_dir).map_err(|e| {
+            HnswError::Internal(format!(
+                "Failed to create temp dir {}: {}",
+                temp_dir.display(),
+                e
+            ))
+        })?;
+
+        // Save the HNSW graph and data to temp directory
         match &self.inner {
             HnswInner::Owned(hnsw) => {
-                hnsw.file_dump(dir, basename).map_err(|e| {
+                hnsw.file_dump(&temp_dir, basename).map_err(|e| {
                     HnswError::Internal(format!(
                         "Failed to dump HNSW to {}/{}: {}",
-                        dir.display(),
+                        temp_dir.display(),
                         basename,
                         e
                     ))
                 })?;
             }
             HnswInner::Loaded(loaded) => {
-                loaded.hnsw.file_dump(dir, basename).map_err(|e| {
+                loaded.hnsw.file_dump(&temp_dir, basename).map_err(|e| {
                     HnswError::Internal(format!(
                         "Failed to dump HNSW to {}/{}: {}",
-                        dir.display(),
+                        temp_dir.display(),
                         basename,
                         e
                     ))
@@ -517,47 +537,19 @@ impl HnswIndex {
             }
         }
 
-        // Save the ID map separately (the library doesn't store our string IDs)
-        // Use write-to-temp-then-rename for atomicity
-        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
-        let id_map_tmp = dir.join(format!("{}.hnsw.ids.tmp", basename));
+        // Save the ID map to temp directory
         let id_map_json = serde_json::to_string(&self.id_map)
             .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
-        std::fs::write(&id_map_tmp, &id_map_json).map_err(|e| {
-            HnswError::Internal(format!("Failed to write {}: {}", id_map_tmp.display(), e))
-        })?;
-        std::fs::rename(&id_map_tmp, &id_map_path).map_err(|e| {
-            HnswError::Internal(format!(
-                "Failed to rename {} to {}: {}",
-                id_map_tmp.display(),
-                id_map_path.display(),
-                e
-            ))
+        let id_map_temp = temp_dir.join(format!("{}.hnsw.ids", basename));
+        std::fs::write(&id_map_temp, &id_map_json).map_err(|e| {
+            HnswError::Internal(format!("Failed to write {}: {}", id_map_temp.display(), e))
         })?;
 
-        // Set restrictive permissions on index files (Unix only)
-        // These files contain code embeddings - not secrets, but defense-in-depth
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let restrictive = std::fs::Permissions::from_mode(0o600);
-            // Set permissions on files we control
-            let _ = std::fs::set_permissions(&id_map_path, restrictive.clone());
-            // Also set on library-written files
-            for ext in &["hnsw.graph", "hnsw.data"] {
-                let path = dir.join(format!("{}.{}", basename, ext));
-                if path.exists() {
-                    let _ = std::fs::set_permissions(&path, restrictive.clone());
-                }
-            }
-        }
-
-        // Compute and save checksums for all files (mitigates bincode deserialization risks)
-        // For .ids we hash the in-memory data to avoid re-reading the file
+        // Compute checksums from temp files
         let ids_hash = blake3::hash(id_map_json.as_bytes());
         let mut checksums = vec![format!("hnsw.ids:{}", ids_hash.to_hex())];
         for ext in &["hnsw.graph", "hnsw.data"] {
-            let path = dir.join(format!("{}.{}", basename, ext));
+            let path = temp_dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
                 let data = std::fs::read(&path).map_err(|e| {
                     HnswError::Internal(format!(
@@ -570,29 +562,49 @@ impl HnswIndex {
                 checksums.push(format!("{}:{}", ext, hash.to_hex()));
             }
         }
-        // Write checksum last with atomic rename - if this file is missing/corrupt,
-        // load will fail verification, preventing use of partial saves
-        let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
-        let checksum_tmp = dir.join(format!("{}.hnsw.checksum.tmp", basename));
-        std::fs::write(&checksum_tmp, checksums.join("\n")).map_err(|e| {
-            HnswError::Internal(format!("Failed to write {}: {}", checksum_tmp.display(), e))
-        })?;
-        std::fs::rename(&checksum_tmp, &checksum_path).map_err(|e| {
+
+        // Write checksum to temp directory
+        let checksum_temp = temp_dir.join(format!("{}.hnsw.checksum", basename));
+        std::fs::write(&checksum_temp, checksums.join("\n")).map_err(|e| {
             HnswError::Internal(format!(
-                "Failed to rename {} to {}: {}",
-                checksum_tmp.display(),
-                checksum_path.display(),
+                "Failed to write {}: {}",
+                checksum_temp.display(),
                 e
             ))
         })?;
 
-        // Set permissions on checksum file too
+        // Set restrictive permissions in temp dir (Unix only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&checksum_path, std::fs::Permissions::from_mode(0o600));
+            let restrictive = std::fs::Permissions::from_mode(0o600);
+            for ext in &["hnsw.ids", "hnsw.graph", "hnsw.data", "hnsw.checksum"] {
+                let path = temp_dir.join(format!("{}.{}", basename, ext));
+                if path.exists() {
+                    let _ = std::fs::set_permissions(&path, restrictive.clone());
+                }
+            }
         }
+
+        // Atomically rename each file from temp to final location
+        // This ensures each individual file is either fully written or not present
+        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"] {
+            let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
+            let final_path = dir.join(format!("{}.{}", basename, ext));
+            if temp_path.exists() {
+                std::fs::rename(&temp_path, &final_path).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to rename {} to {}: {}",
+                        temp_path.display(),
+                        final_path.display(),
+                        e
+                    ))
+                })?;
+            }
+        }
+
+        // Clean up temp directory
+        let _ = std::fs::remove_dir(&temp_dir);
 
         tracing::info!(
             "HNSW index saved: {} vectors (with checksums)",

@@ -24,6 +24,7 @@ use subtle::ConstantTimeEq;
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
+use zeroize::Zeroizing;
 
 use super::super::server::{McpServer, MCP_PROTOCOL_VERSION};
 use super::super::types::JsonRpcRequest;
@@ -35,7 +36,8 @@ use super::super::types::JsonRpcRequest;
 struct HttpState {
     server: McpServer,
     /// API key for authentication (None = no auth required)
-    api_key: Option<String>,
+    /// Wrapped in Zeroizing for secure memory wiping on drop
+    api_key: Option<Zeroizing<String>>,
 }
 
 /// Run the MCP server with HTTP transport
@@ -67,6 +69,8 @@ pub fn serve_http(
     let has_api_key = api_key.is_some();
 
     let server = McpServer::new(project_root, use_gpu)?;
+    // Wrap API key in Zeroizing for secure memory wiping on drop
+    let api_key = api_key.map(Zeroizing::new);
     let state = Arc::new(HttpState { server, api_key });
 
     // CORS layer allows any origin for preflight requests (OPTIONS).
@@ -253,7 +257,7 @@ async fn handle_mcp_post(
     headers: axum::http::HeaderMap,
     Json(request): Json<JsonRpcRequest>,
 ) -> impl IntoResponse {
-    if let Err(e) = validate_api_key(&headers, state.api_key.as_deref()) {
+    if let Err(e) = validate_api_key(&headers, state.api_key.as_ref().map(|s| s.as_str())) {
         return e;
     }
     if let Err(e) = validate_origin_header(&headers) {
@@ -323,7 +327,7 @@ async fn handle_mcp_sse(
     State(state): State<Arc<HttpState>>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
-    validate_api_key(&headers, state.api_key.as_deref())?;
+    validate_api_key(&headers, state.api_key.as_ref().map(|s| s.as_str()))?;
     require_accept_event_stream(&headers)?;
 
     // Create SSE stream with priming event per MCP 2025-11-25 spec:

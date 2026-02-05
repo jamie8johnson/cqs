@@ -149,8 +149,8 @@ impl Store {
             scored.truncate(limit);
 
             if scanned == MAX_NOTES_SCAN as usize {
-                tracing::debug!(
-                    "Note search scanned max {} notes; some may have been skipped",
+                tracing::warn!(
+                    "Note search limit reached ({}). Consider using unified HNSW search.",
                     MAX_NOTES_SCAN
                 );
             }
