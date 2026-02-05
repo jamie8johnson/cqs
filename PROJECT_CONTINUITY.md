@@ -2,21 +2,25 @@
 
 ## Right Now
 
-**All 4 sprints complete** (2026-02-05)
+**v0.4.6 released** (2026-02-05)
 
-All 9 issues from the sprint plan have been implemented and merged.
+All sprint work published to GitHub and crates.io.
 
-### Session Summary (2026-02-05)
-- Sprint 1: Lazy grammar loading (#208), note search warning (#203), API key security (#202)
-- Sprint 2: CLI integration tests (#206), server tests (#205), atomic HNSW writes (#186)
-- Sprint 3: Pipeline resource sharing (#204), stress tests (#207)
-- Sprint 4: Schema migration framework (#188)
-- Fixed CI lock contention with serial_test crate
+### What shipped in v0.4.6
+- Schema migration framework (#188)
+- CLI integration tests (#206)
+- Server transport tests (#205)
+- Stress tests (#207)
+- `--api-key-file` with zeroize (#202)
+- Lazy grammar loading (#208)
+- Pipeline resource sharing (#204)
+- Atomic HNSW writes (#186)
+- Note search warning at WARN level (#203)
+- Fixed flaky HNSW test (top-3 → top-5)
 
-### Recent PRs
-- #215: Schema migration framework
-- #214: Docs update
-- #213: Sprint 1-3 improvements (8 issues closed)
+## Parked
+
+Nothing active.
 
 ## Open Issues
 
@@ -26,9 +30,10 @@ All 9 issues from the sprint plan have been implemented and merged.
 
 ## Architecture
 
+- Version: 0.4.6
+- Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - Unified HNSW index (chunks + notes with prefix)
 - Store: split into focused modules (7 files including migrations)
 - CLI: mod.rs + display.rs + watch.rs + pipeline.rs
-- Schema v10, WAL mode, migration framework ready
-- 290+ tests (including new CLI, server, stress tests)
+- 290+ tests (including CLI, server, stress tests)
