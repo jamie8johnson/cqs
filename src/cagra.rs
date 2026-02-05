@@ -362,19 +362,101 @@ impl CagraIndex {
     ///
     /// This is the typical way to create a CAGRA index at runtime.
     /// Unlike HNSW, CAGRA indexes are not persisted to disk.
+    ///
+    /// Note: CAGRA (cuVS) requires all data upfront for GPU index building,
+    /// so we can't stream incrementally like HNSW. However, we stream from
+    /// SQLite to avoid double-buffering in memory.
     pub fn build_from_store(store: &crate::Store) -> Result<Self, CagraError> {
-        let embeddings = store
-            .all_embeddings()
-            .map_err(|e| CagraError::Cuvs(format!("Failed to load embeddings: {}", e)))?;
+        // Get counts first to pre-allocate
+        let chunk_count = store
+            .chunk_count()
+            .map_err(|e| CagraError::Cuvs(format!("Failed to count chunks: {}", e)))?;
+        let note_count = store
+            .note_count()
+            .map_err(|e| CagraError::Cuvs(format!("Failed to count notes: {}", e)))?
+            as usize;
+        let total_count = chunk_count + note_count;
 
-        if embeddings.is_empty() {
+        if total_count == 0 {
             return Err(CagraError::Cuvs("No embeddings in store".into()));
         }
 
         tracing::info!(
-            "Building CAGRA index from {} stored embeddings",
-            embeddings.len()
+            "Building CAGRA index from {} embeddings ({} chunks, {} notes)",
+            total_count,
+            chunk_count,
+            note_count
         );
-        Self::build(embeddings)
+
+        // Pre-allocate for efficiency
+        let mut id_map = Vec::with_capacity(total_count);
+        let mut flat_data = Vec::with_capacity(total_count * EMBEDDING_DIM);
+
+        // Stream chunk embeddings in batches
+        const BATCH_SIZE: usize = 10_000;
+        for batch_result in store.embedding_batches(BATCH_SIZE) {
+            let batch = batch_result
+                .map_err(|e| CagraError::Cuvs(format!("Failed to fetch batch: {}", e)))?;
+
+            for (chunk_id, embedding) in batch {
+                if embedding.len() != EMBEDDING_DIM {
+                    return Err(CagraError::DimensionMismatch {
+                        expected: EMBEDDING_DIM,
+                        actual: embedding.len(),
+                    });
+                }
+                id_map.push(chunk_id);
+                flat_data.extend(embedding.into_inner());
+            }
+        }
+
+        // Add note embeddings (already prefixed with note:)
+        let note_embeddings = store
+            .note_embeddings()
+            .map_err(|e| CagraError::Cuvs(format!("Failed to fetch notes: {}", e)))?;
+
+        for (note_id, embedding) in note_embeddings {
+            if embedding.len() != EMBEDDING_DIM {
+                return Err(CagraError::DimensionMismatch {
+                    expected: EMBEDDING_DIM,
+                    actual: embedding.len(),
+                });
+            }
+            id_map.push(note_id);
+            flat_data.extend(embedding.into_inner());
+        }
+
+        // Build from pre-collected data
+        Self::build_from_flat(id_map, flat_data)
+    }
+
+    /// Build CAGRA index from pre-collected flat data
+    fn build_from_flat(id_map: Vec<String>, flat_data: Vec<f32>) -> Result<Self, CagraError> {
+        let n_vectors = id_map.len();
+        if n_vectors == 0 {
+            return Err(CagraError::Cuvs("Cannot build empty index".into()));
+        }
+
+        tracing::info!("Building CAGRA index with {} vectors", n_vectors);
+
+        let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
+
+        let dataset = Array2::from_shape_vec((n_vectors, EMBEDDING_DIM), flat_data)
+            .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
+
+        let build_params =
+            cuvs::cagra::IndexParams::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
+
+        let index = cuvs::cagra::Index::build(&resources, &build_params, &dataset)
+            .map_err(|e| CagraError::Cuvs(e.to_string()))?;
+
+        tracing::info!("CAGRA index built successfully");
+
+        Ok(Self {
+            resources: Mutex::new(resources),
+            dataset,
+            id_map,
+            index: Mutex::new(Some(index)),
+        })
     }
 }
