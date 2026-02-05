@@ -546,8 +546,10 @@ impl Parser {
             for cap in m.captures {
                 let callee_name = source[cap.node.byte_range()].to_string();
                 // saturating_sub prevents underflow if line_offset > position
-                let line_number =
-                    (cap.node.start_position().row as u32 + 1).saturating_sub(line_offset);
+                // .max(1) ensures we never produce line 0 (line numbers are 1-indexed)
+                let line_number = (cap.node.start_position().row as u32 + 1)
+                    .saturating_sub(line_offset)
+                    .max(1);
 
                 // Skip common noise (self, this, super, etc.)
                 if !should_skip_callee(&callee_name) {

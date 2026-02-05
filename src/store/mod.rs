@@ -147,6 +147,21 @@ impl Store {
 
         let store = Self { pool, rt };
 
+        // Set restrictive permissions on database files (Unix only)
+        // These files contain code embeddings - not secrets, but defense-in-depth
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let restrictive = std::fs::Permissions::from_mode(0o600);
+            // Main database file
+            let _ = std::fs::set_permissions(path, restrictive.clone());
+            // WAL and SHM files (may not exist yet, ignore errors)
+            let wal_path = path.with_extension("db-wal");
+            let shm_path = path.with_extension("db-shm");
+            let _ = std::fs::set_permissions(&wal_path, restrictive.clone());
+            let _ = std::fs::set_permissions(&shm_path, restrictive);
+        }
+
         tracing::info!(path = %path.display(), "Database connected");
 
         // Check schema version compatibility

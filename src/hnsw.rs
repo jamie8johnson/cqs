@@ -499,6 +499,23 @@ impl HnswIndex {
             HnswError::Internal(format!("Failed to write {}: {}", id_map_path.display(), e))
         })?;
 
+        // Set restrictive permissions on index files (Unix only)
+        // These files contain code embeddings - not secrets, but defense-in-depth
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let restrictive = std::fs::Permissions::from_mode(0o600);
+            // Set permissions on files we control
+            let _ = std::fs::set_permissions(&id_map_path, restrictive.clone());
+            // Also set on library-written files
+            for ext in &["hnsw.graph", "hnsw.data"] {
+                let path = dir.join(format!("{}.{}", basename, ext));
+                if path.exists() {
+                    let _ = std::fs::set_permissions(&path, restrictive.clone());
+                }
+            }
+        }
+
         // Compute and save checksums for all files (mitigates bincode deserialization risks)
         // For .ids we hash the in-memory data to avoid re-reading the file
         let ids_hash = blake3::hash(id_map_json.as_bytes());
@@ -525,6 +542,14 @@ impl HnswIndex {
                 e
             ))
         })?;
+
+        // Set permissions on checksum file too
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ =
+                std::fs::set_permissions(&checksum_path, std::fs::Permissions::from_mode(0o600));
+        }
 
         tracing::info!(
             "HNSW index saved: {} vectors (with checksums)",
