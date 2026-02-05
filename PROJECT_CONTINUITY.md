@@ -13,6 +13,8 @@ Fixed the two "hard" deferred issues:
 
 Then shipped v0.4.3 (PR #178) to GitHub + crates.io.
 
+**Also fixed:** CAGRA GPU index now uses streaming embeddings and includes notes (PR #180). Aligns CAGRA with HNSW approach - streams from SQLite to avoid double-buffering.
+
 ### Key Changes in v0.4.3
 - `Store::embedding_batches()` - streams in 10k batches via LIMIT/OFFSET
 - `HnswIndex::build_batched()` - incremental build, O(batch_size) memory
