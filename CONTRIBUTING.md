@@ -84,31 +84,39 @@ When reporting bugs, please include:
 ```
 src/
   cli/          - Command-line interface (clap)
-    mod.rs      - Argument parsing, command dispatch
+    mod.rs      - Argument parsing, command dispatch, indexing
     display.rs  - Output formatting, result display
+    watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - LanguageRegistry, LanguageDef trait
     rust.rs, python.rs, typescript.rs, javascript.rs, go.rs
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation
-  store/        - SQLite storage layer
+  store/        - SQLite storage layer (Schema v10, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
-    chunks.rs   - Chunk CRUD operations
-    notes.rs    - Note CRUD and search
+    chunks.rs   - Chunk CRUD, embedding_batches() for streaming
+    notes.rs    - Note CRUD, note_embeddings(), search_notes_by_ids()
     calls.rs    - Call graph storage and queries
     helpers.rs  - Types, embedding conversion functions
   parser.rs     - tree-sitter code parsing, call extraction
-  embedder.rs   - ONNX model embedding generation
-  search.rs     - Search algorithms, cosine similarity, scoring
-  hnsw.rs       - HNSW index for fast O(log n) vector search
+  embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
+  search.rs     - Search algorithms, cosine similarity, HNSW-guided search
+  hnsw.rs       - HNSW index with batched build (chunks + notes unified)
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   mcp.rs        - MCP server implementation (stdio + HTTP)
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment
   config.rs     - Configuration file support
+  index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API
 ```
+
+**Key design notes:**
+- 769-dim embeddings (768 from E5-base-v2 + 1 sentiment dimension)
+- Unified HNSW index contains both chunks and notes (notes prefixed with `note:`)
+- Streaming HNSW build via `build_batched()` for memory efficiency
+- Chunks capped at 500 lines, notes capped at 10k entries
 
 ## Questions?
 
