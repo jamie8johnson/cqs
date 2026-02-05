@@ -11,11 +11,6 @@ text = "tree-sitter 0.26 with grammar crates pinned to 0.23.x causes mysterious 
 mentions = ["tree-sitter", "parser.rs", "Cargo.toml"]
 
 [[note]]
-sentiment = -0.5
-text = "Storing absolute paths in chunk IDs breaks path pattern filtering and makes indexes non-portable. Store relative paths, join with project root for filesystem ops."
-mentions = ["store.rs", "chunks"]
-
-[[note]]
 sentiment = -1.0
 text = "MCP tools/call responses MUST wrap in {\"content\":[{\"type\":\"text\",\"text\":\"...\"}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code."
 mentions = ["mcp.rs", "tools/call"]
@@ -24,11 +19,6 @@ mentions = ["mcp.rs", "tools/call"]
 sentiment = -0.5
 text = "trailing_var_arg in clap eats flags after the query. `cqs \"foo\" -n 5` parses as query \"foo -n 5\". Removed it - users quote multi-word queries, flags work anywhere."
 mentions = ["cli.rs", "clap"]
-
-[[note]]
-sentiment = -0.5
-text = "Claude Code ignores .mcp.json in project root. Config lives in ~/.claude.json under projects[\"/path\"].mcpServers. Use `claude mcp add` to configure."
-mentions = ["mcp", "claude"]
 
 [[note]]
 sentiment = -0.5
@@ -66,31 +56,6 @@ mentions = ["ort", "Cargo.toml", "embedder.rs"]
 sentiment = -0.5
 text = "WSL /mnt/c/ path causes random permission errors (libsqlite3-sys, git config). Workaround in .cargo/config.toml but might bite elsewhere."
 mentions = [".cargo/config.toml", "libsqlite3-sys"]
-
-[[note]]
-sentiment = 0.0
-text = "r2d2 pool size at 4 connections is arbitrary. For CPU-bound embedding, more connections don't help. For pure search, more might help. Monitor for pool exhaustion."
-mentions = ["store.rs", "r2d2"]
-
-[[note]]
-sentiment = 0.0
-text = "nomic-embed-text-v1.5 ONNX needs: i64 inputs (not i32), token_type_ids (all zeros), outputs last_hidden_state (not sentence_embedding). Verify inputs/outputs when switching models."
-mentions = ["embedder.rs", "nomic-embed-text"]
-
-[[note]]
-sentiment = -0.5
-text = "hnsw_rs returns Hnsw<'a> with lifetime tied to HnswIo. Can't store loaded index without lifetime issues. Workaround: reload on each search. Adds ~1-2ms overhead."
-mentions = ["hnsw.rs", "hnsw_rs"]
-
-[[note]]
-sentiment = 0.0
-text = "NL descriptions are ~50-100 chars vs 500+ for raw code. nomic-embed-text trained on longer texts. Monitor recall - if it drops, add body tokens back."
-mentions = ["nl.rs", "embedder.rs"]
-
-[[note]]
-sentiment = 0.0
-text = "Schema version bumps require `cqs index --force` to rebuild. No incremental migrations. Acceptable for now but could be painful for large codebases."
-mentions = ["store.rs", "schema.sql"]
 
 [[note]]
 sentiment = 0.0
@@ -191,11 +156,6 @@ mentions = ["WSL", "git", "PowerShell"]
 
 [[note]]
 sentiment = 0.5
-text = "9-layer audit methodology is thorough: security, memory, concurrency, algorithms, architecture, performance, deps, tests, error handling. Systematic beats ad-hoc."
-mentions = ["fresh-eyes", "audit"]
-
-[[note]]
-sentiment = 0.5
 text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback loop. Worth the setup."
 mentions = [".githooks", "cargo fmt"]
 
@@ -208,16 +168,6 @@ mentions = ["hardware", "benchmarking"]
 sentiment = 0.0
 text = "ort CUDA provider needs libonnxruntime_providers_shared.so in LD_LIBRARY_PATH. Libs exist at ~/.cache/ort.pyke.io/dfbin/... but aren't found at runtime. Fix: export LD_LIBRARY_PATH with that path. However, CUDA embedding is slower than CPU for single queries due to GPU context setup overhead - only worth it for batch embedding during indexing."
 mentions = ["embedder.rs", "ort", "CUDA", "LD_LIBRARY_PATH"]
-
-[[note]]
-sentiment = 0.5
-text = "Overlapping window chunking (2048 tokens, 256 overlap) improved indexing throughput 18MB/min → 35MB/min. Long chunks split into windows with parent_id for dedup. GPU gets smaller, bounded work units instead of huge variable-length sequences."
-mentions = ["cli.rs", "embedder.rs", "windowing"]
-
-[[note]]
-sentiment = -0.5
-text = "ort CUDA execution provider falls back to CPU for rotary_emb/Gather ops. These run with full CPU parallelism (~800%) while GPU waits. Windowing helps by capping sequence length, but the fundamental bottleneck is ort's op routing."
-mentions = ["ort", "embedder.rs", "CUDA", "rotary_emb"]
 
 [[note]]
 sentiment = 0.5
@@ -253,11 +203,6 @@ mentions = ["embedder.rs", "E5", "CUDA", "ort"]
 sentiment = -0.5
 text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_LIBRARY_PATH, it would create circular symlinks in the source directory, corrupting the ort cache. Fixed by skipping dirs containing ort_cache path."
 mentions = ["embedder.rs", "ort", "symlink"]
-
-[[note]]
-sentiment = -0.5
-text = "Test fixtures hardcoded 'nomic-embed-text-v1.5' and schema v8 - broke when we switched to E5/v9. Considered exporting constants but decided: hardcode is fine, fix when it breaks, note reminds us. Not every paper cut needs abstraction."
-mentions = ["mcp_test.rs", "store_test.rs", "MODEL_NAME"]
 
 [[note]]
 sentiment = -0.5
@@ -368,3 +313,23 @@ mentions = ["audit mode", "verification", "dead code"]
 sentiment = 0.5
 text = "Always update docs/audit-triage.md status column when fixing audit items. Mark as ✅ Fixed with brief note (e.g., \"logs warning\", \"documented\"). Update summary counts after each batch."
 mentions = ["docs/audit-triage.md", "audit findings"]
+
+[[note]]
+sentiment = 0.5
+text = "CUDA compatibility is the primary gate for embedding model selection. E5-base-v2 was chosen for absolute position embeddings (full CUDA coverage). Any replacement model must be BERT-style (no rotary embeddings) to avoid ort Gather op CPU fallback. Qwen3-Embedding is excluded for this reason."
+mentions = ["embedder.rs", "CUDA", "model selection", "E5"]
+
+[[note]]
+sentiment = 0.5
+text = "Multi-index architecture: multiple Store instances with thin MultiSearch wrapper, NOT SQLite ATTACH or single-DB approach. Each reference gets its own DB + HNSW. Results merged with per-source weight multiplier. Store API is already clean enough for this."
+mentions = ["store", "multi-index", "architecture", "hnsw.rs"]
+
+[[note]]
+sentiment = 0.0
+text = "Route to multi-index ordering matters: settle embedding model BEFORE building reference indexes. Model switch with N reference indexes = N rebuilds. Do it while only project indexes exist."
+mentions = ["multi-index", "model selection", "roadmap"]
+
+[[note]]
+sentiment = 0.5
+text = "Model eval complete (Phase 1): E5-base-v2, BGE-base-en-v1.5, and E5-large-v2 all scored 100% Recall@5 on 50-query eval suite. Eval is saturated - need harder queries to differentiate models. Decision: stay with E5-base-v2 (smallest, proven, no schema change needed). Phase 2 (model switch) skipped."
+mentions = ["embedder.rs", "model selection", "eval", "E5"]
