@@ -253,6 +253,21 @@ impl Parser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
         let _span = tracing::info_span!("parse_file", path = %path.display()).entered();
 
+        // Check file size to prevent OOM on huge files (limit: 50MB)
+        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+                tracing::warn!(
+                    "Skipping large file ({}MB > 50MB limit): {}",
+                    meta.len() / (1024 * 1024),
+                    path.display()
+                );
+                return Ok(vec![]);
+            }
+            Ok(_) => {}
+            Err(e) => return Err(e.into()),
+        }
+
         // Gracefully handle non-UTF8 files
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,

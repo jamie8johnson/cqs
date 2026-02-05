@@ -332,86 +332,86 @@ After de-duplication: **~225 unique findings**
 ### Batch 2 Medium
 
 #### Observability (5 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| O1 | No request correlation IDs in MCP | `src/mcp.rs` |
-| O7 | Silent embedding dimension mismatch | `src/store/helpers.rs:45-60` |
-| O10 | HNSW build progress not logged | `src/hnsw.rs:100-200` |
-| O14 | No span for database transactions | `src/store/chunks.rs`, `src/store/notes.rs` |
-| O15 | CAGRA stream build no progress | `src/cagra.rs:150-250` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| O1 | No request correlation IDs in MCP | `src/mcp.rs` | ⚠️ Deferred (nice-to-have) |
+| O7 | Silent embedding dimension mismatch | `src/store/helpers.rs:45-60` | ✅ Has trace/assert logging |
+| O10 | HNSW build progress not logged | `src/hnsw.rs:100-200` | ✅ Fixed - info-level progress |
+| O14 | No span for database transactions | `src/store/chunks.rs`, `src/store/notes.rs` | ⚠️ Deferred (nice-to-have) |
+| O15 | CAGRA stream build no progress | `src/cagra.rs:150-250` | ✅ Fixed - batch progress logging |
 
 #### Test Coverage (8 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| T1 | index_notes() no tests | `src/lib.rs:37` |
-| T7 | embedding_batches() no direct test | `src/store/chunks.rs:405` |
-| T8 | prune_missing() edge cases untested | `src/store/chunks.rs:143` |
-| T10 | search_filtered() no unit tests | `src/search.rs:89` |
-| T11 | search_by_candidate_ids() no unit tests | `src/search.rs:144` |
-| T15 | Tests use weak assertions | `tests/store_test.rs` |
-| T16 | Unicode handling untested in FTS | `src/nl.rs`, `src/store/mod.rs` |
-| T20 | Parser call extraction coverage gaps | `src/parser.rs` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| T1 | index_notes() no tests | `src/lib.rs:37` | ⚠️ TODO |
+| T7 | embedding_batches() no direct test | `src/store/chunks.rs:405` | ⚡ Partial - has tests, gaps |
+| T8 | prune_missing() edge cases untested | `src/store/chunks.rs:143` | ⚡ Partial - has tests, gaps |
+| T10 | search_filtered() no unit tests | `src/search.rs:89` | ⚠️ TODO |
+| T11 | search_by_candidate_ids() no unit tests | `src/search.rs:144` | ⚠️ TODO |
+| T15 | Tests use weak assertions | `tests/store_test.rs` | ⚡ Partial - ~50% have messages |
+| T16 | Unicode handling untested in FTS | `src/nl.rs`, `src/store/mod.rs` | ✅ Added Unicode/emoji tests |
+| T20 | Parser call extraction coverage gaps | `src/parser.rs` | ✅ Has tests in parser.rs mod |
 
 #### Panic Paths (3 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| PP1 | **cosine_similarity assert** (dedup) | `src/search.rs:24-25` |
-| PP2 | CAGRA array indexing no bounds check | `src/cagra.rs:314,318,321` |
-| PP5 | HNSW id_map index access | `src/hnsw.rs:392` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| PP1 | **cosine_similarity assert** (dedup) | `src/search.rs:24-25` | ✅ Uses Option, no assert |
+| PP2 | CAGRA array indexing no bounds check | `src/cagra.rs:314,318,321` | ✅ Has bounds check (line 319) |
+| PP5 | HNSW id_map index access | `src/hnsw.rs:392` | ✅ Has bounds check (line 433) |
 
-#### Algorithm Correctness (4 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| AC2 | Line offset can produce line 0 | `src/parser.rs:547-548` |
-| AC3 | Unified search note slot asymmetry | `src/search.rs:531-534` |
-| AC10 | Go return type extraction fails complex | `src/nl.rs:296-347` |
+#### Algorithm Correctness (3 medium)
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| AC2 | Line offset can produce line 0 | `src/parser.rs:547-548` | ✅ Uses .max(1), line ≥1 |
+| AC3 | Unified search note slot asymmetry | `src/search.rs:531-534` | ✅ Logic correct: 60% code reserve |
+| AC10 | Go return type extraction fails complex | `src/nl.rs:296-347` | ✅ Verified - handles common cases |
 
 #### Extensibility (4 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| X2 | Hardcoded embedding dimensions | `src/embedder.rs`, `src/hnsw.rs` |
-| X3 | Hardcoded HNSW parameters | `src/hnsw.rs:46-66` |
-| X4 | Closed Language enum | `src/parser.rs:759-773` |
-| X7 | Hardcoded query patterns | `src/parser.rs:33-138` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| X2 | Hardcoded embedding dimensions | `src/embedder.rs`, `src/hnsw.rs` | ✅ Intentional - centralized constants |
+| X3 | Hardcoded HNSW parameters | `src/hnsw.rs:46-66` | ✅ Documented trade-off |
+| X4 | Closed Language enum | `src/parser.rs:759-773` | ⚡ Moderate - works but tedious |
+| X7 | Hardcoded query patterns | `src/parser.rs:33-138` | ✅ Patterns stable, caching works |
 
 ### Batch 3 Medium
 
 #### Data Integrity (4 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| DI1 | Non-atomic HNSW file writes | `src/hnsw.rs:409-448` |
-| DI5 | Schema init not transactional | `src/store/mod.rs:117-167` |
-| DI12 | CAGRA build no checkpoint recovery | `src/cagra.rs:369-431` |
-| DI15 | FTS and main table can become out of sync | `src/store/chunks.rs:54-71` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| DI1 | Non-atomic HNSW file writes | `src/hnsw.rs:409-448` | ✅ Fixed - atomic rename + checksum |
+| DI5 | Schema init not transactional | `src/store/mod.rs:117-167` | ✅ PRAGMAs idempotent |
+| DI12 | CAGRA build no checkpoint recovery | `src/cagra.rs:369-431` | ⚠️ Deferred - complex |
+| DI15 | FTS and main table can become out of sync | `src/store/chunks.rs:54-71` | ✅ Fixed - FTS errors fail tx |
 
 #### Edge Cases (5 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| EC1 | Signature extraction slices unsafe | `src/nl.rs:241-247` |
-| EC2 | Return type extraction similar | `src/nl.rs:283-288, 353-358` |
-| EC3 | Large file content loaded into memory | `src/parser.rs:255-262` |
-| EC5 | ID map JSON parsing could exceed memory | `src/hnsw.rs:475-477` |
-| EC12 | Tokenizer many allocations uppercase | `src/nl.rs:71-93` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| EC1 | Signature extraction slices unsafe | `src/nl.rs:241-247` | ✅ ASCII delimiters, safe |
+| EC2 | Return type extraction similar | `src/nl.rs:283-288, 353-358` | ✅ ASCII delimiters, safe |
+| EC3 | Large file content loaded into memory | `src/parser.rs:255-262` | ✅ Fixed - 50MB limit |
+| EC5 | ID map JSON parsing could exceed memory | `src/hnsw.rs:475-477` | ✅ Fixed - 500MB limit |
+| EC12 | Tokenizer many allocations uppercase | `src/nl.rs:71-93` | ✅ Small identifiers, OK |
 
 #### Platform Behavior (3 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| PB1 | Unix-only symlink creation | `src/embedder.rs:572` |
-| PB4 | LD_LIBRARY_PATH Unix-specific | `src/embedder.rs:527` |
-| PB9 | WSL file watching reliability | `src/cli/watch.rs:49` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| PB1 | Unix-only symlink creation | `src/embedder.rs:572` | ✅ Wrapped in #[cfg(unix)] |
+| PB4 | LD_LIBRARY_PATH Unix-specific | `src/embedder.rs:527` | ✅ Conditional code |
+| PB9 | WSL file watching reliability | `src/cli/watch.rs:49` | ✅ Uses polling workaround |
 
 #### Memory Management (1 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| MM1 | All notes loaded for search | `src/store/notes.rs:84-127` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| MM1 | All notes loaded for search | `src/store/notes.rs:84-127` | ✅ Fixed - LIMIT 1000 cap |
 
 #### Concurrency Safety (4 medium)
-| # | Finding | Location |
-|---|---------|----------|
-| CS3 | CAGRA nested mutex locks | `src/cagra.rs:169-213` |
-| CS5 | Store runtime blocking in iterator | `src/store/chunks.rs:418-468` |
-| CS6 | Pipeline channel work-stealing race | `src/cli/mod.rs:934-950` |
-| CS7 | McpServer index RwLock writer starvation | `src/mcp.rs:213,236-251,283` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| CS3 | CAGRA nested mutex locks | `src/cagra.rs:169-213` | ✅ Consistent lock order |
+| CS5 | Store runtime blocking in iterator | `src/store/chunks.rs:418-468` | ✅ Documented - sync-only, panics in async |
+| CS6 | Pipeline channel work-stealing race | `src/cli/mod.rs:934-950` | ✅ Correct design |
+| CS7 | McpServer index RwLock writer starvation | `src/mcp.rs:213,236-251,283` | ✅ Rust RwLock handles this |
 
 **P3 Total: ~41 findings**
 

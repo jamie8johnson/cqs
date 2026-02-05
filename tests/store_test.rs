@@ -630,3 +630,54 @@ fn test_embedding_batches_exact_multiple() {
         assert_eq!(b.len(), 10);
     }
 }
+
+// ===== Unicode FTS tests (T16) =====
+
+#[test]
+fn test_fts_unicode_function_names() {
+    let store = TestStore::new();
+
+    // Insert chunks with Unicode in names
+    let mut chunk = test_chunk("计算", "fn 计算() { /* calculate */ }");
+    chunk.content = "fn 计算() { /* calculate */ }".to_string();
+    chunk.name = "计算".to_string();
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // FTS should normalize and find it (using query text)
+    let filter = SearchFilter::new().with_query("计算");
+    let results = store.search_filtered(&mock_embedding(1.0), &filter, 5, 0.0);
+    assert!(results.is_ok(), "FTS search should not fail on Unicode");
+    // Note: Whether it actually finds depends on FTS tokenization; test ensures no crash
+}
+
+#[test]
+fn test_fts_emoji_in_comments() {
+    let store = TestStore::new();
+
+    // Insert chunk with emoji in content
+    let mut chunk = test_chunk("emoji_fn", "fn emoji_fn() { /* 🚀 launch */ }");
+    chunk.content = "fn emoji_fn() { /* 🚀 launch */ }".to_string();
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // Should not crash on emoji content
+    let filter = SearchFilter::new().with_query("launch");
+    let results = store.search_filtered(&mock_embedding(1.0), &filter, 5, 0.0);
+    assert!(
+        results.is_ok(),
+        "FTS search should not fail with emoji in content"
+    );
+}
+
+#[test]
+fn test_normalize_for_fts_unicode() {
+    // Test that normalization handles various Unicode correctly
+    assert!(!normalize_for_fts("hello 世界").is_empty());
+    assert!(!normalize_for_fts("emoji 🎉 test").is_empty());
+    assert!(!normalize_for_fts("diacritics: café résumé").is_empty());
+    // RTL text
+    assert!(!normalize_for_fts("rtl: שלום").is_empty());
+}

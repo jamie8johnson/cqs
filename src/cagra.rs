@@ -399,10 +399,12 @@ impl CagraIndex {
 
         // Stream chunk embeddings in batches
         const BATCH_SIZE: usize = 10_000;
+        let mut loaded_chunks = 0usize;
         for batch_result in store.embedding_batches(BATCH_SIZE) {
             let batch = batch_result
                 .map_err(|e| CagraError::Cuvs(format!("Failed to fetch batch: {}", e)))?;
 
+            let batch_len = batch.len();
             for (chunk_id, embedding) in batch {
                 if embedding.len() != EMBEDDING_DIM {
                     return Err(CagraError::DimensionMismatch {
@@ -413,6 +415,19 @@ impl CagraIndex {
                 id_map.push(chunk_id);
                 flat_data.extend(embedding.into_inner());
             }
+
+            loaded_chunks += batch_len;
+            let progress_pct = if chunk_count > 0 {
+                (loaded_chunks * 100) / chunk_count
+            } else {
+                100
+            };
+            tracing::info!(
+                "CAGRA loading progress: {} / {} chunks ({}%)",
+                loaded_chunks,
+                chunk_count,
+                progress_pct
+            );
         }
 
         // Add note embeddings (already prefixed with note:)

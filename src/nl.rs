@@ -379,11 +379,17 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
             // Strip trailing { first
             let sig = signature.trim_end_matches('{').trim();
 
-            // Find where params end by counting parens from the right
-            // The params close-paren is the last ) NOT inside a return type (...)
-            // Strategy: find the last ')' that's not part of a multi-return
-
-            // Simple approach: if last char is ), then return type is wrapped in ()
+            // Go return type extraction using parenthesis depth tracking.
+            // Handles:
+            // - func foo() error                    → Returns error
+            // - func foo() (int, error)             → Returns (int, error)
+            // - func (r *Receiver) Name() error    → Returns error
+            // - func (r *Receiver) Name() (int, error) → Returns (int, error)
+            //
+            // Known limitation: Complex function return types like `func() (func() error)`
+            // may not parse perfectly, but produce acceptable search text.
+            //
+            // Strategy: if last char is ), return type is wrapped in ()
             // Otherwise return type is plain text after the last )
             if sig.ends_with(')') {
                 // Check if it's a multi-return like (string, error) or just empty params ()

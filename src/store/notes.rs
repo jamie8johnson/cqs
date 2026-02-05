@@ -89,13 +89,11 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-                if let Err(e) = sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
+                // Delete from FTS before insert - error must fail transaction to prevent desync
+                sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
                     .bind(&note.id)
                     .execute(&mut *tx)
-                    .await
-                {
-                    tracing::warn!("Failed to delete from notes_fts: {}", e);
-                }
+                    .await?;
 
                 sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
                     .bind(&note.id)
@@ -110,20 +108,38 @@ impl Store {
     }
 
     /// Search notes by embedding similarity
+    ///
+    /// Note: This performs brute-force O(n) similarity search over all notes.
+    /// For large note collections, prefer using the unified HNSW index which
+    /// includes notes with `note:` prefix for efficient ANN search.
+    ///
+    /// The query is limited to MAX_NOTES_SCAN (1000) to prevent OOM on very
+    /// large collections. If you have more notes, use the unified search.
     pub fn search_notes(
         &self,
         query: &Embedding,
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<NoteSearchResult>, StoreError> {
-        tracing::debug!(limit, threshold, "searching notes");
+        // Limit scan to prevent OOM - notes in large collections should use HNSW
+        const MAX_NOTES_SCAN: i64 = 1000;
+
+        tracing::debug!(
+            limit,
+            threshold,
+            max_scan = MAX_NOTES_SCAN,
+            "searching notes"
+        );
 
         self.rt.block_on(async {
+            // Use LIMIT to avoid loading unbounded data
             let rows: Vec<_> =
-                sqlx::query("SELECT id, text, sentiment, mentions, embedding FROM notes")
+                sqlx::query("SELECT id, text, sentiment, mentions, embedding FROM notes LIMIT ?1")
+                    .bind(MAX_NOTES_SCAN)
                     .fetch_all(&self.pool)
                     .await?;
 
+            let scanned = rows.len();
             let mut scored: Vec<(NoteSummary, f32)> = rows
                 .iter()
                 .filter_map(|row| score_note_row(row, query, threshold))
@@ -131,6 +147,13 @@ impl Store {
 
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             scored.truncate(limit);
+
+            if scanned == MAX_NOTES_SCAN as usize {
+                tracing::debug!(
+                    "Note search scanned max {} notes; some may have been skipped",
+                    MAX_NOTES_SCAN
+                );
+            }
 
             Ok(scored
                 .into_iter()
