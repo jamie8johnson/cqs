@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Schema migration framework** (#188, #215)
+  - Migrations run automatically when opening older indexes
+  - Falls back to error if no migration path exists
+  - Framework ready for future schema changes
+- **CLI integration tests** (#206, #213)
+  - 12 end-to-end tests using `assert_cmd`
+  - Tests for init, index, search, stats, completions
+- **Server transport tests** (#205, #213)
+  - 3 tests for stdio transport (initialize, tools/list, invalid JSON)
+- **Stress tests** (#207, #213)
+  - 5 ignored tests for heavy load scenarios
+  - Run with `cargo test --test stress_test -- --ignored`
+- **`--api-key-file` option** for secure API key loading (#202, #213)
+  - Reads key from file, keeps secret out of process list
+  - Uses `zeroize` crate for secure memory wiping
+
+### Changed
+- **Lazy grammar loading** (#208, #213)
+  - Tree-sitter queries compile on first use, not at startup
+  - Reduces startup time by 50-200ms
+- **Pipeline resource sharing** (#204, #213)
+  - Store shared via `Arc` across pipeline threads
+  - Single Tokio runtime instead of 3 separate ones
+- Note search warning now logs at WARN level when hitting 1000-note limit (#203, #213)
+
+### Fixed
+- **Atomic HNSW writes** (#186, #213)
+  - Uses temp directory + rename pattern for crash safety
+  - All 4 files written atomically together
+- CLI test serialization to prevent HuggingFace Hub lock contention in CI
+
 ## [0.4.5] - 2026-02-05
 
 ### Added
