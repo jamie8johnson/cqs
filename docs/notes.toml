@@ -353,3 +353,8 @@ mentions = ["src/store/chunks.rs", "src/hnsw.rs", "embedding_batches", "build_ba
 sentiment = 1.0
 text = "Notes now included in HNSW index with 'note:' prefix. search_unified_with_index partitions candidates by prefix, fetches from chunks/notes tables separately. O(n) brute-force eliminated. Fixes #103."
 mentions = ["src/store/notes.rs", "src/search.rs", "src/cli/mod.rs", "note_embeddings", "search_notes_by_ids"]
+
+[[note]]
+sentiment = 0.5
+text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight, MCP note_weight. Useful when notes dominate due to high semantic match."
+mentions = ["SearchFilter", "search.rs", "mcp.rs", "cli/mod.rs"]

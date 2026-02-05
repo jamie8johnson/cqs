@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-02-05
+
+### Added
+- **`note_weight` parameter** for controlling note prominence in search results (#183)
+  - CLI: `--note-weight 0.5` (0.0-1.0, default 1.0)
+  - MCP: `note_weight` parameter in cqs_search
+  - Lower values make notes rank below code with similar semantic scores
+
+### Changed
+- CAGRA GPU index now uses streaming embeddings and includes notes (#180)
+- Removed dead `search_unified()` function (#182) - only `search_unified_with_index()` was used
+
 ## [0.4.3] - 2026-02-05
 
 ### Added
