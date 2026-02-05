@@ -292,8 +292,8 @@ After de-duplication: **~225 unique findings**
 #### Module Boundaries (5 medium)
 | # | Finding | Location |
 |---|---------|----------|
-| M4 | Store depends on Search module | `src/store/notes.rs:14` |
-| M6 | Store helpers exposes internal types | `src/store/mod.rs:8` |
+| M4 | Store depends on Search module | `src/store/notes.rs:14` | ✅ No search imports in store |
+| M6 | Store helpers exposes internal types | `src/store/mod.rs:8` | ✅ Already pub(crate), types re-exported |
 | M8 | **Parallel Language definitions** (dedup) | `src/parser.rs:760-772`, `src/language/mod.rs` |
 | M9 | CLI directly imports library internals | `src/cli/mod.rs:9-16` |
 | M10 | Search implements on Store type | `src/search.rs:1-300` |
@@ -317,7 +317,7 @@ After de-duplication: **~225 unique findings**
 #### Error Propagation (5 medium)
 | # | Finding | Location |
 |---|---------|----------|
-| E5 | Language/chunk_type parsing errors discarded | `src/store/chunks.rs:296, 306` |
+| E5 | Language/chunk_type parsing errors discarded | `src/store/chunks.rs:296, 306` | ✅ Already logs with tracing::warn |
 | E7 | Multiple bare ? in HNSW load | `src/hnsw.rs` | ✅ All have context now |
 | E10 | CAGRA index rebuild errors become empty | `src/cagra.rs:188-195` |
 | E11 | HNSW dimension mismatch returns empty | `src/hnsw.rs:364-372` |
