@@ -564,3 +564,227 @@ Current open issues that overlap with audit findings:
 | #186 | [P3] Non-atomic HNSW file writes | DI1 (Non-atomic HNSW file writes) |
 
 **Action:** Do not create duplicate issues for these findings. Mark as "covered by #NNN" when fixing.
+
+---
+
+## Post-Refactoring Updates
+
+**Date:** 2026-02-05
+
+The CLI and MCP monoliths have been refactored:
+- CLI: `src/cli/mod.rs` (2,069 lines) split into 15 files (largest 557 lines)
+- MCP: `src/mcp.rs` (2,149 lines) split into 15 files (largest 559 lines)
+
+### Location Mappings
+
+| Old Location | New Location |
+|--------------|--------------|
+| `src/cli/mod.rs` (CLI args, run) | `src/cli/mod.rs` (228 lines - args and dispatch only) |
+| `src/cli/mod.rs` (cmd_index) | `src/cli/commands/index.rs` |
+| `src/cli/mod.rs` (signal handling) | `src/cli/signal.rs` |
+| `src/cli/mod.rs` (file enumeration) | `src/cli/files.rs` |
+| `src/cli/mod.rs` (config/project root) | `src/cli/config.rs` |
+| `src/cli/mod.rs` (run_index_pipeline) | `src/cli/pipeline.rs` |
+| `src/cli/mod.rs` (stats command) | `src/cli/commands/stats.rs` |
+| `src/cli/mod.rs` (serve command) | `src/cli/commands/serve.rs` |
+| `src/cli/mod.rs` (callers/callees) | `src/cli/commands/graph.rs` |
+| `src/mcp.rs` (McpServer) | `src/mcp/server.rs` |
+| `src/mcp.rs` (types) | `src/mcp/types.rs` |
+| `src/mcp.rs` (validation) | `src/mcp/validation.rs` |
+| `src/mcp.rs` (audit mode) | `src/mcp/audit_mode.rs` |
+| `src/mcp.rs` (tool_search) | `src/mcp/tools/search.rs` |
+| `src/mcp.rs` (tool_add_note) | `src/mcp/tools/notes.rs` |
+| `src/mcp.rs` (tool_read) | `src/mcp/tools/read.rs` |
+| `src/mcp.rs` (tool_audit_mode) | `src/mcp/tools/audit.rs` |
+| `src/mcp.rs` (callers/callees) | `src/mcp/tools/call_graph.rs` |
+| `src/mcp.rs` (stats) | `src/mcp/tools/stats.rs` |
+| `src/mcp.rs` (serve_http) | `src/mcp/transports/http.rs` |
+| `src/mcp.rs` (serve_stdio) | `src/mcp/transports/stdio.rs` |
+
+---
+
+### P1 Findings - Updated Locations
+
+#### Code Hygiene
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| H1 | ExitCode enum unused | `src/cli/mod.rs:49` | `src/cli/signal.rs:11-16` | **FIXED** - now used in tests (`mod.rs:528-530`) |
+| H2 | run() incorrectly marked dead | `src/cli/mod.rs:217` | `src/cli/mod.rs:165-168` | **FIXED** - has `#[allow(dead_code)]` with doc explaining usage |
+| H3 | InitializeParams fields unused | `src/mcp.rs:76-87` | `src/mcp/types.rs:45-55` | **FIXED** - fields now have `#[allow(dead_code)]` with docs explaining MCP protocol compliance |
+| H4 | _no_ignore parameter unused | `src/cli/watch.rs:198` | `src/cli/watch.rs:39` | Still unused (named `_no_ignore`) |
+| H6 | cmd_index ~200 lines deep nesting | `src/cli/mod.rs:280-480` | `src/cli/commands/index.rs:21-160` | **EASIER** - now 140 lines, helper functions extracted |
+| H7 | GPU/CPU embedder patterns duplicated | `src/cli/mod.rs` | `src/cli/pipeline.rs` | **EASIER** - consolidated in one file |
+| H8 | Embedding batch processing duplicated | `src/cli/mod.rs`, `src/cli/watch.rs` | Same locations | No change |
+
+#### Error Propagation
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| E12 | MCP notes parse success assumed | `src/mcp.rs:1053-1066` | `src/mcp/tools/notes.rs:120-133` | Now has error handling |
+| E14 | File enumeration skips canonicalization | `src/cli/mod.rs:374-379` | `src/cli/files.rs:79-112` | **IMPROVED** - better error logging with count tracking |
+| E15 | Walker entry errors filtered | `src/cli/mod.rs:356` | `src/cli/files.rs:57-63` | **IMPROVED** - now logs errors via tracing::debug |
+| E18 | Index guard poisoning not logged | `src/mcp.rs:646,652,716,756,878,1096` | `src/mcp/tools/search.rs:72-75`, `src/mcp/tools/audit.rs:14-17`, etc. | **IMPROVED** - now logs "prior panic, recovering" |
+| E19 | Generic "Failed to open index" missing path | `src/mcp.rs:234` | `src/mcp/server.rs:58-59` | **FIXED** - uses `.with_context()` including path |
+
+#### Observability
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| O5 | GPU failures use eprintln | `src/cli/mod.rs:580-590` | `src/cli/pipeline.rs:352-358` | Now uses tracing::warn with structured fields |
+
+#### Panic Paths
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| P3 | Unwrap on enabled field in MCP | `src/mcp.rs:1120` | `src/mcp/tools/audit.rs:42-44` | **FIXED** - uses `unreachable!()` after explicit None check |
+| P4 | Embedder initialization expect | `src/mcp.rs:332` | N/A | Not found in new code - McpServer::new uses `?` |
+| P6 | Ctrl+C handler expect | `src/cli/mod.rs:72` | `src/cli/signal.rs:26-34` | **FIXED** - uses `if let Err(e)` with eprintln warning |
+| P7 | Progress bar template expect | `src/cli/mod.rs:1028` | `src/cli/pipeline.rs:471-476` | Still uses `.expect()` - covered by test at `mod.rs:549-556` |
+
+#### Extensibility
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| X9 | Hardcoded file size limit | `src/cli/mod.rs:32` | `src/cli/files.rs:13` | Unchanged (still constant) |
+| X10 | Hardcoded token window params | `src/cli/mod.rs:33-34` | `src/cli/pipeline.rs:27-28` | **EASIER** - now has doc comment explaining values |
+| X17 | Hardcoded project root markers | `src/cli/mod.rs:315-322` | `src/cli/config.rs:17-24` | Unchanged, but now isolated in config module |
+
+---
+
+### P2 Findings - Updated Locations
+
+#### Edge Cases
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| EC6 | Duration parsing overflow | `src/mcp.rs:1347-1408` | `src/mcp/validation.rs:26-98` | **FIXED** - now caps at 24 hours (line 88-95) |
+| EC8 | Zero limit produces confusing results | `src/mcp.rs:595` | `src/mcp/tools/search.rs:19` | Uses `.clamp(1, 20)` |
+
+#### Platform Behavior
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| PB7 | Chunk ID path separators | `src/cli/mod.rs:717-723` | `src/cli/pipeline.rs:165-166` | **FIXED** - uses `.replace('\\', "/")` |
+| PB8 | JSON output path slashes | `src/cli/display.rs:176`, `src/mcp.rs:608` | `src/cli/display.rs`, `src/mcp/tools/search.rs:35,117` | **FIXED** in MCP - uses `.replace('\\', "/")` |
+| PB10 | Path canonicalization UNC paths | `src/cli/mod.rs:344`, `src/mcp.rs:862-865` | `src/cli/files.rs:19-33`, `src/mcp/validation.rs:100-118` | **FIXED** - `strip_unc_prefix()` in both modules |
+
+#### Memory Management
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| MM9 | MCP tool_read() no file size limit | `src/mcp.rs:874` | `src/mcp/tools/read.rs:39-48` | **FIXED** - now has 10MB limit |
+
+#### Concurrency Safety
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| CS4 | Audit mode TOCTOU | `src/mcp.rs:649-653, 713-718` | `src/mcp/tools/search.rs:79-85` | **FIXED** - captures both values in single lock acquisition |
+| CS6 | Pipeline channel work-stealing race | `src/cli/mod.rs:934-950` | `src/cli/pipeline.rs:381-396` | Unchanged |
+| CS7 | McpServer index RwLock writer starvation | `src/mcp.rs:213,236-251,283` | `src/mcp/server.rs:37,63,71-76` | Unchanged but better documented |
+
+#### Data Security
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| DS1 | CORS allows any origin | `src/mcp.rs:1274-1277` | `src/mcp/transports/http.rs:77-80` | **DOCUMENTED** - now has detailed comments (lines 72-76) explaining two-layer validation |
+| DS4 | Notes file created without permissions | `src/mcp.rs:1028-1037` | `src/mcp/tools/notes.rs:89-105` | **FIXED** - now sets 0o600 on Unix |
+| DS5 | Lock file may leak PID | `src/cli/mod.rs:421-435` | `src/cli/files.rs:137-197` | **FIXED** - sets 0o600 on Unix (lines 147-158) |
+| DS7 | Error messages expose paths | `src/mcp.rs:354-364` | `src/mcp/server.rs:181-226` | **IMPROVED** - `sanitize_error_message()` now in dedicated method |
+| DS9 | Health endpoint exposes version | `src/mcp.rs:1580-1586` | `src/mcp/transports/http.rs:302-319` | **DOCUMENTED** - has security note comment |
+
+#### Input Security
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| IS4 | Duration parsing no upper bound | `src/mcp.rs:1347-1409` | `src/mcp/validation.rs:26-98` | **FIXED** - caps at 24 hours |
+
+#### Resource Footprint
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| RF6 | Parser recreated multiple times | `src/cli/mod.rs:695-1109` | `src/cli/pipeline.rs` (uses Arc) | **FIXED** - parser shared via `Arc` (line 132) |
+| RF10 | HNSW loaded just for stats count | `src/cli/mod.rs:1474-1479` | `src/cli/commands/stats.rs:25` | Uses `count_vectors()` (no full load) |
+
+---
+
+### P3/P4 Findings - Updated Locations
+
+#### Module Boundaries (P4 - Hard)
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| M1 | CLI module is monolith (~1960 lines) | `src/cli/mod.rs:1-1960` | Split into 15 files | **FIXED** - largest file now 557 lines |
+| M2 | MCP module is monolith (~2000 lines) | `src/mcp.rs:1-2000` | Split into 15 files | **FIXED** - largest file now 559 lines |
+
+#### Other
+
+| # | Finding | Old Location | New Location | Status |
+|---|---------|--------------|--------------|--------|
+| RF1 | Multiple Tokio runtimes | `src/store/mod.rs:63`, `src/mcp.rs:1311` | `src/store/mod.rs:63`, `src/mcp/transports/http.rs:114` | **DOCUMENTED** - comment explains rationale (http.rs:111-113) |
+| RF4 | Duplicate Embedder instances | `src/cli/mod.rs:807-809,925-927` | `src/cli/pipeline.rs` | **FIXED** - single Embedder per pipeline stage |
+| DS8 | Stdio transport no authentication | `src/mcp.rs:1181-1234` | `src/mcp/transports/stdio.rs:35` | **DOCUMENTED** - comment notes trusted client |
+
+---
+
+### Summary of Changes
+
+#### Findings Fixed by Refactoring
+
+1. **M1, M2** - CLI and MCP monoliths split into focused modules
+2. **H1** - ExitCode now used in tests
+3. **H2** - run() marked with explanatory `#[allow(dead_code)]`
+4. **H3** - InitializeParams fields documented for protocol compliance
+5. **H6** - cmd_index reduced from ~200 to ~140 lines
+6. **P3** - Audit mode enabled check uses unreachable!() after None guard
+7. **P6** - Ctrl+C handler uses if-let with warning instead of expect
+8. **E14, E15** - File enumeration errors now logged
+9. **E18** - Lock poisoning now logged
+10. **E19** - Index open error includes path
+11. **CS4** - Audit mode TOCTOU fixed with single lock acquisition
+12. **DS4, DS5** - File permissions set on Unix
+13. **EC6, IS4** - Duration parsing capped at 24 hours
+14. **MM9** - File read has 10MB limit
+15. **PB7, PB8, PB10** - Path separator handling fixed
+16. **RF6** - Parser shared via Arc
+
+#### Findings Made Easier
+
+1. **H6** - cmd_index now smaller, helper functions isolated
+2. **H7** - GPU/CPU patterns consolidated in pipeline.rs
+3. **X10** - Token window params documented
+4. **X17** - Project markers isolated in config.rs
+5. **All CLI fixes** - Better module boundaries make changes more focused
+6. **All MCP fixes** - Tools isolated, easier to test individually
+
+#### Difficulty Re-assessment
+
+| Finding | Old Difficulty | New Difficulty | Reason |
+|---------|---------------|----------------|--------|
+| H5 | Hard | Medium | run_index_pipeline now isolated in pipeline.rs |
+| O1 | Medium | Easy | Server handler in one place (server.rs) |
+| T9 | Hard | Medium | CLI commands now separate files, easier to test |
+| CS6 | Medium | Easy | Pipeline logic isolated, easier to reason about |
+| RF4 | Medium | N/A | Fixed by refactoring |
+
+---
+
+### Recommended Priority Adjustments
+
+Given the refactoring:
+
+1. **Promote to P1** (now easier):
+   - O1 (request correlation IDs) - server.rs is focused, easy to add
+   - CS6 (pipeline race) - pipeline.rs is isolated
+
+2. **Demote from P1** (already fixed):
+   - H1, H2, H3 - Dead code issues resolved
+   - P3, P6 - Panic paths fixed
+   - E14, E15, E18, E19 - Error propagation improved
+
+3. **Remove from list**:
+   - M1, M2 - Monolith findings resolved
+   - RF4, RF6 - Resource duplication fixed
+   - CS4, EC6, IS4, MM9, DS4, DS5, PB7, PB8, PB10 - Various fixes
+
+**Net P1 count after refactoring: ~75 (down from ~93)**
