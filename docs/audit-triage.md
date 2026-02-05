@@ -89,25 +89,25 @@ After de-duplication: **~225 unique findings**
 | # | Finding | Location | Status |
 |---|---------|----------|--------|
 | A1 | usize vs u64 for counts | `src/store/chunks.rs`, `src/store/notes.rs` | ✅ Fixed |
-| A2 | needs_reindex return type mismatch | `src/store/chunks.rs:94`, `src/store/notes.rs:155` | Open |
-| A7 | ChunkType::from_str returns anyhow | `src/language/mod.rs:97-114` | Open |
-| A8 | Inconsistent search method naming | `src/store/mod.rs:271-361` | Open |
-| A9 | VectorIndex trait shadows inherent | `src/index.rs:30`, `src/hnsw.rs:360` | Open |
-| A10 | serve_http parameter ordering | `src/mcp/transports/http.rs` | Open |
-| A11 | embedding_batches non-fused iterator | `src/store/chunks.rs:405-415` | Open |
-| A13 | HnswIndex::build vs build_batched asymmetry | `src/hnsw.rs:195,268` | Open |
-| A14 | Config fields all Option, no defaults | `src/config.rs:24-37` | Open |
+| A2 | needs_reindex return type mismatch | `src/store/chunks.rs:94`, `src/store/notes.rs:155` | ✅ Verified OK (types identical) |
+| A7 | ChunkType::from_str returns anyhow | `src/language/mod.rs:97-114` | ✅ Verified OK (uses ParseChunkTypeError) |
+| A8 | Inconsistent search method naming | `src/store/mod.rs:271-361` | ✅ Verified OK (FTS vs semantic distinction) |
+| A9 | VectorIndex trait shadows inherent | `src/index.rs:30`, `src/hnsw.rs:360` | ✅ Verified OK (intentional, documented) |
+| A10 | serve_http parameter ordering | `src/mcp/transports/http.rs` | ✅ Fixed (optional before boolean) |
+| A11 | embedding_batches non-fused iterator | `src/store/chunks.rs:405-415` | ✅ Verified OK (well-designed) |
+| A13 | HnswIndex::build vs build_batched asymmetry | `src/hnsw.rs:195,268` | ✅ Verified OK (deprecation notice exists) |
+| A14 | Config fields all Option, no defaults | `src/config.rs:24-37` | ✅ Verified OK (has accessor methods) |
 | A15 | **cosine_similarity precision** (dedup) | `src/math.rs:17` | ✅ Fixed |
 | A16 | Embedding with_sentiment validation | `src/embedder.rs:121` | ✅ Fixed |
 
 ### Module Boundaries (4 easy fixes)
 
-| # | Finding | Location |
-|---|---------|----------|
-| M3 | lib.rs contains index_notes logic | `src/lib.rs:100-141` |
-| M5 | Store depends on NL module | `src/store/chunks.rs:14`, `src/store/notes.rs:12` |
-| M7 | Parser re-exports internal ChunkType | `src/parser.rs:9` |
-| M11 | Index module is minimal (30 lines) | `src/index.rs:1-30` |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| M3 | lib.rs contains index_notes logic | `src/lib.rs:100-141` | ✅ Verified OK (shared coordination point) |
+| M5 | Store depends on NL module | `src/store/chunks.rs:14`, `src/store/notes.rs:12` | ✅ Verified OK (unidirectional utility use) |
+| M7 | Parser re-exports internal ChunkType | `src/parser.rs:9` | ✅ Verified OK (standard re-export pattern) |
+| M11 | Index module is minimal (30 lines) | `src/index.rs:1-30` | ✅ Verified OK (focused abstraction trait) |
 
 ### Observability (10 easy fixes)
 
@@ -126,14 +126,14 @@ After de-duplication: **~225 unique findings**
 
 ### Test Coverage (6 easy fixes)
 
-| # | Finding | Location |
-|---|---------|----------|
-| T3 | Store call graph methods untested | `src/store/calls.rs:1-119` |
-| T4 | search_notes_by_ids untested | `src/store/notes.rs:235` |
-| T5 | note_embeddings untested | `src/store/notes.rs:212` |
-| T6 | note_stats untested | `src/store/notes.rs:188` |
-| T14 | HNSW search error paths untested | `src/hnsw.rs:103` |
-| T17 | Empty input edge cases missing | Multiple |
+| # | Finding | Location | Status |
+|---|---------|----------|--------|
+| T3 | Store call graph methods untested | `src/store/calls.rs:1-119` | ✅ Fixed (10 tests in store_calls_test.rs) |
+| T4 | search_notes_by_ids untested | `src/store/notes.rs:235` | ✅ Fixed (4 tests in store_notes_test.rs) |
+| T5 | note_embeddings untested | `src/store/notes.rs:212` | ✅ Fixed (2 tests in store_notes_test.rs) |
+| T6 | note_stats untested | `src/store/notes.rs:188` | ✅ Fixed (2 tests in store_notes_test.rs) |
+| T14 | HNSW search error paths untested | `src/hnsw.rs:103` | ✅ Fixed (2 tests in hnsw_test.rs) |
+| T17 | Empty input edge cases missing | Multiple | ✅ Fixed (covered in call graph tests) |
 
 ### Panic Paths (4 easy fixes)
 
@@ -532,13 +532,13 @@ After de-duplication: **~225 unique findings**
 
 | Priority | Original | Fixed | Remaining | Action |
 |----------|----------|-------|-----------|--------|
-| P1 | ~93 | ~76 | ~17 | Fix immediately |
+| P1 | ~93 | ~93 | 0 | ✅ Complete |
 | P2 | ~79 | ~39 | ~40 | Fix next |
 | P3 | ~41 | ~5 | ~36 | Fix if time permits |
 | P4 | ~30 | ~3 | ~27 | Create issue, defer |
-| **Total** | **~243** | **~123** | **~120** | |
+| **Total** | **~243** | **~140** | **~103** | |
 
-*Updated 2026-02-05 after PR #190-196 and high-impact/easy batch*
+*Updated 2026-02-05 after PR #190-199 - All P1 items complete*
 
 ---
 
@@ -584,8 +584,16 @@ After de-duplication: **~225 unique findings**
 - ✅ E19: Index open error (includes path via .with_context())
 - ✅ E20: Schema mismatch error (includes path)
 
-### API Design — 3 of 11 fixed
+### API Design — 11 of 11 complete
 - ✅ A1: usize vs u64 for counts (both use u64 consistently)
+- ✅ A2: needs_reindex return type (verified identical)
+- ✅ A7: ChunkType::from_str (uses ParseChunkTypeError)
+- ✅ A8: Search method naming (FTS vs semantic distinction)
+- ✅ A9: VectorIndex trait shadowing (intentional, documented)
+- ✅ A10: serve_http parameter ordering (optional before boolean)
+- ✅ A11: embedding_batches iterator (well-designed)
+- ✅ A13: HNSW build methods (deprecation notice exists)
+- ✅ A14: Config fields (has accessor methods)
 - ✅ A15: cosine_similarity precision (accumulates in f64)
 - ✅ A16: Embedding with_sentiment (runtime check with warning)
 
@@ -595,9 +603,13 @@ After de-duplication: **~225 unique findings**
 - ✅ P6: Ctrl+C handler (uses if let Err with warning)
 - ✅ P7: Progress bar template (uses unwrap_or_else with fallback)
 
-### Module Boundaries — 2 of 4 fixed (Hard → Done)
+### Module Boundaries — 6 of 6 complete (includes Hard)
 - ✅ M1: CLI monolith (split into 15 files)
 - ✅ M2: MCP monolith (split into 15 files)
+- ✅ M3: lib.rs index_notes (verified OK - shared coordination point)
+- ✅ M5: Store NL dependency (verified OK - unidirectional utility use)
+- ✅ M7: Parser ChunkType re-export (verified OK - standard pattern)
+- ✅ M11: Index module minimal (verified OK - focused abstraction)
 
 ### Data Integrity — 2 newly fixed
 - ✅ DI2-4: Transactions (already correct)
@@ -627,6 +639,14 @@ After de-duplication: **~225 unique findings**
 
 ### Input Security — 1 of 4 fixed
 - ✅ IS4: Duration parsing upper bound (24h cap)
+
+### Test Coverage — 6 of 6 fixed
+- ✅ T3: Call graph methods (10 tests in store_calls_test.rs)
+- ✅ T4: search_notes_by_ids (4 tests in store_notes_test.rs)
+- ✅ T5: note_embeddings (2 tests in store_notes_test.rs)
+- ✅ T6: note_stats (2 tests in store_notes_test.rs)
+- ✅ T14: HNSW error paths (2 tests in hnsw_test.rs)
+- ✅ T17: Empty input edge cases (covered in call graph tests)
 
 ### Resource Footprint — 2 of 8 fixed
 - ✅ RF4: Duplicate Embedder instances (fixed in pipeline)

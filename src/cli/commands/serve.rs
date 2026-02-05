@@ -44,9 +44,9 @@ pub(crate) fn cmd_serve(config: ServeConfig) -> Result<()> {
 
     match config.transport.as_str() {
         "stdio" => cqs::serve_stdio(root, config.gpu),
-        "http" => cqs::serve_http(root, &config.bind, config.port, config.gpu, config.api_key),
+        "http" => cqs::serve_http(root, &config.bind, config.port, config.api_key, config.gpu),
         // Keep sse as alias for backwards compatibility
-        "sse" => cqs::serve_http(root, &config.bind, config.port, config.gpu, config.api_key),
+        "sse" => cqs::serve_http(root, &config.bind, config.port, config.api_key, config.gpu),
         _ => {
             bail!(
                 "Unknown transport: {}. Use 'stdio' or 'http'.",

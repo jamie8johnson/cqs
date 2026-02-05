@@ -49,7 +49,7 @@
 //!
 //! // HTTP transport with GPU embedding (None = no auth)
 //! // Note: serve_http blocks the current thread
-//! cqs::serve_http(".", "127.0.0.1", 3000, true, None)?;
+//! cqs::serve_http(".", "127.0.0.1", 3000, None, true)?;
 //! # Ok(())
 //! # }
 //! ```

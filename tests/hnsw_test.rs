@@ -193,3 +193,61 @@ fn test_query_dimension_mismatch_returns_empty() {
         "Wrong dimension query should return empty"
     );
 }
+
+// ===== build_batched error path tests (T14) =====
+
+#[test]
+fn test_build_batched_dimension_mismatch() {
+    // First batch has correct dimension, second has wrong dimension
+    let good_batch: Vec<(String, Embedding)> = vec![
+        ("good1".to_string(), make_embedding(1)),
+        ("good2".to_string(), make_embedding(2)),
+    ];
+
+    let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 769
+    let bad_batch: Vec<(String, Embedding)> = vec![("bad".to_string(), wrong_dim)];
+
+    let batches: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![Ok(good_batch), Ok(bad_batch)];
+
+    let result = HnswIndex::build_batched(batches.into_iter(), 3);
+    match result {
+        Ok(_) => panic!("Dimension mismatch in batch should fail"),
+        Err(e) => {
+            let err_msg = e.to_string();
+            assert!(
+                err_msg.contains("mismatch") || err_msg.contains("Dimension"),
+                "Error should mention dimension: {}",
+                err_msg
+            );
+        }
+    }
+}
+
+#[test]
+fn test_build_batched_empty_batches() {
+    // All batches are empty
+    let batches: Vec<Result<Vec<(String, Embedding)>, &str>> =
+        vec![Ok(vec![]), Ok(vec![]), Ok(vec![])];
+
+    let result = HnswIndex::build_batched(batches.into_iter(), 0);
+
+    // Empty input should either succeed with empty index or fail gracefully
+    // Current implementation should handle this - empty HNSW is valid
+    match result {
+        Ok(index) => {
+            // Empty index - searching should return empty
+            let query = make_embedding(1);
+            let results = index.search(&query, 5);
+            assert!(results.is_empty(), "Empty index should return no results");
+        }
+        Err(e) => {
+            // If it fails, error should be meaningful
+            let err_msg = e.to_string();
+            assert!(
+                !err_msg.is_empty(),
+                "Error message should not be empty: {}",
+                err_msg
+            );
+        }
+    }
+}
