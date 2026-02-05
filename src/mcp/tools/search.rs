@@ -16,6 +16,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
     let args: SearchArgs = serde_json::from_value(arguments)?;
     validate_query_length(&args.query)?;
 
+    // Clamp limit to [1, 20] - 0 treated as 1, >20 capped at 20
     let limit = args.limit.unwrap_or(5).clamp(1, 20);
     let threshold = args.threshold.unwrap_or(0.3);
 
@@ -67,6 +68,11 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         enable_rrf: !args.semantic_only.unwrap_or(false), // RRF on by default, disable with semantic_only
         note_weight: args.note_weight.unwrap_or(1.0),
     };
+
+    // Validate filter parameters before search
+    filter
+        .validate()
+        .map_err(|e| anyhow::anyhow!("Invalid search filter: {}", e))?;
 
     // Read-lock the index (allows background CAGRA build to upgrade it)
     let index_guard = server.index.read().unwrap_or_else(|e| {

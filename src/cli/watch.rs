@@ -36,7 +36,11 @@ use super::{check_interrupted, find_project_root, Cli};
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
 
-pub fn cmd_watch(cli: &Cli, debounce_ms: u64, _no_ignore: bool) -> Result<()> {
+pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
+    if no_ignore {
+        eprintln!("Warning: --no-ignore is not yet implemented for watch mode");
+    }
+
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");

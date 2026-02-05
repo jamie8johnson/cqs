@@ -33,7 +33,19 @@ pub fn tool_add_note(server: &McpServer, arguments: Value) -> Result<Value> {
         .and_then(|m| m.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| {
+                    if let Some(s) = v.as_str() {
+                        if s.is_empty() {
+                            tracing::debug!("Ignoring empty mention string");
+                            None
+                        } else {
+                            Some(s.to_string())
+                        }
+                    } else {
+                        tracing::debug!(value = ?v, "Ignoring non-string mention value");
+                        None
+                    }
+                })
                 .collect()
         })
         .unwrap_or_default();
