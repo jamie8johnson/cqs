@@ -132,18 +132,21 @@ impl Store {
         let source_str = source_file.to_string_lossy().to_string();
 
         self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
             sqlx::query(
                 "DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes WHERE source_file = ?1)",
             )
             .bind(&source_str)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
             let result = sqlx::query("DELETE FROM notes WHERE source_file = ?1")
                 .bind(&source_str)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
 
+            tx.commit().await?;
             Ok(result.rows_affected() as u32)
         })
     }

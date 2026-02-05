@@ -18,9 +18,11 @@ use crate::store::{Store, StoreError};
 
 /// Cosine similarity for L2-normalized vectors (just dot product)
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
+///
+/// Panics if vectors have different lengths or unexpected dimensions.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    debug_assert_eq!(a.len(), b.len(), "Embedding dimension mismatch");
-    debug_assert_eq!(a.len(), 769, "Expected 769-dim embeddings");
+    assert_eq!(a.len(), b.len(), "Embedding dimension mismatch");
+    assert_eq!(a.len(), 769, "Expected 769-dim embeddings");
     use simsimd::SpatialSimilarity;
     f32::dot(a, b).unwrap_or_else(|| {
         // Fallback for unsupported architectures
