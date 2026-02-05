@@ -714,3 +714,173 @@ fn test_whitespace_only_query() {
         "Whitespace query should be handled gracefully"
     );
 }
+
+// =============================================================================
+// Server Entry Point Tests (stdio transport)
+// =============================================================================
+
+mod server_tests {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    use tempfile::TempDir;
+
+    /// Setup a project directory with .cq initialized
+    fn setup_project() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        let cq_dir = dir.path().join(".cq");
+        std::fs::create_dir_all(&cq_dir).unwrap();
+
+        // Initialize store
+        let index_path = cq_dir.join("index.db");
+        let store = cqs::store::Store::open(&index_path).unwrap();
+        store
+            .init(&cqs::store::ModelInfo {
+                name: "intfloat/e5-base-v2".into(),
+                dimensions: 769,
+                version: "1.0".into(),
+            })
+            .unwrap();
+
+        dir
+    }
+
+    #[test]
+    fn test_stdio_initialize_request() {
+        let dir = setup_project();
+
+        // Spawn cqs serve --transport stdio
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cqs"))
+            .args(["serve", "--transport", "stdio", "--project"])
+            .arg(dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn cqs serve");
+
+        let mut stdin = child.stdin.take().expect("Failed to get stdin");
+        let stdout = child.stdout.take().expect("Failed to get stdout");
+        let mut reader = BufReader::new(stdout);
+
+        // Send initialize request
+        let request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+        writeln!(stdin, "{}", request).expect("Failed to write request");
+        stdin.flush().expect("Failed to flush stdin");
+
+        // Read response
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .expect("Failed to read response");
+
+        // Verify response is valid JSON-RPC
+        let json: serde_json::Value =
+            serde_json::from_str(&response).expect("Response should be valid JSON");
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert_eq!(json["id"], 1);
+        assert!(json["result"].is_object(), "Should have result object");
+        assert!(
+            json["result"]["protocolVersion"].is_string(),
+            "Should have protocol version"
+        );
+
+        // Clean up
+        drop(stdin);
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn test_stdio_list_tools_request() {
+        let dir = setup_project();
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cqs"))
+            .args(["serve", "--transport", "stdio", "--project"])
+            .arg(dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn cqs serve");
+
+        let mut stdin = child.stdin.take().expect("Failed to get stdin");
+        let stdout = child.stdout.take().expect("Failed to get stdout");
+        let mut reader = BufReader::new(stdout);
+
+        // Initialize first
+        let init_request = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+        writeln!(stdin, "{}", init_request).expect("Failed to write init request");
+        stdin.flush().expect("Failed to flush");
+        let mut _init_response = String::new();
+        reader.read_line(&mut _init_response).unwrap();
+
+        // Send tools/list request
+        let tools_request = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        writeln!(stdin, "{}", tools_request).expect("Failed to write tools request");
+        stdin.flush().expect("Failed to flush");
+
+        // Read response
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .expect("Failed to read response");
+
+        // Verify response contains tools
+        let json: serde_json::Value = serde_json::from_str(&response).expect("Valid JSON");
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert_eq!(json["id"], 2);
+        assert!(
+            json["result"]["tools"].is_array(),
+            "Should have tools array"
+        );
+
+        let tools = json["result"]["tools"].as_array().unwrap();
+        let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(
+            tool_names.contains(&"cqs_search"),
+            "Should have cqs_search tool"
+        );
+        assert!(
+            tool_names.contains(&"cqs_stats"),
+            "Should have cqs_stats tool"
+        );
+
+        drop(stdin);
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn test_stdio_invalid_json_returns_error() {
+        let dir = setup_project();
+
+        let mut child = Command::new(env!("CARGO_BIN_EXE_cqs"))
+            .args(["serve", "--transport", "stdio", "--project"])
+            .arg(dir.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("Failed to spawn cqs serve");
+
+        let mut stdin = child.stdin.take().expect("Failed to get stdin");
+        let stdout = child.stdout.take().expect("Failed to get stdout");
+        let mut reader = BufReader::new(stdout);
+
+        // Send invalid JSON
+        writeln!(stdin, "{{not valid json}}").expect("Failed to write");
+        stdin.flush().expect("Failed to flush");
+
+        // Read response
+        let mut response = String::new();
+        reader
+            .read_line(&mut response)
+            .expect("Failed to read response");
+
+        // Should get a JSON-RPC error response
+        let json: serde_json::Value = serde_json::from_str(&response).expect("Valid JSON");
+        assert_eq!(json["jsonrpc"], "2.0");
+        assert!(json["error"].is_object(), "Should have error object");
+
+        drop(stdin);
+        let _ = child.wait();
+    }
+}
