@@ -10,6 +10,17 @@ use serde::Deserialize;
 use std::path::Path;
 
 /// Configuration options loaded from config files
+///
+/// # Example
+///
+/// ```toml
+/// # ~/.config/cqs/config.toml or .cqs.toml
+/// limit = 10          # Default result limit
+/// threshold = 0.3     # Minimum similarity score
+/// name_boost = 0.2    # Weight for name matching
+/// quiet = false       # Suppress progress output
+/// verbose = false     # Enable verbose logging
+/// ```
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -36,7 +47,7 @@ impl Config {
         let project_config = Self::load_file(&project_root.join(".cqs.toml")).unwrap_or_default();
 
         // Project overrides user
-        let merged = user_config.merge(project_config);
+        let merged = user_config.override_with(project_config);
         tracing::debug!(
             limit = ?merged.limit,
             threshold = ?merged.threshold,
@@ -79,8 +90,8 @@ impl Config {
         }
     }
 
-    /// Merge two configs (other overrides self where present)
-    fn merge(self, other: Self) -> Self {
+    /// Layer another config on top (other overrides self where present)
+    fn override_with(self, other: Self) -> Self {
         Config {
             limit: other.limit.or(self.limit),
             threshold: other.threshold.or(self.threshold),
@@ -137,7 +148,7 @@ mod tests {
             ..Default::default()
         };
 
-        let merged = base.merge(override_cfg);
+        let merged = base.override_with(override_cfg);
         assert_eq!(merged.limit, Some(20));
         assert_eq!(merged.threshold, Some(0.5));
         assert_eq!(merged.name_boost, Some(0.3));
