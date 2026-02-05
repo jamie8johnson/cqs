@@ -1,9 +1,13 @@
 //! CLI integration tests
 //!
 //! End-to-end tests for the cqs command-line interface.
+//!
+//! Tests that access the ML model are serialized to prevent HuggingFace Hub
+//! lock contention in CI environments.
 
 use assert_cmd::Command;
 use predicates::prelude::*;
+use serial_test::serial;
 use std::fs;
 use tempfile::TempDir;
 
@@ -55,6 +59,7 @@ fn test_version_output() {
 }
 
 #[test]
+#[serial]
 fn test_init_creates_cq_directory() {
     let dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -72,6 +77,7 @@ fn test_init_creates_cq_directory() {
 }
 
 #[test]
+#[serial]
 fn test_init_idempotent() {
     let dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -103,6 +109,7 @@ fn test_stats_requires_init() {
 }
 
 #[test]
+#[serial]
 fn test_stats_shows_counts() {
     let dir = setup_project();
 
@@ -130,6 +137,7 @@ fn test_stats_shows_counts() {
 }
 
 #[test]
+#[serial]
 fn test_index_auto_initializes() {
     // Index command auto-creates .cq if it doesn't exist
     let dir = setup_project();
@@ -153,6 +161,7 @@ fn test_index_auto_initializes() {
 }
 
 #[test]
+#[serial]
 fn test_index_parses_files() {
     let dir = setup_project();
 
@@ -173,6 +182,7 @@ fn test_index_parses_files() {
 }
 
 #[test]
+#[serial]
 fn test_search_returns_results() {
     let dir = setup_project();
 
@@ -199,6 +209,7 @@ fn test_search_returns_results() {
 }
 
 #[test]
+#[serial]
 fn test_search_json_output() {
     let dir = setup_project();
 
