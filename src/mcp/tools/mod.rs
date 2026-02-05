@@ -41,7 +41,7 @@ pub fn handle_tools_list() -> Result<Value> {
                     "language": {
                         "type": "string",
                         // Keep in sync with crate::parser::Language variants
-                        "enum": ["rust", "python", "typescript", "javascript", "go"],
+                        "enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"],
                         "description": "Filter by language (optional)"
                     },
                     "path_pattern": {

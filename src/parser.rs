@@ -25,7 +25,9 @@ pub enum ParserError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     /// Unknown language string in Language::from_str
-    #[error("Unknown language: '{0}'. Valid options: rust, python, typescript, javascript, go")]
+    #[error(
+        "Unknown language: '{0}'. Valid options: rust, python, typescript, javascript, go, c, java"
+    )]
     UnknownLanguage(String),
 }
 
@@ -187,6 +189,69 @@ const GO_CALL_QUERY: &str = r#"
     field: (field_identifier) @callee))
 "#;
 
+/// C: functions, structs, enums, typedefs
+const C_QUERY: &str = r#"
+(function_definition
+  declarator: (function_declarator
+    declarator: (identifier) @name)) @function
+
+(struct_specifier
+  name: (type_identifier) @name
+  body: (field_declaration_list)) @struct
+
+(enum_specifier
+  name: (type_identifier) @name
+  body: (enumerator_list)) @enum
+
+(type_definition
+  declarator: (type_identifier) @name) @const
+
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @name))) @function
+"#;
+
+/// C: function calls
+const C_CALL_QUERY: &str = r#"
+(call_expression
+  function: (identifier) @callee)
+
+(call_expression
+  function: (field_expression
+    field: (field_identifier) @callee))
+"#;
+
+/// Java: methods, constructors, classes, interfaces, enums, records
+const JAVA_QUERY: &str = r#"
+(method_declaration
+  name: (identifier) @name) @function
+
+(constructor_declaration
+  name: (identifier) @name) @function
+
+(class_declaration
+  name: (identifier) @name) @class
+
+(interface_declaration
+  name: (identifier) @name) @interface
+
+(enum_declaration
+  name: (identifier) @name) @enum
+
+(record_declaration
+  name: (identifier) @name) @struct
+"#;
+
+/// Java: method calls and object creation
+const JAVA_CALL_QUERY: &str = r#"
+(method_invocation
+  name: (identifier) @callee)
+
+(object_creation_expression
+  type: (type_identifier) @callee)
+"#;
+
 /// Code parser using tree-sitter grammars
 ///
 /// Extracts functions, methods, classes, and other code elements
@@ -225,6 +290,8 @@ impl Parser {
             Language::TypeScript,
             Language::JavaScript,
             Language::Go,
+            Language::C,
+            Language::Java,
         ] {
             queries.insert(lang, OnceCell::new());
             call_queries.insert(lang, OnceCell::new());
@@ -440,9 +507,12 @@ impl Parser {
     fn extract_signature(&self, content: &str, language: Language) -> String {
         // Extract up to first { or : (language dependent)
         let sig_end = match language {
-            Language::Rust | Language::Go | Language::TypeScript | Language::JavaScript => {
-                content.find('{').unwrap_or(content.len())
-            }
+            Language::Rust
+            | Language::Go
+            | Language::TypeScript
+            | Language::JavaScript
+            | Language::C
+            | Language::Java => content.find('{').unwrap_or(content.len()),
             Language::Python => content.find(':').unwrap_or(content.len()),
         };
 
@@ -468,7 +538,8 @@ impl Parser {
                 Language::Rust => kind == "line_comment" || kind == "block_comment",
                 Language::Python => kind == "string" || kind == "comment",
                 Language::TypeScript | Language::JavaScript => kind == "comment",
-                Language::Go => kind == "comment",
+                Language::Go | Language::C => kind == "comment",
+                Language::Java => kind == "line_comment" || kind == "block_comment",
             };
 
             if is_doc {
@@ -515,6 +586,11 @@ impl Parser {
             };
         }
 
+        // C has no methods - everything is a function
+        if language == Language::C {
+            return ChunkType::Function;
+        }
+
         // For other languages, check if function is inside a class/impl/struct body
         let mut current = node.parent();
         while let Some(parent) = current {
@@ -525,7 +601,8 @@ impl Parser {
                 Language::TypeScript | Language::JavaScript => {
                     kind == "class_body" || kind == "class_declaration"
                 }
-                Language::Go => unreachable!(),
+                Language::Java => kind == "class_body" || kind == "class_declaration",
+                Language::Go | Language::C => unreachable!(),
             };
             if is_method_container {
                 return ChunkType::Method;
@@ -537,7 +614,7 @@ impl Parser {
 
     pub fn supported_extensions(&self) -> &[&str] {
         &[
-            "rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go",
+            "rs", "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "c", "h", "java",
         ]
     }
 
@@ -800,6 +877,10 @@ pub enum Language {
     JavaScript,
     /// Go (.go files)
     Go,
+    /// C (.c, .h files)
+    C,
+    /// Java (.java files)
+    Java,
 }
 
 impl Language {
@@ -810,6 +891,8 @@ impl Language {
             "ts" | "tsx" => Some(Language::TypeScript),
             "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
             "go" => Some(Language::Go),
+            "c" | "h" => Some(Language::C),
+            "java" => Some(Language::Java),
             _ => None,
         }
     }
@@ -821,6 +904,8 @@ impl Language {
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Language::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
+            Language::C => tree_sitter_c::LANGUAGE.into(),
+            Language::Java => tree_sitter_java::LANGUAGE.into(),
         }
     }
 
@@ -831,6 +916,8 @@ impl Language {
             Language::TypeScript => TYPESCRIPT_QUERY,
             Language::JavaScript => JAVASCRIPT_QUERY,
             Language::Go => GO_QUERY,
+            Language::C => C_QUERY,
+            Language::Java => JAVA_QUERY,
         }
     }
 
@@ -840,6 +927,8 @@ impl Language {
             Language::Python => PYTHON_CALL_QUERY,
             Language::TypeScript | Language::JavaScript => TS_JS_CALL_QUERY,
             Language::Go => GO_CALL_QUERY,
+            Language::C => C_CALL_QUERY,
+            Language::Java => JAVA_CALL_QUERY,
         }
     }
 }
@@ -852,6 +941,8 @@ impl std::fmt::Display for Language {
             Language::TypeScript => write!(f, "typescript"),
             Language::JavaScript => write!(f, "javascript"),
             Language::Go => write!(f, "go"),
+            Language::C => write!(f, "c"),
+            Language::Java => write!(f, "java"),
         }
     }
 }
@@ -865,6 +956,8 @@ impl std::str::FromStr for Language {
             "typescript" => Ok(Language::TypeScript),
             "javascript" => Ok(Language::JavaScript),
             "go" => Ok(Language::Go),
+            "c" => Ok(Language::C),
+            "java" => Ok(Language::Java),
             _ => Err(ParserError::UnknownLanguage(s.to_string())),
         }
     }
@@ -1093,6 +1186,102 @@ interface User {
             assert_eq!(chunks[0].name, "User");
             assert_eq!(chunks[0].chunk_type, ChunkType::Interface);
         }
+
+        #[test]
+        fn test_parse_c_function() {
+            let content = r#"
+/* Adds two integers */
+int add(int a, int b) {
+    return a + b;
+}
+"#;
+            let file = write_temp_file(content, "c");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].name, "add");
+            assert_eq!(chunks[0].chunk_type, ChunkType::Function);
+            assert!(chunks[0]
+                .doc
+                .as_ref()
+                .unwrap()
+                .contains("Adds two integers"));
+        }
+
+        #[test]
+        fn test_parse_c_struct_and_enum() {
+            let content = r#"
+struct Point {
+    int x;
+    int y;
+};
+
+enum Color {
+    RED,
+    GREEN,
+    BLUE
+};
+"#;
+            let file = write_temp_file(content, "c");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let point = chunks.iter().find(|c| c.name == "Point").unwrap();
+            assert_eq!(point.chunk_type, ChunkType::Struct);
+
+            let color = chunks.iter().find(|c| c.name == "Color").unwrap();
+            assert_eq!(color.chunk_type, ChunkType::Enum);
+        }
+
+        #[test]
+        fn test_parse_java_class_with_method() {
+            let content = r#"
+public class Calculator {
+    /**
+     * Adds two numbers
+     */
+    public int add(int a, int b) {
+        return a + b;
+    }
+}
+"#;
+            let file = write_temp_file(content, "java");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
+            assert_eq!(class.chunk_type, ChunkType::Class);
+
+            let method = chunks.iter().find(|c| c.name == "add").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert!(method.doc.as_ref().unwrap().contains("Adds two numbers"));
+        }
+
+        #[test]
+        fn test_parse_java_interface_and_enum() {
+            let content = r#"
+interface Printable {
+    void print();
+}
+
+enum Direction {
+    NORTH,
+    SOUTH,
+    EAST,
+    WEST
+}
+"#;
+            let file = write_temp_file(content, "java");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let iface = chunks.iter().find(|c| c.name == "Printable").unwrap();
+            assert_eq!(iface.chunk_type, ChunkType::Interface);
+
+            let dir = chunks.iter().find(|c| c.name == "Direction").unwrap();
+            assert_eq!(dir.chunk_type, ChunkType::Enum);
+        }
     }
 
     /// Test call extraction
@@ -1247,6 +1436,9 @@ fn another() {
             assert_eq!(Language::from_extension("mjs"), Some(Language::JavaScript));
             assert_eq!(Language::from_extension("cjs"), Some(Language::JavaScript));
             assert_eq!(Language::from_extension("go"), Some(Language::Go));
+            assert_eq!(Language::from_extension("c"), Some(Language::C));
+            assert_eq!(Language::from_extension("h"), Some(Language::C));
+            assert_eq!(Language::from_extension("java"), Some(Language::Java));
             assert_eq!(Language::from_extension("unknown"), None);
         }
 
@@ -1258,6 +1450,8 @@ fn another() {
                 "TypeScript".parse::<Language>().unwrap(),
                 Language::TypeScript
             );
+            assert_eq!("c".parse::<Language>().unwrap(), Language::C);
+            assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
             assert!("invalid".parse::<Language>().is_err());
         }
 
@@ -1268,6 +1462,8 @@ fn another() {
             assert_eq!(Language::TypeScript.to_string(), "typescript");
             assert_eq!(Language::JavaScript.to_string(), "javascript");
             assert_eq!(Language::Go.to_string(), "go");
+            assert_eq!(Language::C.to_string(), "c");
+            assert_eq!(Language::Java.to_string(), "java");
         }
     }
 }

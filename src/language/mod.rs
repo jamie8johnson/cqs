@@ -17,8 +17,12 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+#[cfg(feature = "lang-c")]
+mod c;
 #[cfg(feature = "lang-go")]
 mod go;
+#[cfg(feature = "lang-java")]
+mod java;
 #[cfg(feature = "lang-javascript")]
 mod javascript;
 #[cfg(feature = "lang-python")]
@@ -167,6 +171,12 @@ impl LanguageRegistry {
         #[cfg(feature = "lang-go")]
         reg.register(go::definition());
 
+        #[cfg(feature = "lang-c")]
+        reg.register(c::definition());
+
+        #[cfg(feature = "lang-java")]
+        reg.register(java::definition());
+
         reg
     }
 
@@ -226,6 +236,13 @@ mod tests {
         assert!(REGISTRY.from_extension("js").is_some());
         #[cfg(feature = "lang-go")]
         assert!(REGISTRY.from_extension("go").is_some());
+        #[cfg(feature = "lang-c")]
+        {
+            assert!(REGISTRY.from_extension("c").is_some());
+            assert!(REGISTRY.from_extension("h").is_some());
+        }
+        #[cfg(feature = "lang-java")]
+        assert!(REGISTRY.from_extension("java").is_some());
         assert!(REGISTRY.from_extension("xyz").is_none());
     }
 
@@ -251,6 +268,14 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-go")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-c")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-java")]
         {
             expected += 1;
         }

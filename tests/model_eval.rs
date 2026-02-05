@@ -547,6 +547,8 @@ fn fixture_path(lang: Language) -> PathBuf {
         Language::TypeScript => "ts",
         Language::JavaScript => "js",
         Language::Go => "go",
+        Language::C => "c",
+        Language::Java => "java",
     };
     PathBuf::from(manifest_dir)
         .join("tests")
