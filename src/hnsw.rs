@@ -576,7 +576,13 @@ impl HnswIndex {
         verify_hnsw_checksums(dir, basename)?;
 
         // Load ID map
-        let id_map_json = std::fs::read_to_string(&id_map_path)?;
+        let id_map_json = std::fs::read_to_string(&id_map_path).map_err(|e| {
+            HnswError::Internal(format!(
+                "Failed to read ID map {}: {}",
+                id_map_path.display(),
+                e
+            ))
+        })?;
         let id_map: Vec<String> = serde_json::from_str(&id_map_json)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
 

@@ -363,3 +363,8 @@ mentions = ["SearchFilter", "search.rs", "mcp.rs", "cli/mod.rs"]
 sentiment = -1.0
 text = "Don't trust prior observations. Audit mode exists because I was lazy - trusting notes instead of tracing call paths. When fixing one thing (HNSW streaming), immediately check parallel implementations (CAGRA). Dead code like search_unified sat unnoticed because nobody questioned existing code."
 mentions = ["audit mode", "verification", "dead code"]
+
+[[note]]
+sentiment = 0.5
+text = "Always update docs/audit-triage.md status column when fixing audit items. Mark as ✅ Fixed with brief note (e.g., \"logs warning\", \"documented\"). Update summary counts after each batch."
+mentions = ["docs/audit-triage.md", "audit findings"]
