@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-02-05
+
+### Added
+- **Definition search mode** (`name_only`) for cqs_search (#165)
+  - Use `name_only=true` for "where is X defined?" queries
+  - Skips semantic embedding, searches function/struct names directly
+  - Scoring: exact match 1.0, prefix 0.9, contains 0.7
+  - Faster than glob for definition lookups
+- `count_vectors()` method for fast HNSW stats without loading full index
+
+### Changed
+- CLI refactoring: extracted `watch.rs` from `mod.rs` (274 lines)
+  - `cli/mod.rs` reduced from 2167 to 1893 lines
+
+### Fixed
+- P2 audit fixes (PRs #161-163):
+  - HNSW checksum efficiency (hash from memory, not re-read file)
+  - TOML injection prevention in note mentions
+  - Memory caps for watch mode and note parsing (10k limits)
+  - Platform-specific libc dependency (cfg(unix))
+
 ## [0.3.0] - 2026-02-04
 
 ### Added
