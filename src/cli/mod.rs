@@ -1,11 +1,21 @@
 //! CLI implementation for cq
 
+mod config;
 mod display;
+mod files;
+mod signal;
 mod watch;
+
+// Re-export for watch.rs
+pub(crate) use config::find_project_root;
+pub(crate) use signal::check_interrupted;
+
+use config::apply_config_defaults;
+use files::{acquire_index_lock, enumerate_files};
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 
@@ -13,7 +23,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use crossbeam_channel::{bounded, select, Receiver, Sender};
-use ignore::WalkBuilder;
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
@@ -22,13 +31,11 @@ use cqs::{
     SearchFilter, Store,
 };
 
-// Indexing limits
+// Indexing limits for windowing
 //
 // These values balance quality with memory/time constraints:
-// - MAX_FILE_SIZE: Skip files >1MB (likely generated code, vendor bundles)
 // - MAX_TOKENS_PER_WINDOW: E5-base-v2 has 512 token limit; we use 480 for safety
 // - WINDOW_OVERLAP_TOKENS: 64 tokens overlap provides context continuity
-const MAX_FILE_SIZE: u64 = 1_048_576; // 1MB
 const MAX_TOKENS_PER_WINDOW: usize = 480; // E5-base-v2 has 512 limit
 const WINDOW_OVERLAP_TOKENS: usize = 64; // Context overlap for windowed chunks
 
@@ -41,57 +48,6 @@ struct ServeConfig {
     gpu: bool,
     api_key: Option<String>,
     dangerously_allow_network_bind: bool,
-}
-
-/// Strip Windows UNC path prefix (\\?\) if present.
-///
-/// Windows `canonicalize()` returns UNC paths that can cause issues with
-/// path comparison and display. This strips the prefix for consistency.
-#[cfg(windows)]
-fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(stripped)
-    } else {
-        path
-    }
-}
-
-/// No-op on non-Windows platforms
-#[cfg(not(windows))]
-fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    path
-}
-
-// Exit codes for CLI commands
-#[repr(i32)]
-pub enum ExitCode {
-    NoResults = 2,
-    Interrupted = 130,
-}
-
-// Signal handling
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-/// Install Ctrl+C handler for graceful shutdown
-///
-/// First Ctrl+C sets INTERRUPTED flag, allowing current batch to finish.
-/// Second Ctrl+C force-exits with code 130.
-fn setup_signal_handler() {
-    if let Err(e) = ctrlc::set_handler(|| {
-        if INTERRUPTED.swap(true, Ordering::AcqRel) {
-            // Second Ctrl+C: force exit
-            std::process::exit(ExitCode::Interrupted as i32);
-        }
-        eprintln!("\nInterrupted. Finishing current batch...");
-    }) {
-        eprintln!("Warning: Failed to set Ctrl+C handler: {e}");
-    }
-}
-
-/// Check if user requested interruption via Ctrl+C
-pub(crate) fn check_interrupted() -> bool {
-    INTERRUPTED.load(Ordering::Acquire)
 }
 
 #[derive(Parser)]
@@ -286,233 +242,6 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
-    }
-}
-
-/// Apply config file defaults to CLI options
-/// CLI flags always override config values
-fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config) {
-    // Only apply config if CLI has default values
-    // (we can't detect if user explicitly passed the default, so this is imperfect)
-    if cli.limit == 5 {
-        if let Some(limit) = config.limit {
-            cli.limit = limit;
-        }
-    }
-    if (cli.threshold - 0.3).abs() < f32::EPSILON {
-        if let Some(threshold) = config.threshold {
-            cli.threshold = threshold;
-        }
-    }
-    if (cli.name_boost - 0.2).abs() < f32::EPSILON {
-        if let Some(name_boost) = config.name_boost {
-            cli.name_boost = name_boost;
-        }
-    }
-    if !cli.quiet {
-        if let Some(true) = config.quiet {
-            cli.quiet = true;
-        }
-    }
-    if !cli.verbose {
-        if let Some(true) = config.verbose {
-            cli.verbose = true;
-        }
-    }
-}
-
-/// Find project root by looking for common markers
-pub(crate) fn find_project_root() -> PathBuf {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut current = cwd.as_path();
-
-    loop {
-        // Check for project markers (build files and VCS root)
-        // Listed in priority order: if multiple exist, first match wins
-        let markers = [
-            "Cargo.toml",     // Rust
-            "package.json",   // Node.js
-            "pyproject.toml", // Python (modern)
-            "setup.py",       // Python (legacy)
-            "go.mod",         // Go
-            ".git",           // Git repository root (fallback)
-        ];
-
-        for marker in &markers {
-            if current.join(marker).exists() {
-                return current.to_path_buf();
-            }
-        }
-
-        // Move up
-        match current.parent() {
-            Some(parent) => current = parent,
-            None => break,
-        }
-    }
-
-    // Fall back to CWD with warning
-    tracing::warn!("No project root found, using current directory");
-    cwd
-}
-
-/// Enumerate files to index
-///
-/// Note on I/O efficiency: WalkBuilder's DirEntry caches metadata from the initial
-/// stat() during directory traversal, so e.metadata() doesn't re-stat. The
-/// canonicalize() call does require a separate syscall for symlink resolution,
-/// but this is unavoidable for correct path validation.
-fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Vec<PathBuf>> {
-    let root = strip_unc_prefix(root.canonicalize().context("Failed to canonicalize root")?);
-
-    let walker = WalkBuilder::new(&root)
-        .git_ignore(!no_ignore)
-        .git_global(!no_ignore)
-        .git_exclude(!no_ignore)
-        .ignore(!no_ignore)
-        .hidden(!no_ignore)
-        .follow_links(false)
-        .build();
-
-    let files: Vec<PathBuf> = walker
-        .filter_map(|e| {
-            e.map_err(|err| {
-                tracing::debug!(error = %err, "Failed to read directory entry during walk");
-            })
-            .ok()
-        })
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| {
-            // Skip files over size limit
-            e.metadata()
-                .map(|m| m.len() <= MAX_FILE_SIZE)
-                .unwrap_or(false)
-        })
-        .filter(|e| {
-            // Only supported extensions
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| parser.supported_extensions().contains(&ext))
-                .unwrap_or(false)
-        })
-        .filter_map({
-            // Track count of canonicalization failures to log at appropriate level
-            let failure_count = std::sync::atomic::AtomicUsize::new(0);
-            move |e| {
-                // Validate path stays within project root and convert to relative
-                let path = match e.path().canonicalize() {
-                    Ok(p) => p,
-                    Err(err) => {
-                        let count =
-                            failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if count < 3 {
-                            tracing::warn!(
-                                path = %e.path().display(),
-                                error = %err,
-                                "Failed to canonicalize path, skipping"
-                            );
-                        } else {
-                            tracing::debug!(
-                                path = %e.path().display(),
-                                error = %err,
-                                "Failed to canonicalize path, skipping"
-                            );
-                        }
-                        return None;
-                    }
-                };
-                if path.starts_with(&root) {
-                    // Store relative path for portability and glob matching
-                    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
-                } else {
-                    tracing::warn!("Skipping path outside project: {}", e.path().display());
-                    None
-                }
-            }
-        })
-        .collect();
-
-    Ok(files)
-}
-
-/// Check if a process with the given PID exists
-#[cfg(unix)]
-fn process_exists(pid: u32) -> bool {
-    // SAFETY: kill(pid, 0) is safe - it only checks if process exists without
-    // sending any signal. The pid is u32 cast to i32 which is valid for PIDs.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-#[cfg(windows)]
-fn process_exists(pid: u32) -> bool {
-    use std::process::Command;
-    Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-        .unwrap_or(false)
-}
-
-/// Acquire file lock to prevent concurrent indexing
-/// Writes PID to lock file for stale lock detection
-fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
-    use fs4::fs_std::FileExt;
-    use std::io::Write;
-
-    let lock_path = cq_dir.join("index.lock");
-
-    // Try to open/create the lock file with restrictive permissions (0600 on Unix).
-    // Lock file contains PID which could leak process information.
-    #[cfg(unix)]
-    let lock_file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&lock_path)
-            .context("Failed to create lock file")?
-    };
-
-    #[cfg(not(unix))]
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .context("Failed to create lock file")?;
-
-    match lock_file.try_lock_exclusive() {
-        Ok(()) => {
-            // Write our PID to the lock file
-            let mut file = lock_file;
-            writeln!(file, "{}", std::process::id())?;
-            file.sync_all()?;
-            Ok(file)
-        }
-        Err(_) => {
-            // Lock is held - check if the owning process is still alive
-            if let Ok(content) = std::fs::read_to_string(&lock_path) {
-                if let Ok(pid) = content.trim().parse::<u32>() {
-                    if !process_exists(pid) {
-                        // Stale lock - process is dead, remove and retry
-                        tracing::warn!("Removing stale lock (PID {} no longer exists)", pid);
-                        drop(lock_file);
-                        std::fs::remove_file(&lock_path)?;
-                        // Recursive retry (once)
-                        return acquire_index_lock(cq_dir);
-                    }
-                }
-            }
-            bail!(
-                "Another cqs process is indexing (see .cq/index.lock). \
-                 Hint: Wait for it to finish, or delete .cq/index.lock if the process crashed."
-            )
-        }
     }
 }
 
@@ -1161,7 +890,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         None
     };
 
-    setup_signal_handler();
+    signal::setup_signal_handler();
 
     let _span = tracing::info_span!("cmd_index", force = force, dry_run = dry_run).entered();
 
@@ -1510,7 +1239,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         } else {
             println!("No results found.");
         }
-        std::process::exit(ExitCode::NoResults as i32);
+        std::process::exit(signal::ExitCode::NoResults as i32);
     }
 
     if cli.json {
@@ -2037,8 +1766,8 @@ mod tests {
 
     #[test]
     fn test_exit_code_values() {
-        assert_eq!(ExitCode::NoResults as i32, 2);
-        assert_eq!(ExitCode::Interrupted as i32, 130);
+        assert_eq!(signal::ExitCode::NoResults as i32, 2);
+        assert_eq!(signal::ExitCode::Interrupted as i32, 130);
     }
 
     // ===== display module tests =====
