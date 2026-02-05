@@ -47,8 +47,8 @@ struct HttpState {
 /// * `project_root` - Root directory of the project to index
 /// * `bind` - Address to bind to (e.g., "127.0.0.1")
 /// * `port` - Port to listen on (e.g., 3000)
-/// * `use_gpu` - Whether to use GPU acceleration for embeddings
 /// * `api_key` - Optional API key; if set, requests need `Authorization: Bearer <key>`
+/// * `use_gpu` - Whether to use GPU acceleration for embeddings
 ///
 /// # Design Note: Separate bind and port parameters
 ///
@@ -60,8 +60,8 @@ pub fn serve_http(
     project_root: impl AsRef<Path>,
     bind: &str,
     port: u16,
-    use_gpu: bool,
     api_key: Option<String>,
+    use_gpu: bool,
 ) -> Result<()> {
     // Capture api_key presence before moving it into state
     let has_api_key = api_key.is_some();
