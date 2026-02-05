@@ -210,16 +210,20 @@ pub(crate) fn run_index_pipeline(
     let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);
     let parser_for_thread = Arc::clone(&parser);
 
+    // Create store once and share via Arc (single runtime + connection pool)
+    let store = Arc::new(Store::open(store_path).context("Failed to open store")?);
+    let store_for_parser = Arc::clone(&store);
+    let store_for_gpu = Arc::clone(&store);
+    let store_for_cpu = Arc::clone(&store);
+
     // Clone for threads
     let root_clone = root.to_path_buf();
     let parsed_count_clone = Arc::clone(&parsed_count);
-    let store_path_for_parser = store_path.to_path_buf();
-    let store_path_for_embedder = store_path.to_path_buf();
 
     // Stage 1: Parser thread - parse files in parallel batches
     let parser_handle = thread::spawn(move || -> Result<()> {
         let parser = parser_for_thread;
-        let store = Store::open(&store_path_for_parser).context("Failed to open store")?;
+        let store = store_for_parser;
         let root = root_clone;
 
         for file_batch in files.chunks(file_batch_size) {
@@ -324,13 +328,12 @@ pub(crate) fn run_index_pipeline(
     let gpu_failures_clone = Arc::clone(&gpu_failures);
     let parse_rx_cpu = parse_rx.clone(); // CPU also grabs regular batches
     let embed_tx_cpu = embed_tx.clone();
-    let store_path_for_cpu = store_path.to_path_buf();
 
     // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
     let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
         let embedder = Embedder::new().context("Failed to initialize GPU embedder")?;
         embedder.warm().context("Failed to warm GPU embedder")?;
-        let store = Store::open(&store_path_for_embedder).context("Failed to open store")?;
+        let store = store_for_gpu;
 
         for batch in parse_rx {
             if check_interrupted() {
@@ -448,7 +451,7 @@ pub(crate) fn run_index_pipeline(
     // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
     let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
         let embedder = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
-        let store = Store::open(&store_path_for_cpu).context("Failed to open store")?;
+        let store = store_for_cpu;
 
         loop {
             if check_interrupted() {
@@ -505,7 +508,7 @@ pub(crate) fn run_index_pipeline(
     });
 
     // Stage 3: Writer (main thread) - write to SQLite
-    let store = Store::open(store_path).context("Failed to open store for writing")?;
+    // Uses shared store created earlier (single runtime + connection pool)
     // Reuse shared parser for call graph extraction
     let mut total_embedded = 0;
     let mut total_cached = 0;
