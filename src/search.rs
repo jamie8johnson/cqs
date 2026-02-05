@@ -471,45 +471,6 @@ impl Store {
         })
     }
 
-    /// Unified search across code chunks and notes
-    pub fn search_unified(
-        &self,
-        query: &Embedding,
-        filter: &SearchFilter,
-        limit: usize,
-        threshold: f32,
-    ) -> Result<Vec<crate::store::UnifiedResult>, StoreError> {
-        let code_results = self.search_filtered(query, filter, limit, threshold)?;
-        let note_results = self.search_notes(query, limit, threshold)?;
-
-        let min_code_slots = (limit * 3) / 5;
-        let code_count = code_results.len().min(limit);
-        let reserved_code = code_count.min(min_code_slots);
-        let note_slots = limit.saturating_sub(reserved_code);
-
-        let mut unified: Vec<crate::store::UnifiedResult> = code_results
-            .into_iter()
-            .take(limit)
-            .map(crate::store::UnifiedResult::Code)
-            .collect();
-
-        let notes_to_add: Vec<crate::store::UnifiedResult> = note_results
-            .into_iter()
-            .take(note_slots)
-            .map(crate::store::UnifiedResult::Note)
-            .collect();
-        unified.extend(notes_to_add);
-
-        unified.sort_by(|a, b| {
-            b.score()
-                .partial_cmp(&a.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        unified.truncate(limit);
-
-        Ok(unified)
-    }
-
     /// Unified search with optional vector index
     ///
     /// When an HNSW index is provided, uses O(log n) search for both chunks and notes.
