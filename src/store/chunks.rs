@@ -37,7 +37,7 @@ impl Store {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 )
                 .bind(&chunk.id)
-                .bind(chunk.file.to_string_lossy().to_string())
+                .bind(chunk.file.to_string_lossy().into_owned())
                 .bind("file")
                 .bind(chunk.language.to_string())
                 .bind(chunk.chunk_type.to_string())
@@ -108,7 +108,7 @@ impl Store {
         self.rt.block_on(async {
             let row: Option<(Option<i64>,)> =
                 sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
-                    .bind(path.to_string_lossy().to_string())
+                    .bind(path.to_string_lossy().into_owned())
                     .fetch_optional(&self.pool)
                     .await?;
 
@@ -121,7 +121,7 @@ impl Store {
 
     /// Delete all chunks for an origin (file path or source identifier)
     pub fn delete_by_origin(&self, origin: &Path) -> Result<u32, StoreError> {
-        let origin_str = origin.to_string_lossy().to_string();
+        let origin_str = origin.to_string_lossy().into_owned();
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;

@@ -59,7 +59,7 @@ impl Store {
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
-        let source_str = source_file.to_string_lossy().to_string();
+        let source_str = source_file.to_string_lossy().into_owned();
         tracing::debug!(
             source = %source_str,
             count = notes.len(),
@@ -141,7 +141,7 @@ impl Store {
 
     /// Delete all notes from a source file
     pub fn delete_notes_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
-        let source_str = source_file.to_string_lossy().to_string();
+        let source_str = source_file.to_string_lossy().into_owned();
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -178,7 +178,7 @@ impl Store {
         self.rt.block_on(async {
             let row: Option<(i64,)> =
                 sqlx::query_as("SELECT file_mtime FROM notes WHERE source_file = ?1 LIMIT 1")
-                    .bind(source_file.to_string_lossy().to_string())
+                    .bind(source_file.to_string_lossy().into_owned())
                     .fetch_optional(&self.pool)
                     .await?;
 

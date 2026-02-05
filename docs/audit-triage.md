@@ -63,7 +63,7 @@ After de-duplication: **~225 unique findings**
 | H3 | InitializeParams fields unused | `src/mcp/types.rs:45-55` | ✅ Fixed |
 | H4 | _no_ignore parameter unused | `src/cli/watch.rs:39` | ✅ Warns user |
 | H9 | Note search scoring duplicated | `src/store/notes.rs` | ✅ Fixed |
-| H11 | Redundant .to_string() calls | Multiple files | Open |
+| H11 | Redundant .to_string() calls | Multiple files | ✅ Fixed |
 | H12 | Magic sentiment thresholds | `src/store/notes.rs` | ✅ Fixed |
 
 ### Error Propagation (15 easy fixes)
@@ -82,7 +82,7 @@ After de-duplication: **~225 unique findings**
 | E17 | Poisoned mutex at debug, not warn | `src/embedder.rs:314` | ✅ Fixed |
 | E18 | Index guard poisoning not logged | `src/mcp/tools/*.rs` | ✅ Fixed |
 | E19 | Generic "Failed to open index" missing path | `src/mcp/server.rs:58` | ✅ Fixed |
-| E20 | Store schema mismatch error missing path | `src/store/helpers.rs:32-35` | Open |
+| E20 | Store schema mismatch error missing path | `src/store/helpers.rs:32-35` | ✅ Fixed |
 
 ### API Design (11 easy fixes)
 
@@ -97,8 +97,8 @@ After de-duplication: **~225 unique findings**
 | A11 | embedding_batches non-fused iterator | `src/store/chunks.rs:405-415` | Open |
 | A13 | HnswIndex::build vs build_batched asymmetry | `src/hnsw.rs:195,268` | Open |
 | A14 | Config fields all Option, no defaults | `src/config.rs:24-37` | Open |
-| A15 | **cosine_similarity panics** (dedup) | `src/search.rs:23-25` | Open |
-| A16 | Embedding::new() no validation | `src/embedder.rs:62-65` | Open |
+| A15 | **cosine_similarity precision** (dedup) | `src/math.rs:17` | ✅ Fixed |
+| A16 | Embedding with_sentiment validation | `src/embedder.rs:121` | ✅ Fixed |
 
 ### Module Boundaries (4 easy fixes)
 
@@ -142,7 +142,7 @@ After de-duplication: **~225 unique findings**
 | P3 | Unwrap on enabled field in MCP | `src/mcp/tools/audit.rs:42` | ✅ Fixed |
 | P4 | Embedder initialization expect | `src/mcp/server.rs` | ✅ Fixed |
 | P6 | Ctrl+C handler expect | `src/cli/signal.rs:26-34` | ✅ Fixed |
-| P7 | Progress bar template expect | `src/cli/pipeline.rs:471` | Open |
+| P7 | Progress bar template expect | `src/cli/pipeline.rs:520` | ✅ Fixed |
 
 ### Algorithm Correctness (9 easy fixes)
 
@@ -195,8 +195,8 @@ After de-duplication: **~225 unique findings**
 | DI8 | ID map/HNSW count mismatch only checked on load | `src/hnsw.rs:503-515` | Open |
 | DI9 | No foreign key enforcement | `src/store/mod.rs:68-96` | ✅ FK enabled |
 | DI10 | notes.toml ID collision with hash truncation | `src/note.rs:122` | ✅ Documented |
-| DI13 | Checksum doc limitation | `src/hnsw.rs:97-131` | Open |
-| DI14 | Missing WAL checkpoint on shutdown | `src/store/mod.rs:55-114` | Open |
+| DI13 | Checksum doc limitation | `src/hnsw.rs:94-101` | ✅ Fixed |
+| DI14 | Missing WAL checkpoint on shutdown | `src/store/mod.rs` | ✅ Fixed |
 
 #### Edge Cases (5 easy)
 | # | Finding | Location | Status |
@@ -223,7 +223,7 @@ After de-duplication: **~225 unique findings**
 | MM3 | HnswIndex::build() loads all | `src/hnsw.rs:202-208` | ✅ Documented |
 | MM5 | Unbounded Vec in search results | `src/search.rs:194-228` | Open |
 | MM6 | FileSystemSource collects all files | `src/source/filesystem.rs:39-76` | Open |
-| MM7 | **HNSW checksum reads entire file** (dedup) | `src/hnsw.rs:117` | Open |
+| MM7 | **HNSW checksum reads entire file** (dedup) | `src/hnsw.rs:125` | ✅ Fixed |
 | MM9 | MCP tool_read() no file size limit | `src/mcp/tools/read.rs:39-48` | ✅ Fixed (10MB) |
 | MM10 | embed_documents temporary Strings | `src/embedder.rs:294-296` | Open |
 
@@ -532,13 +532,13 @@ After de-duplication: **~225 unique findings**
 
 | Priority | Original | Fixed | Remaining | Action |
 |----------|----------|-------|-----------|--------|
-| P1 | ~93 | ~70 | ~23 | Fix immediately |
-| P2 | ~79 | ~35 | ~44 | Fix next |
+| P1 | ~93 | ~76 | ~17 | Fix immediately |
+| P2 | ~79 | ~39 | ~40 | Fix next |
 | P3 | ~41 | ~5 | ~36 | Fix if time permits |
 | P4 | ~30 | ~3 | ~27 | Create issue, defer |
-| **Total** | **~243** | **~113** | **~130** | |
+| **Total** | **~243** | **~123** | **~120** | |
 
-*Updated 2026-02-05 after PR #190, #191, #192, and current batch*
+*Updated 2026-02-05 after PR #190-196 and high-impact/easy batch*
 
 ---
 
@@ -563,15 +563,16 @@ After de-duplication: **~225 unique findings**
 - ✅ D16: README GPU timing (verified accurate)
 - ✅ D17: nl.rs XMLParser example (included)
 
-### Code Hygiene — 6 of 7 fixed
+### Code Hygiene — 7 of 7 fixed
 - ✅ H1: ExitCode enum (now used in tests)
 - ✅ H2: run() dead code (documented with #[allow])
 - ✅ H3: InitializeParams fields (documented for MCP compliance)
 - ✅ H4: _no_ignore parameter (now warns if used)
 - ✅ H9: Note scoring duplication (score_note_row extracted)
+- ✅ H11: Redundant .to_string() calls (now uses .into_owned())
 - ✅ H12: Magic sentiment thresholds (constants used)
 
-### Error Propagation — 10 of 15 fixed
+### Error Propagation — 11 of 15 fixed
 - ✅ E1: Glob pattern parsing (logs warning)
 - ✅ E2: Second glob failure (logs warning)
 - ✅ E6: Schema version parsing (logs warning)
@@ -581,23 +582,29 @@ After de-duplication: **~225 unique findings**
 - ✅ E17: Poisoned mutex (logs warning)
 - ✅ E18: Index guard poisoning (logs "prior panic, recovering")
 - ✅ E19: Index open error (includes path via .with_context())
+- ✅ E20: Schema mismatch error (includes path)
 
-### API Design — 1 of 11 fixed
+### API Design — 3 of 11 fixed
 - ✅ A1: usize vs u64 for counts (both use u64 consistently)
+- ✅ A15: cosine_similarity precision (accumulates in f64)
+- ✅ A16: Embedding with_sentiment (runtime check with warning)
 
-### Panic Paths — 3 of 4 fixed
+### Panic Paths — 4 of 4 fixed
 - ✅ P3: Unwrap on enabled field (uses unreachable!() after guard)
 - ✅ P4: Embedder initialization (uses ? not expect)
 - ✅ P6: Ctrl+C handler (uses if let Err with warning)
+- ✅ P7: Progress bar template (uses unwrap_or_else with fallback)
 
 ### Module Boundaries — 2 of 4 fixed (Hard → Done)
 - ✅ M1: CLI monolith (split into 15 files)
 - ✅ M2: MCP monolith (split into 15 files)
 
-### Data Integrity — 0 newly fixed, but verified correct
+### Data Integrity — 2 newly fixed
 - ✅ DI2-4: Transactions (already correct)
 - ✅ DI6: Embedding validation (already has brace depth check)
 - ✅ DI9: Foreign keys (PRAGMA enabled)
+- ✅ DI13: Checksum doc (clarified security model)
+- ✅ DI14: WAL checkpoint on drop (impl Drop for Store)
 
 ### Edge Cases — 1 of 5 fixed
 - ✅ EC6: Duration parsing overflow (capped at 24h)
@@ -607,7 +614,8 @@ After de-duplication: **~225 unique findings**
 - ✅ PB8: JSON output path slashes (fixed in MCP)
 - ✅ PB10: UNC path canonicalization (strip_unc_prefix())
 
-### Memory Management — 1 of 6 fixed
+### Memory Management — 2 of 6 fixed
+- ✅ MM7: HNSW checksum (now streams instead of loading into memory)
 - ✅ MM9: MCP tool_read file size (10MB limit)
 
 ### Concurrency Safety — 1 of 1 fixed

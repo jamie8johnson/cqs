@@ -165,7 +165,7 @@ impl Store {
         tracing::info!(path = %path.display(), "Database connected");
 
         // Check schema version compatibility
-        store.check_schema_version()?;
+        store.check_schema_version(path)?;
         // Check model version compatibility
         store.check_model_version()?;
         // Warn if index was created by different cq version
@@ -232,7 +232,8 @@ impl Store {
         })
     }
 
-    fn check_schema_version(&self) -> Result<(), StoreError> {
+    fn check_schema_version(&self, path: &Path) -> Result<(), StoreError> {
+        let path_str = path.display().to_string();
         self.rt.block_on(async {
             let row: Option<(String,)> =
                 match sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
@@ -264,7 +265,11 @@ impl Store {
                 return Err(StoreError::SchemaNewerThanCq(version));
             }
             if version < CURRENT_SCHEMA_VERSION && version > 0 {
-                return Err(StoreError::SchemaMismatch(version, CURRENT_SCHEMA_VERSION));
+                return Err(StoreError::SchemaMismatch(
+                    path_str,
+                    version,
+                    CURRENT_SCHEMA_VERSION,
+                ));
             }
             Ok(())
         })
@@ -524,6 +529,21 @@ impl Store {
             self.pool.close().await;
             Ok(())
         })
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        // Best-effort WAL checkpoint on drop to avoid leaving large WAL files
+        // Errors are logged but not propagated (Drop can't fail)
+        if let Err(e) = self.rt.block_on(async {
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&self.pool)
+                .await
+        }) {
+            tracing::debug!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
+        }
+        // Pool closes automatically when dropped
     }
 }
 
