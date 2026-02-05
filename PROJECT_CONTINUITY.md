@@ -2,22 +2,21 @@
 
 ## Right Now
 
-**20-category audit complete** (2026-02-05)
+**v0.4.5 released** (2026-02-05)
 
-All P1-P4 items addressed. Future work tracked in issues #202-208.
+20-category audit complete and published. Nothing active.
 
-### Audit Summary
-- **~243 findings** across 20 categories
-- **P1 (~93)**: ✅ Complete - critical fixes merged
-- **P2 (~79)**: ✅ Complete - documentation and code hygiene
-- **P3 (~41)**: ✅ Complete - PR #201 (FTS error handling, limits, progress)
-- **P4 (~30)**: ✅ Complete - PR #209 (19 OK, 11 → issues)
+### Session Summary (2026-02-05)
+- Completed P4 audit triage (PR #209)
+- Created 7 GitHub issues (#202-208) for deferred items
+- Released v0.4.5 to GitHub and crates.io
+- All docs verified up to date
 
-### PRs This Session
-- #199: P1 fixes
-- #200: P2 documentation
-- #201: P3 code fixes
+### Recent PRs
+- #211: Release v0.4.5
+- #210: Docs update (continuity, roadmap)
 - #209: P4 triage completion
+- #201: P3 code fixes
 
 ## Open Issues
 
