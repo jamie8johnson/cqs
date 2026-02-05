@@ -577,7 +577,16 @@ fn ensure_ort_provider_libs() {
         Some(c) => c,
         None => return,
     };
-    let ort_cache = cache_dir.join("ort.pyke.io/dfbin/x86_64-unknown-linux-gnu");
+
+    // Build target triplet dynamically (e.g., x86_64-unknown-linux-gnu, aarch64-apple-darwin)
+    let triplet = match (std::env::consts::ARCH, std::env::consts::OS) {
+        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
+        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
+        ("x86_64", "macos") => "x86_64-apple-darwin",
+        ("aarch64", "macos") => "aarch64-apple-darwin",
+        _ => return, // Unsupported platform for GPU acceleration
+    };
+    let ort_cache = cache_dir.join(format!("ort.pyke.io/dfbin/{}", triplet));
 
     // Find the versioned subdirectory (hash-named)
     let ort_lib_dir = match std::fs::read_dir(&ort_cache) {

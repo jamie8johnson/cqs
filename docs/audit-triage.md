@@ -209,7 +209,7 @@ After de-duplication: **~225 unique findings**
 #### Platform Behavior (7 easy)
 | # | Finding | Location | Status |
 |---|---------|----------|--------|
-| PB2 | Hardcoded Linux cache path | `src/embedder.rs:578` | Open |
+| PB2 | Hardcoded Linux cache path | `src/embedder.rs:580-588` | ✅ Fixed (dynamic triplet) |
 | PB3 | $HOME environment variable assumption | `src/embedder.rs:574` | ✅ Uses dirs::cache_dir() |
 | PB5 | Colon path separator Linux-specific | `src/embedder.rs:605` | ✅ Safe (#[cfg(unix)]) |
 | PB6 | Path display in database URL | `src/store/mod.rs:104` | ✅ Intentional (URL spec) |
