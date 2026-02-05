@@ -202,4 +202,107 @@ impl Store {
             Ok((total as u64, warnings as u64, patterns as u64))
         })
     }
+
+    /// Get all note embeddings for HNSW index building.
+    ///
+    /// Returns (id, embedding) pairs with `note:` prefix on IDs to distinguish from chunks.
+    pub fn note_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM notes")
+                .fetch_all(&self.pool)
+                .await?;
+
+            let results: Vec<(String, Embedding)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let id: String = row.get(0);
+                    let bytes: Vec<u8> = row.get(1);
+                    super::helpers::bytes_to_embedding(&bytes)
+                        .map(|emb| (format!("note:{}", id), Embedding::new(emb)))
+                })
+                .collect();
+
+            Ok(results)
+        })
+    }
+
+    /// Search notes by candidate IDs from HNSW index.
+    ///
+    /// Expects IDs with `note:` prefix stripped (raw note IDs).
+    pub fn search_notes_by_ids(
+        &self,
+        candidate_ids: &[&str],
+        query: &Embedding,
+        limit: usize,
+        threshold: f32,
+    ) -> Result<Vec<NoteSearchResult>, StoreError> {
+        if candidate_ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        tracing::debug!(
+            candidates = candidate_ids.len(),
+            limit,
+            threshold,
+            "searching notes by candidate IDs"
+        );
+
+        self.rt.block_on(async {
+            let placeholders: String = (1..=candidate_ids.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, text, sentiment, mentions, embedding FROM notes WHERE id IN ({})",
+                placeholders
+            );
+
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for id in candidate_ids {
+                    q = q.bind(*id);
+                }
+                q.fetch_all(&self.pool).await?
+            };
+
+            let mut scored: Vec<(NoteSummary, f32)> = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let id: String = row.get(0);
+                    let text: String = row.get(1);
+                    let sentiment: f64 = row.get(2);
+                    let mentions_json: String = row.get(3);
+                    let embedding_bytes: Vec<u8> = row.get(4);
+
+                    let mentions: Vec<String> =
+                        serde_json::from_str(&mentions_json).unwrap_or_default();
+
+                    let embedding = super::helpers::embedding_slice(&embedding_bytes)?;
+                    let score = cosine_similarity(query.as_slice(), embedding);
+
+                    if score >= threshold {
+                        Some((
+                            NoteSummary {
+                                id,
+                                text,
+                                sentiment: sentiment as f32,
+                                mentions,
+                            },
+                            score,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(limit);
+
+            Ok(scored
+                .into_iter()
+                .map(|(note, score)| NoteSearchResult { note, score })
+                .collect())
+        })
+    }
 }

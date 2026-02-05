@@ -1159,27 +1159,6 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
         }
     }
 
-    // Build HNSW index for fast search
-    // Uses batched insertion to avoid OOM on large repos (>50k chunks)
-    if !check_interrupted() {
-        if !cli.quiet {
-            println!("Building HNSW index...");
-        }
-
-        let chunk_count = store.chunk_count()?;
-        if chunk_count > 0 {
-            // Stream embeddings in 10k batches (~30MB each) instead of loading all at once
-            const HNSW_BATCH_SIZE: usize = 10_000;
-            let hnsw =
-                HnswIndex::build_batched(store.embedding_batches(HNSW_BATCH_SIZE), chunk_count)?;
-            hnsw.save(&cq_dir, "index")?;
-
-            if !cli.quiet {
-                println!("  HNSW index: {} vectors", hnsw.len());
-            }
-        }
-    }
-
     // Extract full call graph (includes large functions >100 lines)
     if !check_interrupted() {
         if !cli.quiet {
@@ -1267,6 +1246,40 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
                 }
             } else if !cli.quiet {
                 println!("Notes up to date.");
+            }
+        }
+    }
+
+    // Build HNSW index for fast search (includes both chunks and notes)
+    // Uses batched insertion to avoid OOM on large repos (>50k chunks)
+    if !check_interrupted() {
+        if !cli.quiet {
+            println!("Building HNSW index...");
+        }
+
+        let chunk_count = store.chunk_count()?;
+        let note_count = store.note_count()? as usize;
+        let total_count = chunk_count + note_count;
+
+        if total_count > 0 {
+            // Stream chunk embeddings in 10k batches, then add all notes
+            // Notes are capped at 10k so loading them all is fine
+            const HNSW_BATCH_SIZE: usize = 10_000;
+
+            // Chain chunk batches with a single note batch
+            let chunk_batches = store.embedding_batches(HNSW_BATCH_SIZE);
+            let note_batch = std::iter::once(store.note_embeddings());
+
+            let hnsw = HnswIndex::build_batched(chunk_batches.chain(note_batch), total_count)?;
+            hnsw.save(&cq_dir, "index")?;
+
+            if !cli.quiet {
+                println!(
+                    "  HNSW index: {} vectors ({} chunks, {} notes)",
+                    hnsw.len(),
+                    chunk_count,
+                    note_count
+                );
             }
         }
     }

@@ -7,6 +7,12 @@
 **P2 audit tier complete.** Verified remaining items are either already fixed or design choices.
 
 ### Current Work
+- #103 O(n) note search - **FIXED**: Notes now in HNSW index
+  - Notes included in unified HNSW with `note:` prefix IDs
+  - Added `Store::note_embeddings()` and `search_notes_by_ids()`
+  - Search partitions HNSW candidates by prefix, fetches from respective tables
+  - Note search now O(log n) instead of O(n)
+
 - #107 Memory OOM on huge repos - **FIXED**: Streaming HNSW build
   - Added `Store::embedding_batches()` - streams embeddings in 10k batches via LIMIT/OFFSET
   - Added `HnswIndex::build_batched()` - builds index incrementally without loading all into RAM
@@ -106,9 +112,6 @@ P3 audit doc claimed 43 items but most were already fixed or low-value doc comme
 - Batched metadata queries (I/O #10)
 
 ## Open Issues
-
-### Hard (deferred)
-- #103: O(n) note search (notes are small, acceptable)
 
 ### External/Waiting
 - #106: ort stable
