@@ -102,6 +102,9 @@ impl Source for FileSystemSource {
                 Err(e) => return Err(e.into()),
             };
 
+            // Normalize line endings (CRLF -> LF) for consistent hashing across platforms
+            let content = content.replace("\r\n", "\n");
+
             // Get mtime
             let mtime = path
                 .metadata()

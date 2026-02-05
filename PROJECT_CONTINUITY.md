@@ -17,7 +17,7 @@ P2 audit at 23/58. Resume from item #24 onward.
 
 Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 list.
 
-### P2 Progress: 38 of 58 Fixed
+### P2 Progress: 39 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -26,6 +26,7 @@ Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 l
 | 6 | Config docs missing README | Fixed: added Configuration section |
 | 11 | Parse failures default silently | Fixed: log warnings on parse failures |
 | 12 | Missing .context() on ? | Fixed: added context to thread init errors |
+| 27 | No line ending normalization | Fixed: CRLF -> LF in parser/filesystem |
 | 15 | Non-atomic note append | Fixed: sync_all after write |
 | 17 | HNSW id_map size validation | Fixed: check count on load |
 | 19 | Empty query no feedback | Fixed: debug log when normalized empty |
@@ -60,7 +61,7 @@ Config logging now shows loaded values (P1 #34).
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P2 | 20 remaining | 38 fixed |
+| P2 | 19 remaining | 39 fixed |
 | P3 | 43 | Pending |
 | P4 | 21 | Pending |
 
