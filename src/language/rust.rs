@@ -61,6 +61,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     signature_style: SignatureStyle::UntilBrace,
     type_map: TYPE_MAP,
     doc_nodes: DOC_NODES,
+    method_node_kinds: &[],
+    method_containers: &["impl_item", "trait_item"],
 };
 
 pub fn definition() -> &'static LanguageDef {
