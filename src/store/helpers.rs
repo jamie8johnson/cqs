@@ -7,7 +7,13 @@ use thiserror::Error;
 use crate::embedder::Embedding;
 use crate::parser::{ChunkType, Language};
 
-// Schema version for migrations
+/// Schema version for database migrations
+///
+/// Increment this when changing the database schema. Store::open() checks this
+/// against the stored version and returns StoreError::SchemaMismatch if different.
+///
+/// History:
+/// - v10: Current (sentiment in embeddings, call graph, notes)
 pub const CURRENT_SCHEMA_VERSION: i32 = 10;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions (768 from model + 1 sentiment)
@@ -159,9 +165,14 @@ pub struct NoteSearchResult {
 }
 
 /// Unified search result (code chunk or note)
+///
+/// Search can return both code chunks and notes. This enum allows
+/// handling them uniformly while preserving type-specific data.
 #[derive(Debug)]
 pub enum UnifiedResult {
+    /// A code chunk search result
     Code(SearchResult),
+    /// A note search result
     Note(NoteSearchResult),
 }
 
@@ -248,16 +259,28 @@ impl Default for ModelInfo {
 }
 
 /// Index statistics
+///
+/// Provides overview information about the indexed codebase.
+/// Retrieved via `Store::stats()`.
 #[derive(Debug)]
 pub struct IndexStats {
+    /// Total number of code chunks indexed
     pub total_chunks: u64,
+    /// Number of unique source files
     pub total_files: u64,
+    /// Chunk count grouped by programming language
     pub chunks_by_language: HashMap<Language, u64>,
+    /// Chunk count grouped by element type (function, class, etc.)
     pub chunks_by_type: HashMap<ChunkType, u64>,
+    /// Database file size in bytes
     pub index_size_bytes: u64,
+    /// ISO 8601 timestamp when index was created
     pub created_at: String,
+    /// ISO 8601 timestamp of last update
     pub updated_at: String,
+    /// Embedding model used (e.g., "intfloat/e5-base-v2")
     pub model_name: String,
+    /// Database schema version
     pub schema_version: i32,
 }
 

@@ -341,6 +341,10 @@ impl VectorIndex for CagraIndex {
     fn is_empty(&self) -> bool {
         CagraIndex::is_empty(self)
     }
+
+    fn name(&self) -> &'static str {
+        "CAGRA"
+    }
 }
 
 // SAFETY: CagraIndex is thread-safe because:

@@ -36,4 +36,7 @@ pub trait VectorIndex: Send + Sync {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Index type name (e.g., "HNSW", "CAGRA")
+    fn name(&self) -> &'static str;
 }
