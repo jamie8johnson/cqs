@@ -234,7 +234,10 @@ impl McpServer {
         let hnsw = Self::load_hnsw_index(&cq_dir);
         let index = Arc::new(RwLock::new(hnsw));
 
-        // Spawn background CAGRA build if GPU available
+        // Spawn background CAGRA build if GPU available.
+        // Thread is intentionally detached - it holds only an Arc reference and will
+        // complete gracefully when the main process exits. Joining on Drop would block
+        // shutdown unnecessarily for potentially long GPU operations.
         #[cfg(feature = "gpu-search")]
         if crate::cagra::CagraIndex::gpu_available() {
             let index_clone = Arc::clone(&index);
