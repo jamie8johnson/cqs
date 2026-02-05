@@ -2,11 +2,25 @@
 
 ## Right Now
 
-**P2 audit in progress** (2026-02-04)
+**Pivoting to definition search feature** (2026-02-04)
 
-Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
+P2 audit paused at 23/58 to add definition search mode to cqs_search.
+This will help with ongoing code navigation during fixes.
 
-### P2 Progress: 22 of 58 Fixed
+### Pending Changes (uncommitted on fix/p2-batch-6)
+
+- `src/cli/watch.rs` - new file, extracted from mod.rs (~270 lines)
+- `src/cli/mod.rs` - reduced from 2167 to 1893 lines
+- `src/hnsw.rs` - added `count_vectors()` for fast stats (P2 #52)
+
+### Next: Definition Search Feature
+
+Add `--definition` mode to cqs_search for "where is X defined?" queries.
+- Boost name matching heavily (or exact match only)
+- Return function/struct definitions, not semantic matches
+- Complements current semantic search ("what does X do?")
+
+### P2 Progress: 23 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -29,7 +43,9 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | 48 | stats() multiple queries | Fixed: batched metadata query |
 | 49 | HashSet per function | Fixed: reuse across iterations |
 | 50 | HNSW checksum I/O | Fixed: hash ids from memory |
+| 52 | Stats loads HNSW for length | Fixed: count_vectors() reads ids only |
 | - | Glob pattern tests | Fixed: 3 new tests + FTS bounds tests |
+| - | CLI file split | watch.rs extracted (274 lines)
 
 ### P1 Status: 62 of 64 Closed
 
@@ -101,7 +117,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Tier | Count | Status |
 |------|-------|--------|
 | P1 | 2 deferred | Move to P4 |
-| P2 | 36 remaining | 22 fixed |
+| P2 | 35 remaining | 23 fixed |
 | P3 | 43 | Pending |
 | P4 | 19 + 2 = 21 | Pending |
 
@@ -126,6 +142,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
 - 769-dim embeddings (768 + sentiment)
 - Store: split into focused modules (6 files)
+- CLI: mod.rs + display.rs + watch.rs
 - Schema v10, WAL mode
 - tests/common/mod.rs for test fixtures
-- 272 tests
+- 172 tests
