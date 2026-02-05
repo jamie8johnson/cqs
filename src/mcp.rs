@@ -742,6 +742,15 @@ impl McpServer {
             "not built".to_string()
         };
 
+        // Check active index type (HNSW or CAGRA)
+        let active_index = {
+            let guard = self.index.read().unwrap_or_else(|e| e.into_inner());
+            match guard.as_ref() {
+                Some(idx) => format!("{} ({} vectors)", idx.name(), idx.len()),
+                None => "none loaded".to_string(),
+            }
+        };
+
         let result = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,
@@ -756,6 +765,7 @@ impl McpServer {
             "last_indexed": stats.updated_at,
             "schema_version": stats.schema_version,
             "hnsw_index": hnsw_status,
+            "active_index": active_index,
             "warning": warning,
         });
 

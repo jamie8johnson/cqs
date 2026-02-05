@@ -634,6 +634,7 @@ struct EmbeddedBatch {
 struct PipelineStats {
     total_embedded: usize,
     total_cached: usize,
+    gpu_failures: usize,
 }
 
 /// Run the indexing pipeline with 3 concurrent stages:
@@ -664,6 +665,7 @@ fn run_index_pipeline(
     let total_files = files.len();
     let parsed_count = Arc::new(AtomicUsize::new(0));
     let embedded_count = Arc::new(AtomicUsize::new(0));
+    let gpu_failures = Arc::new(AtomicUsize::new(0));
 
     // Clone for threads
     let root_clone = root.to_path_buf();
@@ -778,6 +780,7 @@ fn run_index_pipeline(
     // Clone for embedders (GPU and CPU run in parallel)
     let embedded_count_gpu = Arc::clone(&embedded_count);
     let embedded_count_cpu = Arc::clone(&embedded_count);
+    let gpu_failures_clone = Arc::clone(&gpu_failures);
     let parse_rx_cpu = parse_rx.clone(); // CPU also grabs regular batches
     let embed_tx_cpu = embed_tx.clone();
     let store_path_for_cpu = store_path.to_path_buf();
@@ -877,6 +880,7 @@ fn run_index_pipeline(
                     }
                     Err(_e) => {
                         // GPU failed - log details and requeue to CPU
+                        gpu_failures_clone.fetch_add(batch.chunks.len(), Ordering::Relaxed);
                         let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
                         let files: Vec<_> = to_embed
                             .iter()
@@ -1051,6 +1055,7 @@ fn run_index_pipeline(
     Ok(PipelineStats {
         total_embedded,
         total_cached,
+        gpu_failures: gpu_failures.load(Ordering::Relaxed),
     })
 }
 
@@ -1120,6 +1125,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
     let stats = run_index_pipeline(&root, files.clone(), &index_path, force, cli.quiet)?;
     let total_embedded = stats.total_embedded;
     let total_cached = stats.total_cached;
+    let gpu_failures = stats.gpu_failures;
 
     // Prune missing files
     let existing_files: HashSet<_> = files.into_iter().collect();
@@ -1136,6 +1142,9 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
             );
         } else {
             println!("  Embedded: {}", total_embedded);
+        }
+        if gpu_failures > 0 {
+            println!("  GPU failures: {} (fell back to CPU)", gpu_failures);
         }
         if pruned > 0 {
             println!("  Pruned: {} (deleted files)", pruned);

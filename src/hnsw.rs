@@ -460,6 +460,10 @@ impl VectorIndex for HnswIndex {
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
+
+    fn name(&self) -> &'static str {
+        "HNSW"
+    }
 }
 
 #[cfg(test)]
