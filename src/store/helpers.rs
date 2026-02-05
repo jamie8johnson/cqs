@@ -29,8 +29,8 @@ pub enum StoreError {
     SystemTime,
     #[error("Runtime error: {0}")]
     Runtime(String),
-    #[error("Schema version mismatch: index is v{0}, cq expects v{1}. Run 'cq index --force' to rebuild.")]
-    SchemaMismatch(i32, i32),
+    #[error("Schema version mismatch in {0}: index is v{1}, cq expects v{2}. Run 'cq index --force' to rebuild.")]
+    SchemaMismatch(String, i32, i32),
     #[error("Index created by newer cq version (schema v{0}). Please upgrade cq.")]
     SchemaNewerThanCq(i32),
     #[error(

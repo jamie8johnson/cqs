@@ -118,7 +118,13 @@ impl Embedding {
     /// Converts a 768-dim model embedding to 769-dim with sentiment.
     /// Sentiment should be -1.0 (negative) to +1.0 (positive).
     pub fn with_sentiment(mut self, sentiment: f32) -> Self {
-        debug_assert_eq!(self.0.len(), MODEL_DIM, "Expected 768-dim embedding");
+        if self.0.len() != MODEL_DIM {
+            tracing::warn!(
+                actual = self.0.len(),
+                expected = MODEL_DIM,
+                "Unexpected embedding dimension in with_sentiment"
+            );
+        }
         self.0.push(sentiment.clamp(-1.0, 1.0));
         self
     }

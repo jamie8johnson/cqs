@@ -13,8 +13,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     }
     use simsimd::SpatialSimilarity;
     let score = f32::dot(a, b).unwrap_or_else(|| {
-        // Fallback for unsupported architectures
-        a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() as f64
+        // Fallback for unsupported architectures - accumulate in f64 for precision
+        a.iter()
+            .zip(b)
+            .map(|(&x, &y)| (x as f64) * (y as f64))
+            .sum::<f64>()
     }) as f32;
     Some(score)
 }

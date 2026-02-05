@@ -128,7 +128,7 @@ impl Source for FileSystemSource {
             let rel_path = path.strip_prefix(&self.root).unwrap_or(&path).to_path_buf();
 
             items.push(SourceItem {
-                origin: rel_path.to_string_lossy().to_string(),
+                origin: rel_path.to_string_lossy().into_owned(),
                 source_type: "file",
                 content,
                 language,

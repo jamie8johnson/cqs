@@ -93,11 +93,13 @@ const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
 
 /// Verify HNSW index file checksums using blake3.
 ///
-/// **Security note:** These checksums detect accidental corruption (disk errors,
-/// incomplete writes), not malicious tampering. An attacker with write access
-/// to the index directory can update both the files and the checksum file.
-/// For tamper-proofing, the checksum file would need to be signed or stored
-/// separately in a trusted location.
+/// # Security Model
+///
+/// **WARNING:** These checksums detect accidental corruption only (disk errors,
+/// incomplete writes). They do NOT provide tamper-detection or authenticity
+/// guarantees - an attacker with filesystem access can update both files and
+/// checksums. For tamper-proofing, the checksum file would need to be signed
+/// or stored separately in a trusted location.
 ///
 /// Returns Ok if checksums match or no checksum file exists (with warning).
 fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
@@ -122,14 +124,23 @@ fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
             }
             let path = dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
-                let data = std::fs::read(&path).map_err(|e| {
+                // Stream file through blake3 hasher to avoid loading entire file into memory
+                let file = std::fs::File::open(&path).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to open {} for checksum: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                let mut hasher = blake3::Hasher::new();
+                std::io::copy(&mut std::io::BufReader::new(file), &mut hasher).map_err(|e| {
                     HnswError::Internal(format!(
                         "Failed to read {} for checksum: {}",
                         path.display(),
                         e
                     ))
                 })?;
-                let actual = blake3::hash(&data).to_hex().to_string();
+                let actual = hasher.finalize().to_hex().to_string();
                 if actual != expected {
                     return Err(HnswError::ChecksumMismatch {
                         file: path.display().to_string(),
