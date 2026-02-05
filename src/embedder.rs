@@ -147,7 +147,9 @@ impl Embedding {
         self.0
     }
 
-    /// Get the dimension of the embedding
+    /// Get the dimension of the embedding.
+    ///
+    /// Returns 769 for cqs embeddings (768 from E5-base-v2 + 1 sentiment dimension).
     pub fn len(&self) -> usize {
         self.0.len()
     }

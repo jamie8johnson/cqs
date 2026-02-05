@@ -43,12 +43,12 @@ After de-duplication: **~225 unique findings**
 | D2 | README.md: Outdated upgrade version | `README.md:34-36` | ✅ Fixed |
 | D3 | SECURITY.md: Protocol version wrong | `SECURITY.md:56` | ✅ Fixed |
 | D4 | ROADMAP.md: Schema v9 → v10 | `ROADMAP.md:227` | ✅ Fixed |
-| D5 | Embedder docstring: 768 → 769 | `src/embedder.rs:147` | Open |
+| D5 | Embedder docstring: 768 → 769 | `src/embedder.rs:150` | ✅ Fixed |
 | D6 | CHANGELOG.md: E5 adoption version mismatch | `CHANGELOG.md:398` | ✅ Fixed |
 | D8 | ModelInfo::default() stale version | `src/store/helpers.rs:278-279` | ✅ Fixed |
 | D9 | Chunk.file doc says relative, is absolute | `src/parser.rs:733` | ✅ Fixed |
 | D10 | ChunkSummary.file same issue | `src/store/helpers.rs:69` | ✅ Fixed |
-| D11 | README.md: HTTP endpoint descriptions missing | `README.md:206-209` | Open |
+| D11 | README.md: HTTP endpoint descriptions missing | `README.md:212-215` | ✅ Fixed |
 | D13 | README missing cqs_read tool | `README.md:188-195` | ✅ Fixed |
 | D14 | README missing cqs_audit_mode tool | `README.md:188-195` | ✅ Fixed |
 | D15 | Config file missing note_weight | `README.md:91-106` | ✅ Fixed |
@@ -61,7 +61,7 @@ After de-duplication: **~225 unique findings**
 | H1 | ExitCode enum unused | `src/cli/signal.rs:11-16` | ✅ Fixed |
 | H2 | run() incorrectly marked dead | `src/cli/mod.rs:165` | ✅ Fixed |
 | H3 | InitializeParams fields unused | `src/mcp/types.rs:45-55` | ✅ Fixed |
-| H4 | _no_ignore parameter unused | `src/cli/watch.rs:39` | Open |
+| H4 | _no_ignore parameter unused | `src/cli/watch.rs:39` | ✅ Warns user |
 | H9 | Note search scoring duplicated | `src/store/notes.rs` | ✅ Fixed |
 | H11 | Redundant .to_string() calls | Multiple files | Open |
 | H12 | Magic sentiment thresholds | `src/store/notes.rs` | ✅ Fixed |
@@ -544,24 +544,30 @@ After de-duplication: **~225 unique findings**
 
 ## Fixed Items (Verified 2026-02-05)
 
-### Documentation — 9 of 14 fixed
+### Documentation — 14 of 14 fixed
 - ✅ D1: PRIVACY.md dims (now 769)
 - ✅ D2: README.md version (schema v10)
 - ✅ D3: SECURITY.md protocol (2025-11-25)
 - ✅ D4: ROADMAP.md schema (v10)
+- ✅ D5: Embedder docstring (returns 769)
 - ✅ D6: CHANGELOG.md E5 version (v0.1.16)
+- ✅ D7: Store re-export docs (all have comments)
 - ✅ D8: ModelInfo::default() (version "2")
 - ✅ D9: Chunk.file doc ("typically absolute")
 - ✅ D10: ChunkSummary.file doc ("typically absolute")
+- ✅ D11: README HTTP endpoints (includes /health)
+- ✅ D12: README HNSW tuning (section exists)
 - ✅ D13: README cqs_read (documented)
 - ✅ D14: README cqs_audit_mode (documented)
 - ✅ D15: README note_weight config (documented)
+- ✅ D16: README GPU timing (verified accurate)
 - ✅ D17: nl.rs XMLParser example (included)
 
-### Code Hygiene — 5 of 7 fixed
+### Code Hygiene — 6 of 7 fixed
 - ✅ H1: ExitCode enum (now used in tests)
 - ✅ H2: run() dead code (documented with #[allow])
 - ✅ H3: InitializeParams fields (documented for MCP compliance)
+- ✅ H4: _no_ignore parameter (now warns if used)
 - ✅ H9: Note scoring duplication (score_note_row extracted)
 - ✅ H12: Magic sentiment thresholds (constants used)
 
