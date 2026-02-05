@@ -2,23 +2,24 @@
 
 ## Right Now
 
-**Pivoting to definition search feature** (2026-02-04)
+**Ready to resume P2 audit fixes** (2026-02-04)
 
-P2 audit paused at 23/58 to add definition search mode to cqs_search.
-This will help with ongoing code navigation during fixes.
+Definition search feature complete (PR #165). Use `name_only=true` in cqs_search for "where is X defined?" queries.
 
-### Pending Changes (uncommitted on fix/p2-batch-6)
+### Next: Continue P2 Fixes
 
-- `src/cli/watch.rs` - new file, extracted from mod.rs (~270 lines)
-- `src/cli/mod.rs` - reduced from 2167 to 1893 lines
-- `src/hnsw.rs` - added `count_vectors()` for fast stats (P2 #52)
+P2 audit at 23/58. Resume from item #24 onward.
 
-### Next: Definition Search Feature
+Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 list.
 
-Add `--definition` mode to cqs_search for "where is X defined?" queries.
-- Boost name matching heavily (or exact match only)
-- Return function/struct definitions, not semantic matches
-- Complements current semantic search ("what does X do?")
+### Recent Merges
+
+| PR | Description |
+|----|-------------|
+| #165 | `name_only` definition search mode |
+| #163 | HNSW checksum efficiency, TOML injection fix |
+| #162 | Memory caps for watch/notes |
+| #161 | P2 performance and platform fixes |
 
 ### P2 Progress: 23 of 58 Fixed
 
@@ -45,85 +46,24 @@ Add `--definition` mode to cqs_search for "where is X defined?" queries.
 | 50 | HNSW checksum I/O | Fixed: hash ids from memory |
 | 52 | Stats loads HNSW for length | Fixed: count_vectors() reads ids only |
 | - | Glob pattern tests | Fixed: 3 new tests + FTS bounds tests |
-| - | CLI file split | watch.rs extracted (274 lines)
+| - | CLI file split | watch.rs extracted (274 lines) |
 
 ### P1 Status: 62 of 64 Closed
 
-| # | Issue | Resolution |
-|---|-------|------------|
-| 1 | Model name mismatches | Fixed: lib.rs, embedder.rs |
-| 2 | Line number clamping | Fixed: helpers.rs + 10 call sites |
-| 3 | Dead code markers | Closed: serde requires them |
-| 4 | Magic numbers | Fixed: documented in store/mod.rs, hnsw.rs |
-| 5 | Commented debug code | Closed: doc examples, not debug |
-| 6 | CLI imports internal types | Closed: uses public API correctly |
-| 7 | ChunkRow exposed publicly | Fixed: pub(crate) |
-| 9 | normalize_for_fts location | Fixed: moved to nl.rs |
-| 11 | Missing doc comments | Fixed: parser.rs, note.rs, nl.rs |
-| 12 | Redundant HnswResult | Fixed: use IndexResult directly |
-| 13 | serve_http/stdio docs | Fixed: mcp.rs |
-| 14 | SearchFilter validation | Fixed: validate() + 7 tests |
-| 15 | MCP tool naming | Closed: cqs_ prefix intentional |
-| 16 | Language::FromStr error | Closed: works correctly |
-| 17 | Config::merge naming | Closed: well-documented |
-| 18 | Note index-based IDs | Fixed: content-hash IDs |
-| 19 | &Path vs PathBuf | Fixed: impl AsRef<Path> API |
-| 20 | VectorIndex &Embedding | Closed: type-safe design |
-| 21 | Swallowed .ok() patterns | Closed: intentional (mtime, etc) |
-| 22 | FTS delete errors | Fixed: logging added |
-| 23 | parse_duration unwrap | Fixed: strict parsing + tests |
-| 24 | HNSW checksum warns | Closed: correct behavior |
-| 26 | Tracing log levels | Fixed: EnvFilter in main.rs |
-| 27 | Embedder batch timing | Fixed: tracing spans |
-| 28 | MCP tool calls logged | Fixed: mcp.rs |
-| 29 | Note indexing silent | Fixed: store/notes.rs tracing |
-| 30 | Call graph no progress | Fixed: store/calls.rs tracing |
-| 31 | Watch mode print | Closed: CLI should use print |
-| 32 | Parser errors detailed | Closed: already detailed |
-| 33 | HNSW checksum logging | Closed: appropriate levels |
-| 34 | Config loading silent | Fixed: debug logging |
-| 35 | token_count test | Fixed: 4 integration tests (#[ignore]) |
-| 36 | cosine_similarity tests | Fixed: 4 tests |
-| 37 | name_match_score tests | Fixed: 5 tests |
-| 38 | delete_by_origin test | Fixed: store_test.rs |
-| 39 | needs_reindex test | Fixed: store_test.rs |
-| 40 | parse_duration tests | Fixed: 10 tests |
-| 41 | AuditMode tests | Fixed: 4 tests |
-| 42 | Source error paths | Fixed: 5 tests |
-| 43 | parse_file_calls tests | Fixed: 3 tests |
-| 44 | ChunkType::FromStr tests | Fixed: 4 tests |
-| 45 | Unicode proptest | Closed: adequate coverage |
-| 46 | display.rs bounds | Closed: already saturating |
-| 47-51 | Panic paths | Closed: verified appropriate |
-| 52 | Call extraction underflow | Closed: saturating_sub |
-| 53 | RRF test max bound | Closed: 0.5 is correct |
-| 54 | Context line edge case | Closed: saturating_sub |
-| 55 | TypeScript return type | Closed: documented limitation |
-| 56 | Go return type | Fixed: paren depth tracking |
-| 58 | Chunk/token limits | Fixed: documented rationale |
-| 59 | HNSW params | Fixed: documented tuning |
-| 60 | Project root markers | Fixed: documented |
-| 63 | Callee skip list | Fixed: documented |
-| 64 | Sentiment thresholds | Fixed: documented |
-
-### Remaining P1: 2 items (deferred to P4)
-
-| # | Issue | Status |
-|---|-------|--------|
-| 8 | nl coupled to parser | Deferred: architectural |
-| 10 | CAGRA/HNSW scattered | Deferred: architectural |
+2 deferred to P4 (architectural: nl/parser coupling, CAGRA/HNSW scattered).
 
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P1 | 2 deferred | Move to P4 |
 | P2 | 35 remaining | 23 fixed |
 | P3 | 43 | Pending |
-| P4 | 19 + 2 = 21 | Pending |
+| P4 | 21 | Pending (includes 2 deferred P1) |
 
 ## Previous Session
 
-**P1 audit fixes** - PR #151 merged with 59/64 items closed
+- Definition search feature implemented and merged
+- CLI split: watch.rs extracted from mod.rs
+- P2 fixes batched into PRs #161-163
 
 ## Open Issues
 

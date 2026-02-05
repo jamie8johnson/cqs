@@ -161,7 +161,8 @@ Use `cqs_search` for semantic code search instead of grep/glob when looking for:
 - Code where you don't know the exact name
 
 Available tools:
-- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `semantic_only`
+- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `semantic_only`, `name_only`
+  - Use `name_only=true` for "where is X defined?" queries (skips embedding, searches function names directly)
 - `cqs_stats` - index stats, chunk counts, HNSW index status
 - `cqs_callers` - find functions that call a given function
 - `cqs_callees` - find functions called by a given function
