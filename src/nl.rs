@@ -461,6 +461,57 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
             // JavaScript doesn't have type annotations in signatures
             // JSDoc parsing handled separately
         }
+        Language::C => {
+            // C: return type is before the function name, e.g., "int add(int a, int b)"
+            // Extract the type words before the function name (last identifier before '(')
+            if let Some(paren) = signature.find('(') {
+                let before = signature[..paren].trim();
+                let words: Vec<&str> = before.split_whitespace().collect();
+                // Last word is function name, everything before is return type + modifiers
+                if words.len() >= 2 {
+                    // Filter out storage class specifiers
+                    let type_words: Vec<&str> = words[..words.len() - 1]
+                        .iter()
+                        .filter(|w| {
+                            !matches!(**w, "static" | "inline" | "extern" | "const" | "volatile")
+                        })
+                        .copied()
+                        .collect();
+                    if !type_words.is_empty() && type_words != ["void"] {
+                        let ret = type_words.join(" ");
+                        let ret_words = tokenize_identifier(&ret).join(" ");
+                        return Some(format!("Returns {}", ret_words));
+                    }
+                }
+            }
+        }
+        Language::Java => {
+            // Java: return type is before the method name, similar to C
+            // e.g., "public int add(int a, int b)" or "private static String getName()"
+            if let Some(paren) = signature.find('(') {
+                let before = signature[..paren].trim();
+                let words: Vec<&str> = before.split_whitespace().collect();
+                if words.len() >= 2 {
+                    // Last word is method name, second-to-last is return type
+                    let ret_type = words[words.len() - 2];
+                    if !matches!(
+                        ret_type,
+                        "void"
+                            | "public"
+                            | "private"
+                            | "protected"
+                            | "static"
+                            | "final"
+                            | "abstract"
+                            | "synchronized"
+                            | "native"
+                    ) {
+                        let ret_words = tokenize_identifier(ret_type).join(" ");
+                        return Some(format!("Returns {}", ret_words));
+                    }
+                }
+            }
+        }
     }
     None
 }
@@ -710,6 +761,8 @@ mod tests {
                 let _ = extract_return_nl(&sig, Language::TypeScript);
                 let _ = extract_return_nl(&sig, Language::JavaScript);
                 let _ = extract_return_nl(&sig, Language::Go);
+                let _ = extract_return_nl(&sig, Language::C);
+                let _ = extract_return_nl(&sig, Language::Java);
             }
         }
     }
