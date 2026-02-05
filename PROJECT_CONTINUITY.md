@@ -85,30 +85,29 @@ Additional fixes (PR #168, #169, #171):
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P2 | ~3 remaining | Complete (design choices) |
-| P3 | 43 | Pending |
-| P4 | 21 | Pending |
+| P2 | 0 | Complete |
+| P3 | ~10 real | Mostly fixed or design choices |
+| P4 | ~5 real | Hard problems deferred |
 
-Remaining P2 items are intentional design choices or hard problems (schema migrations).
+P3 audit doc claimed 43 items but most were already fixed or low-value doc comments.
 
-## Previous Session
-
-- v0.4.0 released (GitHub + crates.io)
-- Definition search implemented (name_only mode)
-- CLI refactored (watch.rs extracted)
+### P3 Already Fixed (not marked in audit doc)
+- MAX_NOTES 10k cap (Memory #8)
+- MAX_PENDING_FILES 10k cap (Memory #10)
+- needs_reindex returns mtime (I/O #2)
+- HNSW checksum from memory (I/O #4)
+- count_vectors reads ids only (I/O #7)
+- Batched metadata queries (I/O #10)
 
 ## Open Issues
 
-### Hard (1+ day)
-- #147: Duplicate types
-- #103: O(n) note search
-- #107: Memory OOM
-- #139: Deferred housekeeping
+### Hard (deferred)
+- #103: O(n) note search (notes are small, acceptable)
+- #107: Memory OOM on huge repos (streaming embeddings)
 
 ### External/Waiting
 - #106: ort stable
 - #63: paste dep
-- #130: Tracking issue
 
 ## Architecture
 
