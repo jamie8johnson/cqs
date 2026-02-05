@@ -478,11 +478,13 @@ mod tests {
         }
 
         /// Property: Items appearing in both lists get higher scores
+        /// Note: Uses hash_set to ensure unique IDs - duplicates in input lists
+        /// accumulate scores which can violate the "overlap wins" property.
         #[test]
         fn prop_rrf_rewards_overlap(
             common_id in "[a-z]{3}",
-            only_semantic in prop::collection::vec("[A-Z]{3}", 1..5),
-            only_fts in prop::collection::vec("[0-9]{3}", 1..5)
+            only_semantic in prop::collection::hash_set("[A-Z]{3}", 1..5),
+            only_fts in prop::collection::hash_set("[0-9]{3}", 1..5)
         ) {
             let mut semantic = vec![common_id.clone()];
             semantic.extend(only_semantic);

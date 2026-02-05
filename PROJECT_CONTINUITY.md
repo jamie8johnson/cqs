@@ -2,22 +2,28 @@
 
 ## Right Now
 
-**v0.4.0 released** (2026-02-05)
+**v0.4.1 released** (2026-02-05)
 
-Definition search feature complete and published. Ready to resume P2 audit fixes.
+P2 audit fixes continuing. Most easy items addressed.
 
-### New in v0.4.0
-- `name_only=true` in cqs_search for definition lookups
-- CLI split: watch.rs extracted
-- P2 audit fixes (PRs #161-165)
+### Recent Fixes (PR #168, #169)
+- GPU failures counter and index visibility
+- VectorIndex::name() for HNSW/CAGRA identification
+- Doc comments for IndexStats, UnifiedResult, CURRENT_SCHEMA_VERSION
+- Config::merge renamed to override_with for clarity
+- Config TOML example in doc comment
+- check_cq_version logs errors instead of silent discard
+- NameMatcher for efficient query tokenization
 
-### Next: Continue P2 Fixes
+### Next: Remaining P2 Items
 
-P2 audit at 23/58. Resume from item #24 onward.
+Remaining P2 items are mostly medium difficulty:
+- Search function naming consolidation
+- VectorIndex trait expansion
+- Tracing subscriber --verbose wiring
+- Schema migration paths
 
-Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 list.
-
-### P2 Progress: 41 of 58 Fixed
+### P2 Progress: ~45 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -60,10 +66,19 @@ Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 l
 Also fixed: Flaky HNSW test (robust assertion), documented embedder cache + HTTP runtime tradeoffs.
 Config logging now shows loaded values (P1 #34).
 
+Additional fixes (PR #168, #169):
+| # | Issue | Resolution |
+|---|-------|------------|
+| 51 | GPU failures invisible | Fixed: counter + summary line |
+| 53 | CAGRA status invisible | Fixed: VectorIndex::name(), active_index in stats |
+| 54 | Config merge naming | Fixed: renamed to override_with |
+| 55 | check_cq_version silent | Fixed: logs errors at debug level |
+| 56 | Missing doc comments | Fixed: IndexStats, UnifiedResult, CURRENT_SCHEMA_VERSION |
+
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P2 | 17 remaining | 41 fixed |
+| P2 | ~13 remaining | ~45 fixed |
 | P3 | 43 | Pending |
 | P4 | 21 | Pending |
 
