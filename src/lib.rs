@@ -79,3 +79,63 @@ pub use store::Store;
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;
+
+// ============ Note Indexing Helper ============
+
+use std::path::Path;
+
+/// Index notes into the database (embed and store)
+///
+/// Shared logic used by both MCP server and CLI watch command.
+/// Embeds notes using the provided embedder and stores them with sentiment.
+///
+/// # Arguments
+/// * `notes` - Notes to index
+/// * `notes_path` - Path to notes file (for mtime tracking)
+/// * `embedder` - Embedder for creating embeddings
+/// * `store` - Store for persisting notes
+///
+/// # Returns
+/// Number of notes indexed
+pub fn index_notes(
+    notes: &[note::Note],
+    notes_path: &Path,
+    embedder: &Embedder,
+    store: &Store,
+) -> anyhow::Result<usize> {
+    if notes.is_empty() {
+        return Ok(0);
+    }
+
+    // Embed note content with sentiment prefix
+    let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+    let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+    // Add sentiment as 769th dimension
+    let embeddings_with_sentiment: Vec<embedder::Embedding> = base_embeddings
+        .into_iter()
+        .zip(notes.iter())
+        .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+        .collect();
+
+    // Get file mtime
+    let file_mtime = notes_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Delete old notes and insert new
+    store.delete_notes_by_file(notes_path)?;
+    let note_embeddings: Vec<_> = notes
+        .iter()
+        .cloned()
+        .zip(embeddings_with_sentiment)
+        .collect();
+    store.upsert_notes_batch(&note_embeddings, notes_path, file_mtime)?;
+
+    Ok(notes.len())
+}

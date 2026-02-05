@@ -23,6 +23,9 @@ pub enum ParserError {
     /// File read error
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+    /// Unknown language string in Language::from_str
+    #[error("Unknown language: '{0}'. Valid options: rust, python, typescript, javascript, go")]
+    UnknownLanguage(String),
 }
 
 // Tree-sitter query patterns per language
@@ -823,7 +826,7 @@ impl std::fmt::Display for Language {
 }
 
 impl std::str::FromStr for Language {
-    type Err = anyhow::Error;
+    type Err = ParserError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "rust" => Ok(Language::Rust),
@@ -831,10 +834,7 @@ impl std::str::FromStr for Language {
             "typescript" => Ok(Language::TypeScript),
             "javascript" => Ok(Language::JavaScript),
             "go" => Ok(Language::Go),
-            _ => anyhow::bail!(
-                "Unknown language: '{}'. Valid options: rust, python, typescript, javascript, go",
-                s
-            ),
+            _ => Err(ParserError::UnknownLanguage(s.to_string())),
         }
     }
 }

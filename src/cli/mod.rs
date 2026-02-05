@@ -124,9 +124,9 @@ pub struct Cli {
     #[arg(short, long)]
     quiet: bool,
 
-    /// Show debug info
+    /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
-    verbose: bool,
+    pub verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -206,9 +206,17 @@ enum Commands {
     },
 }
 
+/// Run CLI with default argument parsing
+///
+/// Note: Typically main.rs uses run_with() to check verbose flag before tracing init.
+/// This function is kept for API compatibility.
+#[allow(dead_code)]
 pub fn run() -> Result<()> {
-    let mut cli = Cli::parse();
+    run_with(Cli::parse())
+}
 
+/// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
+pub fn run_with(mut cli: Cli) -> Result<()> {
     // Load config and apply defaults (CLI flags override config)
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
