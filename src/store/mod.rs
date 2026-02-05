@@ -30,6 +30,9 @@ pub use helpers::{
     UnifiedResult, CURRENT_SCHEMA_VERSION, MODEL_NAME,
 };
 
+// Internal use
+use helpers::{clamp_line_number, ChunkRow};
+
 use crate::nl::normalize_for_fts;
 
 /// Thread-safe SQLite store for chunks and embeddings
@@ -259,6 +262,75 @@ impl Store {
             .await?;
 
             Ok(rows.into_iter().map(|(id,)| id).collect())
+        })
+    }
+
+    /// Search for chunks by name (definition search).
+    ///
+    /// Searches the FTS5 name column for exact or prefix matches.
+    /// Use this for "where is X defined?" queries instead of semantic search.
+    pub fn search_by_name(
+        &self,
+        name: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        let normalized = normalize_for_fts(name);
+        if normalized.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Search name column specifically using FTS5 column filter
+        // Use * for prefix matching (e.g., "parse" matches "parse_config")
+        let fts_query = format!("name:{} OR name:{}*", normalized, normalized);
+
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                 FROM chunks c
+                 JOIN chunks_fts f ON c.id = f.id
+                 WHERE chunks_fts MATCH ?1
+                 ORDER BY bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0) -- Heavy weight on name column
+                 LIMIT ?2",
+            )
+            .bind(&fts_query)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+            use sqlx::Row;
+            let results = rows
+                .into_iter()
+                .map(|row| {
+                    let chunk = ChunkSummary::from(ChunkRow {
+                        id: row.get(0),
+                        origin: row.get(1),
+                        language: row.get(2),
+                        chunk_type: row.get(3),
+                        name: row.get(4),
+                        signature: row.get(5),
+                        content: row.get(6),
+                        doc: row.get(7),
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
+                        parent_id: row.get(10),
+                    });
+                    // Score based on exact match vs prefix match
+                    let name_lower = chunk.name.to_lowercase();
+                    let query_lower = name.to_lowercase();
+                    let score = if name_lower == query_lower {
+                        1.0 // Exact match
+                    } else if name_lower.starts_with(&query_lower) {
+                        0.9 // Prefix match
+                    } else if name_lower.contains(&query_lower) {
+                        0.7 // Contains
+                    } else {
+                        0.5 // FTS matched but not obviously
+                    };
+                    SearchResult { chunk, score }
+                })
+                .collect();
+
+            Ok(results)
         })
     }
 

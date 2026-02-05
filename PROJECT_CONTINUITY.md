@@ -2,29 +2,50 @@
 
 ## Right Now
 
-**P2 audit in progress** (2026-02-04)
+**Pivoting to definition search feature** (2026-02-04)
 
-Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
+P2 audit paused at 23/58 to add definition search mode to cqs_search.
+This will help with ongoing code navigation during fixes.
 
-### P2 Progress: 15 of 58 Fixed
+### Pending Changes (uncommitted on fix/p2-batch-6)
+
+- `src/cli/watch.rs` - new file, extracted from mod.rs (~270 lines)
+- `src/cli/mod.rs` - reduced from 2167 to 1893 lines
+- `src/hnsw.rs` - added `count_vectors()` for fast stats (P2 #52)
+
+### Next: Definition Search Feature
+
+Add `--definition` mode to cqs_search for "where is X defined?" queries.
+- Boost name matching heavily (or exact match only)
+- Return function/struct definitions, not semantic matches
+- Complements current semantic search ("what does X do?")
+
+### P2 Progress: 23 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
 | 1 | Unicode string slicing panic | Fixed: char_indices for text_preview |
-| 15 | Non-atomic note append | Fixed: sync_all after write |
-| 38 | TOML injection in mentions | Fixed: escape backslashes + simplified text |
-| 39 | Glob pattern validation | Fixed: SearchFilter.validate() |
-| 20 | No max query length | Already had: validate_query_length (8192) |
-| 17 | HNSW id_map size validation | Fixed: check count on load |
+| 2 | Inconsistent error handling | Fixed: StoreError::SystemTime |
 | 11 | Parse failures default silently | Fixed: log warnings on parse failures |
+| 15 | Non-atomic note append | Fixed: sync_all after write |
+| 17 | HNSW id_map size validation | Fixed: check count on load |
 | 19 | Empty query no feedback | Fixed: debug log when normalized empty |
-| 8 | note_stats swallows errors | Fixed: propagate StoreError |
+| 20 | No max query length | Already had: validate_query_length (8192) |
 | 21 | Content hash slicing | Fixed: .get(..8).unwrap_or() |
 | 22 | Parser capture index bounds | Fixed: .get().copied() |
+| 28 | libc unconditional dep | Fixed: cfg(unix) |
+| 31 | Unbounded note parsing | Fixed: MAX_NOTES 10k cap |
+| 32 | Watch pending_files unbounded | Fixed: MAX_PENDING_FILES 10k cap |
+| 38 | TOML injection in mentions | Fixed: escape newlines/tabs/etc |
+| 39 | Glob pattern validation | Fixed: SearchFilter.validate() |
 | 40 | FTS normalization unbounded | Fixed: 16KB output cap |
-| 2 | Inconsistent error handling | Fixed: StoreError::SystemTime |
+| 47 | prune_missing individual deletes | Fixed: batch 100 at a time |
 | 48 | stats() multiple queries | Fixed: batched metadata query |
+| 49 | HashSet per function | Fixed: reuse across iterations |
+| 50 | HNSW checksum I/O | Fixed: hash ids from memory |
+| 52 | Stats loads HNSW for length | Fixed: count_vectors() reads ids only |
 | - | Glob pattern tests | Fixed: 3 new tests + FTS bounds tests |
+| - | CLI file split | watch.rs extracted (274 lines)
 
 ### P1 Status: 62 of 64 Closed
 
@@ -96,7 +117,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 | Tier | Count | Status |
 |------|-------|--------|
 | P1 | 2 deferred | Move to P4 |
-| P2 | 43 remaining | 15 fixed |
+| P2 | 35 remaining | 23 fixed |
 | P3 | 43 | Pending |
 | P4 | 19 + 2 = 21 | Pending |
 
@@ -121,6 +142,7 @@ Triage: `docs/audit-triage.md` | Findings: `docs/audit-findings.md`
 
 - 769-dim embeddings (768 + sentiment)
 - Store: split into focused modules (6 files)
+- CLI: mod.rs + display.rs + watch.rs
 - Schema v10, WAL mode
 - tests/common/mod.rs for test fixtures
-- 272 tests
+- 172 tests

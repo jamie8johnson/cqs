@@ -429,6 +429,14 @@ impl HnswIndex {
         graph_path.exists() && data_path.exists() && id_map_path.exists()
     }
 
+    /// Get vector count without loading the full index (fast, for stats)
+    pub fn count_vectors(dir: &Path, basename: &str) -> Option<usize> {
+        let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
+        let content = std::fs::read_to_string(&id_map_path).ok()?;
+        let ids: Vec<String> = serde_json::from_str(&content).ok()?;
+        Some(ids.len())
+    }
+
     /// Get the number of vectors in the index
     pub fn len(&self) -> usize {
         self.id_map.len()
