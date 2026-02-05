@@ -194,7 +194,7 @@ After de-duplication: **~225 unique findings**
 | DI7 | Corrupted embeddings silently filtered | `src/store/chunks.rs:445-448` | ✅ Fixed (logs warning) |
 | DI8 | ID map/HNSW count mismatch only checked on load | `src/hnsw.rs:503-515` | Open |
 | DI9 | No foreign key enforcement | `src/store/mod.rs:68-96` | ✅ FK enabled |
-| DI10 | notes.toml ID collision with hash truncation | `src/note.rs:119-123` | Open |
+| DI10 | notes.toml ID collision with hash truncation | `src/note.rs:122` | ✅ Documented |
 | DI13 | Checksum doc limitation | `src/hnsw.rs:97-131` | Open |
 | DI14 | Missing WAL checkpoint on shutdown | `src/store/mod.rs:55-114` | Open |
 
@@ -202,7 +202,7 @@ After de-duplication: **~225 unique findings**
 | # | Finding | Location | Status |
 |---|---------|----------|--------|
 | EC6 | Duration parsing overflow | `src/mcp/validation.rs:88-95` | ✅ Fixed (24h cap) |
-| EC8 | Zero limit produces confusing results | `src/mcp/tools/search.rs:19` | Open (doc needed) |
+| EC8 | Zero limit produces confusing results | `src/mcp/tools/search.rs:19-20` | ✅ Documented |
 | EC9 | Empty mentions silently dropped | `src/mcp/tools/notes.rs:31-48` | ✅ Fixed (logs debug) |
 | EC11 | SearchFilter doesn't check control chars | `src/store/helpers.rs` | ✅ Verified OK |
 
@@ -220,7 +220,7 @@ After de-duplication: **~225 unique findings**
 #### Memory Management (6 easy, deduped)
 | # | Finding | Location | Status |
 |---|---------|----------|--------|
-| MM3 | HnswIndex::build() loads all | `src/hnsw.rs:195-246` | Open (doc needed) |
+| MM3 | HnswIndex::build() loads all | `src/hnsw.rs:202-208` | ✅ Documented |
 | MM5 | Unbounded Vec in search results | `src/search.rs:194-228` | Open |
 | MM6 | FileSystemSource collects all files | `src/source/filesystem.rs:39-76` | Open |
 | MM7 | **HNSW checksum reads entire file** (dedup) | `src/hnsw.rs:117` | Open |

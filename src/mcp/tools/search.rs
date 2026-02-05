@@ -16,6 +16,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
     let args: SearchArgs = serde_json::from_value(arguments)?;
     validate_query_length(&args.query)?;
 
+    // Clamp limit to [1, 20] - 0 treated as 1, >20 capped at 20
     let limit = args.limit.unwrap_or(5).clamp(1, 20);
     let threshold = args.threshold.unwrap_or(0.3);
 
