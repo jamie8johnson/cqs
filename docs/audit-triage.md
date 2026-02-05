@@ -532,13 +532,13 @@ After de-duplication: **~225 unique findings**
 
 | Priority | Original | Fixed | Remaining | Action |
 |----------|----------|-------|-----------|--------|
-| P1 | ~93 | ~60 | ~33 | Fix immediately |
-| P2 | ~79 | ~25 | ~54 | Fix next |
+| P1 | ~93 | ~70 | ~23 | Fix immediately |
+| P2 | ~79 | ~35 | ~44 | Fix next |
 | P3 | ~41 | ~5 | ~36 | Fix if time permits |
 | P4 | ~30 | ~3 | ~27 | Create issue, defer |
-| **Total** | **~243** | **~93** | **~150** | |
+| **Total** | **~243** | **~113** | **~130** | |
 
-*Updated 2026-02-05 after PR #190 (audit fixes) and PR #191 (refactoring)*
+*Updated 2026-02-05 after PR #190, #191, #192, and current batch*
 
 ---
 
