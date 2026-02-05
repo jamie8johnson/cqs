@@ -358,3 +358,8 @@ mentions = ["src/store/notes.rs", "src/search.rs", "src/cli/mod.rs", "note_embed
 sentiment = 0.5
 text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight, MCP note_weight. Useful when notes dominate due to high semantic match."
 mentions = ["SearchFilter", "search.rs", "mcp.rs", "cli/mod.rs"]
+
+[[note]]
+sentiment = -1.0
+text = "Don't trust prior observations. Audit mode exists because I was lazy - trusting notes instead of tracing call paths. When fixing one thing (HNSW streaming), immediately check parallel implementations (CAGRA). Dead code like search_unified sat unnoticed because nobody questioned existing code."
+mentions = ["audit mode", "verification", "dead code"]
