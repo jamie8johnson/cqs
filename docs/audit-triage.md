@@ -287,7 +287,7 @@ After de-duplication: **~225 unique findings**
 | H6 | cmd_index ~200 lines deep nesting | `src/cli/mod.rs:280-480` | ✅ Now 140 lines with helpers |
 | H7 | GPU/CPU embedder patterns duplicated | `src/cli/mod.rs` | ✅ Consolidated in pipeline.rs |
 | H8 | Embedding batch processing duplicated | `src/cli/mod.rs`, `src/cli/watch.rs` | ✅ Intentional - watch uses simpler path |
-| H10 | Source trait over-engineered | `src/source/mod.rs` |
+| H10 | Source trait over-engineered | `src/source/mod.rs` | ✅ Minimal (3 methods), extensibility documented |
 
 #### Module Boundaries (5 medium)
 | # | Finding | Location |
@@ -319,9 +319,9 @@ After de-duplication: **~225 unique findings**
 |---|---------|----------|
 | E5 | Language/chunk_type parsing errors discarded | `src/store/chunks.rs:296, 306` | ✅ Already logs with tracing::warn |
 | E7 | Multiple bare ? in HNSW load | `src/hnsw.rs` | ✅ All have context now |
-| E10 | CAGRA index rebuild errors become empty | `src/cagra.rs:188-195` |
-| E11 | HNSW dimension mismatch returns empty | `src/hnsw.rs:364-372` |
-| E13 | lib.rs index_notes returns anyhow | `src/lib.rs:105` |
+| E10 | CAGRA index rebuild errors become empty | `src/cagra.rs:188-195` | ✅ Intentional - logs error, returns empty for graceful degradation |
+| E11 | HNSW dimension mismatch returns empty | `src/hnsw.rs:364-372` | ✅ Intentional - logs warning, returns empty |
+| E13 | lib.rs index_notes returns anyhow | `src/lib.rs:105` | Low priority - CLI-focused tool |
 
 **P2 Total: ~79 findings**
 
