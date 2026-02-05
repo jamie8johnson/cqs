@@ -68,6 +68,11 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         note_weight: args.note_weight.unwrap_or(1.0),
     };
 
+    // Validate filter parameters before search
+    filter
+        .validate()
+        .map_err(|e| anyhow::anyhow!("Invalid search filter: {}", e))?;
+
     // Read-lock the index (allows background CAGRA build to upgrade it)
     let index_guard = server.index.read().unwrap_or_else(|e| {
         tracing::debug!("Index RwLock poisoned (prior panic), recovering");

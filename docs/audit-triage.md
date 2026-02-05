@@ -191,7 +191,7 @@ After de-duplication: **~225 unique findings**
 | DI3 | upsert_calls not transactional | `src/store/calls.rs:17-40` | ✅ Verified OK |
 | DI4 | upsert_function_calls not transactional | `src/store/calls.rs:114-161` | ✅ Verified OK |
 | DI6 | No embedding size validation on insert | `src/store/helpers.rs:324-329` | ✅ Has brace depth check |
-| DI7 | Corrupted embeddings silently filtered | `src/store/chunks.rs:382-392` | Open |
+| DI7 | Corrupted embeddings silently filtered | `src/store/chunks.rs:445-448` | ✅ Fixed (logs warning) |
 | DI8 | ID map/HNSW count mismatch only checked on load | `src/hnsw.rs:503-515` | Open |
 | DI9 | No foreign key enforcement | `src/store/mod.rs:68-96` | ✅ FK enabled |
 | DI10 | notes.toml ID collision with hash truncation | `src/note.rs:119-123` | Open |
@@ -203,7 +203,7 @@ After de-duplication: **~225 unique findings**
 |---|---------|----------|--------|
 | EC6 | Duration parsing overflow | `src/mcp/validation.rs:88-95` | ✅ Fixed (24h cap) |
 | EC8 | Zero limit produces confusing results | `src/mcp/tools/search.rs:19` | Open (doc needed) |
-| EC9 | Empty mentions silently dropped | `src/store/notes.rs:36` | Open |
+| EC9 | Empty mentions silently dropped | `src/mcp/tools/notes.rs:31-48` | ✅ Fixed (logs debug) |
 | EC11 | SearchFilter doesn't check control chars | `src/store/helpers.rs` | ✅ Verified OK |
 
 #### Platform Behavior (7 easy)
@@ -237,7 +237,7 @@ After de-duplication: **~225 unique findings**
 |---|---------|----------|--------|
 | IS1 | FTS5 sanitization implicit | `src/nl.rs:114-149` | ✅ Verified secure |
 | IS2 | Glob pattern complexity not limited | `src/store/helpers.rs:320-335` | ✅ Has brace depth limit |
-| IS3 | path_pattern not validated before search | `src/mcp/tools/search.rs` | Open (validate() not called) |
+| IS3 | path_pattern not validated before search | `src/mcp/tools/search.rs:73-75` | ✅ Fixed |
 | IS4 | Duration parsing no upper bound | `src/mcp/validation.rs:88-95` | ✅ Fixed (24h cap) |
 
 #### Data Security (5 easy)
