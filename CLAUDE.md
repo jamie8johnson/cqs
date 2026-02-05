@@ -35,6 +35,8 @@ Use it for:
 - Finding implementations by behavior
 - When you don't know exact names
 
+**Definition search:** Use `name_only=true` for "where is X defined?" queries. Skips embedding, searches function/struct names directly. Faster than glob.
+
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
 Tools: `cqs_search`, `cqs_stats` (run `cqs watch` to keep index fresh)
