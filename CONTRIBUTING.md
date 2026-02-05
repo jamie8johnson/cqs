@@ -91,8 +91,8 @@ src/
     pipeline.rs - Multi-threaded indexing pipeline
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
-    mod.rs      - LanguageRegistry, LanguageDef trait
-    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs
+    mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
+    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation
@@ -106,7 +106,7 @@ src/
   mcp/          - MCP server implementation
     mod.rs      - McpServer, JSON-RPC handling
     transports/ - stdio.rs, http.rs transport implementations
-  parser.rs     - tree-sitter code parsing (lazy grammar loading)
+  parser.rs     - tree-sitter code parsing (delegates to language/ registry)
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
   search.rs     - Search algorithms, cosine similarity, HNSW-guided search
   hnsw.rs       - HNSW index with batched build, atomic writes
