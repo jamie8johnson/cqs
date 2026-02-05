@@ -2,9 +2,17 @@
 
 ## Right Now
 
-**v0.4.6 released** (2026-02-05)
+**Agent teams smoke-tested** (2026-02-05)
 
-All sprint work published to GitHub and crates.io.
+- Teams research preview is enabled and working
+- Smoke test passed: spawnTeam → TaskCreate → spawn teammate → task execution → message → shutdown → cleanup
+- Added "Agent Teams" section to CLAUDE.md with conventions (naming, model selection, cleanup, self-contained prompts)
+- Updated 20-Category Audit execution to use teams (one team per batch, 5 teammates per batch)
+- Built cqs binary to `/home/user001/.cargo-target/cq/debug/cqs` — MCP server needs Claude Code restart to connect
+
+### Pending
+- CLAUDE.md has uncommitted changes (Agent Teams section + audit execution update)
+- Restart Claude Code to pick up cqs MCP server
 
 ### What shipped in v0.4.6
 - Schema migration framework (#188)
