@@ -1,5 +1,6 @@
 //! Code parsing with tree-sitter
 
+use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
@@ -204,18 +205,20 @@ const GO_CALL_QUERY: &str = r#"
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Parser {
-    /// Cached compiled queries per language (Query compilation is ~1ms, worth caching)
-    queries: HashMap<Language, tree_sitter::Query>,
-    /// Cached call extraction queries per language
-    call_queries: HashMap<Language, tree_sitter::Query>,
+    /// Lazily compiled queries per language (compiled on first use)
+    queries: HashMap<Language, OnceCell<tree_sitter::Query>>,
+    /// Lazily compiled call extraction queries per language
+    call_queries: HashMap<Language, OnceCell<tree_sitter::Query>>,
 }
 
 impl Parser {
-    /// Create a new parser with pre-compiled queries for all supported languages
+    /// Create a new parser (queries are compiled lazily on first use)
     pub fn new() -> Result<Self, ParserError> {
         let mut queries = HashMap::new();
         let mut call_queries = HashMap::new();
 
+        // Initialize empty OnceCells for each language
+        // Queries will be compiled on first access
         for lang in [
             Language::Rust,
             Language::Python,
@@ -223,26 +226,43 @@ impl Parser {
             Language::JavaScript,
             Language::Go,
         ] {
-            let grammar = lang.grammar();
-
-            // Chunk extraction queries
-            let pattern = lang.query_pattern();
-            let query = tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
-                ParserError::QueryCompileFailed(lang.to_string(), format!("{:?}", e))
-            })?;
-            queries.insert(lang, query);
-
-            // Call extraction queries
-            let call_pattern = lang.call_query_pattern();
-            let call_query = tree_sitter::Query::new(&grammar, call_pattern).map_err(|e| {
-                ParserError::QueryCompileFailed(format!("{}_calls", lang), format!("{:?}", e))
-            })?;
-            call_queries.insert(lang, call_query);
+            queries.insert(lang, OnceCell::new());
+            call_queries.insert(lang, OnceCell::new());
         }
 
         Ok(Self {
             queries,
             call_queries,
+        })
+    }
+
+    /// Get or compile the chunk extraction query for a language
+    fn get_query(&self, language: Language) -> Result<&tree_sitter::Query, ParserError> {
+        let cell = self.queries.get(&language).ok_or_else(|| {
+            ParserError::QueryCompileFailed(language.to_string(), "not found".into())
+        })?;
+
+        cell.get_or_try_init(|| {
+            let grammar = language.grammar();
+            let pattern = language.query_pattern();
+            tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
+                ParserError::QueryCompileFailed(language.to_string(), format!("{:?}", e))
+            })
+        })
+    }
+
+    /// Get or compile the call extraction query for a language
+    fn get_call_query(&self, language: Language) -> Result<&tree_sitter::Query, ParserError> {
+        let cell = self.call_queries.get(&language).ok_or_else(|| {
+            ParserError::QueryCompileFailed(format!("{}_calls", language), "not found".into())
+        })?;
+
+        cell.get_or_try_init(|| {
+            let grammar = language.grammar();
+            let pattern = language.call_query_pattern();
+            tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
+                ParserError::QueryCompileFailed(format!("{}_calls", language), format!("{:?}", e))
+            })
         })
     }
 
@@ -296,10 +316,8 @@ impl Parser {
             .parse(&source, None)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
-        // Use cached query
-        let query = self.queries.get(&language).ok_or_else(|| {
-            ParserError::QueryCompileFailed(language.to_string(), "not found".into())
-        })?;
+        // Get or compile query (lazy initialization)
+        let query = self.get_query(language)?;
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(query, tree.root_node(), source.as_bytes());
@@ -545,9 +563,9 @@ impl Parser {
             None => return vec![],
         };
 
-        let query = match self.call_queries.get(&language) {
-            Some(q) => q,
-            None => return vec![],
+        let query = match self.get_call_query(language) {
+            Ok(q) => q,
+            Err(_) => return vec![],
         };
 
         let mut cursor = tree_sitter::QueryCursor::new();
@@ -655,15 +673,9 @@ impl Parser {
             .parse(&source, None)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
-        // Get chunk query to find all functions
-        let chunk_query = self.queries.get(&language).ok_or_else(|| {
-            ParserError::QueryCompileFailed(language.to_string(), "not found".into())
-        })?;
-
-        // Get call query
-        let call_query = self.call_queries.get(&language).ok_or_else(|| {
-            ParserError::QueryCompileFailed(format!("{}_calls", language), "not found".into())
-        })?;
+        // Get or compile queries (lazy initialization)
+        let chunk_query = self.get_query(language)?;
+        let call_query = self.get_call_query(language)?;
 
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());

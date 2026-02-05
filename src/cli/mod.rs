@@ -130,6 +130,9 @@ enum Commands {
         /// API key for HTTP authentication (required for non-localhost bind)
         #[arg(long, env = "CQS_API_KEY")]
         api_key: Option<String>,
+        /// Path to file containing API key (alternative to --api-key)
+        #[arg(long)]
+        api_key_file: Option<PathBuf>,
         /// Required when binding to non-localhost (exposes codebase to network)
         #[arg(long, hide = true)]
         dangerously_allow_network_bind: bool,
@@ -193,6 +196,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref project,
             gpu,
             ref api_key,
+            ref api_key_file,
             dangerously_allow_network_bind,
         }) => cmd_serve(ServeConfig {
             transport: transport.clone(),
@@ -201,6 +205,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             project: project.clone(),
             gpu,
             api_key: api_key.clone(),
+            api_key_file: api_key_file.clone(),
             dangerously_allow_network_bind,
         }),
         Some(Commands::Completions { shell }) => {

@@ -16,6 +16,7 @@ pub(crate) struct ServeConfig {
     pub project: Option<PathBuf>,
     pub gpu: bool,
     pub api_key: Option<String>,
+    pub api_key_file: Option<PathBuf>,
     pub dangerously_allow_network_bind: bool,
 }
 
@@ -32,11 +33,25 @@ pub(crate) fn cmd_serve(config: ServeConfig) -> Result<()> {
         );
     }
 
+    // Resolve API key from either --api-key or --api-key-file
+    let api_key = match (&config.api_key, &config.api_key_file) {
+        (Some(_), Some(_)) => {
+            bail!("Cannot specify both --api-key and --api-key-file");
+        }
+        (Some(key), None) => Some(key.clone()),
+        (None, Some(path)) => {
+            let key = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("Failed to read API key file: {}", e))?;
+            Some(key.trim().to_string())
+        }
+        (None, None) => None,
+    };
+
     // Require API key for non-localhost HTTP binds
-    if !is_localhost && config.transport == "http" && config.api_key.is_none() {
+    if !is_localhost && config.transport == "http" && api_key.is_none() {
         bail!(
             "API key required for non-localhost HTTP bind.\n\
-             Set --api-key <key> or CQS_API_KEY environment variable."
+             Set --api-key <key>, --api-key-file <path>, or CQS_API_KEY environment variable."
         );
     }
 
@@ -44,9 +59,9 @@ pub(crate) fn cmd_serve(config: ServeConfig) -> Result<()> {
 
     match config.transport.as_str() {
         "stdio" => cqs::serve_stdio(root, config.gpu),
-        "http" => cqs::serve_http(root, &config.bind, config.port, config.api_key, config.gpu),
+        "http" => cqs::serve_http(root, &config.bind, config.port, api_key, config.gpu),
         // Keep sse as alias for backwards compatibility
-        "sse" => cqs::serve_http(root, &config.bind, config.port, config.api_key, config.gpu),
+        "sse" => cqs::serve_http(root, &config.bind, config.port, api_key, config.gpu),
         _ => {
             bail!(
                 "Unknown transport: {}. Use 'stdio' or 'http'.",
