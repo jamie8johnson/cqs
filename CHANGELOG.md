@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-02-05
+
+### Added
+- **Streaming HNSW build** for large repos (#107)
+  - `Store::embedding_batches()` streams embeddings in 10k batches via LIMIT/OFFSET
+  - `HnswIndex::build_batched()` builds index incrementally
+  - Memory: O(batch_size) instead of O(n) - ~30MB peak instead of ~300MB for 100k chunks
+- **Notes in HNSW index** for O(log n) search (#103)
+  - Note IDs prefixed with `note:` in unified HNSW index
+  - `Store::note_embeddings()` and `search_notes_by_ids()` for indexed note search
+  - Index output now shows: `HNSW index: N vectors (X chunks, Y notes)`
+
+### Changed
+- HNSW build moved after note indexing to include notes in unified index
+
+### Fixed
+- O(n) brute-force note search eliminated - now uses HNSW candidates
+
 ## [0.4.2] - 2026-02-05
 
 ### Added
