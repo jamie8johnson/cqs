@@ -553,9 +553,10 @@ impl McpServer {
             .cloned()
             .unwrap_or(Value::Object(Default::default()));
 
-        tracing::debug!(tool = name, "MCP tool call");
+        let start = std::time::Instant::now();
+        tracing::debug!(tool = name, "MCP tool call started");
 
-        match name {
+        let result = match name {
             "cqs_search" => self.tool_search(arguments),
             "cqs_stats" => self.tool_stats(),
             "cqs_callers" => self.tool_callers(arguments),
@@ -567,7 +568,15 @@ impl McpServer {
                 "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_audit_mode",
                 name
             ),
-        }
+        };
+
+        let elapsed = start.elapsed();
+        tracing::info!(
+            tool = name,
+            elapsed_ms = elapsed.as_millis() as u64,
+            "MCP tool call completed"
+        );
+        result
     }
 
     fn tool_search(&self, arguments: Value) -> Result<Value> {

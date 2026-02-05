@@ -17,7 +17,7 @@ P2 audit at 23/58. Resume from item #24 onward.
 
 Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 list.
 
-### P2 Progress: 28 of 58 Fixed
+### P2 Progress: 32 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -45,13 +45,16 @@ Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 l
 | 49 | HashSet per function | Fixed: reuse across iterations |
 | 50 | HNSW checksum I/O | Fixed: hash ids from memory |
 | 52 | Stats loads HNSW for length | Fixed: count_vectors() reads ids only |
+| 33 | Context line edge case | Fixed: validate line_start, line_end |
+| 34 | Watch embedder per reindex | Fixed: OnceCell lazy init |
+| 35 | CAGRA thread not tracked | Fixed: documented as intentional |
 
-Also fixed: Flaky HNSW test (seed multiplier), documented embedder cache + HTTP runtime tradeoffs.
+Also fixed: Flaky HNSW test (robust assertion), documented embedder cache + HTTP runtime tradeoffs.
 
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P2 | 30 remaining | 28 fixed |
+| P2 | 26 remaining | 32 fixed |
 | P3 | 43 | Pending |
 | P4 | 21 | Pending |
 
