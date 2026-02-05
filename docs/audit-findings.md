@@ -1,6 +1,6 @@
 # Audit Findings
 
-Generated: 2026-02-04
+Generated: 2026-02-05
 
 See design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
@@ -10,393 +10,477 @@ See design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
 ### Code Hygiene
 
-#### 1. Duplicated Tree-Sitter Query Constants
+#### 1. ExitCode enum marked dead but unused
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:49`
+- **Description:** The `ExitCode` enum is marked with `#[allow(dead_code)]` and defines exit codes but CLI uses `anyhow::Result` and `process::exit(1)` directly. The enum was planned but never integrated.
+- **Suggested fix:** Either integrate ExitCode into error handling or remove the unused enum.
+
+#### 2. run() function incorrectly marked dead code
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:217`
+- **Description:** The `run()` function has `#[allow(dead_code)]` but IS called from main.rs. This marker is incorrect.
+- **Suggested fix:** Remove the `#[allow(dead_code)]` attribute.
+
+#### 3. InitializeParams fields marked dead but deserialized
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:76-87`
+- **Description:** Fields `protocol_version`, `capabilities`, `client_info` are deserialized from JSON but never read, suggesting incomplete MCP protocol implementation.
+- **Suggested fix:** Either use these fields for protocol validation/logging or document why they're intentionally ignored.
+
+#### 4. _no_ignore parameter never used
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:198`
+- **Description:** The `reindex_files` function accepts `_no_ignore: bool` parameter that has no effect on behavior.
+- **Suggested fix:** Either implement no_ignore logic or remove the parameter.
+
+#### 5. run_index_pipeline is ~400 lines
 - **Difficulty:** hard
-- **Location:** `src/parser.rs:20-200` and `src/language/*.rs`
-- **Description:** The parser.rs file contains RUST_QUERY, PYTHON_QUERY, etc. that are nearly identical to CHUNK_QUERY constants in language/*.rs. The LanguageRegistry infrastructure is sophisticated but largely unused.
-- **Suggested fix:** Consolidate query definitions into one place. Either have parser.rs use the LanguageRegistry, or remove the duplicate constants.
+- **Location:** `src/cli/mod.rs:450-850`
+- **Description:** Handles file discovery, embedding generation, GPU/CPU thread management, progress display, and database operations all in one function. Violates single responsibility.
+- **Suggested fix:** Extract into smaller functions: `discover_files()`, `spawn_embedding_workers()`, `process_batches()`, `finalize_index()`.
 
-#### 2. Repeated Line Number Clamping Pattern
-- **Difficulty:** easy
-- **Location:** `src/search.rs:125,126`, `src/store/calls.rs:67,68,111,112`, `src/store/chunks.rs:325,326`, `src/store/helpers.rs:182,183`
-- **Description:** The pattern `.clamp(0, u32::MAX as i64) as u32` appears 10 times for converting SQLite i64 to u32.
-- **Suggested fix:** Extract to a helper function like `fn i64_to_line_number(n: i64) -> u32`.
-
-#### 3. Explicit Dead Code Markers
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:76,86`, `src/cli/mod.rs:47`
-- **Description:** `#[allow(dead_code)]` markers on InitializeParams, ClientInfo, ExitCode enum.
-- **Suggested fix:** Either remove the dead code, or actually use it.
-
-#### 4. Unused LanguageRegistry Infrastructure
-- **Difficulty:** hard
-- **Location:** `src/language/mod.rs`, `src/language/*.rs`
-- **Description:** The language module defines sophisticated LanguageRegistry that's barely used. Parser.rs has its own Language enum and queries, bypassing the registry.
-- **Suggested fix:** Fully integrate LanguageRegistry or simplify to only what's used.
-
-#### 5. Inconsistent Error Handling Style
+#### 6. cmd_index is ~200 lines with deep nesting
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:147`, `src/store/notes.rs:147`
-- **Description:** Some error paths use `std::io::Error::other()` instead of structured StoreError.
-- **Suggested fix:** Define appropriate StoreError variants for time-related errors.
+- **Location:** `src/cli/mod.rs:280-480`
+- **Description:** Multiple levels of match statements and conditional logic for handling different index modes.
+- **Suggested fix:** Use early returns and extract mode-specific logic into helper functions.
 
-#### 6. Feature Flag Query Duplication
+#### 7. GPU/CPU embedder thread patterns duplicated
 - **Difficulty:** medium
-- **Location:** `src/parser.rs:315-400`
-- **Description:** Large match statement with `#[cfg(feature = "lang-*")]` guards that repeat similar patterns.
-- **Suggested fix:** Create a macro or helper function for the common work.
+- **Location:** `src/cli/mod.rs` (embedder thread spawning)
+- **Description:** GPU and CPU embedding worker thread setup has similar patterns with duplicated error handling and channel setup.
+- **Suggested fix:** Create a generic `spawn_embedding_worker<E: Embedder>()` function.
 
-#### 7. Magic Numbers in Configuration
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:66,78,86`, `src/hnsw.rs`
-- **Description:** SQLite tuning parameters and HNSW values are hardcoded without explanation.
-- **Suggested fix:** Extract to named constants with documentation.
+#### 8. Embedding batch processing duplicated between index and watch
+- **Difficulty:** medium
+- **Location:** `src/cli/mod.rs` and `src/cli/watch.rs`
+- **Description:** Both commands have similar logic for collecting files, checking mtime, generating embeddings, upserting to store.
+- **Suggested fix:** Extract shared indexing logic into a common module.
 
-#### 8. Commented Debug Code Pattern
+#### 9. Note search scoring logic duplicated
 - **Difficulty:** easy
-- **Location:** `src/search.rs:78-80`
-- **Description:** Debug/trace logging is commented out instead of using proper tracing macros.
-- **Suggested fix:** Use `tracing::debug!()` instead of commented code.
+- **Location:** `src/store/notes.rs:75-128` and `src/store/notes.rs:235-310`
+- **Description:** `search_notes` and `search_notes_by_ids` have identical scoring/ranking logic.
+- **Suggested fix:** Extract common `score_notes()` function.
+
+#### 10. Source trait abstraction may be over-engineered
+- **Difficulty:** medium
+- **Location:** `src/source/mod.rs` and `src/source/filesystem.rs`
+- **Description:** `Source` trait exists but `FileSystemSource` is the only implementation.
+- **Suggested fix:** If no other sources are planned, consider inlining filesystem logic directly.
+
+#### 11. Redundant .to_string() calls
+- **Difficulty:** easy
+- **Location:** Multiple files (store/chunks.rs, store/notes.rs)
+- **Description:** Pattern `path.to_string_lossy().to_string()` appears frequently.
+- **Suggested fix:** Consider a helper function `path_to_string(p: &Path) -> String`.
+
+#### 12. Magic numbers in sentiment thresholds
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:196-203`
+- **Description:** Hardcoded `-0.3` and `0.3` sentiment thresholds instead of using constants from `crate::note`.
+- **Suggested fix:** Use the `SENTIMENT_*_THRESHOLD` constants.
 
 ---
 
 ### Module Boundaries
 
-#### 1. Duplicate Language Enum Definitions
-- **Difficulty:** medium
-- **Location:** `src/parser.rs:730-738` and `src/language/mod.rs`
-- **Description:** Two parallel language systems: parser::Language is used throughout, while language::LanguageDef exists but is barely used.
-- **Suggested fix:** Unify around a single language abstraction.
-
-#### 2. Search Logic Split Across Store and Dedicated Module
-- **Difficulty:** medium
-- **Location:** `src/search.rs` (extends Store) and `src/store/mod.rs`
-- **Description:** Search algorithms are directly part of Store via `impl Store`, mixing persistence and search concerns.
-- **Suggested fix:** Introduce a SearchEngine struct that takes a &Store reference.
-
-#### 3. CLI Module Imports Library Types Directly
-- **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:22-27`
-- **Description:** CLI reaches deep into internal implementations rather than going through public API in lib.rs.
-- **Suggested fix:** Update CLI imports to use the public API from lib.rs.
-
-#### 4. helpers.rs Exposes Internal Row Types Publicly
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:33-46`
-- **Description:** ChunkRow (raw database row type) is exported publicly but should be internal.
-- **Suggested fix:** Make ChunkRow `pub(crate)` instead of pub.
-
-#### 5. nl Module Has Direct Dependency on Parser Types
-- **Difficulty:** easy
-- **Location:** `src/nl.rs:6`
-- **Description:** The nl module imports Chunk, ChunkType, and Language directly from parser, creating tight coupling.
-- **Suggested fix:** Consider defining a trait or simpler struct for nl's needs.
-
-#### 6. MCP Module Reimplements Note Indexing Logic
-- **Difficulty:** medium
-- **Location:** `src/mcp.rs:1074-1115` and `src/cli/mod.rs:1173-1205`
-- **Description:** Both MCP and CLI have duplicate note indexing logic.
-- **Suggested fix:** Extract shared note indexing logic into a function.
-
-#### 7. Store Module Knows About FTS Normalization
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:294-323`
-- **Description:** normalize_for_fts() contains text processing logic that mixes storage with text processing.
-- **Suggested fix:** Move normalize_for_fts() to the nl module.
-
-#### 8. Parser Module Contains Query Constants That Belong in Language Modules
-- **Difficulty:** medium
-- **Location:** `src/parser.rs:25-179`
-- **Description:** Tree-sitter query strings defined in parser.rs, but language/ modules exist for this purpose.
-- **Suggested fix:** Move query constants to respective language modules or delete language/ submodule.
-
-#### 9. Embedder Module Has ONNX Provider Setup Logic
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:492-567`
-- **Description:** ensure_ort_provider_libs() handles filesystem operations unrelated to embedding.
-- **Suggested fix:** Move provider library setup to a separate module.
-
-#### 10. Source Trait Not Fully Utilized
+#### 1. CLI Module is a Monolith
 - **Difficulty:** hard
-- **Location:** `src/source/mod.rs:40-60`
-- **Description:** Source trait exists but only FileSystemSource is implemented, and CLI doesn't actually use it.
-- **Suggested fix:** Either use FileSystemSource through the trait, or remove the trait until needed.
+- **Location:** `src/cli/mod.rs:1-1960`
+- **Description:** ~1960 lines handling command parsing, signal handling, file enumeration, indexing pipeline, progress reporting, configuration, watch mode, serve mode, and all commands.
+- **Suggested fix:** Split into submodules: `cli/commands/`, `cli/indexing.rs`, `cli/watch.rs`, `cli/serve.rs`.
 
-#### 11. CAGRA Module Optional but Creates Conditional Complexity
+#### 2. MCP Module is a Monolith
+- **Difficulty:** hard
+- **Location:** `src/mcp.rs:1-2000`
+- **Description:** ~2000 lines containing JSON-RPC types, request/response handling, tool definitions, audit mode state, validation, and all tool implementations.
+- **Suggested fix:** Split into `mcp/types.rs`, `mcp/tools/`, `mcp/validation.rs`, `mcp/server.rs`.
+
+#### 3. lib.rs Contains Application Logic
 - **Difficulty:** easy
-- **Location:** `src/cagra.rs` and `src/cli/mod.rs:1281-1319`
-- **Description:** Scattered `#[cfg(feature = "gpu-search")]` blocks duplicate CAGRA/HNSW selection logic.
-- **Suggested fix:** Introduce a factory function that encapsulates the selection logic.
+- **Location:** `src/lib.rs:100-141`
+- **Description:** `index_notes` function is application-level orchestration rather than library API.
+- **Suggested fix:** Move to dedicated `note_indexing.rs` module or into `note` module.
+
+#### 4. Store Depends on Higher-Level Search Module
+- **Difficulty:** medium
+- **Location:** `src/store/notes.rs:14`
+- **Description:** `store/notes.rs` imports `crate::search::cosine_similarity`. Store is lower-level; search is higher-level. Inverted dependency.
+- **Suggested fix:** Move `cosine_similarity` to a shared `util` or `math` module.
+
+#### 5. Store Depends on NL Module
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:14` and `src/store/notes.rs:12`
+- **Description:** Store modules import `crate::nl::normalize_for_fts`. NL is higher-level text processing.
+- **Suggested fix:** Have callers normalize text before passing to store, or move to low-level `text` utility module.
+
+#### 6. Store Helpers Module Exposes Internal Types
+- **Difficulty:** medium
+- **Location:** `src/store/mod.rs:8`
+- **Description:** `pub mod helpers` exposes internal types to external consumers.
+- **Suggested fix:** Change to `pub(crate) mod helpers` and re-export only public types in `store/mod.rs`.
+
+#### 7. Parser Re-exports Internal Language Types
+- **Difficulty:** easy
+- **Location:** `src/parser.rs:9`
+- **Description:** `pub use crate::language::ChunkType` re-exports an internal type.
+- **Suggested fix:** Move `ChunkType` to parser.rs as canonical location or document `language::ChunkType` is canonical.
+
+#### 8. Parallel Language Definitions
+- **Difficulty:** medium
+- **Location:** `src/parser.rs:760-772` and `src/language/mod.rs`
+- **Description:** Two parallel systems for representing languages: `Language` enum in parser.rs and `LanguageRegistry`/`LanguageDef` in language module.
+- **Suggested fix:** Consolidate into a single `Language` type in the `language` module.
+
+#### 9. CLI Directly Imports Library Internals
+- **Difficulty:** medium
+- **Location:** `src/cli/mod.rs:9-16`
+- **Description:** CLI imports directly from library submodules rather than public API.
+- **Suggested fix:** Have `lib.rs` provide curated public API surface.
+
+#### 10. Search Module Implements on Store Type
+- **Difficulty:** medium
+- **Location:** `src/search.rs:1-300`
+- **Description:** Search module implements methods directly on `Store` type via `impl Store`. Conflates data access with search algorithms.
+- **Suggested fix:** Create dedicated `SearchEngine` struct that holds reference to `Store`.
+
+#### 11. Index Module is Minimal
+- **Difficulty:** easy
+- **Location:** `src/index.rs:1-30`
+- **Description:** Only 30 lines defining `VectorIndex` trait and `IndexResult`. Could be inlined.
+- **Suggested fix:** Either expand the module or inline the trait into `hnsw.rs`.
 
 ---
 
 ### Documentation
 
-#### 1. Stale model name in lib.rs doc comment
+#### 1. PRIVACY.md: Embedding dimensions incorrect
 - **Difficulty:** easy
-- **Location:** `src/lib.rs:8`
-- **Description:** Says "nomic-embed-text-v1.5" but actual model is E5-base-v2.
-- **Suggested fix:** Change to "E5-base-v2".
+- **Location:** `PRIVACY.md:16`
+- **Description:** States "768-dimensional floats" but actual is 769 (768 + 1 sentiment).
+- **Suggested fix:** Update to "769-dimensional floats (768 from E5-base-v2 + 1 sentiment dimension)"
 
-#### 2. Stale model name in Embedder doc comment
+#### 2. README.md: Upgrade instructions reference outdated version
 - **Difficulty:** easy
-- **Location:** `src/embedder.rs:135`
-- **Description:** Embedder struct doc says "nomic-embed-text-v1.5" but code uses E5-base-v2.
-- **Suggested fix:** Update doc comment.
+- **Location:** `README.md:34-36`
+- **Description:** States "Run after upgrading from v0.1.11 or earlier" but schema is now v10.
+- **Suggested fix:** Update to reference current schema version boundary.
 
-#### 3. Stale model name in CHANGELOG v0.1.0
+#### 3. SECURITY.md: Protocol version shows wrong value
 - **Difficulty:** easy
-- **Location:** `CHANGELOG.md:324`
-- **Description:** Historical reference to nomic-embed-text-v1.5 without noting later model change.
-- **Suggested fix:** Add note about model switch to E5-base-v2.
+- **Location:** `SECURITY.md:56`
+- **Description:** States "Protocol version: 2024-11-05" but actual is "2025-11-25".
+- **Suggested fix:** Update to "2025-11-25"
 
-#### 4. Config file documentation missing from README
+#### 4. ROADMAP.md: Schema version listed as v9
+- **Difficulty:** easy
+- **Location:** `ROADMAP.md:227`
+- **Description:** States "currently v9" but current schema is v10.
+- **Suggested fix:** Update to "currently v10"
+
+#### 5. Embedder docstring shows wrong output dimension
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:147`
+- **Description:** Doc example says `// 768` but `embed_query` returns 769-dim embeddings.
+- **Suggested fix:** Change comment to `// 769`
+
+#### 6. CHANGELOG.md: E5-base-v2 adoption version mismatch
+- **Difficulty:** easy
+- **Location:** `CHANGELOG.md:398`
+- **Description:** v0.1.0 note says changed in v0.2.0 but ROADMAP says v0.1.16.
+- **Suggested fix:** Verify which version switched and update consistently.
+
+#### 7. Missing Store public re-export doc comments
 - **Difficulty:** medium
-- **Location:** `README.md`
-- **Description:** README doesn't document config file format, locations, or available options.
-- **Suggested fix:** Add "Configuration" section documenting config files.
+- **Location:** `src/store/mod.rs:27-31`
+- **Description:** Re-exported public types lack doc comments at module level.
+- **Suggested fix:** Add `/// Re-exported from helpers` style comments.
 
-#### 5. Missing doc comment on JsDocInfo struct
+#### 8. ModelInfo default version is stale
 - **Difficulty:** easy
-- **Location:** `src/nl.rs:11-12`
-- **Description:** Public JsDocInfo struct has no doc comment.
-- **Suggested fix:** Add doc comment explaining purpose.
+- **Location:** `src/store/helpers.rs:278-279`
+- **Description:** `ModelInfo::default()` sets `version: "1.5"` referencing old nomic model.
+- **Suggested fix:** Update to match E5-base-v2 versioning.
 
-#### 6. Missing doc comment on Language enum variants
+#### 9. Chunk.file doc comment says "relative to project root" but path can be absolute
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:731-737`
-- **Description:** Language enum variants have no doc comments about supported extensions.
-- **Suggested fix:** Add doc comments to each variant.
+- **Location:** `src/parser.rs:733`
+- **Description:** Doc states "relative to project root" but parser stores absolute paths.
+- **Suggested fix:** Update to "typically absolute; may be displayed relative to project root"
 
-#### 7. Missing doc comment on ParserError variants
+#### 10. ChunkSummary.file doc comment similarly misleading
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:12-20`
-- **Description:** ParserError enum variants lack doc comments.
-- **Suggested fix:** Add brief doc comments.
+- **Location:** `src/store/helpers.rs:69`
+- **Description:** Same issue - says relative but stores absolute.
+- **Suggested fix:** Clarify paths are typically absolute.
 
-#### 8. Missing doc comment on NoteError variants
+#### 11. README.md: HTTP endpoint list incomplete
 - **Difficulty:** easy
-- **Location:** `src/note.rs:11-16`
-- **Description:** NoteError enum variants lack doc comments.
-- **Suggested fix:** Add doc comments.
+- **Location:** `README.md:206-209`
+- **Description:** Lists endpoints without explaining what each does.
+- **Suggested fix:** Add brief descriptions for each endpoint.
 
-#### 9. Missing doc comment on Config struct
-- **Difficulty:** easy
-- **Location:** `src/config.rs:15`
-- **Description:** Config struct lacks example showing TOML format.
-- **Suggested fix:** Add doc example with sample content.
-
-#### 10. Missing doc comment on SearchFilter struct
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:157-158`
-- **Description:** SearchFilter struct has no doc comment.
-- **Suggested fix:** Add doc comment explaining purpose.
-
-#### 11. Missing doc comment on IndexStats struct fields
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:197-210`
-- **Description:** IndexStats struct has no doc comment or field documentation.
-- **Suggested fix:** Add struct and field doc comments.
-
-#### 12. Missing doc comment on UnifiedResult enum
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:139`
-- **Description:** UnifiedResult enum lacks documentation.
-- **Suggested fix:** Add doc comment explaining Code vs Note variants.
-
-#### 13. Incomplete CLI command documentation
+#### 12. HNSW tuning parameters not in user docs
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs`
-- **Description:** Some CLI commands lack full examples showing expected output.
-- **Suggested fix:** Audit CLI commands and ensure each has doc comments.
+- **Location:** `src/hnsw.rs:46-57`
+- **Description:** Excellent inline docs exist but not exposed to end users.
+- **Suggested fix:** Add "Performance Tuning" section to README.
 
-#### 14. Missing HTTP API documentation
-- **Difficulty:** hard
-- **Location:** `README.md` and `src/mcp.rs`
-- **Description:** README doesn't document HTTP endpoints, request/response format, or authentication.
-- **Suggested fix:** Add "HTTP API" section with endpoint documentation.
-
-#### 15. Stale docs/DESIGN_SPEC_27k_tokens.md references
+#### 13. Missing cqs_read tool in README MCP section
 - **Difficulty:** easy
-- **Location:** `docs/DESIGN_SPEC_27k_tokens.md`
-- **Description:** Design spec extensively references nomic-embed-text-v1.5 (outdated).
-- **Suggested fix:** Update or add note that document is historical.
+- **Location:** `README.md:188-195`
+- **Description:** Tool list omits `cqs_read` and `cqs_add_note`.
+- **Suggested fix:** Add missing tools with descriptions.
 
-#### 16. Missing doc comment on CURRENT_SCHEMA_VERSION constant
+#### 14. Missing cqs_audit_mode tool in README
 - **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:11`
-- **Description:** Schema version constant has only brief inline comment.
-- **Suggested fix:** Add full doc comment explaining schema versioning.
+- **Location:** `README.md:188-195`
+- **Description:** `cqs_audit_mode` tool not mentioned.
+- **Suggested fix:** Add to tool list.
 
-#### 17. Outdated GitHub workflow checking wrong model
+#### 15. Config file options missing note_weight
+- **Difficulty:** easy
+- **Location:** `README.md:91-106` and `src/config.rs:11-37`
+- **Description:** Missing `note_weight` option in example and Config struct.
+- **Suggested fix:** Add `note_weight` to both.
+
+#### 16. README GPU timing estimates may be outdated
 - **Difficulty:** medium
-- **Location:** `.github/workflows/dependency-review.yml:55-69`
-- **Description:** CI checks nomic-ai/nomic-embed-text-v1.5 but codebase uses E5-base-v2.
-- **Suggested fix:** Update workflow to check correct model.
+- **Location:** `README.md:175-176` and `ROADMAP.md:284-288`
+- **Description:** Different timing numbers in different docs.
+- **Suggested fix:** Run benchmarks and update all timing references consistently.
+
+#### 17. nl.rs tokenize_identifier XMLParser example demonstrates poor behavior
+- **Difficulty:** easy
+- **Location:** `src/nl.rs:69`
+- **Description:** Example shows consecutive uppercase breaking into single letters.
+- **Suggested fix:** Replace with better example or add clarifying note.
 
 ---
 
 ### API Design
 
-#### 1. Inconsistent Search Function Naming
+#### 1. Inconsistent return types: usize vs u64 for counts
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:264`, `src/store/notes.rs:178`
+- **Description:** `chunk_count()` returns `usize`, `note_count()` returns `u64`. Inconsistent.
+- **Suggested fix:** Standardize on one type.
+
+#### 2. needs_reindex vs notes_need_reindex return type mismatch
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:94`, `src/store/notes.rs:155`
+- **Description:** `needs_reindex` returns `Option<i64>`, `notes_need_reindex` returns `bool`.
+- **Suggested fix:** Make both return same type (mtime approach is more useful).
+
+#### 3. &Path vs PathBuf inconsistency in function signatures
 - **Difficulty:** medium
-- **Location:** `src/search.rs:80-499` and `src/store/mod.rs:235-252`
-- **Description:** Multiple search methods with inconsistent naming: search(), search_filtered(), search_unified(), etc.
-- **Suggested fix:** Consolidate into single search with SearchOptions struct or builder pattern.
+- **Location:** Multiple files
+- **Description:** Mixed use of `&Path`, `PathBuf`, and `impl AsRef<Path>`.
+- **Suggested fix:** Standardize on `impl AsRef<Path>` for public functions.
 
-#### 2. Redundant Result Types (HnswResult vs IndexResult)
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:78-84` and `src/index.rs:9-15`
-- **Description:** HnswResult and IndexResult are identical structs, causing unnecessary duplication.
-- **Suggested fix:** Remove HnswResult, have HnswIndex::search return Vec<IndexResult> directly.
-
-#### 3. serve_http/serve_stdio Return Type Mismatch
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:1119` and `src/mcp.rs:1190`
-- **Description:** Doc comment shows async fn but these are sync. Doc implies sequential use but stdio blocks.
-- **Suggested fix:** Fix doc comment to remove async, document blocking behavior.
-
-#### 4. SearchFilter Has Required Field Without Default Enforcement
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:155-177`
-- **Description:** query_text must be non-empty for enable_rrf but Default allows empty.
-- **Suggested fix:** Add runtime validation or split into two types.
-
-#### 5. Embedding Type Lacks Dimension Validation
+#### 4. Two Language enum definitions
 - **Difficulty:** medium
-- **Location:** `src/embedder.rs:53-110`
-- **Description:** Embedding::new accepts any length, but system expects 768/769-dim. Only debug_assert checks.
-- **Suggested fix:** Add dimension validation, make new() return Result.
+- **Location:** `src/parser.rs:760`, `src/language/mod.rs`
+- **Description:** `Language` enum in parser.rs and `LanguageDef`/`LanguageRegistry` in language module duplicate functionality.
+- **Suggested fix:** Consolidate into single system.
 
-#### 6. Chunk ID Format Is Implementation Detail Exposed as API
+#### 5. Error type inconsistency across modules
 - **Difficulty:** medium
-- **Location:** `src/parser.rs:700-727`
-- **Description:** Chunk.id as String with format parsed manually in multiple places.
-- **Suggested fix:** Make id opaque (newtype ChunkId) with accessor methods.
+- **Location:** Multiple modules
+- **Description:** Library exposes both specific error types (thiserror) AND uses `anyhow` in some public APIs like `index_notes()`.
+- **Suggested fix:** Public library APIs should use specific error types.
 
-#### 7. MCP Tool Names Don't Follow Convention
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:389-527`
-- **Description:** MCP tools use cqs_ prefix which may conflict with MCP naming conventions.
-- **Suggested fix:** Consider unprefixed names since server is already namespaced.
+#### 6. SearchFilter missing builder pattern
+- **Difficulty:** medium
+- **Location:** `src/store/helpers.rs:189-218`
+- **Description:** Multiple fields require verbose struct syntax to construct.
+- **Suggested fix:** Add builder methods like `SearchFilter::new().with_language(...)`.
 
-#### 8. Language::FromStr Error Type Inconsistency
+#### 7. ChunkType::from_str returns anyhow::Error
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:793-808`
-- **Description:** Language::from_str returns anyhow::Error while other errors use thiserror.
-- **Suggested fix:** Define ParseLanguageError for consistency.
+- **Location:** `src/language/mod.rs:97-114`
+- **Description:** Returns `anyhow::Error` while other `FromStr` impls use module-specific errors.
+- **Suggested fix:** Create dedicated error type for parse failures.
 
-#### 9. Config Merge Behavior Is Surprising
+#### 8. Inconsistent naming: search_by_name vs search_fts vs search_filtered
 - **Difficulty:** easy
-- **Location:** `src/config.rs:63-71`
-- **Description:** Config::merge name suggests combining but actually does layered override.
-- **Suggested fix:** Rename to override_with or layer_on_top_of.
+- **Location:** `src/store/mod.rs:271-361`
+- **Description:** Search methods have inconsistent naming and return types.
+- **Suggested fix:** Establish naming convention and document differences.
 
-#### 10. Note Parsing Uses Index-Based IDs
+#### 9. VectorIndex trait method shadows inherent method
 - **Difficulty:** easy
-- **Location:** `src/note.rs:95-112`
-- **Description:** Notes get IDs like note:0, note:1 based on file index. Reordering breaks references.
-- **Suggested fix:** Generate stable IDs based on content hash.
+- **Location:** `src/index.rs:30`, `src/hnsw.rs:360`
+- **Description:** Both trait and inherent `search` methods exist. Confusing.
+- **Suggested fix:** Remove inherent methods or rename them.
 
-#### 11. Inconsistent Use of &Path vs PathBuf in Function Signatures
+#### 10. serve_http parameter ordering awkward
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:59`, `src/hnsw.rs:297`, `src/mcp.rs:1119`
-- **Description:** Some functions take &Path, others PathBuf, forcing unnecessary allocations.
-- **Suggested fix:** Change owned PathBuf parameters to impl AsRef<Path>.
+- **Location:** `src/mcp.rs:1261`
+- **Description:** `bind` and `port` as separate parameters instead of combined address.
+- **Suggested fix:** Accept `impl ToSocketAddrs` or config struct.
 
-#### 12. VectorIndex Trait Uses Embedding Reference
+#### 11. embedding_batches returns non-fused iterator
 - **Difficulty:** easy
-- **Location:** `src/index.rs:30` and `src/hnsw.rs:248`
-- **Description:** VectorIndex::search takes &Embedding but only needs the slice.
-- **Suggested fix:** Change trait to fn search(&self, query: &[f32], k: usize).
+- **Location:** `src/store/chunks.rs:405-415`
+- **Description:** `EmbeddingBatchIterator` doesn't impl `FusedIterator`.
+- **Suggested fix:** Add `impl FusedIterator for EmbeddingBatchIterator`.
+
+#### 12. Exposed internal types in public re-exports
+- **Difficulty:** medium
+- **Location:** `src/store/mod.rs:27-31`
+- **Description:** Internal types like `bytes_to_embedding`, `ChunkRow` exposed via helpers module.
+- **Suggested fix:** Make `helpers` module `pub(crate)`.
+
+#### 13. HnswIndex::build vs build_batched API asymmetry
+- **Difficulty:** easy
+- **Location:** `src/hnsw.rs:195`, `src/hnsw.rs:268`
+- **Description:** Batched version requires iterator to yield Results, coupling error handling.
+- **Suggested fix:** Consider `build_batched_infallible` for simpler cases.
+
+#### 14. Config fields all Option<T> but no way to get defaults
+- **Difficulty:** easy
+- **Location:** `src/config.rs:24-37`
+- **Description:** All `Option` fields but no methods to get resolved values with defaults.
+- **Suggested fix:** Add methods like `Config::limit_or_default(&self) -> usize`.
+
+#### 15. cosine_similarity panics on wrong dimensions
+- **Difficulty:** easy
+- **Location:** `src/search.rs:23-25`
+- **Description:** Contains `assert_eq!` that panics. Poor API for library function.
+- **Suggested fix:** Return `Option<f32>` or `Result<f32, DimensionError>`.
+
+#### 16. Embedding::new() accepts any vector length
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:62-65`
+- **Description:** Accepts any vector without validation. Newtype should validate invariants.
+- **Suggested fix:** Add `try_new()` that validates or make `new()` validate.
 
 ---
 
 ### Error Propagation
 
-#### 1. Silently swallowed errors with `.ok()` in file metadata operations
+#### 1. Glob pattern parsing silently fails
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:728-732,1196-1199`, `src/source/filesystem.rs:109-110`
-- **Description:** Metadata failures silently converted to Option with no logging.
-- **Suggested fix:** Log warning before using .ok().
+- **Location:** `src/search.rs:184`
+- **Description:** Invalid glob patterns silently converted to `None` via `.ok()`. Users don't know filter isn't applied.
+- **Suggested fix:** Return error or log warning when glob compilation fails.
 
-#### 2. Lost error context in get_by_content_hash
+#### 2. Second glob pattern silent failure
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:163-173`
-- **Description:** Uses .ok()? to swallow database errors, making them indistinguishable from "not found".
-- **Suggested fix:** Return Result<Option<Embedding>, StoreError>.
+- **Location:** `src/search.rs:386`
+- **Description:** Same issue in `search_by_candidate_ids`.
+- **Suggested fix:** Unify glob validation logic and surface errors.
 
-#### 3. Silent error swallowing in check_cq_version
+#### 3. Directory iteration errors silently filtered
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:211-232`
-- **Description:** check_cq_version discards result with let _ =.
-- **Suggested fix:** Add if let Err(e) with tracing::debug!.
+- **Location:** `src/embedder.rs:514`
+- **Description:** `.filter_map(|e| e.ok())` loses information about why files couldn't be read.
+- **Suggested fix:** Log at debug level when entries fail.
 
-#### 4. Parse failures silently default to Language::Rust and ChunkType::Function
+#### 4. File mtime retrieval swallows errors
+- **Difficulty:** easy
+- **Location:** `src/lib.rs:126-129`
+- **Description:** Chained `.ok()` calls lose specific failure reason.
+- **Suggested fix:** Log at trace level when mtime retrieval fails.
+
+#### 5. Language/chunk_type parsing errors silently discarded
 - **Difficulty:** medium
-- **Location:** `src/store/helpers.rs:80-81`
-- **Description:** Failed parsing silently defaults, hiding database corruption.
+- **Location:** `src/store/chunks.rs:296, 306`
+- **Description:** Invalid strings filtered with `.parse().ok()`. Silently drops corrupted entries from stats.
 - **Suggested fix:** Log warning when parsing fails.
 
-#### 5. Missing .context() on bare ? propagation in CLI
+#### 6. Schema version parsing silently defaults to 0
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:183`
+- **Description:** Corrupted version string silently becomes version 0.
+- **Suggested fix:** Log warning when schema_version doesn't parse.
+
+#### 7. Multiple bare ? in HNSW load path
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:989,995,1099`
-- **Description:** Several ? operators propagate without adding context.
-- **Suggested fix:** Add .context("Failed to...") for actionable messages.
+- **Location:** `src/hnsw.rs:107, 117, 433, 442, 448, 475`
+- **Description:** File operations use bare `?` without `.context()`. Errors don't indicate which file.
+- **Suggested fix:** Add `.context(format!("reading {}", path.display()))`.
 
-#### 6. FTS delete errors silently ignored
+#### 8. Tensor creation errors lack context
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:53-56`, `src/store/notes.rs:49-52`
-- **Description:** DELETE on FTS tables uses let _ = to ignore failures.
-- **Suggested fix:** Log failures with tracing::warn!.
+- **Location:** `src/embedder.rs:403-405`
+- **Description:** `Tensor::from_array()` calls use bare `?`. No indication which tensor failed.
+- **Suggested fix:** Add `.context("creating input_ids tensor")` etc.
 
-#### 7. embedding_slice returns None without explanation
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:222-228`
-- **Description:** Wrong embedding byte length returns None silently.
-- **Suggested fix:** Add tracing::warn! when byte length doesn't match.
+#### 9. Database operations missing context
+- **Difficulty:** hard
+- **Location:** `src/store/*.rs` (multiple)
+- **Description:** Many SQLx operations use bare `?` without indicating which table/operation failed.
+- **Suggested fix:** Add `.context()` to key database operations.
 
-#### 8. note_stats swallows query failures
-- **Difficulty:** easy
-- **Location:** `src/store/notes.rs:176-194`
-- **Description:** Uses .unwrap_or((0,)) to convert database errors to zero counts.
-- **Suggested fix:** Propagate error or log warning.
-
-#### 9. Inconsistent error handling in parse_duration
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:1285-1297`
-- **Description:** Uses .unwrap_or(0) for parse failures, making "30x" parse as 30.
-- **Suggested fix:** Return error for unparseable numeric portions.
-
-#### 10. CAGRA build failure logged but not surfaced
+#### 10. CAGRA index rebuild errors become empty results
 - **Difficulty:** medium
-- **Location:** `src/mcp.rs:270-279`
-- **Description:** CAGRA failure logged but client has no visibility.
-- **Suggested fix:** Add status field to cqs_stats indicating GPU index state.
+- **Location:** `src/cagra.rs:188-195`
+- **Description:** Search returns empty on error. Callers can't distinguish "no matches" from "index error".
+- **Suggested fix:** Return `Result<Vec<IndexResult>>` instead.
 
-#### 11. get_embeddings_by_hashes silently returns empty on database error
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:197-204`
-- **Description:** Query failures logged but return empty HashMap, causing re-embedding.
-- **Suggested fix:** Return Result to let callers decide.
-
-#### 12. GPU embedding failure silently routes to CPU without metrics
+#### 11. HNSW search dimension mismatch returns empty
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:851-867`
-- **Description:** GPU failures rerouted to CPU with eprintln! but no aggregated count.
-- **Suggested fix:** Track and report total GPU failures in summary.
+- **Location:** `src/hnsw.rs:364-372`
+- **Description:** Dimension mismatch logged but returns empty. Callers don't know if error or no results.
+- **Suggested fix:** Consider returning `Result`.
 
-#### 13. HNSW checksum verification warns but doesn't fail
+#### 12. MCP notes parse/index failures logged but success assumed
 - **Difficulty:** easy
-- **Location:** `src/hnsw.rs:94-100`
-- **Description:** Missing checksum file logs warning and returns Ok, loading untrusted index.
-- **Suggested fix:** Consider returning Err when checksum missing for newer indexes.
+- **Location:** `src/mcp.rs:1053-1066`
+- **Description:** In `tool_add_note`, indexing failures logged but response doesn't indicate it.
+- **Suggested fix:** Include `index_error` field in response.
 
-#### 14. Thread panic converted to generic error message
+#### 13. lib.rs index_notes returns anyhow::Result
+- **Difficulty:** medium
+- **Location:** `src/lib.rs:105`
+- **Description:** Library function returns `anyhow::Result` instead of typed error.
+- **Suggested fix:** Create top-level library error type.
+
+#### 14. File enumeration quietly skips canonicalization failures
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:1014-1022`
-- **Description:** Thread join failures lose panic payload.
-- **Suggested fix:** Preserve panic information in error message.
+- **Location:** `src/cli/mod.rs:374-379`
+- **Description:** Failures logged at debug but file silently skipped.
+- **Suggested fix:** Consider warning level for first few failures.
+
+#### 15. Walker entry errors silently filtered
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:356`
+- **Description:** `walker.filter_map(|e| e.ok())` drops directory walk errors.
+- **Suggested fix:** Log at debug level when walk entries fail.
+
+#### 16. Embedding byte length mismatch inconsistent logging
+- **Difficulty:** easy
+- **Location:** `src/store/helpers.rs:339-344` vs `src/store/helpers.rs:356`
+- **Description:** `embedding_slice()` logs at trace, `bytes_to_embedding()` logs at warn. Inconsistent.
+- **Suggested fix:** Unify logging levels.
+
+#### 17. Poisoned mutex recovery logs at debug, not warn
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:314-316, 335-337`
+- **Description:** Mutex poisoning indicates a panic occurred. Should be more notable.
+- **Suggested fix:** Log at warn level on first occurrence.
+
+#### 18. Index guard poisoning recovery not logged
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:646, 652, 716, 756, 878, 1096`
+- **Description:** Multiple places recover from poisoned locks with no logging.
+- **Suggested fix:** Add debug-level logging.
+
+#### 19. Generic "Failed to open index" missing path
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:234`
+- **Description:** Error context doesn't include the path attempted.
+- **Suggested fix:** Include `index_path` in context message.
+
+#### 20. Store schema mismatch error missing path
+- **Difficulty:** easy
+- **Location:** `src/store/helpers.rs:32-35`
+- **Description:** Error tells user to run `--force` but doesn't say which index.
+- **Suggested fix:** Add index path to error message.
 
 ---
 
@@ -404,697 +488,818 @@ See design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
 ### Observability
 
-#### 1. Tracing subscriber has no log level configuration
-- **Difficulty:** easy
-- **Location:** `src/main.rs:7-9`
-- **Description:** Tracing subscriber uses defaults, no way to configure log levels at runtime. --verbose flag isn't wired to subscriber.
-- **Suggested fix:** Use EnvFilter with RUST_LOG support and wire --verbose flag.
-
-#### 2. Store database operations have no tracing spans
+#### 1. No Request Correlation IDs in MCP Server
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs`, `src/store/chunks.rs`, `src/store/notes.rs`, `src/store/calls.rs`
-- **Description:** Database operations have no timing info. Can't identify bottlenecks when queries are slow.
-- **Suggested fix:** Add info_span! to major database operations.
+- **Location:** `src/mcp.rs`
+- **Description:** MCP server has no request ID correlation. Tool calls can't be traced back to specific requests in concurrent scenarios.
+- **Suggested fix:** Generate request ID per JSON-RPC message, include in tracing span, propagate through tool execution.
 
-#### 3. HTTP request handling lacks request-level tracing
+#### 2. Watch Mode Lacks Tracing Spans
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:90-150`
+- **Description:** `reindex_file` has no tracing span. Events printed to stderr via `eprintln!` rather than structured logging.
+- **Suggested fix:** Wrap in `info_span!("reindex_file")` and replace `eprintln!` with `tracing::info!`.
+
+#### 3. Parser Has No Timing Spans
+- **Difficulty:** easy
+- **Location:** `src/parser.rs`
+- **Description:** Parsing operations have no tracing spans. Can't identify parsing bottlenecks.
+- **Suggested fix:** Add `info_span!("parse_file", path = %path, language = %lang)`.
+
+#### 4. Database Pool Creation is Silent
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:50-80`
+- **Description:** Connection pool creation has no logging. Hard to verify database connectivity.
+- **Suggested fix:** Add `tracing::info!("database connected", path = %db_path)`.
+
+#### 5. GPU Failures Use eprintln Instead of Tracing
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:580-590`
+- **Description:** CAGRA GPU build failure uses `eprintln!` rather than `tracing::warn!`.
+- **Suggested fix:** Replace with `tracing::warn!(error = %e, "GPU index disabled")`.
+
+#### 6. Index Fallback Logged at Debug Level
+- **Difficulty:** easy
+- **Location:** `src/search.rs:180-200`
+- **Description:** Search fallback from HNSW to brute-force (significant perf degradation) only logged at debug.
+- **Suggested fix:** Log at info level with reason.
+
+#### 7. Silent Embedding Dimension Mismatch
 - **Difficulty:** medium
-- **Location:** `src/mcp.rs:1428-1488`
-- **Description:** HTTP requests have no correlation ID, timing, or visibility into processing.
-- **Suggested fix:** Add tracing span per request with method name and timing.
+- **Location:** `src/store/helpers.rs:45-60`
+- **Description:** `embedding_slice` returns `None` on dimension mismatch, logs at trace. Could mask data integrity issues.
+- **Suggested fix:** Log at warn level with actual dimension found.
 
-#### 4. Embedder batch processing lacks per-batch timing
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:353-440`
-- **Description:** Individual batch steps (tokenization, inference, pooling) not instrumented.
-- **Suggested fix:** Add debug spans around processing steps.
+#### 8. No Metrics for Search Performance
+- **Difficulty:** hard
+- **Location:** `src/search.rs`
+- **Description:** No metrics emission. Can't track query latency, cache hit rates, or result counts.
+- **Suggested fix:** Add metrics using `metrics` crate.
 
-#### 5. MCP tool calls don't log the tool name or execution time
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:530-556`
-- **Description:** Tool calls routed without logging which tool or how long it took.
-- **Suggested fix:** Add info! log with tool name and timing.
+#### 9. No Metrics for Embedding Generation
+- **Difficulty:** hard
+- **Location:** `src/embedder.rs`
+- **Description:** Embedding generation has no metrics. Can't track tokens/second or inference latency.
+- **Suggested fix:** Add metrics for embed_duration, tokens_processed, batch_size.
 
-#### 6. Note indexing has no logging
-- **Difficulty:** easy
-- **Location:** `src/store/notes.rs:17-64`
-- **Description:** Note batch insertion is silent, failures hard to diagnose.
-- **Suggested fix:** Add debug logging for note count and errors.
-
-#### 7. Call graph extraction has no progress or timing info
-- **Difficulty:** easy
-- **Location:** `src/store/calls.rs:110-149`
-- **Description:** Call graph processing provides no visibility.
-- **Suggested fix:** Add trace-level logging with file path and call count.
-
-#### 8. Watch mode file change events aren't logged
-- **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:1567-1667`
-- **Description:** Watch command uses print statements instead of tracing.
-- **Suggested fix:** Add info-level tracing events for file changes.
-
-#### 9. Search RRF fusion has no visibility into ranking contributions
+#### 10. HNSW Build Progress Not Logged
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:255-281`
-- **Description:** No way to see how semantic and FTS scores contribute to ranking.
-- **Suggested fix:** Add debug logging showing semantic/FTS/RRF scores.
+- **Location:** `src/hnsw.rs:100-200`
+- **Description:** Building HNSW index can take significant time but only logs start/completion.
+- **Suggested fix:** Add periodic progress logging.
 
-#### 10. Parser query compilation errors aren't detailed
+#### 11. Call Graph Operations at Trace Level Only
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:222-233`
-- **Description:** Tree-sitter query compilation failures have minimal error messages.
-- **Suggested fix:** Add debug logging with failing query pattern snippet.
+- **Location:** `src/store/calls.rs`
+- **Description:** Call graph upserts log at trace only. No way to see activity at normal log levels.
+- **Suggested fix:** Add info-level logging for batch operations.
 
-#### 11. HNSW checksum verification has asymmetric logging
+#### 12. Config Loading Errors Not Structured
 - **Difficulty:** easy
-- **Location:** `src/hnsw.rs:92-126`
-- **Description:** Success only logs at debug, mismatch doesn't log before error.
-- **Suggested fix:** Add info log on success, warn log on mismatch.
+- **Location:** `src/config.rs:80-120`
+- **Description:** Config parse errors logged at debug. Invalid config should be visible without debug logging.
+- **Suggested fix:** Log at warn level with file path and error.
 
-#### 12. Config file loading results are silent on success
+#### 13. index_notes Function Has No Logging
 - **Difficulty:** easy
-- **Location:** `src/config.rs:30-40`
-- **Description:** No visibility into which config files loaded or what values applied.
-- **Suggested fix:** Add debug logging for loaded config files and values.
+- **Location:** `src/lib.rs:15-60`
+- **Description:** `index_notes` parses and indexes notes but has no logging.
+- **Suggested fix:** Add `tracing::info!("indexing notes", path = %path)`.
+
+#### 14. No Span for Database Transactions
+- **Difficulty:** medium
+- **Location:** `src/store/chunks.rs`, `src/store/notes.rs`
+- **Description:** Batch upserts use transactions but don't wrap in tracing spans. Can't measure transaction duration.
+- **Suggested fix:** Add `info_span!("db_transaction")` around transaction blocks.
+
+#### 15. CAGRA Stream Build Has No Progress
+- **Difficulty:** medium
+- **Location:** `src/cagra.rs:150-250`
+- **Description:** CAGRA streaming build only logs completion. No visibility into progress.
+- **Suggested fix:** Log after each batch processed.
+
+#### 16. Schema Migration Silent on Success
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:100-150`
+- **Description:** Schema migrations don't log success. Can't verify active schema version.
+- **Suggested fix:** Log schema version after migrations.
+
+#### 17. Prune Operation Progress Not Visible
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:140-195`
+- **Description:** `prune_missing` returns count but no logging during operation.
+- **Suggested fix:** Log at info level for total deleted.
 
 ---
 
 ### Test Coverage
 
-#### 1. Missing tests for Embedder.embed_documents batch processing
+#### 1. index_notes() function has no tests
+- **Difficulty:** medium
+- **Location:** `src/lib.rs:37`
+- **Description:** Critical path for notes feature has zero test coverage.
+- **Suggested fix:** Add integration test with temp notes.toml.
+
+#### 2. serve_stdio() and serve_http() have no tests
 - **Difficulty:** hard
-- **Location:** `src/embedder.rs:291`
-- **Description:** Core embed_documents function has no integration tests.
-- **Suggested fix:** Add integration tests for document embedding with known inputs.
+- **Location:** `src/lib.rs:70,91`
+- **Description:** MCP server entry points have no integration tests.
+- **Suggested fix:** Add integration tests that spawn servers and send JSON-RPC requests.
 
-#### 2. Missing tests for Embedder.split_into_windows
+#### 3. Store call graph methods have no tests
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:1-119`
+- **Description:** `upsert_calls()`, `get_callers()`, `get_callees()` all untested.
+- **Suggested fix:** Add unit tests for each method.
+
+#### 4. search_notes_by_ids() has no tests
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:235`
+- **Description:** HNSW-accelerated note search is untested.
+- **Suggested fix:** Add test that inserts notes, queries by candidate IDs.
+
+#### 5. note_embeddings() has no tests
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:212`
+- **Description:** Method for HNSW building is untested.
+- **Suggested fix:** Add test verifying `note:` prefix on IDs.
+
+#### 6. note_stats() has no tests
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:188`
+- **Description:** Stats method returning counts has no coverage.
+- **Suggested fix:** Add test with notes of varying sentiment.
+
+#### 7. embedding_batches() iterator has no direct test
 - **Difficulty:** medium
-- **Location:** `src/embedder.rs:248`
-- **Description:** Window splitting function with complex edge cases is untested.
-- **Suggested fix:** Add unit tests for single window, multiple windows, edge cases.
+- **Location:** `src/store/chunks.rs:405`
+- **Description:** Streaming embeddings iterator only indirectly tested.
+- **Suggested fix:** Add explicit test for batch sizes, termination.
 
-#### 3. Missing tests for Embedder.token_count
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:237`
-- **Description:** token_count function used for windowing decisions is untested.
-- **Suggested fix:** Add unit test for known strings.
-
-#### 4. No tests for cosine_similarity edge cases
-- **Difficulty:** easy
-- **Location:** `src/search.rs:17`
-- **Description:** cosine_similarity has no unit tests for edge cases.
-- **Suggested fix:** Add property tests for identical, orthogonal, self-similarity.
-
-#### 5. Missing tests for name_match_score boundary cases
-- **Difficulty:** easy
-- **Location:** `src/search.rs:29`
-- **Description:** name_match_score lacks tests for empty strings, unicode, long names.
-- **Suggested fix:** Add proptest/fuzz tests for arbitrary inputs.
-
-#### 6. Untested Store.delete_by_origin function
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:110`
-- **Description:** delete_by_origin has no direct tests.
-- **Suggested fix:** Add test that inserts, deletes, verifies gone.
-
-#### 7. Missing tests for Store.needs_reindex
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:87`
-- **Description:** needs_reindex mtime checking is untested.
-- **Suggested fix:** Add integration test with file modification.
-
-#### 8. Missing tests for note CRUD operations
+#### 8. prune_missing() edge cases untested
 - **Difficulty:** medium
-- **Location:** `src/store/notes.rs`
-- **Description:** Notes module functions have no direct unit tests.
-- **Suggested fix:** Add dedicated tests for note operations.
+- **Location:** `src/store/chunks.rs:143`
+- **Description:** No tests for empty set, all missing, batch boundaries.
+- **Suggested fix:** Add edge case tests.
 
-#### 9. Missing tests for call graph operations
-- **Difficulty:** medium
-- **Location:** `src/store/calls.rs`
-- **Description:** Call graph functions have zero test coverage.
-- **Suggested fix:** Add tests for callers/callees queries.
-
-#### 10. Missing tests for parse_duration in MCP
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:1276`
-- **Description:** Duration parsing function has no tests.
-- **Suggested fix:** Add unit tests for valid and invalid inputs.
-
-#### 11. Missing tests for AuditMode state management
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:151`
-- **Description:** AuditMode time-dependent methods are untested.
-- **Suggested fix:** Add unit tests for basic logic paths.
-
-#### 12. No integration tests for CLI commands
+#### 9. CLI commands have no integration tests
 - **Difficulty:** hard
 - **Location:** `src/cli/mod.rs`
-- **Description:** CLI commands are completely untested end-to-end.
-- **Suggested fix:** Add CLI integration tests using assert_cmd.
+- **Description:** No end-to-end tests for `cqs index`, `cqs search`, etc.
+- **Suggested fix:** Add integration tests using `assert_cmd` crate.
 
-#### 13. Missing tests for FileSystemSource with gitignore
+#### 10. search_filtered() has no unit tests
 - **Difficulty:** medium
-- **Location:** `src/source/filesystem.rs:39`
-- **Description:** gitignore respecting behavior is not verified.
-- **Suggested fix:** Add test with .gitignore file.
+- **Location:** `src/search.rs:89`
+- **Description:** Language and path filtering only tested indirectly.
+- **Suggested fix:** Add unit tests with mock data.
 
-#### 14. Missing tests for Source trait error paths
+#### 11. search_by_candidate_ids() has no unit tests
+- **Difficulty:** medium
+- **Location:** `src/search.rs:144`
+- **Description:** HNSW-accelerated search path is untested.
+- **Suggested fix:** Add unit tests for scoring, threshold, limit.
+
+#### 12. search_unified_with_index() has no unit tests
+- **Difficulty:** hard
+- **Location:** `src/search.rs:186`
+- **Description:** Main unified search function is untested.
+- **Suggested fix:** Add comprehensive tests for chunks, notes, note_weight.
+
+#### 13. Embedder methods require model download
+- **Difficulty:** hard
+- **Location:** `src/embedder.rs:198-250`
+- **Description:** Tests marked `#[ignore]` because they need model. No CI coverage.
+- **Suggested fix:** CI job that downloads model, or mock embedder.
+
+#### 14. HNSW search error paths untested
 - **Difficulty:** easy
-- **Location:** `src/source/filesystem.rs`
-- **Description:** Error paths (non-UTF8, permissions) are untested.
-- **Suggested fix:** Add tests for error conditions.
+- **Location:** `src/hnsw.rs:103`
+- **Description:** Empty index, invalid dimension, k=0 not tested.
+- **Suggested fix:** Add error path tests.
 
-#### 15. Missing edge case tests for parser with malformed files
+#### 15. Tests use weak assertions
+- **Difficulty:** medium
+- **Location:** `tests/store_test.rs`
+- **Description:** Several tests only assert `result.is_ok()` without verifying values.
+- **Suggested fix:** Strengthen assertions to verify actual values.
+
+#### 16. Unicode handling untested in FTS
+- **Difficulty:** medium
+- **Location:** `src/nl.rs`, `src/store/mod.rs`
+- **Description:** CJK, emoji, RTL text not tested in FTS.
+- **Suggested fix:** Add unicode tests.
+
+#### 17. Empty input edge cases missing
+- **Difficulty:** easy
+- **Location:** Multiple
+- **Description:** Many functions lack empty input tests.
+- **Suggested fix:** Add tests for empty query, empty file, empty notes.
+
+#### 18. Large data handling untested
+- **Difficulty:** hard
+- **Location:** `src/hnsw.rs`, `src/store/`
+- **Description:** No tests for 100k+ chunks, performance untested.
+- **Suggested fix:** Add benchmark tests with criterion.
+
+#### 19. LoadedHnsw concurrent access untested
+- **Difficulty:** hard
+- **Location:** `src/hnsw.rs:210`
+- **Description:** Uses `unsafe` with Send/Sync claims. No concurrent tests.
+- **Suggested fix:** Add multi-threaded stress tests.
+
+#### 20. Parser call extraction coverage gaps
 - **Difficulty:** medium
 - **Location:** `src/parser.rs`
-- **Description:** No tests for empty files, syntax errors, binary files.
-- **Suggested fix:** Add tests with malformed inputs.
-
-#### 16. Untested Parser.parse_file_calls function
-- **Difficulty:** easy
-- **Location:** `src/parser.rs:589`
-- **Description:** Full call graph extraction function has no tests.
-- **Suggested fix:** Add test with fixture file having large functions.
-
-#### 17. Missing tests for ChunkType.from_str
-- **Difficulty:** easy
-- **Location:** `src/language/mod.rs`
-- **Description:** ChunkType parsing should have explicit tests.
-- **Suggested fix:** Add unit tests for all variants and invalid input.
-
-#### 18. Incomplete proptest coverage for FTS normalization
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:430`
-- **Description:** Unicode fuzzing doesn't cover emoji, combining characters.
-- **Suggested fix:** Expand proptest generators for broader unicode.
+- **Description:** Missing tests for method chaining, async/await, macros.
+- **Suggested fix:** Add parser tests for complex call patterns.
 
 ---
 
 ### Panic Paths
 
-#### 1. Array slice bounds unchecked in display.rs
-- **Difficulty:** easy
-- **Location:** `src/cli/display.rs:25`
-- **Description:** Slicing without verifying indices <= lines.len(). File changes can cause panic.
-- **Suggested fix:** Add bounds check with .min(lines.len()).
-
-#### 2. Ctrl+C handler uses .expect()
-- **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:70`
-- **Description:** Signal handler registration can fail and would panic.
-- **Suggested fix:** Use unwrap_or_else with warning log.
-
-#### 3. Progress bar template .expect()
-- **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:979`
-- **Description:** Uses .expect() on template which violates guidelines.
-- **Suggested fix:** Handle error or use static-validated template.
-
-#### 4. Static regex .expect() in nl.rs
-- **Difficulty:** easy
-- **Location:** `src/nl.rs:21-23`
-- **Description:** LazyLock regexes use .expect() on compile-time constants.
-- **Suggested fix:** Use lazy_regex crate or document the exception.
-
-#### 5. Embedder embed_batch .expect() on single-item result
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:320`
-- **Description:** Assumes single-item batch always returns one result.
-- **Suggested fix:** Use .ok_or_else() and propagate error.
-
-#### 6. NonZeroUsize .expect() on literal values
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:182,205`
-- **Description:** Uses .expect() on mathematically correct literals.
-- **Suggested fix:** Use const initialization or document invariant.
-
-#### 7. OnceCell embedder .expect() after initialization
+#### 1. Assert macros in cosine_similarity
 - **Difficulty:** medium
-- **Location:** `src/mcp.rs:322`
-- **Description:** Potential race between set() and get() in concurrent scenario.
-- **Suggested fix:** Use get_or_init() pattern consistently.
+- **Location:** `src/search.rs:24-25`
+- **Description:** `assert_eq!` panics if embedding dimensions don't match. Corrupted data causes crash.
+- **Suggested fix:** Return `Result<f32, Error>` instead of panicking.
 
-#### 8. SQLx row.get() panics on column mismatch
+#### 2. CAGRA array indexing without bounds check
 - **Difficulty:** medium
-- **Location:** `src/search.rs:149-151`, `src/store/calls.rs:59-69`
-- **Description:** row.get(N) panics if column N doesn't exist.
-- **Suggested fix:** Use row.try_get() and handle errors.
+- **Location:** `src/cagra.rs:314,318,321`
+- **Description:** `neighbor_row[i]` could exceed bounds if cuVS returns fewer results than k.
+- **Suggested fix:** Use `.get(i)` or check bounds before accessing.
+
+#### 3. Unwrap on enabled field in MCP
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:1120`
+- **Description:** `args.enabled.unwrap()` after None check. Fragile if control flow changes.
+- **Suggested fix:** Use `if let Some(enabled) = args.enabled` pattern.
+
+#### 4. Embedder initialization expect
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:332`
+- **Description:** `self.embedder.get().expect("embedder just initialized")` fragile if code changes.
+- **Suggested fix:** Use `unwrap_or_else` with better error context.
+
+#### 5. HNSW id_map index access
+- **Difficulty:** medium
+- **Location:** `src/hnsw.rs:392`
+- **Description:** Array access after bounds check. Safe but fragile pattern.
+- **Suggested fix:** Consider using `.get(idx)` for defense-in-depth.
+
+#### 6. Ctrl+C handler expect
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:72`
+- **Description:** Panics if signal handler setup fails.
+- **Suggested fix:** Consider graceful degradation with warning.
+
+#### 7. Progress bar template expect
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:1028`
+- **Description:** Panics if template string invalid. Template is hardcoded so should be safe.
+- **Suggested fix:** Add unit test to validate template.
 
 ---
 
 ### Algorithm Correctness
 
-#### 1. Potential Underflow in Call Extraction Line Number
+#### 1. RRF formula documentation unclear
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:532`
-- **Description:** Line calculation can underflow if line_offset > row + 1.
-- **Suggested fix:** Use saturating_sub instead of direct subtraction.
+- **Location:** `src/store/mod.rs:376`
+- **Description:** RRF uses `+ 1.0` to convert 0-indexed to 1-indexed ranks. Comment doesn't explain.
+- **Suggested fix:** Document why `+ 1.0` is needed.
 
-#### 2. RRF Property Test Incorrect Max
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:265`
-- **Description:** Comment says max=1.0 but actual max is ~0.016 for single list.
-- **Suggested fix:** Update comment and property test to reflect actual max.
-
-#### 3. Unified Search Slot Allocation Confusing
+#### 2. Line offset subtraction can produce line 0
 - **Difficulty:** medium
-- **Location:** `src/search.rs:432-441`
-- **Description:** Code/note slot allocation doesn't match apparent intent of 60/40 split.
-- **Suggested fix:** Clarify intended behavior and cap code results appropriately.
+- **Location:** `src/parser.rs:547-548`
+- **Description:** `saturating_sub` can return 0, which is invalid for 1-indexed line numbers.
+- **Suggested fix:** Clamp result to minimum 1: `.max(1)`.
 
-#### 4. Context Line Edge Case for Line 0
-- **Difficulty:** easy
-- **Location:** `src/cli/display.rs:20-21`
-- **Description:** Doesn't validate line_start >= 1 and line_end >= line_start.
-- **Suggested fix:** Add validation at function start.
+#### 3. Unified search note slot calculation asymmetry
+- **Difficulty:** medium
+- **Location:** `src/search.rs:531-534`
+- **Description:** Code/note allocation doesn't match 60/40 intent when code results are few.
+- **Suggested fix:** Fix `take(limit)` to respect reserved allocation.
 
-#### 5. TypeScript Return Type Nested Parens
+#### 4. CAGRA itopk_size uses arbitrary constant
 - **Difficulty:** easy
-- **Location:** `src/nl.rs:237`
-- **Description:** rfind("): ") matches inside nested function types.
-- **Suggested fix:** Use proper parsing or document limitation.
+- **Location:** `src/cagra.rs:200`
+- **Description:** `(k * 2).max(128)` undocumented. May not provide sufficient candidates for large k.
+- **Suggested fix:** Document trade-off or use larger multiplier.
 
-#### 6. Go Return Type Extraction Broken
+#### 5. Context line boundary check off-by-one
 - **Difficulty:** easy
-- **Location:** `src/nl.rs:226`
-- **Description:** Uses -> for Go but Go doesn't use arrows for return types.
-- **Suggested fix:** Add Go-specific logic for return type extraction.
+- **Location:** `src/cli/display.rs:30-31`
+- **Description:** End index clamping logic is convoluted and fragile.
+- **Suggested fix:** Simplify with consistent bounds checking.
+
+#### 6. Window splitting pathological case
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:268`
+- **Description:** `overlap >= max_tokens` creates exponential window explosion.
+- **Suggested fix:** Validate `overlap < max_tokens/2` with error.
+
+#### 7. Name matching excludes equal-length substrings
+- **Difficulty:** easy
+- **Location:** `src/search.rs:100-102`
+- **Description:** Substring matching requires length inequality. Intentional but unclear.
+- **Suggested fix:** Add comment explaining the design decision.
+
+#### 8. Cosine similarity panics for wrong dimensions
+- **Difficulty:** medium
+- **Location:** `src/search.rs:23-25`
+- **Description:** `assert_eq!` panics in hot path. Could crash on corrupted data.
+- **Suggested fix:** Return Result or sentinel value with warning.
+
+#### 9. Parser chunk size check boundary
+- **Difficulty:** easy
+- **Location:** `src/parser.rs:300`
+- **Description:** Check `> 100` but message says "100 max". Minor inconsistency.
+- **Suggested fix:** Align message with code behavior.
+
+#### 10. Go return type extraction fails for complex signatures
+- **Difficulty:** medium
+- **Location:** `src/nl.rs:296-347`
+- **Description:** Inner function types confuse parenthesis depth counting.
+- **Suggested fix:** Document limitation or use more robust parsing.
+
+#### 11. Embedding batch iterator offset bug
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:459`
+- **Description:** Offset increments by filtered batch.len(), not rows fetched. Could loop on corruption.
+- **Suggested fix:** Track actual rows fetched for offset.
+
+#### 12. clamp_line_number allows 0
+- **Difficulty:** easy
+- **Location:** `src/store/helpers.rs:317-319`
+- **Description:** Clamps to 0 but line numbers are 1-indexed throughout codebase.
+- **Suggested fix:** Clamp to minimum 1.
+
+#### 13. FTS normalization truncates mid-word
+- **Difficulty:** easy
+- **Location:** `src/nl.rs:130-133`
+- **Description:** Truncation at byte limit can split words, producing incomplete tokens.
+- **Suggested fix:** Truncate at last space boundary.
 
 ---
 
 ### Extensibility
 
-#### 1. Duplicate Language Enum in parser.rs vs language/mod.rs
-- **Difficulty:** medium
-- **Location:** `src/parser.rs:731-737` and `src/language/mod.rs:32-49`
-- **Description:** Adding a language requires updates in 7+ places due to dual systems.
-- **Suggested fix:** Use REGISTRY as single source of truth.
-
-#### 2. Hardcoded Language List in MCP Tool Schema
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:412`
-- **Description:** Language filter enum is hardcoded, requires manual update.
-- **Suggested fix:** Generate schema dynamically from REGISTRY.all().
-
-#### 3. Hardcoded Chunk Size and Token Limits
-- **Difficulty:** easy
-- **Location:** `src/parser.rs:286-287`, `src/cli/mod.rs:30-32`
-- **Description:** Multiple hardcoded limits scattered across files.
-- **Suggested fix:** Move to Config struct with sensible defaults.
-
-#### 4. HNSW Index Parameters Not Configurable
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:47-55`
-- **Description:** HNSW parameters (M, EF) are hardcoded.
-- **Suggested fix:** Add to Config or CLI flags.
-
-#### 5. ChunkType Enum Requires Manual Updates
-- **Difficulty:** medium
-- **Location:** `src/language/mod.rs:62-80`, `src/parser.rs:320-328`
-- **Description:** Adding chunk type requires updates in 5+ places.
-- **Suggested fix:** Consolidate type mapping with language definitions.
-
-#### 6. Project Root Markers Hardcoded
-- **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:300-306`
-- **Description:** Project detection markers hardcoded.
-- **Suggested fix:** Make configurable in Config.
-
-#### 7. SignatureStyle Enum is Closed
-- **Difficulty:** easy
-- **Location:** `src/language/mod.rs:52-59`
-- **Description:** Only two variants, new patterns need enum changes.
-- **Suggested fix:** Make signature extraction a callback function.
-
-#### 8. Embedding Model Hardcoded
-- **Difficulty:** medium
-- **Location:** `src/embedder.rs:14-16`, `src/store/helpers.rs:12`
-- **Description:** Model hardcoded to e5-base-v2 in multiple places.
-- **Suggested fix:** Document how to add models, make selection configurable.
-
-#### 9. RRF K Constant Hardcoded
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:260`
-- **Description:** RRF K=60 constant is hardcoded.
-- **Suggested fix:** Add to SearchFilter or Config.
-
-#### 10. Callee Skip List Hardcoded
-- **Difficulty:** easy
-- **Location:** `src/parser.rs:553-558`
-- **Description:** Names to filter from call graph are hardcoded.
-- **Suggested fix:** Move to language definitions or make configurable.
-
-#### 11. MCP Tool Registration Not Plugin-Based
+#### 1. Hardcoded Embedding Model
 - **Difficulty:** hard
-- **Location:** `src/mcp.rs:388-527`
-- **Description:** Tools defined inline, no extension points.
-- **Suggested fix:** Consider trait-based tool registration system.
+- **Location:** `src/embedder.rs:14-16`
+- **Description:** Model paths hardcoded. Changing model requires code changes in multiple places.
+- **Suggested fix:** Make model configurable via config file.
 
-#### 12. Sentiment Thresholds Hardcoded
-- **Difficulty:** easy
-- **Location:** `src/note.rs:59-65,75-82`
-- **Description:** Warning/pattern thresholds hardcoded in multiple places.
-- **Suggested fix:** Define as constants at module level.
-
-#### 13. No Extension Points for Custom Indexing Hooks
-- **Difficulty:** hard
-- **Location:** `src/cli/mod.rs:646-1028`
-- **Description:** Indexing pipeline is monolithic, no hooks for custom processing.
-- **Suggested fix:** Add trait-based indexing hooks.
-
-#### 14. VectorIndex Trait Minimal Interface
+#### 2. Hardcoded Embedding Dimensions
 - **Difficulty:** medium
-- **Location:** `src/index.rs:21-39`
-- **Description:** Trait is minimal, hard to add capabilities without expanding.
-- **Suggested fix:** Add optional methods or capability queries.
+- **Location:** `src/embedder.rs`, `src/hnsw.rs`, `src/store/helpers.rs`
+- **Description:** MODEL_DIM and EMBEDDING_DIM duplicated across modules.
+- **Suggested fix:** Single source of truth, export from one module.
+
+#### 3. Hardcoded HNSW Parameters
+- **Difficulty:** medium
+- **Location:** `src/hnsw.rs:46-66`
+- **Description:** Tuning parameters require recompilation to change.
+- **Suggested fix:** Add HNSW config section to `.cqs.toml`.
+
+#### 4. Closed Language Enum
+- **Difficulty:** medium
+- **Location:** `src/parser.rs:759-773`
+- **Description:** Adding language requires code changes in 5+ places.
+- **Suggested fix:** Document process clearly or consider plugin system.
+
+#### 5. Duplicate Language Enum
+- **Difficulty:** easy
+- **Location:** `src/parser.rs` and `src/language/mod.rs`
+- **Description:** Two separate language handling systems.
+- **Suggested fix:** Consolidate to single language registry.
+
+#### 6. Closed ChunkType Enum
+- **Difficulty:** easy
+- **Location:** `src/language/mod.rs:62-80`
+- **Description:** Adding code element type requires code changes.
+- **Suggested fix:** Consider `ChunkType::Other(String)` variant.
+
+#### 7. Hardcoded Query Patterns
+- **Difficulty:** medium
+- **Location:** `src/parser.rs:33-138`
+- **Description:** Tree-sitter queries hardcoded. Customizing requires source changes.
+- **Suggested fix:** Load from config/files, fall back to built-in.
+
+#### 8. Hardcoded Chunk Size Limits
+- **Difficulty:** easy
+- **Location:** `src/parser.rs:299-301`
+- **Description:** 100 lines / 100KB limits not configurable.
+- **Suggested fix:** Add to config file.
+
+#### 9. Hardcoded File Size Limit
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:32`
+- **Description:** 1MB limit not configurable.
+- **Suggested fix:** Add `max_file_size` to config.
+
+#### 10. Hardcoded Token Window Parameters
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:33-34`
+- **Description:** MAX_TOKENS_PER_WINDOW and WINDOW_OVERLAP not configurable.
+- **Suggested fix:** Add to config file.
+
+#### 11. Hardcoded SQLite Pragmas
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:69-96`
+- **Description:** Database tuning pragmas not configurable.
+- **Suggested fix:** Add `sqlite` section to config.
+
+#### 12. Hardcoded RRF Constant
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:371`
+- **Description:** K=60 affects result blending, not configurable.
+- **Suggested fix:** Add `rrf_k` to config.
+
+#### 13. Hardcoded Note Limits
+- **Difficulty:** easy
+- **Location:** `src/note.rs:21`
+- **Description:** MAX_NOTES = 10,000 not configurable.
+- **Suggested fix:** Add to config.
+
+#### 14. Hardcoded Sentiment Thresholds
+- **Difficulty:** easy
+- **Location:** `src/note.rs:16-17`
+- **Description:** Warning/pattern thresholds not configurable.
+- **Suggested fix:** Add to config.
+
+#### 15. Hardcoded Query Cache Size
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:181-183`
+- **Description:** LRU cache size = 100 not configurable.
+- **Suggested fix:** Add to config.
+
+#### 16. Hardcoded Batch Sizes
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:176-179`, `src/cli/mod.rs:671-673`
+- **Description:** CPU/GPU batch sizes not configurable.
+- **Suggested fix:** Add to config.
+
+#### 17. Hardcoded Project Root Markers
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:315-322`
+- **Description:** Users cannot add custom project root markers.
+- **Suggested fix:** Allow custom markers in config.
+
+#### 18. Config File Path Hardcoded
+- **Difficulty:** easy
+- **Location:** `src/config.rs:43-47`
+- **Description:** Cannot specify alternate config location.
+- **Suggested fix:** Support `CQS_CONFIG` environment variable.
 
 ---
+
 
 ## Batch 3: Data & Platform Correctness
 
 ### Data Integrity
 
-#### 1. HNSW and SQLite Index Out-of-Sync Risk
+#### 1. Non-atomic HNSW file writes during save
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:1118-1133`
-- **Description:** HNSW rebuilt only at end of indexing. If save fails, indexes become inconsistent.
-- **Suggested fix:** Add version/epoch counter in SQLite validated against HNSW checksum.
+- **Location:** `src/hnsw.rs:409-448`
+- **Description:** Multiple files written sequentially. Crash mid-save leaves partial files. Checksum written last, so crash before completion means corrupted index loads.
+- **Suggested fix:** Write to temp files first, atomically rename all at end.
 
-#### 2. Non-Atomic File Writes in HNSW Save
+#### 2. prune_missing operations not transactional
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:162-194`
+- **Description:** Deletes from chunks_fts and chunks separately. Crash between can leave orphaned FTS entries.
+- **Suggested fix:** Wrap each batch in a transaction.
+
+#### 3. upsert_calls not transactional
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:17-40`
+- **Description:** DELETE followed by INSERT without transaction. Crash between loses all call data.
+- **Suggested fix:** Wrap in transaction.
+
+#### 4. upsert_function_calls not transactional
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:114-161`
+- **Description:** Same issue - DELETE then INSERT without transaction.
+- **Suggested fix:** Wrap in transaction.
+
+#### 5. Schema init not transactional
 - **Difficulty:** medium
-- **Location:** `src/hnsw.rs:297-342`
-- **Description:** Sequential writes without atomicity. Interruption leaves partial files.
-- **Suggested fix:** Write to temp files first, then atomically rename.
+- **Location:** `src/store/mod.rs:117-167`
+- **Description:** Multiple SQL statements without transaction. Partial failure leaves undefined state.
+- **Suggested fix:** Wrap all schema creation in single transaction.
 
-#### 3. Non-Atomic Note File Append in MCP
+#### 6. No embedding size validation on database insert
 - **Difficulty:** easy
-- **Location:** `src/mcp.rs:952-961`
-- **Description:** Concurrent appends can interleave writes, corrupting TOML.
-- **Suggested fix:** Use file locking around append operation.
+- **Location:** `src/store/helpers.rs:324-329`, `src/store/chunks.rs:28-52`
+- **Description:** `embedding_to_bytes()` converts any size. Invalid embeddings could be stored.
+- **Suggested fix:** Validate 769 dimensions before storing.
 
-#### 4. Delete + Insert Without Transaction
-- **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:110-128`, `src/store/notes.rs:121-138`
-- **Description:** Sequential DELETEs without transaction can leave inconsistent state.
-- **Suggested fix:** Wrap both DELETE statements in single transaction.
-
-#### 5. No Embedding Dimension Validation on Load from SQLite
+#### 7. Corrupted embeddings silently filtered on load
 - **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:231-245`
-- **Description:** Dimension mismatch only logs warning, produces incorrect embeddings.
-- **Suggested fix:** Make dimension mismatches a hard error.
+- **Location:** `src/store/chunks.rs:382-392`
+- **Description:** Invalid embeddings filtered with only warning log. HNSW index missing entries silently.
+- **Suggested fix:** Return count of skipped entries or make it an error.
 
-#### 6. HNSW ID Map vs Graph Size Mismatch Not Validated
+#### 8. ID map / HNSW count mismatch only checked on load
 - **Difficulty:** easy
-- **Location:** `src/hnsw.rs:348-400`
-- **Description:** No validation that id_map.len() matches HNSW graph size.
-- **Suggested fix:** Compare and fail fast if they don't match.
+- **Location:** `src/hnsw.rs:503-515`
+- **Description:** Validated on load but not save. Corrupted data could be persisted.
+- **Suggested fix:** Add assertion in save() that counts match.
 
-#### 7. SQLite PRAGMA synchronous = NORMAL May Lose Data on Crash
+#### 9. No foreign key enforcement on SQLite
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:68-96`
+- **Description:** SQLite foreign keys disabled by default. Cascading deletes don't work.
+- **Suggested fix:** Add `PRAGMA foreign_keys = ON` to connection setup.
+
+#### 10. notes.toml ID collision with hash truncation
+- **Difficulty:** easy
+- **Location:** `src/note.rs:119-123`
+- **Description:** Note IDs from 8 hex chars (32 bits). With 10k notes, ~1% collision probability.
+- **Suggested fix:** Use 16 hex chars or detect collisions.
+
+#### 11. No schema migration support
 - **Difficulty:** hard
-- **Location:** `src/store/mod.rs:75`
-- **Description:** Last few transactions may be lost on power failure.
-- **Suggested fix:** Document tradeoff, add config option for FULL mode.
+- **Location:** `src/store/mod.rs:169-193`
+- **Description:** Schema mismatch requires full rebuild. No automated migration path.
+- **Suggested fix:** Implement incremental migrations for compatible changes.
 
-#### 8. No Schema Version Migration Path
-- **Difficulty:** hard
-- **Location:** `src/store/mod.rs:159-183`
-- **Description:** Schema version change requires full --force rebuild, losing all data.
-- **Suggested fix:** Implement incremental schema migrations.
-
-#### 9. Model Dimensions Not Validated at Runtime
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:138-143`
-- **Description:** check_model_version validates name but not dimensions.
-- **Suggested fix:** Add dimension validation comparing with EMBEDDING_DIM.
-
-#### 10. FTS5 Table Can Become Orphaned from Main Table
+#### 12. CAGRA build has no checkpoint recovery
 - **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:53-67`
-- **Description:** FTS delete errors swallowed, can leave stale entries.
-- **Suggested fix:** Propagate FTS delete error or log prominently.
+- **Location:** `src/cagra.rs:369-431`
+- **Description:** Crash during build loses all work. Rebuilt from scratch each time.
+- **Suggested fix:** Consider checkpointing for very large indexes.
+
+#### 13. Checksum provides corruption detection, not tamper-proofing
+- **Difficulty:** easy
+- **Location:** `src/hnsw.rs:97-131`
+- **Description:** Attacker with write access can modify checksum to match corrupted data.
+- **Suggested fix:** Document limitation. Security requires separate trusted storage.
+
+#### 14. Missing WAL checkpoint on clean shutdown
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:55-114`
+- **Description:** No explicit checkpoint on shutdown. WAL may be large on restart.
+- **Suggested fix:** Add `PRAGMA wal_checkpoint(TRUNCATE)` on graceful exit.
+
+#### 15. FTS and main table can become out of sync
+- **Difficulty:** medium
+- **Location:** `src/store/chunks.rs:54-71`
+- **Description:** FTS delete errors ignored but insert errors abort. Asymmetric error handling.
+- **Suggested fix:** Use SQLite triggers or consistent error handling.
 
 ---
 
 ### Edge Cases
 
-#### 1. Unicode String Slicing Panic in MCP add_note Preview
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:991`
-- **Description:** Byte slicing `&text[..100]` panics on multi-byte UTF-8.
-- **Suggested fix:** Use .chars().take(100).collect::<String>().
-
-#### 2. Debug-Only Assertion for Embedding Dimension Mismatch
+#### 1. Signature extraction slices without checking byte boundaries
 - **Difficulty:** medium
-- **Location:** `src/search.rs:18-20`
-- **Description:** debug_assert for dimensions means release builds silently truncate.
-- **Suggested fix:** Use proper assert or return Result.
+- **Location:** `src/nl.rs:241-247`
+- **Description:** `find('(')` returns byte position. `start + 1` could land mid-character for non-ASCII.
+- **Suggested fix:** Validate char boundary before slicing.
 
-#### 3. Signature Extraction Byte Slicing
+#### 2. Return type extraction similarly vulnerable
 - **Difficulty:** medium
-- **Location:** `src/parser.rs:400`
-- **Description:** Slicing assumes char boundary from ASCII find.
-- **Suggested fix:** Add safety check that position is valid char boundary.
+- **Location:** `src/nl.rs:283-288, 353-358`
+- **Description:** Same pattern - byte index from find() used for slicing.
+- **Suggested fix:** Use safer string slicing that accounts for UTF-8.
 
-#### 4. Empty Query Returns Empty Without Feedback
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:237-238`
-- **Description:** Queries normalizing to empty string give zero results silently.
-- **Suggested fix:** Surface warning when query normalizes to empty.
-
-#### 5. No Explicit Check for Maximum Query Length
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs`
-- **Description:** No maximum query length could cause tokenizer issues.
-- **Suggested fix:** Add explicit maximum query length with clear error.
-
-#### 6. HNSW Load Trusts File Without Bounds Checking
+#### 3. Large file content loaded entirely into memory
 - **Difficulty:** medium
-- **Location:** `src/hnsw.rs:103`
-- **Description:** Loaded neighbor indices not validated against id_map bounds.
-- **Suggested fix:** Validate all neighbor indices within range.
+- **Location:** `src/parser.rs:255-262`
+- **Description:** Files up to 1MB loaded entirely. Memory could spike for large files.
+- **Suggested fix:** Document memory requirement or consider streaming.
 
-#### 7. Content Hash Slicing Assumes Hex Format
-- **Difficulty:** easy
-- **Location:** `src/parser.rs:372`, `src/cli/mod.rs:696`
-- **Description:** content_hash[..8] assumes BLAKE3 always produces 8+ chars.
-- **Suggested fix:** Use .get(..8).unwrap_or(&content_hash).
-
-#### 8. No Limit on Number of Notes in Memory During Search
-- **Difficulty:** medium
-- **Location:** `src/store/notes.rs:74-77`
-- **Description:** search_notes loads ALL notes into memory.
-- **Suggested fix:** Add pagination or configurable limit.
-
-#### 9. Parser Capture Index Cast Without Bounds Check
-- **Difficulty:** easy
-- **Location:** `src/parser.rs:631`
-- **Description:** Direct indexing with c.index as usize could panic.
-- **Suggested fix:** Use .get() with fallback.
-
-#### 10. CAGRA Index Neighbor Index Cast
-- **Difficulty:** medium
-- **Location:** `src/cagra.rs:314-315`
-- **Description:** Cast from potentially negative i32 values.
-- **Suggested fix:** Use try_into with proper filtering.
-
-#### 11. FTS Query Injection Risk with Special Characters
-- **Difficulty:** medium
-- **Location:** `src/store/mod.rs:294-323`
-- **Description:** FTS5 operators not explicitly escaped.
-- **Suggested fix:** Consider explicit escaping of FTS5 operators.
-
-#### 12. No Graceful Handling of Deep Directory Trees
+#### 4. Unbounded recursion in extract_doc_comment
 - **Difficulty:** hard
-- **Location:** `src/source/filesystem.rs`
-- **Description:** No depth limit could cause stack overflow or memory issues.
-- **Suggested fix:** Add configurable maximum directory depth.
+- **Location:** `src/parser.rs:427-449`
+- **Description:** Walks siblings backward without limit. Thousands of comments could be slow.
+- **Suggested fix:** Add maximum iteration count.
 
-#### 13. Missing Empty Result Handling Distinction
-- **Difficulty:** easy
-- **Location:** `src/search.rs:205-206`
-- **Description:** Empty vec doesn't distinguish "no matches" from silent failure.
-- **Suggested fix:** Consider result type with more information.
+#### 5. ID map JSON parsing could exceed memory
+- **Difficulty:** medium
+- **Location:** `src/hnsw.rs:475-477`
+- **Description:** Malicious `.hnsw.ids` with billions of entries could exhaust memory.
+- **Suggested fix:** Limit maximum IDs or validate file size before parsing.
 
-#### 14. Potential Integer Overflow in Window Calculation
+#### 6. Parse duration allows arbitrarily large values
 - **Difficulty:** easy
-- **Location:** `src/embedder.rs:265`
-- **Description:** Very small step size could cause slow windowing.
-- **Suggested fix:** Document expected relationship between max_tokens and overlap.
+- **Location:** `src/mcp.rs:1347-1408`
+- **Description:** Large hour values could overflow i64 in minute calculation.
+- **Suggested fix:** Add bounds checking or use checked arithmetic.
+
+#### 7. normalize_for_fts truncates mid-word
+- **Difficulty:** easy
+- **Location:** `src/nl.rs:130-133`
+- **Description:** Truncation at byte limit can split words, affecting FTS quality.
+- **Suggested fix:** Truncate at last space boundary.
+
+#### 8. Zero limit produces confusing results
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:595`
+- **Description:** `limit: 0` returns 0 results with no explanation.
+- **Suggested fix:** Validate limit >= 1 or return explanatory error.
+
+#### 9. Empty mentions deserialization error silently dropped
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:36`
+- **Description:** Invalid JSON silently becomes empty vec.
+- **Suggested fix:** Log warning when deserialization fails.
+
+#### 10. all_embeddings() could cause OOM
+- **Difficulty:** medium
+- **Location:** `src/store/chunks.rs:376-392`
+- **Description:** Loads all embeddings into memory. 100k chunks = ~300MB.
+- **Suggested fix:** Deprecate in favor of embedding_batches().
+
+#### 11. SearchFilter doesn't check path_pattern for control chars
+- **Difficulty:** easy
+- **Location:** `src/store/helpers.rs:254-260`
+- **Description:** Control characters or null bytes could cause issues.
+- **Suggested fix:** Reject patterns with control characters.
+
+#### 12. Tokenizer creates many allocations for uppercase strings
+- **Difficulty:** medium
+- **Location:** `src/nl.rs:71-93`
+- **Description:** All-uppercase 10k char string creates 10k String allocations.
+- **Suggested fix:** Add input length cap or single-pass approach.
 
 ---
 
 ### Platform Behavior
 
-#### 1. Unix-only ONNX Provider Library Handling
+#### 1. Unix-only Symlink Creation
 - **Difficulty:** medium
-- **Location:** `src/embedder.rs:487-567`
-- **Description:** Linux-specific paths, LD_LIBRARY_PATH, Unix symlinks.
-- **Suggested fix:** Add Windows-specific implementation with proper paths.
+- **Location:** `src/embedder.rs:572`
+- **Description:** `std::os::unix::fs::symlink` doesn't exist on Windows.
+- **Suggested fix:** Add `#[cfg(unix)]` guard or cross-platform approach.
 
-#### 2. Windows process_exists Uses Shell Command
+#### 2. Hardcoded Linux Cache Path
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:381-389`
-- **Description:** Spawns tasklist subprocess instead of Win32 API.
-- **Suggested fix:** Use Windows API directly via windows-sys crate.
+- **Location:** `src/embedder.rs:509`
+- **Description:** Path hardcoded to `~/.cache/ort.pyke.io/...` Linux pattern.
+- **Suggested fix:** Use `dirs::cache_dir()` for cross-platform.
 
-#### 3. Path Separator Inconsistency in Stored Origins
+#### 3. $HOME Environment Variable Assumption
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:505`
+- **Description:** `$HOME` is Unix-specific. Windows uses `USERPROFILE`.
+- **Suggested fix:** Use `dirs::home_dir()`.
+
+#### 4. LD_LIBRARY_PATH Unix-specific
 - **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:33`, `src/store/calls.rs:115`
-- **Description:** Native separators stored, cross-platform access fails.
-- **Suggested fix:** Normalize all stored paths to forward slashes.
+- **Location:** `src/embedder.rs:527`
+- **Description:** Linux-specific. Windows uses `PATH` for DLLs.
+- **Suggested fix:** Add proper `#[cfg(target_os)]` guards.
 
-#### 4. Hardcoded Forward Slash in Path Joins
+#### 5. Colon Path Separator in Library Path
 - **Difficulty:** easy
-- **Location:** `src/mcp.rs:220`, `src/cli/mod.rs:1351`
-- **Description:** Inconsistent separator expectations.
-- **Suggested fix:** Consistently use Path::join() for all paths.
+- **Location:** `src/embedder.rs:529`
+- **Description:** Uses `:` which is Unix-specific. Windows uses `;`.
+- **Suggested fix:** Use `std::env::split_paths()`.
 
-#### 5. SQLite URL Path Handling on Windows
+#### 6. Path Display in Database URL
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:65`
+- **Description:** Windows backslashes in SQLite URL may not work correctly.
+- **Suggested fix:** Convert to forward slashes for URL.
+
+#### 7. Chunk ID Path Separators
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:717-723`
+- **Description:** `display()` uses backslashes on Windows. IDs won't match cross-platform.
+- **Suggested fix:** Normalize to forward slashes consistently.
+
+#### 8. JSON Output Path Slashes
+- **Difficulty:** easy
+- **Location:** `src/cli/display.rs:176`, `src/mcp.rs:608`
+- **Description:** Windows backslashes in JSON may confuse tools.
+- **Suggested fix:** Normalize to forward slashes in JSON.
+
+#### 9. WSL File Watching Reliability
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:62`
-- **Description:** path.display() produces backslashes, SQLite URL expects forward.
-- **Suggested fix:** Convert path to forward slashes for URL.
+- **Location:** `src/cli/watch.rs:49`
+- **Description:** Watching `/mnt/c/` paths in WSL has latency and reliability issues.
+- **Suggested fix:** Document limitation. Consider polling fallback for WSL.
 
-#### 6. No Line Ending Normalization for Source Files
+#### 10. Path Canonicalization Edge Cases
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:247`, `src/source/filesystem.rs:96`
-- **Description:** CRLF vs LF affects content hash and embeddings.
-- **Suggested fix:** Normalize line endings to LF after reading.
-
-#### 7. Case Sensitivity Assumptions in Path Matching
-- **Difficulty:** hard
-- **Location:** `src/search.rs`, `src/cli/mod.rs:357-367`
-- **Description:** Different behavior on case-sensitive vs case-insensitive filesystems.
-- **Suggested fix:** Document behavior, use case-insensitive for security checks.
-
-#### 8. libc Dependency Without Windows Alternative
-- **Difficulty:** easy
-- **Location:** `Cargo.toml:93`, `src/cli/mod.rs:378`
-- **Description:** libc is unconditional dependency but only used on Unix.
-- **Suggested fix:** Make libc a target-specific dependency.
-
-#### 9. GPU Features Assume Linux
-- **Difficulty:** hard
-- **Location:** `src/embedder.rs:498`, `src/cagra.rs`
-- **Description:** CUDA paths Linux-specific, Windows GPUs not supported.
-- **Suggested fix:** Investigate Windows-specific paths, document limitations.
+- **Location:** `src/cli/mod.rs:344`, `src/mcp.rs:862-865`
+- **Description:** Windows may return UNC paths (`\\?\C:\...`). Network drives may fail.
+- **Suggested fix:** Use `dunce::canonicalize` to remove UNC prefix.
 
 ---
 
 ### Memory Management
 
-#### 1. Unbounded file collection in enumerate_files
+#### 1. All notes loaded into memory for search
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:340-368`
-- **Description:** All file paths collected into Vec without limit.
-- **Suggested fix:** Add optional limit or streaming approach.
+- **Location:** `src/store/notes.rs:84-127`
+- **Description:** `search_notes()` loads ALL notes. Thousands of notes causes unbounded allocation.
+- **Suggested fix:** Use HNSW index to pre-filter candidates.
 
-#### 2. All embeddings loaded into memory for HNSW build
+#### 2. CAGRA requires all embeddings in memory
 - **Difficulty:** hard
-- **Location:** `src/store/chunks.rs:334-350`, `src/cli/mod.rs:1124`
-- **Description:** Fetches every embedding at once (~300MB for 100k chunks).
-- **Suggested fix:** Implement batched iteration.
+- **Location:** `src/cagra.rs:369-431`
+- **Description:** 100k chunks = ~300MB. Inherent to GPU batch build.
+- **Suggested fix:** Document requirement. Add OOM guard that falls back to HNSW.
 
-#### 3. Unbounded search result collection in search_filtered
-- **Difficulty:** medium
-- **Location:** `src/search.rs:131-177`
-- **Description:** Fetches ALL rows including embeddings per search.
-- **Suggested fix:** Pre-filter via SQL or use pagination.
-
-#### 4. Full file content read into memory during parsing
-- **Difficulty:** medium
-- **Location:** `src/parser.rs:247`, `src/source/filesystem.rs:96`
-- **Description:** Concurrent large file processing can spike memory.
-- **Suggested fix:** Add concurrent file limit or memory budget.
-
-#### 5. CAGRA dataset duplication in memory
-- **Difficulty:** hard
-- **Location:** `src/cagra.rs:60-68`, `src/cagra.rs:100-109`
-- **Description:** Full copy of embeddings for rebuild doubles memory.
-- **Suggested fix:** Document tradeoff, consider lazy rebuild.
-
-#### 6. Intermediate Vec allocations in embedding batch
+#### 3. HnswIndex::build() loads all embeddings
 - **Difficulty:** easy
-- **Location:** `src/embedder.rs:369-376`
-- **Description:** Multiple intermediate Vecs per batch item.
-- **Suggested fix:** Use pre-allocated reusable buffers.
+- **Location:** `src/hnsw.rs:195-246`
+- **Description:** Requires all embeddings in memory. build_batched() exists but may be overlooked.
+- **Suggested fix:** Deprecate build() or add runtime warning for large indexes.
 
-#### 7. Clone-heavy search result path
+#### 4. all_embeddings() loads entire database
 - **Difficulty:** easy
-- **Location:** `src/search.rs:254-264`
-- **Description:** Each result clones entire content string.
-- **Suggested fix:** Use references or Arc for shared content.
+- **Location:** `src/store/chunks.rs:376-393`
+- **Description:** Can cause OOM for large indexes.
+- **Suggested fix:** Deprecate in favor of embedding_batches().
 
-#### 8. Unbounded note accumulation in parse_notes
+#### 5. Unbounded Vec growth in search results
 - **Difficulty:** easy
-- **Location:** `src/note.rs:92-112`
-- **Description:** No limit on number of notes parsed.
-- **Suggested fix:** Add MAX_NOTES constant with validation.
+- **Location:** `src/search.rs:194-228`
+- **Description:** `scored` Vec grows without bound before truncation.
+- **Suggested fix:** Use bounded heap maintaining only top N.
 
-#### 9. Pipeline channel buffers hold full chunk data
-- **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:654-658`
-- **Description:** 256 depth * 32 chunks * 100KB = 800MB potential.
-- **Suggested fix:** Reduce channel depth or add memory-based backpressure.
-
-#### 10. Watch mode pending_files grows unbounded
+#### 6. FileSystemSource collects all files into memory
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:1561`
-- **Description:** HashSet grows without limit during debounce.
-- **Suggested fix:** Add cap on pending_files count.
+- **Location:** `src/source/filesystem.rs:39-76`
+- **Description:** All paths collected into Vec. Large codebases use significant memory.
+- **Suggested fix:** Return iterator instead of Vec.
+
+#### 7. HNSW checksum reads entire file into memory
+- **Difficulty:** easy
+- **Location:** `src/hnsw.rs:117`
+- **Description:** Large indexes (>100MB) create memory pressure.
+- **Suggested fix:** Use streaming hash with blake3::Hasher::update_reader().
+
+#### 8. HNSW save reads files back for checksums
+- **Difficulty:** easy
+- **Location:** `src/hnsw.rs:439-448`
+- **Description:** Files read after write to compute checksums. Duplicates memory.
+- **Suggested fix:** Compute checksums during serialization.
+
+#### 9. MCP tool_read() loads entire file
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:874`
+- **Description:** No file size limit. Large files could cause memory issues.
+- **Suggested fix:** Add maximum file size check (e.g., 10MB).
+
+#### 10. embed_documents creates temporary Strings
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:294-296`
+- **Description:** Prefixed copies of all texts doubles string memory temporarily.
+- **Suggested fix:** Low priority - batch sizes typically small.
 
 ---
 
 ### Concurrency Safety
 
-#### 1. CAGRA Index Not Restored After Search Error
-- **Difficulty:** easy
-- **Location:** `src/cagra.rs:281-303`
-- **Description:** Index consumed on search failure, not restored.
-- **Suggested fix:** Document intentional behavior or rebuild on error.
-
-#### 2. Potential Lock Ordering Issue Between resources and index
-- **Difficulty:** medium
-- **Location:** `src/cagra.rs:155-196`
-- **Description:** Lock ordering could cause deadlock if modified.
-- **Suggested fix:** Document lock ordering invariant prominently.
-
-#### 3. Race Condition Window in Embedder Cache
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:305-322`
-- **Description:** Check-then-act pattern allows redundant computation.
-- **Suggested fix:** Use lock-held pattern or dashmap entry API.
-
-#### 4. HNSW LoadedHnsw Relies on Unsafe Send+Sync
+#### 1. CagraIndex unsafe Send/Sync with mutable dataset
 - **Difficulty:** hard
-- **Location:** `src/hnsw.rs:157-158`
-- **Description:** Safety depends on hnsw_rs internals, uses lifetime transmute.
-- **Suggested fix:** Add compile-time version check, pin hnsw_rs version.
+- **Location:** `src/cagra.rs:354-357`
+- **Description:** `dataset` is `Array2<f32>` (mutable). Type-level immutability not enforced.
+- **Suggested fix:** Use `Arc<[f32]>` or similar immutable container.
 
-#### 5. CLI Pipeline Uses Multiple Producers
+#### 2. LoadedHnsw lifetime transmute version-dependent
+- **Difficulty:** hard
+- **Location:** `src/hnsw.rs:139-163, 489-501`
+- **Description:** Safety depends on hnsw_rs internals. Update could break assumptions.
+- **Suggested fix:** Pin hnsw_rs version. Add test that fails on API changes.
+
+#### 3. CAGRA nested mutex locks
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:753-873`
-- **Description:** GPU/CPU threads both consume from channels, complex flow.
-- **Suggested fix:** Add documentation about expected flow.
+- **Location:** `src/cagra.rs:169-213`
+- **Description:** Holds resources lock for entire search. Serializes all searches.
+- **Suggested fix:** Review if cuVS supports parallel searches with separate streams.
 
-#### 6. MCP Background CAGRA Build Opens Separate Store
+#### 4. Audit mode TOCTOU
 - **Difficulty:** easy
-- **Location:** `src/mcp.rs:254-280`
-- **Description:** Separate connection could see stale data under write load.
-- **Suggested fix:** Document snapshot semantics.
+- **Location:** `src/mcp.rs:649-653, 713-718`
+- **Description:** Lock released between is_active() and status_line(). State could change.
+- **Suggested fix:** Capture both values in single lock acquisition.
 
-#### 7. Global INTERRUPTED Without Explicit Memory Ordering
-- **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:56-76`
-- **Description:** SeqCst is stronger than needed for signal handling.
-- **Suggested fix:** Low priority: change to Release/Acquire.
+#### 5. Store runtime blocking in iterator
+- **Difficulty:** medium
+- **Location:** `src/store/chunks.rs:418-468`
+- **Description:** `block_on()` in iterator. Panics if called from async context.
+- **Suggested fix:** Document that Store methods can't be called from async runtime.
 
-#### 8. HTTP Server RwLock Around McpServer
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:1179-1204`
-- **Description:** Outer RwLock may be unnecessary given interior mutability.
-- **Suggested fix:** Consider removing outer RwLock.
+#### 6. Pipeline channel work-stealing race
+- **Difficulty:** medium
+- **Location:** `src/cli/mod.rs:934-950`
+- **Description:** GPU and CPU both grab from parse_rx. No priority specification.
+- **Suggested fix:** Document expected behavior or use select_biased!.
+
+#### 7. McpServer index RwLock writer starvation
+- **Difficulty:** medium
+- **Location:** `src/mcp.rs:213, 236-251, 283`
+- **Description:** Repeated reads can starve CAGRA upgrade write lock.
+- **Suggested fix:** Likely acceptable. Consider write-preference lock if issue arises.
 
 ---
 
@@ -1102,267 +1307,307 @@ See design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
 ### Input Security
 
-#### 1. TOML Injection in cqs_add_note Mention Escaping
+#### 1. FTS5 sanitization is implicit
 - **Difficulty:** easy
-- **Location:** `src/mcp.rs:916-919`
-- **Description:** Backslashes before quotes not handled in TOML escaping.
-- **Suggested fix:** Use proper TOML escaping or library serialization.
+- **Location:** `src/nl.rs:114-149`
+- **Description:** `normalize_for_fts()` removes FTS5 operators as side effect of tokenization (keeping only alphanumeric). Works but not explicitly documented as security control.
+- **Suggested fix:** Document that normalize_for_fts serves as FTS5 sanitization, or add explicit escaping.
 
-#### 2. No Input Validation on Glob Patterns
+#### 2. Glob pattern complexity not limited
 - **Difficulty:** easy
-- **Location:** `src/search.rs:140-144`
-- **Description:** Complex glob patterns could cause excessive CPU during compilation.
-- **Suggested fix:** Add validation for pattern complexity, cache compiled patterns.
+- **Location:** `src/store/helpers.rs:254-259`
+- **Description:** path_pattern limited to 500 chars but not complexity. Deeply nested patterns could slow compilation.
+- **Suggested fix:** Consider limits on nesting depth or alternatives count.
 
-#### 3. Unbounded FTS Query Normalization
+#### 3. path_pattern not validated before search
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:299-323`
-- **Description:** Normalized output could be larger than input.
-- **Suggested fix:** Add length check on normalized output.
+- **Location:** `src/search.rs:181-185`
+- **Description:** Invalid globs silently ignored via `.ok()`. Could cause unexpected results.
+- **Suggested fix:** Call validate() at search start or document silent ignore behavior.
 
-#### 4. HNSW ID Map Deserialization Size Unlimited
+#### 4. Duration parsing has no upper bound
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:1347-1409`
+- **Description:** "999999999h" could overflow or create impractical audit mode durations.
+- **Suggested fix:** Cap duration to reasonable maximum (e.g., 24 hours).
+
+#### 5. TOML escaping is manual
 - **Difficulty:** medium
-- **Location:** `src/hnsw.rs:361-363`
-- **Description:** JSON deserialization without size limits could cause memory exhaustion.
-- **Suggested fix:** Add sanity check on id_map size.
+- **Location:** `src/mcp.rs:985-1021`
+- **Description:** Manual escaping of \, ", \n, \r, \t. Correct but brittle if TOML spec changes.
+- **Suggested fix:** Use TOML library serialization or add fuzz testing.
 
-#### 5. Windows tasklist Command Argument Injection
-- **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:383-389`
-- **Description:** PID from lock file used in command without full validation.
-- **Suggested fix:** Validate PID is numeric only and within valid range.
-
-#### 6. Config File Loaded from User-Controlled Path
-- **Difficulty:** easy
-- **Location:** `src/config.rs:30-36`
-- **Description:** Malicious .cqs.toml in cloned repo could set unexpected defaults.
-- **Suggested fix:** Document behavior, consider flag to ignore project config.
-
-#### 7. Notes File Path Not Separately Validated
-- **Difficulty:** easy
-- **Location:** `src/mcp.rs:936`
-- **Description:** Hardcoded path but no explicit validation as defense-in-depth.
-- **Suggested fix:** Add path validation.
+**Positive findings:** SQL injection prevented (parameterized queries), path traversal protected (canonicalization), HTTP origin validation robust, command injection not possible.
 
 ---
 
 ### Data Security
 
-#### 1. No Explicit File Permission Controls
+#### 1. CORS allows any origin
 - **Difficulty:** easy
-- **Location:** `src/hnsw.rs:321`, `src/mcp.rs:945-959`, `src/cli/mod.rs:456`
-- **Description:** Created files inherit umask, may be world-readable.
-- **Suggested fix:** Set permissions to 0600 for .cq/ files.
+- **Location:** `src/mcp.rs:1274-1277`
+- **Description:** CorsLayer uses `allow_origin(Any)`. Handler validates localhost, but CORS preflight says `*`.
+- **Suggested fix:** Configure CORS to allow only localhost origins.
 
-#### 2. Database Path Exposure in Error Messages
+#### 2. Index files created without explicit permissions
+- **Difficulty:** medium
+- **Location:** `src/hnsw.rs:413, 433, 448`
+- **Description:** HNSW files may be world-readable with permissive umask. Exposes code embeddings.
+- **Suggested fix:** Use `OpenOptionsExt::mode(0o600)` on Unix.
+
+#### 3. SQLite database created without explicit permissions
+- **Difficulty:** medium
+- **Location:** `src/store/mod.rs:66`
+- **Description:** Database and WAL files inherit default permissions.
+- **Suggested fix:** Set umask to 0o077 before creation.
+
+#### 4. Notes file created without explicit permissions
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:62`
-- **Description:** Full filesystem path could leak in connection errors.
-- **Suggested fix:** Wrap errors to show only relative paths.
+- **Location:** `src/mcp.rs:1028-1037`
+- **Description:** notes.toml may contain sensitive security observations.
+- **Suggested fix:** Set restrictive permissions (0o600).
 
-#### 3. API Key Stored in Plaintext Memory
+#### 5. Lock file may leak PID
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:421-435`
+- **Description:** Minor info disclosure. Lock file also lacks restricted permissions.
+- **Suggested fix:** Create with 0o600 permissions.
+
+#### 6. API key visible in environment/process list
 - **Difficulty:** medium
-- **Location:** `src/mcp.rs:1182`, `src/cli/mod.rs:41`
-- **Description:** Key remains in memory throughout process lifetime.
-- **Suggested fix:** Use secrecy or zeroize crate to clear when done.
+- **Location:** `src/cli/mod.rs:183`
+- **Description:** Environment variables visible via /proc, CLI args visible via ps.
+- **Suggested fix:** Support reading API key from file.
 
-#### 4. CORS Allows Any Origin
-- **Difficulty:** medium
-- **Location:** `src/mcp.rs:1206-1209`
-- **Description:** CorsLayer uses Any, relies on application-level origin check.
-- **Suggested fix:** Make CORS more restrictive as defense in depth.
+#### 7. Error messages may expose internal paths
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:354-364`
+- **Description:** Full error details returned to clients including file paths.
+- **Suggested fix:** Sanitize errors. Log full server-side, return generic to clients.
 
-#### 5. Race Condition Window in Lock File Creation
+#### 8. Stdio transport has no authentication
 - **Difficulty:** hard
-- **Location:** `src/cli/mod.rs:400-435`
-- **Description:** Window between creation and lock acquisition.
-- **Suggested fix:** Use O_EXCL equivalent or atomic creation.
+- **Location:** `src/mcp.rs:1181-1234`
+- **Description:** By design for trusted clients, but document security implications.
+- **Suggested fix:** Document that stdio should only be used with trusted clients.
+
+#### 9. Health endpoint exposes version
+- **Difficulty:** easy
+- **Location:** `src/mcp.rs:1580-1586`
+- **Description:** Allows attackers to identify exact version for targeting vulnerabilities.
+- **Suggested fix:** Require auth or return only status without version.
+
+#### 10. API key stored in plain memory
+- **Difficulty:** hard
+- **Location:** `src/mcp.rs:1247`
+- **Description:** Memory dumps would expose API key.
+- **Suggested fix:** Use `secrecy` crate to zero memory on drop.
+
+**Positive findings:** Constant-time API key comparison, DNS rebinding protection, path traversal protection, request body limits, checksum validation.
 
 ---
 
 ### Algorithmic Complexity
 
-#### 1. O(n*m) Word Overlap in name_match_score
-- **Difficulty:** easy
-- **Location:** `src/search.rs:63-72`
-- **Description:** Nested iteration with substring contains() for each word pair.
-- **Suggested fix:** Use HashSet for exact matching if acceptable.
-
-#### 2. O(n) Brute-Force Note Search
+#### 1. O(n) brute-force note search
 - **Difficulty:** medium
-- **Location:** `src/store/notes.rs:66-118`
-- **Description:** Always loads all notes and computes similarity against each.
-- **Suggested fix:** Add notes to HNSW index or use FTS pre-filtering.
+- **Location:** `src/store/notes.rs:74-128`
+- **Description:** Fetches ALL notes and computes similarity for each. 10k notes = 10k computations per search.
+- **Suggested fix:** Remove direct search_notes calls or add warning for large sets without index.
 
-#### 3. Repeated tokenize_identifier Calls
+#### 2. NameMatcher O(m*n) substring matching
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:299-323`
-- **Description:** Allocates new vectors for each identifier tokenization.
-- **Suggested fix:** Use streaming tokenizer or memoize common identifiers.
+- **Location:** `src/search.rs:93-105`
+- **Description:** Nested iteration checking contains() for each word pair. Runs per-chunk.
+- **Suggested fix:** Remove substring fallback if exact match is sufficient.
 
-#### 4. Query Word Substring Contains O(q*n*len)
+#### 3. normalize_for_fts intermediate allocations
 - **Difficulty:** easy
-- **Location:** `src/search.rs:68-69`
-- **Description:** Both directions of contains() checked in inner loop.
-- **Suggested fix:** Use HashSet if exact matching acceptable.
+- **Location:** `src/nl.rs:114-149`
+- **Description:** Creates Vec<String> per word. Called for every chunk during indexing.
+- **Suggested fix:** Use streaming approach writing directly to output.
 
-#### 5. Linear Scan in prune_missing with Individual Deletes
+#### 4. tokenize_identifier unnecessary clone
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:131-159`
-- **Description:** O(deleted * 2 SQL queries) for missing files.
-- **Suggested fix:** Batch deletes using WHERE NOT IN.
+- **Location:** `src/nl.rs:71-93`
+- **Description:** `current.clone()` on every word boundary wastes allocations.
+- **Suggested fix:** Use `std::mem::take(&mut current)` instead.
 
-#### 6. Cosine Similarity Fallback is O(dim)
+#### 5. extract_params_nl multiple intermediate allocations
 - **Difficulty:** easy
-- **Location:** `src/search.rs:22-25`
-- **Description:** Manual dot product in fallback path.
-- **Suggested fix:** No action needed - SIMD handles common case.
+- **Location:** `src/nl.rs:241-277`
+- **Description:** Splits, filters, collects to Vec per parameter.
+- **Suggested fix:** Use iterator chain collecting once at end.
 
-#### 7. Multiple Database Queries for stats()
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:227-301`
-- **Description:** 7 separate sequential queries for stats.
-- **Suggested fix:** Combine into single query using CTEs.
+#### 6. Brute-force search fallback O(n)
+- **Difficulty:** hard
+- **Location:** `src/search.rs:166-228`
+- **Description:** Without HNSW, loads ALL embeddings (~150MB for 50k chunks) per search.
+- **Suggested fix:** Add warning when brute-force triggered on large indexes.
 
-#### 8. HashSet Created Per Function in parse_file_calls
+#### 7. HashSet rebuilt per search result
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:675-677`
-- **Description:** Many small HashSet allocations during parsing.
-- **Suggested fix:** Reuse single HashSet by clearing between functions.
+- **Location:** `src/search.rs:78-88`
+- **Description:** New HashSet from name words for each result. Thousands per search.
+- **Suggested fix:** Pre-index names during storage instead of query-time.
+
+#### 8. Call graph extraction re-reads files
+- **Difficulty:** medium
+- **Location:** `src/cli/mod.rs:1172-1198`
+- **Description:** Files read twice: once for chunks, once for calls.
+- **Suggested fix:** Extract calls during initial parse pass.
+
+#### 9. RRF allocates HashMap per search
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:364-392`
+- **Description:** New HashMap for each RRF fusion. Acceptable but could optimize.
+- **Suggested fix:** Consider pre-allocated buffer for hot path.
+
+#### 10. prune_missing O(n) HashSet check
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:140-195`
+- **Description:** Fetches all origins from SQL, checks each against HashSet.
+- **Suggested fix:** Use SQL WHERE NOT IN with batched values.
 
 ---
 
 ### I/O Efficiency
 
-#### 1. Note Search Full Table Scan
+#### 1. Note search O(n) full table scan
 - **Difficulty:** medium
-- **Location:** `src/store/notes.rs:67-117`
-- **Description:** Fetches ALL notes for every search, no vector index.
-- **Suggested fix:** Add notes to HNSW or create separate index.
+- **Location:** `src/store/notes.rs:75-128`
+- **Description:** Fetches ALL notes for every search when HNSW unavailable.
+- **Suggested fix:** Require HNSW index or add FTS pre-filtering for notes.
 
-#### 2. File Metadata Read Twice During Indexing
+#### 2. HNSW save reads files twice for checksums
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:726-732`, `src/store/chunks.rs:87-93`
-- **Description:** mtime retrieved twice for same file.
-- **Suggested fix:** Cache mtime during enumeration.
+- **Location:** `src/hnsw.rs:436-449`
+- **Description:** Writes file then reads it back to compute checksum. Doubles I/O.
+- **Suggested fix:** Compute checksum during write using hashing writer.
 
-#### 3. Checksum Verification Reads HNSW Files Twice
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:92-126`, `src/hnsw.rs:348-399`
-- **Description:** Files read for checksum then read again for loading.
-- **Suggested fix:** Verify checksum during loading or use mmap.
-
-#### 4. HNSW Save Re-reads Files to Compute Checksums
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:324-334`
-- **Description:** Files written then immediately read back for hashing.
-- **Suggested fix:** Compute checksums from in-memory data.
-
-#### 5. No Embedder Caching Across CLI Commands
-- **Difficulty:** hard
-- **Location:** `src/cli/mod.rs:1681,1757`
-- **Description:** Each command re-initializes ONNX session (~500ms).
-- **Suggested fix:** Consider daemon mode or warm flag.
-
-#### 6. Call Graph Re-parses Files Already Parsed
+#### 3. Call graph extraction re-reads parsed files
 - **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:1136-1161`
-- **Description:** parse_file_calls re-reads and re-parses after chunk extraction.
-- **Suggested fix:** Extract both in single parsing pass.
+- **Location:** `src/cli/mod.rs:1173-1197`
+- **Description:** Files read again for calls after already being parsed for chunks.
+- **Suggested fix:** Extract calls during initial parse pass.
 
-#### 7. Stats Command Loads HNSW Just for Length
+#### 4. FTS operations not batched
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:1361-1365`
-- **Description:** Loads entire index to get vector count.
-- **Suggested fix:** Store count in metadata file.
+- **Location:** `src/store/chunks.rs:54-71`
+- **Description:** Individual DELETE then INSERT per chunk for FTS table.
+- **Suggested fix:** Batch with WHERE IN and push_values like calls table.
 
-#### 8. Individual upsert_calls Per Chunk
-- **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:992-997`
-- **Description:** Calls upserted one chunk at a time.
-- **Suggested fix:** Batch calls in single transaction.
-
-#### 9. FileSystemSource Reads Content Eagerly
-- **Difficulty:** medium
-- **Location:** `src/source/filesystem.rs:88-127`
-- **Description:** Reads all file content before checking if reindex needed.
-- **Suggested fix:** Make content loading lazy.
-
-#### 10. Database Metadata Queries Not Batched
+#### 5. HNSW checksum reads entire file into memory
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:258-289`
-- **Description:** 6 separate queries for metadata.
-- **Suggested fix:** Combine into single WHERE IN query.
+- **Location:** `src/hnsw.rs:117`
+- **Description:** Large indexes cause memory spikes during verification.
+- **Suggested fix:** Use streaming hash with blake3::Hasher::update_reader().
+
+#### 6. Watch mode re-opens Store on every reindex
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:115-124`
+- **Description:** New Store (runtime + pool) for each file change.
+- **Suggested fix:** Keep single Store instance in watch loop.
+
+#### 7. enumerate_files reads metadata twice
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:356-375`
+- **Description:** Size check and canonicalize may both stat the file.
+- **Suggested fix:** Cache metadata from size check.
+
+#### 8. No connection reuse between pipeline stages
+- **Difficulty:** medium
+- **Location:** `src/cli/mod.rs:696-1016`
+- **Description:** Each stage opens own Store with own runtime and pool.
+- **Suggested fix:** Share single Store via Arc across threads.
+
+#### 9. FTS query normalized twice for RRF
+- **Difficulty:** easy
+- **Location:** `src/search.rs:232`
+- **Description:** Same normalization may happen multiple times.
+- **Suggested fix:** Normalize once at search start and reuse.
 
 ---
 
 ### Resource Footprint
 
-#### 1. Tokio Runtime Created Per-Store Instance
+#### 1. Multiple Tokio Runtimes
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:60`
-- **Description:** Multiple stores create redundant runtimes.
-- **Suggested fix:** Use shared global runtime.
+- **Location:** `src/store/mod.rs:63`, `src/mcp.rs:1311`
+- **Description:** Each Store creates runtime. MCP server has at least 2 separate runtimes.
+- **Suggested fix:** Share single application-wide runtime.
 
-#### 2. Separate HTTP Runtime Created
+#### 2. Eager model path resolution
 - **Difficulty:** easy
-- **Location:** `src/mcp.rs:1240`
-- **Description:** serve_http creates own runtime despite Store having one.
-- **Suggested fix:** Reuse Store's runtime.
+- **Location:** `src/embedder.rs:172-174`
+- **Description:** HuggingFace API calls even for commands that don't need embeddings.
+- **Suggested fix:** Make ensure_model() lazy.
 
-#### 3. ONNX Session Cold Start (~500ms)
-- **Difficulty:** hard
-- **Location:** `src/embedder.rs:151-152`
-- **Description:** First query incurs model loading delay.
-- **Suggested fix:** Pre-warm during MCP init, add --warm CLI flag.
-
-#### 4. Background CAGRA Thread Not Tracked
+#### 3. GPU provider detection on every Embedder
 - **Difficulty:** easy
-- **Location:** `src/mcp.rs:238`
-- **Description:** Detached thread continues on shutdown.
-- **Suggested fix:** Store handle, join on Drop.
+- **Location:** `src/embedder.rs:584-599`
+- **Description:** CUDA/TensorRT detection runs for each Embedder::new().
+- **Suggested fix:** Cache provider in static OnceCell.
 
-#### 5. Large Binary Size (34MB)
-- **Difficulty:** hard
-- **Location:** `Cargo.toml`
-- **Description:** Tree-sitter grammars, ONNX runtime, tokio contribute.
-- **Suggested fix:** Profile with cargo-bloat, lazy-load grammars.
+#### 4. Duplicate Embedder instances in pipeline
+- **Difficulty:** medium
+- **Location:** `src/cli/mod.rs:807-809, 925-927`
+- **Description:** GPU and CPU embedders each have own tokenizer and cache.
+- **Suggested fix:** Share tokenizer, or use single Embedder with dynamic provider.
 
-#### 6. SQLite MMAP 256MB Unconditional
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:84`
-- **Description:** High mmap size regardless of database size.
-- **Suggested fix:** Make configurable, lower default.
-
-#### 7. 4 Connections Per Store Pool
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:66`
-- **Description:** Up to 12 connections with pipeline's 3 stores.
-- **Suggested fix:** Share Store or reduce pool size.
-
-#### 8. Query Cache Size Hardcoded
+#### 5. Large query cache default (100 entries)
 - **Difficulty:** easy
 - **Location:** `src/embedder.rs:181-183`
-- **Description:** 100 entries (~300KB) not configurable.
-- **Suggested fix:** Make configurable via config file.
+- **Description:** ~300KB cache wasted for batch indexing which doesn't repeat queries.
+- **Suggested fix:** Make cache size configurable or disable for batch ops.
 
-#### 9. Three Threads During Indexing
-- **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:672,759,876`
-- **Description:** Each has own Store and embedder instance.
-- **Suggested fix:** Consider streaming or lazy CPU embedder init.
-
-#### 10. HNSW Loaded Per CLI Query
-- **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:1230-1246`
-- **Description:** Index loaded from disk every invocation.
-- **Suggested fix:** Cache in temp file or use MCP for interactive use.
-
-#### 11. File Watcher Creates Embedder Per Reindex
+#### 6. Parser recreated multiple times
 - **Difficulty:** easy
-- **Location:** `src/cli/mod.rs:1681`
-- **Description:** ~500ms delay on first reindex.
-- **Suggested fix:** Keep embedder alive in watch loop.
+- **Location:** `src/cli/mod.rs:695-1109`
+- **Description:** Multiple Parser instances compile same queries (~50ms wasted).
+- **Suggested fix:** Share single Parser via Arc.
+
+#### 7. Store opened multiple times during indexing
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:697-1126`
+- **Description:** 4+ Store instances with separate runtimes and pools.
+- **Suggested fix:** Share single Store via Arc.
+
+#### 8. 64MB SQLite page cache per connection
+- **Difficulty:** medium
+- **Location:** `src/store/mod.rs:86`
+- **Description:** With 4 connections × 4 Stores = potentially 1GB+ page cache.
+- **Suggested fix:** Reduce for write-heavy indexing, ensure single Store.
+
+#### 9. 256MB mmap per connection
+- **Difficulty:** medium
+- **Location:** `src/store/mod.rs:94`
+- **Description:** Reserves address space even for small indexes.
+- **Suggested fix:** Make proportional to index size.
+
+#### 10. HNSW loaded just for stats count
+- **Difficulty:** easy
+- **Location:** `src/cli/mod.rs:1474-1479`
+- **Description:** Full graph loaded to display vector count.
+- **Suggested fix:** Use count_vectors() which only reads ID map.
+
+#### 11. All tree-sitter grammars compiled upfront
+- **Difficulty:** hard
+- **Location:** `src/parser.rs:214-246`
+- **Description:** All 5 languages compiled even if only one used.
+- **Suggested fix:** Lazy-compile queries on first use per language.
+
+#### 12. No connection pool idle timeout
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:69-70`
+- **Description:** Connections held indefinitely even when idle.
+- **Suggested fix:** Add idle_timeout(Duration::from_secs(300)).
+
+#### 13. Watch mode holds resources when idle
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:60`
+- **Description:** Embedder stays loaded during long idle periods.
+- **Suggested fix:** Unload after inactivity period or document memory use.
 
 ---
 
@@ -1370,53 +1615,24 @@ See design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
 | Batch | Category | Findings |
 |-------|----------|----------|
-| 1 | Code Hygiene | 8 |
+| 1 | Code Hygiene | 12 |
 | 1 | Module Boundaries | 11 |
 | 1 | Documentation | 17 |
-| 1 | API Design | 12 |
-| 1 | Error Propagation | 14 |
-| 2 | Observability | 12 |
-| 2 | Test Coverage | 18 |
-| 2 | Panic Paths | 8 |
-| 2 | Algorithm Correctness | 6 |
-| 2 | Extensibility | 14 |
-| 3 | Data Integrity | 10 |
-| 3 | Edge Cases | 14 |
-| 3 | Platform Behavior | 9 |
+| 1 | API Design | 16 |
+| 1 | Error Propagation | 20 |
+| 2 | Observability | 17 |
+| 2 | Test Coverage | 20 |
+| 2 | Panic Paths | 7 |
+| 2 | Algorithm Correctness | 13 |
+| 2 | Extensibility | 18 |
+| 3 | Data Integrity | 15 |
+| 3 | Edge Cases | 12 |
+| 3 | Platform Behavior | 10 |
 | 3 | Memory Management | 10 |
-| 3 | Concurrency Safety | 8 |
-| 4 | Input Security | 7 |
-| 4 | Data Security | 5 |
-| 4 | Algorithmic Complexity | 8 |
-| 4 | I/O Efficiency | 10 |
-| 4 | Resource Footprint | 11 |
-| **Total** | | **202** |
-
-### By Difficulty
-
-| Difficulty | Count |
-|------------|-------|
-| Easy | ~130 |
-| Medium | ~55 |
-| Hard | ~17 |
-
-### Priority Tiers (per design)
-
-**P1 - Fix immediately (Easy + Batch 1-2):**
-- Documentation: model name mismatches (5 locations)
-- Code Hygiene: line number clamping helper
-- Panic Paths: display.rs bounds check
-- Algorithm Correctness: Go return type broken
-
-**P2 - Fix next (Easy + Batch 3-4, Medium + Batch 1):**
-- Edge Cases: Unicode string slicing panic
-- Module Boundaries: duplicate Language enum
-- Error Propagation: swallowed .ok() patterns
-
-**P3 - Fix if time permits:**
-- Memory Management: unbounded collections
-- I/O Efficiency: double parsing, double file reads
-
-**P4 - Create issues, defer:**
-- Hard items: schema migrations, platform GPU support, binary size
-
+| 3 | Concurrency Safety | 7 |
+| 4 | Input Security | 5 |
+| 4 | Data Security | 10 |
+| 4 | Algorithmic Complexity | 10 |
+| 4 | I/O Efficiency | 9 |
+| 4 | Resource Footprint | 13 |
+| **Total** | | **~242** |

@@ -103,6 +103,8 @@ impl Store {
 
         let store = Self { pool, rt };
 
+        tracing::info!(path = %path.display(), "Database connected");
+
         // Check schema version compatibility
         store.check_schema_version()?;
         // Check model version compatibility
@@ -162,6 +164,11 @@ impl Store {
                 .execute(&self.pool)
                 .await?;
 
+            tracing::info!(
+                schema_version = CURRENT_SCHEMA_VERSION,
+                "Schema initialized"
+            );
+
             Ok(())
         })
     }
@@ -180,7 +187,19 @@ impl Store {
                     Err(e) => return Err(e.into()),
                 };
 
-            let version: i32 = row.and_then(|(s,)| s.parse().ok()).unwrap_or(0);
+            let version: i32 = row
+                .and_then(|(s,)| {
+                    s.parse()
+                        .map_err(|e| {
+                            tracing::warn!(
+                                stored_value = %s,
+                                error = %e,
+                                "Failed to parse schema_version from metadata, defaulting to 0"
+                            );
+                        })
+                        .ok()
+                })
+                .unwrap_or(0);
 
             if version > CURRENT_SCHEMA_VERSION {
                 return Err(StoreError::SchemaNewerThanCq(version));
@@ -268,6 +287,25 @@ impl Store {
     }
 
     /// Search FTS5 index for keyword matches.
+    ///
+    /// # Search Method Overview
+    ///
+    /// The Store provides several search methods with different characteristics:
+    ///
+    /// - **`search_fts`**: Full-text keyword search using SQLite FTS5. Returns chunk IDs.
+    ///   Best for: Exact keyword matches, symbol lookup by name fragment.
+    ///
+    /// - **`search_by_name`**: Definition search by function/struct name. Uses FTS5 with
+    ///   heavy weighting on the name column. Returns full `SearchResult` with scores.
+    ///   Best for: "Where is X defined?" queries.
+    ///
+    /// - **`search_filtered`** (in search.rs): Semantic search with optional language/path
+    ///   filters. Can use RRF hybrid search combining semantic + FTS scores.
+    ///   Best for: Natural language queries like "retry with exponential backoff".
+    ///
+    /// - **`search_filtered_with_index`** (in search.rs): Like `search_filtered` but uses
+    ///   HNSW/CAGRA vector index for O(log n) candidate retrieval instead of brute force.
+    ///   Best for: Large indexes (>5k chunks) where brute force is slow.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
         let normalized_query = normalize_for_fts(query);
         if normalized_query.is_empty() {
@@ -373,11 +411,14 @@ impl Store {
         let mut scores: HashMap<&str, f32> = HashMap::new();
 
         for (rank, id) in semantic_ids.iter().enumerate() {
+            // RRF formula: 1 / (K + rank). The + 1.0 converts 0-indexed enumerate()
+            // to 1-indexed ranks (first result = rank 1, not rank 0).
             let contribution = 1.0 / (K + rank as f32 + 1.0);
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }
 
         for (rank, id) in fts_ids.iter().enumerate() {
+            // Same conversion: enumerate's 0-index -> RRF's 1-indexed rank
             let contribution = 1.0 / (K + rank as f32 + 1.0);
             *scores.entry(id.as_str()).or_insert(0.0) += contribution;
         }

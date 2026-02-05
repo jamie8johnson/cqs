@@ -224,7 +224,7 @@
 
 Ship 1.0 when:
 
-- [ ] Schema stable for 1+ week of daily use (currently v9)
+- [ ] Schema stable for 1+ week of daily use (currently v10)
 - [ ] Used on 2+ different codebases without issues
 - [ ] MCP integration solid in daily Claude Code use
 - [ ] No known correctness bugs

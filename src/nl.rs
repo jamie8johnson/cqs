@@ -59,6 +59,10 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 
 /// Split identifier on snake_case and camelCase boundaries.
 ///
+/// Note: This function splits on every uppercase letter, so acronyms like
+/// "XMLParser" become individual letters. This is intentional for search
+/// tokenization where "xml parser" is more useful than preserving "XML".
+///
 /// # Examples
 ///
 /// ```
@@ -66,7 +70,7 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 ///
 /// assert_eq!(tokenize_identifier("parseConfigFile"), vec!["parse", "config", "file"]);
 /// assert_eq!(tokenize_identifier("get_user_name"), vec!["get", "user", "name"]);
-/// assert_eq!(tokenize_identifier("XMLParser"), vec!["x", "m", "l", "parser"]);
+/// assert_eq!(tokenize_identifier("XMLParser"), vec!["x", "m", "l", "parser"]); // acronyms split per-letter
 /// ```
 pub fn tokenize_identifier(s: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -126,9 +130,12 @@ pub fn normalize_for_fts(text: &str) -> String {
             result.push_str(&tokens.join(" "));
             current_word.clear();
 
-            // Cap output to prevent memory issues
+            // Cap output to prevent memory issues - truncate at last space boundary
             if result.len() >= MAX_FTS_OUTPUT_LEN {
-                result.truncate(MAX_FTS_OUTPUT_LEN);
+                let truncate_at = result[..MAX_FTS_OUTPUT_LEN]
+                    .rfind(' ')
+                    .unwrap_or(MAX_FTS_OUTPUT_LEN);
+                result.truncate(truncate_at);
                 return result;
             }
         }
@@ -141,9 +148,13 @@ pub fn normalize_for_fts(text: &str) -> String {
         result.push_str(&tokens.join(" "));
     }
 
-    // Final cap check
+    // Final cap check - truncate at last space to avoid splitting words
     if result.len() > MAX_FTS_OUTPUT_LEN {
-        result.truncate(MAX_FTS_OUTPUT_LEN);
+        // Find last space before the limit to avoid mid-word truncation
+        let truncate_at = result[..MAX_FTS_OUTPUT_LEN]
+            .rfind(' ')
+            .unwrap_or(MAX_FTS_OUTPUT_LEN);
+        result.truncate(truncate_at);
     }
     result
 }

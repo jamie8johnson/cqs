@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use tracing::{info, info_span, warn};
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::nl::generate_nl_description;
@@ -20,7 +21,7 @@ use super::{check_interrupted, find_project_root, Cli};
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
 
-pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
+pub fn cmd_watch(cli: &Cli, debounce_ms: u64, _no_ignore: bool) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");
@@ -91,9 +92,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                 }
             }
             Ok(Err(e)) => {
-                if !cli.quiet {
-                    eprintln!("Watch error: {}", e);
-                }
+                warn!(error = %e, "Watch error");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Check if we should process pending changes
@@ -117,27 +116,19 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             None => match Embedder::new() {
                                 Ok(e) => embedder.get_or_init(|| e),
                                 Err(e) => {
-                                    eprintln!("Failed to initialize embedder: {}", e);
+                                    warn!(error = %e, "Failed to initialize embedder");
                                     continue;
                                 }
                             },
                         };
-                        match reindex_files(
-                            &root,
-                            &index_path,
-                            &files,
-                            &parser,
-                            emb,
-                            no_ignore,
-                            cli.quiet,
-                        ) {
+                        match reindex_files(&root, &index_path, &files, &parser, emb, cli.quiet) {
                             Ok(count) => {
                                 if !cli.quiet {
                                     println!("Indexed {} chunk(s)", count);
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Reindex error: {}", e);
+                                warn!(error = %e, "Reindex error");
                             }
                         }
                     }
@@ -153,7 +144,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             None => match Embedder::new() {
                                 Ok(e) => embedder.get_or_init(|| e),
                                 Err(e) => {
-                                    eprintln!("Failed to initialize embedder: {}", e);
+                                    warn!(error = %e, "Failed to initialize embedder");
                                     continue;
                                 }
                             },
@@ -165,7 +156,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                                 }
                             }
                             Err(e) => {
-                                eprintln!("Notes reindex error: {}", e);
+                                warn!(error = %e, "Notes reindex error");
                             }
                         }
                     }
@@ -195,9 +186,11 @@ fn reindex_files(
     files: &[PathBuf],
     parser: &CqParser,
     embedder: &Embedder,
-    _no_ignore: bool,
     quiet: bool,
 ) -> Result<usize> {
+    let _span = info_span!("reindex_files", file_count = files.len()).entered();
+    info!(file_count = files.len(), "Reindexing files");
+
     let store = Store::open(index_path)?;
 
     // Parse the changed files
@@ -268,6 +261,8 @@ fn reindex_notes(
     embedder: &Embedder,
     quiet: bool,
 ) -> Result<usize> {
+    let _span = info_span!("reindex_notes").entered();
+
     let notes_path = root.join("docs/notes.toml");
     if !notes_path.exists() {
         return Ok(0);

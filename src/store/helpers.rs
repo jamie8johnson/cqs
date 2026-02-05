@@ -66,7 +66,7 @@ pub(crate) struct ChunkRow {
 pub struct ChunkSummary {
     /// Unique identifier
     pub id: String,
-    /// Source file path (relative to project root)
+    /// Source file path (typically absolute, as stored during indexing)
     pub file: PathBuf,
     /// Programming language
     pub language: Language,
@@ -275,8 +275,8 @@ impl Default for ModelInfo {
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
-            dimensions: 769, // 768 from model + 1 sentiment
-            version: "1.5".to_string(),
+            dimensions: 769,          // 768 from model + 1 sentiment
+            version: "2".to_string(), // E5-base-v2
         }
     }
 }
@@ -309,13 +309,14 @@ pub struct IndexStats {
 
 // ============ Line Number Conversion ============
 
-/// Clamp i64 to valid u32 line number range
+/// Clamp i64 to valid u32 line number range (1-indexed)
 ///
-/// SQLite returns i64, but line numbers are u32. This safely clamps
-/// to avoid truncation issues on extreme values.
+/// SQLite returns i64, but line numbers are u32 and 1-indexed.
+/// This safely clamps to avoid truncation issues on extreme values,
+/// with minimum 1 since line 0 is invalid in 1-indexed systems.
 #[inline]
 pub fn clamp_line_number(n: i64) -> u32 {
-    n.clamp(0, u32::MAX as i64) as u32
+    n.clamp(1, u32::MAX as i64) as u32
 }
 
 // ============ Embedding Serialization ============
@@ -339,7 +340,7 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
         tracing::trace!(
             expected = EXPECTED_BYTES,
             actual = bytes.len(),
-            "embedding byte length mismatch"
+            "Embedding byte length mismatch, skipping"
         );
         return None;
     }
@@ -350,13 +351,14 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 ///
 /// Returns None if byte length doesn't match expected embedding size (769 * 4 bytes).
 /// This prevents silently using corrupted/truncated embeddings.
+/// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
 pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
     const EXPECTED_BYTES: usize = 769 * 4;
     if bytes.len() != EXPECTED_BYTES {
-        tracing::warn!(
+        tracing::trace!(
             expected = EXPECTED_BYTES,
             actual = bytes.len(),
-            "Embedding byte length mismatch (possible corruption), skipping"
+            "Embedding byte length mismatch, skipping"
         );
         return None;
     }
@@ -475,8 +477,10 @@ mod tests {
 
     #[test]
     fn test_clamp_line_number_negative() {
-        assert_eq!(clamp_line_number(-1), 0);
-        assert_eq!(clamp_line_number(-1000), 0);
+        // Line numbers are 1-indexed, so negative/zero clamps to 1
+        assert_eq!(clamp_line_number(-1), 1);
+        assert_eq!(clamp_line_number(-1000), 1);
+        assert_eq!(clamp_line_number(0), 1);
     }
 
     #[test]

@@ -72,20 +72,30 @@ pub struct JsonRpcError {
 
 // MCP types
 
+/// MCP initialize request parameters.
+///
+/// These fields are required by the MCP protocol spec and must be deserialized,
+/// but the server doesn't use them beyond validation - we accept any protocol version
+/// and don't make decisions based on client capabilities or identity.
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct InitializeParams {
     #[serde(rename = "protocolVersion")]
+    #[allow(dead_code)]
     protocol_version: String,
+    #[allow(dead_code)]
     capabilities: Value,
     #[serde(rename = "clientInfo")]
+    #[allow(dead_code)]
     client_info: ClientInfo,
 }
 
+/// MCP client info (part of initialize request).
+/// Deserialized for protocol compliance but not used.
 #[derive(Deserialize)]
-#[allow(dead_code)]
 struct ClientInfo {
+    #[allow(dead_code)]
     name: String,
+    #[allow(dead_code)]
     version: String,
 }
 
@@ -231,7 +241,8 @@ impl McpServer {
             bail!("Index not found. Run 'cq init && cq index' first.");
         }
 
-        let store = Store::open(&index_path).context("Failed to open index")?;
+        let store = Store::open(&index_path)
+            .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
 
         // Load HNSW first (fast) - wrap in Arc<RwLock> for background upgrade
         let hnsw = Self::load_hnsw_index(&cq_dir);
@@ -329,7 +340,9 @@ impl McpServer {
         let _ = self.embedder.set(new_embedder);
 
         // Return reference (definitely initialized now, either by us or another thread)
-        Ok(self.embedder.get().expect("embedder just initialized"))
+        self.embedder.get().ok_or_else(|| {
+            anyhow::anyhow!("embedder initialization failed: OnceLock empty after set")
+        })
     }
 
     /// Handle a JSON-RPC request
@@ -643,13 +656,19 @@ impl McpServer {
         };
 
         // Read-lock the index (allows background CAGRA build to upgrade it)
-        let index_guard = self.index.read().unwrap_or_else(|e| e.into_inner());
+        let index_guard = self.index.read().unwrap_or_else(|e| {
+            tracing::debug!("Index RwLock poisoned (prior panic), recovering");
+            e.into_inner()
+        });
 
         // Check audit mode - if active, use code-only search
         let audit_active = self
             .audit_mode
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::debug!("Audit mode lock poisoned (prior panic), recovering");
+                e.into_inner()
+            })
             .is_active();
         let results: Vec<UnifiedResult> = if audit_active {
             // Code-only search when audit mode is active
@@ -713,7 +732,10 @@ impl McpServer {
         if let Some(status) = self
             .audit_mode
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| {
+                tracing::debug!("Audit mode lock poisoned (prior panic), recovering");
+                e.into_inner()
+            })
             .status_line()
         {
             result["audit_mode"] = serde_json::json!(status);
@@ -753,7 +775,10 @@ impl McpServer {
 
         // Check active index type (HNSW or CAGRA)
         let active_index = {
-            let guard = self.index.read().unwrap_or_else(|e| e.into_inner());
+            let guard = self.index.read().unwrap_or_else(|e| {
+                tracing::debug!("Index RwLock poisoned (prior panic), recovering");
+                e.into_inner()
+            });
             match guard.as_ref() {
                 Some(idx) => format!("{} ({} vectors)", idx.name(), idx.len()),
                 None => "none loaded".to_string(),
@@ -875,7 +900,10 @@ impl McpServer {
             .context(format!("Failed to read file: {}", path))?;
 
         // Check audit mode - if active, skip note injection
-        let audit_guard = self.audit_mode.lock().unwrap_or_else(|e| e.into_inner());
+        let audit_guard = self.audit_mode.lock().unwrap_or_else(|e| {
+            tracing::debug!("Audit mode lock poisoned (prior panic), recovering");
+            e.into_inner()
+        });
         let audit_active = audit_guard.is_active();
         let mut context_header = String::new();
 
@@ -1050,18 +1078,18 @@ impl McpServer {
         }
 
         // Re-parse and re-index all notes so the new one is immediately searchable
-        let indexed = match parse_notes(&notes_path) {
+        let (indexed, index_error) = match parse_notes(&notes_path) {
             Ok(notes) if !notes.is_empty() => match self.index_notes(&notes, &notes_path) {
-                Ok(count) => count,
+                Ok(count) => (count, None),
                 Err(e) => {
                     tracing::warn!("Failed to index notes: {}", e);
-                    0
+                    (0, Some(e.to_string()))
                 }
             },
-            Ok(_) => 0,
+            Ok(_) => (0, None),
             Err(e) => {
                 tracing::warn!("Failed to parse notes after adding: {}", e);
-                0
+                (0, Some(e.to_string()))
             }
         };
 
@@ -1073,7 +1101,7 @@ impl McpServer {
             "observation"
         };
 
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "status": "added",
             "type": sentiment_label,
             "sentiment": sentiment,
@@ -1082,6 +1110,11 @@ impl McpServer {
             "indexed": indexed > 0,
             "total_notes": indexed
         });
+
+        // Include index error in response if indexing failed
+        if let Some(err) = index_error {
+            result["index_error"] = serde_json::json!(err);
+        }
 
         Ok(serde_json::json!({
             "content": [{
@@ -1093,7 +1126,10 @@ impl McpServer {
 
     fn tool_audit_mode(&self, arguments: Value) -> Result<Value> {
         let args: AuditModeArgs = serde_json::from_value(arguments)?;
-        let mut audit_mode = self.audit_mode.lock().unwrap_or_else(|e| e.into_inner());
+        let mut audit_mode = self.audit_mode.lock().unwrap_or_else(|e| {
+            tracing::debug!("Audit mode lock poisoned (prior panic), recovering");
+            e.into_inner()
+        });
 
         // If no enabled argument, just query current state
         if args.enabled.is_none() {
@@ -1117,7 +1153,10 @@ impl McpServer {
             }));
         }
 
-        let enabled = args.enabled.unwrap();
+        // SAFETY: early return above guarantees enabled is Some
+        let Some(enabled) = args.enabled else {
+            unreachable!("enabled checked above");
+        };
 
         if enabled {
             // Parse expires_in duration (default 30m)
@@ -1258,6 +1297,13 @@ struct HttpState {
 /// * `port` - Port to listen on (e.g., 3000)
 /// * `use_gpu` - Whether to use GPU acceleration for embeddings
 /// * `api_key` - Optional API key; if set, requests need `Authorization: Bearer <key>`
+///
+/// # Design Note: Separate bind and port parameters
+///
+/// We use separate `bind` and `port` instead of a combined `SocketAddr` for CLI ergonomics:
+/// - `--bind 127.0.0.1 --port 3000` is clearer than `--addr 127.0.0.1:3000`
+/// - Allows independent defaults (bind defaults to localhost, port to 3000)
+/// - Matches conventions of similar tools (uvicorn, gunicorn, etc.)
 pub fn serve_http(
     project_root: impl AsRef<Path>,
     bind: &str,

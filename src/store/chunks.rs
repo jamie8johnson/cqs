@@ -190,6 +190,10 @@ impl Store {
                 deleted += result.rows_affected() as u32;
             }
 
+            if deleted > 0 {
+                tracing::info!(deleted, files = missing.len(), "Pruned chunks for missing files");
+            }
+
             Ok(deleted)
         })
     }
@@ -261,12 +265,12 @@ impl Store {
     }
 
     /// Get the number of chunks in the index
-    pub fn chunk_count(&self) -> Result<usize, StoreError> {
+    pub fn chunk_count(&self) -> Result<u64, StoreError> {
         self.rt.block_on(async {
             let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM chunks")
                 .fetch_one(&self.pool)
                 .await?;
-            Ok(row.0 as usize)
+            Ok(row.0 as u64)
         })
     }
 
@@ -438,6 +442,11 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
                 .fetch_all(&self.store.pool)
                 .await?;
 
+            // Track actual rows fetched (before filtering) to correctly advance SQL OFFSET.
+            // If we used batch.len() (after filter_map), we'd under-count when some rows
+            // have invalid embeddings, causing duplicate fetches or missed rows.
+            let rows_fetched = rows.len();
+
             let batch: Vec<(String, Embedding)> = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -447,22 +456,32 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
                 })
                 .collect();
 
-            Ok(batch)
+            Ok((batch, rows_fetched))
         });
 
-        match &result {
-            Ok(batch) if batch.is_empty() => {
+        match result {
+            Ok((batch, rows_fetched)) if batch.is_empty() && rows_fetched == 0 => {
+                // No more rows in database
                 self.done = true;
                 None
             }
-            Ok(batch) => {
-                self.offset += batch.len();
-                Some(result)
+            Ok((batch, rows_fetched)) => {
+                self.offset += rows_fetched;
+                if batch.is_empty() {
+                    // Had rows but all filtered out - continue to next batch
+                    self.next()
+                } else {
+                    Some(Ok(batch))
+                }
             }
-            Err(_) => {
+            Err(e) => {
                 self.done = true;
-                Some(result)
+                Some(Err(e))
             }
         }
     }
 }
+
+// SAFETY: Once `done` is set to true, `next()` always returns None.
+// This is guaranteed by the check at the start of `next()`.
+impl<'a> std::iter::FusedIterator for EmbeddingBatchIterator<'a> {}

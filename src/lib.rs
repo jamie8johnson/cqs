@@ -103,6 +103,8 @@ pub fn index_notes(
     embedder: &Embedder,
     store: &Store,
 ) -> anyhow::Result<usize> {
+    tracing::info!(path = %notes_path.display(), count = notes.len(), "Indexing notes");
+
     if notes.is_empty() {
         return Ok(0);
     }
@@ -123,8 +125,18 @@ pub fn index_notes(
     let file_mtime = notes_path
         .metadata()
         .and_then(|m| m.modified())
+        .map_err(|e| {
+            tracing::trace!(path = %notes_path.display(), error = %e, "Failed to get file mtime");
+            e
+        })
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| {
+                    tracing::trace!(path = %notes_path.display(), error = %e, "File mtime before Unix epoch");
+                })
+                .ok()
+        })
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 

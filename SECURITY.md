@@ -53,7 +53,7 @@ When using `cqs serve --transport http`:
 | **API key** | None required | `--api-key` or `CQS_API_KEY` env var |
 | **Origin validation** | Localhost only | Rejects external origins |
 | **Body limit** | 1MB | Prevents oversized payloads |
-| **Protocol version** | 2024-11-05 | MCP Streamable HTTP spec |
+| **Protocol version** | 2025-11-25 | MCP Streamable HTTP spec |
 
 **When binding to network (`0.0.0.0`):**
 - API key becomes **required**

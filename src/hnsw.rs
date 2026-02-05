@@ -185,7 +185,17 @@ enum HnswInner {
 }
 
 impl HnswIndex {
-    /// Build a new HNSW index from embeddings
+    /// Build a new HNSW index from embeddings (single-pass).
+    ///
+    /// # When to use `build` vs `build_batched`
+    ///
+    /// - **`build`**: Use when all embeddings fit comfortably in memory (<50k chunks,
+    ///   ~150MB for 50k × 769 × 4 bytes). Slightly higher graph quality since all
+    ///   vectors are available during construction.
+    ///
+    /// - **`build_batched`**: Use for large indexes (>50k chunks) or memory-constrained
+    ///   environments. Streams embeddings in batches to avoid OOM. Graph quality is
+    ///   marginally lower but negligible for practical search accuracy.
     ///
     /// **Warning:** This loads all embeddings into memory at once.
     /// For large indexes (>50k chunks), prefer `build_batched()` to avoid OOM.
@@ -349,11 +359,15 @@ impl HnswIndex {
         })
     }
 
-    /// Search for nearest neighbors
+    /// Search for nearest neighbors (inherent implementation).
+    ///
+    /// This is the actual search implementation. The `VectorIndex` trait method
+    /// delegates to this inherent method. Both methods have identical signatures
+    /// and behavior - use whichever is more convenient at the call site.
     ///
     /// # Arguments
-    /// * `query` - Query embedding
-    /// * `k` - Number of results to return
+    /// * `query` - Query embedding (769-dim: 768 model + 1 sentiment)
+    /// * `k` - Maximum number of results to return
     ///
     /// # Returns
     /// Vector of (chunk_id, score) pairs, sorted by descending score

@@ -94,8 +94,27 @@ impl std::fmt::Display for ChunkType {
     }
 }
 
+/// Error returned when parsing an invalid ChunkType string
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseChunkTypeError {
+    /// The invalid input string
+    pub input: String,
+}
+
+impl std::fmt::Display for ParseChunkTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant",
+            self.input
+        )
+    }
+}
+
+impl std::error::Error for ParseChunkTypeError {}
+
 impl std::str::FromStr for ChunkType {
-    type Err = anyhow::Error;
+    type Err = ParseChunkTypeError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "function" => Ok(ChunkType::Function),
@@ -106,10 +125,9 @@ impl std::str::FromStr for ChunkType {
             "trait" => Ok(ChunkType::Trait),
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
-            _ => anyhow::bail!(
-                "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant",
-                s
-            ),
+            _ => Err(ParseChunkTypeError {
+                input: s.to_string(),
+            }),
         }
     }
 }

@@ -44,12 +44,9 @@ struct ServeConfig {
     dangerously_allow_network_bind: bool,
 }
 
-// Exit codes
+// Exit codes for CLI commands
 #[repr(i32)]
-#[allow(dead_code)]
 pub enum ExitCode {
-    Success = 0,
-    GeneralError = 1,
     NoResults = 2,
     Interrupted = 130,
 }
@@ -62,14 +59,15 @@ static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 /// First Ctrl+C sets INTERRUPTED flag, allowing current batch to finish.
 /// Second Ctrl+C force-exits with code 130.
 fn setup_signal_handler() {
-    ctrlc::set_handler(|| {
+    if let Err(e) = ctrlc::set_handler(|| {
         if INTERRUPTED.swap(true, Ordering::AcqRel) {
             // Second Ctrl+C: force exit
             std::process::exit(ExitCode::Interrupted as i32);
         }
         eprintln!("\nInterrupted. Finishing current batch...");
-    })
-    .expect("Failed to set Ctrl+C handler");
+    }) {
+        eprintln!("Warning: Failed to set Ctrl+C handler: {e}");
+    }
 }
 
 /// Check if user requested interruption via Ctrl+C
@@ -213,7 +211,7 @@ enum Commands {
 /// Run CLI with default argument parsing
 ///
 /// Note: Typically main.rs uses run_with() to check verbose flag before tracing init.
-/// This function is kept for API compatibility.
+/// This function is kept for library users who want simpler invocation.
 #[allow(dead_code)]
 pub fn run() -> Result<()> {
     run_with(Cli::parse())
@@ -353,7 +351,12 @@ fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Ve
         .build();
 
     let files: Vec<PathBuf> = walker
-        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            e.map_err(|err| {
+                tracing::debug!(error = %err, "Failed to read directory entry during walk");
+            })
+            .ok()
+        })
         .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
         .filter(|e| {
             // Skip files over size limit
@@ -369,21 +372,39 @@ fn enumerate_files(root: &Path, parser: &CqParser, no_ignore: bool) -> Result<Ve
                 .map(|ext| parser.supported_extensions().contains(&ext))
                 .unwrap_or(false)
         })
-        .filter_map(|e| {
-            // Validate path stays within project root and convert to relative
-            let path = match e.path().canonicalize() {
-                Ok(p) => p,
-                Err(err) => {
-                    tracing::debug!("Skipping {}: {}", e.path().display(), err);
-                    return None;
+        .filter_map({
+            // Track count of canonicalization failures to log at appropriate level
+            let failure_count = std::sync::atomic::AtomicUsize::new(0);
+            move |e| {
+                // Validate path stays within project root and convert to relative
+                let path = match e.path().canonicalize() {
+                    Ok(p) => p,
+                    Err(err) => {
+                        let count =
+                            failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if count < 3 {
+                            tracing::warn!(
+                                path = %e.path().display(),
+                                error = %err,
+                                "Failed to canonicalize path, skipping"
+                            );
+                        } else {
+                            tracing::debug!(
+                                path = %e.path().display(),
+                                error = %err,
+                                "Failed to canonicalize path, skipping"
+                            );
+                        }
+                        return None;
+                    }
+                };
+                if path.starts_with(&root) {
+                    // Store relative path for portability and glob matching
+                    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
+                } else {
+                    tracing::warn!("Skipping path outside project: {}", e.path().display());
+                    None
                 }
-            };
-            if path.starts_with(&root) {
-                // Store relative path for portability and glob matching
-                Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
-            } else {
-                tracing::warn!("Skipping path outside project: {}", e.path().display());
-                None
             }
         })
         .collect();
@@ -865,10 +886,10 @@ fn run_index_pipeline(
 
                 // Pre-filter long batches to CPU (GPU hits CUDNN limits >8k chars)
                 if max_len > 8000 {
-                    eprintln!(
-                        "Routing long batch to CPU: {} chunks, max_len={}",
-                        to_embed.len(),
-                        max_len
+                    tracing::warn!(
+                        chunks = to_embed.len(),
+                        max_len,
+                        "Routing long batch to CPU (GPU CUDNN limit)"
                     );
                     if fail_tx.send(batch).is_err() {
                         break;
@@ -896,7 +917,7 @@ fn run_index_pipeline(
                             break;
                         }
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         // GPU failed - log details and requeue to CPU
                         gpu_failures_clone.fetch_add(batch.chunks.len(), Ordering::Relaxed);
                         let max_len = texts.iter().map(|t| t.len()).max().unwrap_or(0);
@@ -904,11 +925,12 @@ fn run_index_pipeline(
                             .iter()
                             .map(|c| c.file.display().to_string())
                             .collect();
-                        eprintln!(
-                            "GPU failed, requeueing {} chunks to CPU (max_len={}, files={:?})",
-                            batch.chunks.len(),
+                        tracing::warn!(
+                            error = %e,
+                            chunks = batch.chunks.len(),
                             max_len,
-                            files
+                            ?files,
+                            "GPU embedding failed, requeueing to CPU"
                         );
                         if fail_tx.send(batch).is_err() {
                             break; // CPU thread gone
@@ -1201,8 +1223,12 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
     if !check_interrupted() {
         let notes_path = root.join("docs/notes.toml");
         if notes_path.exists() {
-            // Check if notes need reindexing
-            let needs_reindex = force || store.notes_need_reindex(&notes_path).unwrap_or(true);
+            // Check if notes need reindexing (Some(mtime) = needs reindex, None = up to date)
+            let needs_reindex = force
+                || store
+                    .notes_need_reindex(&notes_path)
+                    .unwrap_or(Some(0))
+                    .is_some();
 
             if needs_reindex {
                 if !cli.quiet {
@@ -1267,7 +1293,7 @@ fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<(
             println!("Building HNSW index...");
         }
 
-        let chunk_count = store.chunk_count()?;
+        let chunk_count = store.chunk_count()? as usize;
         let note_count = store.note_count()? as usize;
         let total_count = chunk_count + note_count;
 
@@ -1358,7 +1384,7 @@ fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
             // Only worth it when search time savings exceed rebuild cost.
             // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
-            const CAGRA_THRESHOLD: usize = 5000;
+            const CAGRA_THRESHOLD: u64 = 5000;
             let chunk_count = store.chunk_count().unwrap_or(0);
             if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
                 match cqs::cagra::CagraIndex::build_from_store(&store) {
@@ -1938,8 +1964,6 @@ mod tests {
 
     #[test]
     fn test_exit_code_values() {
-        assert_eq!(ExitCode::Success as i32, 0);
-        assert_eq!(ExitCode::GeneralError as i32, 1);
         assert_eq!(ExitCode::NoResults as i32, 2);
         assert_eq!(ExitCode::Interrupted as i32, 130);
     }
@@ -1956,5 +1980,17 @@ mod tests {
             // This would be better as an integration test
             assert!(results.is_empty());
         }
+    }
+
+    // ===== Progress bar template tests =====
+
+    #[test]
+    fn test_progress_bar_template_valid() {
+        // Verify the progress bar template used in cmd_index is valid.
+        // This catches template syntax errors at test time rather than runtime.
+        use indicatif::ProgressStyle;
+        let result =
+            ProgressStyle::default_bar().template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}");
+        assert!(result.is_ok(), "Progress bar template should be valid");
     }
 }

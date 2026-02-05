@@ -32,7 +32,7 @@ cargo install cqs
 
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
-cqs index --force  # Run after upgrading from v0.1.11 or earlier
+cqs index --force  # Run after upgrading from older versions (current schema: v10)
 ```
 
 ## Quick Start
@@ -99,6 +99,9 @@ threshold = 0.4
 
 # Name boost for hybrid search (0.0 = pure semantic, 1.0 = pure name)
 name_boost = 0.2
+
+# Note weight in search results (0.0-1.0, lower = notes rank below code)
+note_weight = 1.0
 
 # Output modes
 quiet = false
@@ -186,11 +189,14 @@ Use `cqs_search` for semantic code search instead of grep/glob when looking for:
 - Code where you don't know the exact name
 
 Available tools:
-- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `semantic_only`, `name_only`
+- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `note_weight`, `semantic_only`, `name_only`
   - Use `name_only=true` for "where is X defined?" queries (skips embedding, searches function names directly)
 - `cqs_stats` - index stats, chunk counts, HNSW index status
 - `cqs_callers` - find functions that call a given function
 - `cqs_callees` - find functions called by a given function
+- `cqs_read` - read file with context notes injected as comments
+- `cqs_add_note` - add observation to project memory (indexed for future searches)
+- `cqs_audit_mode` - toggle audit mode to exclude notes from search/read results
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
@@ -204,9 +210,9 @@ cqs serve --transport http --port 3000 --project /path/to/project
 ```
 
 Endpoints:
-- `POST /mcp` - JSON-RPC requests
-- `GET /mcp` - SSE stream for server-to-client messages
-- `GET /health` - Health check
+- `POST /mcp` - JSON-RPC requests (MCP protocol messages)
+- `GET /mcp` - SSE stream for server-to-client notifications
+- `GET /health` - Health check (returns 200 OK when server is ready)
 
 **Authentication:** For network-exposed servers, API key authentication is required:
 

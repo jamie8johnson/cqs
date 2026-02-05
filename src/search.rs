@@ -19,15 +19,18 @@ use crate::store::{Store, StoreError};
 /// Cosine similarity for L2-normalized vectors (just dot product)
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
 ///
-/// Panics if vectors have different lengths or unexpected dimensions.
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    assert_eq!(a.len(), b.len(), "Embedding dimension mismatch");
-    assert_eq!(a.len(), 769, "Expected 769-dim embeddings");
+/// Returns `None` if vectors have different lengths or unexpected dimensions.
+/// This allows callers to gracefully handle dimension mismatches rather than panicking.
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() || a.len() != 769 {
+        return None;
+    }
     use simsimd::SpatialSimilarity;
-    f32::dot(a, b).unwrap_or_else(|| {
+    let score = f32::dot(a, b).unwrap_or_else(|| {
         // Fallback for unsupported architectures
         a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>() as f64
-    }) as f32
+    }) as f32;
+    Some(score)
 }
 
 /// Pre-tokenized query for efficient name matching in loops
@@ -96,6 +99,9 @@ impl NameMatcher {
                     return true;
                 }
                 // Slow path: substring matching (only if no exact match)
+                // Intentionally excludes equal-length substrings: if lengths are equal
+                // but strings differ, they're not substrings of each other (would need
+                // exact match, handled above). This avoids redundant contains() calls.
                 name_words.iter().any(|nw| {
                     // Short-circuit: check length before expensive substring search
                     (nw.len() > w.len() && nw.contains(w.as_str()))
@@ -178,11 +184,15 @@ impl Store {
             };
 
             // Compile glob pattern once outside the loop (not per-chunk)
-            let glob_matcher = filter
-                .path_pattern
-                .as_ref()
-                .and_then(|p| globset::Glob::new(p).ok())
-                .map(|g| g.compile_matcher());
+            let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
+                match globset::Glob::new(p) {
+                    Ok(g) => Some(g.compile_matcher()),
+                    Err(e) => {
+                        tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
+                        None
+                    }
+                }
+            });
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
             let name_matcher = if use_hybrid {
@@ -199,7 +209,7 @@ impl Store {
                     let name: Option<String> = if use_hybrid { row.get(2) } else { None };
 
                     let embedding = embedding_slice(&embedding_bytes)?;
-                    let embedding_score = cosine_similarity(query.as_slice(), embedding);
+                    let embedding_score = cosine_similarity(query.as_slice(), embedding)?;
 
                     let score = if let Some(ref matcher) = name_matcher {
                         let n = name.as_deref().unwrap_or("");
@@ -332,7 +342,7 @@ impl Store {
             let index_results = idx.search(query, candidate_count);
 
             if index_results.is_empty() {
-                tracing::debug!("Index returned no candidates, falling back to brute-force");
+                tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
                 return self.search_filtered(query, filter, limit, threshold);
             }
 
@@ -380,11 +390,15 @@ impl Store {
             };
 
             // Compile glob pattern once outside the loop (not per-chunk)
-            let glob_matcher = filter
-                .path_pattern
-                .as_ref()
-                .and_then(|p| globset::Glob::new(p).ok())
-                .map(|g| g.compile_matcher());
+            let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
+                match globset::Glob::new(p) {
+                    Ok(g) => Some(g.compile_matcher()),
+                    Err(e) => {
+                        tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
+                        None
+                    }
+                }
+            });
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
             let name_matcher = if use_hybrid {
@@ -433,7 +447,7 @@ impl Store {
                         Some(e) => e,
                         None => return None,
                     };
-                    let embedding_score = cosine_similarity(query.as_slice(), embedding);
+                    let embedding_score = cosine_similarity(query.as_slice(), embedding)?;
 
                     let score = if let Some(ref matcher) = name_matcher {
                         let name_score = matcher.score(&chunk_row.name);
@@ -491,7 +505,7 @@ impl Store {
             let index_results = idx.search(query, candidate_count);
 
             if index_results.is_empty() {
-                tracing::debug!("Index returned no candidates, falling back to brute-force");
+                tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
                 (
                     self.search_filtered(query, filter, limit, threshold)?,
                     self.search_notes(query, limit, threshold)?,
@@ -580,7 +594,7 @@ mod tests {
     #[test]
     fn test_cosine_similarity_identical() {
         let a = make_embedding(0.5);
-        let sim = cosine_similarity(&a, &a);
+        let sim = cosine_similarity(&a, &a).expect("Should succeed for valid embeddings");
         // Identical vectors should have high similarity
         assert!(sim > 0.99, "Expected ~1.0, got {}", sim);
     }
@@ -589,7 +603,7 @@ mod tests {
     fn test_cosine_similarity_orthogonal() {
         let a = make_unit_embedding(0);
         let b = make_unit_embedding(1);
-        let sim = cosine_similarity(&a, &b);
+        let sim = cosine_similarity(&a, &b).expect("Should succeed for valid embeddings");
         // Orthogonal unit vectors should have 0 similarity
         assert!(sim.abs() < 0.01, "Expected ~0, got {}", sim);
     }
@@ -598,8 +612,8 @@ mod tests {
     fn test_cosine_similarity_symmetric() {
         let a: Vec<f32> = (0..769).map(|i| (i as f32) / 769.0).collect();
         let b: Vec<f32> = (0..769).map(|i| 1.0 - (i as f32) / 769.0).collect();
-        let sim_ab = cosine_similarity(&a, &b);
-        let sim_ba = cosine_similarity(&b, &a);
+        let sim_ab = cosine_similarity(&a, &b).expect("Should succeed");
+        let sim_ba = cosine_similarity(&b, &a).expect("Should succeed");
         assert!((sim_ab - sim_ba).abs() < 1e-6, "Should be symmetric");
     }
 
@@ -608,10 +622,24 @@ mod tests {
         // Random-ish vectors
         let a: Vec<f32> = (0..769).map(|i| ((i * 7) % 100) as f32 / 100.0).collect();
         let b: Vec<f32> = (0..769).map(|i| ((i * 13) % 100) as f32 / 100.0).collect();
-        let sim = cosine_similarity(&a, &b);
+        let sim = cosine_similarity(&a, &b).expect("Should succeed");
         // Cosine similarity for non-normalized vectors can exceed [-1, 1]
         // but for typical embeddings should be reasonable
         assert!(sim.is_finite(), "Should be finite");
+    }
+
+    #[test]
+    fn test_cosine_similarity_dimension_mismatch() {
+        let a: Vec<f32> = vec![0.5; 768]; // Wrong dimension
+        let b: Vec<f32> = vec![0.5; 769];
+        assert!(
+            cosine_similarity(&a, &b).is_none(),
+            "Should fail for mismatched dimensions"
+        );
+        assert!(
+            cosine_similarity(&a, &a).is_none(),
+            "Should fail for wrong dimension"
+        );
     }
 
     // ===== name_match_score tests =====

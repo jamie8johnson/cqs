@@ -33,6 +33,7 @@ impl Store {
                         .push_bind(call.line_number as i64);
                 });
                 query_builder.build().execute(&self.pool).await?;
+                tracing::debug!(chunk_id, call_count = calls.len(), "Inserted chunk calls");
             }
 
             Ok(())
@@ -154,6 +155,12 @@ impl Store {
                         .push_bind(*call_line as i64);
                 });
                 query_builder.build().execute(&self.pool).await?;
+                tracing::info!(
+                    file = %file_str,
+                    functions = function_calls.len(),
+                    calls = all_calls.len(),
+                    "Indexed function calls"
+                );
             }
 
             Ok(())

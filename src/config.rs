@@ -100,6 +100,40 @@ impl Config {
             verbose: other.verbose.or(self.verbose),
         }
     }
+
+    // ===== Accessors with defaults =====
+
+    /// Default result limit for search queries
+    pub const DEFAULT_LIMIT: usize = 5;
+    /// Default similarity threshold (0.0-1.0)
+    pub const DEFAULT_THRESHOLD: f32 = 0.3;
+    /// Default name boost for hybrid search
+    pub const DEFAULT_NAME_BOOST: f32 = 0.2;
+
+    /// Get result limit with default fallback
+    pub fn limit_or_default(&self) -> usize {
+        self.limit.unwrap_or(Self::DEFAULT_LIMIT)
+    }
+
+    /// Get similarity threshold with default fallback
+    pub fn threshold_or_default(&self) -> f32 {
+        self.threshold.unwrap_or(Self::DEFAULT_THRESHOLD)
+    }
+
+    /// Get name boost with default fallback
+    pub fn name_boost_or_default(&self) -> f32 {
+        self.name_boost.unwrap_or(Self::DEFAULT_NAME_BOOST)
+    }
+
+    /// Get quiet mode with default fallback (false)
+    pub fn quiet_or_default(&self) -> bool {
+        self.quiet.unwrap_or(false)
+    }
+
+    /// Get verbose mode with default fallback (false)
+    pub fn verbose_or_default(&self) -> bool {
+        self.verbose.unwrap_or(false)
+    }
 }
 
 #[cfg(test)]
