@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-02-05
+
+### Added
+- GPU failures counter in index summary output
+- `VectorIndex::name()` method for HNSW/CAGRA identification
+- `active_index` field in cqs_stats showing which vector index is in use
+
+### Changed
+- `Config::merge` renamed to `override_with` for clarity
+- `Language::FromStr` now returns `ParserError::UnknownLanguage` (thiserror) instead of anyhow
+- `--verbose` flag now sets tracing subscriber to debug level
+- Note indexing logic deduplicated into shared `cqs::index_notes()` function
+
+### Fixed
+- `check_cq_version` now logs errors at debug level instead of silently discarding
+- Doc comments added for `IndexStats`, `UnifiedResult`, `CURRENT_SCHEMA_VERSION`
+
 ## [0.4.1] - 2026-02-05
 
 ### Changed
