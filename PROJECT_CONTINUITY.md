@@ -17,7 +17,7 @@ P2 audit at 23/58. Resume from item #24 onward.
 
 Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 list.
 
-### P2 Progress: 23 of 58 Fixed
+### P2 Progress: 28 of 58 Fixed
 
 | # | Issue | Resolution |
 |---|-------|------------|
@@ -30,7 +30,11 @@ Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 l
 | 20 | No max query length | Already had: validate_query_length (8192) |
 | 21 | Content hash slicing | Fixed: .get(..8).unwrap_or() |
 | 22 | Parser capture index bounds | Fixed: .get().copied() |
+| 24 | Embedding dim validation | Fixed: bytes_to_embedding returns Option |
+| 25 | Model dims not validated | Fixed: DimensionMismatch error at load |
+| 27 | File metadata read twice | Fixed: needs_reindex returns mtime |
 | 28 | libc unconditional dep | Fixed: cfg(unix) |
+| 30 | name_match O(n*m) | Fixed: HashSet fast path for exact match |
 | 31 | Unbounded note parsing | Fixed: MAX_NOTES 10k cap |
 | 32 | Watch pending_files unbounded | Fixed: MAX_PENDING_FILES 10k cap |
 | 38 | TOML injection in mentions | Fixed: escape newlines/tabs/etc |
@@ -42,10 +46,12 @@ Reference: `docs/plans/2026-02-04-20-category-audit-design.md` has the full P2 l
 | 50 | HNSW checksum I/O | Fixed: hash ids from memory |
 | 52 | Stats loads HNSW for length | Fixed: count_vectors() reads ids only |
 
+Also fixed: Flaky HNSW test (seed multiplier), documented embedder cache + HTTP runtime tradeoffs.
+
 ### Remaining Tiers
 | Tier | Count | Status |
 |------|-------|--------|
-| P2 | 35 remaining | 23 fixed |
+| P2 | 30 remaining | 28 fixed |
 | P3 | 43 | Pending |
 | P4 | 21 | Pending |
 

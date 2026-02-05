@@ -262,7 +262,10 @@ impl Embedder {
         }
 
         let mut windows = Vec::new();
-        let step = max_tokens.saturating_sub(overlap).max(1); // Ensure step >= 1 to prevent infinite loop
+        // Step size: tokens per window minus overlap. saturating_sub prevents underflow,
+        // .max(1) ensures forward progress (avoids infinite loop if overlap >= max_tokens).
+        // For best results: overlap < max_tokens/2 (ensures step > max_tokens/2).
+        let step = max_tokens.saturating_sub(overlap).max(1);
         let mut start = 0;
         let mut window_idx = 0u32;
 

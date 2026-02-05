@@ -8,6 +8,10 @@ use colored::Colorize;
 use cqs::store::UnifiedResult;
 
 /// Read context lines before and after a range in a file
+///
+/// # Arguments
+/// * `line_start` - 1-indexed start line (0 treated as 1)
+/// * `line_end` - 1-indexed end line (must be >= line_start)
 pub fn read_context_lines(
     file: &Path,
     line_start: u32,
@@ -16,6 +20,10 @@ pub fn read_context_lines(
 ) -> Result<(Vec<String>, Vec<String>)> {
     let content = std::fs::read_to_string(file)?;
     let lines: Vec<&str> = content.lines().collect();
+
+    // Normalize: treat 0 as 1, ensure end >= start
+    let line_start = line_start.max(1);
+    let line_end = line_end.max(line_start);
 
     let start_idx = (line_start as usize).saturating_sub(1).min(lines.len());
     let end_idx = (line_end as usize)
