@@ -50,10 +50,17 @@ When using `cqs serve --transport http`:
 | Control | Default | Override |
 |---------|---------|----------|
 | **Bind address** | `127.0.0.1` (localhost) | `--bind` + `--dangerously-allow-network-bind` |
-| **API key** | None required | `--api-key` or `CQS_API_KEY` env var |
+| **API key** | None required | `--api-key`, `--api-key-file`, or `CQS_API_KEY` env var |
 | **Origin validation** | Localhost only | Rejects external origins |
 | **Body limit** | 1MB | Prevents oversized payloads |
 | **Protocol version** | 2025-11-25 | MCP Streamable HTTP spec |
+
+**API key options:**
+- `--api-key SECRET` - Direct value (visible in process list)
+- `--api-key-file /path/to/file` - Read from file (recommended, keeps secret out of `ps aux`)
+- `CQS_API_KEY=SECRET` - Environment variable (visible in `/proc/*/environ`)
+
+The `--api-key-file` option uses `zeroize` to clear the key from memory when dropped.
 
 **When binding to network (`0.0.0.0`):**
 - API key becomes **required**

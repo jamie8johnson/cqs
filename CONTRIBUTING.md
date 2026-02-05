@@ -84,8 +84,11 @@ When reporting bugs, please include:
 ```
 src/
   cli/          - Command-line interface (clap)
-    mod.rs      - Argument parsing, command dispatch, indexing
+    mod.rs      - Argument parsing, command dispatch
+    commands/   - Command implementations (serve.rs)
+    config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
+    pipeline.rs - Multi-threaded indexing pipeline
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - LanguageRegistry, LanguageDef trait
@@ -99,12 +102,15 @@ src/
     notes.rs    - Note CRUD, note_embeddings(), search_notes_by_ids()
     calls.rs    - Call graph storage and queries
     helpers.rs  - Types, embedding conversion functions
-  parser.rs     - tree-sitter code parsing, call extraction
+    migrations.rs - Schema migration framework
+  mcp/          - MCP server implementation
+    mod.rs      - McpServer, JSON-RPC handling
+    transports/ - stdio.rs, http.rs transport implementations
+  parser.rs     - tree-sitter code parsing (lazy grammar loading)
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
   search.rs     - Search algorithms, cosine similarity, HNSW-guided search
-  hnsw.rs       - HNSW index with batched build (chunks + notes unified)
+  hnsw.rs       - HNSW index with batched build, atomic writes
   cagra.rs      - GPU-accelerated CAGRA index (optional)
-  mcp.rs        - MCP server implementation (stdio + HTTP)
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment
   config.rs     - Configuration file support
@@ -117,6 +123,7 @@ src/
 - Unified HNSW index contains both chunks and notes (notes prefixed with `note:`)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Chunks capped at 500 lines, notes capped at 10k entries
+- Schema migrations allow upgrading indexes without full rebuild
 
 ## Questions?
 

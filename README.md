@@ -223,6 +223,10 @@ cqs serve --transport http --api-key SECRET --project /path/to/project
 # Via environment variable
 export CQS_API_KEY=SECRET
 cqs serve --transport http --project /path/to/project
+
+# Via file (recommended - keeps secret out of process list)
+echo "SECRET" > /path/to/keyfile
+cqs serve --transport http --api-key-file /path/to/keyfile --project /path/to/project
 ```
 
 Clients must include `Authorization: Bearer SECRET` header.
