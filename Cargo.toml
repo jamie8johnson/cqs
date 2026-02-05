@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Semantic code search for Claude Code. Find functions by what they do, not their names. Local ML, GPU-accelerated."
@@ -8,7 +8,7 @@ license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"
 readme = "README.md"
-keywords = ["code-search", "embeddings", "semantic-search"]
+keywords = ["code-search", "semantic-search", "mcp-server", "embeddings", "vector-search"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [
     ".claude/",
