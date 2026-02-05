@@ -200,6 +200,17 @@
   - Audit mode added (`cqs_audit_mode` tool)
   - `note_weight` parameter for search
 
+- [x] Sprint improvements (v0.4.6)
+  - Schema migration framework (#188)
+  - CLI integration tests - 12 end-to-end tests (#206)
+  - Server transport tests - 3 stdio tests (#205)
+  - Stress tests - 5 ignored heavy-load tests (#207)
+  - `--api-key-file` with zeroize for secure key loading (#202)
+  - Lazy grammar loading - 50-200ms startup improvement (#208)
+  - Pipeline resource sharing via `Arc<Store>` (#204)
+  - Atomic HNSW writes for crash safety (#186)
+  - Note search warning at WARN level (#203)
+
 ### Planned
 
 - [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
