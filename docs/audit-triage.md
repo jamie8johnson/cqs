@@ -318,7 +318,7 @@ After de-duplication: **~225 unique findings**
 | # | Finding | Location |
 |---|---------|----------|
 | E5 | Language/chunk_type parsing errors discarded | `src/store/chunks.rs:296, 306` |
-| E7 | Multiple bare ? in HNSW load | `src/hnsw.rs:107,117,433,442,448,475` |
+| E7 | Multiple bare ? in HNSW load | `src/hnsw.rs` | ✅ All have context now |
 | E10 | CAGRA index rebuild errors become empty | `src/cagra.rs:188-195` |
 | E11 | HNSW dimension mismatch returns empty | `src/hnsw.rs:364-372` |
 | E13 | lib.rs index_notes returns anyhow | `src/lib.rs:105` |
