@@ -348,3 +348,8 @@ mentions = ["src/note.rs", "src/nl.rs", "src/store.rs", "src/mcp.rs", "proptest"
 sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via LIMIT/OFFSET, HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = ["src/store/chunks.rs", "src/hnsw.rs", "embedding_batches", "build_batched"]
+
+[[note]]
+sentiment = 1.0
+text = "Notes now included in HNSW index with 'note:' prefix. search_unified_with_index partitions candidates by prefix, fetches from chunks/notes tables separately. O(n) brute-force eliminated. Fixes #103."
+mentions = ["src/store/notes.rs", "src/search.rs", "src/cli/mod.rs", "note_embeddings", "search_notes_by_ids"]
