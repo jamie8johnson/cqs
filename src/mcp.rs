@@ -141,6 +141,9 @@ struct SearchArgs {
     /// Definition search mode - find by name only, no semantic matching.
     /// Use for "where is X defined?" queries. Much faster than semantic search.
     name_only: Option<bool>,
+    /// Weight for note scores in results (0.0-1.0, default 1.0)
+    /// Lower values make notes rank lower than code with similar semantic scores.
+    note_weight: Option<f32>,
 }
 
 /// Audit mode arguments
@@ -438,6 +441,11 @@ impl McpServer {
                             "type": "boolean",
                             "description": "Definition search: find by name only, skip semantic matching. Use for 'where is X defined?' queries. Much faster.",
                             "default": false
+                        },
+                        "note_weight": {
+                            "type": "number",
+                            "description": "Weight for note scores 0.0-1.0 (default: 1.0). Lower values make notes rank below code.",
+                            "default": 1.0
                         }
                     },
                     "required": ["query"]
@@ -631,6 +639,7 @@ impl McpServer {
             name_boost: args.name_boost.unwrap_or(0.2),
             query_text: args.query.clone(),
             enable_rrf: !args.semantic_only.unwrap_or(false), // RRF on by default, disable with semantic_only
+            note_weight: args.note_weight.unwrap_or(1.0),
         };
 
         // Read-lock the index (allows background CAGRA build to upgrade it)
