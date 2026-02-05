@@ -1,0 +1,280 @@
+//! Index command for cqs
+//!
+//! Indexes codebase files for semantic search.
+
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+
+use cqs::{parse_notes, Embedder, Embedding, HnswIndex, ModelInfo, Parser as CqParser, Store};
+
+use crate::cli::{
+    acquire_index_lock, check_interrupted, enumerate_files, find_project_root, run_index_pipeline,
+    signal, Cli,
+};
+
+/// Index codebase files for semantic search
+///
+/// Parses source files, generates embeddings, and stores them in the index database.
+/// Uses incremental indexing by default (only re-embeds changed files).
+pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
+    let root = find_project_root();
+    let cq_dir = root.join(".cq");
+    let index_path = cq_dir.join("index.db");
+
+    // Ensure .cq directory exists
+    if !cq_dir.exists() {
+        std::fs::create_dir_all(&cq_dir)?;
+    }
+
+    // Acquire lock (unless dry run)
+    let _lock = if !dry_run {
+        Some(acquire_index_lock(&cq_dir)?)
+    } else {
+        None
+    };
+
+    signal::setup_signal_handler();
+
+    let _span = tracing::info_span!("cmd_index", force = force, dry_run = dry_run).entered();
+
+    if !cli.quiet {
+        println!("Scanning files...");
+    }
+
+    let parser = CqParser::new()?;
+    let files = enumerate_files(&root, &parser, no_ignore)?;
+
+    if !cli.quiet {
+        println!("Found {} files", files.len());
+    }
+
+    if dry_run {
+        for file in &files {
+            println!("  {}", file.display());
+        }
+        println!();
+        println!("(dry run - no changes made)");
+        return Ok(());
+    }
+
+    // Initialize or open store
+    let store = if index_path.exists() && !force {
+        Store::open(&index_path)?
+    } else {
+        // Remove old index if forcing
+        if index_path.exists() {
+            std::fs::remove_file(&index_path)?;
+        }
+        let store = Store::open(&index_path)?;
+        store.init(&ModelInfo::default())?;
+        store
+    };
+
+    if !cli.quiet {
+        println!("Indexing {} files (pipelined)...", files.len());
+    }
+
+    // Run the 3-stage pipeline: parse → embed → write
+    let stats = run_index_pipeline(&root, files.clone(), &index_path, force, cli.quiet)?;
+    let total_embedded = stats.total_embedded;
+    let total_cached = stats.total_cached;
+    let gpu_failures = stats.gpu_failures;
+
+    // Prune missing files
+    let existing_files: HashSet<_> = files.into_iter().collect();
+    let pruned = store.prune_missing(&existing_files)?;
+
+    if !cli.quiet {
+        println!();
+        println!("Index complete:");
+        let newly_embedded = total_embedded - total_cached;
+        if total_cached > 0 {
+            println!(
+                "  Chunks: {} ({} cached, {} embedded)",
+                total_embedded, total_cached, newly_embedded
+            );
+        } else {
+            println!("  Embedded: {}", total_embedded);
+        }
+        if gpu_failures > 0 {
+            println!("  GPU failures: {} (fell back to CPU)", gpu_failures);
+        }
+        if pruned > 0 {
+            println!("  Pruned: {} (deleted files)", pruned);
+        }
+    }
+
+    // Extract full call graph (includes large functions >100 lines)
+    if !check_interrupted() {
+        if !cli.quiet {
+            println!("Extracting call graph...");
+        }
+
+        let total_calls = extract_call_graph(&parser, &root, &existing_files, &store)?;
+
+        if !cli.quiet {
+            println!("  Call graph: {} calls", total_calls);
+        }
+    }
+
+    // Index notes if notes.toml exists
+    if !check_interrupted() {
+        if !cli.quiet {
+            println!("Indexing notes...");
+        }
+
+        let (note_count, was_skipped) = index_notes_from_file(&root, &store, force)?;
+
+        if !cli.quiet {
+            if was_skipped && note_count == 0 {
+                println!("Notes up to date.");
+            } else if note_count > 0 {
+                let (total, warnings, patterns) = store.note_stats()?;
+                println!(
+                    "  Notes: {} total ({} warnings, {} patterns)",
+                    total, warnings, patterns
+                );
+            }
+        }
+    }
+
+    // Build HNSW index for fast search (includes both chunks and notes)
+    if !check_interrupted() {
+        if !cli.quiet {
+            println!("Building HNSW index...");
+        }
+
+        if let Some((total, chunk_count, note_count)) = build_hnsw_index(&store, &cq_dir)? {
+            if !cli.quiet {
+                println!(
+                    "  HNSW index: {} vectors ({} chunks, {} notes)",
+                    total, chunk_count, note_count
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Extract call graph from source files
+///
+/// Parses function call relationships for callers/callees queries.
+/// Returns the total number of calls extracted.
+fn extract_call_graph(
+    parser: &CqParser,
+    root: &Path,
+    files: &HashSet<PathBuf>,
+    store: &Store,
+) -> Result<usize> {
+    let mut total_calls = 0;
+    for file in files {
+        let abs_path = root.join(file);
+        match parser.parse_file_calls(&abs_path) {
+            Ok(function_calls) => {
+                for fc in &function_calls {
+                    total_calls += fc.calls.len();
+                }
+                store.upsert_function_calls(file, &function_calls)?;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to extract calls from {}: {}", abs_path.display(), e);
+            }
+        }
+    }
+    Ok(total_calls)
+}
+
+/// Index notes from notes.toml if it exists and needs reindexing
+///
+/// Returns (indexed_count, was_skipped) where was_skipped is true if notes were up to date.
+fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usize, bool)> {
+    let notes_path = root.join("docs/notes.toml");
+    if !notes_path.exists() {
+        return Ok((0, true));
+    }
+
+    // Check if notes need reindexing (Some(mtime) = needs reindex, None = up to date)
+    let needs_reindex = force
+        || store
+            .notes_need_reindex(&notes_path)
+            .unwrap_or(Some(0))
+            .is_some();
+
+    if !needs_reindex {
+        return Ok((0, true));
+    }
+
+    match parse_notes(&notes_path) {
+        Ok(notes) => {
+            if notes.is_empty() {
+                return Ok((0, false));
+            }
+
+            let embedder = Embedder::new()?;
+            let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
+            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+            let base_embeddings = embedder.embed_documents(&text_refs)?;
+
+            // Add sentiment as 769th dimension
+            let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
+                .into_iter()
+                .zip(notes.iter())
+                .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
+                .collect();
+
+            // Get file mtime
+            let file_mtime = notes_path
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+
+            // Delete old notes and insert new
+            store.delete_notes_by_file(&notes_path)?;
+            let count = notes.len();
+            let note_embeddings: Vec<_> =
+                notes.into_iter().zip(embeddings_with_sentiment).collect();
+            store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
+
+            Ok((count, false))
+        }
+        Err(e) => {
+            tracing::warn!("Failed to parse notes: {}", e);
+            Ok((0, false))
+        }
+    }
+}
+
+/// Build HNSW index from store embeddings
+///
+/// Creates an HNSW index containing both chunk and note embeddings,
+/// using batched insertion to avoid OOM on large repos.
+pub(crate) fn build_hnsw_index(
+    store: &Store,
+    cq_dir: &Path,
+) -> Result<Option<(usize, usize, usize)>> {
+    let chunk_count = store.chunk_count()? as usize;
+    let note_count = store.note_count()? as usize;
+    let total_count = chunk_count + note_count;
+
+    if total_count == 0 {
+        return Ok(None);
+    }
+
+    // Stream chunk embeddings in 10k batches, then add all notes
+    // Notes are capped at 10k so loading them all is fine
+    const HNSW_BATCH_SIZE: usize = 10_000;
+
+    let chunk_batches = store.embedding_batches(HNSW_BATCH_SIZE);
+    let note_batch = std::iter::once(store.note_embeddings());
+
+    let hnsw = HnswIndex::build_batched(chunk_batches.chain(note_batch), total_count)?;
+    hnsw.save(cq_dir, "index")?;
+
+    Ok(Some((hnsw.len(), chunk_count, note_count)))
+}

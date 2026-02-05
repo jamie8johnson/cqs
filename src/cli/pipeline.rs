@@ -92,7 +92,7 @@ struct EmbeddedBatch {
 }
 
 /// Stats returned from pipelined indexing
-pub(super) struct PipelineStats {
+pub(crate) struct PipelineStats {
     pub total_embedded: usize,
     pub total_cached: usize,
     pub gpu_failures: usize,
@@ -102,7 +102,7 @@ pub(super) struct PipelineStats {
 /// 1. Parser: Parse files in parallel batches
 /// 2. Embedder: Embed chunks (GPU)
 /// 3. Writer: Write to SQLite
-pub(super) fn run_index_pipeline(
+pub(crate) fn run_index_pipeline(
     root: &Path,
     files: Vec<PathBuf>,
     store_path: &Path,

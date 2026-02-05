@@ -38,7 +38,7 @@ fn strip_unc_prefix(path: PathBuf) -> PathBuf {
 /// stat() during directory traversal, so e.metadata() doesn't re-stat. The
 /// canonicalize() call does require a separate syscall for symlink resolution,
 /// but this is unavoidable for correct path validation.
-pub(super) fn enumerate_files(
+pub(crate) fn enumerate_files(
     root: &Path,
     parser: &CqParser,
     no_ignore: bool,
@@ -136,7 +136,7 @@ fn process_exists(pid: u32) -> bool {
 
 /// Acquire file lock to prevent concurrent indexing
 /// Writes PID to lock file for stale lock detection
-pub(super) fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
+pub(crate) fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
     use fs4::fs_std::FileExt;
     use std::io::Write;
 
