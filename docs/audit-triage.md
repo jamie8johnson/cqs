@@ -458,7 +458,7 @@ After de-duplication: **~225 unique findings**
 #### Code Hygiene (1 hard)
 | # | Finding | Location |
 |---|---------|----------|
-| H5 | run_index_pipeline ~400 lines | `src/cli/mod.rs:450-850` |
+| H5 | run_index_pipeline ~400 lines | `src/cli/mod.rs:450-850` | ✅ Extracted helpers, simplified CPU thread |
 
 #### Module Boundaries (2 hard)
 | # | Finding | Location |

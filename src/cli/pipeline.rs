@@ -98,6 +98,84 @@ pub(crate) struct PipelineStats {
     pub gpu_failures: usize,
 }
 
+/// Result of preparing a batch for embedding.
+///
+/// Separates chunks into those with cached embeddings vs those needing embedding.
+struct PreparedEmbedding {
+    /// Chunks with existing embeddings (from cache)
+    cached: Vec<(Chunk, Embedding)>,
+    /// Chunks that need new embeddings
+    to_embed: Vec<Chunk>,
+    /// NL descriptions for chunks needing embedding
+    texts: Vec<String>,
+    /// File modification time for the batch
+    file_mtime: i64,
+}
+
+/// Prepare a batch for embedding: apply windowing, check cache, generate texts.
+///
+/// This consolidates the common logic between GPU and CPU embedder threads:
+/// 1. Apply windowing to split long chunks
+/// 2. Check store for cached embeddings by content hash
+/// 3. Separate into cached (reuse) vs to_embed (need new embedding)
+/// 4. Generate NL descriptions for chunks needing embedding
+fn prepare_for_embedding(
+    batch: ParsedBatch,
+    embedder: &Embedder,
+    store: &Store,
+) -> PreparedEmbedding {
+    use cqs::nl::generate_nl_description;
+
+    // Step 1: Apply windowing to split long chunks into overlapping windows
+    let windowed_chunks = apply_windowing(batch.chunks, embedder);
+
+    // Step 2: Check for existing embeddings by content hash
+    let hashes: Vec<&str> = windowed_chunks
+        .iter()
+        .map(|c| c.content_hash.as_str())
+        .collect();
+    let existing = store.get_embeddings_by_hashes(&hashes);
+
+    // Step 3: Separate into cached vs to_embed
+    let mut to_embed: Vec<Chunk> = Vec::new();
+    let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
+
+    for chunk in windowed_chunks {
+        if let Some(emb) = existing.get(&chunk.content_hash) {
+            cached.push((chunk, emb.clone()));
+        } else {
+            to_embed.push(chunk);
+        }
+    }
+
+    // Step 4: Generate NL descriptions for chunks needing embedding
+    let texts: Vec<String> = to_embed.iter().map(generate_nl_description).collect();
+
+    PreparedEmbedding {
+        cached,
+        to_embed,
+        texts,
+        file_mtime: batch.file_mtime,
+    }
+}
+
+/// Create an EmbeddedBatch from cached and newly embedded chunks.
+fn create_embedded_batch(
+    cached: Vec<(Chunk, Embedding)>,
+    to_embed: Vec<Chunk>,
+    new_embeddings: Vec<Embedding>,
+    file_mtime: i64,
+) -> EmbeddedBatch {
+    let cached_count = cached.len();
+    let mut chunk_embeddings = cached;
+    chunk_embeddings.extend(to_embed.into_iter().zip(new_embeddings));
+    EmbeddedBatch {
+        chunk_embeddings,
+        cached_count,
+        file_mtime,
+    }
+}
+
 /// Run the indexing pipeline with 3 concurrent stages:
 /// 1. Parser: Parse files in parallel batches
 /// 2. Embedder: Embed chunks (GPU)
@@ -395,42 +473,14 @@ pub(crate) fn run_index_pipeline(
                 },
             };
 
-            // Apply windowing to split long chunks into overlapping windows
-            let windowed_chunks = apply_windowing(batch.chunks, &embedder);
-            let batch = ParsedBatch {
-                chunks: windowed_chunks,
-                file_mtime: batch.file_mtime,
-            };
-
-            // Check for existing embeddings by content hash
-            let hashes: Vec<&str> = batch
-                .chunks
-                .iter()
-                .map(|c| c.content_hash.as_str())
-                .collect();
-            let existing = store.get_embeddings_by_hashes(&hashes);
-
-            // Separate into cached vs to_embed
-            let mut to_embed: Vec<&Chunk> = Vec::new();
-            let mut cached: Vec<(Chunk, Embedding)> = Vec::new();
-
-            for chunk in &batch.chunks {
-                if let Some(emb) = existing.get(&chunk.content_hash) {
-                    cached.push((chunk.clone(), emb.clone()));
-                } else {
-                    to_embed.push(chunk);
-                }
-            }
+            // Prepare batch: windowing, cache check, text generation
+            let prepared = prepare_for_embedding(batch, &embedder, &store);
 
             // Embed new chunks (CPU only)
-            let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
+            let new_embeddings: Vec<Embedding> = if prepared.to_embed.is_empty() {
                 vec![]
             } else {
-                let texts: Vec<String> = to_embed
-                    .iter()
-                    .map(|c| generate_nl_description(c))
-                    .collect();
-                let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+                let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
                 embedder
                     .embed_documents(&text_refs)?
                     .into_iter()
@@ -438,20 +488,16 @@ pub(crate) fn run_index_pipeline(
                     .collect()
             };
 
-            let cached_count = cached.len();
-            let mut chunk_embeddings = cached;
-            chunk_embeddings.extend(to_embed.into_iter().cloned().zip(new_embeddings));
+            let embedded_batch = create_embedded_batch(
+                prepared.cached,
+                prepared.to_embed,
+                new_embeddings,
+                prepared.file_mtime,
+            );
 
-            embedded_count_cpu.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
+            embedded_count_cpu.fetch_add(embedded_batch.chunk_embeddings.len(), Ordering::Relaxed);
 
-            if embed_tx_cpu
-                .send(EmbeddedBatch {
-                    chunk_embeddings,
-                    cached_count,
-                    file_mtime: batch.file_mtime,
-                })
-                .is_err()
-            {
+            if embed_tx_cpu.send(embedded_batch).is_err() {
                 break; // Receiver dropped
             }
         }
