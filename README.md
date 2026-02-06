@@ -247,6 +247,8 @@ Implements MCP Streamable HTTP spec 2025-11-25 with Origin validation and protoc
 - TypeScript
 - JavaScript (JSDoc `@param`/`@returns` tags improve search quality)
 - Go
+- C
+- Java
 
 ## Indexing
 

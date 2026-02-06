@@ -65,7 +65,7 @@ Thank you for your interest in contributing to cqs!
 
 ### Feature Ideas
 
-- Additional language support (tree-sitter grammars: C, C++, Java, Ruby)
+- Additional language support (tree-sitter grammars: C++, Ruby, and more)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
