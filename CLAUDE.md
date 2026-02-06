@@ -51,7 +51,11 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-Tools: `cqs_search`, `cqs_stats` (run `cqs watch` to keep index fresh)
+Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff` (run `cqs watch` to keep index fresh)
+
+**`cqs_similar`** — find code similar to a given function. Use for refactoring discovery, finding duplicates.
+**`cqs_explain`** — function card: signature, callers, callees, similar. Collapses 4+ tool calls into 1.
+**`cqs_diff`** — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
 
 ## Audit Mode
 

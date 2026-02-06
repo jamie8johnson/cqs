@@ -525,3 +525,18 @@ mentions = ["CHANGELOG.md", "git tag", "release"]
 sentiment = -0.5
 text = "cfg(test) only applies within the library crate's unit tests. Integration tests (tests/*.rs) are separate compilation units — they see the public API without cfg(test) gating. Can't use cfg(test) to hide types only needed by integration tests."
 mentions = ["cfg(test)", "tests/", "integration tests"]
+
+[[note]]
+sentiment = -0.5
+text = "parse_target (file:name resolution) is duplicated in 4 places: cli/commands/similar.rs, cli/commands/explain.rs, mcp/tools/similar.rs, mcp/tools/explain.rs. Should extract to shared utility if adding more commands that resolve targets."
+mentions = ["src/cli/commands/similar.rs", "src/cli/commands/explain.rs", "src/mcp/tools/similar.rs", "src/mcp/tools/explain.rs"]
+
+[[note]]
+sentiment = -0.5
+text = "cqs diff loads embeddings one-by-one for each matched pair via get_chunk_with_embedding. For large diffs (1000+ matched functions), this will be slow. Batch loading would help but adds complexity — defer until someone hits the perf wall."
+mentions = ["src/diff.rs", "semantic_diff", "get_chunk_with_embedding"]
+
+[[note]]
+sentiment = 0.0
+text = "Workspace detection uses string contains(\"[workspace]\") on Cargo.toml content. Simple but could false-positive on comments. Low risk — real TOML parsing would need toml crate dependency just for this check."
+mentions = ["src/cli/config.rs", "find_cargo_workspace_root"]

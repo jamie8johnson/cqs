@@ -15,8 +15,8 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_doctor, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref,
-    cmd_serve, cmd_stats, NotesCommand, RefCommand, ServeConfig,
+    cmd_callees, cmd_callers, cmd_diff, cmd_doctor, cmd_explain, cmd_index, cmd_init, cmd_notes,
+    cmd_query, cmd_ref, cmd_serve, cmd_similar, cmd_stats, NotesCommand, RefCommand, ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -169,6 +169,44 @@ enum Commands {
         #[command(subcommand)]
         subcmd: RefCommand,
     },
+    /// Semantic diff between indexed snapshots
+    Diff {
+        /// Reference name to compare from
+        source: String,
+        /// Reference name or "project" (default: project)
+        target: Option<String>,
+        /// Similarity threshold for "modified" (default: 0.95)
+        #[arg(short = 't', long, default_value = "0.95")]
+        threshold: f32,
+        /// Filter by language
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate a function card (signature, callers, callees, similar)
+    Explain {
+        /// Function name or file:function
+        name: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find code similar to a given function
+    Similar {
+        /// Function name or file:function (e.g., "search_filtered" or "src/search.rs:search_filtered")
+        target: String,
+        /// Max results
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Min similarity threshold
+        #[arg(short = 't', long, default_value = "0.3")]
+        threshold: f32,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -217,6 +255,20 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
         Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
+        Some(Commands::Diff {
+            ref source,
+            ref target,
+            threshold,
+            ref lang,
+            json,
+        }) => cmd_diff(source, target.as_deref(), threshold, lang.as_deref(), json),
+        Some(Commands::Explain { ref name, json }) => cmd_explain(&cli, name, json),
+        Some(Commands::Similar {
+            ref target,
+            limit,
+            threshold,
+            json,
+        }) => cmd_similar(&cli, target, limit, threshold, json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

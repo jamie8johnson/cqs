@@ -55,6 +55,7 @@
 //! ```
 
 pub mod config;
+pub mod diff;
 pub mod embedder;
 pub mod hnsw;
 pub mod index;

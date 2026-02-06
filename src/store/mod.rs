@@ -32,6 +32,9 @@ use tokio::runtime::Runtime;
 /// Information about a function caller (from call graph).
 pub use helpers::CallerInfo;
 
+/// Chunk identity for diff comparison (name, file, line, window info).
+pub use helpers::ChunkIdentity;
+
 /// Summary of an indexed code chunk (function, class, etc.).
 pub use helpers::ChunkSummary;
 

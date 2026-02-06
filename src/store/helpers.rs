@@ -165,6 +165,28 @@ pub struct CallerInfo {
     pub line: u32,
 }
 
+/// Chunk identity for diff comparison
+///
+/// Minimal metadata needed to identify and match chunks across stores.
+/// Does not include content or embeddings.
+#[derive(Debug, Clone)]
+pub struct ChunkIdentity {
+    /// Unique chunk identifier
+    pub id: String,
+    /// Source file path
+    pub origin: String,
+    /// Function/class/etc. name
+    pub name: String,
+    /// Type of code element (e.g., "function", "class")
+    pub chunk_type: String,
+    /// Starting line number (1-indexed)
+    pub line_start: u32,
+    /// Parent chunk ID (for windowed chunks)
+    pub parent_id: Option<String>,
+    /// Window index within parent (for long functions split into windows)
+    pub window_idx: Option<u32>,
+}
+
 /// Note statistics (total count and categorized counts)
 #[derive(Debug, Clone)]
 pub struct NoteStats {
