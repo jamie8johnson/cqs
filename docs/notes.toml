@@ -16,7 +16,7 @@ mentions = [
 sentiment = -1.0
 text = 'MCP tools/call responses MUST wrap in {"content":[{"type":"text","text":"..."}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code.'
 mentions = [
-    "mcp.rs",
+    "src/mcp/tools/mod.rs",
     "tools/call",
 ]
 
@@ -24,7 +24,7 @@ mentions = [
 sentiment = -0.5
 text = 'trailing_var_arg in clap eats flags after the query. `cqs "foo" -n 5` parses as query "foo -n 5". Removed it - users quote multi-word queries, flags work anywhere.'
 mentions = [
-    "cli.rs",
+    "src/cli/mod.rs",
     "clap",
 ]
 
@@ -75,8 +75,8 @@ mentions = [
 sentiment = 0.0
 text = "store.search() and hnsw.search() both match callee name 'search'. No type info in call graph - can't distinguish which is called. Documented limitation."
 mentions = [
-    "store.rs",
-    "parser.rs",
+    "src/store/mod.rs",
+    "src/parser.rs",
 ]
 
 [[note]]
@@ -148,14 +148,6 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Scale changes economics. 90% savings at 1M instances = $90k/month. Watch mode, embedding efficiency, GPU utilization matter more at scale."
-mentions = [
-    "embedder.rs",
-    "cli.rs",
-]
-
-[[note]]
-sentiment = 0.5
 text = "Copilot+ PC is a hardware contract for AI workloads - guarantees NPU with 40+ TOPS, DirectML, Phi Silica. ort crate has DirectML execution provider. If we detect Copilot+ runtime, could use NPU path instead of CUDA/CPU. Third acceleration tier after GPU and CPU."
 mentions = [
     "embedder.rs",
@@ -176,8 +168,8 @@ mentions = [
 sentiment = 0.5
 text = "MCP 0.13s query latency is real-time usable. Was 1.3s before optimization (CPU embedder init per query). 10x improvement from caching embedder instance."
 mentions = [
-    "mcp.rs",
-    "embedder.rs",
+    "src/mcp/server.rs",
+    "src/embedder.rs",
     "latency",
 ]
 
@@ -244,7 +236,7 @@ mentions = [
 sentiment = -0.5
 text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=32 runs stable. With 2048-token windowing, GPU util cycles 0-99% (bursty) as it waits for ort CPU fallback ops between batches."
 mentions = [
-    "cli.rs",
+    "src/cli/mod.rs",
     "batch_size",
     "gpu-search",
 ]
@@ -263,8 +255,8 @@ mentions = [
 sentiment = 0.0
 text = "Switched from nomic-embed-text-v1.5 to E5-base-v2 (Feb 2026). E5 prefixes: 'passage: ' for docs, 'query: ' for search. Window params adjusted: 480 tokens/64 overlap (E5's 512 limit vs nomic's 8192)."
 mentions = [
-    "embedder.rs",
-    "cli.rs",
+    "src/embedder.rs",
+    "src/cli/mod.rs",
     "E5",
     "windowing",
 ]
@@ -330,7 +322,7 @@ mentions = [
 sentiment = 0.5
 text = "--name-boost 0.8 for precision when you know partial function name. Default 0.2 favors semantic. Crank it up when searching for specific identifiers vs concepts."
 mentions = [
-    "cli.rs",
+    "src/cli/mod.rs",
     "name_boost",
     "hybrid search",
 ]
@@ -368,8 +360,8 @@ mentions = [
 sentiment = 0.5
 text = "--bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
 mentions = [
-    "cli.rs",
-    "mcp.rs",
+    "src/cli/mod.rs",
+    "src/mcp/validation.rs",
     "--bind",
     "auth",
 ]
@@ -386,8 +378,8 @@ mentions = [
 sentiment = 0.5
 text = "Inline validation code is hard to find via semantic search. Extract into named functions: validate_api_key, validate_origin_header, etc. 'validate bearer token' query now finds validate_api_key at 0.74 score."
 mentions = [
-    "mcp.rs",
-    "hnsw.rs",
+    "src/mcp/validation.rs",
+    "src/hnsw.rs",
     "discoverability",
 ]
 
@@ -425,17 +417,9 @@ sentiment = 0.5
 text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight, MCP note_weight. Useful when notes dominate due to high semantic match."
 mentions = [
     "SearchFilter",
-    "search.rs",
-    "mcp.rs",
-    "cli/mod.rs",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Audit findings file: docs/audit-findings.md. Triage by impact x effort into P1-P4. Fix P1 first (easy + high-impact), create issues for P4 (hard or low-impact). Collect ALL findings before fixing ANY."
-mentions = [
-    "docs/audit-findings.md",
-    "audit",
+    "src/search.rs",
+    "src/mcp/tools/search.rs",
+    "src/cli/mod.rs",
 ]
 
 [[note]]
@@ -446,25 +430,6 @@ mentions = [
     "CUDA",
     "model selection",
     "E5",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Multi-index architecture: multiple Store instances with thin MultiSearch wrapper, NOT SQLite ATTACH or single-DB approach. Each reference gets its own DB + HNSW. Results merged with per-source weight multiplier. Store API is already clean enough for this."
-mentions = [
-    "store",
-    "multi-index",
-    "architecture",
-    "hnsw.rs",
-]
-
-[[note]]
-sentiment = 0.0
-text = "Route to multi-index ordering matters: settle embedding model BEFORE building reference indexes. Model switch with N reference indexes = N rebuilds. Do it while only project indexes exist."
-mentions = [
-    "multi-index",
-    "model selection",
-    "roadmap",
 ]
 
 [[note]]
@@ -530,4 +495,30 @@ mentions = [
 [[note]]
 sentiment = -0.5
 text = "`--json` is a top-level Cli flag, not a subcommand flag. Correct: `cqs --json stats`, NOT `cqs stats --json`. Same for callers/callees. Could be improved by adding it to subcommands too."
-mentions = ["src/cli/mod.rs", "--json", "clap"]
+mentions = [
+    "src/cli/mod.rs",
+    "--json",
+    "clap",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Multi-index architecture: each reference gets its own Store + HNSW. Score-based merge with weight multiplier (default 0.8). Sequential search is fine for 2-3 refs. Parallel search tracked in #257 for when 5+ refs needed."
+mentions = [
+    "src/reference.rs",
+    "merge_results",
+    "ReferenceIndex",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Fresh-eyes review caught missing weight validation in ref add — user could pass weight >1.0 which amplifies reference scores instead of damping them. Always validate user-facing numeric inputs at entry point."
+mentions = [
+    "src/cli/commands/reference.rs",
+    "cmd_ref_add",
+]
+
+[[note]]
+sentiment = 0.5
+text = "20-category audit produced 38% duplicate findings. Categories like Input Security + Data Security, Memory Management + Resource Footprint, and Algorithmic Complexity + I/O Efficiency overlap heavily. Consolidated to 14 categories / 3 batches for next run. Cuts collection time ~25% and eliminates redundancy."
+mentions = ["docs/plans/2026-02-04-20-category-audit-design.md", ".claude/skills/audit/SKILL.md", "audit"]

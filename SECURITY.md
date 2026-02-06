@@ -84,7 +84,8 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 | `.cq/hnsw.*` | Vector index files | Search operations |
 | `docs/notes.toml` | Developer notes | Search, `cqs_read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
-| `~/.config/cqs/` | User config (future) | Not yet implemented |
+| `~/.config/cqs/` | Config file (user-level defaults) | All operations |
+| `~/.local/share/cqs/refs/*/` | Reference indexes (read-only during search) | Search operations |
 
 ### Write Access
 
@@ -96,6 +97,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 | `.cq/checksums.bin` | File change detection | `cqs index` |
 | `.cq/cqs.pid` | Process lock file | `cqs watch` |
 | `docs/notes.toml` | Developer notes | `cqs_add_note`, `cqs_update_note`, `cqs_remove_note` |
+| `~/.local/share/cqs/refs/*/` | Reference index storage | `cqs ref add`, `cqs ref update` |
 
 ### Process Operations
 
@@ -118,6 +120,8 @@ This blocks:
 - `../../../etc/passwd` - resolved and rejected
 - Absolute paths outside project - rejected
 - Symlinks pointing outside - resolved then rejected
+
+Reference names are validated to prevent path traversal: no `/`, `\`, or `..` allowed.
 
 ## Symlink Behavior
 

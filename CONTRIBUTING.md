@@ -117,7 +117,8 @@ src/
     transports/ - stdio.rs, http.rs transport implementations
   parser.rs     - tree-sitter code parsing (delegates to language/ registry)
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
-  search.rs     - Search algorithms, cosine similarity, HNSW-guided search
+  search.rs     - Search algorithms, name matching, HNSW-guided search
+  math.rs       - Vector math utilities (cosine similarity, SIMD)
   hnsw.rs       - HNSW index with batched build, atomic writes
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl.rs         - NL description generation, JSDoc parsing

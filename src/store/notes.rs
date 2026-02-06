@@ -71,7 +71,8 @@ impl Store {
 
             let now = chrono::Utc::now().to_rfc3339();
             for (note, embedding) in notes {
-                let mentions_json = serde_json::to_string(&note.mentions).unwrap_or_default();
+                let mentions_json = serde_json::to_string(&note.mentions)
+                    .map_err(|e| StoreError::Runtime(format!("JSON serialization: {e}")))?;
 
                 sqlx::query(
                     "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
@@ -198,7 +199,8 @@ impl Store {
             // Step 2: Insert new notes + FTS
             let now = chrono::Utc::now().to_rfc3339();
             for (note, embedding) in notes {
-                let mentions_json = serde_json::to_string(&note.mentions).unwrap_or_default();
+                let mentions_json = serde_json::to_string(&note.mentions)
+                    .map_err(|e| StoreError::Runtime(format!("JSON serialization: {e}")))?;
 
                 sqlx::query(
                     "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)

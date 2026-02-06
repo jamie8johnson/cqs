@@ -37,7 +37,12 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
     let filter = SearchFilter {
         languages: args
             .language
-            .map(|l| vec![l.parse().unwrap_or(Language::Rust)]),
+            .map(|l| {
+                l.parse::<Language>()
+                    .map(|lang| vec![lang])
+                    .map_err(|_| anyhow::anyhow!("Unknown language '{}'. Supported: rust, python, typescript, javascript, go, c, java", l))
+            })
+            .transpose()?,
         path_pattern: args.path_pattern,
         name_boost: args.name_boost.unwrap_or(0.2),
         query_text: args.query.clone(),

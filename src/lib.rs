@@ -20,7 +20,7 @@
 //! # fn main() -> anyhow::Result<()> {
 //! // Initialize components
 //! let parser = Parser::new()?;
-//! let mut embedder = Embedder::new()?;
+//! let embedder = Embedder::new()?;
 //! let store = Store::open(std::path::Path::new(".cq/index.db"))?;
 //!
 //! // Parse and embed a file

@@ -90,27 +90,25 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria. Teammates start with zero context — they can't see your conversation.
 
-## 20-Category Audit
+## Code Audit
 
 Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
 
 **Quick reference:**
-- 20 categories in 4 batches of 5 (avoids context overflow)
-- Maintainability/readability prioritized in batch order
+- 14 categories in 3 batches (5, 5, 4) — consolidated from 20/4 after v0.5.3 audit found 38% duplication
 - Collect all findings first, then fix by impact × effort
 - Stop at diminishing returns during discovery
 - Once triaged, complete the tier. Don't suggest stopping mid-priority.
 
 **Batches:**
-1. Readability foundation: Code Hygiene, Module Boundaries, Documentation, API Design, Error Propagation
-2. Understandable behavior: Observability, Test Coverage, Panic Paths, Algorithm Correctness, Extensibility
-3. Data & platform: Data Integrity, Edge Cases, Platform Behavior, Memory Management, Concurrency Safety
-4. Security & performance: Input Security, Data Security, Algorithmic Complexity, I/O Efficiency, Resource Footprint
+1. Code Quality: Code Quality, Documentation, API Design, Error Handling, Observability
+2. Behavior: Test Coverage, Robustness, Algorithm Correctness, Extensibility, Platform Behavior
+3. Infrastructure: Security, Data Safety, Performance, Resource Management
 
 **Execution:**
-1. Enable audit mode before each batch
-2. `spawnTeam` per batch, 5 teammates (one per category, haiku or sonnet)
-3. Each teammate writes findings to `docs/audit-findings.md` (append, don't overwrite)
+1. Enable audit mode before each batch (`cqs_audit_mode(true, expires_in="2h")`)
+2. `TeamCreate` per batch, agents per category (sonnet for judgment, haiku for mechanical)
+3. Each agent writes findings to `docs/audit-findings.md` (append, don't overwrite)
 4. Shutdown team, cleanup before next batch
 5. After all batches: triage, prioritize, fix
 

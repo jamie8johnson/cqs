@@ -12,6 +12,8 @@
 //! - `lang-typescript` - TypeScript support (enabled by default)
 //! - `lang-javascript` - JavaScript support (enabled by default)
 //! - `lang-go` - Go support (enabled by default)
+//! - `lang-c` - C support (enabled by default)
+//! - `lang-java` - Java support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;

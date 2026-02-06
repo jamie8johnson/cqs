@@ -29,18 +29,18 @@ pub enum StoreError {
     SystemTime,
     #[error("Runtime error: {0}")]
     Runtime(String),
-    #[error("Schema version mismatch in {0}: index is v{1}, cq expects v{2}. Run 'cq index --force' to rebuild.")]
+    #[error("Schema version mismatch in {0}: index is v{1}, cqs expects v{2}. Run 'cqs index --force' to rebuild.")]
     SchemaMismatch(String, i32, i32),
-    #[error("Index created by newer cq version (schema v{0}). Please upgrade cq.")]
+    #[error("Index created by newer cqs version (schema v{0}). Please upgrade cqs.")]
     SchemaNewerThanCq(i32),
-    #[error("No migration path from schema v{0} to v{1}. Run 'cq index --force' to rebuild.")]
+    #[error("No migration path from schema v{0} to v{1}. Run 'cqs index --force' to rebuild.")]
     MigrationNotSupported(i32, i32),
     #[error(
-        "Model mismatch: index uses '{0}', current is '{1}'. Run 'cq index --force' to re-embed."
+        "Model mismatch: index uses '{0}', current is '{1}'. Run 'cqs index --force' to re-embed."
     )]
     ModelMismatch(String, String),
     #[error(
-        "Dimension mismatch: index has {0}-dim embeddings, current model expects {1}. Run 'cq index --force' to rebuild."
+        "Dimension mismatch: index has {0}-dim embeddings, current model expects {1}. Run 'cqs index --force' to rebuild."
     )]
     DimensionMismatch(u32, u32),
 }
