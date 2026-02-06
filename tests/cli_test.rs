@@ -252,3 +252,137 @@ fn test_invalid_option_fails() {
         .failure()
         .stderr(predicate::str::contains("unexpected argument"));
 }
+
+// =============================================================================
+// Doctor command tests
+// =============================================================================
+
+#[test]
+#[serial]
+fn test_doctor_runs() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["doctor"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[test]
+#[serial]
+fn test_doctor_shows_runtime() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["doctor"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Runtime"));
+}
+
+#[test]
+#[serial]
+fn test_doctor_shows_parser() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["doctor"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Parser"));
+}
+
+// =============================================================================
+// Call graph command tests (callers/callees)
+// =============================================================================
+
+#[test]
+fn test_callers_no_index() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["callers", "some_function"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Index")));
+}
+
+#[test]
+fn test_callees_no_index() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["callees", "some_function"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Index")));
+}
+
+#[test]
+#[serial]
+fn test_callers_json_output() {
+    let dir = setup_project();
+
+    // Initialize and index first
+    cqs()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    cqs()
+        .args(["index"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // callers with --json should return valid JSON (even if empty)
+    let output = cqs()
+        .args(["callers", "add", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Parse stdout to verify it's valid JSON
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
+    assert!(parsed.is_array(), "callers --json should return array");
+}
+
+#[test]
+#[serial]
+fn test_callees_json_output() {
+    let dir = setup_project();
+
+    // Initialize and index first
+    cqs()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    cqs()
+        .args(["index"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // callees with --json should return valid JSON
+    let output = cqs()
+        .args(["callees", "add", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
+    assert!(parsed.is_object(), "callees --json should return object");
+    assert!(parsed["function"].is_string(), "Should have function field");
+}

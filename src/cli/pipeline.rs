@@ -574,3 +574,103 @@ pub(crate) fn run_index_pipeline(
         gpu_failures: gpu_failures.load(Ordering::Relaxed),
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::language::{ChunkType, Language};
+
+    fn make_test_chunk(id: &str, content: &str) -> Chunk {
+        Chunk {
+            id: id.to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: id.to_string(),
+            signature: String::new(),
+            content: content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 10,
+            content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+            parent_id: None,
+            window_idx: None,
+        }
+    }
+
+    #[test]
+    fn test_create_embedded_batch_all_cached() {
+        let chunk = make_test_chunk("c1", "fn foo() {}");
+        let emb = Embedding::new(vec![0.0; 769]);
+        let cached = vec![(chunk, emb)];
+
+        let batch = create_embedded_batch(cached, vec![], vec![], 12345);
+        assert_eq!(batch.chunk_embeddings.len(), 1);
+        assert_eq!(batch.cached_count, 1);
+        assert_eq!(batch.file_mtime, 12345);
+    }
+
+    #[test]
+    fn test_create_embedded_batch_all_new() {
+        let chunk = make_test_chunk("c1", "fn foo() {}");
+        let emb = Embedding::new(vec![1.0; 769]);
+
+        let batch = create_embedded_batch(vec![], vec![chunk], vec![emb], 99);
+        assert_eq!(batch.chunk_embeddings.len(), 1);
+        assert_eq!(batch.cached_count, 0);
+        assert_eq!(batch.file_mtime, 99);
+    }
+
+    #[test]
+    fn test_create_embedded_batch_mixed() {
+        let cached_chunk = make_test_chunk("c1", "fn foo() {}");
+        let cached_emb = Embedding::new(vec![0.0; 769]);
+        let new_chunk = make_test_chunk("c2", "fn bar() {}");
+        let new_emb = Embedding::new(vec![1.0; 769]);
+
+        let batch = create_embedded_batch(
+            vec![(cached_chunk, cached_emb)],
+            vec![new_chunk],
+            vec![new_emb],
+            12345,
+        );
+        assert_eq!(batch.chunk_embeddings.len(), 2);
+        assert_eq!(batch.cached_count, 1);
+    }
+
+    #[test]
+    fn test_create_embedded_batch_empty() {
+        let batch = create_embedded_batch(vec![], vec![], vec![], 0);
+        assert_eq!(batch.chunk_embeddings.len(), 0);
+        assert_eq!(batch.cached_count, 0);
+    }
+
+    #[test]
+    fn test_create_embedded_batch_preserves_order() {
+        let c1 = make_test_chunk("c1", "fn first() {}");
+        let e1 = Embedding::new(vec![1.0; 769]);
+        let c2 = make_test_chunk("c2", "fn second() {}");
+        let e2 = Embedding::new(vec![2.0; 769]);
+        let c3 = make_test_chunk("c3", "fn third() {}");
+        let e3 = Embedding::new(vec![3.0; 769]);
+
+        let batch = create_embedded_batch(vec![(c1, e1)], vec![c2, c3], vec![e2, e3], 0);
+
+        assert_eq!(batch.chunk_embeddings.len(), 3);
+        // Cached come first, then new in order
+        assert_eq!(batch.chunk_embeddings[0].0.id, "c1");
+        assert_eq!(batch.chunk_embeddings[1].0.id, "c2");
+        assert_eq!(batch.chunk_embeddings[2].0.id, "c3");
+    }
+
+    #[test]
+    fn test_windowing_constants() {
+        // Verify constants are sensible
+        assert!(MAX_TOKENS_PER_WINDOW <= 512, "Should be under E5 limit");
+        assert!(
+            WINDOW_OVERLAP_TOKENS < MAX_TOKENS_PER_WINDOW,
+            "Overlap must be less than window"
+        );
+        assert!(WINDOW_OVERLAP_TOKENS > 0, "Overlap should be positive");
+    }
+}

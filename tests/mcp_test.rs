@@ -716,6 +716,595 @@ fn test_whitespace_only_query() {
 }
 
 // =============================================================================
+// Tool-specific tests: search, notes, callers/callees, audit, stats
+// =============================================================================
+
+// ----- cqs_search tool tests -----
+
+#[test]
+fn test_cqs_search_name_only_mode() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": "test_function",
+                "name_only": true
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // name_only mode should succeed (skips embedder, searches by name)
+    assert!(
+        response.error.is_none(),
+        "name_only search failed: {:?}",
+        response.error
+    );
+}
+
+#[test]
+fn test_cqs_search_limit_clamping_zero() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": "test",
+                "limit": 0,
+                "name_only": true
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // limit=0 should be clamped to 1, not error
+    assert!(
+        response.error.is_none(),
+        "limit=0 should be clamped, got error: {:?}",
+        response.error
+    );
+}
+
+#[test]
+fn test_cqs_search_limit_clamping_high() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": "test",
+                "limit": 50,
+                "name_only": true
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // limit=50 should be clamped to 20, not error
+    assert!(
+        response.error.is_none(),
+        "limit=50 should be clamped, got error: {:?}",
+        response.error
+    );
+}
+
+#[test]
+fn test_cqs_search_threshold_boundaries() {
+    let (_dir, server) = setup_test_server();
+
+    for threshold in &[0.0, 1.0] {
+        let request = make_request(
+            "tools/call",
+            Some(json!({
+                "name": "cqs_search",
+                "arguments": {
+                    "query": "test",
+                    "threshold": threshold,
+                    "name_only": true
+                }
+            })),
+        );
+
+        let response = server.handle_request(request);
+
+        assert!(
+            response.error.is_none(),
+            "threshold={} should be accepted, got error: {:?}",
+            threshold,
+            response.error
+        );
+    }
+}
+
+#[test]
+fn test_cqs_search_missing_query() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_some(),
+        "Missing query should return error"
+    );
+}
+
+#[test]
+fn test_cqs_search_note_weight_param() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": "test",
+                "note_weight": 0.5,
+                "name_only": true
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "note_weight param should be accepted: {:?}",
+        response.error
+    );
+}
+
+// ----- cqs_add_note tool tests -----
+
+#[test]
+fn test_cqs_add_note_basic() {
+    let (dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": "This is a test note"
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "add_note failed: {:?}",
+        response.error
+    );
+
+    let result = response.result.unwrap();
+    let content = result["content"][0]["text"].as_str().unwrap();
+
+    // Should confirm note was added
+    assert!(
+        content.contains("added") || content.contains("status"),
+        "Should confirm addition: {}",
+        content
+    );
+
+    // docs/notes.toml should exist
+    assert!(
+        dir.path().join("docs/notes.toml").exists(),
+        "docs/notes.toml should be created"
+    );
+}
+
+#[test]
+fn test_cqs_add_note_empty_text() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": ""
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some(), "Empty text should return error");
+}
+
+#[test]
+fn test_cqs_add_note_missing_text() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some(), "Missing text should return error");
+}
+
+#[test]
+fn test_cqs_add_note_with_mentions() {
+    let (dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": "Found a pattern in search",
+                "mentions": ["search.rs", "index.rs"],
+                "sentiment": 0.5
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "add_note with mentions failed: {:?}",
+        response.error
+    );
+
+    // Verify TOML contains mentions
+    let toml_content = std::fs::read_to_string(dir.path().join("docs/notes.toml")).unwrap();
+    assert!(
+        toml_content.contains("search.rs"),
+        "TOML should contain mention: {}",
+        toml_content
+    );
+    assert!(
+        toml_content.contains("index.rs"),
+        "TOML should contain mention: {}",
+        toml_content
+    );
+}
+
+#[test]
+fn test_cqs_add_note_sentiment_clamping() {
+    let (dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": "Extreme sentiment test",
+                "sentiment": 5.0
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "Extreme sentiment should be clamped, not error: {:?}",
+        response.error
+    );
+
+    // Verify sentiment was clamped to 1.0
+    let toml_content = std::fs::read_to_string(dir.path().join("docs/notes.toml")).unwrap();
+    assert!(
+        toml_content.contains("sentiment = 1") || toml_content.contains("sentiment = 1.0"),
+        "Sentiment should be clamped to 1.0: {}",
+        toml_content
+    );
+}
+
+#[test]
+fn test_cqs_add_note_toml_escaping() {
+    let (dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": {
+                "text": "Note with \"quotes\" and\nnewlines"
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "TOML escaping failed: {:?}",
+        response.error
+    );
+
+    // File should be valid TOML
+    let toml_content = std::fs::read_to_string(dir.path().join("docs/notes.toml")).unwrap();
+    assert!(
+        toml_content.parse::<toml::Table>().is_ok(),
+        "notes.toml should be valid TOML: {}",
+        toml_content
+    );
+}
+
+#[test]
+fn test_cqs_add_note_appends() {
+    let (_dir, server) = setup_test_server();
+
+    // Add first note
+    let request1 = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": { "text": "First note" }
+        })),
+    );
+    let response1 = server.handle_request(request1);
+    assert!(response1.error.is_none());
+
+    // Add second note
+    let request2 = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_add_note",
+            "arguments": { "text": "Second note" }
+        })),
+    );
+    let response2 = server.handle_request(request2);
+    assert!(response2.error.is_none());
+
+    // Response should indicate total_notes >= 2
+    let result = response2.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("total_notes") || text.contains("2"),
+        "Should show multiple notes: {}",
+        text
+    );
+}
+
+// ----- cqs_callers / cqs_callees tool tests -----
+
+#[test]
+fn test_cqs_callers_missing_name() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_callers",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some(), "Missing name should return error");
+}
+
+#[test]
+fn test_cqs_callers_nonexistent() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_callers",
+            "arguments": { "name": "nonexistent_function_xyz" }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should succeed with empty results, not error
+    assert!(
+        response.error.is_none(),
+        "Nonexistent function should not error: {:?}",
+        response.error
+    );
+    let result = response.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("No callers") || text.contains("[]"),
+        "Should indicate no callers found: {}",
+        text
+    );
+}
+
+#[test]
+fn test_cqs_callees_missing_name() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_callees",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_some(), "Missing name should return error");
+}
+
+#[test]
+fn test_cqs_callees_nonexistent() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_callees",
+            "arguments": { "name": "nonexistent_function_xyz" }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    // Should succeed with empty results
+    assert!(
+        response.error.is_none(),
+        "Nonexistent function should not error: {:?}",
+        response.error
+    );
+}
+
+// ----- cqs_audit_mode tool tests -----
+
+#[test]
+fn test_cqs_audit_mode_query() {
+    let (_dir, server) = setup_test_server();
+
+    // Query without setting - should return current state
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_audit_mode",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "Audit mode query failed: {:?}",
+        response.error
+    );
+    let result = response.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("audit_mode"),
+        "Should contain audit_mode status: {}",
+        text
+    );
+}
+
+#[test]
+fn test_cqs_audit_mode_enable_disable() {
+    let (_dir, server) = setup_test_server();
+
+    // Enable
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_audit_mode",
+            "arguments": { "enabled": true }
+        })),
+    );
+
+    let response = server.handle_request(request);
+    assert!(
+        response.error.is_none(),
+        "Audit enable failed: {:?}",
+        response.error
+    );
+    let result = response.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("true") || text.contains("enabled"),
+        "Should confirm enabled: {}",
+        text
+    );
+
+    // Disable
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_audit_mode",
+            "arguments": { "enabled": false }
+        })),
+    );
+
+    let response = server.handle_request(request);
+    assert!(
+        response.error.is_none(),
+        "Audit disable failed: {:?}",
+        response.error
+    );
+}
+
+#[test]
+fn test_cqs_audit_mode_custom_duration() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_audit_mode",
+            "arguments": {
+                "enabled": true,
+                "expires_in": "1h"
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "Custom duration failed: {:?}",
+        response.error
+    );
+}
+
+// ----- cqs_stats tool tests (extended) -----
+
+#[test]
+fn test_cqs_stats_response_structure() {
+    let (_dir, server) = setup_test_server();
+
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_stats",
+            "arguments": {}
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(response.error.is_none());
+    let result = response.result.unwrap();
+    let text = result["content"][0]["text"].as_str().unwrap();
+
+    // Should contain key stats fields
+    assert!(
+        text.contains("chunks") || text.contains("Total"),
+        "Should have chunk info: {}",
+        text
+    );
+    assert!(
+        text.contains("model") || text.contains("e5"),
+        "Should have model info: {}",
+        text
+    );
+}
+
+// =============================================================================
 // Server Entry Point Tests (stdio transport)
 // =============================================================================
 

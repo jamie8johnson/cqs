@@ -450,8 +450,11 @@ impl CagraIndex {
         Self::build_from_flat(id_map, flat_data)
     }
 
-    /// Build CAGRA index from pre-collected flat data
-    fn build_from_flat(id_map: Vec<String>, flat_data: Vec<f32>) -> Result<Self, CagraError> {
+    /// Build CAGRA index from pre-collected flat data (also used by tests)
+    pub(crate) fn build_from_flat(
+        id_map: Vec<String>,
+        flat_data: Vec<f32>,
+    ) -> Result<Self, CagraError> {
         let n_vectors = id_map.len();
         if n_vectors == 0 {
             return Err(CagraError::Cuvs("Cannot build empty index".into()));
@@ -478,5 +481,199 @@ impl CagraIndex {
             id_map,
             index: Mutex::new(Some(index)),
         })
+    }
+}
+
+#[cfg(all(test, feature = "gpu-search"))]
+mod tests {
+    use super::*;
+    use crate::index::VectorIndex;
+    use std::sync::Mutex;
+
+    /// Serialize GPU tests — concurrent CUDA contexts cause SIGSEGV
+    static GPU_LOCK: Mutex<()> = Mutex::new(());
+
+    fn make_embedding(seed: u32) -> Embedding {
+        let mut v = vec![0.0f32; EMBEDDING_DIM];
+        for (i, val) in v.iter_mut().enumerate() {
+            *val = ((seed as f32 * 10.0) + (i as f32 * 0.001)).sin();
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            v.iter_mut().for_each(|x| *x /= norm);
+        }
+        Embedding::new(v)
+    }
+
+    fn require_gpu() -> bool {
+        if !CagraIndex::gpu_available() {
+            eprintln!("Skipping CAGRA test: no GPU available");
+            return false;
+        }
+        true
+    }
+
+    fn build_test_index(n: u32) -> CagraIndex {
+        let embeddings: Vec<(String, Embedding)> = (0..n)
+            .map(|i| (format!("chunk_{}", i), make_embedding(i)))
+            .collect();
+        CagraIndex::build(embeddings).expect("Failed to build test index")
+    }
+
+    #[test]
+    fn test_gpu_available() {
+        // Should return a bool without panicking
+        let _ = CagraIndex::gpu_available();
+    }
+
+    #[test]
+    fn test_build_simple() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(5);
+        assert_eq!(index.len(), 5);
+        assert!(!index.is_empty());
+    }
+
+    #[test]
+    fn test_build_empty() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let result = CagraIndex::build(vec![]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_dimension_mismatch() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let bad_embedding = Embedding::new(vec![1.0; 100]); // wrong dims
+        let result = CagraIndex::build(vec![("bad".into(), bad_embedding)]);
+        match result {
+            Err(CagraError::DimensionMismatch {
+                expected: 769,
+                actual: 100,
+            }) => {}
+            Err(e) => panic!("Expected DimensionMismatch(769, 100), got: {:?}", e),
+            Ok(_) => panic!("Expected error, got Ok"),
+        }
+    }
+
+    #[test]
+    fn test_search_self_match() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(10);
+        let query = make_embedding(3); // same as chunk_3
+        let results = index.search(&query, 5);
+        assert!(!results.is_empty(), "Search returned no results");
+        // chunk_3 should be the top result (exact match)
+        assert_eq!(results[0].id, "chunk_3", "Top result should be chunk_3");
+        assert!(
+            results[0].score > 0.9,
+            "Self-match score should be high, got {}",
+            results[0].score
+        );
+    }
+
+    #[test]
+    fn test_search_k_limiting() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(10);
+        let query = make_embedding(0);
+        let results = index.search(&query, 3);
+        assert!(
+            results.len() <= 3,
+            "Expected at most 3 results, got {}",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn test_search_ordering() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(10);
+        let query = make_embedding(0);
+        let results = index.search(&query, 5);
+        for window in results.windows(2) {
+            assert!(
+                window[0].score >= window[1].score,
+                "Results not sorted: {} < {}",
+                window[0].score,
+                window[1].score
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_dimension_mismatch_query() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(5);
+        let bad_query = Embedding::new(vec![1.0; 100]); // wrong dims
+        let results = index.search(&bad_query, 3);
+        assert!(
+            results.is_empty(),
+            "Mismatched query should return empty results"
+        );
+    }
+
+    #[test]
+    fn test_multiple_searches() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(10);
+
+        // First search consumes the index internally
+        let results1 = index.search(&make_embedding(0), 3);
+        assert!(!results1.is_empty(), "First search returned no results");
+
+        // Second search triggers rebuild
+        let results2 = index.search(&make_embedding(5), 3);
+        assert!(!results2.is_empty(), "Second search returned no results");
+        assert_eq!(
+            results2[0].id, "chunk_5",
+            "Second search should find chunk_5"
+        );
+    }
+
+    #[test]
+    fn test_name_returns_cagra() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(5);
+        let vi: &dyn VectorIndex = &index;
+        assert_eq!(vi.name(), "CAGRA");
+    }
+
+    #[test]
+    fn test_is_empty() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(3);
+        assert!(!index.is_empty());
+        assert_eq!(index.len(), 3);
     }
 }
