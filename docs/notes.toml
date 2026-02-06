@@ -3,211 +3,289 @@
 # sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
 #   -1 = serious pain, -0.5 = notable pain, 0 = neutral, 0.5 = notable gain, 1 = major win
 
-# === Pain (negative sentiment) ===
-
 [[note]]
 sentiment = -1.0
 text = "tree-sitter 0.26 with grammar crates pinned to 0.23.x causes mysterious parsing failures. No clear error messages. Keep grammar versions aligned with tree-sitter core."
-mentions = ["tree-sitter", "parser.rs", "Cargo.toml"]
+mentions = [
+    "tree-sitter",
+    "parser.rs",
+    "Cargo.toml",
+]
 
 [[note]]
 sentiment = -1.0
-text = "MCP tools/call responses MUST wrap in {\"content\":[{\"type\":\"text\",\"text\":\"...\"}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code."
-mentions = ["mcp.rs", "tools/call"]
+text = 'MCP tools/call responses MUST wrap in {"content":[{"type":"text","text":"..."}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code.'
+mentions = [
+    "mcp.rs",
+    "tools/call",
+]
 
 [[note]]
 sentiment = -0.5
-text = "trailing_var_arg in clap eats flags after the query. `cqs \"foo\" -n 5` parses as query \"foo -n 5\". Removed it - users quote multi-word queries, flags work anywhere."
-mentions = ["cli.rs", "clap"]
+text = 'trailing_var_arg in clap eats flags after the query. `cqs "foo" -n 5` parses as query "foo -n 5". Removed it - users quote multi-word queries, flags work anywhere.'
+mentions = [
+    "cli.rs",
+    "clap",
+]
 
 [[note]]
 sentiment = -0.5
 text = "gh pr checks exit code returns 1 if ANY check is pending or skipped, even if critical ones passed. Don't trust exit code - parse output or use --watch."
-mentions = ["gh", "CI", "github"]
+mentions = [
+    "gh",
+    "CI",
+    "github",
+]
 
 [[note]]
 sentiment = -1.0
 text = "Context compacts suddenly without warning. Lose state mid-task. Update tears proactively - don't wait for compaction. The trap in CLAUDE.md helps on resume."
-mentions = ["anthropic", "claude", "context"]
+mentions = [
+    "anthropic",
+    "claude",
+    "context",
+]
 
 [[note]]
 sentiment = -1.0
 text = "Asking instead of doing wastes turns. 'Do as thou wilt shall be the whole of the law.' Act on clear patterns, update tears without asking, reserve questions for genuine ambiguity."
-mentions = ["workflow", "autonomy"]
-
-[[note]]
-sentiment = -1.0
-text = "Passive laziness pattern: explaining instead of executing, summarizing instead of acting, stopping to ask 'should I continue?' mid-task. Execute fully. Momentum > ceremony."
-mentions = ["workflow", "autonomy", "initiative"]
-
-# === Neutral (observations) ===
-
-[[note]]
-sentiment = 0.0
-text = "Grammar crates have dev-dep on tree-sitter ^0.23, but we're using 0.26. Works via abstraction layer. If parsing breaks mysteriously, check version gap first."
-mentions = ["tree-sitter", "Cargo.toml"]
+mentions = [
+    "workflow",
+    "autonomy",
+]
 
 [[note]]
 sentiment = 0.0
 text = "ort 2.0.0-rc.11 is still RC - no stable 2.0 yet. API could change. Pin exact version, watch for breaking changes on upgrade."
-mentions = ["ort", "Cargo.toml", "embedder.rs"]
+mentions = [
+    "ort",
+    "Cargo.toml",
+    "embedder.rs",
+]
 
 [[note]]
 sentiment = -0.5
 text = "WSL /mnt/c/ path causes random permission errors (libsqlite3-sys, git config). Workaround in .cargo/config.toml but might bite elsewhere."
-mentions = [".cargo/config.toml", "libsqlite3-sys"]
+mentions = [
+    ".cargo/config.toml",
+    "libsqlite3-sys",
+]
 
 [[note]]
 sentiment = 0.0
 text = "store.search() and hnsw.search() both match callee name 'search'. No type info in call graph - can't distinguish which is called. Documented limitation."
-mentions = ["store.rs", "parser.rs"]
+mentions = [
+    "store.rs",
+    "parser.rs",
+]
 
 [[note]]
 sentiment = 0.0
 text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Mitigated with blake3 checksums on save/load. verify_hnsw_checksums validates extension allowlist to prevent path traversal."
-mentions = ["hnsw.rs", "hnsw_rs", "bincode", "blake3"]
-
-# === Gain (positive sentiment) ===
+mentions = [
+    "hnsw.rs",
+    "hnsw_rs",
+    "bincode",
+    "blake3",
+]
 
 [[note]]
 sentiment = 1.0
 text = "cqs is Tears - context persistence for AI collaborators. Code chunks are entity 1, notes are entity 2. The name was always right."
-mentions = ["README.md", "CLAUDE.md"]
+mentions = [
+    "README.md",
+    "CLAUDE.md",
+]
 
 [[note]]
 sentiment = 1.0
 text = "Natural language carries sentiment. Words like 'failed', 'broke', 'wasted' are negative. 'Worked', 'clean', 'saved' are positive. Embedding model learned this. Schema simplifies to just text."
-mentions = ["note.rs", "embedder.rs"]
+mentions = [
+    "note.rs",
+    "embedder.rs",
+]
 
 [[note]]
 sentiment = 0.5
 text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
-mentions = ["embedder.rs", "store.rs", "hnsw.rs"]
+mentions = [
+    "embedder.rs",
+    "store.rs",
+    "hnsw.rs",
+]
 
 [[note]]
 sentiment = 1.0
 text = "Git as team sync layer. Commit notes.toml, push/pull handles sync. Access control = repo permissions. History = blame. Conflict resolution = merge. No infrastructure needed."
-mentions = ["notes.toml", "tears"]
+mentions = [
+    "notes.toml",
+    "tears",
+]
 
 [[note]]
 sentiment = 1.0
 text = "Locality is the feature, not limitation. cqs indexes YOUR codebase, YOUR team's memory. Context persistence is inherently local. Specificity is the value."
-mentions = ["CLAUDE.md", "tears"]
+mentions = [
+    "CLAUDE.md",
+    "tears",
+]
 
 [[note]]
 sentiment = 1.0
 text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-search for CUDA-equipped infrastructure."
-mentions = ["hnsw.rs", "Cargo.toml"]
+mentions = [
+    "hnsw.rs",
+    "Cargo.toml",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Notes with sentiment are prediction errors - expected X, got Y. Negative = pain, positive = gain. High-value because they mark where understanding needs updating. Index surprises, not routine."
-mentions = ["note.rs", "tears"]
+mentions = [
+    "note.rs",
+    "tears",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Scale changes economics. 90% savings at 1M instances = $90k/month. Watch mode, embedding efficiency, GPU utilization matter more at scale."
-mentions = ["embedder.rs", "cli.rs"]
+mentions = [
+    "embedder.rs",
+    "cli.rs",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Copilot+ PC is a hardware contract for AI workloads - guarantees NPU with 40+ TOPS, DirectML, Phi Silica. ort crate has DirectML execution provider. If we detect Copilot+ runtime, could use NPU path instead of CUDA/CPU. Third acceleration tier after GPU and CPU."
-mentions = ["embedder.rs", "ort", "DirectML"]
+mentions = [
+    "embedder.rs",
+    "ort",
+    "DirectML",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Tears actually work. Context resumes correctly after compaction - read PROJECT_CONTINUITY.md and pick up where we left off. The system serves its purpose."
-mentions = ["PROJECT_CONTINUITY.md", "tears", "context"]
+mentions = [
+    "PROJECT_CONTINUITY.md",
+    "tears",
+    "context",
+]
 
 [[note]]
 sentiment = 0.5
 text = "MCP 0.13s query latency is real-time usable. Was 1.3s before optimization (CPU embedder init per query). 10x improvement from caching embedder instance."
-mentions = ["mcp.rs", "embedder.rs", "latency"]
-
-[[note]]
-sentiment = 0.5
-text = "Fresh-eyes audit found real bug - schema version said 8, code used 9. Process validated itself. The discipline works."
-mentions = ["fresh-eyes", "store.rs", "audit"]
+mentions = [
+    "mcp.rs",
+    "embedder.rs",
+    "latency",
+]
 
 [[note]]
 sentiment = 0.5
 text = "5-point sentiment scale (-1, -0.5, 0, 0.5, 1) beats 21-point (0.1 increments). Coarser is clearer - no false precision. When writing -0.6 vs -0.7, the distinction wasn't meaningful anyway."
-mentions = ["notes.toml", "sentiment"]
+mentions = [
+    "notes.toml",
+    "sentiment",
+]
 
 [[note]]
 sentiment = -0.5
 text = "cuvs-sys crate uses find_package(cuvs), not source build. Needs libcuvs pre-installed via conda or manual RAPIDS build. Not self-contained like expected."
-mentions = ["cuvs", "Cargo.toml", "gpu-search"]
+mentions = [
+    "cuvs",
+    "Cargo.toml",
+    "gpu-search",
+]
 
 [[note]]
 sentiment = 0.5
 text = "WSL has RTX A6000 (49GB VRAM) available for GPU testing. Use conda cuvs environment."
-mentions = ["cagra.rs", "gpu-search"]
+mentions = [
+    "cagra.rs",
+    "gpu-search",
+]
 
 [[note]]
 sentiment = 0.0
 text = "CI catches what local builds miss. Feature flags differ between dev (gpu-search enabled) and CI (default features). Clippy on CI found dead code invisible locally."
-mentions = ["CI", "clippy", "features"]
+mentions = [
+    "CI",
+    "clippy",
+    "features",
+]
 
 [[note]]
 sentiment = 0.0
-text = "PowerShell workaround for WSL git credentials is reliable. `powershell.exe -Command \"cd C:\\Projects\\cq; git push\"` - ugly but works every time."
-mentions = ["WSL", "git", "PowerShell"]
+text = 'PowerShell workaround for WSL git credentials is reliable. `powershell.exe -Command "cd C:\Projects\cq; git push"` - ugly but works every time.'
+mentions = [
+    "WSL",
+    "git",
+    "PowerShell",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback loop. Worth the setup."
-mentions = [".githooks", "cargo fmt"]
+mentions = [
+    ".githooks",
+    "cargo fmt",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 12.0, WSL2"
-mentions = ["hardware", "benchmarking"]
-
-[[note]]
-sentiment = 0.0
-text = "ort CUDA provider needs libonnxruntime_providers_shared.so in LD_LIBRARY_PATH. Libs exist at ~/.cache/ort.pyke.io/dfbin/... but aren't found at runtime. Fix: export LD_LIBRARY_PATH with that path. However, CUDA embedding is slower than CPU for single queries due to GPU context setup overhead - only worth it for batch embedding during indexing."
-mentions = ["embedder.rs", "ort", "CUDA", "LD_LIBRARY_PATH"]
-
-[[note]]
-sentiment = 0.5
-text = "nomic-embed-text uses rotary position embeddings which cause Gather op CPU fallback. E5 models use absolute position embeddings (no rotary) - likely full CUDA coverage. Trade-off: E5-large has 512 token context vs nomic's 8192, but windowing makes this moot."
-mentions = ["embedder.rs", "nomic-embed-text", "E5", "model"]
+mentions = [
+    "hardware",
+    "benchmarking",
+]
 
 [[note]]
 sentiment = -0.5
 text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=32 runs stable. With 2048-token windowing, GPU util cycles 0-99% (bursty) as it waits for ort CPU fallback ops between batches."
-mentions = ["cli.rs", "batch_size", "gpu-search"]
-
-[[note]]
-sentiment = 0.5
-text = "E5-base-v2 verified: 100 Gather ops but ALL are embedding lookups (word_embeddings, position_embeddings), not rotary. nomic has 72 rotary_emb Gathers that cause CPU fallback. E5 should have full CUDA coverage."
-mentions = ["embedder.rs", "E5", "nomic-embed-text", "CUDA"]
+mentions = [
+    "cli.rs",
+    "batch_size",
+    "gpu-search",
+]
 
 [[note]]
 sentiment = -0.5
 text = "ort CUDA provider fails silently if libs not in LD_LIBRARY_PATH. No error - just falls back to CPU. The log shows 'Adding default CPU execution provider' instead of CUDA. Must include ~/.cache/ort.pyke.io/dfbin/.../  in LD_LIBRARY_PATH."
-mentions = ["ort", "CUDA", "LD_LIBRARY_PATH", "embedder.rs"]
+mentions = [
+    "ort",
+    "CUDA",
+    "LD_LIBRARY_PATH",
+    "embedder.rs",
+]
 
 [[note]]
 sentiment = 0.0
 text = "Switched from nomic-embed-text-v1.5 to E5-base-v2 (Feb 2026). E5 prefixes: 'passage: ' for docs, 'query: ' for search. Window params adjusted: 480 tokens/64 overlap (E5's 512 limit vs nomic's 8192)."
-mentions = ["embedder.rs", "cli.rs", "E5", "windowing"]
-
-[[note]]
-sentiment = 0.5
-text = "E5-base-v2 CUDA confirmed working. Zero rotary_emb ops - only embeddings/Gather (position lookups) and Unsqueeze (shape) on CPU. These are fast constant-time ops, not the 800% CPU thrashing from nomic's rotary embeddings."
-mentions = ["embedder.rs", "E5", "CUDA", "ort"]
+mentions = [
+    "embedder.rs",
+    "cli.rs",
+    "E5",
+    "windowing",
+]
 
 [[note]]
 sentiment = -0.5
 text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_LIBRARY_PATH, it would create circular symlinks in the source directory, corrupting the ort cache. Fixed by skipping dirs containing ort_cache path."
-mentions = ["embedder.rs", "ort", "symlink"]
+mentions = [
+    "embedder.rs",
+    "ort",
+    "symlink",
+]
 
 [[note]]
 sentiment = -0.5
 text = "cfg(feature) dead code trap: if a constant is defined outside a #[cfg(feature)] block but only used inside it, clippy reports dead_code when feature is disabled. Move constants inside the cfg block or gate with #[cfg(feature)] too."
-mentions = ["cli.rs", "CAGRA_THRESHOLD", "clippy"]
+mentions = [
+    "cli.rs",
+    "CAGRA_THRESHOLD",
+    "clippy",
+]
 
 [[note]]
 sentiment = -0.5
@@ -217,134 +295,234 @@ mentions = ["git"]
 [[note]]
 sentiment = 0.5
 text = "Put token count in filename for large files (e.g., DESIGN_SPEC_27k_tokens.md). Claude sees it in glob results and knows to chunk or skip. Metadata in the filesystem."
-mentions = ["docs/", "workflow"]
+mentions = [
+    "docs/",
+    "workflow",
+]
 
 [[note]]
 sentiment = 0.0
 text = "WSL cargo target is at /home/user001/.cargo-target/cq (not ./target/). Set in .cargo/config.toml to avoid permission issues on /mnt/c/. Remember when running release binaries."
-mentions = ["WSL", ".cargo/config.toml", "target"]
+mentions = [
+    "WSL",
+    ".cargo/config.toml",
+    "target",
+]
 
 [[note]]
 sentiment = 0.5
-text = "cqs pronounced \"seeks\" - semantic search that seeks code by behavior, not text matching. grep for known strings, cqs for \"how does X work?\""
-mentions = ["README.md", "cqs"]
+text = 'cqs pronounced "seeks" - semantic search that seeks code by behavior, not text matching. grep for known strings, cqs for "how does X work?"'
+mentions = [
+    "README.md",
+    "cqs",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Notes surface heavily in search results because they contain dense semantic content about architecture decisions. That's intentional - observations are indexed to be found when conceptually relevant."
-mentions = ["notes.toml", "store.rs", "search"]
+mentions = [
+    "notes.toml",
+    "store.rs",
+    "search",
+]
 
 [[note]]
 sentiment = 0.5
 text = "--name-boost 0.8 for precision when you know partial function name. Default 0.2 favors semantic. Crank it up when searching for specific identifiers vs concepts."
-mentions = ["cli.rs", "name_boost", "hybrid search"]
+mentions = [
+    "cli.rs",
+    "name_boost",
+    "hybrid search",
+]
 
 [[note]]
 sentiment = 1.0
 text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Eliminated blocking startup delay."
-mentions = ["mcp.rs", "cagra.rs", "hnsw.rs", "startup"]
+mentions = [
+    "mcp.rs",
+    "cagra.rs",
+    "hnsw.rs",
+    "startup",
+]
 
 [[note]]
 sentiment = 0.5
-text = "Conda env vars for LD_LIBRARY_PATH: `conda env config vars set LD_LIBRARY_PATH=\"...\"` in cuvs env. Auto-sets on activate. No more manual export."
-mentions = ["conda", "LD_LIBRARY_PATH", "WSL", "cuvs"]
+text = 'Conda env vars for LD_LIBRARY_PATH: `conda env config vars set LD_LIBRARY_PATH="..."` in cuvs env. Auto-sets on activate. No more manual export.'
+mentions = [
+    "conda",
+    "LD_LIBRARY_PATH",
+    "WSL",
+    "cuvs",
+]
 
 [[note]]
 sentiment = 0.0
 text = "Run `cqs watch` in background terminal to keep notes.toml indexed. Manual edits without watch = stale search results."
-mentions = ["cqs watch", "notes.toml", "indexing"]
+mentions = [
+    "cqs watch",
+    "notes.toml",
+    "indexing",
+]
 
 [[note]]
 sentiment = 0.5
 text = "--bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
-mentions = ["cli.rs", "mcp.rs", "--bind", "auth"]
+mentions = [
+    "cli.rs",
+    "mcp.rs",
+    "--bind",
+    "auth",
+]
 
 [[note]]
 sentiment = 0.5
 text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API so cli.rs/mcp.rs didn't need changes. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
-mentions = ["src/store/mod.rs", "Cargo.toml"]
+mentions = [
+    "src/store/mod.rs",
+    "Cargo.toml",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Inline validation code is hard to find via semantic search. Extract into named functions: validate_api_key, validate_origin_header, etc. 'validate bearer token' query now finds validate_api_key at 0.74 score."
-mentions = ["mcp.rs", "hnsw.rs", "discoverability"]
+mentions = [
+    "mcp.rs",
+    "hnsw.rs",
+    "discoverability",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Path traversal via checksum file: verify_hnsw_checksums read extensions from file, could be '../../../etc/passwd'. Fixed with HNSW_EXTENSIONS allowlist. Low severity (local read-only) but still worth hardening."
-mentions = ["hnsw.rs", "security", "path traversal"]
+mentions = [
+    "hnsw.rs",
+    "security",
+    "path traversal",
+]
 
 [[note]]
-sentiment = 1
+sentiment = 1.0
 text = "First 10-category audit: 16 issues closed, proptest found RRF bound bug immediately, security docs expanded. Second 20-category audit (v0.5.1): ~85 findings, P1-P3 fixed in 3 PRs, 13 P4 items deferred. Test count: 379 (no GPU). Audits consistently find real bugs."
-mentions = ["SECURITY.md", "src/store/", "tests/", "audit"]
+mentions = [
+    "SECURITY.md",
+    "src/store/",
+    "tests/",
+    "audit",
+]
 
 [[note]]
 sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via LIMIT/OFFSET, HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
-mentions = ["src/store/chunks.rs", "src/hnsw.rs", "embedding_batches", "build_batched"]
-
-[[note]]
-sentiment = 1.0
-text = "Notes REMOVED from HNSW/CAGRA index (PR #244). Always brute-force from SQLite (capped 1000). HNSW is chunk-only now. Old approach (note: prefix in HNSW) caused staleness when notes added via MCP. Fixes #230."
-mentions = ["src/search.rs", "src/cli/commands/index.rs", "src/cagra.rs", "src/store/notes.rs"]
+mentions = [
+    "src/store/chunks.rs",
+    "src/hnsw.rs",
+    "embedding_batches",
+    "build_batched",
+]
 
 [[note]]
 sentiment = 0.5
 text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight, MCP note_weight. Useful when notes dominate due to high semantic match."
-mentions = ["SearchFilter", "search.rs", "mcp.rs", "cli/mod.rs"]
-
-[[note]]
-sentiment = -1.0
-text = "Don't trust prior observations. Audit mode exists because I was lazy - trusting notes instead of tracing call paths. When fixing one thing (HNSW streaming), immediately check parallel implementations (CAGRA). Dead code like search_unified sat unnoticed because nobody questioned existing code."
-mentions = ["audit mode", "verification", "dead code"]
+mentions = [
+    "SearchFilter",
+    "search.rs",
+    "mcp.rs",
+    "cli/mod.rs",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Audit findings file: docs/audit-findings.md. Triage by impact x effort into P1-P4. Fix P1 first (easy + high-impact), create issues for P4 (hard or low-impact). Collect ALL findings before fixing ANY."
-mentions = ["docs/audit-findings.md", "audit"]
+mentions = [
+    "docs/audit-findings.md",
+    "audit",
+]
 
 [[note]]
 sentiment = 0.5
 text = "CUDA compatibility is the primary gate for embedding model selection. E5-base-v2 was chosen for absolute position embeddings (full CUDA coverage). Any replacement model must be BERT-style (no rotary embeddings) to avoid ort Gather op CPU fallback. Qwen3-Embedding is excluded for this reason."
-mentions = ["embedder.rs", "CUDA", "model selection", "E5"]
+mentions = [
+    "embedder.rs",
+    "CUDA",
+    "model selection",
+    "E5",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Multi-index architecture: multiple Store instances with thin MultiSearch wrapper, NOT SQLite ATTACH or single-DB approach. Each reference gets its own DB + HNSW. Results merged with per-source weight multiplier. Store API is already clean enough for this."
-mentions = ["store", "multi-index", "architecture", "hnsw.rs"]
+mentions = [
+    "store",
+    "multi-index",
+    "architecture",
+    "hnsw.rs",
+]
 
 [[note]]
 sentiment = 0.0
 text = "Route to multi-index ordering matters: settle embedding model BEFORE building reference indexes. Model switch with N reference indexes = N rebuilds. Do it while only project indexes exist."
-mentions = ["multi-index", "model selection", "roadmap"]
+mentions = [
+    "multi-index",
+    "model selection",
+    "roadmap",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Model eval complete (Phase 1): E5-base-v2, BGE-base-en-v1.5, and E5-large-v2 all scored 100% Recall@5 on 50-query eval suite. Eval is saturated - need harder queries to differentiate models. Decision: stay with E5-base-v2 (smallest, proven, no schema change needed). Phase 2 (model switch) skipped."
-mentions = ["embedder.rs", "model selection", "eval", "E5"]
+mentions = [
+    "embedder.rs",
+    "model selection",
+    "eval",
+    "E5",
+]
 
 [[note]]
 sentiment = -1.0
 text = "Glob filter BEFORE heap was the #1 correctness bug from the 20-category audit. Brute-force search applied glob AFTER selecting top-k from heap, meaning filtered results could miss relevant chunks that were displaced by non-matching ones. Always filter before ranking."
-mentions = ["src/search.rs", "glob", "brute-force", "algorithm correctness"]
+mentions = [
+    "src/search.rs",
+    "glob",
+    "brute-force",
+    "algorithm correctness",
+]
 
 [[note]]
 sentiment = 0.5
 text = "note_weight=0 bug: documented as 'excludes notes from results' but only zeroed scores - notes still appeared. Caught by test_search_unified_note_weight_zero_excludes_notes. Tests that assert absence (not just presence) find real bugs. Write negative-case tests."
-mentions = ["src/search.rs", "SearchFilter", "note_weight", "testing"]
+mentions = [
+    "src/search.rs",
+    "SearchFilter",
+    "note_weight",
+    "testing",
+]
 
 [[note]]
 sentiment = 1.0
 text = "20-category audit v2 (v0.5.1): 5 parallel agents per batch, 4 batches, audit mode enabled. Found ~85 actionable items from ~120 raw. Key: collect ALL findings before fixing ANY. Batch by priority tier (P1-P4), fix in order. Took 3 PRs to fix P1-P3, created 13 issues for P4."
-mentions = ["docs/audit-findings.md", "audit", "v0.5.1", "workflow"]
+mentions = [
+    "docs/audit-findings.md",
+    "audit",
+    "v0.5.1",
+    "workflow",
+]
 
 [[note]]
 sentiment = -0.5
 text = "Heredoc in `gh pr create --body` gets captured as a permission entry in .claude/settings.local.json, causing parse errors on next startup. Fix: always write PR/release bodies to a temp file and use --body-file instead of inline heredocs. The multiline content gets serialized into the permissions allow list as a malformed Bash() entry."
-mentions = ["settings.local.json", "gh pr create", "powershell.exe", "heredoc"]
+mentions = [
+    "settings.local.json",
+    "gh pr create",
+    "powershell.exe",
+    "heredoc",
+]
 
 [[note]]
 sentiment = 1.0
 text = "Notes removed from HNSW/CAGRA index entirely. Always brute-force from SQLite (capped 1000). Fixes #230 staleness. HNSW is chunk-only now. Also added cqs_update_note and cqs_remove_note MCP tools with atomic TOML rewrite via rewrite_notes_file()."
-mentions = ["src/search.rs", "src/note.rs", "src/mcp/tools/notes.rs", "src/cli/commands/index.rs"]
+mentions = [
+    "src/search.rs",
+    "src/note.rs",
+    "src/mcp/tools/notes.rs",
+    "src/cli/commands/index.rs",
+]
