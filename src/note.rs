@@ -126,7 +126,12 @@ pub(crate) fn rewrite_notes_file(
     notes_path: &Path,
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
-    let content = std::fs::read_to_string(notes_path)?;
+    let content = std::fs::read_to_string(notes_path).map_err(|e| {
+        NoteError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {}", notes_path.display(), e),
+        ))
+    })?;
     let mut file: NoteFile = toml::from_str(&content)?;
 
     mutate(&mut file.note)?;

@@ -14,6 +14,49 @@ use crate::nl::normalize_for_fts;
 use crate::note::Note;
 use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
 
+/// Insert a single note + FTS entry within an existing transaction.
+async fn insert_note_with_fts(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    note: &Note,
+    embedding: &Embedding,
+    source_str: &str,
+    file_mtime: i64,
+    now: &str,
+) -> Result<(), StoreError> {
+    let mentions_json = serde_json::to_string(&note.mentions)
+        .map_err(|e| StoreError::Runtime(format!("JSON serialization: {e}")))?;
+
+    sqlx::query(
+        "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+    )
+    .bind(&note.id)
+    .bind(&note.text)
+    .bind(note.sentiment)
+    .bind(&mentions_json)
+    .bind(embedding_to_bytes(embedding))
+    .bind(source_str)
+    .bind(file_mtime)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+
+    // Delete from FTS before insert - error must fail transaction to prevent desync
+    sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
+        .bind(&note.id)
+        .execute(&mut **tx)
+        .await?;
+
+    sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
+        .bind(&note.id)
+        .bind(normalize_for_fts(&note.text))
+        .execute(&mut **tx)
+        .await?;
+
+    Ok(())
+}
+
 /// Score a note row and return (NoteSummary, score) if it meets the threshold.
 ///
 /// Shared scoring logic between brute-force search and ID-based search.
@@ -71,35 +114,7 @@ impl Store {
 
             let now = chrono::Utc::now().to_rfc3339();
             for (note, embedding) in notes {
-                let mentions_json = serde_json::to_string(&note.mentions)
-                    .map_err(|e| StoreError::Runtime(format!("JSON serialization: {e}")))?;
-
-                sqlx::query(
-                    "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                )
-                .bind(&note.id)
-                .bind(&note.text)
-                .bind(note.sentiment)
-                .bind(&mentions_json)
-                .bind(embedding_to_bytes(embedding))
-                .bind(&source_str)
-                .bind(file_mtime)
-                .bind(&now)
-                .bind(&now)
-                .execute(&mut *tx)
-                .await?;
-
-                // Delete from FTS before insert - error must fail transaction to prevent desync
-                sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
-                    .bind(&note.id)
-                    .execute(&mut *tx)
-                    .await?;
-
-                sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
-                    .bind(&note.id)
-                    .bind(normalize_for_fts(&note.text))
-                    .execute(&mut *tx)
+                insert_note_with_fts(&mut tx, note, embedding, &source_str, file_mtime, &now)
                     .await?;
             }
 
@@ -199,34 +214,7 @@ impl Store {
             // Step 2: Insert new notes + FTS
             let now = chrono::Utc::now().to_rfc3339();
             for (note, embedding) in notes {
-                let mentions_json = serde_json::to_string(&note.mentions)
-                    .map_err(|e| StoreError::Runtime(format!("JSON serialization: {e}")))?;
-
-                sqlx::query(
-                    "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                )
-                .bind(&note.id)
-                .bind(&note.text)
-                .bind(note.sentiment)
-                .bind(&mentions_json)
-                .bind(embedding_to_bytes(embedding))
-                .bind(&source_str)
-                .bind(file_mtime)
-                .bind(&now)
-                .bind(&now)
-                .execute(&mut *tx)
-                .await?;
-
-                sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
-                    .bind(&note.id)
-                    .execute(&mut *tx)
-                    .await?;
-
-                sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
-                    .bind(&note.id)
-                    .bind(normalize_for_fts(&note.text))
-                    .execute(&mut *tx)
+                insert_note_with_fts(&mut tx, note, embedding, &source_str, file_mtime, &now)
                     .await?;
             }
 

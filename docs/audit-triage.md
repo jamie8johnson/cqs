@@ -999,38 +999,38 @@ All 12 items fixed and merged.
 
 | # | Finding | Source | Effort | Status |
 |---|---------|--------|--------|--------|
-| 1 | Config `load_file` returns None for parse errors — silent malformed config | Error Propagation #2 | medium | |
-| 2 | `search_reference` swallows errors, returns empty vec | Error Propagation #3 | medium | |
+| 1 | Config `load_file` returns None for parse errors — silent malformed config | Error Propagation #2 | medium | 📋 #264 |
+| 2 | `search_reference` swallows errors, returns empty vec | Error Propagation #3 | medium | 📋 #265 |
 | 3 | `display.rs:read_context_lines` trailing `\r` on CRLF files | Platform #5 | easy | ✅ Fixed — defensive trim_end_matches('\\r') |
-| 4 | `embedding_to_bytes` panics on dimension mismatch | Panic Paths #1 | medium | |
+| 4 | `embedding_to_bytes` panics on dimension mismatch | Panic Paths #1 | medium | 📋 #266 |
 | 5 | `unreachable!` in search.rs name_only Note branch | Panic Paths #5 | easy | ✅ Fixed — filter_map + warn |
-| 6 | Config file written without restrictive permissions | Data Security #4 | easy | |
+| 6 | Config file written without restrictive permissions | Data Security #4 | easy | ✅ Fixed — 0o600 on config write |
 | 7 | Duplicated glob pattern compilation in search.rs | Code Hygiene #2 | easy | ✅ Fixed — extracted compile_glob_filter() |
-| 8 | Duplicated note insert logic in store/notes.rs | Code Hygiene #3 | easy | |
-| 9 | `HnswInner` match duplication — add `hnsw()` accessor | Code Hygiene #6 | easy | |
-| 10 | `NlTemplate` variants only used in eval tests — gate with cfg(test) | Code Hygiene #7 | easy | |
-| 11 | Pipeline parser thread swallows parse errors with no aggregate count | Error Propagation #10 | easy | |
-| 12 | Pipeline thread panics produce generic error, discard payload | Observability #6 | easy | |
+| 8 | Duplicated note insert logic in store/notes.rs | Code Hygiene #3 | easy | ✅ Fixed — extracted insert_note_with_fts() |
+| 9 | `HnswInner` match duplication — add `hnsw()` accessor | Code Hygiene #6 | easy | ✅ Fixed — added HnswInner::hnsw() accessor |
+| 10 | `NlTemplate` variants only used in eval tests — gate with cfg(test) | Code Hygiene #7 | easy | ⏸ Won't-fix — cfg(test) doesn't apply to integration tests |
+| 11 | Pipeline parser thread swallows parse errors with no aggregate count | Error Propagation #10 | easy | ✅ Fixed — parse_errors counter + report |
+| 12 | Pipeline thread panics produce generic error, discard payload | Observability #6 | easy | ✅ Fixed — panic_message() extracts payload |
 | 13 | `check_interrupted` flag never reset | Concurrency #8 | easy | ✅ Fixed — added reset_interrupted(), called at cmd_index entry |
-| 14 | `rewrite_notes_file` opaque IO error when file missing | Edge Cases #6 | easy | |
+| 14 | `rewrite_notes_file` opaque IO error when file missing | Edge Cases #6 | easy | ✅ Fixed — includes path in IO error |
 | 15 | Empty query bypasses semantic search — embeds empty string | Edge Cases #8 | easy | ✅ Fixed — validate_query_length rejects empty/whitespace |
 
 ## P4 — Defer / Won't-Fix
 
 | # | Finding | Source | Reason | Status |
 |---|---------|--------|--------|--------|
-| 1 | search.rs implements Store methods outside store module | Module Boundaries #1 | Architectural — needs design | |
-| 2 | `index_notes` in lib.rs couples root to domain logic | Module Boundaries #2 | Refactor — low urgency | |
-| 3 | MCP uses anyhow instead of typed errors | Module Boundaries #3 | Large refactor, works fine | |
-| 4 | All 14 modules pub in lib.rs — no enforced API boundary | Module Boundaries #5 | Breaking change for consumers | |
-| 5 | `store::pool` and `store::rt` leaked to search.rs | Module Boundaries #7 | Blocked by P4 #1 | |
-| 6 | Adding new language requires 5 places in 3 files | Extensibility #1 | Acceptable — compile checks it | |
-| 7 | MCP tool list is hardcoded JSON blob | Extensibility #2 | Works, trait system is overengineering | |
-| 8 | Embedding model hardcoded — 7 constants | Extensibility #3 | By design | |
-| 9 | HNSW tuning parameters compile-time only | Extensibility #4 | By design for now | |
-| 10 | Brute-force loads ALL embeddings into memory | Memory #1 | Mitigated by HNSW — fallback only | |
-| 11 | HNSW unsafe transmute lifetime extension | Panic Paths #10 | High risk but well-documented, no fix without upstream | |
-| 12 | Each Store creates own tokio Runtime | Resource #1 | Existing #257 | |
-| 13 | Notes file no locking | Concurrency #1 | Existing #231 | |
-| 14 | HNSW stale after watch updates | Data Integrity #4 | Existing #236 | |
-| 15 | Watch mode inotify doesn't work on /mnt/c/ | Platform #7 | WSL limitation, documented | |
+| 1 | search.rs implements Store methods outside store module | Module Boundaries #1 | Architectural — needs design | 📋 #267 |
+| 2 | `index_notes` in lib.rs couples root to domain logic | Module Boundaries #2 | Refactor — low urgency | 📋 #267 |
+| 3 | MCP uses anyhow instead of typed errors | Module Boundaries #3 | Large refactor, works fine | 📋 #267 |
+| 4 | All 14 modules pub in lib.rs — no enforced API boundary | Module Boundaries #5 | Breaking change for consumers | 📋 #267 |
+| 5 | `store::pool` and `store::rt` leaked to search.rs | Module Boundaries #7 | Blocked by P4 #1 | 📋 #267 |
+| 6 | Adding new language requires 5 places in 3 files | Extensibility #1 | Acceptable — compile checks it | 📋 #268 |
+| 7 | MCP tool list is hardcoded JSON blob | Extensibility #2 | Works, trait system is overengineering | ⏸ Won't-fix |
+| 8 | Embedding model hardcoded — 7 constants | Extensibility #3 | By design | ⏸ Won't-fix |
+| 9 | HNSW tuning parameters compile-time only | Extensibility #4 | By design for now | ⏸ Won't-fix |
+| 10 | Brute-force loads ALL embeddings into memory | Memory #1 | Mitigated by HNSW — fallback only | 📋 #269 |
+| 11 | HNSW unsafe transmute lifetime extension | Panic Paths #10 | High risk but well-documented, no fix without upstream | 📋 #270 |
+| 12 | Each Store creates own tokio Runtime | Resource #1 | Existing #257 | 📋 #257 |
+| 13 | Notes file no locking | Concurrency #1 | Existing #231 | 📋 #231 |
+| 14 | HNSW stale after watch updates | Data Integrity #4 | Existing #236 | 📋 #236 |
+| 15 | Watch mode inotify doesn't work on /mnt/c/ | Platform #7 | WSL limitation, documented | ⏸ Won't-fix |

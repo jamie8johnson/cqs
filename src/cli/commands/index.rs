@@ -105,6 +105,12 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         if pruned > 0 {
             println!("  Pruned: {} (deleted files)", pruned);
         }
+        if stats.parse_errors > 0 {
+            println!(
+                "  Parse errors: {} (see logs for details)",
+                stats.parse_errors
+            );
+        }
     }
 
     // Extract full call graph (includes large functions >100 lines)
