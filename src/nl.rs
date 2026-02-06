@@ -225,6 +225,21 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
     }
 }
 
+/// Template variants for NL description generation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NlTemplate {
+    /// Current production template: doc + "A {type} named {name}" + params + returns
+    Standard,
+    /// No structural prefix: doc + name + params + returns
+    NoPrefix,
+    /// Standard + body keywords extracted from function content
+    BodyKeywords,
+    /// No prefix + body keywords
+    Compact,
+    /// Doc-first: minimal metadata when doc exists, full template when missing
+    DocFirst,
+}
+
 /// Generate natural language description from chunk metadata.
 ///
 /// Produces text like: "A function named parse config. Takes path parameter. Returns config."
@@ -257,17 +272,30 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
 /// assert!(nl.contains("Parse configuration"));
 /// ```
 pub fn generate_nl_description(chunk: &Chunk) -> String {
+    generate_nl_with_template(chunk, NlTemplate::Standard)
+}
+
+/// Generate NL description using a specific template variant.
+pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
     let mut parts = Vec::new();
 
-    // 1. Doc comment is gold - it's human-written NL
-    if let Some(ref doc) = chunk.doc {
+    // Shared: doc comment
+    let has_doc = if let Some(ref doc) = chunk.doc {
         let doc_trimmed = doc.trim();
         if !doc_trimmed.is_empty() {
             parts.push(doc_trimmed.to_string());
+            true
+        } else {
+            false
         }
-    }
+    } else {
+        false
+    };
 
-    // 2. Chunk type + normalized name
+    // Shared: tokenized name
+    let name_words = tokenize_identifier(&chunk.name).join(" ");
+
+    // Shared: type word
     let type_word = match chunk.chunk_type {
         ChunkType::Function => "function",
         ChunkType::Method => "method",
@@ -278,17 +306,30 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
         ChunkType::Interface => "interface",
         ChunkType::Constant => "constant",
     };
-    let name_words = tokenize_identifier(&chunk.name).join(" ");
-    parts.push(format!("A {} named {}", type_word, name_words));
 
-    // 3. Parse signature for params/return (with JSDoc fallback for JavaScript)
+    // DocFirst: minimal metadata when doc exists
+    if template == NlTemplate::DocFirst && has_doc {
+        parts.push(name_words);
+        return parts.join(". ");
+    }
+
+    // Name line: with or without "A {type} named" prefix
+    match template {
+        NlTemplate::NoPrefix | NlTemplate::Compact => {
+            parts.push(name_words);
+        }
+        _ => {
+            parts.push(format!("A {} named {}", type_word, name_words));
+        }
+    }
+
+    // Parameters + return type
     let jsdoc_info = if chunk.language == Language::JavaScript {
         chunk.doc.as_ref().map(|d| parse_jsdoc_tags(d))
     } else {
         None
     };
 
-    // Parameters: prefer signature, fallback to JSDoc for JS
     if let Some(params_desc) = extract_params_nl(&chunk.signature) {
         parts.push(params_desc);
     } else if let Some(ref info) = jsdoc_info {
@@ -302,12 +343,19 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
         }
     }
 
-    // Return type: prefer signature, fallback to JSDoc for JS
     if let Some(return_desc) = extract_return_nl(&chunk.signature, chunk.language) {
         parts.push(return_desc);
     } else if let Some(ref info) = jsdoc_info {
         if let Some(ref ret) = info.returns {
             parts.push(format!("Returns {}", ret));
+        }
+    }
+
+    // Body keywords for variants that use them
+    if matches!(template, NlTemplate::BodyKeywords | NlTemplate::Compact) {
+        let keywords = extract_body_keywords(&chunk.content, chunk.language);
+        if !keywords.is_empty() {
+            parts.push(format!("Uses: {}", keywords.join(", ")));
         }
     }
 
@@ -514,6 +562,150 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
         }
     }
     None
+}
+
+/// Extract meaningful keywords from function body, filtering language noise.
+///
+/// Returns up to 10 unique keywords sorted by frequency (descending).
+pub fn extract_body_keywords(content: &str, language: Language) -> Vec<String> {
+    use std::collections::HashMap;
+
+    let stopwords: &[&str] = match language {
+        Language::Rust => &[
+            "fn", "let", "mut", "pub", "use", "impl", "mod", "struct", "enum", "trait", "type",
+            "where", "const", "static", "unsafe", "async", "await", "move", "ref", "self", "super",
+            "crate", "return", "if", "else", "for", "while", "loop", "match", "break", "continue",
+            "as", "in", "true", "false", "some", "none", "ok", "err",
+        ],
+        Language::Python => &[
+            "def", "class", "self", "return", "if", "elif", "else", "for", "while", "import",
+            "from", "as", "with", "try", "except", "finally", "raise", "pass", "break", "continue",
+            "and", "or", "not", "in", "is", "true", "false", "none", "lambda", "yield", "global",
+            "nonlocal",
+        ],
+        Language::TypeScript | Language::JavaScript => &[
+            "function",
+            "const",
+            "let",
+            "var",
+            "return",
+            "if",
+            "else",
+            "for",
+            "while",
+            "do",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "new",
+            "this",
+            "class",
+            "extends",
+            "import",
+            "export",
+            "from",
+            "default",
+            "try",
+            "catch",
+            "finally",
+            "throw",
+            "async",
+            "await",
+            "true",
+            "false",
+            "null",
+            "undefined",
+            "typeof",
+            "instanceof",
+            "void",
+        ],
+        Language::Go => &[
+            "func",
+            "var",
+            "const",
+            "type",
+            "struct",
+            "interface",
+            "return",
+            "if",
+            "else",
+            "for",
+            "range",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "go",
+            "defer",
+            "select",
+            "chan",
+            "map",
+            "package",
+            "import",
+            "true",
+            "false",
+            "nil",
+        ],
+        Language::C => &[
+            "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "return",
+            "typedef", "struct", "enum", "union", "void", "int", "char", "float", "double", "long",
+            "short", "unsigned", "signed", "static", "extern", "const", "volatile", "sizeof",
+            "null", "true", "false",
+        ],
+        Language::Java => &[
+            "public",
+            "private",
+            "protected",
+            "static",
+            "final",
+            "abstract",
+            "class",
+            "interface",
+            "extends",
+            "implements",
+            "return",
+            "if",
+            "else",
+            "for",
+            "while",
+            "do",
+            "switch",
+            "case",
+            "break",
+            "continue",
+            "new",
+            "this",
+            "super",
+            "try",
+            "catch",
+            "finally",
+            "throw",
+            "throws",
+            "import",
+            "package",
+            "void",
+            "int",
+            "boolean",
+            "string",
+            "true",
+            "false",
+            "null",
+        ],
+    };
+
+    // Count word frequencies
+    let mut freq: HashMap<String, usize> = HashMap::new();
+    for token in tokenize_identifier(content) {
+        if token.len() >= 3 && !stopwords.contains(&token.as_str()) {
+            *freq.entry(token).or_insert(0) += 1;
+        }
+    }
+
+    // Sort by frequency descending, take top 10
+    let mut keywords: Vec<(String, usize)> = freq.into_iter().collect();
+    keywords.sort_by(|a, b| b.1.cmp(&a.1));
+    keywords.into_iter().take(10).map(|(w, _)| w).collect()
 }
 
 #[cfg(test)]

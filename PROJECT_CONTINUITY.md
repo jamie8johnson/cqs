@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**Session complete** (2026-02-05)
+**v0.5.0 released** (2026-02-05)
 
 ### Completed This Session
 - **PR triage**: Merged #52, #54, #53, #51, #220. Closed #164, #50.
@@ -12,6 +12,7 @@
 - **Refactor**: Parser/registry consolidation. PR #223 merged. parser.rs: 1469 → 1056 lines (28% reduction).
 - **GPU setup**: CUDA 13.1 toolkit + conda + libcuvs 25.12 installed. `gpu-search` feature builds and passes all tests. Wrapper at `~/gpu-test.sh`.
 - **Test coverage**: 50 new tests across 6 modules. PR #224 merged. 375 tests (GPU) / 364 (no GPU).
+- **Release v0.5.0**: Docs updated, PR #225 merged. Published to crates.io + GitHub release.
 
 ### What's Next
 - **Phase 4**: Template experiments in nl.rs

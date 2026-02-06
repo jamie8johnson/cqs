@@ -228,9 +228,12 @@
   - 50 new tests across 6 modules (cagra, index, mcp tools, pipeline, CLI)
   - Total: 375 tests (GPU) / 364 (no GPU)
 
-### Planned
+- [x] Template experiments (#226)
+  - 5 variants tested: Standard, NoPrefix, BodyKeywords, Compact, DocFirst
+  - All scored 100% Recall@5 — ceiling effect from doc comments
+  - Baseline stays; infra available for harder eval cases later
 
-- [ ] Template experiments (no prefix, body keywords) - run eval to compare
+### Planned
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)
   - Index popular crates as reference (tokio, serde, axum)
