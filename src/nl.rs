@@ -71,6 +71,7 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 /// assert_eq!(tokenize_identifier("parseConfigFile"), vec!["parse", "config", "file"]);
 /// assert_eq!(tokenize_identifier("get_user_name"), vec!["get", "user", "name"]);
 /// assert_eq!(tokenize_identifier("XMLParser"), vec!["x", "m", "l", "parser"]); // acronyms split per-letter
+/// assert_eq!(tokenize_identifier("获取用户"), vec!["获", "取", "用", "户"]); // CJK: one token per character
 /// ```
 pub fn tokenize_identifier(s: &str) -> Vec<String> {
     let mut words = Vec::new();
@@ -82,6 +83,12 @@ pub fn tokenize_identifier(s: &str) -> Vec<String> {
                 // Use std::mem::take to avoid clone - moves String out and leaves empty String
                 words.push(std::mem::take(&mut current));
             }
+        } else if is_cjk(c) {
+            // CJK characters become individual tokens (no word boundaries in CJK)
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            words.push(c.to_string());
         } else if c.is_uppercase() && !current.is_empty() {
             words.push(std::mem::take(&mut current));
             current.push(c.to_lowercase().next().unwrap_or(c));
@@ -93,6 +100,21 @@ pub fn tokenize_identifier(s: &str) -> Vec<String> {
         words.push(current);
     }
     words
+}
+
+/// Returns true for CJK Unified Ideographs and common CJK ranges.
+/// Covers Chinese, Japanese kanji, Korean hanja, and extensions.
+fn is_cjk(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs
+        | '\u{3400}'..='\u{4DBF}' // CJK Extension A
+        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+        | '\u{3000}'..='\u{303F}' // CJK Symbols and Punctuation
+        | '\u{3040}'..='\u{309F}' // Hiragana
+        | '\u{30A0}'..='\u{30FF}' // Katakana
+        | '\u{AC00}'..='\u{D7AF}' // Hangul Syllables
+        | '\u{1100}'..='\u{11FF}' // Hangul Jamo
+    )
 }
 
 /// Maximum output length for FTS normalization.
@@ -204,6 +226,20 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
                     if !self.current.is_empty() {
                         return Some(std::mem::take(&mut self.current));
                     }
+                }
+                Some(c) if is_cjk(c) => {
+                    // CJK characters become individual tokens
+                    if !self.current.is_empty() {
+                        // Stash the CJK char for next iteration by pushing to current
+                        // after yielding — but simpler to just yield current first,
+                        // then handle CJK on next call. Use peekable workaround:
+                        // Actually, we already consumed c. Flush current, return it,
+                        // but we need to also emit c. Push c to current so it's yielded next.
+                        let result = std::mem::take(&mut self.current);
+                        self.current.push(c);
+                        return Some(result);
+                    }
+                    return Some(c.to_string());
                 }
                 Some(c) if c.is_uppercase() && !self.current.is_empty() => {
                     let result = std::mem::take(&mut self.current);
@@ -725,6 +761,40 @@ mod tests {
         );
         assert_eq!(tokenize_identifier("simple"), vec!["simple"]);
         assert_eq!(tokenize_identifier(""), Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_tokenize_identifier_cjk() {
+        // Pure CJK: each character becomes its own token
+        assert_eq!(
+            tokenize_identifier("获取用户名"),
+            vec!["获", "取", "用", "户", "名"]
+        );
+        // Mixed Latin + CJK
+        assert_eq!(
+            tokenize_identifier("get用户Name"),
+            vec!["get", "用", "户", "name"]
+        );
+        // Japanese hiragana
+        assert_eq!(
+            tokenize_identifier("こんにちは"),
+            vec!["こ", "ん", "に", "ち", "は"]
+        );
+        // Korean hangul
+        assert_eq!(tokenize_identifier("사용자"), vec!["사", "용", "자"]);
+        // CJK with underscores
+        assert_eq!(
+            tokenize_identifier("get_用户_name"),
+            vec!["get", "用", "户", "name"]
+        );
+    }
+
+    #[test]
+    fn test_normalize_for_fts_cjk() {
+        // CJK characters split into individual tokens
+        assert_eq!(normalize_for_fts("获取用户名"), "获 取 用 户 名");
+        // Mixed: CJK in a code context
+        assert_eq!(normalize_for_fts("fn get_用户()"), "fn get 用 户");
     }
 
     #[test]

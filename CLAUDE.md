@@ -129,6 +129,8 @@ The HNSW disaster: built an index, wrote save/load, marked "done" - but search n
 
 **"Done" means a user can use it, not that code exists.**
 
+5. **Update the roadmap.** Check off completed items in `ROADMAP.md`. Stale roadmaps cause duplicate work.
+
 ## Project Conventions
 
 - Rust edition 2021

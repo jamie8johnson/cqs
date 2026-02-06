@@ -243,10 +243,13 @@
   - MCP tools: `cqs_update_note`, `cqs_remove_note` (atomic TOML rewrite)
   - `rewrite_notes_file()` helper with header preservation
 
-### Planned
-- [ ] Note grooming command/skill (#245)
+### Done (cont.)
+
+- [x] Note grooming command/skill (#245)
   - `cqs notes list` — display all notes with sentiment, staleness
   - `/groom-notes` skill — interactive review + batch cleanup
+
+### Planned
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)
   - Index popular crates as reference (tokio, serde, axum)
