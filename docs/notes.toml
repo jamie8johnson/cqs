@@ -526,3 +526,8 @@ mentions = [
     "src/mcp/tools/notes.rs",
     "src/cli/commands/index.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "`--json` is a top-level Cli flag, not a subcommand flag. Correct: `cqs --json stats`, NOT `cqs stats --json`. Same for callers/callees. Could be improved by adding it to subcommands too."
+mentions = ["src/cli/mod.rs", "--json", "clap"]
