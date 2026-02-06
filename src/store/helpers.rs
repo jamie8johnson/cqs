@@ -61,6 +61,27 @@ pub(crate) struct ChunkRow {
     pub parent_id: Option<String>,
 }
 
+impl ChunkRow {
+    /// Construct from a SQLite row containing columns:
+    /// id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+    pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
+        use sqlx::Row;
+        ChunkRow {
+            id: row.get("id"),
+            origin: row.get("origin"),
+            language: row.get("language"),
+            chunk_type: row.get("chunk_type"),
+            name: row.get("name"),
+            signature: row.get("signature"),
+            content: row.get("content"),
+            doc: row.get("doc"),
+            line_start: clamp_line_number(row.get::<i64, _>("line_start")),
+            line_end: clamp_line_number(row.get::<i64, _>("line_end")),
+            parent_id: row.get("parent_id"),
+        }
+    }
+}
+
 /// Chunk metadata returned from search results
 ///
 /// Contains all chunk information except the embedding vector.

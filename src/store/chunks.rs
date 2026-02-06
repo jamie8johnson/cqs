@@ -6,8 +6,7 @@ use std::path::{Path, PathBuf};
 use sqlx::Row;
 
 use super::helpers::{
-    bytes_to_embedding, clamp_line_number, embedding_to_bytes, ChunkRow, ChunkSummary, IndexStats,
-    StoreError,
+    bytes_to_embedding, embedding_to_bytes, ChunkRow, ChunkSummary, IndexStats, StoreError,
 };
 use super::Store;
 use crate::embedder::Embedding;
@@ -396,22 +395,88 @@ impl Store {
             .fetch_optional(&self.pool)
             .await?;
 
-            Ok(row.map(|r| {
-                ChunkSummary::from(ChunkRow {
-                    id: r.get(0),
-                    origin: r.get(1),
-                    language: r.get(2),
-                    chunk_type: r.get(3),
-                    name: r.get(4),
-                    signature: r.get(5),
-                    content: r.get(6),
-                    doc: r.get(7),
-                    line_start: clamp_line_number(r.get::<i64, _>(8)),
-                    line_end: clamp_line_number(r.get::<i64, _>(9)),
-                    parent_id: r.get(10),
-                })
-            }))
+            Ok(row.map(|r| ChunkSummary::from(ChunkRow::from_row(&r))))
         })
+    }
+
+    /// Fetch chunks by IDs (without embeddings) — async version.
+    ///
+    /// Returns a map of chunk ID → ChunkRow for the given IDs.
+    /// Used by search to hydrate top-N results after scoring.
+    pub(crate) async fn fetch_chunks_by_ids_async(
+        &self,
+        ids: &[&str],
+    ) -> Result<HashMap<String, ChunkRow>, StoreError> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let placeholders: String = (1..=ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+             FROM chunks WHERE id IN ({})",
+            placeholders
+        );
+
+        let rows: Vec<_> = {
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(*id);
+            }
+            q.fetch_all(&self.pool).await?
+        };
+
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let chunk = ChunkRow::from_row(r);
+                (chunk.id.clone(), chunk)
+            })
+            .collect())
+    }
+
+    /// Fetch chunks by IDs with embeddings — async version.
+    ///
+    /// Returns (ChunkRow, embedding_bytes) for each ID found.
+    /// Used by search for candidate scoring (needs embeddings for similarity).
+    pub(crate) async fn fetch_chunks_with_embeddings_by_ids_async(
+        &self,
+        ids: &[&str],
+    ) -> Result<Vec<(ChunkRow, Vec<u8>)>, StoreError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let placeholders: String = (1..=ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, embedding
+             FROM chunks WHERE id IN ({})",
+            placeholders
+        );
+
+        let rows: Vec<_> = {
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(*id);
+            }
+            q.fetch_all(&self.pool).await?
+        };
+
+        Ok(rows
+            .iter()
+            .map(|r| {
+                use sqlx::Row;
+                let chunk = ChunkRow::from_row(r);
+                let embedding_bytes: Vec<u8> = r.get("embedding");
+                (chunk, embedding_bytes)
+            })
+            .collect())
     }
 
     /// Get all chunk IDs and embeddings (for HNSW index building)
