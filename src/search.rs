@@ -1,7 +1,7 @@
-//! Search algorithms and scoring functions
+//! Search algorithms and name matching
 //!
-//! This module contains the SearchEngine for code and note search,
-//! as well as helper functions for similarity scoring.
+//! Implements search methods on Store for semantic, hybrid, and index-guided
+//! search. See `math.rs` for similarity scoring.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashSet};
@@ -289,9 +289,13 @@ impl Store {
                 };
 
                 if let Some(ref matcher) = glob_matcher {
-                    // Extract file path from chunk ID (format: "path:start-end").
-                    // Use rfind(':') to handle paths with colons (e.g., Windows "C:\...")
-                    let file_part = id.rfind(':').map(|i| &id[..i]).unwrap_or(&id);
+                    // Extract file path from chunk ID (format: "path:line_start:hash_prefix").
+                    // Strip ":hash_prefix" then ":line_start" with two rfind calls.
+                    let file_part = id
+                        .rfind(':')
+                        .and_then(|i| id[..i].rfind(':'))
+                        .map(|i| &id[..i])
+                        .unwrap_or(&id);
                     if !matcher.is_match(file_part) {
                         continue;
                     }

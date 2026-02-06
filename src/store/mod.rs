@@ -172,7 +172,7 @@ impl Store {
         store.check_schema_version(path)?;
         // Check model version compatibility
         store.check_model_version()?;
-        // Warn if index was created by different cq version
+        // Warn if index was created by different cqs version
         store.check_cq_version();
 
         Ok(store)

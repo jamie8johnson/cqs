@@ -1,7 +1,7 @@
 //! Note parsing and types
 //!
-//! Notes are unified memory entries - surprises worth remembering.
-//! Replaces separate Scar and Hunch types with a simpler schema.
+//! Notes are developer observations with sentiment, stored in TOML and
+//! indexed for semantic search.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;

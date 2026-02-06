@@ -328,6 +328,7 @@ async fn handle_mcp_sse(
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)> {
     validate_api_key(&headers, state.api_key.as_ref().map(|s| s.as_str()))?;
+    validate_origin_header(&headers)?;
     require_accept_event_stream(&headers)?;
 
     // Create SSE stream with priming event per MCP 2025-11-25 spec:

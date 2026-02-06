@@ -82,13 +82,13 @@ fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
 /// Message types for the pipelined indexer
 struct ParsedBatch {
     chunks: Vec<Chunk>,
-    file_mtime: i64,
+    file_mtimes: std::collections::HashMap<PathBuf, i64>,
 }
 
 struct EmbeddedBatch {
     chunk_embeddings: Vec<(Chunk, Embedding)>,
     cached_count: usize,
-    file_mtime: i64,
+    file_mtimes: std::collections::HashMap<PathBuf, i64>,
 }
 
 /// Stats returned from pipelined indexing
@@ -108,8 +108,8 @@ struct PreparedEmbedding {
     to_embed: Vec<Chunk>,
     /// NL descriptions for chunks needing embedding
     texts: Vec<String>,
-    /// File modification time for the batch
-    file_mtime: i64,
+    /// File modification times (per-file)
+    file_mtimes: std::collections::HashMap<PathBuf, i64>,
 }
 
 /// Prepare a batch for embedding: apply windowing, check cache, generate texts.
@@ -155,7 +155,7 @@ fn prepare_for_embedding(
         cached,
         to_embed,
         texts,
-        file_mtime: batch.file_mtime,
+        file_mtimes: batch.file_mtimes,
     }
 }
 
@@ -164,7 +164,7 @@ fn create_embedded_batch(
     cached: Vec<(Chunk, Embedding)>,
     to_embed: Vec<Chunk>,
     new_embeddings: Vec<Embedding>,
-    file_mtime: i64,
+    file_mtimes: std::collections::HashMap<PathBuf, i64>,
 ) -> EmbeddedBatch {
     let cached_count = cached.len();
     let mut chunk_embeddings = cached;
@@ -172,7 +172,7 @@ fn create_embedded_batch(
     EmbeddedBatch {
         chunk_embeddings,
         cached_count,
-        file_mtime,
+        file_mtimes,
     }
 }
 
@@ -296,19 +296,16 @@ pub(crate) fn run_index_pipeline(
             parsed_count_clone.fetch_add(file_batch.len(), Ordering::Relaxed);
 
             if !chunks.is_empty() {
-                // Use cached mtime from first chunk's file (already computed above)
-                let file_mtime = chunks
-                    .first()
-                    .and_then(|c| file_mtimes.get(&c.file))
-                    .copied()
-                    .unwrap_or(0);
-
-                // Send in embedding-sized batches
+                // Send in embedding-sized batches with per-file mtimes
                 for chunk_batch in chunks.chunks(batch_size) {
+                    let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunk_batch
+                        .iter()
+                        .filter_map(|c| file_mtimes.get(&c.file).map(|&m| (c.file.clone(), m)))
+                        .collect();
                     if parse_tx
                         .send(ParsedBatch {
                             chunks: chunk_batch.to_vec(),
-                            file_mtime,
+                            file_mtimes: batch_mtimes,
                         })
                         .is_err()
                     {
@@ -349,7 +346,7 @@ pub(crate) fn run_index_pipeline(
                     .send(EmbeddedBatch {
                         chunk_embeddings: prepared.cached,
                         cached_count,
-                        file_mtime: prepared.file_mtime,
+                        file_mtimes: prepared.file_mtimes,
                     })
                     .is_err()
                 {
@@ -376,7 +373,7 @@ pub(crate) fn run_index_pipeline(
                         .send(EmbeddedBatch {
                             chunk_embeddings: prepared.cached,
                             cached_count,
-                            file_mtime: prepared.file_mtime,
+                            file_mtimes: prepared.file_mtimes.clone(),
                         })
                         .is_err()
                     {
@@ -386,7 +383,7 @@ pub(crate) fn run_index_pipeline(
                 if fail_tx
                     .send(ParsedBatch {
                         chunks: prepared.to_embed,
-                        file_mtime: prepared.file_mtime,
+                        file_mtimes: prepared.file_mtimes.clone(),
                     })
                     .is_err()
                 {
@@ -408,7 +405,7 @@ pub(crate) fn run_index_pipeline(
                         .send(EmbeddedBatch {
                             chunk_embeddings,
                             cached_count,
-                            file_mtime: prepared.file_mtime,
+                            file_mtimes: prepared.file_mtimes.clone(),
                         })
                         .is_err()
                     {
@@ -437,7 +434,7 @@ pub(crate) fn run_index_pipeline(
                             .send(EmbeddedBatch {
                                 chunk_embeddings: prepared.cached,
                                 cached_count,
-                                file_mtime: prepared.file_mtime,
+                                file_mtimes: prepared.file_mtimes.clone(),
                             })
                             .is_err()
                         {
@@ -447,7 +444,7 @@ pub(crate) fn run_index_pipeline(
                     if fail_tx
                         .send(ParsedBatch {
                             chunks: prepared.to_embed,
-                            file_mtime: prepared.file_mtime,
+                            file_mtimes: prepared.file_mtimes.clone(),
                         })
                         .is_err()
                     {
@@ -508,7 +505,7 @@ pub(crate) fn run_index_pipeline(
                 prepared.cached,
                 prepared.to_embed,
                 new_embeddings,
-                prepared.file_mtime,
+                prepared.file_mtimes,
             );
 
             embedded_count_cpu.fetch_add(embedded_batch.chunk_embeddings.len(), Ordering::Relaxed);
@@ -547,7 +544,24 @@ pub(crate) fn run_index_pipeline(
             break;
         }
 
-        store.upsert_chunks_batch(&batch.chunk_embeddings, Some(batch.file_mtime))?;
+        // Group by file for correct per-file mtime (batches may span multiple files)
+        if batch.file_mtimes.len() <= 1 {
+            // Fast path: single file or no mtimes — use existing batch upsert
+            let mtime = batch.file_mtimes.values().next().copied();
+            store.upsert_chunks_batch(&batch.chunk_embeddings, mtime)?;
+        } else {
+            // Multi-file batch: group by file and upsert with correct per-file mtime
+            let mut by_file: std::collections::HashMap<&std::path::Path, Vec<&(Chunk, Embedding)>> =
+                std::collections::HashMap::new();
+            for pair in &batch.chunk_embeddings {
+                by_file.entry(pair.0.file.as_path()).or_default().push(pair);
+            }
+            for (file, pairs) in by_file {
+                let mtime = batch.file_mtimes.get(file).copied();
+                let owned: Vec<_> = pairs.into_iter().cloned().collect();
+                store.upsert_chunks_batch(&owned, mtime)?;
+            }
+        }
 
         // Extract and batch-store function calls (single transaction per batch)
         let all_calls: Vec<_> = batch
@@ -621,16 +635,22 @@ mod tests {
         }
     }
 
+    fn test_mtimes(mtime: i64) -> std::collections::HashMap<PathBuf, i64> {
+        let mut m = std::collections::HashMap::new();
+        m.insert(PathBuf::from("test.rs"), mtime);
+        m
+    }
+
     #[test]
     fn test_create_embedded_batch_all_cached() {
         let chunk = make_test_chunk("c1", "fn foo() {}");
         let emb = Embedding::new(vec![0.0; 769]);
         let cached = vec![(chunk, emb)];
 
-        let batch = create_embedded_batch(cached, vec![], vec![], 12345);
+        let batch = create_embedded_batch(cached, vec![], vec![], test_mtimes(12345));
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 1);
-        assert_eq!(batch.file_mtime, 12345);
+        assert_eq!(batch.file_mtimes[&PathBuf::from("test.rs")], 12345);
     }
 
     #[test]
@@ -638,10 +658,10 @@ mod tests {
         let chunk = make_test_chunk("c1", "fn foo() {}");
         let emb = Embedding::new(vec![1.0; 769]);
 
-        let batch = create_embedded_batch(vec![], vec![chunk], vec![emb], 99);
+        let batch = create_embedded_batch(vec![], vec![chunk], vec![emb], test_mtimes(99));
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 0);
-        assert_eq!(batch.file_mtime, 99);
+        assert_eq!(batch.file_mtimes[&PathBuf::from("test.rs")], 99);
     }
 
     #[test]
@@ -655,7 +675,7 @@ mod tests {
             vec![(cached_chunk, cached_emb)],
             vec![new_chunk],
             vec![new_emb],
-            12345,
+            test_mtimes(12345),
         );
         assert_eq!(batch.chunk_embeddings.len(), 2);
         assert_eq!(batch.cached_count, 1);
@@ -663,7 +683,7 @@ mod tests {
 
     #[test]
     fn test_create_embedded_batch_empty() {
-        let batch = create_embedded_batch(vec![], vec![], vec![], 0);
+        let batch = create_embedded_batch(vec![], vec![], vec![], std::collections::HashMap::new());
         assert_eq!(batch.chunk_embeddings.len(), 0);
         assert_eq!(batch.cached_count, 0);
     }
@@ -677,7 +697,8 @@ mod tests {
         let c3 = make_test_chunk("c3", "fn third() {}");
         let e3 = Embedding::new(vec![3.0; 769]);
 
-        let batch = create_embedded_batch(vec![(c1, e1)], vec![c2, c3], vec![e2, e3], 0);
+        let batch =
+            create_embedded_batch(vec![(c1, e1)], vec![c2, c3], vec![e2, e3], test_mtimes(0));
 
         assert_eq!(batch.chunk_embeddings.len(), 3);
         // Cached come first, then new in order

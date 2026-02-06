@@ -1,4 +1,4 @@
-//! Schema migrations for cq index database
+//! Schema migrations for cqs index database
 //!
 //! When the schema version changes, migrations allow upgrading existing indexes
 //! without requiring a full rebuild (`cqs index --force`).

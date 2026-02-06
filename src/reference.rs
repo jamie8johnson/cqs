@@ -87,6 +87,9 @@ pub fn search_reference(
             for r in &mut results {
                 r.score *= ref_idx.weight;
             }
+            // Re-filter after weight: results that passed raw threshold may fall
+            // below after weighting (consistent with name_only path)
+            results.retain(|r| r.score >= threshold);
             results
         }
         Err(e) => {
@@ -146,10 +149,9 @@ pub fn merge_results(
 
     // Sort by score descending
     tagged.sort_by(|a, b| {
-        let score_a = tagged_score(a);
-        let score_b = tagged_score(b);
-        score_b
-            .partial_cmp(&score_a)
+        b.result
+            .score()
+            .partial_cmp(&a.result.score())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
@@ -157,21 +159,28 @@ pub fn merge_results(
     tagged
 }
 
-/// Extract score from a tagged result for sorting
-fn tagged_score(t: &TaggedResult) -> f32 {
-    match &t.result {
-        UnifiedResult::Code(r) => r.score,
-        UnifiedResult::Note(r) => r.score,
-    }
-}
-
 /// Default storage directory for reference indexes
 pub fn refs_dir() -> Option<std::path::PathBuf> {
     dirs::data_local_dir().map(|d| d.join("cqs/refs"))
 }
 
+/// Validate a reference name (no path separators or traversal)
+pub fn validate_ref_name(name: &str) -> Result<(), &'static str> {
+    if name.is_empty() {
+        return Err("Reference name cannot be empty");
+    }
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("Reference name cannot contain '/', '\\', or '..'");
+    }
+    if name == "." {
+        return Err("Reference name cannot be '.'");
+    }
+    Ok(())
+}
+
 /// Get the storage path for a named reference
 pub fn ref_path(name: &str) -> Option<std::path::PathBuf> {
+    validate_ref_name(name).ok()?;
     refs_dir().map(|d| d.join(name))
 }
 
@@ -247,9 +256,9 @@ mod tests {
         let merged = merge_results(primary, refs, 10);
         assert_eq!(merged.len(), 4);
         // Should be sorted: 0.95, 0.9, 0.7, 0.5
-        assert!(tagged_score(&merged[0]) >= tagged_score(&merged[1]));
-        assert!(tagged_score(&merged[1]) >= tagged_score(&merged[2]));
-        assert!(tagged_score(&merged[2]) >= tagged_score(&merged[3]));
+        assert!(merged[0].result.score() >= merged[1].result.score());
+        assert!(merged[1].result.score() >= merged[2].result.score());
+        assert!(merged[2].result.score() >= merged[3].result.score());
     }
 
     #[test]
@@ -264,7 +273,7 @@ mod tests {
         let merged = merge_results(primary, refs, 2);
         assert_eq!(merged.len(), 2);
         // Top 2 by score: 0.9, 0.85
-        assert!(tagged_score(&merged[0]) > 0.85);
+        assert!(merged[0].result.score() > 0.85);
     }
 
     #[test]
@@ -294,8 +303,8 @@ mod tests {
         let merged = merge_results(primary, refs, 10);
         assert_eq!(merged.len(), 3);
         // Sorted: 0.9 (code), 0.88 (ref), 0.85 (note)
-        assert!(tagged_score(&merged[0]) >= tagged_score(&merged[1]));
-        assert!(tagged_score(&merged[1]) >= tagged_score(&merged[2]));
+        assert!(merged[0].result.score() >= merged[1].result.score());
+        assert!(merged[1].result.score() >= merged[2].result.score());
     }
 
     #[test]
@@ -330,5 +339,28 @@ mod tests {
         if let Some(path) = ref_path("tokio") {
             assert!(path.ends_with("cqs/refs/tokio"));
         }
+    }
+
+    #[test]
+    fn test_validate_ref_name_rejects_traversal() {
+        assert!(validate_ref_name("../etc").is_err());
+        assert!(validate_ref_name("foo/bar").is_err());
+        assert!(validate_ref_name("foo\\bar").is_err());
+        assert!(validate_ref_name("..").is_err());
+        assert!(validate_ref_name(".").is_err());
+        assert!(validate_ref_name("").is_err());
+    }
+
+    #[test]
+    fn test_validate_ref_name_accepts_valid() {
+        assert!(validate_ref_name("tokio").is_ok());
+        assert!(validate_ref_name("my-ref").is_ok());
+        assert!(validate_ref_name("ref_v2").is_ok());
+    }
+
+    #[test]
+    fn test_ref_path_rejects_traversal() {
+        assert!(ref_path("../etc").is_none());
+        assert!(ref_path("foo/bar").is_none());
     }
 }
