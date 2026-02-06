@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2021"
 rust-version = "1.88"
 description = "Semantic code search for Claude Code. Find functions by what they do, not their names. Local ML, GPU-accelerated."
