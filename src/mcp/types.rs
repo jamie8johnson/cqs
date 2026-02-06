@@ -119,6 +119,8 @@ pub(crate) struct SearchArgs {
     /// Weight for note scores in results (0.0-1.0, default 1.0)
     /// Lower values make notes rank lower than code with similar semantic scores.
     pub note_weight: Option<f32>,
+    /// Filter which indexes to search. Use "project" for primary, reference names for others.
+    pub sources: Option<Vec<String>>,
 }
 
 /// Audit mode arguments

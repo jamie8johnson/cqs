@@ -84,6 +84,46 @@ pub(crate) fn cmd_doctor(_cli: &Cli) -> Result<()> {
         println!("      Run 'cq index' to create the index");
     }
 
+    // Check references
+    let config = cqs::config::Config::load(&root);
+    if !config.references.is_empty() {
+        println!();
+        println!("References:");
+        for r in &config.references {
+            let db_path = r.path.join("index.db");
+            if !r.path.exists() {
+                println!(
+                    "  {} {}: path missing ({})",
+                    "[✗]".red(),
+                    r.name,
+                    r.path.display()
+                );
+                continue;
+            }
+            match Store::open(&db_path) {
+                Ok(store) => {
+                    let chunks = store.chunk_count().unwrap_or(0);
+                    let hnsw = if cqs::HnswIndex::exists(&r.path, "index") {
+                        "HNSW loaded".to_string()
+                    } else {
+                        "no HNSW".to_string()
+                    };
+                    println!(
+                        "  {} {}: {} chunks, {} (weight {:.1})",
+                        "[✓]".green(),
+                        r.name,
+                        chunks,
+                        hnsw,
+                        r.weight
+                    );
+                }
+                Err(e) => {
+                    println!("  {} {}: {}", "[✗]".red(), r.name, e);
+                }
+            }
+        }
+    }
+
     println!();
     println!("All checks passed.");
 

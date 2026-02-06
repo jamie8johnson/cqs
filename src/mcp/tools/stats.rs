@@ -43,7 +43,27 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         }
     };
 
-    let result = serde_json::json!({
+    // Collect reference info
+    let references: Vec<_> = server
+        .references
+        .iter()
+        .map(|r| {
+            let chunks = r.store.chunk_count().unwrap_or(0);
+            let hnsw = r
+                .index
+                .as_ref()
+                .map(|idx| format!("{} vectors", idx.len()))
+                .unwrap_or_else(|| "not built".to_string());
+            serde_json::json!({
+                "name": r.name,
+                "chunks": chunks,
+                "hnsw": hnsw,
+                "weight": r.weight,
+            })
+        })
+        .collect();
+
+    let mut result = serde_json::json!({
         "total_chunks": stats.total_chunks,
         "total_files": stats.total_files,
         "by_language": stats.chunks_by_language.iter()
@@ -60,6 +80,10 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         "active_index": active_index,
         "warning": warning,
     });
+
+    if !references.is_empty() {
+        result["references"] = serde_json::json!(references);
+    }
 
     // MCP tools/call requires content array format
     Ok(serde_json::json!({

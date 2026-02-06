@@ -64,6 +64,7 @@ pub mod mcp;
 pub mod nl;
 pub mod note;
 pub mod parser;
+pub mod reference;
 pub mod search;
 pub mod source;
 pub mod store;

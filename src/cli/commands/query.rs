@@ -4,7 +4,7 @@
 
 use anyhow::{bail, Context, Result};
 
-use cqs::{Embedder, HnswIndex, SearchFilter, Store};
+use cqs::{reference, Embedder, HnswIndex, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, signal, Cli};
 
@@ -82,6 +82,10 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         }
     };
 
+    // Load references for multi-index search
+    let config = cqs::config::Config::load(&root);
+    let references = reference::load_references(&config.references);
+
     // Use unified search with vector index if available
     let results = store.search_unified_with_index(
         &query_embedding,
@@ -91,7 +95,43 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         index.as_deref(),
     )?;
 
-    if results.is_empty() {
+    // Fast path: no references configured
+    if references.is_empty() {
+        if results.is_empty() {
+            if cli.json {
+                println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+            } else {
+                println!("No results found.");
+            }
+            std::process::exit(signal::ExitCode::NoResults as i32);
+        }
+
+        if cli.json {
+            display::display_unified_results_json(&results, query)?;
+        } else {
+            display::display_unified_results(&results, &root, cli.no_content, cli.context)?;
+        }
+        return Ok(());
+    }
+
+    // Multi-index search: search each reference
+    let mut ref_results = Vec::new();
+    for ref_idx in &references {
+        let r = reference::search_reference(
+            ref_idx,
+            &query_embedding,
+            &filter,
+            cli.limit,
+            cli.threshold,
+        );
+        if !r.is_empty() {
+            ref_results.push((ref_idx.name.clone(), r));
+        }
+    }
+
+    let tagged = reference::merge_results(results, ref_results, cli.limit);
+
+    if tagged.is_empty() {
         if cli.json {
             println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
         } else {
@@ -101,9 +141,9 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     if cli.json {
-        display::display_unified_results_json(&results, query)?;
+        display::display_tagged_results_json(&tagged, query)?;
     } else {
-        display::display_unified_results(&results, &root, cli.no_content, cli.context)?;
+        display::display_tagged_results(&tagged, &root, cli.no_content, cli.context)?;
     }
 
     Ok(())

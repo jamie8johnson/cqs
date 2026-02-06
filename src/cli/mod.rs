@@ -15,8 +15,8 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::check_interrupted;
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_doctor, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_serve,
-    cmd_stats, NotesCommand, ServeConfig,
+    cmd_callees, cmd_callers, cmd_doctor, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref,
+    cmd_serve, cmd_stats, NotesCommand, RefCommand, ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -164,6 +164,11 @@ enum Commands {
         #[command(subcommand)]
         subcmd: NotesCommand,
     },
+    /// Manage reference indexes for multi-index search
+    Ref {
+        #[command(subcommand)]
+        subcmd: RefCommand,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -211,6 +216,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Callers { ref name, json }) => cmd_callers(&cli, name, json),
         Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
+        Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -480,6 +486,79 @@ mod tests {
         }
     }
 
+    // ===== Ref command tests =====
+
+    #[test]
+    fn test_cmd_ref_add_defaults() {
+        let cli = Cli::try_parse_from(["cqs", "ref", "add", "tokio", "/path/to/source"]).unwrap();
+        match cli.command {
+            Some(Commands::Ref { ref subcmd }) => match subcmd {
+                RefCommand::Add {
+                    name,
+                    source,
+                    weight,
+                } => {
+                    assert_eq!(name, "tokio");
+                    assert_eq!(source.to_string_lossy(), "/path/to/source");
+                    assert!((*weight - 0.8).abs() < 0.001);
+                }
+                _ => panic!("Expected Add subcommand"),
+            },
+            _ => panic!("Expected Ref command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ref_add_custom_weight() {
+        let cli =
+            Cli::try_parse_from(["cqs", "ref", "add", "stdlib", "/usr/src", "--weight", "0.5"])
+                .unwrap();
+        match cli.command {
+            Some(Commands::Ref { ref subcmd }) => match subcmd {
+                RefCommand::Add { weight, .. } => {
+                    assert!((*weight - 0.5).abs() < 0.001);
+                }
+                _ => panic!("Expected Add subcommand"),
+            },
+            _ => panic!("Expected Ref command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ref_list() {
+        let cli = Cli::try_parse_from(["cqs", "ref", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ref {
+                subcmd: RefCommand::List
+            })
+        ));
+    }
+
+    #[test]
+    fn test_cmd_ref_remove() {
+        let cli = Cli::try_parse_from(["cqs", "ref", "remove", "tokio"]).unwrap();
+        match cli.command {
+            Some(Commands::Ref { ref subcmd }) => match subcmd {
+                RefCommand::Remove { name } => assert_eq!(name, "tokio"),
+                _ => panic!("Expected Remove subcommand"),
+            },
+            _ => panic!("Expected Ref command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ref_update() {
+        let cli = Cli::try_parse_from(["cqs", "ref", "update", "tokio"]).unwrap();
+        match cli.command {
+            Some(Commands::Ref { ref subcmd }) => match subcmd {
+                RefCommand::Update { name } => assert_eq!(name, "tokio"),
+                _ => panic!("Expected Update subcommand"),
+            },
+            _ => panic!("Expected Ref command"),
+        }
+    }
+
     // ===== Error cases =====
 
     #[test]
@@ -507,6 +586,7 @@ mod tests {
             name_boost: Some(0.5),
             quiet: Some(true),
             verbose: Some(true),
+            references: vec![],
         };
         apply_config_defaults(&mut cli, &config);
 
@@ -526,6 +606,7 @@ mod tests {
             name_boost: Some(0.4),
             quiet: Some(true),
             verbose: Some(true),
+            references: vec![],
         };
         apply_config_defaults(&mut cli, &config);
 
