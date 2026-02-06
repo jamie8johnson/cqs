@@ -6,9 +6,13 @@
 
 Branch: main, synced with remote. No pending work.
 
-### Just released
-- v0.5.2 published to crates.io and GitHub
-- PRs #248, #249, #250 merged
+### Done this session
+- PR #252 merged: CJK tokenization for FTS search (closed #238)
+- PR #253 merged: Store boundary refactor + TOML serializer (closed #234, #237)
+- Closed #235 (dual runtimes) as not_planned — accepted, documented
+- Added "update the roadmap" to CLAUDE.md completion checklist
+- Marked note grooming (#245) as done in ROADMAP.md
+- Groomed notes: 62 → 60
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -17,8 +21,7 @@ Branch: main, synced with remote. No pending work.
 ## Parked
 
 - **Phase 6**: Security (index encryption, rate limiting)
-- **Multi-index**: reference codebases (after model question settled)
-- **P4 issues**: #231-#241 (file locking, CAGRA guard, CJK, etc.)
+- **Multi-index**: reference codebases (model eval done, ready to build)
 
 ## Open Issues
 
@@ -26,15 +29,11 @@ Branch: main, synced with remote. No pending work.
 - #106: ort stable (currently 2.0.0-rc.11)
 - #63: paste dep (via tokenizers)
 
-### P4 Deferred
+### P4 Deferred (7 remaining)
 - #231: Notes file locking
 - #232: CAGRA RAII guard pattern
 - #233: Cache parsed notes.toml in MCP server
-- #234: search.rs / store::helpers refactor
-- #235: Dual tokio runtimes in HTTP mode
 - #236: HNSW-SQLite freshness validation
-- #237: TOML manual escaping → serializer
-- #238: CJK tokenization
 - #239: Test coverage gaps (low-priority)
 - #240: embedding_batches cursor pagination
 - #241: Config permission checks
@@ -46,4 +45,4 @@ Branch: main, synced with remote. No pending work.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
-- 381 tests (no GPU), 0 warnings, clippy clean
+- 383 tests (no GPU), 0 warnings, clippy clean

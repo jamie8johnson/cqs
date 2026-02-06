@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] - 2026-02-06
+
+### Added
+- CJK tokenization: Chinese, Japanese, Korean characters split into individual FTS tokens
+- `ChunkRow::from_row()` centralized SQLite row mapping in store layer
+- `fetch_chunks_by_ids_async()` and `fetch_chunks_with_embeddings_by_ids_async()` store methods
+
+### Changed
+- `tool_add_note` uses `toml::to_string()` via serde instead of manual string escaping
+- `search.rs` no longer constructs `ChunkRow` directly from raw SQLite rows
+
 ## [0.5.2] - 2026-02-06
 
 ### Added
