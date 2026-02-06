@@ -2,32 +2,14 @@
 
 ## Right Now
 
-**Phase 6: Discovery & UX** — implementation complete, needs review + PR (2026-02-06)
+**v0.7.0 released** (2026-02-06). Clean state. No active work.
 
-### Implemented (all uncommitted on main)
-- [x] Store prereq methods (`get_chunk_with_embedding`, `all_chunk_identities`, `ChunkIdentity`)
-- [x] `cqs similar` (CLI + MCP) — search by example using stored embeddings
-- [x] `cqs explain` (CLI + MCP) — function card (signature, callers, callees, similar)
-- [x] `cqs diff` (CLI + MCP) — semantic diff between indexed snapshots
-- [x] Workspace-aware indexing — detect Cargo workspace root
-
-### New files
-- `src/diff.rs` — core diff algorithm
-- `src/cli/commands/similar.rs` — CLI handler
-- `src/cli/commands/explain.rs` — CLI handler
-- `src/cli/commands/diff.rs` — CLI handler
-- `src/mcp/tools/similar.rs` — MCP tool
-- `src/mcp/tools/explain.rs` — MCP tool
-- `src/mcp/tools/diff.rs` — MCP tool
-
-### Modified files
-- `src/store/chunks.rs`, `src/store/helpers.rs`, `src/store/mod.rs` — Store prereqs
-- `src/cli/mod.rs`, `src/cli/commands/mod.rs` — CLI wiring (3 new commands)
-- `src/mcp/tools/mod.rs` — MCP wiring (3 new tools)
-- `src/cli/display.rs` — `display_similar_results_json`
-- `src/cli/config.rs` — workspace-aware `find_project_root`
-- `src/lib.rs` — `pub mod diff`
-- `CLAUDE.md` — document new tools
+### What shipped in v0.7.0
+- `cqs similar` (CLI + MCP) — search by example using stored embeddings
+- `cqs explain` (CLI + MCP) — function card (signature, callers, callees, similar)
+- `cqs diff` (CLI + MCP) — semantic diff between indexed snapshots
+- Workspace-aware indexing — detect Cargo workspace root
+- Store prereqs: `get_chunk_with_embedding`, `all_chunk_identities`, `ChunkIdentity`
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs

@@ -5,15 +5,6 @@
 
 [[note]]
 sentiment = -1.0
-text = "tree-sitter 0.26 with grammar crates pinned to 0.23.x causes mysterious parsing failures. No clear error messages. Keep grammar versions aligned with tree-sitter core."
-mentions = [
-    "tree-sitter",
-    "parser.rs",
-    "Cargo.toml",
-]
-
-[[note]]
-sentiment = -1.0
 text = 'MCP tools/call responses MUST wrap in {"content":[{"type":"text","text":"..."}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code.'
 mentions = [
     "src/mcp/tools/mod.rs",
@@ -35,23 +26,6 @@ mentions = [
     "gh",
     "CI",
     "github",
-]
-
-[[note]]
-sentiment = -1.0
-text = "Context compacts suddenly without warning. Lose state mid-task. Update tears proactively - don't wait for compaction. The trap in CLAUDE.md helps on resume."
-mentions = [
-    "anthropic",
-    "claude",
-    "context",
-]
-
-[[note]]
-sentiment = -1.0
-text = "Asking instead of doing wastes turns. 'Do as thou wilt shall be the whole of the law.' Act on clear patterns, update tears without asking, reserve questions for genuine ambiguity."
-mentions = [
-    "workflow",
-    "autonomy",
 ]
 
 [[note]]
@@ -90,22 +64,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 1.0
-text = "cqs is Tears - context persistence for AI collaborators. Code chunks are entity 1, notes are entity 2. The name was always right."
-mentions = [
-    "README.md",
-    "CLAUDE.md",
-]
-
-[[note]]
-sentiment = 1.0
-text = "Natural language carries sentiment. Words like 'failed', 'broke', 'wasted' are negative. 'Worked', 'clean', 'saved' are positive. Embedding model learned this. Schema simplifies to just text."
-mentions = [
-    "note.rs",
-    "embedder.rs",
-]
-
-[[note]]
 sentiment = 0.5
 text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
 mentions = [
@@ -124,26 +82,10 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Locality is the feature, not limitation. cqs indexes YOUR codebase, YOUR team's memory. Context persistence is inherently local. Specificity is the value."
-mentions = [
-    "CLAUDE.md",
-    "tears",
-]
-
-[[note]]
-sentiment = 1.0
 text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-search for CUDA-equipped infrastructure."
 mentions = [
     "hnsw.rs",
     "Cargo.toml",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Notes with sentiment are prediction errors - expected X, got Y. Negative = pain, positive = gain. High-value because they mark where understanding needs updating. Index surprises, not routine."
-mentions = [
-    "note.rs",
-    "tears",
 ]
 
 [[note]]
@@ -153,15 +95,6 @@ mentions = [
     "embedder.rs",
     "ort",
     "DirectML",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Tears actually work. Context resumes correctly after compaction - read PROJECT_CONTINUITY.md and pick up where we left off. The system serves its purpose."
-mentions = [
-    "PROJECT_CONTINUITY.md",
-    "tears",
-    "context",
 ]
 
 [[note]]
@@ -208,15 +141,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = 'PowerShell workaround for WSL git credentials is reliable. `powershell.exe -Command "cd C:\Projects\cq; git push"` - ugly but works every time.'
-mentions = [
-    "WSL",
-    "git",
-    "PowerShell",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback loop. Worth the setup."
 mentions = [
@@ -249,34 +173,6 @@ mentions = [
     "CUDA",
     "LD_LIBRARY_PATH",
     "embedder.rs",
-]
-
-[[note]]
-sentiment = 0.0
-text = "Switched from nomic-embed-text-v1.5 to E5-base-v2 (Feb 2026). E5 prefixes: 'passage: ' for docs, 'query: ' for search. Window params adjusted: 480 tokens/64 overlap (E5's 512 limit vs nomic's 8192)."
-mentions = [
-    "src/embedder.rs",
-    "src/cli/mod.rs",
-    "E5",
-    "windowing",
-]
-
-[[note]]
-sentiment = -0.5
-text = "ensure_ort_provider_libs() had a bug: if ort cache dir was first in LD_LIBRARY_PATH, it would create circular symlinks in the source directory, corrupting the ort cache. Fixed by skipping dirs containing ort_cache path."
-mentions = [
-    "embedder.rs",
-    "ort",
-    "symlink",
-]
-
-[[note]]
-sentiment = -0.5
-text = "cfg(feature) dead code trap: if a constant is defined outside a #[cfg(feature)] block but only used inside it, clippy reports dead_code when feature is disabled. Move constants inside the cfg block or gate with #[cfg(feature)] too."
-mentions = [
-    "src/cli/commands/query.rs",
-    "CAGRA_THRESHOLD",
-    "clippy",
 ]
 
 [[note]]
@@ -345,15 +241,6 @@ mentions = [
     "LD_LIBRARY_PATH",
     "WSL",
     "cuvs",
-]
-
-[[note]]
-sentiment = 0.0
-text = "Run `cqs watch` in background terminal to keep notes.toml indexed. Manual edits without watch = stale search results."
-mentions = [
-    "cqs watch",
-    "notes.toml",
-    "indexing",
 ]
 
 [[note]]
@@ -519,24 +406,49 @@ mentions = [
 [[note]]
 sentiment = -0.5
 text = "CHANGELOG pollution trap: if you update CHANGELOG entries after the tag is already cut, the entry drifts from reality. Always verify with `git show vX.Y.Z:CHANGELOG.md` before a release to catch drift. v0.5.3 entry had multi-index content that wasn't in that release."
-mentions = ["CHANGELOG.md", "git tag", "release"]
+mentions = [
+    "CHANGELOG.md",
+    "git tag",
+    "release",
+]
 
 [[note]]
 sentiment = -0.5
 text = "cfg(test) only applies within the library crate's unit tests. Integration tests (tests/*.rs) are separate compilation units — they see the public API without cfg(test) gating. Can't use cfg(test) to hide types only needed by integration tests."
-mentions = ["cfg(test)", "tests/", "integration tests"]
+mentions = [
+    "cfg(test)",
+    "tests/",
+    "integration tests",
+]
 
 [[note]]
 sentiment = -0.5
 text = "parse_target (file:name resolution) is duplicated in 4 places: cli/commands/similar.rs, cli/commands/explain.rs, mcp/tools/similar.rs, mcp/tools/explain.rs. Should extract to shared utility if adding more commands that resolve targets."
-mentions = ["src/cli/commands/similar.rs", "src/cli/commands/explain.rs", "src/mcp/tools/similar.rs", "src/mcp/tools/explain.rs"]
+mentions = [
+    "src/cli/commands/similar.rs",
+    "src/cli/commands/explain.rs",
+    "src/mcp/tools/similar.rs",
+    "src/mcp/tools/explain.rs",
+]
 
 [[note]]
 sentiment = -0.5
 text = "cqs diff loads embeddings one-by-one for each matched pair via get_chunk_with_embedding. For large diffs (1000+ matched functions), this will be slow. Batch loading would help but adds complexity — defer until someone hits the perf wall."
-mentions = ["src/diff.rs", "semantic_diff", "get_chunk_with_embedding"]
+mentions = [
+    "src/diff.rs",
+    "semantic_diff",
+    "get_chunk_with_embedding",
+]
 
 [[note]]
 sentiment = 0.0
-text = "Workspace detection uses string contains(\"[workspace]\") on Cargo.toml content. Simple but could false-positive on comments. Low risk — real TOML parsing would need toml crate dependency just for this check."
-mentions = ["src/cli/config.rs", "find_cargo_workspace_root"]
+text = 'Workspace detection uses string contains("[workspace]") on Cargo.toml content. Simple but could false-positive on comments. Low risk — real TOML parsing would need toml crate dependency just for this check.'
+mentions = [
+    "src/cli/config.rs",
+    "find_cargo_workspace_root",
+]
+
+[[note]]
+sentiment = 0.5
+text = "When adding new MCP tools/capabilities: create a cqs-prefixed skill in .claude/skills/, update bootstrap's portable skills list, and decide if it's project-local or global (~/.claude/skills/). Skill = SKILL.md with frontmatter (name, description, argument-hint) + usage docs. Keep names prefixed to avoid collisions."
+mentions = ["bootstrap/SKILL.md", ".claude/skills/", "src/mcp/tools/mod.rs"]

@@ -268,15 +268,42 @@
 
 ## Phase 6: Discovery & UX
 
-### Ideas
+### Status: Complete (v0.7.0)
 
-- `cqs diff` — semantic diff between branches/versions ("what changed conceptually?" vs line-level)
-- `cqs similar <file>` — find semantically similar functions/files for refactoring discovery
-- Pre-built reference packages (#255) — downloadable indexes for popular crates (`cqs ref install tokio`)
-- Workspace-aware indexing — detect Cargo workspaces, index all crates with cross-crate call graphs
-- `cqs explain <function>` — generate NL explanation of what a function does (NL pipeline in reverse)
+### Done
 
-## Phase 7: Security
+- [x] `cqs similar` (CLI + MCP) — find similar functions by example using stored embeddings
+- [x] `cqs explain` (CLI + MCP) — function card (signature, callers, callees, similar)
+- [x] `cqs diff` (CLI + MCP) — semantic diff between indexed snapshots
+- [x] Workspace-aware indexing — detect Cargo workspace root from member crates
+- [x] Store prereqs: `get_chunk_with_embedding`, `all_chunk_identities`, `ChunkIdentity`
+- [x] 431 tests (no GPU), 12 MCP tools
+
+### Deferred
+
+- Pre-built reference packages (#255) — `cqs ref install tokio`
+
+## Phase 7: Token Efficiency
+
+### Rationale
+
+Each feature targets a specific multi-tool-call pattern that burns tokens in AI sessions.
+
+### Ideas (ordered by projected savings)
+
+1. **`cqs trace`** — Follow a call chain end-to-end. "Trace search from CLI to results" returns the ordered function chain with condensed signatures. Replaces 5-10 sequential file reads per code-flow question. *Highest savings — most common multi-tool pattern.*
+
+2. **`cqs impact`** — "What breaks if I change X?" Returns callers with usage context (the relevant lines, not whole files), plus tests that reference X. Replaces callers + reading each caller's file + grepping tests. ~5 tool calls → 1.
+
+3. **`cqs batch`** — Execute multiple queries in one tool call. `{queries: [{search: "X"}, {callers: "Y"}, {explain: "Z"}]}` → single response. Eliminates round-trip overhead for independent lookups.
+
+4. **`cqs context`** — "What do I need to know to work on module X?" Returns public API, internal types, imports, dependents, and recent notes. Like `explain` but at module/file scope.
+
+5. **`cqs test-map`** — Map functions to tests that exercise them. "What tests cover `search_filtered`?" Returns test names + files. Saves grep rounds before refactoring.
+
+6. **Focused `cqs_read`** — Mode that returns just the target function + its type dependencies (struct defs, trait bounds) instead of the whole file. Cuts file-read tokens by 50-80% in large files.
+
+## Phase 8: Security
 
 ### Done
 
