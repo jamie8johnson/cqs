@@ -6,16 +6,13 @@
 
 Branch: main, synced with remote. No pending work.
 
-### Recently merged
-- PR #248: docs-review skill, notes grooming, stale doc fixes
+### Just released
+- v0.5.2 published to crates.io and GitHub
+- PRs #248, #249, #250 merged
 
-### Dev environment changes (not in repo)
-- `~/.bashrc`: added `LD_LIBRARY_PATH` for ort CUDA libs
+### Dev environment
+- `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
 - `~/.config/systemd/user/cqs-watch.service`: auto-starts `cqs watch` on WSL boot
-- Index reindexed: 1,612 chunks, 78 files, HNSW current
-
-### Skills
-8 skills in `.claude/skills/`: audit, bootstrap, docs-review, groom-notes, pr, reindex, release, update-tears
 
 ## Parked
 
@@ -44,7 +41,7 @@ Branch: main, synced with remote. No pending work.
 
 ## Architecture
 
-- Version: 0.5.1
+- Version: 0.5.2
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
