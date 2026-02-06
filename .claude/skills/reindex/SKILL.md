@@ -1,7 +1,7 @@
 ---
 name: reindex
 description: Rebuild the cqs index and show before/after stats comparison.
-disable-model-invocation: true
+disable-model-invocation: false
 argument-hint: "[--force]"
 ---
 

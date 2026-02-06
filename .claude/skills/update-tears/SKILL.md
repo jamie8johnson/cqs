@@ -1,7 +1,7 @@
 ---
 name: update-tears
 description: Update PROJECT_CONTINUITY.md and notes.toml with current session state. Use proactively before context compaction or when switching tasks.
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 # Update Tears

@@ -4,10 +4,18 @@
 
 **Clean state** (2026-02-06)
 
-Branch: main. Commit `9be4453` (notes grooming) not yet pushed.
+Branch: main, synced with remote. No pending work.
 
-### This session
-- Groomed notes.toml: 40 → 31 notes (removed 9 stale/duplicate/superseded)
+### Recently merged
+- PR #248: docs-review skill, notes grooming, stale doc fixes
+
+### Dev environment changes (not in repo)
+- `~/.bashrc`: added `LD_LIBRARY_PATH` for ort CUDA libs
+- `~/.config/systemd/user/cqs-watch.service`: auto-starts `cqs watch` on WSL boot
+- Index reindexed: 1,612 chunks, 78 files, HNSW current
+
+### Skills
+8 skills in `.claude/skills/`: audit, bootstrap, docs-review, groom-notes, pr, reindex, release, update-tears
 
 ## Parked
 

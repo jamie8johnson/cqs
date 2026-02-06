@@ -1,7 +1,7 @@
 ---
 name: groom-notes
 description: Review and clean up stale notes in notes.toml. Use when notes accumulate and need pruning.
-disable-model-invocation: true
+disable-model-invocation: false
 argument-hint: "[--warnings|--patterns|--all]"
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: docs-review
 description: Review project docs for staleness. Checks lib.rs, Cargo.toml, README, CONTRIBUTING, SECURITY, PRIVACY, and GitHub repo metadata.
-disable-model-invocation: true
+disable-model-invocation: false
 ---
 
 # Docs Review
