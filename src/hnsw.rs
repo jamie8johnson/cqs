@@ -59,8 +59,7 @@ const MAX_NB_CONNECTION: usize = 24; // M parameter - connections per node
 const MAX_LAYER: usize = 16; // Maximum layers in the graph
 const EF_CONSTRUCTION: usize = 200; // Construction-time search width
 
-/// Embedding dimension (768 from model + 1 sentiment)
-const EMBEDDING_DIM: usize = 769;
+use crate::EMBEDDING_DIM;
 
 /// Search width for queries (higher = more accurate but slower)
 const EF_SEARCH: usize = 100;
@@ -742,6 +741,26 @@ impl HnswIndex {
             }
         };
         Some(ids.len())
+    }
+
+    /// Load HNSW index if available, wrapped as VectorIndex trait object.
+    /// Shared helper used by both CLI and MCP server.
+    pub fn try_load(cq_dir: &Path) -> Option<Box<dyn VectorIndex>> {
+        if Self::exists(cq_dir, "index") {
+            match Self::load(cq_dir, "index") {
+                Ok(index) => {
+                    tracing::info!("HNSW index loaded ({} vectors)", index.len());
+                    Some(Box::new(index))
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
+                    None
+                }
+            }
+        } else {
+            tracing::debug!("No HNSW index found");
+            None
+        }
     }
 
     /// Get the number of vectors in the index

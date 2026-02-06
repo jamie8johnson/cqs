@@ -20,12 +20,12 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         None
     };
 
-    // Check HNSW index status
+    // Check HNSW index status (lightweight count, no full load)
     let cq_dir = server.project_root.join(".cq");
     let hnsw_status = if HnswIndex::exists(&cq_dir, "index") {
-        match HnswIndex::load(&cq_dir, "index") {
-            Ok(hnsw) => format!("{} vectors (O(log n) search)", hnsw.len()),
-            Err(_) => "exists but failed to load".to_string(),
+        match HnswIndex::count_vectors(&cq_dir, "index") {
+            Some(count) => format!("{} vectors (O(log n) search)", count),
+            None => "exists but failed to read".to_string(),
         }
     } else {
         "not built".to_string()
@@ -52,7 +52,7 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         "by_type": stats.chunks_by_type.iter()
             .map(|(t, c)| (t.to_string(), c))
             .collect::<std::collections::HashMap<_, _>>(),
-        "index_path": server.project_root.join(".cq/index.db").to_string_lossy(),
+        "index_path": ".cq/index.db",
         "model": stats.model_name,
         "last_indexed": stats.updated_at,
         "schema_version": stats.schema_version,

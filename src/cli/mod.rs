@@ -161,15 +161,6 @@ enum Commands {
     },
 }
 
-/// Run CLI with default argument parsing
-///
-/// Note: Typically main.rs uses run_with() to check verbose flag before tracing init.
-/// This function is kept for library users who want simpler invocation.
-#[allow(dead_code)]
-pub fn run() -> Result<()> {
-    run_with(Cli::parse())
-}
-
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(mut cli: Cli) -> Result<()> {
     // Load config and apply defaults (CLI flags override config)

@@ -16,8 +16,8 @@ use crate::parser::{ChunkType, Language};
 /// - v10: Current (sentiment in embeddings, call graph, notes)
 pub const CURRENT_SCHEMA_VERSION: i32 = 10;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
-/// Expected embedding dimensions (768 from model + 1 sentiment)
-pub const EXPECTED_DIMENSIONS: u32 = 769;
+/// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
+pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
 
 #[derive(Error, Debug)]
 pub enum StoreError {
@@ -426,7 +426,7 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
 /// Returns None if byte length doesn't match expected embedding size.
 /// Uses trace level logging to avoid impacting search performance.
 pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
-    const EXPECTED_BYTES: usize = 769 * 4; // 768 model + 1 sentiment
+    const EXPECTED_BYTES: usize = crate::EMBEDDING_DIM * 4;
     if bytes.len() != EXPECTED_BYTES {
         tracing::trace!(
             expected = EXPECTED_BYTES,
@@ -444,7 +444,7 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 /// This prevents silently using corrupted/truncated embeddings.
 /// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
 pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
-    const EXPECTED_BYTES: usize = 769 * 4;
+    const EXPECTED_BYTES: usize = crate::EMBEDDING_DIM * 4;
     if bytes.len() != EXPECTED_BYTES {
         tracing::trace!(
             expected = EXPECTED_BYTES,

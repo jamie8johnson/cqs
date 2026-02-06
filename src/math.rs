@@ -2,13 +2,15 @@
 //!
 //! Shared math functions used across modules (search, notes, etc.).
 
+use crate::EMBEDDING_DIM;
+
 /// Cosine similarity for L2-normalized vectors (just dot product)
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
 ///
 /// Returns `None` if vectors have different lengths or unexpected dimensions.
 /// This allows callers to gracefully handle dimension mismatches rather than panicking.
 pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
-    if a.len() != b.len() || a.len() != 769 {
+    if a.len() != b.len() || a.len() != EMBEDDING_DIM {
         return None;
     }
     use simsimd::SpatialSimilarity;

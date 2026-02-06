@@ -85,10 +85,13 @@ When reporting bugs, please include:
 src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
-    commands/   - Command implementations (serve.rs)
+    commands/   - Command implementations
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
+    files.rs    - File enumeration, lock files, path utilities
     pipeline.rs - Multi-threaded indexing pipeline
+    signal.rs   - Signal handling (Ctrl+C)
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
@@ -105,6 +108,12 @@ src/
     migrations.rs - Schema migration framework
   mcp/          - MCP server implementation
     mod.rs      - McpServer, JSON-RPC handling
+    server.rs   - Request routing, error sanitization
+    types.rs    - JSON-RPC types
+    validation.rs - Input validation, path checks
+    audit_mode.rs - Audit mode state
+    tools/      - MCP tool implementations
+      mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs
     transports/ - stdio.rs, http.rs transport implementations
   parser.rs     - tree-sitter code parsing (delegates to language/ registry)
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
@@ -122,7 +131,7 @@ src/
 - 769-dim embeddings (768 from E5-base-v2 + 1 sentiment dimension)
 - Unified HNSW index contains both chunks and notes (notes prefixed with `note:`)
 - Streaming HNSW build via `build_batched()` for memory efficiency
-- Chunks capped at 500 lines, notes capped at 10k entries
+- Chunks capped at 100 lines, notes capped at 10k entries
 - Schema migrations allow upgrading indexes without full rebuild
 
 ## Questions?

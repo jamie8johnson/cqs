@@ -3,8 +3,6 @@
 //! Security-critical validation functions for query length, duration parsing,
 //! and path handling.
 
-use std::path::PathBuf;
-
 use anyhow::{bail, Result};
 
 /// Maximum query length to prevent excessive embedding computation
@@ -97,25 +95,7 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
     Ok(chrono::Duration::minutes(total_minutes))
 }
 
-/// Strip Windows UNC path prefix (\\?\) if present.
-///
-/// Windows `canonicalize()` returns UNC paths that can cause issues with
-/// path comparison and display. This strips the prefix for consistency.
-#[cfg(windows)]
-pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(stripped)
-    } else {
-        path
-    }
-}
-
-/// No-op on non-Windows platforms
-#[cfg(not(windows))]
-pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    path
-}
+pub use crate::strip_unc_prefix;
 
 #[cfg(test)]
 mod tests {

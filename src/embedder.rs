@@ -55,8 +55,8 @@ pub struct Embedding(Vec<f32>);
 
 /// Standard embedding dimension from model
 pub const MODEL_DIM: usize = 768;
-/// Full embedding dimension with sentiment
-pub const EMBEDDING_DIM: usize = 769;
+/// Full embedding dimension with sentiment — re-exported from crate root
+pub use crate::EMBEDDING_DIM;
 
 /// Error returned when creating an embedding with invalid dimensions
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,11 +322,12 @@ impl Embedder {
         // Validate overlap to prevent exponential window explosion.
         // overlap >= max_tokens/2 means step <= max_tokens/2, causing O(2n/max_tokens) windows
         // instead of O(n/max_tokens). With overlap >= max_tokens, step becomes 1 token = disaster.
-        assert!(
-            overlap < max_tokens / 2,
-            "overlap ({overlap}) must be less than max_tokens/2 ({}) to prevent exponential windows",
-            max_tokens / 2
-        );
+        if overlap >= max_tokens / 2 {
+            return Err(EmbedderError::TokenizerError(format!(
+                "overlap ({overlap}) must be less than max_tokens/2 ({})",
+                max_tokens / 2
+            )));
+        }
 
         let tokenizer = self.tokenizer()?;
         let encoding = tokenizer

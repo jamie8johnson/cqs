@@ -16,6 +16,7 @@ mod validation;
 // Public API
 pub use server::McpServer;
 pub use transports::{serve_http, serve_stdio};
+// Types kept pub(crate) for integration tests; not part of public API
 pub use types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 
 #[cfg(test)]
