@@ -45,7 +45,7 @@
 ### Deferred
 
 - Signature-aware search (name boost covers most cases)
-- More languages (C, C++, Java, Ruby)
+- More languages (C++, Ruby) [C and Java shipped in Phase 5]
 - MCP extras: cqs_similar, cqs_index, progress notifications
 
 ## Phase 3: Integration
@@ -211,10 +211,25 @@
   - Atomic HNSW writes for crash safety (#186)
   - Note search warning at WARN level (#203)
 
+- [x] Model evaluation (#221)
+  - E5-base-v2 confirmed: 100% Recall@5 (50/50 eval queries)
+  - CodeSage/Qwen3 evaluation unnecessary — E5 wins
+
+- [x] C and Java language support (#222)
+  - tree-sitter-c, tree-sitter-java grammars
+  - Language enum + LanguageDef registry entries
+  - 7 languages total (Rust, Python, TypeScript, JavaScript, Go, C, Java)
+
+- [x] Parser/registry consolidation (#223)
+  - parser.rs: 1469 → 1056 lines (28% reduction)
+  - Parser re-exports Language, ChunkType from language module
+
+- [x] Test coverage expansion (#224)
+  - 50 new tests across 6 modules (cagra, index, mcp tools, pipeline, CLI)
+  - Total: 375 tests (GPU) / 364 (no GPU)
+
 ### Planned
 
-- [ ] C and Java language support (tree-sitter-c, tree-sitter-java)
-- [ ] Code-specific embedding model (CodeSage, Qwen3-Embedding vs E5)
 - [ ] Template experiments (no prefix, body keywords) - run eval to compare
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)

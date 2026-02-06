@@ -2,9 +2,7 @@
 
 ## Right Now
 
-**Test coverage expansion — complete, needs commit/PR** (2026-02-05)
-
-All 6 modules covered. 375 tests (with GPU) / 364 (without GPU). 0 failures.
+**Session complete** (2026-02-05)
 
 ### Completed This Session
 - **PR triage**: Merged #52, #54, #53, #51, #220. Closed #164, #50.
@@ -13,10 +11,9 @@ All 6 modules covered. 375 tests (with GPU) / 364 (without GPU). 0 failures.
 - **Phase 3**: C and Java language support. PR #222 merged.
 - **Refactor**: Parser/registry consolidation. PR #223 merged. parser.rs: 1469 → 1056 lines (28% reduction).
 - **GPU setup**: CUDA 13.1 toolkit + conda + libcuvs 25.12 installed. `gpu-search` feature builds and passes all tests. Wrapper at `~/gpu-test.sh`.
-- **Test coverage**: 50 new tests across 6 modules (index: 4, cagra: 11, mcp/tools: 22, pipeline: 6, doctor: 3, graph: 4).
+- **Test coverage**: 50 new tests across 6 modules. PR #224 merged. 375 tests (GPU) / 364 (no GPU).
 
 ### What's Next
-- Commit + PR for test coverage
 - **Phase 4**: Template experiments in nl.rs
 - **Phase 5**: Multi-index (5 sub-phases)
 
@@ -42,7 +39,7 @@ Nothing active.
 
 ## Architecture
 
-- Version: 0.4.6
+- Version: 0.5.0
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - Unified HNSW index (chunks + notes with prefix)
@@ -50,4 +47,4 @@ Nothing active.
 - Parser re-exports Language, ChunkType from language module
 - Store: split into focused modules (7 files including migrations)
 - CLI: mod.rs + display.rs + watch.rs + pipeline.rs
-- 326+ tests (including CLI, server, stress tests)
+- 375 tests with GPU / 364 without (including CLI, server, stress tests)

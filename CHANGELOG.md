@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-02-05
+
+### Added
+- **C and Java language support** (#222)
+  - tree-sitter-c and tree-sitter-java grammars
+  - 7 languages total (Rust, Python, TypeScript, JavaScript, Go, C, Java)
+- **Test coverage expansion** (#224)
+  - 50 new tests across 6 modules (cagra, index, MCP tools, pipeline, CLI)
+  - Total: 375 tests (GPU) / 364 (no GPU)
+
+### Changed
+- **Model evaluation complete** (#221)
+  - E5-base-v2 confirmed as best option: 100% Recall@5 (50/50 eval queries)
+- **Parser/registry consolidation** (#223)
+  - parser.rs reduced from 1469 to 1056 lines (28% reduction)
+  - Parser re-exports Language, ChunkType from language module
+
 ## [0.4.6] - 2026-02-05
 
 ### Added
@@ -453,6 +470,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[0.5.0]: https://github.com/jamie8johnson/cqs/compare/v0.4.6...v0.5.0
 [0.4.6]: https://github.com/jamie8johnson/cqs/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/jamie8johnson/cqs/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/jamie8johnson/cqs/compare/v0.4.3...v0.4.4
