@@ -23,11 +23,19 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     let cq_dir = root.join(".cq");
     // Use count_vectors to avoid loading full HNSW index just for stats
     let hnsw_vectors = HnswIndex::count_vectors(&cq_dir, "index");
+    let note_count = store.note_count().unwrap_or(0);
+    let (call_count, caller_count, callee_count) = store.function_call_stats().unwrap_or((0, 0, 0));
 
     if cli.json {
         let json = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,
+            "notes": note_count,
+            "call_graph": {
+                "total_calls": call_count,
+                "unique_callers": caller_count,
+                "unique_callees": callee_count,
+            },
             "by_language": stats.chunks_by_language.iter()
                 .map(|(l, c)| (l.to_string(), c))
                 .collect::<std::collections::HashMap<_, _>>(),
@@ -60,6 +68,12 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
         println!("Model: {}", stats.model_name);
         println!("Schema: v{}", stats.schema_version);
         println!("Created: {}", stats.created_at);
+        println!();
+        println!("Notes: {}", note_count);
+        println!(
+            "Call graph: {} calls ({} callers, {} callees)",
+            call_count, caller_count, callee_count
+        );
 
         // HNSW index status (use count_vectors to avoid loading full index)
         println!();
