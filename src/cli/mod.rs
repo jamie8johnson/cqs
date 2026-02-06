@@ -15,8 +15,8 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::check_interrupted;
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_doctor, cmd_index, cmd_init, cmd_query, cmd_serve, cmd_stats,
-    ServeConfig,
+    cmd_callees, cmd_callers, cmd_doctor, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_serve,
+    cmd_stats, NotesCommand, ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -159,6 +159,11 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// List and manage notes
+    Notes {
+        #[command(subcommand)]
+        subcmd: NotesCommand,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -205,6 +210,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }
         Some(Commands::Callers { ref name, json }) => cmd_callers(&cli, name, json),
         Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
+        Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -444,6 +450,33 @@ mod tests {
                 assert!(json);
             }
             _ => panic!("Expected Callees command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_notes_list() {
+        let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                NotesCommand::List { warnings, patterns } => {
+                    assert!(!warnings);
+                    assert!(!patterns);
+                }
+            },
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_notes_list_warnings() {
+        let cli = Cli::try_parse_from(["cqs", "notes", "list", "--warnings"]).unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                NotesCommand::List { warnings, .. } => {
+                    assert!(warnings);
+                }
+            },
+            _ => panic!("Expected Notes command"),
         }
     }
 

@@ -26,6 +26,18 @@ If context just compacted: read tears, then ask "where were we?" rather than gue
 * `docs/notes.toml` -- observations indexed by cqs (warnings, patterns)
 * `ROADMAP.md` -- what's done, what's next
 
+## Skills
+
+Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
+
+- `/update-tears` -- capture state before compaction or task switch
+- `/groom-notes` -- review and clean up stale notes
+- `/release` -- version bump, changelog, publish, GitHub release
+- `/audit` -- 20-category code audit with parallel agents
+- `/pr` -- WSL-safe PR creation (always `--body-file`)
+- `/bootstrap` -- set up tears infrastructure for new projects
+- `/reindex` -- rebuild index with before/after stats
+
 ## Code Search
 
 **Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching.
@@ -238,3 +250,5 @@ None.
 ### Next
 - [ ] ...
 ```
+
+Also set up `.claude/skills/` with portable skills. Use `/bootstrap` if available, or copy from an existing cqs project. Skills are auto-discovered from `.claude/skills/*/SKILL.md`.

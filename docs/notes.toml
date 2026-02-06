@@ -286,8 +286,8 @@ mentions = ["src/store/chunks.rs", "src/hnsw.rs", "embedding_batches", "build_ba
 
 [[note]]
 sentiment = 1.0
-text = "Notes now included in HNSW index with 'note:' prefix. search_unified_with_index partitions candidates by prefix, fetches from chunks/notes tables separately. O(n) brute-force eliminated. Fixes #103."
-mentions = ["src/store/notes.rs", "src/search.rs", "src/cli/pipeline.rs", "note_embeddings", "search_notes_by_ids"]
+text = "Notes REMOVED from HNSW/CAGRA index (PR #244). Always brute-force from SQLite (capped 1000). HNSW is chunk-only now. Old approach (note: prefix in HNSW) caused staleness when notes added via MCP. Fixes #230."
+mentions = ["src/search.rs", "src/cli/commands/index.rs", "src/cagra.rs", "src/store/notes.rs"]
 
 [[note]]
 sentiment = 0.5
@@ -343,3 +343,8 @@ mentions = ["docs/audit-findings.md", "audit", "v0.5.1", "workflow"]
 sentiment = -0.5
 text = "Heredoc in `gh pr create --body` gets captured as a permission entry in .claude/settings.local.json, causing parse errors on next startup. Fix: always write PR/release bodies to a temp file and use --body-file instead of inline heredocs. The multiline content gets serialized into the permissions allow list as a malformed Bash() entry."
 mentions = ["settings.local.json", "gh pr create", "powershell.exe", "heredoc"]
+
+[[note]]
+sentiment = 1.0
+text = "Notes removed from HNSW/CAGRA index entirely. Always brute-force from SQLite (capped 1000). Fixes #230 staleness. HNSW is chunk-only now. Also added cqs_update_note and cqs_remove_note MCP tools with atomic TOML rewrite via rewrite_notes_file()."
+mentions = ["src/search.rs", "src/note.rs", "src/mcp/tools/notes.rs", "src/cli/commands/index.rs"]
