@@ -37,7 +37,7 @@ pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
             .map(|c| {
                 serde_json::json!({
                     "name": c.name,
-                    "file": c.file.to_string_lossy(),
+                    "file": c.file.to_string_lossy().replace('\\', "/"),
                     "line": c.line,
                 })
             })

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use cqs::{parse_notes, Embedder, Embedding, HnswIndex, ModelInfo, Parser as CqParser, Store};
+use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
     acquire_index_lock, check_interrupted, enumerate_files, find_project_root, run_index_pipeline,
@@ -131,10 +131,10 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
             if was_skipped && note_count == 0 {
                 println!("Notes up to date.");
             } else if note_count > 0 {
-                let (total, warnings, patterns) = store.note_stats()?;
+                let ns = store.note_stats()?;
                 println!(
                     "  Notes: {} total ({} warnings, {} patterns)",
-                    total, warnings, patterns
+                    ns.total, ns.warnings, ns.patterns
                 );
             }
         }
@@ -214,33 +214,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
             }
 
             let embedder = Embedder::new()?;
-            let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
-            let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-            let base_embeddings = embedder.embed_documents(&text_refs)?;
-
-            // Add sentiment as 769th dimension
-            let embeddings_with_sentiment: Vec<Embedding> = base_embeddings
-                .into_iter()
-                .zip(notes.iter())
-                .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
-                .collect();
-
-            // Get file mtime
-            let file_mtime = notes_path
-                .metadata()
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-
-            // Delete old notes and insert new
-            store.delete_notes_by_file(&notes_path)?;
-            let count = notes.len();
-            let note_embeddings: Vec<_> =
-                notes.into_iter().zip(embeddings_with_sentiment).collect();
-            store.upsert_notes_batch(&note_embeddings, &notes_path, file_mtime)?;
-
+            let count = cqs::index_notes(&notes, &notes_path, &embedder, store)?;
             Ok((count, false))
         }
         Err(e) => {

@@ -205,10 +205,10 @@ fn test_note_embeddings_returns_prefixed_ids() {
 fn test_note_stats_empty() {
     let store = TestStore::new();
 
-    let (total, warnings, patterns) = store.note_stats().unwrap();
-    assert_eq!(total, 0);
-    assert_eq!(warnings, 0);
-    assert_eq!(patterns, 0);
+    let ns = store.note_stats().unwrap();
+    assert_eq!(ns.total, 0);
+    assert_eq!(ns.warnings, 0);
+    assert_eq!(ns.patterns, 0);
 }
 
 #[test]
@@ -235,8 +235,8 @@ fn test_note_stats_sentiments() {
         .upsert_notes_batch(&notes, &PathBuf::from("notes.toml"), 12345)
         .unwrap();
 
-    let (total, warnings, patterns) = store.note_stats().unwrap();
-    assert_eq!(total, 6, "Should have 6 total notes");
-    assert_eq!(warnings, 2, "Should have 2 warnings (sentiment < -0.3)");
-    assert_eq!(patterns, 2, "Should have 2 patterns (sentiment > 0.3)");
+    let ns = store.note_stats().unwrap();
+    assert_eq!(ns.total, 6, "Should have 6 total notes");
+    assert_eq!(ns.warnings, 2, "Should have 2 warnings (sentiment < -0.3)");
+    assert_eq!(ns.patterns, 2, "Should have 2 patterns (sentiment > 0.3)");
 }

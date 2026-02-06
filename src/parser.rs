@@ -431,6 +431,21 @@ impl Parser {
     /// Returns calls for every function in the file, including those >100 lines
     /// that would normally be skipped during chunk extraction.
     pub fn parse_file_calls(&self, path: &Path) -> Result<Vec<FunctionCalls>, ParserError> {
+        // Check file size (matching parse_file limit)
+        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+                tracing::warn!(
+                    "Skipping large file ({}MB > 50MB limit): {}",
+                    meta.len() / (1024 * 1024),
+                    path.display()
+                );
+                return Ok(vec![]);
+            }
+            Ok(_) => {}
+            Err(e) => return Err(e.into()),
+        }
+
         // Read file
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,

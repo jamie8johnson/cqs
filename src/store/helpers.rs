@@ -144,6 +144,17 @@ pub struct CallerInfo {
     pub line: u32,
 }
 
+/// Note statistics (total count and categorized counts)
+#[derive(Debug, Clone)]
+pub struct NoteStats {
+    /// Total number of notes
+    pub total: u64,
+    /// Notes with negative sentiment (warnings)
+    pub warnings: u64,
+    /// Notes with positive sentiment (patterns)
+    pub patterns: u64,
+}
+
 /// Note metadata returned from search results
 #[derive(Debug, Clone)]
 pub struct NoteSummary {
@@ -292,13 +303,13 @@ impl SearchFilter {
     ///
     /// Returns Ok(()) if valid, or Err with description of what's wrong.
     pub fn validate(&self) -> Result<(), &'static str> {
-        // name_boost must be in [0.0, 1.0]
-        if self.name_boost < 0.0 || self.name_boost > 1.0 {
+        // name_boost must be in [0.0, 1.0] (NaN-safe: NaN is not contained in any range)
+        if !(0.0..=1.0).contains(&self.name_boost) {
             return Err("name_boost must be between 0.0 and 1.0");
         }
 
-        // note_weight must be in [0.0, 1.0]
-        if self.note_weight < 0.0 || self.note_weight > 1.0 {
+        // note_weight must be in [0.0, 1.0] (NaN-safe)
+        if !(0.0..=1.0).contains(&self.note_weight) {
             return Err("note_weight must be between 0.0 and 1.0");
         }
 

@@ -5,7 +5,7 @@ use std::path::Path;
 use sqlx::Row;
 
 use super::helpers::{
-    embedding_slice, embedding_to_bytes, NoteSearchResult, NoteSummary, StoreError,
+    embedding_slice, embedding_to_bytes, NoteSearchResult, NoteStats, NoteSummary, StoreError,
 };
 use super::Store;
 use crate::embedder::Embedding;
@@ -223,25 +223,24 @@ impl Store {
     }
 
     /// Get note statistics (total, warnings, patterns)
-    pub fn note_stats(&self) -> Result<(u64, u64, u64), StoreError> {
+    pub fn note_stats(&self) -> Result<NoteStats, StoreError> {
         self.rt.block_on(async {
-            let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM notes")
-                .fetch_one(&self.pool)
-                .await?;
+            let (total, warnings, patterns): (i64, i64, i64) = sqlx::query_as(
+                "SELECT COUNT(*),
+                        SUM(CASE WHEN sentiment < ?1 THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN sentiment > ?2 THEN 1 ELSE 0 END)
+                 FROM notes",
+            )
+            .bind(SENTIMENT_NEGATIVE_THRESHOLD)
+            .bind(SENTIMENT_POSITIVE_THRESHOLD)
+            .fetch_one(&self.pool)
+            .await?;
 
-            let (warnings,): (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment < ?1")
-                    .bind(SENTIMENT_NEGATIVE_THRESHOLD)
-                    .fetch_one(&self.pool)
-                    .await?;
-
-            let (patterns,): (i64,) =
-                sqlx::query_as("SELECT COUNT(*) FROM notes WHERE sentiment > ?1")
-                    .bind(SENTIMENT_POSITIVE_THRESHOLD)
-                    .fetch_one(&self.pool)
-                    .await?;
-
-            Ok((total as u64, warnings as u64, patterns as u64))
+            Ok(NoteStats {
+                total: total as u64,
+                warnings: warnings as u64,
+                patterns: patterns as u64,
+            })
         })
     }
 

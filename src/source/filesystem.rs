@@ -55,6 +55,7 @@ impl FileSystemSource {
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
+            .follow_links(false) // Don't follow symlinks (prevents cycles and traversal attacks)
             .build();
 
         for entry in walker.flatten() {
@@ -128,7 +129,7 @@ impl Source for FileSystemSource {
             let rel_path = path.strip_prefix(&self.root).unwrap_or(&path).to_path_buf();
 
             items.push(SourceItem {
-                origin: rel_path.to_string_lossy().into_owned(),
+                origin: rel_path.to_string_lossy().replace('\\', "/"),
                 source_type: "file",
                 content,
                 language,

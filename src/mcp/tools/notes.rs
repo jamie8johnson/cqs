@@ -164,7 +164,7 @@ pub fn tool_add_note(server: &McpServer, arguments: Value) -> Result<Value> {
 
     // Include index error in response if indexing failed
     if let Some(err) = index_error {
-        result["index_error"] = serde_json::json!(err);
+        result["index_error"] = serde_json::json!(server.sanitize_error_message(&err));
     }
 
     Ok(serde_json::json!({
