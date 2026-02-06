@@ -266,7 +266,17 @@
   - Remaining items tracked in issues #264-270
   - Test count: 418 (no GPU)
 
-## Phase 6: Security
+## Phase 6: Discovery & UX
+
+### Ideas
+
+- `cqs diff` — semantic diff between branches/versions ("what changed conceptually?" vs line-level)
+- `cqs similar <file>` — find semantically similar functions/files for refactoring discovery
+- Pre-built reference packages (#255) — downloadable indexes for popular crates (`cqs ref install tokio`)
+- Workspace-aware indexing — detect Cargo workspaces, index all crates with cross-crate call graphs
+- `cqs explain <function>` — generate NL explanation of what a function does (NL pipeline in reverse)
+
+## Phase 7: Security
 
 ### Done
 
