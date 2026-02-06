@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-02-05
+
+### Fixed
+- Algorithm correctness: glob filter applied BEFORE heap in brute-force search (was producing wrong results)
+- `note_weight=0` now correctly excludes notes from unified search (was only zeroing scores)
+- Windows path extraction in brute-force search uses `origin` column instead of string splitting
+- GPU-to-CPU fallback no longer double-windows chunks
+- Atomic note replacement (single transaction instead of delete+insert)
+- Error propagation: 6 silent error swallowing sites now propagate errors
+- Non-finite score validation (NaN/infinity checks in cosine similarity and search filters)
+- FTS5 name query: terms now quoted to prevent syntax errors
+- Empty query guard for `search_by_name`
+- `split_into_windows` returns Result instead of panicking via assert
+- Store Drop: `catch_unwind` around `block_on` to prevent panic in async contexts
+- Stdio transport: line reads capped at 1MB
+- `follow_links(false)` on filesystem walker (prevents symlink loops)
+- `.cq/` directory created with 0o700 permissions
+- `parse_file_calls` file size guard matching `parse_file`
+- HNSW `count_vectors` size guard matching `load()`
+- SQL IN clause batching for `get_embeddings_by_hashes` (chunks of 500)
+- SQLite cache_size reduced from 64MB to 16MB per connection
+- Path normalization gaps fixed in call_graph, graph, stats, filesystem source
+
+### Changed
+- `strip_unc_prefix` deduplicated into shared `path_utils` module
+- `load_hnsw_index` deduplicated into `HnswIndex::try_load()`
+- `index_notes_from_file` deduplicated — CLI now calls `cqs::index_notes()`
+- MCP JSON-RPC types restricted to `pub(crate)` visibility
+- Regex in `sanitize_error_message` compiled once via `LazyLock`
+- `EMBEDDING_DIM` consolidated to single constant in `lib.rs`
+- MCP stats uses `count_vectors()` instead of full HNSW load
+- `note_stats` returns named struct instead of tuple
+- Pipeline call graph upserts batched into single transaction
+- HTTP server logging: `eprintln!` replaced with `tracing`
+- MCP search: timing span added for observability
+- GPU/CPU thread termination now logged
+- Error sanitization regex covers `/mnt/` paths
+- Watch mode: mtime cached per-file for efficiency
+- Batch metadata checks on Store::open (single query)
+- Consolidated note_stats and call_stats into fewer queries
+- Dead code removed from `cli::run()`
+- HNSW save uses streaming checksum (BufReader)
+- Model BLAKE3 checksums populated for E5-base-v2
+
+### Added
+- 15 new search tests (HNSW-guided, brute-force, glob, language, unified, FTS)
+- Test count: 379 (no GPU) up from 364
+
+### Documentation
+- `lib.rs` language list updated (C, Java)
+- HNSW params corrected (M=24, ef_search=100)
+- Cache size corrected (32 not 100)
+- Roadmap phase updated
+- Chunk cap documented as 100 lines
+- Architecture tree updated with CLI/MCP submodules
+
 ## [0.5.0] - 2026-02-05
 
 ### Added
@@ -470,6 +526,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[0.5.1]: https://github.com/jamie8johnson/cqs/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/jamie8johnson/cqs/compare/v0.4.6...v0.5.0
 [0.4.6]: https://github.com/jamie8johnson/cqs/compare/v0.4.5...v0.4.6
 [0.4.5]: https://github.com/jamie8johnson/cqs/compare/v0.4.4...v0.4.5

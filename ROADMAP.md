@@ -233,6 +233,11 @@
   - All scored 100% Recall@5 — ceiling effect from doc comments
   - Baseline stays; infra available for harder eval cases later
 
+- [x] 20-category audit v2 (PRs #227-#229)
+  - ~85 actionable findings fixed across P1-P3
+  - 13 P4 items tracked in issues #230-#241
+  - 15 new search path tests, test count 379 (no GPU)
+
 ### Planned
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)
