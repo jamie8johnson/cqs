@@ -97,6 +97,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         });
         (guard.is_active(), guard.status_line())
     };
+    let search_start = std::time::Instant::now();
     let results: Vec<UnifiedResult> = if audit_active {
         // Code-only search when audit mode is active
         let code_results = server.store.search_filtered_with_index(
@@ -117,6 +118,13 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
             index_guard.as_deref(),
         )?
     };
+    let search_ms = search_start.elapsed().as_millis();
+    tracing::info!(
+        results = results.len(),
+        elapsed_ms = search_ms,
+        audit = audit_active,
+        "MCP search completed"
+    );
 
     let json_results: Vec<_> = results
         .iter()

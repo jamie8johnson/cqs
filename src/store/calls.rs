@@ -43,6 +43,48 @@ impl Store {
         })
     }
 
+    /// Insert call sites for multiple chunks in a single transaction.
+    ///
+    /// Takes `(chunk_id, CallSite)` pairs and batches them into one transaction.
+    pub fn upsert_calls_batch(
+        &self,
+        calls: &[(String, crate::parser::CallSite)],
+    ) -> Result<(), StoreError> {
+        if calls.is_empty() {
+            return Ok(());
+        }
+
+        tracing::trace!(call_count = calls.len(), "upserting calls batch");
+
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
+            // Collect unique chunk IDs to delete old calls
+            let mut seen_ids = std::collections::HashSet::new();
+            for (chunk_id, _) in calls {
+                if seen_ids.insert(chunk_id.as_str()) {
+                    sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
+                        .bind(chunk_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
+
+            // Batch insert all calls
+            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
+                sqlx::QueryBuilder::new("INSERT INTO calls (caller_id, callee_name, line_number) ");
+            query_builder.push_values(calls.iter(), |mut b, (chunk_id, call)| {
+                b.push_bind(chunk_id)
+                    .push_bind(&call.callee_name)
+                    .push_bind(call.line_number as i64);
+            });
+            query_builder.build().execute(&mut *tx).await?;
+
+            tx.commit().await?;
+            Ok(())
+        })
+    }
+
     /// Find all chunks that call a given function name
     pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
         tracing::debug!(callee_name, "querying callers from chunks");

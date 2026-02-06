@@ -16,8 +16,8 @@ const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "onnx/tokenizer.json";
 
 // blake3 checksums for model verification (empty = skip validation)
-const MODEL_BLAKE3: &str = "";
-const TOKENIZER_BLAKE3: &str = "";
+const MODEL_BLAKE3: &str = "5ca98b5db8c2d0e354163bff1160e4ca67b48e51e724d7b4a621270552fd5c04";
+const TOKENIZER_BLAKE3: &str = "6e933bf59db40b8b2a0de480fe5006662770757e1e1671eb7e48ff6a5f00b0b4";
 
 #[derive(Error, Debug)]
 pub enum EmbedderError {
