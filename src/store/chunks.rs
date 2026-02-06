@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use sqlx::Row;
 
 use super::helpers::{
-    bytes_to_embedding, embedding_to_bytes, ChunkRow, ChunkSummary, IndexStats, StoreError,
+    bytes_to_embedding, clamp_line_number, embedding_to_bytes, ChunkIdentity, ChunkRow,
+    ChunkSummary, IndexStats, StoreError,
 };
 use super::Store;
 use crate::embedder::Embedding;
@@ -396,6 +397,59 @@ impl Store {
             .await?;
 
             Ok(row.map(|r| ChunkSummary::from(ChunkRow::from_row(&r))))
+        })
+    }
+
+    /// Get a chunk with its embedding vector.
+    ///
+    /// Returns `Ok(None)` if the chunk doesn't exist or has a corrupt embedding.
+    /// Used by `cqs similar` and `cqs explain` to search by example.
+    pub fn get_chunk_with_embedding(
+        &self,
+        id: &str,
+    ) -> Result<Option<(ChunkSummary, Embedding)>, StoreError> {
+        self.rt.block_on(async {
+            let results = self
+                .fetch_chunks_with_embeddings_by_ids_async(&[id])
+                .await?;
+            Ok(results.into_iter().next().and_then(|(row, bytes)| {
+                match bytes_to_embedding(&bytes) {
+                    Some(emb) => Some((ChunkSummary::from(row), Embedding::new(emb))),
+                    None => {
+                        tracing::warn!(chunk_id = %row.id, "Corrupt embedding for chunk, skipping");
+                        None
+                    }
+                }
+            }))
+        })
+    }
+
+    /// Get identity metadata for all chunks (for diff comparison).
+    ///
+    /// Returns minimal metadata needed to match chunks across stores.
+    /// Loads all rows but only lightweight columns (no content or embeddings).
+    pub fn all_chunk_identities(&self) -> Result<Vec<ChunkIdentity>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, origin, name, chunk_type, line_start, parent_id, window_idx FROM chunks",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .iter()
+                .map(|row| ChunkIdentity {
+                    id: row.get("id"),
+                    origin: row.get("origin"),
+                    name: row.get("name"),
+                    chunk_type: row.get("chunk_type"),
+                    line_start: clamp_line_number(row.get::<i64, _>("line_start")),
+                    parent_id: row.get("parent_id"),
+                    window_idx: row
+                        .get::<Option<i64>, _>("window_idx")
+                        .map(|i| i as u32),
+                })
+                .collect())
         })
     }
 

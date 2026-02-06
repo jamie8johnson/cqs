@@ -2,17 +2,32 @@
 
 ## Right Now
 
-**v0.6.0 released** (2026-02-06)
+**Phase 6: Discovery & UX** — implementation complete, needs review + PR (2026-02-06)
 
-Clean state. No active work.
+### Implemented (all uncommitted on main)
+- [x] Store prereq methods (`get_chunk_with_embedding`, `all_chunk_identities`, `ChunkIdentity`)
+- [x] `cqs similar` (CLI + MCP) — search by example using stored embeddings
+- [x] `cqs explain` (CLI + MCP) — function card (signature, callers, callees, similar)
+- [x] `cqs diff` (CLI + MCP) — semantic diff between indexed snapshots
+- [x] Workspace-aware indexing — detect Cargo workspace root
 
-### v0.6.0 included
-- Multi-index search (PR #258)
-- P1 audit fixes — 12 items (PR #259)
-- P2 audit fixes — 5 items (PR #261)
-- P3 audit fixes — 11 items (PRs #262, #263)
-- Published to crates.io, GitHub release created
-- Remaining P3/P4 tracked in issues #264-270
+### New files
+- `src/diff.rs` — core diff algorithm
+- `src/cli/commands/similar.rs` — CLI handler
+- `src/cli/commands/explain.rs` — CLI handler
+- `src/cli/commands/diff.rs` — CLI handler
+- `src/mcp/tools/similar.rs` — MCP tool
+- `src/mcp/tools/explain.rs` — MCP tool
+- `src/mcp/tools/diff.rs` — MCP tool
+
+### Modified files
+- `src/store/chunks.rs`, `src/store/helpers.rs`, `src/store/mod.rs` — Store prereqs
+- `src/cli/mod.rs`, `src/cli/commands/mod.rs` — CLI wiring (3 new commands)
+- `src/mcp/tools/mod.rs` — MCP wiring (3 new tools)
+- `src/cli/display.rs` — `display_similar_results_json`
+- `src/cli/config.rs` — workspace-aware `find_project_root`
+- `src/lib.rs` — `pub mod diff`
+- `CLAUDE.md` — document new tools
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -20,8 +35,8 @@ Clean state. No active work.
 
 ## Parked
 
-- **Phase 6**: Discovery & UX (diff, similar, explain, workspace indexing)
 - **Phase 7**: Security (index encryption, rate limiting)
+- **ref install** — deferred from Phase 6, tracked in #255
 
 ## Open Issues
 
@@ -60,4 +75,5 @@ Clean state. No active work.
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
-- 418 tests (no GPU), 0 warnings, clippy clean
+- 431 tests (no GPU), 0 warnings, clippy clean
+- MCP tools: 12 (search, stats, callers, callees, read, add_note, update_note, remove_note, audit_mode, diff, explain, similar)

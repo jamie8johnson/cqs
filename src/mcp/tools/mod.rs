@@ -4,9 +4,12 @@
 
 mod audit;
 mod call_graph;
+mod diff;
+mod explain;
 mod notes;
 mod read;
 mod search;
+mod similar;
 mod stats;
 
 use anyhow::{bail, Result};
@@ -193,6 +196,77 @@ pub fn handle_tools_list() -> Result<Value> {
             }),
         },
         Tool {
+            name: "cqs_diff".into(),
+            description: "Semantic diff between indexed snapshots. Compare project vs a reference, or two references.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Reference name to compare from"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Reference name or 'project' (default: project)"
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Similarity threshold for 'modified' (default: 0.95)",
+                        "default": 0.95
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"],
+                        "description": "Filter by language (optional)"
+                    }
+                },
+                "required": ["source"]
+            }),
+        },
+        Tool {
+            name: "cqs_explain".into(),
+            description: "Generate a function card: signature, docs, callers, callees, similar functions.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Function name or file:function"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        Tool {
+            name: "cqs_similar".into(),
+            description: "Find code similar to a given function. Search by example.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Function name or file:function (e.g., 'search_filtered' or 'src/search.rs:search_filtered')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results (default: 5, max: 20)",
+                        "default": 5
+                    },
+                    "threshold": {
+                        "type": "number",
+                        "description": "Minimum similarity score 0.0-1.0 (default: 0.3)",
+                        "default": 0.3
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"],
+                        "description": "Filter by language (optional)"
+                    }
+                },
+                "required": ["target"]
+            }),
+        },
+        Tool {
             name: "cqs_audit_mode".into(),
             description: "Toggle audit mode to exclude notes from search and read results. Use before code audits or fresh-eyes reviews to prevent prior observations from influencing analysis.".into(),
             input_schema: serde_json::json!({
@@ -242,8 +316,11 @@ pub fn handle_tools_call(server: &McpServer, params: Option<Value>) -> Result<Va
         "cqs_update_note" => notes::tool_update_note(server, arguments),
         "cqs_remove_note" => notes::tool_remove_note(server, arguments),
         "cqs_audit_mode" => audit::tool_audit_mode(server, arguments),
+        "cqs_diff" => diff::tool_diff(server, arguments),
+        "cqs_explain" => explain::tool_explain(server, arguments),
+        "cqs_similar" => similar::tool_similar(server, arguments),
         _ => bail!(
-            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_audit_mode",
+            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_audit_mode, cqs_diff, cqs_explain, cqs_similar",
             name
         ),
     };

@@ -6,7 +6,11 @@ use std::path::PathBuf;
 
 use super::Cli;
 
-/// Find project root by looking for common markers
+/// Find project root by looking for common markers.
+///
+/// For Cargo projects, detects workspace roots: if a `Cargo.toml` is found,
+/// continues walking up to check if it's inside a workspace. A parent directory
+/// with `[workspace]` in its `Cargo.toml` takes precedence as the project root.
 pub(crate) fn find_project_root() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut current = cwd.as_path();
@@ -25,6 +29,12 @@ pub(crate) fn find_project_root() -> PathBuf {
 
         for marker in &markers {
             if current.join(marker).exists() {
+                // For Cargo projects, check if we're inside a workspace
+                if *marker == "Cargo.toml" {
+                    if let Some(ws_root) = find_cargo_workspace_root(current) {
+                        return ws_root;
+                    }
+                }
                 return current.to_path_buf();
             }
         }
@@ -39,6 +49,32 @@ pub(crate) fn find_project_root() -> PathBuf {
     // Fall back to CWD with warning
     tracing::warn!("No project root found, using current directory");
     cwd
+}
+
+/// Walk up from a directory containing Cargo.toml to find a workspace root.
+///
+/// Returns `Some(path)` if a parent directory has a `Cargo.toml` with `[workspace]`,
+/// `None` if no workspace root found (the original dir is the root).
+fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {
+    let mut candidate = from.parent()?;
+
+    loop {
+        let cargo_toml = candidate.join("Cargo.toml");
+        if cargo_toml.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+                if content.contains("[workspace]") {
+                    tracing::info!(
+                        workspace_root = %candidate.display(),
+                        member = %from.display(),
+                        "Detected Cargo workspace root"
+                    );
+                    return Some(candidate.to_path_buf());
+                }
+            }
+        }
+
+        candidate = candidate.parent()?;
+    }
 }
 
 /// Apply config file defaults to CLI options

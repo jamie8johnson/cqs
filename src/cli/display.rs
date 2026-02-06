@@ -326,6 +326,38 @@ pub fn display_tagged_results(
     Ok(())
 }
 
+/// Display similar results as JSON
+pub fn display_similar_results_json(
+    results: &[cqs::store::SearchResult],
+    target: &str,
+) -> Result<()> {
+    let json_results: Vec<_> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                "line_start": r.chunk.line_start,
+                "line_end": r.chunk.line_end,
+                "name": r.chunk.name,
+                "signature": r.chunk.signature,
+                "language": r.chunk.language.to_string(),
+                "chunk_type": r.chunk.chunk_type.to_string(),
+                "score": r.score,
+                "content": r.chunk.content,
+            })
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "target": target,
+        "results": json_results,
+        "total": results.len(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
 /// Display tagged results as JSON (multi-index with source field)
 pub fn display_tagged_results_json(results: &[TaggedResult], query: &str) -> Result<()> {
     let json_results: Vec<_> = results
