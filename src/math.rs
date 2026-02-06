@@ -21,7 +21,11 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
             .map(|(&x, &y)| (x as f64) * (y as f64))
             .sum::<f64>()
     }) as f32;
-    Some(score)
+    if score.is_finite() {
+        Some(score)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -28,6 +28,29 @@ pub fn serve_stdio(project_root: impl AsRef<Path>, use_gpu: bool) -> Result<()> 
     for line in stdin.lock().lines() {
         let line = line?;
 
+        // Guard against oversized requests
+        const MAX_LINE_LENGTH: usize = 1_048_576; // 1MB
+        if line.len() > MAX_LINE_LENGTH {
+            let error_response = JsonRpcResponse {
+                jsonrpc: "2.0".into(),
+                id: None,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32700,
+                    message: format!(
+                        "Request too large: {} bytes (max {})",
+                        line.len(),
+                        MAX_LINE_LENGTH
+                    ),
+                    data: None,
+                }),
+            };
+            let response_json = serde_json::to_string(&error_response)?;
+            writeln!(stdout, "{}", response_json)?;
+            stdout.flush()?;
+            continue;
+        }
+
         if line.trim().is_empty() {
             continue;
         }

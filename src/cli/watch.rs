@@ -16,7 +16,7 @@
 //! of using watch mode.
 
 use std::cell::OnceCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -258,14 +258,17 @@ fn reindex_files(
         store.delete_by_origin(rel_path)?;
     }
 
+    let mut mtime_cache: HashMap<&std::path::Path, Option<i64>> = HashMap::new();
     for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
-        let abs_path = root.join(&chunk.file);
-        let mtime = abs_path
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64);
+        let mtime = *mtime_cache.entry(chunk.file.as_path()).or_insert_with(|| {
+            let abs_path = root.join(&chunk.file);
+            abs_path
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+        });
         store.upsert_chunk(chunk, embedding, mtime)?;
     }
 
@@ -293,10 +296,10 @@ fn reindex_notes(root: &Path, store: &Store, embedder: &Embedder, quiet: bool) -
     let count = cqs::index_notes(&notes, &notes_path, embedder, store)?;
 
     if !quiet {
-        let (total, warnings, patterns) = store.note_stats()?;
+        let ns = store.note_stats()?;
         println!(
             "  Notes: {} total ({} warnings, {} patterns)",
-            total, warnings, patterns
+            ns.total, ns.warnings, ns.patterns
         );
     }
 

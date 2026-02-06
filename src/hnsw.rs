@@ -550,14 +550,22 @@ impl HnswIndex {
         for ext in &["hnsw.graph", "hnsw.data"] {
             let path = temp_dir.join(format!("{}.{}", basename, ext));
             if path.exists() {
-                let data = std::fs::read(&path).map_err(|e| {
+                let file = std::fs::File::open(&path).map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to open {} for checksum: {}",
+                        path.display(),
+                        e
+                    ))
+                })?;
+                let mut hasher = blake3::Hasher::new();
+                hasher.update_reader(file).map_err(|e| {
                     HnswError::Internal(format!(
                         "Failed to read {} for checksum: {}",
                         path.display(),
                         e
                     ))
                 })?;
-                let hash = blake3::hash(&data);
+                let hash = hasher.finalize();
                 checksums.push(format!("{}:{}", ext, hash.to_hex()));
             }
         }
@@ -733,6 +741,16 @@ impl HnswIndex {
                 return None;
             }
         };
+        // Guard against oversized id map files
+        const MAX_ID_MAP_SIZE: usize = 100 * 1024 * 1024; // 100MB
+        if content.len() > MAX_ID_MAP_SIZE {
+            tracing::warn!(
+                "HNSW id map too large ({} bytes): {}",
+                content.len(),
+                id_map_path.display()
+            );
+            return None;
+        }
         let ids: Vec<String> = match serde_json::from_str(&content) {
             Ok(ids) => ids,
             Err(e) => {

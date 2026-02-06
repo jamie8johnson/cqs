@@ -44,6 +44,9 @@ pub use helpers::ModelInfo;
 /// A note search result with similarity score.
 pub use helpers::NoteSearchResult;
 
+/// Statistics about indexed notes.
+pub use helpers::NoteStats;
+
 /// Summary of a note (text, sentiment, mentions).
 pub use helpers::NoteSummary;
 
@@ -127,8 +130,8 @@ impl Store {
                         sqlx::query("PRAGMA synchronous = NORMAL")
                             .execute(&mut *conn)
                             .await?;
-                        // 64MB page cache (negative = KB, -65536 = 64MB)
-                        sqlx::query("PRAGMA cache_size = -65536")
+                        // 16MB page cache per connection (negative = KB, -16384 = 16MB)
+                        sqlx::query("PRAGMA cache_size = -16384")
                             .execute(&mut *conn)
                             .await?;
                         // Keep temp tables in memory
@@ -421,7 +424,7 @@ impl Store {
 
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
-        let fts_query = format!("name:{} OR name:{}*", normalized, normalized);
+        let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(

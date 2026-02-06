@@ -22,6 +22,13 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     // Create .cq directory
     std::fs::create_dir_all(&cq_dir).context("Failed to create .cq directory")?;
 
+    // Set restrictive permissions on .cq directory (Unix only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&cq_dir, std::fs::Permissions::from_mode(0o700));
+    }
+
     // Create .gitignore
     let gitignore = cq_dir.join(".gitignore");
     std::fs::write(

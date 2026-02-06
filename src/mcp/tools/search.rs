@@ -22,6 +22,14 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
 
     // Definition search mode - find by name only, skip embedding
     if args.name_only.unwrap_or(false) {
+        if args.query.trim().is_empty() {
+            return Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": "[]"
+                }]
+            }));
+        }
         let results = server.store.search_by_name(&args.query, limit)?;
         let json_results: Vec<_> = results
             .iter()

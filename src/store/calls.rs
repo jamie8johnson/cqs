@@ -100,11 +100,8 @@ impl Store {
     /// Get call graph statistics
     pub fn call_stats(&self) -> Result<(u64, u64), StoreError> {
         self.rt.block_on(async {
-            let (total_calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM calls")
-                .fetch_one(&self.pool)
-                .await?;
-            let (unique_callees,): (i64,) =
-                sqlx::query_as("SELECT COUNT(DISTINCT callee_name) FROM calls")
+            let (total_calls, unique_callees): (i64, i64) =
+                sqlx::query_as("SELECT COUNT(*), COUNT(DISTINCT callee_name) FROM calls")
                     .fetch_one(&self.pool)
                     .await?;
 
@@ -224,17 +221,11 @@ impl Store {
     /// Get full call graph statistics
     pub fn function_call_stats(&self) -> Result<(u64, u64, u64), StoreError> {
         self.rt.block_on(async {
-            let (total_calls,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM function_calls")
-                .fetch_one(&self.pool)
-                .await?;
-            let (unique_callers,): (i64,) =
-                sqlx::query_as("SELECT COUNT(DISTINCT caller_name) FROM function_calls")
-                    .fetch_one(&self.pool)
-                    .await?;
-            let (unique_callees,): (i64,) =
-                sqlx::query_as("SELECT COUNT(DISTINCT callee_name) FROM function_calls")
-                    .fetch_one(&self.pool)
-                    .await?;
+            let (total_calls, unique_callers, unique_callees): (i64, i64, i64) = sqlx::query_as(
+                "SELECT COUNT(*), COUNT(DISTINCT caller_name), COUNT(DISTINCT callee_name) FROM function_calls",
+            )
+            .fetch_one(&self.pool)
+            .await?;
 
             Ok((
                 total_calls as u64,

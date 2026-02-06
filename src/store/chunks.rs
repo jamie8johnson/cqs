@@ -236,43 +236,48 @@ impl Store {
     }
 
     /// Get embeddings for chunks with matching content hashes (batch lookup).
+    ///
+    /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
     pub fn get_embeddings_by_hashes(&self, hashes: &[&str]) -> HashMap<String, Embedding> {
         if hashes.is_empty() {
             return HashMap::new();
         }
 
-        self.rt.block_on(async {
-            let placeholders: String = (1..=hashes.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let sql = format!(
-                "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
-                placeholders
-            );
+        const BATCH_SIZE: usize = 500;
+        let mut result = HashMap::new();
 
-            let rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
-                for hash in hashes {
-                    q = q.bind(*hash);
-                }
-                match q.fetch_all(&self.pool).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        tracing::warn!("Failed to fetch embeddings by hash: {}", e);
-                        return HashMap::new();
+        self.rt.block_on(async {
+            for batch in hashes.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
+                    placeholders
+                );
+
+                let rows: Vec<_> = {
+                    let mut q = sqlx::query(&sql);
+                    for hash in batch {
+                        q = q.bind(*hash);
+                    }
+                    match q.fetch_all(&self.pool).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!("Failed to fetch embeddings by hash: {}", e);
+                            continue;
+                        }
+                    }
+                };
+
+                for row in rows {
+                    let hash: String = row.get(0);
+                    let bytes: Vec<u8> = row.get(1);
+                    if let Some(embedding) = bytes_to_embedding(&bytes) {
+                        result.insert(hash, Embedding::new(embedding));
                     }
                 }
-            };
-
-            let mut result = HashMap::new();
-            for row in rows {
-                let hash: String = row.get(0);
-                let bytes: Vec<u8> = row.get(1);
-                if let Some(embedding) = bytes_to_embedding(&bytes) {
-                    result.insert(hash, Embedding::new(embedding));
-                }
-                // Corrupted embeddings are skipped (warning logged by bytes_to_embedding)
             }
             result
         })

@@ -184,7 +184,7 @@ impl McpServer {
     ///
     /// Replaces absolute paths (starting with / or drive letter) with relative paths
     /// or generic descriptions to prevent information leakage to clients.
-    fn sanitize_error_message(&self, error: &str) -> String {
+    pub(crate) fn sanitize_error_message(&self, error: &str) -> String {
         static RE_UNIX: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root)/[^\s:]+")
                 .expect("hardcoded regex")

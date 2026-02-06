@@ -25,7 +25,7 @@ pub fn tool_callers(server: &McpServer, arguments: Value) -> Result<Value> {
             "callers": callers.iter().map(|c| {
                 serde_json::json!({
                     "name": c.name,
-                    "file": c.file.to_string_lossy(),
+                    "file": c.file.to_string_lossy().replace('\\', "/"),
                     "line": c.line,
                 })
             }).collect::<Vec<_>>(),
