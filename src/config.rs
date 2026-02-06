@@ -190,6 +190,23 @@ pub fn add_reference_to_config(
             .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", config_path.display(), e))?
     };
 
+    // Check for duplicate name
+    if let Some(toml::Value::Array(arr)) = table.get("reference") {
+        let has_duplicate = arr.iter().any(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n == ref_config.name)
+                .unwrap_or(false)
+        });
+        if has_duplicate {
+            anyhow::bail!(
+                "Reference '{}' already exists in {}",
+                ref_config.name,
+                config_path.display()
+            );
+        }
+    }
+
     let ref_value = toml::Value::try_from(ref_config)
         .map_err(|e| anyhow::anyhow!("Failed to serialize reference config: {}", e))?;
 
@@ -504,5 +521,35 @@ path = "/home/user/.local/share/cqs/refs/serde"
         // Should still be valid config, just no references
         let config = Config::load_file(&config_path).unwrap();
         assert!(config.references.is_empty());
+    }
+
+    #[test]
+    fn test_add_reference_duplicate_name_errors() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        let ref1 = ReferenceConfig {
+            name: "tokio".into(),
+            path: "/refs/tokio".into(),
+            source: None,
+            weight: 0.8,
+        };
+        add_reference_to_config(&config_path, &ref1).unwrap();
+
+        // Adding same name again should fail
+        let ref2 = ReferenceConfig {
+            name: "tokio".into(),
+            path: "/refs/tokio2".into(),
+            source: None,
+            weight: 0.5,
+        };
+        let result = add_reference_to_config(&config_path, &ref2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+
+        // Original should be unchanged
+        let config = Config::load_file(&config_path).unwrap();
+        assert_eq!(config.references.len(), 1);
+        assert_eq!(config.references[0].weight, 0.8);
     }
 }

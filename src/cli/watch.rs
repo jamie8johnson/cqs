@@ -272,6 +272,8 @@ fn reindex_files(
         store.upsert_chunk(chunk, embedding, mtime)?;
     }
 
+    store.touch_updated_at().ok();
+
     if !quiet {
         println!("Updated {} file(s)", files.len());
     }
