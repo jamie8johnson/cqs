@@ -27,27 +27,30 @@ Release a new version of cqs.
    - Update `Cargo.toml` version field
    - Run `cargo check` to update `Cargo.lock`
 
-3. **Changelog**:
+3. **Docs review**:
+   Run `/docs-review`. Fix anything stale before cutting the release.
+
+4. **Changelog**:
    - Read `CHANGELOG.md`
    - Add new section with version and date
    - Summarize changes since last release using `git log` since last tag
    - Categorize: Added, Changed, Fixed, Removed
 
-4. **Commit and tag**:
+5. **Commit and tag**:
    - Create branch: `release/vX.Y.Z`
    - Commit: `chore: Release vX.Y.Z`
    - Create PR via PowerShell (WSL): `powershell.exe -Command 'gh pr create ...'`
    - Use `--body-file` for PR body (never inline heredocs)
    - Wait for CI: `powershell.exe -Command 'gh pr checks N --watch'`
 
-5. **After PR merge**:
+6. **After PR merge**:
    - Sync main: `git checkout main && git pull`
    - Tag: `git tag vX.Y.Z`
    - Push tag via PowerShell: `powershell.exe -Command 'cd C:\Projects\cq; git push origin vX.Y.Z'`
    - Publish: `cargo publish`
    - Create GitHub release via PowerShell with `--body-file`
 
-6. **Post-release**:
+7. **Post-release**:
    - Update PROJECT_CONTINUITY.md with new version
    - Update ROADMAP.md if phase milestones changed
 

@@ -4,15 +4,10 @@
 
 **Clean state** (2026-02-06)
 
-Branch: main, synced with remote. No pending work.
+Branch: main. Commit `9be4453` (notes grooming) not yet pushed.
 
-### Recently merged
-- PR #244: Brute-force notes + update/remove MCP tools (closes #230)
-- PR #246: `cqs notes list` CLI + 7 Claude Code skills (closes #245)
-
-### Skills
-7 skills in `.claude/skills/`. Should appear in `/` after restart.
-If they don't show in autocomplete, try removing `disable-model-invocation: true` from frontmatter.
+### This session
+- Groomed notes.toml: 40 → 31 notes (removed 9 stale/duplicate/superseded)
 
 ## Parked
 

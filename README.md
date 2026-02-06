@@ -126,6 +126,7 @@ Find function call relationships:
 ```bash
 cqs callers <name>   # Functions that call <name>
 cqs callees <name>   # Functions called by <name>
+cqs notes list       # List all project notes with sentiment
 ```
 
 Use cases:
@@ -196,6 +197,8 @@ Available tools:
 - `cqs_callees` - find functions called by a given function
 - `cqs_read` - read file with context notes injected as comments
 - `cqs_add_note` - add observation to project memory (indexed for future searches)
+- `cqs_update_note` - update an existing note's text, sentiment, or mentions
+- `cqs_remove_note` - remove a note from project memory
 - `cqs_audit_mode` - toggle audit mode to exclude notes from search/read results
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
