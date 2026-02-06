@@ -4,7 +4,7 @@
 //! as well as helper functions for similarity scoring.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashSet};
 
 use sqlx::Row;
 
@@ -13,9 +13,7 @@ use crate::index::VectorIndex;
 use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
-use crate::store::helpers::{
-    clamp_line_number, embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult,
-};
+use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult};
 use crate::store::{Store, StoreError};
 
 /// Pre-tokenized query for efficient name matching in loops
@@ -342,43 +340,7 @@ impl Store {
 
             // Phase 2: Fetch full content only for top-N results
             let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
-            let placeholders: String = (1..=ids.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
-                 FROM chunks WHERE id IN ({})",
-                placeholders
-            );
-
-            let detail_rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
-                for id in &ids {
-                    q = q.bind(*id);
-                }
-                q.fetch_all(&self.pool).await?
-            };
-
-            let rows_map: HashMap<String, ChunkRow> = detail_rows
-                .into_iter()
-                .map(|row| {
-                    let chunk_row = ChunkRow {
-                        id: row.get(0),
-                        origin: row.get(1),
-                        language: row.get(2),
-                        chunk_type: row.get(3),
-                        name: row.get(4),
-                        signature: row.get(5),
-                        content: row.get(6),
-                        doc: row.get(7),
-                        line_start: clamp_line_number(row.get::<i64, _>(8)),
-                        line_end: clamp_line_number(row.get::<i64, _>(9)),
-                        parent_id: row.get(10),
-                    };
-                    (chunk_row.id.clone(), chunk_row)
-                })
-                .collect();
+            let rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
 
             let mut seen_parents: HashSet<String> = HashSet::new();
             let results: Vec<SearchResult> = final_scored
@@ -447,29 +409,11 @@ impl Store {
         let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
 
         self.rt.block_on(async {
-            let placeholders: String = (1..=candidate_ids.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, embedding, parent_id
-                 FROM chunks WHERE id IN ({})",
-                placeholders
-            );
-
-            let rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
-                for id in candidate_ids {
-                    q = q.bind(*id);
-                }
-                q.fetch_all(&self.pool).await?
-            };
+            let rows = self
+                .fetch_chunks_with_embeddings_by_ids_async(candidate_ids)
+                .await?;
 
             // Compile glob pattern once outside the loop (not per-chunk).
-            // Note: Invalid patterns are logged and silently ignored (returns all results).
-            // Callers should validate patterns upfront via SearchFilter::validate() if they
-            // want to reject invalid patterns. This lenient behavior is intentional to allow
-            // partial searches when users provide malformed patterns interactively.
             let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
                 match globset::Glob::new(p) {
                     Ok(g) => Some(g.compile_matcher()),
@@ -489,22 +433,7 @@ impl Store {
 
             let mut scored: Vec<(ChunkRow, f32)> = rows
                 .into_iter()
-                .filter_map(|row| {
-                    let chunk_row = ChunkRow {
-                        id: row.get(0),
-                        origin: row.get(1),
-                        language: row.get(2),
-                        chunk_type: row.get(3),
-                        name: row.get(4),
-                        signature: row.get(5),
-                        content: row.get(6),
-                        doc: row.get(7),
-                        line_start: clamp_line_number(row.get::<i64, _>(8)),
-                        line_end: clamp_line_number(row.get::<i64, _>(9)),
-                        parent_id: row.get(11),
-                    };
-                    let embedding_bytes: Vec<u8> = row.get(10);
-
+                .filter_map(|(chunk_row, embedding_bytes)| {
                     if let Some(ref langs) = filter.languages {
                         let row_lang: Result<crate::parser::Language, _> =
                             chunk_row.language.parse();

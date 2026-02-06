@@ -78,44 +78,16 @@ pub fn tool_add_note(server: &McpServer, arguments: Value) -> Result<Value> {
         })
         .unwrap_or_default();
 
-    // Build TOML entry - escape all strings properly
-    let mentions_toml = if mentions.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\nmentions = [{}]",
-            mentions
-                .iter()
-                .map(|m| {
-                    format!(
-                        "\"{}\"",
-                        m.replace('\\', "\\\\")
-                            .replace('\"', "\\\"")
-                            .replace('\n', "\\n")
-                            .replace('\r', "\\r")
-                            .replace('\t', "\\t")
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+    // Build TOML entry using serde serialization for correct escaping
+    let note_entry = crate::note::NoteEntry {
+        sentiment,
+        text: text.to_string(),
+        mentions,
     };
 
-    // Escape text for TOML - use single-line strings with escape sequences
-    // (avoids triple-quote edge cases)
-    let text_toml = format!(
-        "\"{}\"",
-        text.replace('\\', "\\\\")
-            .replace('\"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t")
-    );
-
-    let entry = format!(
-        "\n[[note]]\nsentiment = {:.1}\ntext = {}{}\n",
-        sentiment, text_toml, mentions_toml
-    );
+    // Serialize the entry fields, then wrap with [[note]] header
+    let serialized = toml::to_string(&note_entry).context("Failed to serialize note as TOML")?;
+    let entry = format!("\n[[note]]\n{}", serialized);
 
     // Append to notes.toml
     let notes_path = server.project_root.join("docs/notes.toml");
