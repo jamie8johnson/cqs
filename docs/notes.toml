@@ -454,7 +454,7 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Audits consistently find real bugs. History: 10-category (v0.4): 16 issues closed, proptest found RRF bound bug. 20-category v1 (v0.5.1): ~85 actionable from ~120 raw, 3 PRs for P1-P3, 13 P4 issues. 20-category v2 (v0.5.3): ~120 unique from 193 raw, 12 P1 fixed in PR #259. Key: 5 parallel agents per batch, audit mode on, collect ALL findings before fixing ANY. Batch by priority tier."
+text = "Audits consistently find real bugs. History: 10-category (v0.4): 16 issues closed, proptest found RRF bound bug. 20-category v1 (v0.5.1): ~85 actionable from ~120 raw, 3 PRs for P1-P3, 13 P4 issues. 20-category v2 (v0.6.0): ~120 unique from 193 raw, 28 fixes across P1-P3 (PRs #259, #261, #262, #263), 7 issues for remaining items. Key: 5 parallel agents per batch, audit mode on, collect ALL findings before fixing ANY. Batch by priority tier."
 mentions = [
     "docs/audit-findings.md",
     "audit",
@@ -515,3 +515,13 @@ mentions = [
     ".claude/skills/audit/SKILL.md",
     "audit",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "CHANGELOG pollution trap: if you update CHANGELOG entries after the tag is already cut, the entry drifts from reality. Always verify with `git show vX.Y.Z:CHANGELOG.md` before a release to catch drift. v0.5.3 entry had multi-index content that wasn't in that release."
+mentions = ["CHANGELOG.md", "git tag", "release"]
+
+[[note]]
+sentiment = -0.5
+text = "cfg(test) only applies within the library crate's unit tests. Integration tests (tests/*.rs) are separate compilation units — they see the public API without cfg(test) gating. Can't use cfg(test) to hide types only needed by integration tests."
+mentions = ["cfg(test)", "tests/", "integration tests"]

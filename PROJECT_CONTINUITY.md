@@ -2,15 +2,16 @@
 
 ## Right Now
 
-**Releasing v0.6.0** (2026-02-06)
+**v0.6.0 released** (2026-02-06)
 
-Branch: `main` — multi-index + all audit fixes merged.
+Clean state. No active work.
 
-### What's in v0.6.0
+### v0.6.0 included
 - Multi-index search (PR #258)
 - P1 audit fixes — 12 items (PR #259)
 - P2 audit fixes — 5 items (PR #261)
 - P3 audit fixes — 11 items (PRs #262, #263)
+- Published to crates.io, GitHub release created
 - Remaining P3/P4 tracked in issues #264-270
 
 ### Dev environment
@@ -19,7 +20,8 @@ Branch: `main` — multi-index + all audit fixes merged.
 
 ## Parked
 
-- **Phase 6**: Security (index encryption, rate limiting)
+- **Phase 6**: Discovery & UX (diff, similar, explain, workspace indexing)
+- **Phase 7**: Security (index encryption, rate limiting)
 
 ## Open Issues
 
@@ -32,7 +34,16 @@ Branch: `main` — multi-index + all audit fixes merged.
 - #256: Cross-store dedup
 - #257: Parallel search + shared Runtime
 
-### P4 Deferred (7 remaining from v0.5.1 audit)
+### Remaining audit items (v0.6.0 audit)
+- #264: Config load_file silently ignores parse errors (P3)
+- #265: search_reference swallows errors (P3)
+- #266: embedding_to_bytes should validate dimensions (P3)
+- #267: Module boundary cleanup (P4)
+- #268: Language extensibility (P4)
+- #269: Brute-force search loads all embeddings (P4)
+- #270: HNSW LoadedHnsw unsafe transmute (P4)
+
+### P4 Deferred (v0.5.1 audit, still open)
 - #231: Notes file locking
 - #232: CAGRA RAII guard pattern
 - #233: Cache parsed notes.toml in MCP server
