@@ -9,7 +9,7 @@
 //! CUDA gate: only BERT-style models (absolute position embeddings) are candidates.
 //! Models with rotary embeddings (nomic, Qwen3) cause ort CPU fallback thrashing.
 
-use cqs::nl::generate_nl_description;
+use cqs::nl::{generate_nl_description, generate_nl_with_template, NlTemplate};
 use cqs::parser::{Language, Parser};
 use ndarray::Array2;
 use ort::session::Session;
@@ -722,6 +722,175 @@ fn test_model_comparison() {
     eprintln!(
         "{:<25} {:>6} {:>6} {:>6} {:>6} {:>6} {:>8}",
         "Model", "Rust", "Py", "TS", "JS", "Go", "Overall"
+    );
+    eprintln!("{}", "-".repeat(75));
+
+    for (name, by_lang, total_hits, total_cases) in &all_results {
+        let mut row = format!("{:<25}", name);
+        for lang in &languages {
+            if let Some((hits, total)) = by_lang.get(lang) {
+                row += &format!(" {:>5}/{}", hits, total);
+            } else {
+                row += "    n/a";
+            }
+        }
+        let pct = if *total_cases > 0 {
+            (*total_hits as f64 / *total_cases as f64) * 100.0
+        } else {
+            0.0
+        };
+        row += &format!(" {:>6.0}%", pct);
+        eprintln!("{}", row);
+    }
+    eprintln!();
+}
+
+// ===== Template comparison eval =====
+
+#[test]
+#[ignore] // Slow - embeds 5x. Run with: cargo test template_eval -- --ignored --nocapture
+fn test_template_comparison() {
+    let parser = Parser::new().expect("Failed to initialize parser");
+    let e5_config = &MODELS[0]; // E5-base-v2
+    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    // Parse fixtures once
+    let mut chunks: Vec<cqs::parser::Chunk> = Vec::new();
+    for lang in &languages {
+        let path = fixture_path(*lang);
+        let parsed = parser.parse_file(&path).expect("Failed to parse fixture");
+        chunks.extend(parsed);
+    }
+    eprintln!("Parsed {} chunks from fixtures\n", chunks.len());
+
+    let templates = [
+        ("Standard (baseline)", NlTemplate::Standard),
+        ("NoPrefix", NlTemplate::NoPrefix),
+        ("BodyKeywords", NlTemplate::BodyKeywords),
+        ("Compact", NlTemplate::Compact),
+        ("DocFirst", NlTemplate::DocFirst),
+    ];
+
+    let mut all_results: Vec<(&str, HashMap<Language, (usize, usize)>, usize, usize)> = Vec::new();
+
+    for (template_name, template) in &templates {
+        eprintln!("--- {} ---", template_name);
+
+        // Generate NL descriptions with this template
+        let nl_texts: Vec<String> = chunks
+            .iter()
+            .map(|c| generate_nl_with_template(c, *template))
+            .collect();
+
+        // Show a sample
+        if let Some(first) = nl_texts.first() {
+            eprintln!("  Sample: {}", &first[..first.len().min(120)]);
+        }
+
+        // Embed all descriptions
+        let text_refs: Vec<&str> = nl_texts.iter().map(|s| s.as_str()).collect();
+        let mut all_embeddings: Vec<Vec<f32>> = Vec::new();
+        for batch in text_refs.chunks(16) {
+            match embedder.embed_documents(batch) {
+                Ok(embs) => all_embeddings.extend(embs),
+                Err(e) => {
+                    eprintln!("  SKIP: Embedding failed: {}\n", e);
+                    continue;
+                }
+            }
+        }
+
+        if all_embeddings.len() != chunks.len() {
+            eprintln!("  SKIP: Embedding count mismatch\n");
+            continue;
+        }
+
+        // Build indexed chunks
+        let indexed: Vec<IndexedChunk> = chunks
+            .iter()
+            .zip(all_embeddings.into_iter())
+            .map(|(chunk, emb)| IndexedChunk {
+                name: chunk.name.clone(),
+                language: chunk.language,
+                embedding: emb,
+            })
+            .collect();
+
+        // Run eval cases
+        let mut results_by_lang: HashMap<Language, (usize, usize)> = HashMap::new();
+        let mut total_hits = 0;
+        let mut total_cases = 0;
+
+        for case in EVAL_CASES {
+            let query_embedding = embedder
+                .embed_query(case.query)
+                .expect("Query embed failed");
+
+            let mut scored: Vec<(&str, f32)> = indexed
+                .iter()
+                .filter(|c| c.language == case.language)
+                .map(|c| {
+                    (
+                        c.name.as_str(),
+                        cosine_similarity(&query_embedding, &c.embedding),
+                    )
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            scored.truncate(5);
+
+            let found = scored.iter().any(|(name, _)| *name == case.expected_name);
+
+            let (hits, total) = results_by_lang.entry(case.language).or_insert((0, 0));
+            *total += 1;
+            if found {
+                *hits += 1;
+                total_hits += 1;
+            }
+            total_cases += 1;
+
+            if !found {
+                let top_names: Vec<&str> = scored.iter().take(3).map(|(n, _)| *n).collect();
+                eprintln!(
+                    "  MISS [{:?}] \"{}\" -> exp: {}, got: {:?}",
+                    case.language, case.query, case.expected_name, top_names
+                );
+            }
+        }
+
+        // Per-language summary
+        for lang in &languages {
+            if let Some((hits, total)) = results_by_lang.get(lang) {
+                let pct = (*hits as f64 / *total as f64) * 100.0;
+                eprintln!("  {:?}: {}/{} ({:.0}%)", lang, hits, total, pct);
+            }
+        }
+        let overall_pct = if total_cases > 0 {
+            (total_hits as f64 / total_cases as f64) * 100.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "  Overall: {}/{} ({:.0}%)\n",
+            total_hits, total_cases, overall_pct
+        );
+
+        all_results.push((template_name, results_by_lang, total_hits, total_cases));
+    }
+
+    // Print comparison table
+    eprintln!("=== Template Comparison ===\n");
+    eprintln!(
+        "{:<25} {:>6} {:>6} {:>6} {:>6} {:>6} {:>8}",
+        "Template", "Rust", "Py", "TS", "JS", "Go", "Overall"
     );
     eprintln!("{}", "-".repeat(75));
 
