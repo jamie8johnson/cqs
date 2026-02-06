@@ -12,7 +12,7 @@ mod watch;
 pub(crate) use config::find_project_root;
 pub(crate) use files::{acquire_index_lock, enumerate_files};
 pub(crate) use pipeline::run_index_pipeline;
-pub(crate) use signal::check_interrupted;
+pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
     cmd_callees, cmd_callers, cmd_doctor, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref,

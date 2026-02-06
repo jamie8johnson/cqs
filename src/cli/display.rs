@@ -20,7 +20,8 @@ pub fn read_context_lines(
     context: usize,
 ) -> Result<(Vec<String>, Vec<String>)> {
     let content = std::fs::read_to_string(file)?;
-    let lines: Vec<&str> = content.lines().collect();
+    // .lines() handles \r\n, but trim trailing \r for bare-CR edge cases
+    let lines: Vec<&str> = content.lines().map(|l| l.trim_end_matches('\r')).collect();
 
     // Normalize: treat 0 as 1, ensure end >= start
     let line_start = line_start.max(1);

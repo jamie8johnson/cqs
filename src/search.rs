@@ -108,6 +108,19 @@ impl NameMatcher {
     }
 }
 
+/// Compile a glob pattern into a matcher, logging and ignoring invalid patterns.
+///
+/// Returns `None` if the pattern is `None` or invalid (with a warning logged).
+fn compile_glob_filter(pattern: Option<&String>) -> Option<globset::GlobMatcher> {
+    pattern.and_then(|p| match globset::Glob::new(p) {
+        Ok(g) => Some(g.compile_matcher()),
+        Err(e) => {
+            tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
+            None
+        }
+    })
+}
+
 /// Compute name match score for hybrid search
 ///
 /// For repeated calls with the same query, use `NameMatcher::new(query).score(name)` instead.
@@ -247,15 +260,7 @@ impl Store {
             // Callers should validate patterns upfront via SearchFilter::validate() if they
             // want to reject invalid patterns. This lenient behavior is intentional to allow
             // partial searches when users provide malformed patterns interactively.
-            let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
-                match globset::Glob::new(p) {
-                    Ok(g) => Some(g.compile_matcher()),
-                    Err(e) => {
-                        tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
-                        None
-                    }
-                }
-            });
+            let glob_matcher = compile_glob_filter(filter.path_pattern.as_ref());
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
             let name_matcher = if use_hybrid {
@@ -418,15 +423,7 @@ impl Store {
                 .await?;
 
             // Compile glob pattern once outside the loop (not per-chunk).
-            let glob_matcher = filter.path_pattern.as_ref().and_then(|p| {
-                match globset::Glob::new(p) {
-                    Ok(g) => Some(g.compile_matcher()),
-                    Err(e) => {
-                        tracing::warn!(pattern = %p, error = %e, "Invalid glob pattern, ignoring filter");
-                        None
-                    }
-                }
-            });
+            let glob_matcher = compile_glob_filter(filter.path_pattern.as_ref());
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
             let name_matcher = if use_hybrid {
@@ -636,5 +633,28 @@ mod tests {
         let limit = 5;
         let min_code_slots = ((limit * 3) / 5).max(1);
         assert_eq!(min_code_slots, 3);
+    }
+
+    // ===== compile_glob_filter tests =====
+
+    #[test]
+    fn test_compile_glob_filter_none() {
+        assert!(compile_glob_filter(None).is_none());
+    }
+
+    #[test]
+    fn test_compile_glob_filter_valid() {
+        let pattern = "src/**/*.rs".to_string();
+        let matcher = compile_glob_filter(Some(&pattern));
+        assert!(matcher.is_some());
+        let m = matcher.unwrap();
+        assert!(m.is_match("src/cli/mod.rs"));
+        assert!(!m.is_match("tests/foo.py"));
+    }
+
+    #[test]
+    fn test_compile_glob_filter_invalid() {
+        let pattern = "[invalid".to_string();
+        assert!(compile_glob_filter(Some(&pattern)).is_none());
     }
 }

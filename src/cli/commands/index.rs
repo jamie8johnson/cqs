@@ -10,8 +10,8 @@ use anyhow::Result;
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
-    acquire_index_lock, check_interrupted, enumerate_files, find_project_root, run_index_pipeline,
-    signal, Cli,
+    acquire_index_lock, check_interrupted, enumerate_files, find_project_root, reset_interrupted,
+    run_index_pipeline, signal, Cli,
 };
 
 /// Index codebase files for semantic search
@@ -19,6 +19,7 @@ use crate::cli::{
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
 pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
+    reset_interrupted();
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");
