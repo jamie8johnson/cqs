@@ -1,4 +1,4 @@
-# 20-Category Audit Design
+# Code Audit Design
 
 ## Overview
 
@@ -6,49 +6,52 @@
 
 **Stopping criteria:** Diminishing returns. Fix until the effort-to-benefit ratio gets bad. This means easy wins in high-impact areas first; stop when only hard, low-impact work remains.
 
-**Execution model:** 4 batches of 5 parallel agents each. Batches run sequentially to avoid context overflow. All findings collected before any fixing begins - this gives full visibility to make smart prioritization decisions.
+**Execution model:** 3 batches of 5 parallel agents each. Batches run sequentially to avoid context overflow. All findings collected before any fixing begins - this gives full visibility to make smart prioritization decisions.
 
 **Tracking:** Markdown file during collection phase (`docs/audit-findings.md`). Findings promoted to GitHub issues when we enter fix phase. This keeps collection lightweight while ensuring work gets tracked formally once committed.
 
-## Batch Composition
+## Category Design (14 categories, 3 batches)
 
-Categories ordered by impact, with maintainability/readability prioritized:
+### v0.5.3 Lesson: Consolidation
 
-### Batch 1: Readability foundation
-- Code Hygiene - dead code, duplication, complexity
-- Module Boundaries - coupling, cohesion, dependency direction
-- Documentation - accuracy, completeness, staleness
-- API Design - consistency, ergonomics, stability
-- Error Propagation - Result chains, context, recovery
+The original 20-category / 4-batch design produced 193 raw findings with 38% duplication. Root cause: categories in batches 3-4 overlapped heavily:
 
-### Batch 2: Understandable behavior
-- Observability - logging coverage, tracing, debuggability
-- Test Coverage - gaps, meaningful assertions, integration
-- Panic Paths - unwrap/expect usage, unwind safety
-- Algorithm Correctness - off-by-one, boundary conditions, logic
-- Extensibility - adding features without surgery
+| Overlap cluster | Duplicated across |
+|----------------|-------------------|
+| Path traversal / untrusted input | Input Security, Data Security, Edge Cases |
+| Memory / resource use | Memory Management, Resource Footprint |
+| Performance / I/O | Algorithmic Complexity, I/O Efficiency |
+| Robustness / edge cases | Panic Paths, Edge Cases |
+| Data safety / concurrency | Data Integrity, Concurrency Safety |
 
-### Batch 3: Data & platform correctness
-- Data Integrity - corruption detection, validation, migrations
-- Edge Cases - empty, huge, unicode, malformed inputs
-- Platform Behavior - OS differences, path handling, WSL
-- Memory Management - leaks, OOM protection, resource limits
-- Concurrency Safety - races, deadlocks, thread safety
+Consolidating these into broader categories eliminates duplication without losing coverage. Each agent gets a wider scope but produces fewer redundant findings.
 
-### Batch 4: Security & performance
-- Input Security - injection, path traversal, untrusted data
-- Data Security - file permissions, secrets, access control
-- Algorithmic Complexity - O(n²), unnecessary iterations
-- I/O Efficiency - batching, caching, disk/network patterns
-- Resource Footprint - memory usage, startup time, idle cost
+### Batch 1: Code Quality (5 agents)
+- **Code Quality** — dead code, duplication, complexity, coupling, cohesion, dependency direction (was: Code Hygiene + Module Boundaries)
+- **Documentation** — accuracy, completeness, staleness
+- **API Design** — consistency, ergonomics, naming, type design
+- **Error Handling** — Result chains, context, recovery, swallowed errors (was: Error Propagation)
+- **Observability** — logging coverage, tracing, debuggability
+
+### Batch 2: Behavior (5 agents)
+- **Test Coverage** — gaps, meaningful assertions, integration
+- **Robustness** — unwrap/expect, edge cases (empty, huge, unicode, malformed), panic paths (was: Panic Paths + Edge Cases)
+- **Algorithm Correctness** — off-by-one, boundary conditions, logic errors
+- **Extensibility** — adding features without surgery, hardcoded values
+- **Platform Behavior** — OS differences, path handling, WSL
+
+### Batch 3: Infrastructure (4 agents)
+- **Security** — injection, path traversal, file permissions, secrets, access control (was: Input Security + Data Security)
+- **Data Safety** — corruption, validation, migrations, races, deadlocks, thread safety (was: Data Integrity + Concurrency Safety)
+- **Performance** — O(n²), unnecessary iterations, batching, caching, I/O patterns (was: Algorithmic Complexity + I/O Efficiency)
+- **Resource Management** — memory usage, startup time, idle cost, OOM protection, leaks (was: Memory Management + Resource Footprint)
 
 ## Agent Behavior and Findings Format
 
 **Each audit agent:**
-1. Enables audit mode (`cqs_audit_mode(true)`) to force fresh examination
-2. Explores the codebase looking for issues in its category
-3. Produces structured findings with difficulty estimates
-4. Does NOT fix anything - collection phase only
+1. Explores the codebase looking for issues in its category
+2. Produces structured findings with difficulty estimates
+3. Does NOT fix anything - collection phase only
 
 **Finding structure:**
 ```markdown
@@ -68,16 +71,22 @@ Categories ordered by impact, with maintainability/readability prioritized:
 
 **Aggregation:** After each batch completes, findings appended to `docs/audit-findings.md` under a batch header. Cross-reference against existing GitHub issues to avoid duplicates.
 
+**Agent prompts must include:**
+- List of open issues from previous audits (to note overlaps, not re-report)
+- Key files and line counts for the category
+- Explicit "stop after ~10 findings" to prevent diminishing returns
+- Convention reminders (thiserror vs anyhow, no unwrap in prod, etc.)
+
 ## Fix Prioritization
 
-After all 4 batches complete, findings sorted by impact × effort:
+After all batches complete, findings sorted by impact × effort:
 
 | Tier | Criteria | Action |
 |------|----------|--------|
 | P1 | Easy + Batch 1-2 (high impact) | Fix immediately |
-| P2 | Easy + Batch 3-4, or Medium + Batch 1 | Fix next |
-| P3 | Medium + Batch 2-3 | Fix if time permits |
-| P4 | Medium + Batch 4, or Hard + any | Create issue, defer |
+| P2 | Easy + Batch 3, or Medium + Batch 1 | Fix next |
+| P3 | Medium + Batch 2 | Fix if time permits |
+| P4 | Medium + Batch 3, or Hard + any | Create issue, defer |
 
 **Diminishing returns trigger:** When we've cleared P1 and P2, assess remaining work. If P3 items are mostly "meh" improvements, stop fixing and bank the rest as issues.
 
@@ -91,21 +100,22 @@ After all 4 batches complete, findings sorted by impact × effort:
 
 ## Execution Workflow
 
-### Phase 1: Collection (4 sequential rounds)
+### Phase 1: Collection (3 sequential rounds)
 
 ```
-For each batch (1-4):
-  1. Enable audit mode
-  2. Dispatch 5 agents in parallel
-  3. Wait for all agents to complete
-  4. Aggregate findings to docs/audit-findings.md
-  5. Clear context if needed before next batch
+For each batch (1-3):
+  1. Enable audit mode: cqs_audit_mode(true, expires_in="2h")
+  2. Create team: audit-batch-N
+  3. Dispatch agents in parallel (5 for batch 1-2, 4 for batch 3)
+  4. Wait for all agents to complete
+  5. Shutdown team, cleanup
+  6. Clear context if needed before next batch
 ```
 
 ### Phase 2: Triage
 
 1. Review complete findings list
-2. De-duplicate (some issues span categories)
+2. De-duplicate (should be minimal with consolidated categories)
 3. Assign priority tiers (P1-P4)
 4. Check against existing GitHub issues
 5. Decide: proceed with fixing or stop here?
@@ -123,3 +133,8 @@ For each batch (1-4):
 - `docs/plans/2026-02-04-20-category-audit-design.md` - this design doc
 - GitHub issues for findings being fixed
 - Clean code
+
+## History
+
+- **v0.5.1**: First audit. 20 categories, 4 batches. ~85 actionable findings from ~120 raw. P1-P3 fixed in 3 PRs, 13 P4 deferred as issues (#231-241).
+- **v0.5.3**: Second audit. 20 categories, 4 batches. 193 raw findings, ~120 unique (38% duplication). Identified consolidation opportunity → redesigned to 14 categories / 3 batches for next run.

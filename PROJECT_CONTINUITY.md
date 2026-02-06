@@ -2,23 +2,34 @@
 
 ## Right Now
 
-**Implementing multi-index support** (2026-02-06)
+**20-category audit complete, triage done, ready to fix P1** (2026-02-06)
 
-Branch: main (will create feature branch). Plan approved: `/home/user001/.claude/plans/stateful-sparking-swing.md`
+Branch: `main` — PR #258 merged (multi-index).
 
-### Active: Multi-index (Phase 5 final item)
-- Plan: 7 steps, 14 files (2 new), ~30 tests
-- Step 1: Config (ReferenceConfig, override_with, read-modify-write helpers)
-- Step 2: reference.rs (ReferenceIndex, load_references, merge_results, TaggedResult)
-- Step 3: MCP integration (server + search multi-search path)
-- Step 4: MCP stats with references
-- Step 5: CLI ref commands, display, query, name_only, sources filter, doctor
-- Step 6-7: Tests, docs, cleanup
+### Audit state
+- Full 20-category audit completed (4 batches × 5 parallel agents)
+- 193 raw findings in `docs/audit-findings.md`, ~120 unique after dedup
+- Triage done: 12 P1, 6 P2, 15 P3, 15 P4
+- Previous audit P4 issues (#231-241) cross-checked — overlapping findings noted
 
-### Done this session
-- Released v0.5.3 (prior session)
-- Planned multi-index feature with two fresh-eyes reviews
-- Found & fixed: store.init() needs ModelInfo, ref update was missing HNSW rebuild
+### P1 fixes needed (easy + high impact)
+1. Reference name path traversal (security)
+2. Glob filter wrong path extraction in brute-force search (correctness)
+3. Pipeline wrong file_mtime across batched files (correctness)
+4. StoreError messages say `cq` not `cqs` (user-facing)
+5. Language param silently defaults to Rust (user-facing)
+6. SECURITY.md stale (docs)
+7. `tagged_score()` redundant (dead code)
+8. Reference threshold before vs after weight (correctness)
+9. SSE endpoint missing origin validation (security)
+10. 5 stale doc fixes (search.rs, note.rs, language/mod.rs, store/mod.rs, CONTRIBUTING.md)
+11. lib.rs Quick Start unnecessary `mut` (docs)
+12. serde_json unwrap_or_default in notes (error handling)
+
+### Uncommitted files
+- `docs/audit-findings.md` — full audit findings
+- `docs/notes.toml` — groomed (4 removed, 10 mentions updated)
+- `PROJECT_CONTINUITY.md` — this file
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -27,7 +38,6 @@ Branch: main (will create feature branch). Plan approved: `/home/user001/.claude
 ## Parked
 
 - **Phase 6**: Security (index encryption, rate limiting)
-- **Multi-index**: reference codebases — **now in progress** (plan approved)
 
 ## Open Issues
 
@@ -35,7 +45,12 @@ Branch: main (will create feature branch). Plan approved: `/home/user001/.claude
 - #106: ort stable (currently 2.0.0-rc.11)
 - #63: paste dep (via tokenizers)
 
-### P4 Deferred (7 remaining)
+### Multi-index follow-ups
+- #255: Pre-built reference packages
+- #256: Cross-store dedup
+- #257: Parallel search + shared Runtime
+
+### P4 Deferred (7 remaining from v0.5.1 audit)
 - #231: Notes file locking
 - #232: CAGRA RAII guard pattern
 - #233: Cache parsed notes.toml in MCP server
@@ -50,5 +65,6 @@ Branch: main (will create feature branch). Plan approved: `/home/user001/.claude
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
+- Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
-- 383 tests (no GPU), 0 warnings, clippy clean
+- 388 tests (no GPU), 0 warnings, clippy clean
