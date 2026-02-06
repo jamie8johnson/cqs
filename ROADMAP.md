@@ -239,6 +239,10 @@
   - 15 new search path tests, test count 379 (no GPU)
 
 ### Planned
+- [ ] Note management tools (`cqs_update_note`, `cqs_remove_note`)
+  - MCP tools for updating/removing notes by ID or text match
+  - Enable regular note grooming without manual TOML editing
+  - CLI: `cqs notes list`, `cqs notes remove <id>`
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)
   - Index popular crates as reference (tokio, serde, axum)

@@ -256,13 +256,13 @@ mentions = ["cqs watch", "notes.toml", "indexing"]
 
 [[note]]
 sentiment = 0.5
-text = "--bind flag added with safety check. Non-localhost requires --dangerously-allow-network-bind. API key auth parked - reverse proxy with real auth is better for serious network exposure."
+text = "--bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
 mentions = ["cli.rs", "mcp.rs", "--bind", "auth"]
 
 [[note]]
 sentiment = 0.5
 text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API so cli.rs/mcp.rs didn't need changes. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
-mentions = ["src/store.rs", "Cargo.toml"]
+mentions = ["src/store/mod.rs", "Cargo.toml"]
 
 [[note]]
 sentiment = 0.5
@@ -276,18 +276,8 @@ mentions = ["hnsw.rs", "security", "path traversal"]
 
 [[note]]
 sentiment = 1
-text = "Skeptical 10-category audit complete. 16 issues closed. Property tests (proptest) added - found RRF bound bug immediately. Test count: 145. Security docs expanded with threat model, filesystem access, symlink behavior."
-mentions = ["SECURITY.md", "src/store.rs", "src/embedder.rs", "tests/mcp_test.rs"]
-
-[[note]]
-sentiment = 1
-text = "Post-audit assessment: codebase is solid. 145 tests, property tests found real bug, security documented honestly. Remaining gaps (cache/GPU testing) would need refactoring - adequate as-is. Ready for users."
-mentions = ["PROJECT_CONTINUITY.md"]
-
-[[note]]
-sentiment = 1.0
-text = "Proptest fuzz targets added (17 tests). Covers TOML parser, tokenizer, JSDoc, FTS sanitization, JSON-RPC, origin validation. Total tests now 162 - more than doubled from pre-audit 75."
-mentions = ["src/note.rs", "src/nl.rs", "src/store.rs", "src/mcp.rs", "proptest"]
+text = "First 10-category audit: 16 issues closed, proptest found RRF bound bug immediately, security docs expanded. Second 20-category audit (v0.5.1): ~85 findings, P1-P3 fixed in 3 PRs, 13 P4 items deferred. Test count: 379 (no GPU). Audits consistently find real bugs."
+mentions = ["SECURITY.md", "src/store/", "tests/", "audit"]
 
 [[note]]
 sentiment = 1.0
@@ -297,7 +287,7 @@ mentions = ["src/store/chunks.rs", "src/hnsw.rs", "embedding_batches", "build_ba
 [[note]]
 sentiment = 1.0
 text = "Notes now included in HNSW index with 'note:' prefix. search_unified_with_index partitions candidates by prefix, fetches from chunks/notes tables separately. O(n) brute-force eliminated. Fixes #103."
-mentions = ["src/store/notes.rs", "src/search.rs", "src/cli/mod.rs", "note_embeddings", "search_notes_by_ids"]
+mentions = ["src/store/notes.rs", "src/search.rs", "src/cli/pipeline.rs", "note_embeddings", "search_notes_by_ids"]
 
 [[note]]
 sentiment = 0.5
@@ -311,8 +301,8 @@ mentions = ["audit mode", "verification", "dead code"]
 
 [[note]]
 sentiment = 0.5
-text = "Always update docs/audit-triage.md status column when fixing audit items. Mark as ✅ Fixed with brief note (e.g., \"logs warning\", \"documented\"). Update summary counts after each batch."
-mentions = ["docs/audit-triage.md", "audit findings"]
+text = "Audit findings file: docs/audit-findings.md. Triage by impact x effort into P1-P4. Fix P1 first (easy + high-impact), create issues for P4 (hard or low-impact). Collect ALL findings before fixing ANY."
+mentions = ["docs/audit-findings.md", "audit"]
 
 [[note]]
 sentiment = 0.5
@@ -333,3 +323,23 @@ mentions = ["multi-index", "model selection", "roadmap"]
 sentiment = 0.5
 text = "Model eval complete (Phase 1): E5-base-v2, BGE-base-en-v1.5, and E5-large-v2 all scored 100% Recall@5 on 50-query eval suite. Eval is saturated - need harder queries to differentiate models. Decision: stay with E5-base-v2 (smallest, proven, no schema change needed). Phase 2 (model switch) skipped."
 mentions = ["embedder.rs", "model selection", "eval", "E5"]
+
+[[note]]
+sentiment = -1.0
+text = "Glob filter BEFORE heap was the #1 correctness bug from the 20-category audit. Brute-force search applied glob AFTER selecting top-k from heap, meaning filtered results could miss relevant chunks that were displaced by non-matching ones. Always filter before ranking."
+mentions = ["src/search.rs", "glob", "brute-force", "algorithm correctness"]
+
+[[note]]
+sentiment = 0.5
+text = "note_weight=0 bug: documented as 'excludes notes from results' but only zeroed scores - notes still appeared. Caught by test_search_unified_note_weight_zero_excludes_notes. Tests that assert absence (not just presence) find real bugs. Write negative-case tests."
+mentions = ["src/search.rs", "SearchFilter", "note_weight", "testing"]
+
+[[note]]
+sentiment = 1.0
+text = "20-category audit v2 (v0.5.1): 5 parallel agents per batch, 4 batches, audit mode enabled. Found ~85 actionable items from ~120 raw. Key: collect ALL findings before fixing ANY. Batch by priority tier (P1-P4), fix in order. Took 3 PRs to fix P1-P3, created 13 issues for P4."
+mentions = ["docs/audit-findings.md", "audit", "v0.5.1", "workflow"]
+
+[[note]]
+sentiment = -0.5
+text = "Heredoc in `gh pr create --body` gets captured as a permission entry in .claude/settings.local.json, causing parse errors on next startup. Fix: always write PR/release bodies to a temp file and use --body-file instead of inline heredocs. The multiline content gets serialized into the permissions allow list as a malformed Bash() entry."
+mentions = ["settings.local.json", "gh pr create", "powershell.exe", "heredoc"]
