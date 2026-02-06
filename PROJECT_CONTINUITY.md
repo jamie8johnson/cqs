@@ -2,15 +2,17 @@
 
 ## Right Now
 
-**Working on #245: Groom notes command/skill** (2026-02-06)
+**Clean state** (2026-02-06)
 
-Branch: main (will create feature branch)
+Branch: main, synced with remote. No pending work.
 
-### Context
-- PR #244 merged: brute-force notes + update/remove MCP tools
-- #230 closed (HNSW staleness)
-- Notes removed from HNSW/CAGRA entirely — chunk-only index now
-- 38 notes in notes.toml, some stale (e.g., "Notes now included in HNSW" is now wrong)
+### Recently merged
+- PR #244: Brute-force notes + update/remove MCP tools (closes #230)
+- PR #246: `cqs notes list` CLI + 7 Claude Code skills (closes #245)
+
+### Skills
+7 skills in `.claude/skills/`. Should appear in `/` after restart.
+If they don't show in autocomplete, try removing `disable-model-invocation: true` from frontmatter.
 
 ## Parked
 
@@ -43,8 +45,5 @@ Branch: main (will create feature branch)
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
-- Language enum + LanguageDef registry in language/mod.rs (source of truth)
-- Parser re-exports Language, ChunkType from language module
-- Store: split into focused modules (7 files including migrations)
-- CLI: mod.rs + display.rs + watch.rs + pipeline.rs
-- 390 tests with GPU / 379 without (including CLI, server, stress tests)
+- 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
+- 381 tests (no GPU), 0 warnings, clippy clean
