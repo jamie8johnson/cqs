@@ -2,23 +2,33 @@
 
 ## Right Now
 
-**Parser/registry refactor complete** (2026-02-05)
+**Test coverage expansion — complete, needs commit/PR** (2026-02-05)
 
-Consolidated parser.rs duplication with language/ registry. parser.rs: 1469 → 1056 lines (28% reduction).
+All 6 modules covered. 375 tests (with GPU) / 364 (without GPU). 0 failures.
 
 ### Completed This Session
 - **PR triage**: Merged #52, #54, #53, #51, #220. Closed #164, #50.
 - **Phase 1**: Model eval — E5-base-v2 stays (100% Recall@5). PR #221 merged.
 - **Phase 2**: Skipped (E5 wins).
 - **Phase 3**: C and Java language support. PR #222 merged.
-- **Refactor**: Parser/registry consolidation. Language enum moved to language/mod.rs. Query constants deleted from parser.rs. Methods delegate to REGISTRY via Language::def(). infer_chunk_type data-driven via LanguageDef fields.
+- **Refactor**: Parser/registry consolidation. PR #223 merged. parser.rs: 1469 → 1056 lines (28% reduction).
+- **GPU setup**: CUDA 13.1 toolkit + conda + libcuvs 25.12 installed. `gpu-search` feature builds and passes all tests. Wrapper at `~/gpu-test.sh`.
+- **Test coverage**: 50 new tests across 6 modules (index: 4, cagra: 11, mcp/tools: 22, pipeline: 6, doctor: 3, graph: 4).
 
-### What's Next (per approved plan)
+### What's Next
+- Commit + PR for test coverage
 - **Phase 4**: Template experiments in nl.rs
 - **Phase 5**: Multi-index (5 sub-phases)
 
 ### Open PRs
-None. (Refactor uncommitted — needs PR.)
+None.
+
+### GPU Build
+```bash
+bash ~/gpu-test.sh test --features gpu-search  # all env vars set
+bash ~/gpu-test.sh build --features gpu-search
+```
+Needs: CUDA 13.1, conda base env (miniforge3), libcuvs 25.12
 
 ## Parked
 
