@@ -136,6 +136,41 @@ Use cases:
 
 Call graph is indexed across all files - callers are found regardless of which file they're in.
 
+## Reference Indexes (Multi-Index Search)
+
+Search across your project and external codebases simultaneously:
+
+```bash
+cqs ref add tokio /path/to/tokio          # Index an external codebase
+cqs ref add stdlib /path/to/rust/library --weight 0.6  # Custom weight
+cqs ref list                               # Show configured references
+cqs ref update tokio                       # Re-index from source
+cqs ref remove tokio                       # Remove reference and index files
+```
+
+Once added, all searches automatically include reference results:
+
+```bash
+cqs "spawn async task"    # Finds results in project AND tokio reference
+```
+
+Reference results are ranked with a weight multiplier (default 0.8) so project results naturally appear first at equal similarity.
+
+**MCP integration**: The `cqs_search` tool gains a `sources` parameter to filter which indexes to search:
+- Omit `sources` to search all indexes
+- `sources: ["project"]` — search only the primary project
+- `sources: ["tokio"]` — search only the tokio reference
+
+References are configured in `.cqs.toml`:
+
+```toml
+[[reference]]
+name = "tokio"
+path = "/home/user/.local/share/cqs/refs/tokio"
+source = "/home/user/code/tokio"
+weight = 0.8
+```
+
 ## Claude Code Integration
 
 ### Why use cqs?

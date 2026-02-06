@@ -67,6 +67,11 @@ pub fn handle_tools_list() -> Result<Value> {
                         "type": "number",
                         "description": "Weight for note scores 0.0-1.0 (default: 1.0). Lower values make notes rank below code.",
                         "default": 1.0
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Filter which indexes to search. Use \"project\" for primary, reference names for others. Omit to search all."
                     }
                 },
                 "required": ["query"]

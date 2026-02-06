@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -122,6 +122,7 @@ src/
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment, rewrite_notes_file()
+  reference.rs  - Multi-index: ReferenceIndex, load, search, merge
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API

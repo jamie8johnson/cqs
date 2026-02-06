@@ -249,13 +249,14 @@
   - `cqs notes list` — display all notes with sentiment, staleness
   - `/groom-notes` skill — interactive review + batch cleanup
 
-### Planned
-- [ ] Multi-index support (reference codebases)
-  - Search multiple indexes simultaneously (project + stdlib + deps)
-  - Index popular crates as reference (tokio, serde, axum)
-  - Index rust-lang/rust stdlib as language reference
-  - MCP searches across all configured indexes
-  - Use case: "How does stdlib implement X?" while coding your project
+- [x] Multi-index support (reference codebases)
+  - `cqs ref add/list/remove/update` CLI commands
+  - Search multiple indexes simultaneously (project + refs)
+  - MCP `cqs_search` searches across all configured indexes
+  - `sources` filter parameter for targeted search
+  - Score-based merge with configurable weight multiplier
+  - `cqs doctor` validates reference health
+  - `[[reference]]` config in `.cqs.toml`
 
 ## Phase 6: Security
 

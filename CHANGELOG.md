@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.3] - 2026-02-06
 
 ### Added
+- **Multi-index search**: search across project + reference codebases simultaneously
+  - `cqs ref add <name> <source>` — index an external codebase as a reference
+  - `cqs ref list` — show configured references with chunk/vector counts
+  - `cqs ref remove <name>` — remove a reference and its index files
+  - `cqs ref update <name>` — re-index a reference from its source
+  - MCP `cqs_search` with `sources` parameter to filter which indexes to search
+  - Score-based merge with configurable weight multiplier (default 0.8)
+  - `cqs doctor` validates reference index health
+  - `[[reference]]` config entries in `.cqs.toml`
 - CJK tokenization: Chinese, Japanese, Korean characters split into individual FTS tokens
 - `ChunkRow::from_row()` centralized SQLite row mapping in store layer
 - `fetch_chunks_by_ids_async()` and `fetch_chunks_with_embeddings_by_ids_async()` store methods

@@ -2,17 +2,23 @@
 
 ## Right Now
 
-**Clean state** (2026-02-06)
+**Implementing multi-index support** (2026-02-06)
 
-Branch: main, synced with remote. No pending work.
+Branch: main (will create feature branch). Plan approved: `/home/user001/.claude/plans/stateful-sparking-swing.md`
+
+### Active: Multi-index (Phase 5 final item)
+- Plan: 7 steps, 14 files (2 new), ~30 tests
+- Step 1: Config (ReferenceConfig, override_with, read-modify-write helpers)
+- Step 2: reference.rs (ReferenceIndex, load_references, merge_results, TaggedResult)
+- Step 3: MCP integration (server + search multi-search path)
+- Step 4: MCP stats with references
+- Step 5: CLI ref commands, display, query, name_only, sources filter, doctor
+- Step 6-7: Tests, docs, cleanup
 
 ### Done this session
-- PR #252 merged: CJK tokenization for FTS search (closed #238)
-- PR #253 merged: Store boundary refactor + TOML serializer (closed #234, #237)
-- Closed #235 (dual runtimes) as not_planned — accepted, documented
-- Added "update the roadmap" to CLAUDE.md completion checklist
-- Marked note grooming (#245) as done in ROADMAP.md
-- Groomed notes: 62 → 60
+- Released v0.5.3 (prior session)
+- Planned multi-index feature with two fresh-eyes reviews
+- Found & fixed: store.init() needs ModelInfo, ref update was missing HNSW rebuild
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -21,7 +27,7 @@ Branch: main, synced with remote. No pending work.
 ## Parked
 
 - **Phase 6**: Security (index encryption, rate limiting)
-- **Multi-index**: reference codebases (model eval done, ready to build)
+- **Multi-index**: reference codebases — **now in progress** (plan approved)
 
 ## Open Issues
 
@@ -40,7 +46,7 @@ Branch: main, synced with remote. No pending work.
 
 ## Architecture
 
-- Version: 0.5.2
+- Version: 0.5.3
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)

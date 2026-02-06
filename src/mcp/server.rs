@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::embedder::Embedder;
 use crate::hnsw::HnswIndex;
 use crate::index::VectorIndex;
+use crate::reference::ReferenceIndex;
 use crate::store::Store;
 
 use super::audit_mode::AuditMode;
@@ -39,6 +40,8 @@ pub struct McpServer {
     pub(crate) use_gpu: bool,
     /// Audit mode state (interior mutability for concurrent access)
     pub(crate) audit_mode: Mutex<AuditMode>,
+    /// Reference indexes for multi-index search
+    pub(crate) references: Vec<ReferenceIndex>,
 }
 
 impl McpServer {
@@ -75,6 +78,10 @@ impl McpServer {
             });
         }
 
+        // Load reference indexes from config
+        let config = crate::config::Config::load(project_root);
+        let references = crate::reference::load_references(&config.references);
+
         Ok(Self {
             store,
             embedder: OnceLock::new(),
@@ -82,6 +89,7 @@ impl McpServer {
             index,
             use_gpu,
             audit_mode: Mutex::new(AuditMode::default()),
+            references,
         })
     }
 

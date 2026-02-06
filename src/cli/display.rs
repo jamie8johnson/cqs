@@ -5,6 +5,7 @@ use std::path::Path;
 use anyhow::Result;
 use colored::Colorize;
 
+use cqs::reference::TaggedResult;
 use cqs::store::UnifiedResult;
 
 /// Read context lines before and after a range in a file
@@ -193,6 +194,168 @@ pub fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> R
                 "mentions": r.note.mentions,
                 "score": r.score,
             }),
+        })
+        .collect();
+
+    let output = serde_json::json!({
+        "results": json_results,
+        "query": query,
+        "total": results.len(),
+    });
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Display tagged search results (multi-index with source labels)
+pub fn display_tagged_results(
+    results: &[TaggedResult],
+    root: &Path,
+    no_content: bool,
+    context: Option<usize>,
+) -> Result<()> {
+    for tagged in results {
+        match &tagged.result {
+            UnifiedResult::Code(r) => {
+                let rel_path = r.chunk.file.strip_prefix(root).unwrap_or(&r.chunk.file);
+
+                // Prepend source name for reference results
+                let source_prefix = tagged
+                    .source
+                    .as_ref()
+                    .map(|s| format!("[{}] ", s))
+                    .unwrap_or_default();
+
+                let header = format!(
+                    "{}{}:{} ({} {}) [{}] [{:.2}]",
+                    source_prefix,
+                    rel_path.display(),
+                    r.chunk.line_start,
+                    r.chunk.chunk_type,
+                    r.chunk.name,
+                    r.chunk.language,
+                    r.score
+                );
+
+                println!("{}", header.cyan());
+
+                if !no_content {
+                    println!("{}", "─".repeat(50));
+
+                    // Context lines only for project results (reference source files may not exist)
+                    if tagged.source.is_none() {
+                        if let Some(n) = context {
+                            if n > 0 {
+                                let abs_path = root.join(&r.chunk.file);
+                                if let Ok((before, _)) = read_context_lines(
+                                    &abs_path,
+                                    r.chunk.line_start,
+                                    r.chunk.line_end,
+                                    n,
+                                ) {
+                                    for line in &before {
+                                        println!("{}", format!("  {}", line).dimmed());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if r.chunk.content.lines().count() <= 10 {
+                        println!("{}", r.chunk.content);
+                    } else {
+                        for line in r.chunk.content.lines().take(8) {
+                            println!("{}", line);
+                        }
+                        println!("    ...");
+                    }
+
+                    // After context only for project results
+                    if tagged.source.is_none() {
+                        if let Some(n) = context {
+                            if n > 0 {
+                                let abs_path = root.join(&r.chunk.file);
+                                if let Ok((_, after)) = read_context_lines(
+                                    &abs_path,
+                                    r.chunk.line_start,
+                                    r.chunk.line_end,
+                                    n,
+                                ) {
+                                    for line in &after {
+                                        println!("{}", format!("  {}", line).dimmed());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    println!();
+                }
+            }
+            UnifiedResult::Note(r) => {
+                let sentiment_indicator = if r.note.sentiment < -0.3 {
+                    format!("v={:.1}", r.note.sentiment).red()
+                } else if r.note.sentiment > 0.3 {
+                    format!("v={:.1}", r.note.sentiment).green()
+                } else {
+                    format!("v={:.1}", r.note.sentiment).dimmed()
+                };
+
+                let header = format!("[note] {} [{:.2}]", sentiment_indicator, r.score);
+                println!("{}", header.blue());
+
+                if !no_content {
+                    println!("{}", "─".repeat(50));
+                    let text_lines: Vec<&str> = r.note.text.lines().collect();
+                    if text_lines.len() <= 3 {
+                        println!("{}", r.note.text);
+                    } else {
+                        for line in text_lines.iter().take(3) {
+                            println!("{}", line);
+                        }
+                        println!("    ...");
+                    }
+                    println!();
+                }
+            }
+        }
+    }
+
+    println!("{} results", results.len());
+    Ok(())
+}
+
+/// Display tagged results as JSON (multi-index with source field)
+pub fn display_tagged_results_json(results: &[TaggedResult], query: &str) -> Result<()> {
+    let json_results: Vec<_> = results
+        .iter()
+        .map(|t| {
+            let mut json = match &t.result {
+                UnifiedResult::Code(r) => serde_json::json!({
+                    "type": "code",
+                    "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                    "line_start": r.chunk.line_start,
+                    "line_end": r.chunk.line_end,
+                    "name": r.chunk.name,
+                    "signature": r.chunk.signature,
+                    "language": r.chunk.language.to_string(),
+                    "chunk_type": r.chunk.chunk_type.to_string(),
+                    "score": r.score,
+                    "content": r.chunk.content,
+                }),
+                UnifiedResult::Note(r) => serde_json::json!({
+                    "type": "note",
+                    "id": r.note.id,
+                    "text": r.note.text,
+                    "sentiment": r.note.sentiment,
+                    "mentions": r.note.mentions,
+                    "score": r.score,
+                }),
+            };
+            if let Some(source) = &t.source {
+                json["source"] = serde_json::json!(source);
+            }
+            json
         })
         .collect();
 
