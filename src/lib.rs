@@ -168,14 +168,13 @@ pub fn index_notes(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    // Delete old notes and insert new
-    store.delete_notes_by_file(notes_path)?;
+    // Atomically replace notes (delete old + insert new in single transaction)
     let note_embeddings: Vec<_> = notes
         .iter()
         .cloned()
         .zip(embeddings_with_sentiment)
         .collect();
-    store.upsert_notes_batch(&note_embeddings, notes_path, file_mtime)?;
+    store.replace_notes_for_file(&note_embeddings, notes_path, file_mtime)?;
 
     Ok(notes.len())
 }

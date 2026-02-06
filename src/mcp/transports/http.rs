@@ -100,16 +100,16 @@ pub fn serve_http(
     let is_localhost = bind == "127.0.0.1" || bind == "localhost" || bind == "::1";
     if !is_localhost {
         if has_api_key {
-            eprintln!("WARNING: Binding to {} with API key authentication.", bind);
+            tracing::warn!("Binding to {} with API key authentication.", bind);
         } else {
-            eprintln!("WARNING: Binding to {} WITHOUT authentication!", bind);
+            tracing::warn!("Binding to {} WITHOUT authentication!", bind);
         }
     }
 
-    eprintln!("MCP HTTP server listening on http://{}", addr);
-    eprintln!("MCP Protocol Version: {}", MCP_PROTOCOL_VERSION);
+    tracing::info!("MCP HTTP server listening on http://{}", addr);
+    tracing::info!("MCP Protocol Version: {}", MCP_PROTOCOL_VERSION);
     if has_api_key {
-        eprintln!("Authentication: API key required (Authorization: Bearer <key>)");
+        tracing::info!("Authentication: API key required (Authorization: Bearer <key>)");
     }
 
     // Note: Creates separate runtime from Store's internal runtime.
@@ -120,7 +120,7 @@ pub fn serve_http(
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         let shutdown = async {
             tokio::signal::ctrl_c().await.ok();
-            eprintln!("\nShutting down HTTP server...");
+            tracing::info!("Shutting down HTTP server...");
         };
         axum::serve(listener, app)
             .with_graceful_shutdown(shutdown)

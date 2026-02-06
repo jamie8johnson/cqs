@@ -549,15 +549,19 @@ impl Store {
 
 impl Drop for Store {
     fn drop(&mut self) {
-        // Best-effort WAL checkpoint on drop to avoid leaving large WAL files
-        // Errors are logged but not propagated (Drop can't fail)
-        if let Err(e) = self.rt.block_on(async {
-            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                .execute(&self.pool)
-                .await
-        }) {
-            tracing::debug!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
-        }
+        // Best-effort WAL checkpoint on drop to avoid leaving large WAL files.
+        // Errors are logged but not propagated (Drop can't fail).
+        // catch_unwind guards against block_on panicking when called from
+        // within an async context (e.g., if Store is dropped inside a tokio runtime).
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Err(e) = self.rt.block_on(async {
+                sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .execute(&self.pool)
+                    .await
+            }) {
+                tracing::debug!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
+            }
+        }));
         // Pool closes automatically when dropped
     }
 }

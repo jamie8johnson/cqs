@@ -579,6 +579,9 @@ impl Store {
         threshold: f32,
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<crate::store::UnifiedResult>, StoreError> {
+        // Skip note search entirely when note_weight is effectively zero
+        let skip_notes = filter.note_weight <= 0.0;
+
         let (code_results, note_results) = if let Some(idx) = index {
             // Query HNSW for candidates (both chunks and notes)
             let candidate_count = (limit * 5).max(100);
@@ -586,9 +589,14 @@ impl Store {
 
             if index_results.is_empty() {
                 tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
+                let notes = if skip_notes {
+                    vec![]
+                } else {
+                    self.search_notes(query, limit, threshold)?
+                };
                 (
                     self.search_filtered(query, filter, limit, threshold)?,
-                    self.search_notes(query, limit, threshold)?,
+                    notes,
                 )
             } else {
                 // Partition candidates by note: prefix
@@ -597,7 +605,9 @@ impl Store {
 
                 for result in &index_results {
                     if let Some(id) = result.id.strip_prefix("note:") {
-                        note_ids.push(id);
+                        if !skip_notes {
+                            note_ids.push(id);
+                        }
                     } else {
                         chunk_ids.push(&result.id);
                     }
@@ -611,14 +621,23 @@ impl Store {
 
                 let code =
                     self.search_by_candidate_ids(&chunk_ids, query, filter, limit, threshold)?;
-                let notes = self.search_notes_by_ids(&note_ids, query, limit, threshold)?;
+                let notes = if skip_notes {
+                    vec![]
+                } else {
+                    self.search_notes_by_ids(&note_ids, query, limit, threshold)?
+                };
 
                 (code, notes)
             }
         } else {
+            let notes = if skip_notes {
+                vec![]
+            } else {
+                self.search_notes(query, limit, threshold)?
+            };
             (
                 self.search_filtered(query, filter, limit, threshold)?,
-                self.search_notes(query, limit, threshold)?,
+                notes,
             )
         };
 

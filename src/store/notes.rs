@@ -162,6 +162,77 @@ impl Store {
         })
     }
 
+    /// Replace all notes for a source file in a single transaction.
+    ///
+    /// Atomically deletes existing notes and inserts new ones, preventing
+    /// data loss if the process crashes mid-operation.
+    pub fn replace_notes_for_file(
+        &self,
+        notes: &[(Note, Embedding)],
+        source_file: &Path,
+        file_mtime: i64,
+    ) -> Result<usize, StoreError> {
+        let source_str = source_file.to_string_lossy().into_owned();
+        tracing::debug!(
+            source = %source_str,
+            count = notes.len(),
+            "replacing notes for file"
+        );
+
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
+            // Step 1: Delete existing notes + FTS for this file
+            sqlx::query(
+                "DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes WHERE source_file = ?1)",
+            )
+            .bind(&source_str)
+            .execute(&mut *tx)
+            .await?;
+
+            sqlx::query("DELETE FROM notes WHERE source_file = ?1")
+                .bind(&source_str)
+                .execute(&mut *tx)
+                .await?;
+
+            // Step 2: Insert new notes + FTS
+            let now = chrono::Utc::now().to_rfc3339();
+            for (note, embedding) in notes {
+                let mentions_json = serde_json::to_string(&note.mentions).unwrap_or_default();
+
+                sqlx::query(
+                    "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .bind(&note.id)
+                .bind(&note.text)
+                .bind(note.sentiment)
+                .bind(&mentions_json)
+                .bind(embedding_to_bytes(embedding))
+                .bind(&source_str)
+                .bind(file_mtime)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query("DELETE FROM notes_fts WHERE id = ?1")
+                    .bind(&note.id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                sqlx::query("INSERT INTO notes_fts (id, text) VALUES (?1, ?2)")
+                    .bind(&note.id)
+                    .bind(normalize_for_fts(&note.text))
+                    .execute(&mut *tx)
+                    .await?;
+            }
+
+            tx.commit().await?;
+            Ok(notes.len())
+        })
+    }
+
     /// Delete all notes from a source file
     pub fn delete_notes_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
         let source_str = source_file.to_string_lossy().into_owned();
