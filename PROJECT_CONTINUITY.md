@@ -2,39 +2,21 @@
 
 ## Right Now
 
-**Brute-force notes + note management tools** (2026-02-06)
+**Working on #245: Groom notes command/skill** (2026-02-06)
 
-Branch: `feat/brute-force-notes-and-note-tools`
+Branch: main (will create feature branch)
 
-### Done
-- Notes removed from HNSW/CAGRA index — always brute-force from SQLite (fixes #230)
-- `search_notes_by_ids()` removed (dead code)
-- `cqs_update_note` MCP tool — find by exact text, update text/sentiment/mentions
-- `cqs_remove_note` MCP tool — find by exact text, remove from notes.toml
-- `rewrite_notes_file()` helper in note.rs — atomic TOML rewrite with header preservation
-- NoteEntry/NoteFile now Serialize+Deserialize for round-trip
-- 379 tests pass, 0 warnings, clippy clean
-
-### Needs
-- Commit and PR
-- Check CLAUDE.md bootstrap section (user asked if still current)
-- Update ROADMAP.md (note management tools → done)
-
-### Open PRs
-None.
-
-### GPU Build
-```bash
-bash ~/gpu-test.sh test --features gpu-search  # all env vars set
-bash ~/gpu-test.sh build --features gpu-search
-```
-Needs: CUDA 13.1, conda base env (miniforge3), libcuvs 25.12
+### Context
+- PR #244 merged: brute-force notes + update/remove MCP tools
+- #230 closed (HNSW staleness)
+- Notes removed from HNSW/CAGRA entirely — chunk-only index now
+- 38 notes in notes.toml, some stale (e.g., "Notes now included in HNSW" is now wrong)
 
 ## Parked
 
-- **Phase 5**: Multi-index (deferred for audit)
-- **Note management tools**: `cqs_update_note`, `cqs_remove_note` (roadmap planned)
-- **P4 issues**: #230-#241 (HNSW staleness, file locking, CAGRA guard, etc.)
+- **Phase 6**: Security (index encryption, rate limiting)
+- **Multi-index**: reference codebases (after model question settled)
+- **P4 issues**: #231-#241 (file locking, CAGRA guard, CJK, etc.)
 
 ## Open Issues
 
@@ -43,7 +25,6 @@ Needs: CUDA 13.1, conda base env (miniforge3), libcuvs 25.12
 - #63: paste dep (via tokenizers)
 
 ### P4 Deferred
-- #230: HNSW stale after MCP note additions
 - #231: Notes file locking
 - #232: CAGRA RAII guard pattern
 - #233: Cache parsed notes.toml in MCP server
@@ -61,7 +42,7 @@ Needs: CUDA 13.1, conda base env (miniforge3), libcuvs 25.12
 - Version: 0.5.1
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
-- Unified HNSW index (chunks + notes with prefix)
+- HNSW index: chunks only (notes use brute-force SQLite search)
 - Language enum + LanguageDef registry in language/mod.rs (source of truth)
 - Parser re-exports Language, ChunkType from language module
 - Store: split into focused modules (7 files including migrations)

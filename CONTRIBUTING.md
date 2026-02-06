@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -102,7 +102,7 @@ src/
   store/        - SQLite storage layer (Schema v10, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
     chunks.rs   - Chunk CRUD, embedding_batches() for streaming
-    notes.rs    - Note CRUD, note_embeddings(), search_notes_by_ids()
+    notes.rs    - Note CRUD, note_embeddings(), brute-force search
     calls.rs    - Call graph storage and queries
     helpers.rs  - Types, embedding conversion functions
     migrations.rs - Schema migration framework
@@ -121,18 +121,28 @@ src/
   hnsw.rs       - HNSW index with batched build, atomic writes
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl.rs         - NL description generation, JSDoc parsing
-  note.rs       - Developer notes with sentiment
+  note.rs       - Developer notes with sentiment, rewrite_notes_file()
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API
+.claude/
+  skills/       - Claude Code skills (auto-discovered)
+    groom-notes/  - Interactive note review and cleanup
+    update-tears/ - Session state capture for context persistence
+    release/      - Version bump, changelog, publish workflow
+    audit/        - 20-category code audit with parallel agents
+    pr/           - WSL-safe PR creation
+    bootstrap/    - New project setup with tears infrastructure
+    reindex/      - Rebuild index with before/after stats
 ```
 
 **Key design notes:**
 - 769-dim embeddings (768 from E5-base-v2 + 1 sentiment dimension)
-- Unified HNSW index contains both chunks and notes (notes prefixed with `note:`)
+- HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
 - Chunks capped at 100 lines, notes capped at 10k entries
 - Schema migrations allow upgrading indexes without full rebuild
+- Skills in `.claude/skills/*/SKILL.md` are auto-discovered by Claude Code
 
 ## Questions?
 

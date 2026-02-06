@@ -92,7 +92,7 @@
 
 ### Deferred
 
-- Incremental embedding updates (rebuild works fine for now)
+- Incremental embedding updates (brute-force notes approach from #244 handles note staleness; chunk HNSW rebuild works fine)
 - Index sharing (team sync)
 
 ### Done (Post-Release)
@@ -238,11 +238,15 @@
   - 13 P4 items tracked in issues #230-#241
   - 15 new search path tests, test count 379 (no GPU)
 
+- [x] Note management tools (PR #244, closes #230)
+  - Notes removed from HNSW/CAGRA — always brute-force from SQLite
+  - MCP tools: `cqs_update_note`, `cqs_remove_note` (atomic TOML rewrite)
+  - `rewrite_notes_file()` helper with header preservation
+
 ### Planned
-- [ ] Note management tools (`cqs_update_note`, `cqs_remove_note`)
-  - MCP tools for updating/removing notes by ID or text match
-  - Enable regular note grooming without manual TOML editing
-  - CLI: `cqs notes list`, `cqs notes remove <id>`
+- [ ] Note grooming command/skill (#245)
+  - `cqs notes list` — display all notes with sentiment, staleness
+  - `/groom-notes` skill — interactive review + batch cleanup
 - [ ] Multi-index support (reference codebases)
   - Search multiple indexes simultaneously (project + stdlib + deps)
   - Index popular crates as reference (tokio, serde, axum)
