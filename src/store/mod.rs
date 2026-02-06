@@ -526,6 +526,21 @@ impl Store {
         Self::rrf_fuse(semantic_ids, fts_ids, limit)
     }
 
+    /// Update the `updated_at` metadata timestamp to now.
+    ///
+    /// Call after indexing operations complete (pipeline, watch reindex, note sync)
+    /// to track when the index was last modified.
+    pub fn touch_updated_at(&self) -> Result<(), StoreError> {
+        let now = chrono::Utc::now().to_rfc3339();
+        self.rt.block_on(async {
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES ('updated_at', ?1)")
+                .bind(&now)
+                .execute(&self.pool)
+                .await?;
+            Ok(())
+        })
+    }
+
     /// Gracefully close the store, performing WAL checkpoint.
     ///
     /// This ensures all WAL changes are written to the main database file,

@@ -3,6 +3,7 @@
 //! Manages reference indexes for multi-index search.
 //! References are read-only indexes of external codebases.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
@@ -78,10 +79,15 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
         .canonicalize()
         .map_err(|e| anyhow::anyhow!("Source path '{}' not found: {}", source.display(), e))?;
 
-    // Create reference directory
+    // Create reference directory with restrictive permissions
     let ref_dir = reference::ref_path(name)
         .ok_or_else(|| anyhow::anyhow!("Could not determine reference storage directory"))?;
     std::fs::create_dir_all(&ref_dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&ref_dir, std::fs::Permissions::from_mode(0o700));
+    }
     let db_path = ref_dir.join("index.db");
 
     // Initialize store schema
@@ -250,7 +256,7 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     }
 
     // Run incremental indexing pipeline
-    let stats = run_index_pipeline(source, files, &db_path, false, cli.quiet)?;
+    let stats = run_index_pipeline(source, files.clone(), &db_path, false, cli.quiet)?;
 
     if !cli.quiet {
         let newly = stats.total_embedded - stats.total_cached;
@@ -260,8 +266,15 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         );
     }
 
-    // Rebuild HNSW
+    // Prune chunks for deleted files
     let store = Store::open(&db_path)?;
+    let existing_files: HashSet<_> = files.into_iter().collect();
+    let pruned = store.prune_missing(&existing_files)?;
+    if !cli.quiet && pruned > 0 {
+        println!("  Pruned: {} (deleted files)", pruned);
+    }
+
+    // Rebuild HNSW
     if let Some(count) = build_hnsw_index(&store, ref_dir)? {
         if !cli.quiet {
             println!("  HNSW: {} vectors", count);

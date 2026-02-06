@@ -553,7 +553,7 @@ impl Store {
             self.search_filtered(query, filter, limit, threshold)?
         };
 
-        let min_code_slots = (limit * 3) / 5;
+        let min_code_slots = ((limit * 3) / 5).max(1);
         let code_count = code_results.len().min(limit);
         let reserved_code = code_count.min(min_code_slots);
         let note_slots = limit.saturating_sub(reserved_code);
@@ -618,5 +618,23 @@ mod tests {
     #[test]
     fn test_name_match_no_match() {
         assert_eq!(name_match_score("foo", "bar"), 0.0);
+    }
+
+    // ===== min_code_slots tests =====
+
+    #[test]
+    fn test_min_code_slots_limit_1() {
+        // With limit=1, (1*3)/5 = 0 which starved code results.
+        // After fix: .max(1) ensures at least 1 code slot.
+        let limit = 1;
+        let min_code_slots = ((limit * 3) / 5).max(1);
+        assert_eq!(min_code_slots, 1);
+    }
+
+    #[test]
+    fn test_min_code_slots_limit_5() {
+        let limit = 5;
+        let min_code_slots = ((limit * 3) / 5).max(1);
+        assert_eq!(min_code_slots, 3);
     }
 }

@@ -605,6 +605,9 @@ pub(crate) fn run_index_pipeline(
         .join()
         .map_err(|_| anyhow::anyhow!("CPU embedder thread panicked"))??;
 
+    // Update the "updated_at" metadata timestamp
+    store.touch_updated_at().ok();
+
     Ok(PipelineStats {
         total_embedded,
         total_cached,

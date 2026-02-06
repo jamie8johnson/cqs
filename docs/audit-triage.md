@@ -960,3 +960,77 @@ Given the refactoring:
    - CS4, EC6, IS4, MM9, DS4, DS5, PB7, PB8, PB10 - Various fixes
 
 **Net P1 count after refactoring: ~75 (down from ~93)**
+
+---
+
+# v0.5.3 Audit Triage (2026-02-06)
+
+Source: `docs/audit-findings.md` — fresh 20-category audit, ~120 unique findings from 193 raw.
+
+## P1 — Fixed (PR #259)
+
+All 12 items fixed and merged.
+
+1. ~~Reference name path traversal~~ — `validate_ref_name()` added
+2. ~~Glob filter wrong path extraction in brute-force search~~ — double `rfind(':')`
+3. ~~Pipeline wrong file_mtime across batched files~~ — `HashMap<PathBuf, i64>`
+4. ~~StoreError messages say `cq` not `cqs`~~ — 4 strings updated
+5. ~~Language param silently defaults to Rust~~ — returns error with valid list
+6. ~~SECURITY.md stale~~ — updated config paths, reference paths, traversal note
+7. ~~`tagged_score()` redundant~~ — removed, use `t.result.score()`
+8. ~~Reference threshold before vs after weight~~ — post-weight `retain` filter
+9. ~~SSE endpoint missing origin validation~~ — `validate_origin_header` added
+10. ~~5 stale doc fixes~~ — search.rs, note.rs, language/mod.rs, store/mod.rs, CONTRIBUTING.md
+11. ~~lib.rs Quick Start unnecessary `mut`~~ — removed
+12. ~~serde_json unwrap_or_default in notes~~ — proper `map_err` + `?`
+
+## P2 — Next
+
+| # | Finding | Source | Effort | Impact | Status |
+|---|---------|--------|--------|--------|--------|
+| 1 | `ref update` doesn't prune deleted files | Data Integrity #5 | easy | Stale chunks in reference search results | ✅ fixed |
+| 2 | `metadata.updated_at` never written — stats show stale time | Data Integrity #1 | easy | `cqs stats` shows creation time, not last index | ✅ fixed |
+| 3 | `once_cell` redundant with `std::sync::OnceLock` (Rust 1.88) | Resource #7 | easy | Unnecessary dependency | ⏸ deferred — `OnceLock::get_or_try_init` still unstable |
+| 4 | `add_reference_to_config` allows duplicate names at library level | Data Integrity #6 / Edge Cases #2 | easy | Duplicate refs = duplicate search results | ✅ fixed |
+| 5 | `search_unified_with_index` limit=1 gives 0 code slots | Edge Cases #5 | easy | limit=1 returns only notes, never code | ✅ fixed |
+| 6 | Reference directory created without restrictive permissions | Data Security #3 | easy | Indexed code embeddings world-readable | ✅ fixed |
+
+## P3 — When Convenient
+
+| # | Finding | Source | Effort | Status |
+|---|---------|--------|--------|--------|
+| 1 | Config `load_file` returns None for parse errors — silent malformed config | Error Propagation #2 | medium | |
+| 2 | `search_reference` swallows errors, returns empty vec | Error Propagation #3 | medium | |
+| 3 | `display.rs:read_context_lines` trailing `\r` on CRLF files | Platform #5 | easy | |
+| 4 | `embedding_to_bytes` panics on dimension mismatch | Panic Paths #1 | medium | |
+| 5 | `unreachable!` in search.rs name_only Note branch | Panic Paths #5 | easy | |
+| 6 | Config file written without restrictive permissions | Data Security #4 | easy | |
+| 7 | Duplicated glob pattern compilation in search.rs | Code Hygiene #2 | easy | |
+| 8 | Duplicated note insert logic in store/notes.rs | Code Hygiene #3 | easy | |
+| 9 | `HnswInner` match duplication — add `hnsw()` accessor | Code Hygiene #6 | easy | |
+| 10 | `NlTemplate` variants only used in eval tests — gate with cfg(test) | Code Hygiene #7 | easy | |
+| 11 | Pipeline parser thread swallows parse errors with no aggregate count | Error Propagation #10 | easy | |
+| 12 | Pipeline thread panics produce generic error, discard payload | Observability #6 | easy | |
+| 13 | `check_interrupted` flag never reset | Concurrency #8 | easy | |
+| 14 | `rewrite_notes_file` opaque IO error when file missing | Edge Cases #6 | easy | |
+| 15 | Empty query bypasses semantic search — embeds empty string | Edge Cases #8 | easy | |
+
+## P4 — Defer / Won't-Fix
+
+| # | Finding | Source | Reason | Status |
+|---|---------|--------|--------|--------|
+| 1 | search.rs implements Store methods outside store module | Module Boundaries #1 | Architectural — needs design | |
+| 2 | `index_notes` in lib.rs couples root to domain logic | Module Boundaries #2 | Refactor — low urgency | |
+| 3 | MCP uses anyhow instead of typed errors | Module Boundaries #3 | Large refactor, works fine | |
+| 4 | All 14 modules pub in lib.rs — no enforced API boundary | Module Boundaries #5 | Breaking change for consumers | |
+| 5 | `store::pool` and `store::rt` leaked to search.rs | Module Boundaries #7 | Blocked by P4 #1 | |
+| 6 | Adding new language requires 5 places in 3 files | Extensibility #1 | Acceptable — compile checks it | |
+| 7 | MCP tool list is hardcoded JSON blob | Extensibility #2 | Works, trait system is overengineering | |
+| 8 | Embedding model hardcoded — 7 constants | Extensibility #3 | By design | |
+| 9 | HNSW tuning parameters compile-time only | Extensibility #4 | By design for now | |
+| 10 | Brute-force loads ALL embeddings into memory | Memory #1 | Mitigated by HNSW — fallback only | |
+| 11 | HNSW unsafe transmute lifetime extension | Panic Paths #10 | High risk but well-documented, no fix without upstream | |
+| 12 | Each Store creates own tokio Runtime | Resource #1 | Existing #257 | |
+| 13 | Notes file no locking | Concurrency #1 | Existing #231 | |
+| 14 | HNSW stale after watch updates | Data Integrity #4 | Existing #236 | |
+| 15 | Watch mode inotify doesn't work on /mnt/c/ | Platform #7 | WSL limitation, documented | |

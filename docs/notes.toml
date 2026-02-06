@@ -109,9 +109,9 @@ mentions = [
 sentiment = 0.5
 text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
 mentions = [
-    "embedder.rs",
-    "store.rs",
-    "hnsw.rs",
+    "src/embedder.rs",
+    "src/store/mod.rs",
+    "src/hnsw.rs",
 ]
 
 [[note]]
@@ -274,7 +274,7 @@ mentions = [
 sentiment = -0.5
 text = "cfg(feature) dead code trap: if a constant is defined outside a #[cfg(feature)] block but only used inside it, clippy reports dead_code when feature is disabled. Move constants inside the cfg block or gate with #[cfg(feature)] too."
 mentions = [
-    "cli.rs",
+    "src/cli/commands/query.rs",
     "CAGRA_THRESHOLD",
     "clippy",
 ]
@@ -394,16 +394,6 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "First 10-category audit: 16 issues closed, proptest found RRF bound bug immediately, security docs expanded. Second 20-category audit (v0.5.1): ~85 findings, P1-P3 fixed in 3 PRs, 13 P4 items deferred. Test count: 379 (no GPU). Audits consistently find real bugs."
-mentions = [
-    "SECURITY.md",
-    "src/store/",
-    "tests/",
-    "audit",
-]
-
-[[note]]
-sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via LIMIT/OFFSET, HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
     "src/store/chunks.rs",
@@ -464,11 +454,10 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "20-category audit v2 (v0.5.1): 5 parallel agents per batch, 4 batches, audit mode enabled. Found ~85 actionable items from ~120 raw. Key: collect ALL findings before fixing ANY. Batch by priority tier (P1-P4), fix in order. Took 3 PRs to fix P1-P3, created 13 issues for P4."
+text = "Audits consistently find real bugs. History: 10-category (v0.4): 16 issues closed, proptest found RRF bound bug. 20-category v1 (v0.5.1): ~85 actionable from ~120 raw, 3 PRs for P1-P3, 13 P4 issues. 20-category v2 (v0.5.3): ~120 unique from 193 raw, 12 P1 fixed in PR #259. Key: 5 parallel agents per batch, audit mode on, collect ALL findings before fixing ANY. Batch by priority tier."
 mentions = [
     "docs/audit-findings.md",
     "audit",
-    "v0.5.1",
     "workflow",
 ]
 
@@ -521,4 +510,8 @@ mentions = [
 [[note]]
 sentiment = 0.5
 text = "20-category audit produced 38% duplicate findings. Categories like Input Security + Data Security, Memory Management + Resource Footprint, and Algorithmic Complexity + I/O Efficiency overlap heavily. Consolidated to 14 categories / 3 batches for next run. Cuts collection time ~25% and eliminates redundancy."
-mentions = ["docs/plans/2026-02-04-20-category-audit-design.md", ".claude/skills/audit/SKILL.md", "audit"]
+mentions = [
+    "docs/plans/2026-02-04-20-category-audit-design.md",
+    ".claude/skills/audit/SKILL.md",
+    "audit",
+]
