@@ -2,34 +2,16 @@
 
 ## Right Now
 
-**20-category audit complete, triage done, ready to fix P1** (2026-02-06)
+**Releasing v0.6.0** (2026-02-06)
 
-Branch: `main` — PR #258 merged (multi-index).
+Branch: `main` — multi-index + all audit fixes merged.
 
-### Audit state
-- Full 20-category audit completed (4 batches × 5 parallel agents)
-- 193 raw findings in `docs/audit-findings.md`, ~120 unique after dedup
-- Triage done: 12 P1, 6 P2, 15 P3, 15 P4
-- Previous audit P4 issues (#231-241) cross-checked — overlapping findings noted
-
-### P1 fixes needed (easy + high impact)
-1. Reference name path traversal (security)
-2. Glob filter wrong path extraction in brute-force search (correctness)
-3. Pipeline wrong file_mtime across batched files (correctness)
-4. StoreError messages say `cq` not `cqs` (user-facing)
-5. Language param silently defaults to Rust (user-facing)
-6. SECURITY.md stale (docs)
-7. `tagged_score()` redundant (dead code)
-8. Reference threshold before vs after weight (correctness)
-9. SSE endpoint missing origin validation (security)
-10. 5 stale doc fixes (search.rs, note.rs, language/mod.rs, store/mod.rs, CONTRIBUTING.md)
-11. lib.rs Quick Start unnecessary `mut` (docs)
-12. serde_json unwrap_or_default in notes (error handling)
-
-### Uncommitted files
-- `docs/audit-findings.md` — full audit findings
-- `docs/notes.toml` — groomed (4 removed, 10 mentions updated)
-- `PROJECT_CONTINUITY.md` — this file
+### What's in v0.6.0
+- Multi-index search (PR #258)
+- P1 audit fixes — 12 items (PR #259)
+- P2 audit fixes — 5 items (PR #261)
+- P3 audit fixes — 11 items (PRs #262, #263)
+- Remaining P3/P4 tracked in issues #264-270
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -61,10 +43,10 @@ Branch: `main` — PR #258 merged (multi-index).
 
 ## Architecture
 
-- Version: 0.5.3
+- Version: 0.6.0
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
-- 388 tests (no GPU), 0 warnings, clippy clean
+- 418 tests (no GPU), 0 warnings, clippy clean

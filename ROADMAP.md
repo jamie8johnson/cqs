@@ -258,6 +258,14 @@
   - `cqs doctor` validates reference health
   - `[[reference]]` config in `.cqs.toml`
 
+- [x] 20-category audit v3 (PRs #259, #261, #262, #263)
+  - 193 raw findings, ~120 unique, P1-P4 triaged
+  - P1: 12 fixes (path traversal, glob filter, pipeline mtime, threshold, SSE origin, docs, error messages)
+  - P2: 5 fixes (dead code, CAGRA streaming, brute-force notes, call graph errors, config parse)
+  - P3: 11 fixes (signal reset, unreachable, glob dedup, empty query, CRLF, permissions, SQL dedup, HNSW accessor, pipeline stats, panic messages, IO context)
+  - Remaining items tracked in issues #264-270
+  - Test count: 418 (no GPU)
+
 ## Phase 6: Security
 
 ### Done
