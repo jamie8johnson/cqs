@@ -28,16 +28,7 @@ Release a new version of cqs.
    - Run `cargo check` to update `Cargo.lock`
 
 3. **Docs review**:
-   Review each item below. Fix anything stale before cutting the release.
-   - `src/lib.rs` doc comment — language count, feature list, API examples still accurate?
-   - `Cargo.toml` — `description`, `keywords`, `categories` still reflect the tool?
-   - `README.md` — hardcoded versions (schema, install), feature list, usage examples
-   - `CONTRIBUTING.md` — Architecture Overview matches current file layout? Any files added/moved/renamed since last release?
-   - `SECURITY.md` — threat model current? Any new attack surfaces from this release?
-   - `PRIVACY.md` — data handling claims still accurate?
-   - GitHub repo description/topics — run `gh repo view` and check. Update with `gh repo edit` if needed.
-
-   Use `git log vPREVIOUS..HEAD --stat` to see what changed and focus review on affected docs.
+   Run `/docs-review`. Fix anything stale before cutting the release.
 
 4. **Changelog**:
    - Read `CHANGELOG.md`

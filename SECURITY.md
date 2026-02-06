@@ -95,6 +95,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 | `.cq/hnsw.*` | Vector index | `cqs index` |
 | `.cq/checksums.bin` | File change detection | `cqs index` |
 | `.cq/cqs.pid` | Process lock file | `cqs watch` |
+| `docs/notes.toml` | Developer notes | `cqs_add_note`, `cqs_update_note`, `cqs_remove_note` |
 
 ### Process Operations
 

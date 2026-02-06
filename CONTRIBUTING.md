@@ -134,6 +134,7 @@ src/
     pr/           - WSL-safe PR creation
     bootstrap/    - New project setup with tears infrastructure
     reindex/      - Rebuild index with before/after stats
+    docs-review/  - Check project docs for staleness
 ```
 
 **Key design notes:**
