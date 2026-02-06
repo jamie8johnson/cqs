@@ -2,13 +2,12 @@
 
 ## Right Now
 
-**v0.5.1 released** (2026-02-05)
+**Housekeeping** (2026-02-06)
 
-### What Happened
-- 20-category audit: ~85 actionable findings
-- P1 fixed in PR #227, P2 in #228, P3 in #229
-- 13 P4 items deferred to issues #230-#241
-- v0.5.1 released to GitHub and crates.io
+- v0.5.1 released (2026-02-05), audit complete
+- Fixed heredoc-in-permissions bug in settings.local.json (previous session)
+- Notes groomed, CLAUDE.md updated with --body-file rule
+- Committing leftover tears from v0.5.1 session
 
 ### Open PRs
 None.
@@ -23,6 +22,7 @@ Needs: CUDA 13.1, conda base env (miniforge3), libcuvs 25.12
 ## Parked
 
 - **Phase 5**: Multi-index (deferred for audit)
+- **Note management tools**: `cqs_update_note`, `cqs_remove_note` (roadmap planned)
 - **P4 issues**: #230-#241 (HNSW staleness, file locking, CAGRA guard, etc.)
 
 ## Open Issues
