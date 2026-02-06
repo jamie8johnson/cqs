@@ -582,63 +582,42 @@ impl Store {
         // Skip note search entirely when note_weight is effectively zero
         let skip_notes = filter.note_weight <= 0.0;
 
-        let (code_results, note_results) = if let Some(idx) = index {
-            // Query HNSW for candidates (both chunks and notes)
+        // Notes always use brute-force search from SQLite (capped at 1000).
+        // This ensures notes added via MCP are immediately searchable without
+        // waiting for an HNSW rebuild. HNSW is only used for chunks (10k-100k+).
+        let note_results = if skip_notes {
+            vec![]
+        } else {
+            self.search_notes(query, limit, threshold)?
+        };
+
+        let code_results = if let Some(idx) = index {
+            // Query HNSW for chunk candidates only
             let candidate_count = (limit * 5).max(100);
             let index_results = idx.search(query, candidate_count);
 
             if index_results.is_empty() {
                 tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
-                let notes = if skip_notes {
-                    vec![]
-                } else {
-                    self.search_notes(query, limit, threshold)?
-                };
-                (
-                    self.search_filtered(query, filter, limit, threshold)?,
-                    notes,
-                )
+                self.search_filtered(query, filter, limit, threshold)?
             } else {
-                // Partition candidates by note: prefix
-                let mut chunk_ids: Vec<&str> = Vec::new();
-                let mut note_ids: Vec<&str> = Vec::new();
-
-                for result in &index_results {
-                    if let Some(id) = result.id.strip_prefix("note:") {
-                        if !skip_notes {
-                            note_ids.push(id);
+                // Filter to chunk IDs only (skip any legacy note: prefixed entries)
+                let chunk_ids: Vec<&str> = index_results
+                    .iter()
+                    .filter_map(|r| {
+                        if r.id.starts_with("note:") {
+                            None
+                        } else {
+                            Some(r.id.as_str())
                         }
-                    } else {
-                        chunk_ids.push(&result.id);
-                    }
-                }
+                    })
+                    .collect();
 
-                tracing::debug!(
-                    "Index returned {} chunk candidates, {} note candidates",
-                    chunk_ids.len(),
-                    note_ids.len()
-                );
+                tracing::debug!("Index returned {} chunk candidates", chunk_ids.len());
 
-                let code =
-                    self.search_by_candidate_ids(&chunk_ids, query, filter, limit, threshold)?;
-                let notes = if skip_notes {
-                    vec![]
-                } else {
-                    self.search_notes_by_ids(&note_ids, query, limit, threshold)?
-                };
-
-                (code, notes)
+                self.search_by_candidate_ids(&chunk_ids, query, filter, limit, threshold)?
             }
         } else {
-            let notes = if skip_notes {
-                vec![]
-            } else {
-                self.search_notes(query, limit, threshold)?
-            };
-            (
-                self.search_filtered(query, filter, limit, threshold)?,
-                notes,
-            )
+            self.search_filtered(query, filter, limit, threshold)?
         };
 
         let min_code_slots = (limit * 3) / 5;

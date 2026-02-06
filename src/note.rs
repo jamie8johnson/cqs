@@ -3,7 +3,7 @@
 //! Notes are unified memory entries - surprises worth remembering.
 //! Replaces separate Scar and Hunch types with a simpler schema.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 
@@ -29,26 +29,32 @@ pub enum NoteError {
     /// Invalid TOML syntax or structure
     #[error("TOML parse error: {0}")]
     Toml(#[from] toml::de::Error),
+    /// TOML serialization error
+    #[error("TOML serialization error: {0}")]
+    TomlSer(#[from] toml::ser::Error),
+    /// Note not found
+    #[error("Note not found: {0}")]
+    NotFound(String),
 }
 
-/// Raw note entry from TOML
-#[derive(Debug, Deserialize)]
-struct NoteEntry {
+/// Raw note entry from TOML (round-trippable via serde)
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub(crate) struct NoteEntry {
     /// Sentiment: -1.0 (negative/pain) to +1.0 (positive/gain)
     #[serde(default)]
-    sentiment: f32,
+    pub sentiment: f32,
     /// The note content - natural language
-    text: String,
+    pub text: String,
     /// Code paths/functions mentioned (for linking)
-    #[serde(default)]
-    mentions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mentions: Vec<String>,
 }
 
-/// TOML file structure
-#[derive(Debug, Deserialize)]
-struct NoteFile {
+/// TOML file structure (round-trippable via serde)
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct NoteFile {
     #[serde(default)]
-    note: Vec<NoteEntry>,
+    pub note: Vec<NoteEntry>,
 }
 
 /// A parsed note entry
@@ -98,10 +104,43 @@ impl Note {
     }
 }
 
+/// File header preserved across rewrites
+const NOTES_HEADER: &str = "\
+# Notes - unified memory for AI collaborators
+# Surprises (prediction errors) worth remembering
+# sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
+#   -1 = serious pain, -0.5 = notable pain, 0 = neutral, 0.5 = notable gain, 1 = major win
+";
+
 /// Parse notes from a notes.toml file
 pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
     let content = std::fs::read_to_string(path)?;
     parse_notes_str(&content)
+}
+
+/// Rewrite notes.toml by applying a mutation to the parsed entries.
+///
+/// Reads the file, parses into `NoteEntry` structs, applies `mutate`,
+/// serializes back with the standard header, and writes atomically.
+pub(crate) fn rewrite_notes_file(
+    notes_path: &Path,
+    mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
+) -> Result<Vec<NoteEntry>, NoteError> {
+    let content = std::fs::read_to_string(notes_path)?;
+    let mut file: NoteFile = toml::from_str(&content)?;
+
+    mutate(&mut file.note)?;
+
+    let serialized = toml::to_string_pretty(&file)?;
+
+    let output = format!("{}\n{}", NOTES_HEADER, serialized);
+
+    // Atomic write: temp file + rename
+    let tmp_path = notes_path.with_extension("toml.tmp");
+    std::fs::write(&tmp_path, output)?;
+    std::fs::rename(&tmp_path, notes_path)?;
+
+    Ok(file.note)
 }
 
 /// Parse notes from a string (for testing)
@@ -226,6 +265,86 @@ text = "first note"
         // Verify ID format (note:16-hex-chars)
         assert!(notes1[0].id.starts_with("note:"));
         assert_eq!(notes1[0].id.len(), 5 + 16); // "note:" + 16 hex chars
+    }
+
+    // ===== rewrite_notes_file tests =====
+
+    #[test]
+    fn test_rewrite_update_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        std::fs::write(
+            &path,
+            "# header\n\n[[note]]\nsentiment = -0.5\ntext = \"old text\"\nmentions = [\"file.rs\"]\n",
+        )
+        .unwrap();
+
+        rewrite_notes_file(&path, |entries| {
+            let entry = entries.iter_mut().find(|e| e.text == "old text").unwrap();
+            entry.text = "new text".to_string();
+            entry.sentiment = 0.5;
+            Ok(())
+        })
+        .unwrap();
+
+        let notes = parse_notes(&path).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, "new text");
+        assert_eq!(notes[0].sentiment, 0.5);
+        assert_eq!(notes[0].mentions, vec!["file.rs"]);
+    }
+
+    #[test]
+    fn test_rewrite_remove_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        std::fs::write(
+            &path,
+            "[[note]]\ntext = \"keep\"\n\n[[note]]\ntext = \"remove\"\n",
+        )
+        .unwrap();
+
+        rewrite_notes_file(&path, |entries| {
+            entries.retain(|e| e.text != "remove");
+            Ok(())
+        })
+        .unwrap();
+
+        let notes = parse_notes(&path).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].text, "keep");
+    }
+
+    #[test]
+    fn test_rewrite_preserves_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        std::fs::write(&path, "[[note]]\ntext = \"hello\"\n").unwrap();
+
+        rewrite_notes_file(&path, |_entries| Ok(())).unwrap();
+
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.starts_with("# Notes"),
+            "Should have standard header"
+        );
+    }
+
+    #[test]
+    fn test_rewrite_not_found_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.toml");
+        std::fs::write(&path, "[[note]]\ntext = \"exists\"\n").unwrap();
+
+        let result = rewrite_notes_file(&path, |entries| {
+            entries
+                .iter()
+                .find(|e| e.text == "nonexistent")
+                .ok_or_else(|| NoteError::NotFound("not found".into()))?;
+            Ok(())
+        });
+
+        assert!(result.is_err());
     }
 
     // ===== Fuzz tests =====
