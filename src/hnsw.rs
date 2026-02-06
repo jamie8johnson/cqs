@@ -208,6 +208,16 @@ enum HnswInner {
     Loaded(LoadedHnsw),
 }
 
+impl HnswInner {
+    /// Get a reference to the underlying HNSW graph regardless of variant.
+    fn hnsw(&self) -> &Hnsw<'static, f32, DistCosine> {
+        match self {
+            HnswInner::Owned(hnsw) => hnsw,
+            HnswInner::Loaded(loaded) => &loaded.hnsw,
+        }
+    }
+}
+
 impl HnswIndex {
     /// Build a new HNSW index from embeddings (single-pass).
     ///
@@ -422,14 +432,10 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        let neighbors = match &self.inner {
-            HnswInner::Owned(hnsw) => hnsw.search_neighbours(query.as_slice(), k, EF_SEARCH),
-            HnswInner::Loaded(loaded) => {
-                loaded
-                    .hnsw
-                    .search_neighbours(query.as_slice(), k, EF_SEARCH)
-            }
-        };
+        let neighbors = self
+            .inner
+            .hnsw()
+            .search_neighbours(query.as_slice(), k, EF_SEARCH);
 
         neighbors
             .into_iter()
@@ -471,10 +477,7 @@ impl HnswIndex {
         tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
 
         // Verify ID map matches HNSW vector count before saving
-        let hnsw_count = match &self.inner {
-            HnswInner::Owned(hnsw) => hnsw.get_nb_point(),
-            HnswInner::Loaded(loaded) => loaded.hnsw.get_nb_point(),
-        };
+        let hnsw_count = self.inner.hnsw().get_nb_point();
         assert_eq!(
             hnsw_count,
             self.id_map.len(),
@@ -513,28 +516,17 @@ impl HnswIndex {
         })?;
 
         // Save the HNSW graph and data to temp directory
-        match &self.inner {
-            HnswInner::Owned(hnsw) => {
-                hnsw.file_dump(&temp_dir, basename).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to dump HNSW to {}/{}: {}",
-                        temp_dir.display(),
-                        basename,
-                        e
-                    ))
-                })?;
-            }
-            HnswInner::Loaded(loaded) => {
-                loaded.hnsw.file_dump(&temp_dir, basename).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to dump HNSW to {}/{}: {}",
-                        temp_dir.display(),
-                        basename,
-                        e
-                    ))
-                })?;
-            }
-        }
+        self.inner
+            .hnsw()
+            .file_dump(&temp_dir, basename)
+            .map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to dump HNSW to {}/{}: {}",
+                    temp_dir.display(),
+                    basename,
+                    e
+                ))
+            })?;
 
         // Save the ID map to temp directory
         let id_map_json = serde_json::to_string(&self.id_map)

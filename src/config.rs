@@ -220,6 +220,14 @@ pub fn add_reference_to_config(
     }
 
     std::fs::write(config_path, toml::to_string_pretty(&table)?)?;
+
+    // Restrict permissions — config may contain paths revealing project structure
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+    }
+
     Ok(())
 }
 
@@ -255,6 +263,12 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
 
     if removed {
         std::fs::write(config_path, toml::to_string_pretty(&table)?)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
+        }
     }
     Ok(removed)
 }

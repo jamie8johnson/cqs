@@ -96,6 +96,7 @@ pub(crate) struct PipelineStats {
     pub total_embedded: usize,
     pub total_cached: usize,
     pub gpu_failures: usize,
+    pub parse_errors: usize,
 }
 
 /// Result of preparing a batch for embedding.
@@ -203,6 +204,7 @@ pub(crate) fn run_index_pipeline(
     let parsed_count = Arc::new(AtomicUsize::new(0));
     let embedded_count = Arc::new(AtomicUsize::new(0));
     let gpu_failures = Arc::new(AtomicUsize::new(0));
+    let parse_errors = Arc::new(AtomicUsize::new(0));
 
     // Create parser once and share via Arc (avoids re-creating ~1ms init per thread)
     let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);
@@ -217,6 +219,7 @@ pub(crate) fn run_index_pipeline(
     // Clone for threads
     let root_clone = root.to_path_buf();
     let parsed_count_clone = Arc::clone(&parsed_count);
+    let parse_errors_clone = Arc::clone(&parse_errors);
 
     // Stage 1: Parser thread - parse files in parallel batches
     let parser_handle = thread::spawn(move || -> Result<()> {
@@ -250,6 +253,7 @@ pub(crate) fn run_index_pipeline(
                         }
                         Err(e) => {
                             tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                            parse_errors_clone.fetch_add(1, Ordering::Relaxed);
                             vec![]
                         }
                     }
@@ -597,13 +601,13 @@ pub(crate) fn run_index_pipeline(
     // Wait for threads to finish
     parser_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("Parser thread panicked"))??;
+        .map_err(|e| anyhow::anyhow!("Parser thread panicked: {}", panic_message(&e)))??;
     gpu_embedder_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("GPU embedder thread panicked"))??;
+        .map_err(|e| anyhow::anyhow!("GPU embedder thread panicked: {}", panic_message(&e)))??;
     cpu_embedder_handle
         .join()
-        .map_err(|_| anyhow::anyhow!("CPU embedder thread panicked"))??;
+        .map_err(|e| anyhow::anyhow!("CPU embedder thread panicked: {}", panic_message(&e)))??;
 
     // Update the "updated_at" metadata timestamp
     store.touch_updated_at().ok();
@@ -612,7 +616,19 @@ pub(crate) fn run_index_pipeline(
         total_embedded,
         total_cached,
         gpu_failures: gpu_failures.load(Ordering::Relaxed),
+        parse_errors: parse_errors.load(Ordering::Relaxed),
     })
+}
+
+/// Extract a human-readable message from a thread panic payload.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 #[cfg(test)]
