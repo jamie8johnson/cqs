@@ -2,21 +2,31 @@
 
 ## Right Now
 
-**v0.5.0 released** (2026-02-05)
+**20-Category Audit — Fix Phase** (2026-02-05)
 
-### Completed This Session
-- **PR triage**: Merged #52, #54, #53, #51, #220. Closed #164, #50.
-- **Phase 1**: Model eval — E5-base-v2 stays (100% Recall@5). PR #221 merged.
-- **Phase 2**: Skipped (E5 wins).
-- **Phase 3**: C and Java language support. PR #222 merged.
-- **Refactor**: Parser/registry consolidation. PR #223 merged. parser.rs: 1469 → 1056 lines (28% reduction).
-- **GPU setup**: CUDA 13.1 toolkit + conda + libcuvs 25.12 installed. `gpu-search` feature builds and passes all tests. Wrapper at `~/gpu-test.sh`.
-- **Test coverage**: 50 new tests across 6 modules. PR #224 merged. 375 tests (GPU) / 364 (no GPU).
-- **Release v0.5.0**: Docs updated, PR #225 merged. Published to crates.io + GitHub release.
+### Current Task
+Fixing P1 audit findings. Plan at `~/.claude/plans/serialized-enchanting-moon.md`.
 
-### What's Next
-- **Phase 4**: Template experiments in nl.rs
-- **Phase 5**: Multi-index (5 sub-phases)
+### Audit Status
+- **Collection complete**: All 4 batches (20 categories) done
+- **Findings**: ~120 raw, ~85 actionable after dedup
+- **Findings file**: `docs/audit-findings.md` (full details)
+- **Triage**: P1 (12 items), P2 (23), P3 (12), P4 (~12 deferred)
+- **Fix progress**: Starting P1
+
+### P1 Items (in progress)
+1. Documentation fixes (6 items: lib.rs, README, CHANGELOG, ROADMAP, CONTRIBUTING x2)
+2. Deduplicate `strip_unc_prefix` → shared `path_utils.rs`
+3. MCP stats: use `count_vectors()` not full HNSW load
+4. Deduplicate `load_hnsw_index` → `HnswIndex::try_load()`
+5. MCP JSON-RPC types visibility → `pub(crate)`
+6. Regex caching in `sanitize_error_message` → `LazyLock`
+7. Error propagation: 6 silent-swallow fixes
+8. `cli::run()` dead code removal
+9. `EMBEDDING_DIM` consolidation → single constant in lib.rs
+10. `split_into_windows` assert → Result
+11. Glob filter BEFORE heap (algorithm correctness bug)
+12. Windows path extraction bug in brute-force search
 
 ### Open PRs
 None.
@@ -28,9 +38,13 @@ bash ~/gpu-test.sh build --features gpu-search
 ```
 Needs: CUDA 13.1, conda base env (miniforge3), libcuvs 25.12
 
+## Completed This Session
+- **20-category audit collection**: 4 batches × 5 parallel agents
+- Previous session: v0.5.0 release, C/Java, model eval, parser refactor, 50 tests, NL templates
+
 ## Parked
 
-Nothing active.
+- **Phase 5**: Multi-index (deferred for audit)
 
 ## Open Issues
 

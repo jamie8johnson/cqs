@@ -2,32 +2,11 @@
 //!
 //! Executes semantic search queries.
 
-use std::path::Path;
-
 use anyhow::{bail, Context, Result};
 
 use cqs::{Embedder, HnswIndex, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, signal, Cli};
-
-/// Load HNSW index if available, wrapped as trait object
-fn load_hnsw_index(cq_dir: &Path) -> Option<Box<dyn cqs::index::VectorIndex>> {
-    if HnswIndex::exists(cq_dir, "index") {
-        match HnswIndex::load(cq_dir, "index") {
-            Ok(index) => {
-                tracing::info!("Using HNSW index ({} vectors)", index.len());
-                Some(Box::new(index))
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
-                None
-            }
-        }
-    } else {
-        tracing::debug!("No HNSW index found, using brute-force search");
-        None
-    }
-}
 
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
@@ -48,7 +27,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     let languages = match &cli.lang {
         Some(l) => Some(vec![l.parse().context(
-            "Invalid language. Valid: rust, python, typescript, javascript, go",
+            "Invalid language. Valid: rust, python, typescript, javascript, go, c, java",
         )?]),
         None => None,
     };
@@ -81,7 +60,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                     }
                     Err(e) => {
                         tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
-                        load_hnsw_index(&cq_dir)
+                        HnswIndex::try_load(&cq_dir)
                     }
                 }
             } else {
@@ -94,12 +73,12 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                 } else {
                     tracing::debug!("GPU not available, using HNSW");
                 }
-                load_hnsw_index(&cq_dir)
+                HnswIndex::try_load(&cq_dir)
             }
         }
         #[cfg(not(feature = "gpu-search"))]
         {
-            load_hnsw_index(&cq_dir)
+            HnswIndex::try_load(&cq_dir)
         }
     };
 

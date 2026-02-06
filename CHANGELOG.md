@@ -383,7 +383,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - HNSW index for O(log n) search on large codebases (>50k chunks)
 - Automatic HNSW index build after indexing
-- Query embedding LRU cache (100 entries)
+- Query embedding LRU cache (32 entries)
 
 ### Fixed
 - RwLock poison recovery in HTTP handler

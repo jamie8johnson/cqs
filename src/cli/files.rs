@@ -7,30 +7,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use ignore::WalkBuilder;
 
+use cqs::strip_unc_prefix;
 use cqs::Parser as CqParser;
 
 /// Maximum file size to index (1MB)
 const MAX_FILE_SIZE: u64 = 1_048_576;
-
-/// Strip Windows UNC path prefix (\\?\) if present.
-///
-/// Windows `canonicalize()` returns UNC paths that can cause issues with
-/// path comparison and display. This strips the prefix for consistency.
-#[cfg(windows)]
-fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(stripped)
-    } else {
-        path
-    }
-}
-
-/// No-op on non-Windows platforms
-#[cfg(not(windows))]
-fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    path
-}
 
 /// Enumerate files to index
 ///

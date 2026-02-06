@@ -291,7 +291,9 @@ impl Store {
                 };
 
                 if let Some(ref matcher) = glob_matcher {
-                    let file_part = id.split(':').next().unwrap_or("");
+                    // Extract file path from chunk ID (format: "path:start-end").
+                    // Use rfind(':') to handle paths with colons (e.g., Windows "C:\...")
+                    let file_part = id.rfind(':').map(|i| &id[..i]).unwrap_or(&id);
                     if !matcher.is_match(file_part) {
                         continue;
                     }

@@ -3,7 +3,7 @@
 //! The McpServer handles JSON-RPC requests and coordinates tool execution.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -59,7 +59,7 @@ impl McpServer {
             .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
 
         // Load HNSW first (fast) - wrap in Arc<RwLock> for background upgrade
-        let hnsw = Self::load_hnsw_index(&cq_dir);
+        let hnsw = HnswIndex::try_load(&cq_dir);
         let index = Arc::new(RwLock::new(hnsw));
 
         // Spawn background CAGRA build if GPU available.
@@ -112,24 +112,6 @@ impl McpServer {
             Err(e) => {
                 tracing::warn!("MCP: CAGRA build failed, keeping HNSW: {}", e);
             }
-        }
-    }
-
-    /// Load HNSW index if available
-    fn load_hnsw_index(cq_dir: &std::path::Path) -> Option<Box<dyn VectorIndex>> {
-        if HnswIndex::exists(cq_dir, "index") {
-            match HnswIndex::load(cq_dir, "index") {
-                Ok(index) => {
-                    tracing::info!("MCP: Loaded HNSW index ({} vectors)", index.len());
-                    Some(Box::new(index))
-                }
-                Err(e) => {
-                    tracing::warn!("MCP: Failed to load HNSW index: {}", e);
-                    None
-                }
-            }
-        } else {
-            None
         }
     }
 
@@ -203,26 +185,22 @@ impl McpServer {
     /// Replaces absolute paths (starting with / or drive letter) with relative paths
     /// or generic descriptions to prevent information leakage to clients.
     fn sanitize_error_message(&self, error: &str) -> String {
+        static RE_UNIX: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root)/[^\s:]+")
+                .expect("hardcoded regex")
+        });
+        static RE_WINDOWS: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files)[^\s:]*")
+                .expect("hardcoded regex")
+        });
+
         // Strip the project root path if present
         let project_str = self.project_root.to_string_lossy();
         let sanitized = error.replace(project_str.as_ref(), "<project>");
 
-        // Also strip common absolute path patterns that might leak from dependencies
-        // Match Unix paths: /home/user/... /tmp/... etc.
-        // Match Windows paths: C:\Users\... D:\...
-        // Note: Using [^\s:] instead of [^\s:"'] to avoid raw string escaping issues
-        let re_unix = regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc)/[^\s:]+").ok();
-        let re_windows =
-            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files)[^\s:]*").ok();
-
-        let mut result = sanitized;
-        if let Some(re) = re_unix {
-            result = re.replace_all(&result, "<path>").to_string();
-        }
-        if let Some(re) = re_windows {
-            result = re.replace_all(&result, "<path>").to_string();
-        }
-        result
+        let result = RE_UNIX.replace_all(&sanitized, "<path>");
+        let result = RE_WINDOWS.replace_all(&result, "<path>");
+        result.into_owned()
     }
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {

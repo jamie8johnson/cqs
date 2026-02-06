@@ -28,9 +28,8 @@ use crate::embedder::Embedding;
 #[cfg(feature = "gpu-search")]
 use crate::index::{IndexResult, VectorIndex};
 
-/// Embedding dimension (768 from model + 1 sentiment)
 #[cfg(feature = "gpu-search")]
-const EMBEDDING_DIM: usize = 769;
+use crate::EMBEDDING_DIM;
 
 #[cfg(feature = "gpu-search")]
 #[derive(Error, Debug)]

@@ -72,7 +72,7 @@
 
 - VS Code extension (can use MCP directly)
 
-## Current Phase: 4 (Scale)
+## Current Phase: 5 (Multi-index)
 
 ### Status: Complete (v0.1.8)
 

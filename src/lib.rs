@@ -7,7 +7,7 @@
 //!
 //! - **Semantic search**: Uses E5-base-v2 embeddings (769-dim: 768 model + sentiment)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go
+//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, Java
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **MCP integration**: Works with Claude Code and other AI assistants
 //!
@@ -81,6 +81,32 @@ pub use store::{ModelInfo, SearchFilter, Store};
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;
+
+use std::path::PathBuf;
+
+/// Embedding dimension: 768 from E5-base-v2 model + 1 sentiment dimension.
+/// Single source of truth — all modules import this constant.
+pub const EMBEDDING_DIM: usize = 769;
+
+/// Strip Windows UNC path prefix (\\?\) if present.
+///
+/// Windows `canonicalize()` returns UNC paths that can cause issues with
+/// path comparison and display. This strips the prefix for consistency.
+#[cfg(windows)]
+pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(stripped) = s.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        path
+    }
+}
+
+/// No-op on non-Windows platforms
+#[cfg(not(windows))]
+pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
+    path
+}
 
 // ============ Note Indexing Helper ============
 
