@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-02-06
+
+### Added
+- **`cqs similar`** (CLI + MCP): find semantically similar functions by using a stored embedding as the query vector — search by example instead of by text
+- **`cqs explain`** (CLI + MCP): generate a function card with signature, docs, callers, callees, and top-3 similar functions in one call
+- **`cqs diff`** (CLI + MCP): semantic diff between indexed snapshots — compare project vs reference or two references, reports added/removed/modified with similarity scores
+- **Workspace-aware indexing**: detect Cargo workspace root from member crates so `cqs index` indexes the whole workspace
+- Store methods: `get_chunk_with_embedding()`, `all_chunk_identities()`, `ChunkIdentity` type
+
 ## [0.6.0] - 2026-02-06
 
 ### Added

@@ -136,6 +136,23 @@ Use cases:
 
 Call graph is indexed across all files - callers are found regardless of which file they're in.
 
+## Discovery Tools
+
+```bash
+# Find functions similar to a given function (search by example)
+cqs similar search_filtered                    # by name
+cqs similar src/search.rs:search_filtered      # by file:name
+
+# Function card: signature, callers, callees, similar functions
+cqs explain search_filtered
+cqs explain src/search.rs:search_filtered --json
+
+# Semantic diff between indexed snapshots
+cqs diff old-version                           # project vs reference
+cqs diff old-version new-ref                   # two references
+cqs diff old-version --threshold 0.90          # stricter "modified" cutoff
+```
+
 ## Reference Indexes (Multi-Index Search)
 
 Search across your project and external codebases simultaneously:
@@ -235,6 +252,9 @@ Available tools:
 - `cqs_update_note` - update an existing note's text, sentiment, or mentions
 - `cqs_remove_note` - remove a note from project memory
 - `cqs_audit_mode` - toggle audit mode to exclude notes from search/read results
+- `cqs_similar` - find functions similar to a given function (search by example)
+- `cqs_explain` - function card: signature, callers, callees, similar functions
+- `cqs_diff` - semantic diff between indexed snapshots
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
