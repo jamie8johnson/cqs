@@ -200,7 +200,7 @@ fn tool_search_name_only(
 
     let json_results: Vec<_> = tagged
         .iter()
-        .map(|t| match &t.result {
+        .filter_map(|t| match &t.result {
             UnifiedResult::Code(r) => {
                 let root = if t.source.is_some() {
                     // Reference results: paths are relative to reference source, don't strip
@@ -208,9 +208,16 @@ fn tool_search_name_only(
                 } else {
                     Some(server.project_root.as_path())
                 };
-                format_code_result(r, root.unwrap_or(&server.project_root), t.source.as_deref())
+                Some(format_code_result(
+                    r,
+                    root.unwrap_or(&server.project_root),
+                    t.source.as_deref(),
+                ))
             }
-            UnifiedResult::Note(_) => unreachable!("name_only search doesn't return notes"),
+            UnifiedResult::Note(_) => {
+                tracing::warn!("Unexpected note in name_only results, skipping");
+                None
+            }
         })
         .collect();
 

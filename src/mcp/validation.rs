@@ -8,8 +8,11 @@ use anyhow::{bail, Result};
 /// Maximum query length to prevent excessive embedding computation
 pub const MAX_QUERY_LENGTH: usize = 8192;
 
-/// Validate query length to prevent excessive embedding computation.
+/// Validate query: reject empty/whitespace-only and enforce max length.
 pub fn validate_query_length(query: &str) -> Result<()> {
+    if query.trim().is_empty() {
+        bail!("Query is empty");
+    }
     if query.len() > MAX_QUERY_LENGTH {
         bail!(
             "Query too long: {} bytes (max {})",
@@ -180,6 +183,21 @@ mod tests {
     fn test_parse_duration_empty() {
         assert!(parse_duration("").is_err());
         assert!(parse_duration("   ").is_err());
+    }
+
+    // ===== validate_query_length tests =====
+
+    #[test]
+    fn test_validate_query_empty_rejected() {
+        assert!(validate_query_length("").is_err());
+        assert!(validate_query_length("   ").is_err());
+        assert!(validate_query_length("\t\n").is_err());
+    }
+
+    #[test]
+    fn test_validate_query_normal_accepted() {
+        assert!(validate_query_length("hello").is_ok());
+        assert!(validate_query_length("  hello  ").is_ok());
     }
 
     #[test]

@@ -38,3 +38,26 @@ pub fn setup_signal_handler() {
 pub fn check_interrupted() -> bool {
     INTERRUPTED.load(Ordering::Acquire)
 }
+
+/// Reset the interrupted flag.
+///
+/// Call at the start of each top-level operation so a prior Ctrl+C
+/// (e.g. during `cqs watch` or MCP server) doesn't poison subsequent work.
+pub fn reset_interrupted() {
+    INTERRUPTED.store(false, Ordering::Release);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_reset_interrupted_clears_flag() {
+        // Set the flag manually
+        INTERRUPTED.store(true, Ordering::Release);
+        assert!(check_interrupted());
+        // Reset should clear it
+        reset_interrupted();
+        assert!(!check_interrupted());
+    }
+}

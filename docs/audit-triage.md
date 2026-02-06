@@ -1001,19 +1001,19 @@ All 12 items fixed and merged.
 |---|---------|--------|--------|--------|
 | 1 | Config `load_file` returns None for parse errors — silent malformed config | Error Propagation #2 | medium | |
 | 2 | `search_reference` swallows errors, returns empty vec | Error Propagation #3 | medium | |
-| 3 | `display.rs:read_context_lines` trailing `\r` on CRLF files | Platform #5 | easy | |
+| 3 | `display.rs:read_context_lines` trailing `\r` on CRLF files | Platform #5 | easy | ✅ Fixed — defensive trim_end_matches('\\r') |
 | 4 | `embedding_to_bytes` panics on dimension mismatch | Panic Paths #1 | medium | |
-| 5 | `unreachable!` in search.rs name_only Note branch | Panic Paths #5 | easy | |
+| 5 | `unreachable!` in search.rs name_only Note branch | Panic Paths #5 | easy | ✅ Fixed — filter_map + warn |
 | 6 | Config file written without restrictive permissions | Data Security #4 | easy | |
-| 7 | Duplicated glob pattern compilation in search.rs | Code Hygiene #2 | easy | |
+| 7 | Duplicated glob pattern compilation in search.rs | Code Hygiene #2 | easy | ✅ Fixed — extracted compile_glob_filter() |
 | 8 | Duplicated note insert logic in store/notes.rs | Code Hygiene #3 | easy | |
 | 9 | `HnswInner` match duplication — add `hnsw()` accessor | Code Hygiene #6 | easy | |
 | 10 | `NlTemplate` variants only used in eval tests — gate with cfg(test) | Code Hygiene #7 | easy | |
 | 11 | Pipeline parser thread swallows parse errors with no aggregate count | Error Propagation #10 | easy | |
 | 12 | Pipeline thread panics produce generic error, discard payload | Observability #6 | easy | |
-| 13 | `check_interrupted` flag never reset | Concurrency #8 | easy | |
+| 13 | `check_interrupted` flag never reset | Concurrency #8 | easy | ✅ Fixed — added reset_interrupted(), called at cmd_index entry |
 | 14 | `rewrite_notes_file` opaque IO error when file missing | Edge Cases #6 | easy | |
-| 15 | Empty query bypasses semantic search — embeds empty string | Edge Cases #8 | easy | |
+| 15 | Empty query bypasses semantic search — embeds empty string | Edge Cases #8 | easy | ✅ Fixed — validate_query_length rejects empty/whitespace |
 
 ## P4 — Defer / Won't-Fix
 
