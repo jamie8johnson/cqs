@@ -1,5 +1,5 @@
 ---
-name: bootstrap
+name: cqs-bootstrap
 description: One-command setup for cqs in a new project — MCP config, skills, tears infrastructure, CLAUDE.md, init, index.
 disable-model-invocation: false
 argument-hint: "[project_path]"
@@ -84,7 +84,7 @@ None.
    - `update-tears` — session state capture
    - `groom-notes` — note cleanup
    - `reindex` — rebuild index with stats
-   - `bootstrap` — this skill (for nested projects)
+   - `cqs-bootstrap` — this skill (for nested projects)
    - `cqs-search` — semantic code search
    - `cqs-stats` — index statistics
    - `cqs-callers` — find callers of a function
