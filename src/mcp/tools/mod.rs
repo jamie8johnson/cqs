@@ -147,6 +147,47 @@ pub fn handle_tools_list() -> Result<Value> {
             }),
         },
         Tool {
+            name: "cqs_update_note".into(),
+            description: "Update an existing note in project memory. Find by exact text match, then replace text, sentiment, or mentions.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Exact text of the note to update (used to find it)"
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text (optional — omit to keep current)"
+                    },
+                    "new_sentiment": {
+                        "type": "number",
+                        "description": "Replacement sentiment -1.0 to +1.0 (optional — omit to keep current)"
+                    },
+                    "new_mentions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Replacement mentions (optional — omit to keep current)"
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "cqs_remove_note".into(),
+            description: "Remove a note from project memory. Find by exact text match and delete from notes.toml.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Exact text of the note to remove"
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        Tool {
             name: "cqs_audit_mode".into(),
             description: "Toggle audit mode to exclude notes from search and read results. Use before code audits or fresh-eyes reviews to prevent prior observations from influencing analysis.".into(),
             input_schema: serde_json::json!({
@@ -193,9 +234,11 @@ pub fn handle_tools_call(server: &McpServer, params: Option<Value>) -> Result<Va
         "cqs_callees" => call_graph::tool_callees(server, arguments),
         "cqs_read" => read::tool_read(server, arguments),
         "cqs_add_note" => notes::tool_add_note(server, arguments),
+        "cqs_update_note" => notes::tool_update_note(server, arguments),
+        "cqs_remove_note" => notes::tool_remove_note(server, arguments),
         "cqs_audit_mode" => audit::tool_audit_mode(server, arguments),
         _ => bail!(
-            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_audit_mode",
+            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_audit_mode",
             name
         ),
     };

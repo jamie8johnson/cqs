@@ -369,32 +369,23 @@ impl CagraIndex {
     /// Note: CAGRA (cuVS) requires all data upfront for GPU index building,
     /// so we can't stream incrementally like HNSW. However, we stream from
     /// SQLite to avoid double-buffering in memory.
+    ///
+    /// Notes are excluded — they use brute-force search from SQLite so that
+    /// notes added via MCP are immediately searchable without rebuild.
     pub fn build_from_store(store: &crate::Store) -> Result<Self, CagraError> {
-        // Get counts first to pre-allocate
         let chunk_count = store
             .chunk_count()
             .map_err(|e| CagraError::Cuvs(format!("Failed to count chunks: {}", e)))?
             as usize;
-        let note_count = store
-            .note_count()
-            .map_err(|e| CagraError::Cuvs(format!("Failed to count notes: {}", e)))?
-            as usize;
-        let total_count = chunk_count + note_count;
 
-        if total_count == 0 {
+        if chunk_count == 0 {
             return Err(CagraError::Cuvs("No embeddings in store".into()));
         }
 
-        tracing::info!(
-            "Building CAGRA index from {} embeddings ({} chunks, {} notes)",
-            total_count,
-            chunk_count,
-            note_count
-        );
+        tracing::info!("Building CAGRA index from {} chunk embeddings", chunk_count,);
 
-        // Pre-allocate for efficiency
-        let mut id_map = Vec::with_capacity(total_count);
-        let mut flat_data = Vec::with_capacity(total_count * EMBEDDING_DIM);
+        let mut id_map = Vec::with_capacity(chunk_count);
+        let mut flat_data = Vec::with_capacity(chunk_count * EMBEDDING_DIM);
 
         // Stream chunk embeddings in batches
         const BATCH_SIZE: usize = 10_000;
@@ -427,22 +418,6 @@ impl CagraIndex {
                 chunk_count,
                 progress_pct
             );
-        }
-
-        // Add note embeddings (already prefixed with note:)
-        let note_embeddings = store
-            .note_embeddings()
-            .map_err(|e| CagraError::Cuvs(format!("Failed to fetch notes: {}", e)))?;
-
-        for (note_id, embedding) in note_embeddings {
-            if embedding.len() != EMBEDDING_DIM {
-                return Err(CagraError::DimensionMismatch {
-                    expected: EMBEDDING_DIM,
-                    actual: embedding.len(),
-                });
-            }
-            id_map.push(note_id);
-            flat_data.extend(embedding.into_inner());
         }
 
         // Build from pre-collected data

@@ -140,18 +140,15 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         }
     }
 
-    // Build HNSW index for fast search (includes both chunks and notes)
+    // Build HNSW index for fast chunk search (notes use brute-force from SQLite)
     if !check_interrupted() {
         if !cli.quiet {
             println!("Building HNSW index...");
         }
 
-        if let Some((total, chunk_count, note_count)) = build_hnsw_index(&store, &cq_dir)? {
+        if let Some(total) = build_hnsw_index(&store, &cq_dir)? {
             if !cli.quiet {
-                println!(
-                    "  HNSW index: {} vectors ({} chunks, {} notes)",
-                    total, chunk_count, note_count
-                );
+                println!("  HNSW index: {} vectors", total);
             }
         }
     }
@@ -226,29 +223,23 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 
 /// Build HNSW index from store embeddings
 ///
-/// Creates an HNSW index containing both chunk and note embeddings,
-/// using batched insertion to avoid OOM on large repos.
-pub(crate) fn build_hnsw_index(
-    store: &Store,
-    cq_dir: &Path,
-) -> Result<Option<(usize, usize, usize)>> {
+/// Creates an HNSW index containing chunk embeddings only.
+///
+/// Notes are excluded from HNSW — they use brute-force search from SQLite
+/// so that notes added via MCP are immediately searchable without rebuild.
+pub(crate) fn build_hnsw_index(store: &Store, cq_dir: &Path) -> Result<Option<usize>> {
     let chunk_count = store.chunk_count()? as usize;
-    let note_count = store.note_count()? as usize;
-    let total_count = chunk_count + note_count;
 
-    if total_count == 0 {
+    if chunk_count == 0 {
         return Ok(None);
     }
 
-    // Stream chunk embeddings in 10k batches, then add all notes
-    // Notes are capped at 10k so loading them all is fine
     const HNSW_BATCH_SIZE: usize = 10_000;
 
     let chunk_batches = store.embedding_batches(HNSW_BATCH_SIZE);
-    let note_batch = std::iter::once(store.note_embeddings());
 
-    let hnsw = HnswIndex::build_batched(chunk_batches.chain(note_batch), total_count)?;
+    let hnsw = HnswIndex::build_batched(chunk_batches, chunk_count)?;
     hnsw.save(cq_dir, "index")?;
 
-    Ok(Some((hnsw.len(), chunk_count, note_count)))
+    Ok(Some(hnsw.len()))
 }

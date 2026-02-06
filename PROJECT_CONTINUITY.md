@@ -2,12 +2,23 @@
 
 ## Right Now
 
-**Housekeeping** (2026-02-06)
+**Brute-force notes + note management tools** (2026-02-06)
 
-- v0.5.1 released (2026-02-05), audit complete
-- Fixed heredoc-in-permissions bug in settings.local.json (previous session)
-- Notes groomed, CLAUDE.md updated with --body-file rule
-- Committing leftover tears from v0.5.1 session
+Branch: `feat/brute-force-notes-and-note-tools`
+
+### Done
+- Notes removed from HNSW/CAGRA index — always brute-force from SQLite (fixes #230)
+- `search_notes_by_ids()` removed (dead code)
+- `cqs_update_note` MCP tool — find by exact text, update text/sentiment/mentions
+- `cqs_remove_note` MCP tool — find by exact text, remove from notes.toml
+- `rewrite_notes_file()` helper in note.rs — atomic TOML rewrite with header preservation
+- NoteEntry/NoteFile now Serialize+Deserialize for round-trip
+- 379 tests pass, 0 warnings, clippy clean
+
+### Needs
+- Commit and PR
+- Check CLAUDE.md bootstrap section (user asked if still current)
+- Update ROADMAP.md (note management tools → done)
 
 ### Open PRs
 None.
