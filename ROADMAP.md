@@ -348,6 +348,9 @@
 - [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
 - [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed
 - [ ] **Batch UX** — common batch patterns (e.g., "callers for these N functions") as named shortcuts instead of raw JSON construction
+- [ ] **`note_only` search filter** — filter search results to notes only. "What do we know about X" vs "where is X implemented." Trivial to add, high value for memory retrieval.
+- [ ] **`cqs context --summary`** — signatures only, skip content. Cuts tokens ~80% for module orientation without needing full source.
+- [ ] **Working-tree diff** — `cqs diff HEAD` against current index state without requiring a named reference. Helps agents orient after context compaction.
 
 ## Parked
 
