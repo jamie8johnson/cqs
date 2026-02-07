@@ -2,23 +2,15 @@
 
 ## Right Now
 
-**v0.9.1 Audit complete** (2026-02-07). Full 14-category audit done, triage written.
+**v0.9.1 Audit — P1/P2/P3 complete** (2026-02-07). 96 fixes merged across 3 PRs.
 
 ### Audit status
 - 157 raw findings → ~138 unique after dedup
-- P1: 47 findings (easy + high impact) — **fix next**
-- P2: 37 findings (medium effort or moderate impact)
-- P3: 37 findings (test coverage, observability, polish)
-- P4: 17 findings (defer/existing issues)
+- P1: 43 fixes merged (PR #293)
+- P2: 23 fixes merged (PR #295)
+- P3: 30 fixes merged (PR #296) — 6 non-issues, 1 deferred (#19 param naming)
+- P4: 17 findings deferred
 - Files: `docs/audit-findings.md`, `docs/audit-triage.md` (v0.9.1 section appended)
-- Previous findings archived to `docs/audit-findings-v0.5.3.md`
-
-### Top P1 items to fix first
-1. `config.rs:184` unwrap_or_default destroys config on I/O error
-2. Watch mode never updates call graph
-3. `gather.rs` truncates by file order not score
-4. `parse_duration` integer overflow bypasses 24h cap
-5. 7 dead code methods to remove
 
 ### Post-audit roadmap items
 - Add `format: "mermaid"` output to `cqs_impact`, `cqs_context`, `cqs_dead` — added to ROADMAP.md
@@ -72,6 +64,6 @@
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
-- 262 lib tests (no GPU), 0 warnings, clippy clean
+- 261 lib + 176 integration tests (no GPU), 0 warnings, clippy clean
 - MCP tools: 20
 - Source layout: parser/ and hnsw/ are now directories (split from monoliths in v0.9.0)

@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-02-07
+
+### Fixed
+- **96 audit fixes** across P1 (43), P2 (23), P3 (30) from 14-category code audit
+- **Config safety**: `add_reference_to_config` no longer destroys config on I/O errors
+- **Watch mode**: call graph now updates during incremental reindex
+- **Gather**: results sorted by score before truncation (was file order)
+- **Diff**: language filter uses stored language field instead of file extension matching
+- **Search robustness**: limit=0 early return, NaN score defense in BoundedScoreHeap, max_tokens=0 guard
+- **Migration safety**: schema migrations wrapped in single transaction
+- **Watch paths**: `dunce::canonicalize` for Windows UNC path handling
+- **Config validation**: reference weights clamped to [0.0, 1.0], reference count limited to 20
+- **Error propagation**: unwrap → Result throughout CLI and MCP tools
+- **N+1 queries**: batched embedding lookups in diff and pipeline
+- **Code consolidation**: DRY refactors in explain.rs, search.rs, notes.rs
+
+### Added
+- Tracing spans on `search_unified` and `search_by_candidates` for performance visibility
+- MCP observability: tool entry/exit logging, client info on connect, pipeline stats
+- Docstrings for `cosine_similarity` variants and `tool_stats` response fields
+- Integration tests: dead code, semantic diff, gather BFS, call graph, reference search, MCP format
+- `ChunkIdentity.language` field for language-aware operations
+- MCP tool count corrected: 20 (was documented as 21)
+
+### Changed
+- `run_migration` accepts `&mut SqliteConnection` instead of `&SqlitePool` for transaction safety
+- Context dedup uses typed struct instead of JSON string comparison
+
 ## [0.9.1] - 2026-02-06
 
 ### Changed
@@ -621,6 +649,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[0.9.2]: https://github.com/jamie8johnson/cqs/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamie8johnson/cqs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamie8johnson/cqs/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/jamie8johnson/cqs/compare/v0.7.0...v0.8.0
