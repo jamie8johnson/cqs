@@ -50,14 +50,14 @@ sentiment = 0.0
 text = "store.search() and hnsw.search() both match callee name 'search'. No type info in call graph - can't distinguish which is called. Documented limitation."
 mentions = [
     "src/store/mod.rs",
-    "src/parser.rs",
+    "src/parser/calls.rs",
 ]
 
 [[note]]
 sentiment = 0.0
 text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Mitigated with blake3 checksums on save/load. verify_hnsw_checksums validates extension allowlist to prevent path traversal."
 mentions = [
-    "hnsw.rs",
+    "src/hnsw/persist.rs",
     "hnsw_rs",
     "bincode",
     "blake3",
@@ -69,7 +69,7 @@ text = "769th embedding dimension can encode explicit sentiment. Similarity sear
 mentions = [
     "src/embedder.rs",
     "src/store/mod.rs",
-    "src/hnsw.rs",
+    "src/hnsw/mod.rs",
 ]
 
 [[note]]
@@ -84,7 +84,7 @@ mentions = [
 sentiment = 1.0
 text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-search for CUDA-equipped infrastructure."
 mentions = [
-    "hnsw.rs",
+    "src/hnsw/mod.rs",
     "Cargo.toml",
 ]
 
@@ -274,7 +274,7 @@ mentions = [
 sentiment = 0.5
 text = "Path traversal via checksum file: verify_hnsw_checksums read extensions from file, could be '../../../etc/passwd'. Fixed with HNSW_EXTENSIONS allowlist. Low severity (local read-only) but still worth hardening."
 mentions = [
-    "hnsw.rs",
+    "src/hnsw/persist.rs",
     "security",
     "path traversal",
 ]
@@ -284,7 +284,7 @@ sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via LIMIT/OFFSET, HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
     "src/store/chunks.rs",
-    "src/hnsw.rs",
+    "src/hnsw/build.rs",
     "embedding_batches",
     "build_batched",
 ]
@@ -423,16 +423,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "parse_target (file:name resolution) is duplicated in 4 places: cli/commands/similar.rs, cli/commands/explain.rs, mcp/tools/similar.rs, mcp/tools/explain.rs. Should extract to shared utility if adding more commands that resolve targets."
-mentions = [
-    "src/cli/commands/similar.rs",
-    "src/cli/commands/explain.rs",
-    "src/mcp/tools/similar.rs",
-    "src/mcp/tools/explain.rs",
-]
-
-[[note]]
-sentiment = -0.5
 text = "cqs diff loads embeddings one-by-one for each matched pair via get_chunk_with_embedding. For large diffs (1000+ matched functions), this will be slow. Batch loading would help but adds complexity — defer until someone hits the perf wall."
 mentions = [
     "src/diff.rs",
@@ -458,11 +448,35 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "test_loaded_index_multiple_searches is flaky in CI. HNSW approximate search with 10 random embeddings doesn't reliably find exact match in top-5. Pre-existing, not related to any feature changes. Rerun CI when it fails."
-mentions = ["src/hnsw.rs", "CI", "flaky test"]
-
-[[note]]
 sentiment = 1.0
 text = "Post-v0.8.0 features shipped across 3 context windows with zero regressions. Tears + MEMORY.md system worked — each window picked up exactly where the last left off. Key: commit per batch, update tears after each commit, keep MEMORY.md under 200 lines."
-mentions = ["PROJECT_CONTINUITY.md", "MEMORY.md", "tears", "workflow"]
+mentions = [
+    "PROJECT_CONTINUITY.md",
+    "MEMORY.md",
+    "tears",
+    "workflow",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Splitting monolithic .rs files into directories: trait method imports (e.g. `use hnsw_rs::api::AnnT`) don't carry across submodule files — each file needs its own import. Caught as build error after initial split."
+mentions = [
+    "src/hnsw/search.rs",
+    "src/hnsw/build.rs",
+    "src/hnsw/persist.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "One-hot embeddings for HNSW test stability: sin-based make_embedding(seed) produced vectors too similar in 769-dim cosine space — HNSW approximate search couldn't reliably rank the exact match. Fix: one-hot-like vectors (0.01 baseline + 1.0 spike at seed-specific dimension). Cosine similarity ~0.01 between seeds, 1.0 for same seed. Reusable pattern for any HNSW test needing well-separated embeddings."
+mentions = ["src/hnsw/safety.rs", "src/hnsw/build.rs", "make_embedding", "flaky test"]
+
+[[note]]
+sentiment = 0.5
+text = "Rust impl blocks split across module files: when splitting monolithic .rs into a directory module, impl Foo blocks can live in separate files (chunk.rs, calls.rs each have `impl Parser { ... }`). No trait needed, no delegation. Public API unchanged. Key enabler for the parser/ and hnsw/ refactors."
+mentions = ["src/parser/chunk.rs", "src/parser/calls.rs", "src/hnsw/build.rs", "src/hnsw/search.rs", "src/hnsw/persist.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "Token efficiency tools: cqs_trace, cqs_impact, cqs_gather collapse 5-10 file reads into one MCP call by combining search + call graph traversal server-side. The savings compound: fewer tool calls = fewer round-trips = less context burn. This is the core value prop for AI agent consumers."
+mentions = ["src/mcp/tools/mod.rs", "src/trace.rs", "src/impact.rs", "src/gather.rs"]
