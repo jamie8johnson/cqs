@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 
 use cqs::reference::TaggedResult;
@@ -19,7 +19,8 @@ pub fn read_context_lines(
     line_end: u32,
     context: usize,
 ) -> Result<(Vec<String>, Vec<String>)> {
-    let content = std::fs::read_to_string(file)?;
+    let content = std::fs::read_to_string(file)
+        .with_context(|| format!("Failed to read {}", file.display()))?;
     // .lines() handles \r\n, but trim trailing \r for bare-CR edge cases
     let lines: Vec<&str> = content.lines().map(|l| l.trim_end_matches('\r')).collect();
 

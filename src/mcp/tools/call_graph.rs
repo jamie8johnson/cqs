@@ -15,23 +15,17 @@ pub fn tool_callers(server: &McpServer, arguments: Value) -> Result<Value> {
     // Use full call graph (includes large functions)
     let callers = server.store.get_callers_full(name)?;
 
-    let result = if callers.is_empty() {
-        serde_json::json!({
-            "callers": [],
-            "message": format!("No callers found for '{}'", name)
-        })
-    } else {
-        serde_json::json!({
-            "callers": callers.iter().map(|c| {
-                serde_json::json!({
-                    "name": c.name,
-                    "file": c.file.to_string_lossy().replace('\\', "/"),
-                    "line": c.line,
-                })
-            }).collect::<Vec<_>>(),
-            "count": callers.len(),
-        })
-    };
+    let result = serde_json::json!({
+        "function": name,
+        "callers": callers.iter().map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "file": c.file.to_string_lossy().replace('\\', "/"),
+                "line": c.line,
+            })
+        }).collect::<Vec<_>>(),
+        "count": callers.len(),
+    });
 
     Ok(serde_json::json!({
         "content": [{

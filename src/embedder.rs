@@ -213,7 +213,6 @@ pub struct Embedder {
     model_paths: OnceCell<(PathBuf, PathBuf)>,
     provider: ExecutionProvider,
     max_length: usize,
-    batch_size: usize,
     /// LRU cache for query embeddings (avoids re-computing same queries)
     query_cache: Mutex<LruCache<String, Embedding>>,
 }
@@ -233,11 +232,6 @@ impl Embedder {
     pub fn new() -> Result<Self, EmbedderError> {
         let provider = select_provider();
 
-        let batch_size = match provider {
-            ExecutionProvider::CPU => 4,
-            _ => 16,
-        };
-
         let query_cache = Mutex::new(LruCache::new(
             NonZeroUsize::new(DEFAULT_QUERY_CACHE_SIZE)
                 .expect("DEFAULT_QUERY_CACHE_SIZE is non-zero"),
@@ -249,7 +243,6 @@ impl Embedder {
             model_paths: OnceCell::new(),
             provider,
             max_length: 512,
-            batch_size,
             query_cache,
         })
     }
@@ -270,7 +263,6 @@ impl Embedder {
             model_paths: OnceCell::new(),
             provider: ExecutionProvider::CPU,
             max_length: 512,
-            batch_size: 4,
             query_cache,
         })
     }
@@ -422,11 +414,6 @@ impl Embedder {
     /// Get the execution provider being used
     pub fn provider(&self) -> ExecutionProvider {
         self.provider
-    }
-
-    /// Get the batch size
-    pub fn batch_size(&self) -> usize {
-        self.batch_size
     }
 
     /// Warm up the model with a dummy inference
@@ -607,7 +594,10 @@ fn ensure_ort_provider_libs() {
             .filter(|e| e.path().is_dir())
             .map(|e| e.path())
             .next(),
-        Err(_) => return,
+        Err(e) => {
+            tracing::debug!(path = %ort_cache.display(), error = %e, "ORT cache directory not found");
+            return;
+        }
     };
 
     let ort_lib_dir = match ort_lib_dir {

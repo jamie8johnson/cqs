@@ -43,7 +43,10 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
                     current_num
                 )
             })?;
-            total_minutes += hours * 60;
+            total_minutes = hours
+                .checked_mul(60)
+                .and_then(|m| total_minutes.checked_add(m))
+                .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
             current_num.clear();
         } else if c == 'm' {
             if current_num.is_empty() {
@@ -56,7 +59,9 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
                     current_num
                 )
             })?;
-            total_minutes += mins;
+            total_minutes = total_minutes
+                .checked_add(mins)
+                .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
             current_num.clear();
         } else if !c.is_whitespace() {
             bail!(
@@ -75,7 +80,9 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
                 current_num
             )
         })?;
-        total_minutes += mins;
+        total_minutes = total_minutes
+            .checked_add(mins)
+            .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
     }
 
     if total_minutes <= 0 {
@@ -205,5 +212,22 @@ mod tests {
         assert!(parse_duration("m").is_err());
         assert!(parse_duration("h").is_err());
         assert!(parse_duration("hm").is_err());
+    }
+
+    #[test]
+    fn test_validate_query_boundary_length() {
+        // Exactly at limit should pass
+        let at_limit = "a".repeat(MAX_QUERY_LENGTH);
+        assert!(validate_query_length(&at_limit).is_ok());
+
+        // One over limit should fail
+        let over_limit = "a".repeat(MAX_QUERY_LENGTH + 1);
+        assert!(validate_query_length(&over_limit).is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_overflow() {
+        // i64::MAX hours should overflow
+        assert!(parse_duration(&format!("{}h", i64::MAX)).is_err());
     }
 }

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use cqs::config::{add_reference_to_config, remove_reference_from_config, ReferenceConfig};
 use cqs::reference;
@@ -82,7 +82,8 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     // Create reference directory with restrictive permissions
     let ref_dir = reference::ref_path(name)
         .ok_or_else(|| anyhow::anyhow!("Could not determine reference storage directory"))?;
-    std::fs::create_dir_all(&ref_dir)?;
+    std::fs::create_dir_all(&ref_dir)
+        .with_context(|| format!("Failed to create {}", ref_dir.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -214,7 +215,8 @@ fn cmd_ref_remove(name: &str) -> Result<()> {
     // Delete reference directory if it exists
     if let Some(cfg) = ref_config {
         if cfg.path.exists() {
-            std::fs::remove_dir_all(&cfg.path)?;
+            std::fs::remove_dir_all(&cfg.path)
+                .with_context(|| format!("Failed to remove {}", cfg.path.display()))?;
         }
     }
 

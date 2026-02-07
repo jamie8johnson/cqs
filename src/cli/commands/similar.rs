@@ -6,23 +6,7 @@ use cqs::{HnswIndex, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, Cli};
 
-/// Parse a target string into (optional_file, name)
-///
-/// Formats:
-///   "function_name"              → (None, "function_name")
-///   "src/foo.rs:function_name"   → (Some("src/foo.rs"), "function_name")
-fn parse_target(target: &str) -> (Option<&str>, &str) {
-    // Split on last colon to handle paths with colons (Windows drive letters)
-    if let Some(pos) = target.rfind(':') {
-        let file = &target[..pos];
-        let name = &target[pos + 1..];
-        // Only treat as file:name if both parts are non-empty
-        if !file.is_empty() && !name.is_empty() {
-            return (Some(file), name);
-        }
-    }
-    (None, target)
-}
+use super::resolve::parse_target;
 
 /// Resolve a target to a chunk ID by searching by name and optionally filtering by file
 fn resolve_target(store: &Store, target: &str) -> Result<(String, String)> {
@@ -175,10 +159,10 @@ mod tests {
 
     #[test]
     fn test_parse_target_empty_name_fallback() {
-        // Trailing colon — treat entire string as name
+        // Trailing colon — stripped per P1 F11 fix
         let (file, name) = parse_target("something:");
         assert_eq!(file, None);
-        assert_eq!(name, "something:");
+        assert_eq!(name, "something");
     }
 
     #[test]

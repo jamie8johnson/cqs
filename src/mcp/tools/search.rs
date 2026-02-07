@@ -20,7 +20,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
 
     // Clamp limit to [1, 20] - 0 treated as 1, >20 capped at 20
     let limit = args.limit.unwrap_or(5).clamp(1, 20);
-    let threshold = args.threshold.unwrap_or(0.3);
+    let threshold = args.threshold.unwrap_or(0.3).clamp(0.0, 1.0);
 
     // Determine which sources to search
     let search_project = should_search_source(&args.sources, "project");
@@ -205,10 +205,15 @@ fn tool_search_name_only(
             .iter()
             .map(|r| format_code_result(r, &server.project_root, None))
             .collect();
+        let wrapped = serde_json::json!({
+            "results": json_results,
+            "query": args.query,
+            "total": json_results.len(),
+        });
         return Ok(serde_json::json!({
             "content": [{
                 "type": "text",
-                "text": serde_json::to_string_pretty(&json_results)?
+                "text": serde_json::to_string_pretty(&wrapped)?
             }]
         }));
     }
@@ -254,10 +259,15 @@ fn tool_search_name_only(
         })
         .collect();
 
+    let wrapped = serde_json::json!({
+        "results": json_results,
+        "query": args.query,
+        "total": json_results.len(),
+    });
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
-            "text": serde_json::to_string_pretty(&json_results)?
+            "text": serde_json::to_string_pretty(&wrapped)?
         }]
     }))
 }

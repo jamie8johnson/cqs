@@ -456,21 +456,6 @@ impl Store {
         })
     }
 
-    /// Get a single chunk by its ID
-    pub fn get_chunk_by_id(&self, id: &str) -> Result<Option<ChunkSummary>, StoreError> {
-        self.rt.block_on(async {
-            let row: Option<_> = sqlx::query(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
-                 FROM chunks WHERE id = ?1",
-            )
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?;
-
-            Ok(row.map(|r| ChunkSummary::from(ChunkRow::from_row(&r))))
-        })
-    }
-
     /// Get a chunk with its embedding vector.
     ///
     /// Returns `Ok(None)` if the chunk doesn't exist or has a corrupt embedding.
@@ -602,48 +587,6 @@ impl Store {
                 (chunk, embedding_bytes)
             })
             .collect())
-    }
-
-    /// Get all chunk IDs and embeddings (for HNSW index building)
-    ///
-    /// **Warning:** This loads all embeddings into memory at once.
-    /// For large indexes (>50k chunks), prefer `embedding_batches()` to avoid OOM.
-    ///
-    /// Logs a warning if any embeddings are skipped due to corruption (wrong size).
-    pub fn all_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
-        self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM chunks")
-                .fetch_all(&self.pool)
-                .await?;
-
-            let total_rows = rows.len();
-            let mut skipped = 0usize;
-
-            let results: Vec<(String, Embedding)> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let id: String = row.get(0);
-                    let bytes: Vec<u8> = row.get(1);
-                    match bytes_to_embedding(&bytes) {
-                        Some(emb) => Some((id, Embedding::new(emb))),
-                        None => {
-                            skipped += 1;
-                            None
-                        }
-                    }
-                })
-                .collect();
-
-            if skipped > 0 {
-                tracing::warn!(
-                    skipped,
-                    total = total_rows,
-                    "Skipped corrupted embeddings (wrong size). Run 'cqs index --force' to rebuild."
-                );
-            }
-
-            Ok(results)
-        })
     }
 
     /// Stream embeddings in batches for memory-efficient HNSW building.

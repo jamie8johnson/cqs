@@ -55,7 +55,7 @@ impl McpServer {
         let cq_dir = project_root.join(".cq");
 
         if !index_path.exists() {
-            bail!("Index not found. Run 'cq init && cq index' first.");
+            bail!("Index not found. Run 'cqs init && cqs index' first.");
         }
 
         let store = Store::open(&index_path)
@@ -133,12 +133,17 @@ impl McpServer {
             return Ok(embedder);
         }
 
-        // Slow path: initialize
+        // Slow path: initialize (can take 500ms+ for model loading)
+        let start = std::time::Instant::now();
         let new_embedder = if self.use_gpu {
             Embedder::new()?
         } else {
             Embedder::new_cpu()?
         };
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "Embedder initialized"
+        );
 
         // Try to set (another thread might have raced us, that's OK)
         let _ = self.embedder.set(new_embedder);
@@ -172,7 +177,7 @@ impl McpServer {
                 // Sanitize error message to avoid exposing internal paths.
                 // Log the full error for debugging, return sanitized version to client.
                 let full_error = e.to_string();
-                tracing::debug!(error = %full_error, "Request error");
+                tracing::warn!(error = %full_error, "Request error");
                 let sanitized = self.sanitize_error_message(&full_error);
                 JsonRpcResponse {
                     jsonrpc: "2.0".into(),
@@ -194,11 +199,11 @@ impl McpServer {
     /// or generic descriptions to prevent information leakage to clients.
     pub(crate) fn sanitize_error_message(&self, error: &str) -> String {
         static RE_UNIX: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root)/[^\s:]+")
+            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root|run|srv|proc|snap|Library|Applications|private)/[^\s:]+")
                 .expect("hardcoded regex")
         });
         static RE_WINDOWS: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files)[^\s:]*")
+            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files|ProgramData|Temp)[^\s:]*")
                 .expect("hardcoded regex")
         });
 

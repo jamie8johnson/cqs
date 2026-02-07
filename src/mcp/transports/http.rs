@@ -197,6 +197,7 @@ fn validate_origin_header(headers: &HeaderMap) -> Result<(), ValidationError> {
 /// Check if origin is a valid localhost origin.
 /// Prevents bypass via subdomains like localhost.evil.com
 fn is_localhost_origin(origin: &str) -> bool {
+    let origin = origin.to_ascii_lowercase();
     // Check each allowed prefix and ensure it's followed by end, port, or path
     let prefixes = [
         "http://localhost",

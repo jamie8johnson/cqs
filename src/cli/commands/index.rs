@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
@@ -26,7 +26,8 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
 
     // Ensure .cq directory exists
     if !cq_dir.exists() {
-        std::fs::create_dir_all(&cq_dir)?;
+        std::fs::create_dir_all(&cq_dir)
+            .with_context(|| format!("Failed to create {}", cq_dir.display()))?;
     }
 
     // Acquire lock (unless dry run)
@@ -66,7 +67,8 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
     } else {
         // Remove old index if forcing
         if index_path.exists() {
-            std::fs::remove_file(&index_path)?;
+            std::fs::remove_file(&index_path)
+                .with_context(|| format!("Failed to remove {}", index_path.display()))?;
         }
         let store = Store::open(&index_path)?;
         store.init(&ModelInfo::default())?;

@@ -312,7 +312,7 @@
 - [x] **`cqs project`** (CLI) — cross-project search via `~/.config/cqs/projects.toml` registry
 - [x] **`cqs gather`** (CLI + MCP) — smart context assembly: BFS call graph expansion from semantic seed results
 - [x] **`--pattern` filter** — post-search structural matching (builder, error_swallow, async, mutex, unsafe, recursion)
-- [x] 21 MCP tools (up from 17), 258 lib tests, 31 new unit tests
+- [x] 20 MCP tools (up from 17), 260 lib tests, 33 new unit tests
 
 ## Refactoring
 
@@ -341,6 +341,9 @@
 
 ### Planned
 
+- [ ] **Mermaid output for `cqs impact`** — `format: "mermaid"` renders caller graph as flowchart. Agents can visualize blast radius of a change.
+- [ ] **Mermaid output for `cqs context`** — `format: "mermaid"` renders module dependency graph (external callers/callees, dependent files).
+- [ ] **Mermaid output for `cqs dead`** — `format: "mermaid"` renders orphan clusters. Visualize dead code relationships.
 - [ ] **Token cost estimates** — include approximate token count in tool responses so agents can budget context window usage
 - [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
 - [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed

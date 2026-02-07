@@ -20,7 +20,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let index_path = cq_dir.join("index.db");
 
     if !index_path.exists() {
-        bail!("Index not found. Run 'cq init && cq index' first.");
+        bail!("Index not found. Run 'cqs init && cqs index' first.");
     }
 
     let store = Store::open(&index_path)?;
@@ -54,6 +54,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
         note_weight: cli.note_weight,
     };
+    filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
     // Load vector index for O(log n) search
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {

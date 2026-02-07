@@ -6,18 +6,7 @@ use serde_json::Value;
 use crate::store::SearchFilter;
 
 use super::super::server::McpServer;
-
-/// Parse target into (optional_file, name)
-fn parse_target(target: &str) -> (Option<&str>, &str) {
-    if let Some(pos) = target.rfind(':') {
-        let file = &target[..pos];
-        let name = &target[pos + 1..];
-        if !file.is_empty() && !name.is_empty() {
-            return (Some(file), name);
-        }
-    }
-    (None, target)
-}
+use super::resolve::parse_target;
 
 pub fn tool_similar(server: &McpServer, arguments: Value) -> Result<Value> {
     let target = arguments
@@ -36,7 +25,8 @@ pub fn tool_similar(server: &McpServer, arguments: Value) -> Result<Value> {
         .get("threshold")
         .and_then(|v| v.as_f64())
         .map(|v| v as f32)
-        .unwrap_or(0.3);
+        .unwrap_or(0.3)
+        .clamp(0.0, 1.0);
 
     let language_filter = arguments
         .get("language")

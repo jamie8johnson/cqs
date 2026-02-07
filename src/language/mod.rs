@@ -186,6 +186,11 @@ impl Language {
         self.def().chunk_query
     }
 
+    /// Get the primary file extension for this language (e.g., "rs" for Rust)
+    pub fn primary_extension(&self) -> &'static str {
+        self.def().extensions[0]
+    }
+
     /// Get the call extraction query pattern
     pub fn call_query_pattern(&self) -> &'static str {
         self.def().call_query.unwrap_or("")

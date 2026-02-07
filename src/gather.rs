@@ -161,11 +161,14 @@ pub fn gather(
         }
     }
 
-    // 5. Sort by file → line_start (reading order)
-    chunks.sort_by(|a, b| a.file.cmp(&b.file).then(a.line_start.cmp(&b.line_start)));
-
-    // 6. Truncate to limit
+    // 5. Sort by score desc, truncate to limit, then re-sort by file → line_start
+    chunks.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     chunks.truncate(opts.limit);
+    chunks.sort_by(|a, b| a.file.cmp(&b.file).then(a.line_start.cmp(&b.line_start)));
 
     Ok(GatherResult {
         chunks,

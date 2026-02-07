@@ -291,7 +291,10 @@ pub(crate) fn run_index_pipeline(
                                 true
                             }
                             Ok(None) => false,
-                            Err(_) => true, // Reindex on error
+                            Err(e) => {
+                                tracing::warn!(file = %abs_path.display(), error = %e, "mtime check failed, reindexing");
+                                true
+                            }
                         }
                     })
                     .collect()
@@ -610,7 +613,9 @@ pub(crate) fn run_index_pipeline(
         .map_err(|e| anyhow::anyhow!("CPU embedder thread panicked: {}", panic_message(&e)))??;
 
     // Update the "updated_at" metadata timestamp
-    store.touch_updated_at().ok();
+    if let Err(e) = store.touch_updated_at() {
+        tracing::warn!(error = %e, "Failed to update timestamp");
+    }
 
     Ok(PipelineStats {
         total_embedded,

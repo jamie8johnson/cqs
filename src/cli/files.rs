@@ -19,8 +19,8 @@ pub(crate) fn enumerate_files(
 #[cfg(unix)]
 fn process_exists(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is safe - it only checks if process exists without
-    // sending any signal. The pid is u32 cast to i32 which is valid for PIDs.
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+    // sending any signal.
+    i32::try_from(pid).is_ok_and(|p| unsafe { libc::kill(p, 0) == 0 })
 }
 
 #[cfg(windows)]

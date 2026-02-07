@@ -6,17 +6,7 @@ use cqs::{HnswIndex, SearchFilter, Store};
 
 use crate::cli::find_project_root;
 
-/// Parse a target string into (optional_file, name) — same as similar.rs
-fn parse_target(target: &str) -> (Option<&str>, &str) {
-    if let Some(pos) = target.rfind(':') {
-        let file = &target[..pos];
-        let name = &target[pos + 1..];
-        if !file.is_empty() && !name.is_empty() {
-            return (Some(file), name);
-        }
-    }
-    (None, target)
-}
+use super::resolve::parse_target;
 
 pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
     let root = find_project_root();
