@@ -77,9 +77,10 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
     // External callees — functions this file calls that live elsewhere
     let mut external_callees = Vec::new();
     for chunk in &chunks {
+        let chunk_file = chunk.file.to_string_lossy();
         let callees = server
             .store
-            .get_callees_full(&chunk.name)
+            .get_callees_full(&chunk.name, Some(&chunk_file))
             .unwrap_or_default();
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str()) {

@@ -72,7 +72,8 @@ pub(crate) fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
 
     let store = Store::open(&index_path)?;
     // Use full call graph (includes large functions)
-    let callees = store.get_callees_full(name)?;
+    // No file context available from CLI input — pass None
+    let callees = store.get_callees_full(name, None)?;
 
     if json {
         let json_output = serde_json::json!({
