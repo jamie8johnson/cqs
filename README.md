@@ -298,8 +298,9 @@ Use `cqs_search` for semantic code search instead of grep/glob when looking for:
 - Code where you don't know the exact name
 
 Available tools:
-- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `note_weight`, `semantic_only`, `name_only`
+- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `note_weight`, `semantic_only`, `name_only`, `note_only`, `sources`, `pattern`
   - Use `name_only=true` for "where is X defined?" queries (skips embedding, searches function names directly)
+  - Use `note_only=true` to search only notes (skip code results)
 - `cqs_stats` - index stats, chunk counts, HNSW index status
 - `cqs_callers` - find functions that call a given function
 - `cqs_callees` - find functions called by a given function
@@ -312,10 +313,10 @@ Available tools:
 - `cqs_explain` - function card: signature, callers, callees, similar functions
 - `cqs_diff` - semantic diff between indexed snapshots
 - `cqs_trace` - follow call chain between two functions (BFS shortest path). `format: "mermaid"` for diagrams
-- `cqs_impact` - what breaks if you change X? Callers with snippets + affected tests
+- `cqs_impact` - what breaks if you change X? Callers with snippets + affected tests. `format: "mermaid"` for diagrams
 - `cqs_test_map` - map functions to tests that exercise them
 - `cqs_batch` - execute multiple queries in one call (up to 10)
-- `cqs_context` - module-level understanding: chunks, callers, callees, notes for a file
+- `cqs_context` - module-level understanding: chunks, callers, callees, notes for a file. `summary: true` for counts only
 - `cqs_gather` - smart context assembly: seed search + call graph BFS expansion
 - `cqs_dead` - find functions/methods never called by indexed code
 - `cqs_gc` - report index staleness (stale/missing file counts)

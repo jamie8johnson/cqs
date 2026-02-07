@@ -53,7 +53,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 
 Tools: `cqs_search`, `cqs_stats`, `cqs_callers`, `cqs_callees`, `cqs_read`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc`, `cqs_add_note`, `cqs_update_note`, `cqs_remove_note`, `cqs_audit_mode` (20 tools — run `cqs watch` to keep index fresh)
 
-**`cqs_read`** — **use instead of raw `Read` tool.** Returns file contents with relevant notes injected as comments. Same content, richer context. Default to this for any source file in an indexed project.
+**`cqs_read`** — **use instead of raw `Read` for indexed source files.** Returns file contents with relevant notes injected as comments. Same content, richer context. Use raw `Read` for non-indexed files (config, markdown, lock files).
 **`cqs_similar`** — find code similar to a given function. Use for refactoring discovery, finding duplicates.
 **`cqs_explain`** — function card: signature, callers, callees, similar. Collapses 4+ tool calls into 1.
 **`cqs_diff`** — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
