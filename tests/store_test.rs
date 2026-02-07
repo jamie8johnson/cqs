@@ -681,3 +681,158 @@ fn test_normalize_for_fts_unicode() {
     // RTL text
     assert!(!normalize_for_fts("rtl: שלום").is_empty());
 }
+
+// ===== Call Graph Tests (#7) =====
+
+#[test]
+fn test_get_call_graph() {
+    use cqs::parser::{CallSite, FunctionCalls};
+
+    let store = TestStore::new();
+
+    // Insert chunks
+    let chunk_a = test_chunk("func_a", "fn func_a() { func_b(); func_c(); }");
+    let chunk_b = test_chunk("func_b", "fn func_b() { func_c(); }");
+    let chunk_c = test_chunk("func_c", "fn func_c() {}");
+
+    let emb = mock_embedding(1.0);
+    store.upsert_chunk(&chunk_a, &emb, Some(12345)).unwrap();
+    store.upsert_chunk(&chunk_b, &emb, Some(12345)).unwrap();
+    store.upsert_chunk(&chunk_c, &emb, Some(12345)).unwrap();
+
+    // Insert call edges: func_a → func_b, func_a → func_c, func_b → func_c
+    let function_calls = vec![
+        FunctionCalls {
+            name: "func_a".to_string(),
+            line_start: 1,
+            calls: vec![
+                CallSite {
+                    callee_name: "func_b".to_string(),
+                    line_number: 1,
+                },
+                CallSite {
+                    callee_name: "func_c".to_string(),
+                    line_number: 1,
+                },
+            ],
+        },
+        FunctionCalls {
+            name: "func_b".to_string(),
+            line_start: 5,
+            calls: vec![CallSite {
+                callee_name: "func_c".to_string(),
+                line_number: 5,
+            }],
+        },
+    ];
+    store
+        .upsert_function_calls(&PathBuf::from("test.rs"), &function_calls)
+        .unwrap();
+
+    // Get call graph
+    let graph = store.get_call_graph().unwrap();
+
+    // Verify forward edges (caller → callees)
+    assert_eq!(
+        graph.forward.get("func_a").map(|v| v.len()),
+        Some(2),
+        "func_a should call 2 functions"
+    );
+    assert_eq!(
+        graph.forward.get("func_b").map(|v| v.len()),
+        Some(1),
+        "func_b should call 1 function"
+    );
+    assert!(
+        graph.forward.get("func_c").is_none(),
+        "func_c should call nothing"
+    );
+
+    // Verify reverse edges (callee → callers)
+    assert_eq!(
+        graph.reverse.get("func_c").map(|v| v.len()),
+        Some(2),
+        "func_c should be called by 2 functions"
+    );
+    assert_eq!(
+        graph.reverse.get("func_b").map(|v| v.len()),
+        Some(1),
+        "func_b should be called by 1 function"
+    );
+    assert!(
+        graph.reverse.get("func_a").is_none(),
+        "func_a should not be called by anyone"
+    );
+}
+
+// ===== Chunk Identities Test (#6) =====
+
+#[test]
+fn test_all_chunk_identities() {
+    use cqs::parser::Language;
+
+    let store = TestStore::new();
+
+    // Insert chunks with various properties
+    let chunk1 = test_chunk("fn1", "fn fn1() {}");
+    let mut chunk2 = test_chunk("fn2", "fn fn2() {}");
+    chunk2.file = PathBuf::from("other.rs");
+    chunk2.id = format!("other.rs:1:{}", &chunk2.content_hash[..8]);
+    chunk2.line_start = 10;
+
+    let emb = mock_embedding(1.0);
+    store.upsert_chunk(&chunk1, &emb, Some(12345)).unwrap();
+    store.upsert_chunk(&chunk2, &emb, Some(12345)).unwrap();
+
+    // Get all identities
+    let identities = store.all_chunk_identities().unwrap();
+
+    assert_eq!(identities.len(), 2, "Should return 2 chunk identities");
+
+    // Find chunk1 identity
+    let id1 = identities.iter().find(|i| i.name == "fn1").unwrap();
+    assert_eq!(id1.origin, "test.rs");
+    assert_eq!(id1.language, "rust");
+    assert_eq!(id1.line_start, 1);
+
+    // Find chunk2 identity
+    let id2 = identities.iter().find(|i| i.name == "fn2").unwrap();
+    assert_eq!(id2.origin, "other.rs");
+    assert_eq!(id2.line_start, 10);
+}
+
+// ===== Get Chunk With Embedding Test (#6) =====
+
+#[test]
+fn test_get_chunk_with_embedding() {
+    let store = TestStore::new();
+
+    let chunk = test_chunk("test_fn", "fn test_fn() { 42 }");
+    let embedding = mock_embedding(0.75);
+    store.upsert_chunk(&chunk, &embedding, Some(12345)).unwrap();
+
+    // Retrieve chunk with embedding
+    let result = store.get_chunk_with_embedding(&chunk.id).unwrap();
+    assert!(result.is_some(), "Should find the chunk");
+
+    let (retrieved_chunk, retrieved_emb) = result.unwrap();
+    assert_eq!(retrieved_chunk.name, "test_fn");
+    assert_eq!(retrieved_chunk.id, chunk.id);
+
+    // Embedding should match (dimensions should be same)
+    assert_eq!(retrieved_emb.as_slice().len(), embedding.as_slice().len());
+}
+
+#[test]
+fn test_get_chunk_with_embedding_nonexistent() {
+    let store = TestStore::new();
+
+    // Query for non-existent chunk
+    let result = store
+        .get_chunk_with_embedding("nonexistent:1:abcd1234")
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "Should return None for non-existent chunk"
+    );
+}

@@ -488,6 +488,60 @@ fn test_very_long_query_rejected() {
     );
 }
 
+// ===== MCP Response Format Test (#9) =====
+
+#[test]
+fn test_mcp_search_response_format() {
+    let (_dir, server) = setup_test_server();
+
+    // Make a search request (use name_only to avoid needing embedder)
+    let request = make_request(
+        "tools/call",
+        Some(json!({
+            "name": "cqs_search",
+            "arguments": {
+                "query": "test_function",
+                "name_only": true
+            }
+        })),
+    );
+
+    let response = server.handle_request(request);
+
+    assert!(
+        response.error.is_none(),
+        "Search should succeed: {:?}",
+        response.error
+    );
+
+    let result = response.result.unwrap();
+
+    // Validate response structure
+    let content = result["content"]
+        .as_array()
+        .expect("Response should have content array");
+    assert!(!content.is_empty(), "Content array should not be empty");
+
+    // First content item should be type "text"
+    assert_eq!(
+        content[0]["type"], "text",
+        "First content item should be type 'text'"
+    );
+
+    // Text field should be valid JSON
+    let text = content[0]["text"]
+        .as_str()
+        .expect("Content should have text field");
+    let parsed: serde_json::Value =
+        serde_json::from_str(text).expect("Text content should be valid JSON");
+
+    // Should have results field (may be empty array)
+    assert!(
+        parsed.get("results").is_some(),
+        "Parsed JSON should have 'results' field"
+    );
+}
+
 #[test]
 fn test_initialize_without_params() {
     let (_dir, server) = setup_test_server();

@@ -40,7 +40,7 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
     let mut tx = pool.begin().await?;
     for version in from..to {
         tracing::info!(from = version, to = version + 1, "Running migration step");
-        run_migration(&mut *tx, version, version + 1).await?;
+        run_migration(&mut tx, version, version + 1).await?;
     }
     sqlx::query("UPDATE metadata SET value = ?1 WHERE key = 'schema_version'")
         .bind(to.to_string())
