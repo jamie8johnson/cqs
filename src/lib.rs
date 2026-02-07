@@ -269,5 +269,7 @@ pub fn enumerate_files(
         })
         .collect();
 
+    tracing::info!(file_count = files.len(), "File enumeration complete");
+
     Ok(files)
 }

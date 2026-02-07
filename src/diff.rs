@@ -57,7 +57,8 @@ impl From<&ChunkIdentity> for ChunkKey {
     }
 }
 
-/// Compute cosine similarity between two embeddings
+/// Full cosine similarity with norm computation.
+/// Used for cross-store comparison where vectors may not share normalization.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
@@ -108,26 +109,18 @@ pub fn semantic_diff(
 
     // Apply language filter
     let source_ids: Vec<_> = if let Some(lang) = language_filter {
-        let ext = lang
-            .parse::<crate::parser::Language>()
-            .map(|l| l.primary_extension())
-            .unwrap_or(lang);
         source_ids
             .into_iter()
-            .filter(|c| c.chunk_type != "unknown" && c.origin.ends_with(&format!(".{}", ext)))
+            .filter(|c| c.chunk_type != "unknown" && c.language == lang)
             .collect()
     } else {
         source_ids
     };
 
     let target_ids: Vec<_> = if let Some(lang) = language_filter {
-        let ext = lang
-            .parse::<crate::parser::Language>()
-            .map(|l| l.primary_extension())
-            .unwrap_or(lang);
         target_ids
             .into_iter()
-            .filter(|c| c.chunk_type != "unknown" && c.origin.ends_with(&format!(".{}", ext)))
+            .filter(|c| c.chunk_type != "unknown" && c.language == lang)
             .collect()
     } else {
         target_ids

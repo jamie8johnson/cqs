@@ -412,3 +412,63 @@ fn test_search_by_name() {
         );
     }
 }
+
+// ===== #5: search_reference_by_name =====
+
+#[test]
+fn test_search_reference_by_name() {
+    use cqs::reference::ReferenceIndex;
+
+    let store = TestStore::new();
+    let c1 = test_chunk("search_fn", "fn search_fn() { search }");
+    let c2 = test_chunk("find_fn", "fn find_fn() { find }");
+
+    insert_chunks(&store, &[c1, c2], 1.0);
+
+    // Create a reference index (open separate Store to same DB)
+    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_idx = ReferenceIndex {
+        name: "test-ref".to_string(),
+        store: ref_store,
+        index: None,
+        weight: 0.8,
+    };
+
+    // Search by name
+    let results = cqs::reference::search_reference_by_name(&ref_idx, "search_fn", 10, 0.0);
+
+    assert!(!results.is_empty(), "Should find search_fn");
+    assert_eq!(results[0].chunk.name, "search_fn");
+
+    // Score should be scaled by weight (0.8)
+    assert!(
+        results[0].score <= 0.8,
+        "Score should be scaled by weight 0.8, got {}",
+        results[0].score
+    );
+}
+
+#[test]
+fn test_search_reference_by_name_threshold() {
+    use cqs::reference::ReferenceIndex;
+
+    let store = TestStore::new();
+    let c1 = test_chunk("test_fn", "fn test_fn() {}");
+    insert_chunks(&store, &[c1], 1.0);
+
+    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_idx = ReferenceIndex {
+        name: "test-ref".to_string(),
+        store: ref_store,
+        index: None,
+        weight: 0.5, // Low weight
+    };
+
+    // High threshold should filter out results (score * weight < threshold)
+    let results = cqs::reference::search_reference_by_name(&ref_idx, "test_fn", 10, 0.9);
+
+    assert!(
+        results.is_empty(),
+        "High threshold should filter out results with low weight"
+    );
+}

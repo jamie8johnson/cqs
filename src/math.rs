@@ -4,7 +4,8 @@
 
 use crate::EMBEDDING_DIM;
 
-/// Cosine similarity for L2-normalized vectors (just dot product)
+/// Dot product of two embeddings (= cosine similarity for L2-normalized vectors).
+/// E5-base-v2 outputs normalized embeddings, so dot product suffices.
 /// Uses SIMD acceleration when available (2-4x faster on AVX2/NEON)
 ///
 /// Returns `None` if vectors have different lengths or unexpected dimensions.

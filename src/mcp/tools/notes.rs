@@ -121,6 +121,8 @@ pub fn tool_add_note(server: &McpServer, arguments: Value) -> Result<Value> {
     // Re-parse and re-index all notes so the new one is immediately searchable
     let (indexed, index_error) = reindex_notes(server, &notes_path);
 
+    tracing::info!("Note added successfully");
+
     let sentiment_label = if sentiment < -0.3 {
         "warning"
     } else if sentiment > 0.3 {
@@ -228,6 +230,8 @@ pub fn tool_update_note(server: &McpServer, arguments: Value) -> Result<Value> {
 
     let (indexed, index_error) = reindex_notes(server, &notes_path);
 
+    tracing::info!("Note updated successfully");
+
     let final_text = new_text.unwrap_or(text);
     let mut result = serde_json::json!({
         "status": "updated",
@@ -289,6 +293,8 @@ pub fn tool_remove_note(server: &McpServer, arguments: Value) -> Result<Value> {
     .context("Failed to remove note")?;
 
     let (indexed, index_error) = reindex_notes(server, &notes_path);
+
+    tracing::info!("Note removed successfully");
 
     let mut result = serde_json::json!({
         "status": "removed",

@@ -35,6 +35,12 @@ impl TestStore {
         Self { store, _dir: dir }
     }
 
+    /// Get the database path for this test store
+    #[allow(dead_code)]
+    pub fn db_path(&self) -> PathBuf {
+        self._dir.path().join("index.db")
+    }
+
     /// Create a test store with custom model info
     #[allow(dead_code)]
     pub fn with_model(model: &ModelInfo) -> Self {

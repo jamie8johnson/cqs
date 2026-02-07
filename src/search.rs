@@ -167,6 +167,11 @@ impl BoundedScoreHeap {
 
     /// Push a scored result. If at capacity, evicts the lowest score.
     fn push(&mut self, id: String, score: f32) {
+        if !score.is_finite() {
+            tracing::warn!("BoundedScoreHeap: ignoring non-finite score");
+            return;
+        }
+
         // If below capacity, always insert
         if self.heap.len() < self.capacity {
             self.heap.push(Reverse((OrderedFloat(score), id)));
@@ -421,6 +426,13 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        let _span = tracing::info_span!(
+            "search_by_candidates",
+            candidates = candidate_ids.len(),
+            limit
+        )
+        .entered();
+
         if candidate_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -531,6 +543,12 @@ impl Store {
         threshold: f32,
         index: Option<&dyn VectorIndex>,
     ) -> Result<Vec<crate::store::UnifiedResult>, StoreError> {
+        if limit == 0 {
+            return Ok(vec![]);
+        }
+
+        let _span = tracing::info_span!("search_unified", limit, threshold = %threshold).entered();
+
         // Skip note search entirely when note_weight is effectively zero
         let skip_notes = filter.note_weight <= 0.0;
 
@@ -572,6 +590,8 @@ impl Store {
             self.search_filtered(query, filter, limit, threshold)?
         };
 
+        // Slot allocation: reserve minimum 60% for code results, up to 40% for notes.
+        // This prevents notes from dominating while still surfacing relevant observations.
         let min_code_slots = ((limit * 3) / 5).max(1);
         let code_count = code_results.len().min(limit);
         let reserved_code = code_count.min(min_code_slots);

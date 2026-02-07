@@ -218,7 +218,7 @@ impl McpServer {
 
     fn handle_initialize(&self, params: Option<Value>) -> Result<Value> {
         // SAFETY: Allocation bounded by 1MB request body limit (HTTP) or trusted client (stdio)
-        let _params: InitializeParams =
+        let params: InitializeParams =
             params
                 .map(serde_json::from_value)
                 .transpose()?
@@ -230,6 +230,12 @@ impl McpServer {
                         version: "0.0.0".into(),
                     },
                 });
+
+        tracing::info!(
+            client = %params.client_info.name,
+            version = %params.client_info.version,
+            "MCP client connected"
+        );
 
         let result = InitializeResult {
             protocol_version: MCP_PROTOCOL_VERSION.into(),

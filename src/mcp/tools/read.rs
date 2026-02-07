@@ -23,6 +23,8 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
             anyhow::anyhow!("Missing 'path' argument (or use 'focus' for focused read)")
         })?;
 
+    tracing::info!(path = %path, "cqs_read: reading file");
+
     let file_path = server.project_root.join(path);
     if !file_path.exists() {
         bail!("File not found: {}", path);
@@ -89,6 +91,8 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
                             .any(|m| m == file_name || m == path || path_matches_mention(path, m))
                     })
                     .collect();
+
+                tracing::debug!(notes_injected = relevant.len(), "cqs_read: notes injected");
 
                 if !relevant.is_empty() {
                     context_header.push_str(
@@ -237,6 +241,8 @@ fn tool_read_focused(server: &McpServer, focus: &str, _arguments: &Value) -> Res
         .unwrap_or(&chunk.file)
         .to_string_lossy()
         .replace('\\', "/");
+
+    tracing::info!(path = %rel_file, focus = %focus, "cqs_read: focused read");
 
     let mut output = String::new();
 

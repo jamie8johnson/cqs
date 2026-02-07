@@ -176,6 +176,8 @@ fn tool_search_name_only(
     threshold: f32,
     search_project: bool,
 ) -> Result<Value> {
+    let start = std::time::Instant::now();
+
     if args.query.trim().is_empty() {
         return Ok(serde_json::json!({
             "content": [{
@@ -205,6 +207,11 @@ fn tool_search_name_only(
             .iter()
             .map(|r| format_code_result(r, &server.project_root, None))
             .collect();
+        tracing::info!(
+            results = json_results.len(),
+            elapsed_ms = start.elapsed().as_millis(),
+            "Name-only search complete"
+        );
         return build_search_response(json_results, &args.query, None);
     }
 
@@ -249,6 +256,11 @@ fn tool_search_name_only(
         })
         .collect();
 
+    tracing::info!(
+        results = json_results.len(),
+        elapsed_ms = start.elapsed().as_millis(),
+        "Name-only search complete"
+    );
     build_search_response(json_results, &args.query, None)
 }
 

@@ -74,7 +74,31 @@ impl Config {
         let project_config = Self::load_file(&project_root.join(".cqs.toml")).unwrap_or_default();
 
         // Project overrides user
-        let merged = user_config.override_with(project_config);
+        let mut merged = user_config.override_with(project_config);
+
+        // Limit reference count
+        const MAX_REFERENCES: usize = 20;
+        if merged.references.len() > MAX_REFERENCES {
+            tracing::warn!(
+                count = merged.references.len(),
+                max = MAX_REFERENCES,
+                "Too many references configured, truncating"
+            );
+            merged.references.truncate(MAX_REFERENCES);
+        }
+
+        // Clamp reference weights to [0.0, 1.0]
+        for r in &mut merged.references {
+            if r.weight < 0.0 || r.weight > 1.0 {
+                tracing::warn!(
+                    name = %r.name,
+                    weight = r.weight,
+                    "Reference weight out of bounds [0.0, 1.0], clamping"
+                );
+                r.weight = r.weight.clamp(0.0, 1.0);
+            }
+        }
+
         tracing::debug!(
             limit = ?merged.limit,
             threshold = ?merged.threshold,
@@ -535,5 +559,62 @@ path = "/home/user/.local/share/cqs/refs/serde"
         let config = Config::load_file(&config_path).unwrap();
         assert_eq!(config.references.len(), 1);
         assert_eq!(config.references[0].weight, 0.8);
+    }
+
+    #[test]
+    fn test_weight_clamping() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // Write config with out-of-bounds weights
+        std::fs::write(
+            &config_path,
+            r#"
+[[reference]]
+name = "over"
+path = "/refs/over"
+weight = 1.5
+
+[[reference]]
+name = "under"
+path = "/refs/under"
+weight = -0.5
+
+[[reference]]
+name = "valid"
+path = "/refs/valid"
+weight = 0.7
+"#,
+        )
+        .unwrap();
+
+        // Load config (should clamp weights)
+        let config = Config::load(&dir.path());
+
+        // Find the references
+        let over_ref = config.references.iter().find(|r| r.name == "over").unwrap();
+        let under_ref = config
+            .references
+            .iter()
+            .find(|r| r.name == "under")
+            .unwrap();
+        let valid_ref = config
+            .references
+            .iter()
+            .find(|r| r.name == "valid")
+            .unwrap();
+
+        assert_eq!(
+            over_ref.weight, 1.0,
+            "Weight > 1.0 should be clamped to 1.0"
+        );
+        assert_eq!(
+            under_ref.weight, 0.0,
+            "Weight < 0.0 should be clamped to 0.0"
+        );
+        assert_eq!(
+            valid_ref.weight, 0.7,
+            "Valid weight should remain unchanged"
+        );
     }
 }

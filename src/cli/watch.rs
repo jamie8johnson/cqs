@@ -75,6 +75,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let mut last_event = std::time::Instant::now();
     let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
+    let cq_dir = dunce::canonicalize(&cq_dir).unwrap_or(cq_dir);
+    let notes_path = dunce::canonicalize(&notes_path).unwrap_or(notes_path);
 
     // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
     // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
@@ -88,6 +90,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 for path in event.paths {
+                    let path = dunce::canonicalize(&path).unwrap_or(path);
                     // Skip .cq directory
                     if path.starts_with(&cq_dir) {
                         continue;
