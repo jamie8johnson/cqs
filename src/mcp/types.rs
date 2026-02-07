@@ -123,6 +123,8 @@ pub(crate) struct SearchArgs {
     pub note_weight: Option<f32>,
     /// Filter which indexes to search. Use "project" for primary, reference names for others.
     pub sources: Option<Vec<String>>,
+    /// Filter by structural code pattern (builder, error_swallow, async, mutex, unsafe, recursion)
+    pub pattern: Option<String>,
 }
 
 /// Audit mode arguments

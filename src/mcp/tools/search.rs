@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::parser::{ChunkType, Language};
 use crate::reference::{self, TaggedResult};
 use crate::store::{SearchFilter, UnifiedResult};
+use crate::structural::Pattern;
 
 use super::super::server::McpServer;
 use super::super::types::SearchArgs;
@@ -62,6 +63,9 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         note_weight: args.note_weight.unwrap_or(1.0),
     };
 
+    // Parse structural pattern filter
+    let pattern: Option<Pattern> = args.pattern.as_ref().map(|p| p.parse()).transpose()?;
+
     // Validate filter parameters before search
     filter
         .validate()
@@ -108,6 +112,23 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         }
     } else {
         vec![]
+    };
+
+    // Apply structural pattern filter if specified
+    let primary_results = if let Some(ref pat) = pattern {
+        let mut filtered: Vec<UnifiedResult> = primary_results
+            .into_iter()
+            .filter(|r| match r {
+                UnifiedResult::Code(sr) => {
+                    pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
+                }
+                UnifiedResult::Note(_) => false,
+            })
+            .collect();
+        filtered.truncate(limit);
+        filtered
+    } else {
+        primary_results
     };
 
     // Fast path: no references configured

@@ -70,6 +70,9 @@ pub mod reference;
 pub mod search;
 pub mod source;
 pub mod store;
+pub mod structural;
+
+pub mod gather;
 
 #[cfg(feature = "gpu-search")]
 pub mod cagra;
