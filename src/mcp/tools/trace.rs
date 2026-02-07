@@ -22,6 +22,10 @@ pub fn tool_trace(server: &McpServer, arguments: Value) -> Result<Value> {
         .map(|v| v as usize)
         .unwrap_or(10)
         .clamp(1, 50);
+    let format = arguments
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("json");
 
     // Resolve source and target to chunk names
     let (source_chunk, _) = resolve_target(&server.store, source)?;
@@ -38,6 +42,17 @@ pub fn tool_trace(server: &McpServer, arguments: Value) -> Result<Value> {
             .unwrap_or(&source_chunk.file)
             .to_string_lossy()
             .replace('\\', "/");
+
+        if format == "mermaid" {
+            let text = format!(
+                "graph TD\n    A[\"{} ({}:{})\"]",
+                mermaid_escape(&source_name),
+                mermaid_escape(&rel_file),
+                source_chunk.line_start
+            );
+            return Ok(serde_json::json!({"content": [{"type": "text", "text": text}]}));
+        }
+
         let result = serde_json::json!({
             "source": source_name,
             "target": target_name,
@@ -55,6 +70,11 @@ pub fn tool_trace(server: &McpServer, arguments: Value) -> Result<Value> {
 
     match path {
         Some(names) => {
+            if format == "mermaid" {
+                let text = format_mermaid(&server.store, &server.project_root, &names)?;
+                return Ok(serde_json::json!({"content": [{"type": "text", "text": text}]}));
+            }
+
             // Enrich each node with file/line/signature
             let mut path_json = Vec::new();
             for name in &names {
@@ -90,6 +110,14 @@ pub fn tool_trace(server: &McpServer, arguments: Value) -> Result<Value> {
             )
         }
         None => {
+            if format == "mermaid" {
+                let text = format!(
+                    "graph TD\n    %% No call path found from {} to {} within depth {}",
+                    source_name, target_name, max_depth
+                );
+                return Ok(serde_json::json!({"content": [{"type": "text", "text": text}]}));
+            }
+
             let result = serde_json::json!({
                 "source": source_name,
                 "target": target_name,
@@ -145,4 +173,55 @@ fn bfs_shortest_path(
         }
     }
     None
+}
+
+/// Format trace path as Mermaid graph TD string
+fn format_mermaid(
+    store: &crate::Store,
+    project_root: &std::path::Path,
+    names: &[String],
+) -> anyhow::Result<String> {
+    let mut lines = vec!["graph TD".to_string()];
+
+    for (i, name) in names.iter().enumerate() {
+        let label = match store.search_by_name(name, 1)?.into_iter().next() {
+            Some(r) => {
+                let rel = r
+                    .chunk
+                    .file
+                    .strip_prefix(project_root)
+                    .unwrap_or(&r.chunk.file)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                format!(
+                    "{} ({}:{})",
+                    mermaid_escape(name),
+                    mermaid_escape(&rel),
+                    r.chunk.line_start
+                )
+            }
+            None => mermaid_escape(name),
+        };
+        lines.push(format!("    {}[\"{}\"]", node_letter(i), label));
+    }
+
+    for i in 0..names.len().saturating_sub(1) {
+        lines.push(format!("    {} --> {}", node_letter(i), node_letter(i + 1)));
+    }
+
+    Ok(lines.join("\n"))
+}
+
+fn node_letter(i: usize) -> String {
+    if i < 26 {
+        ((b'A' + i as u8) as char).to_string()
+    } else {
+        format!("{}{}", ((b'A' + (i % 26) as u8) as char), i / 26)
+    }
+}
+
+fn mermaid_escape(s: &str) -> String {
+    s.replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

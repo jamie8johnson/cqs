@@ -319,6 +319,12 @@ pub fn handle_tools_list() -> Result<Value> {
                         "type": "integer",
                         "description": "Maximum search depth (default: 10)",
                         "default": 10
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["json", "mermaid"],
+                        "description": "Output format (default: json). Use 'mermaid' for diagram output.",
+                        "default": "json"
                     }
                 },
                 "required": ["source", "target"]

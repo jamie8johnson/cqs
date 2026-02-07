@@ -16,8 +16,9 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
     cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor, cmd_explain, cmd_gc,
-    cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref, cmd_serve, cmd_similar,
-    cmd_stats, cmd_test_map, cmd_trace, NotesCommand, RefCommand, ServeConfig,
+    cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_project, cmd_query, cmd_ref, cmd_serve,
+    cmd_similar, cmd_stats, cmd_test_map, cmd_trace, NotesCommand, ProjectCommand, RefCommand,
+    ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -232,7 +233,10 @@ enum Commands {
         /// Max search depth
         #[arg(long, default_value = "10")]
         max_depth: usize,
-        /// Output as JSON
+        /// Output format: text, json, mermaid
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
     },
@@ -263,6 +267,11 @@ enum Commands {
         /// Include public API functions in the main list
         #[arg(long)]
         include_pub: bool,
+    },
+    /// Manage cross-project search registry
+    Project {
+        #[command(subcommand)]
+        subcmd: ProjectCommand,
     },
     /// Remove stale chunks and rebuild index
     Gc {
@@ -341,8 +350,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref source,
             ref target,
             max_depth,
+            ref format,
             json,
-        }) => cmd_trace(&cli, source, target, max_depth, json),
+        }) => {
+            let fmt = if json { "json" } else { format.as_str() };
+            cmd_trace(&cli, source, target, max_depth, fmt)
+        }
         Some(Commands::TestMap {
             ref name,
             depth,
@@ -350,6 +363,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_test_map(&cli, name, depth, json),
         Some(Commands::Context { ref path, json }) => cmd_context(&cli, path, json),
         Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
+        Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
