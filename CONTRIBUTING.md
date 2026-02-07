@@ -135,9 +135,12 @@ src/
     release/      - Version bump, changelog, publish workflow
     audit/        - 20-category code audit with parallel agents
     pr/           - WSL-safe PR creation
-    bootstrap/    - New project setup with tears infrastructure
+    cqs-bootstrap/ - New project setup with tears infrastructure
     reindex/      - Rebuild index with before/after stats
     docs-review/  - Check project docs for staleness
+    migrate/      - Schema version upgrades
+    troubleshoot/ - Diagnose common cqs issues
+    cqs-*/        - MCP tool skill wrappers (search, read, callers, etc.)
 ```
 
 **Key design notes:**

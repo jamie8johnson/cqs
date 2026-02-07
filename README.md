@@ -153,6 +153,26 @@ cqs diff old-version new-ref                   # two references
 cqs diff old-version --threshold 0.90          # stricter "modified" cutoff
 ```
 
+## Code Intelligence
+
+```bash
+# Follow a call chain between two functions (BFS shortest path)
+cqs trace cmd_query search_filtered
+cqs trace cmd_query search_filtered --max-depth 5
+
+# Impact analysis: what breaks if I change this function?
+cqs impact search_filtered                # direct callers + affected tests
+cqs impact search_filtered --depth 3      # transitive callers
+
+# Map functions to their tests
+cqs test-map search_filtered
+cqs test-map search_filtered --depth 3 --json
+
+# Module overview: chunks, callers, callees, notes for a file
+cqs context src/search.rs
+cqs context src/search.rs --json
+```
+
 ## Reference Indexes (Multi-Index Search)
 
 Search across your project and external codebases simultaneously:
@@ -247,7 +267,7 @@ Available tools:
 - `cqs_stats` - index stats, chunk counts, HNSW index status
 - `cqs_callers` - find functions that call a given function
 - `cqs_callees` - find functions called by a given function
-- `cqs_read` - read file with context notes injected as comments
+- `cqs_read` - read file with context notes injected as comments (use `focus` param for function + type deps only)
 - `cqs_add_note` - add observation to project memory (indexed for future searches)
 - `cqs_update_note` - update an existing note's text, sentiment, or mentions
 - `cqs_remove_note` - remove a note from project memory
@@ -255,6 +275,11 @@ Available tools:
 - `cqs_similar` - find functions similar to a given function (search by example)
 - `cqs_explain` - function card: signature, callers, callees, similar functions
 - `cqs_diff` - semantic diff between indexed snapshots
+- `cqs_trace` - follow call chain between two functions (BFS shortest path)
+- `cqs_impact` - what breaks if you change X? Callers with snippets + affected tests
+- `cqs_test_map` - map functions to tests that exercise them
+- `cqs_batch` - execute multiple queries in one call (up to 10)
+- `cqs_context` - module-level understanding: chunks, callers, callees, notes for a file
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
