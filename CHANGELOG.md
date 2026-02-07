@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-02-06
+
+### Changed
+- **Refactor**: Split `parser.rs` (1072 lines) into `src/parser/` directory — mod.rs, types.rs, chunk.rs, calls.rs
+- **Refactor**: Split `hnsw.rs` (1150 lines) into `src/hnsw/` directory — mod.rs, build.rs, search.rs, persist.rs, safety.rs
+- Updated public-facing messaging to lead with token savings for AI agents
+- Enhanced `groom-notes` skill with Phase 2 (suggest new notes from git history)
+- Updated CONTRIBUTING.md architecture tree for new directory layout
+
+### Fixed
+- Flaky `test_loaded_index_multiple_searches` — replaced sin-based test embeddings with well-separated one-hot vectors
+
 ## [0.9.0] - 2026-02-07
 
 ### Added
