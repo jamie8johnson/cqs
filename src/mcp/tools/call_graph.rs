@@ -43,7 +43,8 @@ pub fn tool_callees(server: &McpServer, arguments: Value) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("Missing 'name' argument"))?;
 
     // Use full call graph (includes large functions)
-    let callees = server.store.get_callees_full(name)?;
+    // No file context available from MCP tool input — pass None
+    let callees = server.store.get_callees_full(name, None)?;
 
     let result = serde_json::json!({
         "function": name,

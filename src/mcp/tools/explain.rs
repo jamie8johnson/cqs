@@ -42,10 +42,11 @@ pub fn tool_explain(server: &McpServer, arguments: Value) -> Result<Value> {
         .get_callers_full(&chunk.name)
         .unwrap_or_default();
 
-    // Get callees
+    // Get callees — scope to the resolved chunk's file to avoid ambiguity
+    let chunk_file = chunk.file.to_string_lossy();
     let callees = server
         .store
-        .get_callees_full(&chunk.name)
+        .get_callees_full(&chunk.name, Some(&chunk_file))
         .unwrap_or_default();
 
     // Get similar (top 3)
