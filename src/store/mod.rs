@@ -23,6 +23,7 @@ pub(crate) mod helpers;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use tokio::runtime::Runtime;
@@ -105,6 +106,8 @@ use crate::nl::normalize_for_fts;
 pub struct Store {
     pub(crate) pool: SqlitePool,
     pub(crate) rt: Runtime,
+    /// Whether close() has already been called (skip WAL checkpoint in Drop)
+    closed: AtomicBool,
 }
 
 impl Store {
@@ -158,7 +161,11 @@ impl Store {
                 .await
         })?;
 
-        let store = Self { pool, rt };
+        let store = Self {
+            pool,
+            rt,
+            closed: AtomicBool::new(false),
+        };
 
         // Set restrictive permissions on database files (Unix only)
         // These files contain code embeddings - not secrets, but defense-in-depth
@@ -559,6 +566,7 @@ impl Store {
     /// Safe to skip (pool will close connections on drop), but recommended
     /// for clean shutdown in long-running processes.
     pub fn close(self) -> Result<(), StoreError> {
+        self.closed.store(true, Ordering::Release);
         self.rt.block_on(async {
             // TRUNCATE mode: checkpoint and delete WAL file
             sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -573,6 +581,9 @@ impl Store {
 
 impl Drop for Store {
     fn drop(&mut self) {
+        if self.closed.load(Ordering::Acquire) {
+            return; // Already checkpointed in close()
+        }
         // Best-effort WAL checkpoint on drop to avoid leaving large WAL files.
         // Errors are logged but not propagated (Drop can't fail).
         // catch_unwind guards against block_on panicking when called from
