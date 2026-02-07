@@ -115,11 +115,20 @@ src/
     tools/      - MCP tool implementations
       mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, batch.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs
     transports/ - stdio.rs, http.rs transport implementations
-  parser.rs     - tree-sitter code parsing (delegates to language/ registry)
+  parser/       - Tree-sitter code parsing (delegates to language/ registry)
+    mod.rs      - Parser struct, parse_file(), supported_extensions()
+    types.rs    - Chunk, CallSite, FunctionCalls, ParserError
+    chunk.rs    - Chunk extraction, signatures, doc comments
+    calls.rs    - Call graph extraction, callee filtering
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
   search.rs     - Search algorithms, name matching, HNSW-guided search
   math.rs       - Vector math utilities (cosine similarity, SIMD)
-  hnsw.rs       - HNSW index with batched build, atomic writes
+  hnsw/         - HNSW index with batched build, atomic writes
+    mod.rs      - HnswIndex, HnswInner, HnswError, VectorIndex impl
+    build.rs    - build(), build_batched() construction
+    search.rs   - Nearest-neighbor search
+    persist.rs  - save(), load(), checksum verification
+    safety.rs   - Send/Sync and loaded-index safety tests
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment, rewrite_notes_file()
