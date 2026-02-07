@@ -15,8 +15,9 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_diff, cmd_doctor, cmd_explain, cmd_index, cmd_init, cmd_notes,
-    cmd_query, cmd_ref, cmd_serve, cmd_similar, cmd_stats, NotesCommand, RefCommand, ServeConfig,
+    cmd_callees, cmd_callers, cmd_context, cmd_diff, cmd_doctor, cmd_explain, cmd_impact,
+    cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref, cmd_serve, cmd_similar, cmd_stats,
+    cmd_test_map, cmd_trace, NotesCommand, RefCommand, ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -207,6 +208,49 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Impact analysis: what breaks if you change a function
+    Impact {
+        /// Function name or file:function
+        name: String,
+        /// Caller depth (1=direct, 2+=transitive)
+        #[arg(long, default_value = "1")]
+        depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Trace call chain between two functions
+    Trace {
+        /// Source function name or file:function
+        source: String,
+        /// Target function name or file:function
+        target: String,
+        /// Max search depth
+        #[arg(long, default_value = "10")]
+        max_depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find tests that exercise a function
+    TestMap {
+        /// Function name or file:function
+        name: String,
+        /// Max call chain depth to search
+        #[arg(long, default_value = "5")]
+        depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// What do I need to know to work on this file
+    Context {
+        /// File path relative to project root
+        path: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -269,6 +313,23 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             threshold,
             json,
         }) => cmd_similar(&cli, target, limit, threshold, json),
+        Some(Commands::Impact {
+            ref name,
+            depth,
+            json,
+        }) => cmd_impact(&cli, name, depth, json),
+        Some(Commands::Trace {
+            ref source,
+            ref target,
+            max_depth,
+            json,
+        }) => cmd_trace(&cli, source, target, max_depth, json),
+        Some(Commands::TestMap {
+            ref name,
+            depth,
+            json,
+        }) => cmd_test_map(&cli, name, depth, json),
+        Some(Commands::Context { ref path, json }) => cmd_context(&cli, path, json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

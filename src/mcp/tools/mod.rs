@@ -3,14 +3,20 @@
 //! Each tool provides a specific capability to MCP clients.
 
 mod audit;
+mod batch;
 mod call_graph;
+mod context;
 mod diff;
 mod explain;
+mod impact;
 mod notes;
 mod read;
+pub(crate) mod resolve;
 mod search;
 mod similar;
 mod stats;
+mod test_map;
+mod trace;
 
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -125,9 +131,12 @@ pub fn handle_tools_list() -> Result<Value> {
                     "path": {
                         "type": "string",
                         "description": "Path to file (relative to project root)"
+                    },
+                    "focus": {
+                        "type": "string",
+                        "description": "Function name or file:function. Returns only the target function + its type dependencies instead of the whole file. Cuts tokens by 50-80% in large files."
                     }
-                },
-                "required": ["path"]
+                }
             }),
         },
         Tool {
@@ -267,6 +276,101 @@ pub fn handle_tools_list() -> Result<Value> {
             }),
         },
         Tool {
+            name: "cqs_impact".into(),
+            description: "Impact analysis: what breaks if you change a function. Returns callers with usage context and tests that reference the function.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Function name or file:function to analyze"
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Caller depth (1=direct only, 2+=transitive). Default: 1",
+                        "default": 1
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        Tool {
+            name: "cqs_trace".into(),
+            description: "Follow a call chain between two functions. Returns the shortest path through the call graph.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Source function name or file:function"
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "Target function name or file:function"
+                    },
+                    "max_depth": {
+                        "type": "integer",
+                        "description": "Maximum search depth (default: 10)",
+                        "default": 10
+                    }
+                },
+                "required": ["source", "target"]
+            }),
+        },
+        Tool {
+            name: "cqs_test_map".into(),
+            description: "Map functions to tests that exercise them. Find what tests cover a given function.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Function name or file:function to find tests for"
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "Max call chain depth to search (default: 5)",
+                        "default": 5
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        Tool {
+            name: "cqs_batch".into(),
+            description: "Execute multiple queries in one tool call. Eliminates round-trip overhead for independent lookups.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tool": {"type": "string", "enum": ["search", "callers", "callees", "explain", "similar", "stats"], "description": "Which tool to invoke"},
+                                "arguments": {"type": "object", "description": "Arguments for the tool"}
+                            },
+                            "required": ["tool"]
+                        },
+                        "maxItems": 10,
+                        "description": "Array of queries to execute"
+                    }
+                },
+                "required": ["queries"]
+            }),
+        },
+        Tool {
+            name: "cqs_context".into(),
+            description: "What do I need to know to work on this file? Returns all chunks (signatures), external callers, external callees, dependent files, and related notes.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path relative to project root (e.g., 'src/search.rs')"}
+                },
+                "required": ["path"]
+            }),
+        },
+        Tool {
             name: "cqs_audit_mode".into(),
             description: "Toggle audit mode to exclude notes from search and read results. Use before code audits or fresh-eyes reviews to prevent prior observations from influencing analysis.".into(),
             input_schema: serde_json::json!({
@@ -319,8 +423,13 @@ pub fn handle_tools_call(server: &McpServer, params: Option<Value>) -> Result<Va
         "cqs_diff" => diff::tool_diff(server, arguments),
         "cqs_explain" => explain::tool_explain(server, arguments),
         "cqs_similar" => similar::tool_similar(server, arguments),
+        "cqs_impact" => impact::tool_impact(server, arguments),
+        "cqs_trace" => trace::tool_trace(server, arguments),
+        "cqs_test_map" => test_map::tool_test_map(server, arguments),
+        "cqs_batch" => batch::tool_batch(server, arguments),
+        "cqs_context" => context::tool_context(server, arguments),
         _ => bail!(
-            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_audit_mode, cqs_diff, cqs_explain, cqs_similar",
+            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_audit_mode, cqs_diff, cqs_explain, cqs_similar, cqs_impact, cqs_trace, cqs_test_map, cqs_batch, cqs_context",
             name
         ),
     };

@@ -165,6 +165,34 @@ pub struct CallerInfo {
     pub line: u32,
 }
 
+/// Caller with call-site context for impact analysis
+///
+/// Enriches CallerInfo with the specific line where the call occurs,
+/// enabling snippet extraction without reading the source file.
+#[derive(Debug, Clone)]
+pub struct CallerWithContext {
+    /// Function name of the caller
+    pub name: String,
+    /// Source file path
+    pub file: PathBuf,
+    /// Line where the calling function starts
+    pub line: u32,
+    /// Line where the call to the target occurs
+    pub call_line: u32,
+}
+
+/// In-memory call graph for BFS traversal
+///
+/// Built from a single scan of the `function_calls` table.
+/// Both forward and reverse adjacency lists are included
+/// to support trace (forward BFS) and impact/test-map (reverse BFS).
+pub struct CallGraph {
+    /// Forward edges: caller_name -> Vec<callee_name>
+    pub forward: HashMap<String, Vec<String>>,
+    /// Reverse edges: callee_name -> Vec<caller_name>
+    pub reverse: HashMap<String, Vec<String>>,
+}
+
 /// Chunk identity for diff comparison
 ///
 /// Minimal metadata needed to identify and match chunks across stores.

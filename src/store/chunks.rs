@@ -385,6 +385,29 @@ impl Store {
         })
     }
 
+    /// Get all chunks for a given file (origin).
+    ///
+    /// Returns chunks sorted by line_start. Used by `cqs context` to list
+    /// all functions/types in a file.
+    pub fn get_chunks_by_origin(&self, origin: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                        line_start, line_end, parent_id
+                 FROM chunks WHERE origin = ?1
+                 ORDER BY line_start",
+            )
+            .bind(origin)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .iter()
+                .map(|r| ChunkSummary::from(ChunkRow::from_row(r)))
+                .collect())
+        })
+    }
+
     /// Get a single chunk by its ID
     pub fn get_chunk_by_id(&self, id: &str) -> Result<Option<ChunkSummary>, StoreError> {
         self.rt.block_on(async {

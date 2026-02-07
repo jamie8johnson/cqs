@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, context.rs, resolve.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -113,7 +113,7 @@ src/
     validation.rs - Input validation, path checks
     audit_mode.rs - Audit mode state
     tools/      - MCP tool implementations
-      mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs
+      mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, batch.rs, context.rs, resolve.rs
     transports/ - stdio.rs, http.rs transport implementations
   parser.rs     - tree-sitter code parsing (delegates to language/ registry)
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings

@@ -29,8 +29,14 @@ use tokio::runtime::Runtime;
 
 // Re-export public types with documentation
 
+/// In-memory call graph (forward + reverse adjacency lists).
+pub use helpers::CallGraph;
+
 /// Information about a function caller (from call graph).
 pub use helpers::CallerInfo;
+
+/// Caller with call-site context for impact analysis.
+pub use helpers::CallerWithContext;
 
 /// Chunk identity for diff comparison (name, file, line, window info).
 pub use helpers::ChunkIdentity;
