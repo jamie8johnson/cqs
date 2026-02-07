@@ -99,6 +99,11 @@ None.
    - `cqs-audit-mode` — toggle audit mode for unbiased review
    - `cqs-ref` — manage reference indexes (add/remove/update/list)
    - `cqs-watch` — start file watcher for live index updates
+   - `cqs-trace` — follow call chain between two functions
+   - `cqs-impact` — what breaks if you change X
+   - `cqs-test-map` — map functions to their tests
+   - `cqs-batch` — execute multiple queries in one call
+   - `cqs-context` — module-level file overview
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
@@ -167,7 +172,7 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff` (run `cqs watch` to keep index fresh)
+Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context` (run `cqs watch` to keep index fresh)
 
 ## Audit Mode
 
