@@ -38,7 +38,13 @@ pub(crate) fn cmd_context(_cli: &crate::cli::Cli, path: &str, json: bool) -> Res
     let mut external_callers = Vec::new();
     let mut dependent_files: HashSet<String> = HashSet::new();
     for chunk in &chunks {
-        let callers = store.get_callers_full(&chunk.name).unwrap_or_default();
+        let callers = match store.get_callers_full(&chunk.name) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, name = %chunk.name, "Failed to get callers");
+                Vec::new()
+            }
+        };
         for caller in callers {
             let caller_origin = caller.file.to_string_lossy().to_string();
             if caller_origin != origin && !caller_origin.ends_with(path) {
@@ -64,9 +70,13 @@ pub(crate) fn cmd_context(_cli: &crate::cli::Cli, path: &str, json: bool) -> Res
     let mut seen_callees: HashSet<String> = HashSet::new();
     for chunk in &chunks {
         let chunk_file = chunk.file.to_string_lossy();
-        let callees = store
-            .get_callees_full(&chunk.name, Some(&chunk_file))
-            .unwrap_or_default();
+        let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file)) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, name = %chunk.name, "Failed to get callees");
+                Vec::new()
+            }
+        };
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str())
                 && seen_callees.insert(callee_name.clone())
