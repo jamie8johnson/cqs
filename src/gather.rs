@@ -134,29 +134,34 @@ pub fn gather(
     let mut chunks: Vec<GatheredChunk> = Vec::new();
 
     for (name, (score, depth)) in &name_scores {
-        if let Ok(results) = store.search_by_name(name, 1) {
-            if let Some(r) = results.into_iter().next() {
-                // Dedup by chunk id
-                if seen_ids.contains(&r.chunk.id) {
-                    continue;
-                }
-                seen_ids.insert(r.chunk.id.clone());
+        match store.search_by_name(name, 1) {
+            Ok(results) => {
+                if let Some(r) = results.into_iter().next() {
+                    // Dedup by chunk id
+                    if seen_ids.contains(&r.chunk.id) {
+                        continue;
+                    }
+                    seen_ids.insert(r.chunk.id.clone());
 
-                chunks.push(GatheredChunk {
-                    name: r.chunk.name.clone(),
-                    file: r
-                        .chunk
-                        .file
-                        .strip_prefix(project_root)
-                        .unwrap_or(&r.chunk.file)
-                        .to_path_buf(),
-                    line_start: r.chunk.line_start,
-                    line_end: r.chunk.line_end,
-                    signature: r.chunk.signature.clone(),
-                    content: r.chunk.content.clone(),
-                    score: *score,
-                    depth: *depth,
-                });
+                    chunks.push(GatheredChunk {
+                        name: r.chunk.name.clone(),
+                        file: r
+                            .chunk
+                            .file
+                            .strip_prefix(project_root)
+                            .unwrap_or(&r.chunk.file)
+                            .to_path_buf(),
+                        line_start: r.chunk.line_start,
+                        line_end: r.chunk.line_end,
+                        signature: r.chunk.signature.clone(),
+                        content: r.chunk.content.clone(),
+                        score: *score,
+                        depth: *depth,
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, name = %name, "BFS expansion search failed");
             }
         }
     }

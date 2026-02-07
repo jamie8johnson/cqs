@@ -31,7 +31,10 @@ impl Parser {
 
         let query = match self.get_call_query(language) {
             Ok(q) => q,
-            Err(_) => return vec![],
+            Err(e) => {
+                tracing::warn!(error = %e, "Tree-sitter query failed in extract_calls");
+                return vec![];
+            }
         };
 
         let mut cursor = tree_sitter::QueryCursor::new();

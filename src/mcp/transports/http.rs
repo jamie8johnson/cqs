@@ -298,10 +298,13 @@ async fn handle_mcp_post(
         return (StatusCode::ACCEPTED, Json(serde_json::json!(null)));
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::to_value(&response).unwrap_or_default()),
-    )
+    match serde_json::to_value(&response) {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to serialize MCP response");
+            (StatusCode::OK, Json(serde_json::Value::Null))
+        }
+    }
 }
 
 /// Handle GET /health

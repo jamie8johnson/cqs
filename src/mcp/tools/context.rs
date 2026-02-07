@@ -50,10 +50,13 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
     let mut dependent_files: HashSet<String> = HashSet::new();
 
     for chunk in &chunks {
-        let callers = server
-            .store
-            .get_callers_full(&chunk.name)
-            .unwrap_or_default();
+        let callers = match server.store.get_callers_full(&chunk.name) {
+            Ok(callers) => callers,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to get callers for {}", chunk.name);
+                Vec::new()
+            }
+        };
         for caller in callers {
             let caller_origin = caller.file.to_string_lossy().to_string();
             if caller_origin != origin && !caller_origin.ends_with(path) {
@@ -78,10 +81,16 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
     let mut external_callees = Vec::new();
     for chunk in &chunks {
         let chunk_file = chunk.file.to_string_lossy();
-        let callees = server
+        let callees = match server
             .store
             .get_callees_full(&chunk.name, Some(&chunk_file))
-            .unwrap_or_default();
+        {
+            Ok(callees) => callees,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to get callees for {}", chunk.name);
+                Vec::new()
+            }
+        };
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str()) {
                 external_callees.push(serde_json::json!({

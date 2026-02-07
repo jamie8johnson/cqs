@@ -42,13 +42,23 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
     let chunk = &source.chunk;
 
     // Get callers
-    let callers = store.get_callers_full(&chunk.name).unwrap_or_default();
+    let callers = match store.get_callers_full(&chunk.name) {
+        Ok(callers) => callers,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get callers for {}", chunk.name);
+            Vec::new()
+        }
+    };
 
     // Get callees — scope to the resolved chunk's file to avoid ambiguity
     let chunk_file = chunk.file.to_string_lossy();
-    let callees = store
-        .get_callees_full(&chunk.name, Some(&chunk_file))
-        .unwrap_or_default();
+    let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file)) {
+        Ok(callees) => callees,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get callees for {}", chunk.name);
+            Vec::new()
+        }
+    };
 
     // Get similar (top 3) using embedding
     let similar = match store.get_chunk_with_embedding(&chunk.id)? {
