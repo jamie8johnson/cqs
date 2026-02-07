@@ -13,6 +13,7 @@ use super::Cli;
 /// with `[workspace]` in its `Cargo.toml` takes precedence as the project root.
 pub(crate) fn find_project_root() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
     let mut current = cwd.as_path();
 
     loop {
@@ -32,10 +33,12 @@ pub(crate) fn find_project_root() -> PathBuf {
                 // For Cargo projects, check if we're inside a workspace
                 if *marker == "Cargo.toml" {
                     if let Some(ws_root) = find_cargo_workspace_root(current) {
+                        let ws_root = dunce::canonicalize(&ws_root).unwrap_or(ws_root);
                         return ws_root;
                     }
                 }
-                return current.to_path_buf();
+                let found = current.to_path_buf();
+                return dunce::canonicalize(&found).unwrap_or(found);
             }
         }
 

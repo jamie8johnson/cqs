@@ -153,19 +153,24 @@ pub(crate) fn rewrite_notes_file(
             format!("{}: {}", tmp_path.display(), e),
         ))
     })?;
-    std::fs::rename(&tmp_path, notes_path).map_err(|e| {
-        // Clean up temp file on rename failure
+    if let Err(rename_err) = std::fs::rename(&tmp_path, notes_path) {
+        // Rename can fail with EXDEV on cross-device (Docker overlayfs, some CI).
+        // Fall back to copy + remove.
+        if let Err(copy_err) = std::fs::copy(&tmp_path, notes_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(NoteError::Io(std::io::Error::new(
+                copy_err.kind(),
+                format!(
+                    "rename {} -> {} failed ({}), copy fallback also failed: {}",
+                    tmp_path.display(),
+                    notes_path.display(),
+                    rename_err,
+                    copy_err
+                ),
+            )));
+        }
         let _ = std::fs::remove_file(&tmp_path);
-        NoteError::Io(std::io::Error::new(
-            e.kind(),
-            format!(
-                "rename {} -> {}: {}",
-                tmp_path.display(),
-                notes_path.display(),
-                e
-            ),
-        ))
-    })?;
+    }
 
     Ok(file.note)
 }

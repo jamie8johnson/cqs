@@ -40,57 +40,65 @@ pub(crate) fn acquire_index_lock(cq_dir: &Path) -> Result<std::fs::File> {
     use std::io::Write;
 
     let lock_path = cq_dir.join("index.lock");
+    let mut retried = false;
 
-    // Try to open/create the lock file with restrictive permissions (0600 on Unix).
-    // Lock file contains PID which could leak process information.
-    #[cfg(unix)]
-    let lock_file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
+    loop {
+        // Try to open/create the lock file with restrictive permissions (0600 on Unix).
+        // Lock file contains PID which could leak process information.
+        #[cfg(unix)]
+        let lock_file = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .mode(0o600)
+                .open(&lock_path)
+                .context("Failed to create lock file")?
+        };
+
+        #[cfg(not(unix))]
+        let lock_file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)
             .read(true)
             .write(true)
-            .mode(0o600)
             .open(&lock_path)
-            .context("Failed to create lock file")?
-    };
+            .context("Failed to create lock file")?;
 
-    #[cfg(not(unix))]
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .context("Failed to create lock file")?;
-
-    match lock_file.try_lock_exclusive() {
-        Ok(()) => {
-            // Write our PID to the lock file
-            let mut file = lock_file;
-            writeln!(file, "{}", std::process::id())?;
-            file.sync_all()?;
-            Ok(file)
-        }
-        Err(_) => {
-            // Lock is held - check if the owning process is still alive
-            if let Ok(content) = std::fs::read_to_string(&lock_path) {
-                if let Ok(pid) = content.trim().parse::<u32>() {
-                    if !process_exists(pid) {
-                        // Stale lock - process is dead, remove and retry
-                        tracing::warn!("Removing stale lock (PID {} no longer exists)", pid);
-                        drop(lock_file);
-                        std::fs::remove_file(&lock_path)?;
-                        // Recursive retry (once)
-                        return acquire_index_lock(cq_dir);
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => {
+                // Write our PID to the lock file
+                let mut file = lock_file;
+                writeln!(file, "{}", std::process::id())?;
+                file.sync_all()?;
+                return Ok(file);
+            }
+            Err(_) => {
+                // Lock is held - check if the owning process is still alive
+                if !retried {
+                    if let Ok(content) = std::fs::read_to_string(&lock_path) {
+                        if let Ok(pid) = content.trim().parse::<u32>() {
+                            if !process_exists(pid) {
+                                // Stale lock - process is dead, remove and retry once
+                                tracing::warn!(
+                                    "Removing stale lock (PID {} no longer exists)",
+                                    pid
+                                );
+                                drop(lock_file);
+                                std::fs::remove_file(&lock_path)?;
+                                retried = true;
+                                continue;
+                            }
+                        }
                     }
                 }
+                bail!(
+                    "Another cqs process is indexing (see .cq/index.lock). \
+                     Hint: Wait for it to finish, or delete .cq/index.lock if the process crashed."
+                )
             }
-            bail!(
-                "Another cqs process is indexing (see .cq/index.lock). \
-                 Hint: Wait for it to finish, or delete .cq/index.lock if the process crashed."
-            )
         }
     }
 }
