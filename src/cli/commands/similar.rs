@@ -81,6 +81,7 @@ pub(crate) fn cmd_similar(
         query_text: String::new(),
         enable_rrf: false, // No RRF — direct embedding comparison
         note_weight: 0.0,  // Code only
+        note_only: false,
     };
 
     // Load vector index

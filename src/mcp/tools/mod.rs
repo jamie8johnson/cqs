@@ -96,6 +96,11 @@ pub fn handle_tools_list() -> Result<Value> {
                         "description": "Weight for note scores 0.0-1.0 (default: 1.0). Lower values make notes rank below code.",
                         "default": 1.0
                     },
+                    "note_only": {
+                        "type": "boolean",
+                        "description": "Return only notes, skip code search. Use for looking up prior observations without code noise.",
+                        "default": false
+                    },
                     "sources": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -314,6 +319,12 @@ pub fn handle_tools_list() -> Result<Value> {
                         "type": "integer",
                         "description": "Caller depth (1=direct only, 2+=transitive). Default: 1",
                         "default": 1
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["json", "mermaid"],
+                        "description": "Output format (default: json). Use 'mermaid' for diagram output.",
+                        "default": "json"
                     }
                 },
                 "required": ["name"]
@@ -396,7 +407,8 @@ pub fn handle_tools_list() -> Result<Value> {
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to project root (e.g., 'src/search.rs')"}
+                    "path": {"type": "string", "description": "File path relative to project root (e.g., 'src/search.rs')"},
+                    "summary": {"type": "boolean", "description": "Return counts only (chunk count, caller/callee counts, file list) instead of full details. Saves tokens for quick overview.", "default": false}
                 },
                 "required": ["path"]
             }),

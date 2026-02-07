@@ -53,6 +53,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         query_text: query.to_string(),
         enable_rrf: true, // Enable RRF hybrid search by default
         note_weight: cli.note_weight,
+        note_only: cli.note_only,
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 

@@ -14,6 +14,11 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("Missing required parameter: path"))?;
 
+    let summary = arguments
+        .get("summary")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // Resolve origin — try both relative and absolute forms
     let abs_path = server.project_root.join(path);
     let origin = abs_path.to_string_lossy().to_string();
@@ -145,6 +150,27 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
 
     let mut dep_files: Vec<String> = dependent_files.into_iter().collect();
     dep_files.sort();
+
+    if summary {
+        let result = serde_json::json!({
+            "file": path,
+            "chunk_count": chunks_json.len(),
+            "chunks": chunks_json.iter().map(|c| {
+                serde_json::json!({
+                    "name": c.get("name"),
+                    "chunk_type": c.get("chunk_type"),
+                    "lines": c.get("lines"),
+                })
+            }).collect::<Vec<_>>(),
+            "external_caller_count": external_callers.len(),
+            "external_callee_count": external_callees.len(),
+            "dependent_files": dep_files,
+            "note_count": notes_json.len(),
+        });
+        return Ok(
+            serde_json::json!({"content": [{"type": "text", "text": serde_json::to_string_pretty(&result)?}]}),
+        );
+    }
 
     let result = serde_json::json!({
         "file": path,

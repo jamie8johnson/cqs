@@ -14,7 +14,7 @@ pub(crate) fn cmd_impact(
     _cli: &crate::cli::Cli,
     name: &str,
     depth: usize,
-    json: bool,
+    format: &str,
 ) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
@@ -161,7 +161,56 @@ pub(crate) fn cmd_impact(
         Vec::new()
     };
 
-    if json {
+    // Mermaid output
+    if format == "mermaid" {
+        let mut lines = vec!["graph TD".to_string()];
+        lines.push(format!("    A[\"{}\"]", mermaid_escape(&chunk.name)));
+        lines.push("    style A fill:#f96".to_string());
+
+        let mut idx = 1;
+        for c in &callers {
+            let rel = c
+                .file
+                .strip_prefix(&root)
+                .unwrap_or(&c.file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let letter = node_letter(idx);
+            lines.push(format!(
+                "    {}[\"{} ({}:{})\"]",
+                letter,
+                mermaid_escape(&c.name),
+                mermaid_escape(&rel),
+                c.line
+            ));
+            lines.push(format!("    {} --> A", letter));
+            idx += 1;
+        }
+
+        for t in &tests {
+            let rel = t
+                .file
+                .strip_prefix(&root)
+                .unwrap_or(&t.file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let letter = node_letter(idx);
+            lines.push(format!(
+                "    {}{{\"{}\\n{}\\ndepth: {}\"}}",
+                letter,
+                mermaid_escape(&t.name),
+                mermaid_escape(&rel),
+                t.call_depth
+            ));
+            lines.push(format!("    {} -.-> A", letter));
+            idx += 1;
+        }
+
+        println!("{}", lines.join("\n"));
+        return Ok(());
+    }
+
+    if format == "json" {
         let callers_json: Vec<_> = callers
             .iter()
             .map(|c| {
@@ -310,4 +359,18 @@ pub(crate) fn cmd_impact(
     }
 
     Ok(())
+}
+
+fn node_letter(i: usize) -> String {
+    if i < 26 {
+        ((b'A' + i as u8) as char).to_string()
+    } else {
+        format!("{}{}", ((b'A' + (i % 26) as u8) as char), i / 26)
+    }
+}
+
+fn mermaid_escape(s: &str) -> String {
+    s.replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }

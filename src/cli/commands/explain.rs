@@ -71,6 +71,7 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
                 query_text: String::new(),
                 enable_rrf: false,
                 note_weight: 0.0,
+                note_only: false,
             };
             let index = HnswIndex::try_load(&cq_dir);
             let sim_results = store.search_filtered_with_index(

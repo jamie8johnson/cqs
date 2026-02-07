@@ -14,7 +14,7 @@ use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
 use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult};
-use crate::store::{Store, StoreError};
+use crate::store::{Store, StoreError, UnifiedResult};
 
 /// Pre-tokenized query for efficient name matching in loops
 ///
@@ -548,6 +548,12 @@ impl Store {
         }
 
         let _span = tracing::info_span!("search_unified", limit, threshold = %threshold).entered();
+
+        // note_only: return only notes, skip code search entirely
+        if filter.note_only {
+            let note_results = self.search_notes(query, limit, threshold)?;
+            return Ok(note_results.into_iter().map(UnifiedResult::Note).collect());
+        }
 
         // Skip note search entirely when note_weight is effectively zero
         let skip_notes = filter.note_weight <= 0.0;

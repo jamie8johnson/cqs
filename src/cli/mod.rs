@@ -54,6 +54,10 @@ pub struct Cli {
     #[arg(long, default_value = "1.0")]
     note_weight: f32,
 
+    /// Search notes only (skip code results)
+    #[arg(long)]
+    note_only: bool,
+
     /// Filter by language
     #[arg(short = 'l', long)]
     lang: Option<String>,
@@ -224,7 +228,10 @@ enum Commands {
         /// Caller depth (1=direct, 2+=transitive)
         #[arg(long, default_value = "1")]
         depth: usize,
-        /// Output as JSON
+        /// Output format: text, json, mermaid
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
     },
@@ -262,6 +269,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Return summary counts instead of full details
+        #[arg(long)]
+        summary: bool,
     },
     /// Find functions with no callers (dead code detection)
     Dead {
@@ -365,8 +375,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Impact {
             ref name,
             depth,
+            ref format,
             json,
-        }) => cmd_impact(&cli, name, depth, json),
+        }) => {
+            let fmt = if json { "json" } else { format.as_str() };
+            cmd_impact(&cli, name, depth, fmt)
+        }
         Some(Commands::Trace {
             ref source,
             ref target,
@@ -382,7 +396,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             depth,
             json,
         }) => cmd_test_map(&cli, name, depth, json),
-        Some(Commands::Context { ref path, json }) => cmd_context(&cli, path, json),
+        Some(Commands::Context {
+            ref path,
+            json,
+            summary,
+        }) => cmd_context(&cli, path, json, summary),
         Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
         Some(Commands::Gather {
             ref query,

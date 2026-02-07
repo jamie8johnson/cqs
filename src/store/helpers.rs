@@ -303,6 +303,8 @@ pub struct SearchFilter {
     /// 0.5 = notes scored at half weight
     /// 0.0 = notes excluded from results
     pub note_weight: f32,
+    /// When true, return only notes (skip code search entirely)
+    pub note_only: bool,
 }
 
 impl Default for SearchFilter {
@@ -315,6 +317,7 @@ impl Default for SearchFilter {
             query_text: String::new(),
             enable_rrf: false,
             note_weight: 1.0, // Notes weighted equally by default
+            note_only: false,
         }
     }
 }
@@ -353,6 +356,11 @@ impl SearchFilter {
         // note_weight must be in [0.0, 1.0] (NaN-safe)
         if !(0.0..=1.0).contains(&self.note_weight) {
             return Err("note_weight must be between 0.0 and 1.0");
+        }
+
+        // note_only with note_weight=0 is contradictory
+        if self.note_only && self.note_weight == 0.0 {
+            return Err("note_only=true with note_weight=0.0 is contradictory");
         }
 
         // query_text required when name_boost > 0 or enable_rrf

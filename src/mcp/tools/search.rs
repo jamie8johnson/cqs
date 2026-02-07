@@ -61,6 +61,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         query_text: args.query.clone(),
         enable_rrf: !args.semantic_only.unwrap_or(false), // RRF on by default, disable with semantic_only
         note_weight: args.note_weight.unwrap_or(1.0),
+        note_only: args.note_only.unwrap_or(false),
     };
 
     // Parse structural pattern filter
@@ -87,6 +88,29 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         (guard.is_active(), guard.status_line())
     };
     let search_start = std::time::Instant::now();
+
+    // note_only mode: return only notes, skip code search entirely
+    if filter.note_only {
+        if audit_active {
+            anyhow::bail!("note_only is unavailable during audit mode");
+        }
+        if search_project {
+            let note_results = server
+                .store
+                .search_notes(&query_embedding, limit, threshold)?;
+            let results: Vec<UnifiedResult> =
+                note_results.into_iter().map(UnifiedResult::Note).collect();
+            let search_ms = search_start.elapsed().as_millis();
+            tracing::info!(
+                results = results.len(),
+                elapsed_ms = search_ms,
+                "MCP note_only search completed"
+            );
+            return format_unified_results(results, &args.query, audit_status);
+        } else {
+            return format_unified_results(vec![], &args.query, audit_status);
+        }
+    }
 
     // Search primary store
     let primary_results: Vec<UnifiedResult> = if search_project {
