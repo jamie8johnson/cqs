@@ -371,3 +371,13 @@ Ship 1.0 when:
 - [ ] No known correctness bugs
 
 1.0 means: API stable, semver enforced, breaking changes = major bump.
+
+## Future: Agent Memory
+
+Ideas beyond code search — making cqs a knowledge layer across sessions.
+
+- [ ] **Diff-aware impact** — `cqs impact-diff` takes a git diff, returns affected callers + tests that need re-running. CI integration: run only relevant tests. Combines `git diff` parse → function extraction → call graph traversal.
+- [ ] **Navigational traces** — record what an agent searched for, read, and edited during a session. Future sessions can replay the trail instead of rediscovering it. "Last time someone asked about auth, they read these 5 files in this order."
+- [ ] **Cross-session search** — embed and index past conversation fragments (questions + answers). When an agent asks "how does X work?", surface the answer from last Tuesday's session, not just code.
+- [ ] **Session knowledge packages** — export "what the last agent learned" as a reference index. Not just notes — navigational knowledge, frequently-accessed files, decision context. Bootstrap cold starts on unfamiliar codebases.
+- [ ] **Auto-detected patterns** — track search→read→edit sequences across sessions. When a pattern repeats (e.g., "searching for error handling always leads to these 3 files"), pre-compute and suggest the path.
