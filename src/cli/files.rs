@@ -20,7 +20,7 @@ pub(crate) fn enumerate_files(
 fn process_exists(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is safe - it only checks if process exists without
     // sending any signal.
-    i32::try_from(pid).map_or(false, |p| unsafe { libc::kill(p, 0) == 0 })
+    i32::try_from(pid).is_ok_and(|p| unsafe { libc::kill(p, 0) == 0 })
 }
 
 #[cfg(windows)]
