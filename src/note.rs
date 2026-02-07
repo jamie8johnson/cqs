@@ -142,8 +142,25 @@ pub(crate) fn rewrite_notes_file(
 
     // Atomic write: temp file + rename
     let tmp_path = notes_path.with_extension("toml.tmp");
-    std::fs::write(&tmp_path, output)?;
-    std::fs::rename(&tmp_path, notes_path)?;
+    std::fs::write(&tmp_path, &output).map_err(|e| {
+        NoteError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {}", tmp_path.display(), e),
+        ))
+    })?;
+    std::fs::rename(&tmp_path, notes_path).map_err(|e| {
+        // Clean up temp file on rename failure
+        let _ = std::fs::remove_file(&tmp_path);
+        NoteError::Io(std::io::Error::new(
+            e.kind(),
+            format!(
+                "rename {} -> {}: {}",
+                tmp_path.display(),
+                notes_path.display(),
+                e
+            ),
+        ))
+    })?;
 
     Ok(file.note)
 }

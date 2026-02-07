@@ -19,7 +19,7 @@ pub fn parse_target(target: &str) -> (Option<&str>, &str) {
             return (Some(file), name);
         }
     }
-    (None, target)
+    (None, target.trim_end_matches(':'))
 }
 
 /// Resolve a target string to a ChunkSummary.

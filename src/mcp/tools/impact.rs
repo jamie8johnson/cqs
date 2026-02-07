@@ -73,9 +73,10 @@ pub fn tool_impact(server: &McpServer, arguments: Value) -> Result<Value> {
     queue.push_back((target_name.clone(), 0));
 
     while let Some((current, d)) = queue.pop_front() {
-        if d >= 5 {
+        const MAX_TEST_SEARCH_DEPTH: usize = 5;
+        if d >= MAX_TEST_SEARCH_DEPTH {
             continue;
-        } // max test search depth
+        }
         if let Some(callers) = graph.reverse.get(&current) {
             for caller in callers {
                 if !ancestors.contains_key(caller) {

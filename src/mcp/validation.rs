@@ -43,7 +43,10 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
                     current_num
                 )
             })?;
-            total_minutes += hours * 60;
+            total_minutes = hours
+                .checked_mul(60)
+                .and_then(|m| total_minutes.checked_add(m))
+                .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
             current_num.clear();
         } else if c == 'm' {
             if current_num.is_empty() {
@@ -56,7 +59,9 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
                     current_num
                 )
             })?;
-            total_minutes += mins;
+            total_minutes = total_minutes
+                .checked_add(mins)
+                .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
             current_num.clear();
         } else if !c.is_whitespace() {
             bail!(
@@ -75,7 +80,9 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
                 current_num
             )
         })?;
-        total_minutes += mins;
+        total_minutes = total_minutes
+            .checked_add(mins)
+            .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
     }
 
     if total_minutes <= 0 {

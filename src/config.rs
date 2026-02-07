@@ -147,7 +147,11 @@ pub fn add_reference_to_config(
     config_path: &Path,
     ref_config: &ReferenceConfig,
 ) -> anyhow::Result<()> {
-    let content = std::fs::read_to_string(config_path).unwrap_or_default();
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
     let mut table: toml::Table = if content.is_empty() {
         toml::Table::new()
     } else {
