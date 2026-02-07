@@ -332,6 +332,10 @@
   - Tests stay with their respective modules
   - Target: each file 200-350 lines
 
+### Bugs
+
+- [ ] **Flaky `test_loaded_index_multiple_searches`** — HNSW approximate search with random embeddings doesn't reliably find exact match in top-5. Tighten test to use structured embeddings or increase ef_search for test.
+
 ## Phase 8: Security
 
 ### Done
