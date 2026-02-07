@@ -194,3 +194,97 @@ fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> V
     }
     neighbors
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_graph() -> CallGraph {
+        let mut forward = HashMap::new();
+        let mut reverse = HashMap::new();
+
+        // A calls B and C
+        forward.insert("A".to_string(), vec!["B".to_string(), "C".to_string()]);
+        // B calls D
+        forward.insert("B".to_string(), vec!["D".to_string()]);
+
+        // B and C are called by A
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        reverse.insert("C".to_string(), vec!["A".to_string()]);
+        // D is called by B
+        reverse.insert("D".to_string(), vec!["B".to_string()]);
+
+        CallGraph { forward, reverse }
+    }
+
+    #[test]
+    fn test_direction_parse() {
+        assert!(matches!(
+            "both".parse::<GatherDirection>().unwrap(),
+            GatherDirection::Both
+        ));
+        assert!(matches!(
+            "callers".parse::<GatherDirection>().unwrap(),
+            GatherDirection::Callers
+        ));
+        assert!(matches!(
+            "callees".parse::<GatherDirection>().unwrap(),
+            GatherDirection::Callees
+        ));
+        assert!("invalid".parse::<GatherDirection>().is_err());
+    }
+
+    #[test]
+    fn test_default_options() {
+        let opts = GatherOptions::default();
+        assert_eq!(opts.expand_depth, 1);
+        assert_eq!(opts.limit, 10);
+        assert!(matches!(opts.direction, GatherDirection::Both));
+    }
+
+    #[test]
+    fn test_get_neighbors_callees() {
+        let graph = make_graph();
+        let neighbors = get_neighbors(&graph, "A", GatherDirection::Callees);
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&"B".to_string()));
+        assert!(neighbors.contains(&"C".to_string()));
+    }
+
+    #[test]
+    fn test_get_neighbors_callers() {
+        let graph = make_graph();
+        let neighbors = get_neighbors(&graph, "B", GatherDirection::Callers);
+        assert_eq!(neighbors.len(), 1);
+        assert_eq!(neighbors[0], "A");
+    }
+
+    #[test]
+    fn test_get_neighbors_both() {
+        let graph = make_graph();
+        // B has callees [D] and callers [A]
+        let neighbors = get_neighbors(&graph, "B", GatherDirection::Both);
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&"D".to_string()));
+        assert!(neighbors.contains(&"A".to_string()));
+    }
+
+    #[test]
+    fn test_get_neighbors_unknown_node() {
+        let graph = make_graph();
+        let neighbors = get_neighbors(&graph, "Z", GatherDirection::Both);
+        assert!(neighbors.is_empty());
+    }
+
+    #[test]
+    fn test_get_neighbors_leaf_node() {
+        let graph = make_graph();
+        // D has no callees, only callers
+        let callees = get_neighbors(&graph, "D", GatherDirection::Callees);
+        assert!(callees.is_empty());
+
+        let callers = get_neighbors(&graph, "D", GatherDirection::Callers);
+        assert_eq!(callers.len(), 1);
+        assert_eq!(callers[0], "B");
+    }
+}

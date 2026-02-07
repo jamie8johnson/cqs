@@ -179,3 +179,195 @@ where
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pattern_parse_all_variants() {
+        assert!(matches!(
+            "builder".parse::<Pattern>().unwrap(),
+            Pattern::Builder
+        ));
+        assert!(matches!(
+            "error_swallow".parse::<Pattern>().unwrap(),
+            Pattern::ErrorSwallow
+        ));
+        assert!(matches!(
+            "error-swallow".parse::<Pattern>().unwrap(),
+            Pattern::ErrorSwallow
+        ));
+        assert!(matches!(
+            "async".parse::<Pattern>().unwrap(),
+            Pattern::Async
+        ));
+        assert!(matches!(
+            "mutex".parse::<Pattern>().unwrap(),
+            Pattern::Mutex
+        ));
+        assert!(matches!(
+            "unsafe".parse::<Pattern>().unwrap(),
+            Pattern::Unsafe
+        ));
+        assert!(matches!(
+            "recursion".parse::<Pattern>().unwrap(),
+            Pattern::Recursion
+        ));
+        assert!("unknown".parse::<Pattern>().is_err());
+    }
+
+    #[test]
+    fn test_pattern_display_roundtrip() {
+        for name in &[
+            "builder",
+            "error_swallow",
+            "async",
+            "mutex",
+            "unsafe",
+            "recursion",
+        ] {
+            let p: Pattern = name.parse().unwrap();
+            assert_eq!(p.to_string(), *name);
+        }
+    }
+
+    #[test]
+    fn test_builder_pattern() {
+        let pat = Pattern::Builder;
+        assert!(pat.matches(
+            "fn with_name(self, name: &str) -> Self { ... }",
+            "with_name",
+            None
+        ));
+        assert!(pat.matches("fn build(self) -> &Self { ... }", "build", None));
+        assert!(!pat.matches("fn foo() -> i32 { 42 }", "foo", None));
+    }
+
+    #[test]
+    fn test_error_swallow_rust() {
+        let pat = Pattern::ErrorSwallow;
+        let lang = Some(Language::Rust);
+        assert!(pat.matches("let _ = result.unwrap_or_default();", "", lang));
+        assert!(pat.matches("result.ok();", "", lang));
+        assert!(pat.matches("match x { Ok(v) => v, _ => {} }", "", lang));
+        assert!(!pat.matches("let v = result?;", "", lang));
+    }
+
+    #[test]
+    fn test_error_swallow_python() {
+        let pat = Pattern::ErrorSwallow;
+        let lang = Some(Language::Python);
+        assert!(pat.matches("try:\n    foo()\nexcept:\n    pass", "", lang));
+        assert!(pat.matches("try:\n    foo()\nexcept Exception:\n    pass", "", lang));
+        assert!(!pat.matches(
+            "try:\n    foo()\nexcept ValueError as e:\n    log(e)",
+            "",
+            lang
+        ));
+    }
+
+    #[test]
+    fn test_error_swallow_js() {
+        let pat = Pattern::ErrorSwallow;
+        let lang = Some(Language::JavaScript);
+        assert!(pat.matches("try { foo(); } catch (e) {}", "", lang));
+        assert!(pat.matches("try { foo(); } catch (e) { // ignore }", "", lang));
+        assert!(!pat.matches("try { foo(); } catch (e) { console.log(e); }", "", lang));
+    }
+
+    #[test]
+    fn test_async_rust() {
+        let pat = Pattern::Async;
+        assert!(pat.matches("async fn fetch() { ... }", "", Some(Language::Rust)));
+        assert!(pat.matches("let r = client.get(url).await?;", "", Some(Language::Rust)));
+        assert!(!pat.matches("fn sync_fetch() { ... }", "", Some(Language::Rust)));
+    }
+
+    #[test]
+    fn test_async_python() {
+        let pat = Pattern::Async;
+        assert!(pat.matches("async def fetch():", "", Some(Language::Python)));
+        assert!(pat.matches("result = await client.get(url)", "", Some(Language::Python)));
+        assert!(!pat.matches("def sync_fetch():", "", Some(Language::Python)));
+    }
+
+    #[test]
+    fn test_async_go() {
+        let pat = Pattern::Async;
+        let lang = Some(Language::Go);
+        assert!(pat.matches("go func() { ... }()", "", lang));
+        assert!(pat.matches("ch <- value", "", lang));
+        assert!(!pat.matches("func sync() { ... }", "", lang));
+    }
+
+    #[test]
+    fn test_mutex_rust() {
+        let pat = Pattern::Mutex;
+        let lang = Some(Language::Rust);
+        assert!(pat.matches("let guard = data.lock().unwrap();", "", lang));
+        assert!(pat.matches("let m = Mutex::new(0);", "", lang));
+        assert!(pat.matches("let rw = RwLock::new(vec![]);", "", lang));
+        assert!(!pat.matches("fn pure_function(x: i32) -> i32 { x + 1 }", "", lang));
+    }
+
+    #[test]
+    fn test_unsafe_rust() {
+        let pat = Pattern::Unsafe;
+        assert!(pat.matches("unsafe { ptr::read(src) }", "", Some(Language::Rust)));
+        assert!(!pat.matches("fn safe_function() { ... }", "", Some(Language::Rust)));
+    }
+
+    #[test]
+    fn test_unsafe_c() {
+        let pat = Pattern::Unsafe;
+        let lang = Some(Language::C);
+        assert!(pat.matches("memcpy(dst, src, n);", "", lang));
+        assert!(pat.matches("strcpy(buf, input);", "", lang));
+        assert!(pat.matches("sprintf(buf, fmt, arg);", "", lang));
+        assert!(!pat.matches("int add(int a, int b) { return a + b; }", "", lang));
+    }
+
+    #[test]
+    fn test_recursion_self_call() {
+        let pat = Pattern::Recursion;
+        let code =
+            "fn factorial(n: u32) -> u32 {\n    if n <= 1 { 1 } else { n * factorial(n - 1) }\n}";
+        assert!(pat.matches(code, "factorial", None));
+    }
+
+    #[test]
+    fn test_recursion_no_self_call() {
+        let pat = Pattern::Recursion;
+        let code = "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}";
+        assert!(!pat.matches(code, "add", None));
+    }
+
+    #[test]
+    fn test_recursion_empty_name() {
+        let pat = Pattern::Recursion;
+        assert!(!pat.matches("fn foo() { foo() }", "", None));
+    }
+
+    #[test]
+    fn test_recursion_single_line() {
+        let pat = Pattern::Recursion;
+        // Single-line content should not match (can't distinguish sig from body)
+        assert!(!pat.matches("fn foo() { foo() }", "foo", None));
+    }
+
+    #[test]
+    fn test_filter_by_pattern() {
+        let items = vec![
+            ("unsafe { ptr::read(p) }", "read_ptr", Some(Language::Rust)),
+            ("fn safe() -> i32 { 42 }", "safe", Some(Language::Rust)),
+            ("unsafe { transmute(x) }", "cast", Some(Language::Rust)),
+        ];
+
+        let filtered = filter_by_pattern(items, &Pattern::Unsafe, |item| (item.0, item.1, item.2));
+
+        assert_eq!(filtered.len(), 2);
+        assert_eq!(filtered[0].1, "read_ptr");
+        assert_eq!(filtered[1].1, "cast");
+    }
+}

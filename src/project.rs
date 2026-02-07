@@ -162,3 +162,91 @@ fn make_project_relative(project_root: &Path, file: &Path) -> PathBuf {
         .unwrap_or(file)
         .to_path_buf()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_registry_default_empty() {
+        let reg = ProjectRegistry::default();
+        assert!(reg.project.is_empty());
+    }
+
+    #[test]
+    fn test_registry_get() {
+        let reg = ProjectRegistry {
+            project: vec![
+                ProjectEntry {
+                    name: "foo".to_string(),
+                    path: PathBuf::from("/tmp/foo"),
+                },
+                ProjectEntry {
+                    name: "bar".to_string(),
+                    path: PathBuf::from("/tmp/bar"),
+                },
+            ],
+        };
+        assert_eq!(reg.get("foo").unwrap().path, PathBuf::from("/tmp/foo"));
+        assert_eq!(reg.get("bar").unwrap().path, PathBuf::from("/tmp/bar"));
+        assert!(reg.get("baz").is_none());
+    }
+
+    #[test]
+    fn test_registry_remove_in_memory() {
+        let mut reg = ProjectRegistry {
+            project: vec![
+                ProjectEntry {
+                    name: "a".to_string(),
+                    path: PathBuf::from("/a"),
+                },
+                ProjectEntry {
+                    name: "b".to_string(),
+                    path: PathBuf::from("/b"),
+                },
+            ],
+        };
+
+        // Remove by name (skip save since we're testing in-memory)
+        let before = reg.project.len();
+        reg.project.retain(|p| p.name != "a");
+        assert_eq!(reg.project.len(), before - 1);
+        assert!(reg.get("a").is_none());
+        assert!(reg.get("b").is_some());
+    }
+
+    #[test]
+    fn test_registry_serialization_roundtrip() {
+        let reg = ProjectRegistry {
+            project: vec![ProjectEntry {
+                name: "test".to_string(),
+                path: PathBuf::from("/tmp/test"),
+            }],
+        };
+        let toml_str = toml::to_string_pretty(&reg).unwrap();
+        let parsed: ProjectRegistry = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.project.len(), 1);
+        assert_eq!(parsed.project[0].name, "test");
+        assert_eq!(parsed.project[0].path, PathBuf::from("/tmp/test"));
+    }
+
+    #[test]
+    fn test_make_project_relative() {
+        let root = Path::new("/home/user/project");
+        let file = Path::new("/home/user/project/src/main.rs");
+        assert_eq!(
+            make_project_relative(root, file),
+            PathBuf::from("src/main.rs")
+        );
+    }
+
+    #[test]
+    fn test_make_project_relative_not_child() {
+        let root = Path::new("/home/user/project");
+        let file = Path::new("/other/path/file.rs");
+        assert_eq!(
+            make_project_relative(root, file),
+            PathBuf::from("/other/path/file.rs")
+        );
+    }
+}
