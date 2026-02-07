@@ -1034,3 +1034,211 @@ All 12 items fixed and merged.
 | 13 | Notes file no locking | Concurrency #1 | Existing #231 | 📋 #231 |
 | 14 | HNSW stale after watch updates | Data Integrity #4 | Existing #236 | 📋 #236 |
 | 15 | Watch mode inotify doesn't work on /mnt/c/ | Platform #7 | WSL limitation, documented | ⏸ Won't-fix |
+
+---
+
+# v0.9.1 Audit Triage (2026-02-07)
+
+Source: `docs/audit-findings.md` — 14-category audit, 157 raw findings across 3 batches.
+
+## De-duplication Notes
+
+Cross-category duplicates (fix once):
+
+1. **`config.rs:184` unwrap_or_default clobbers config** — Error Handling #7, Security #3, Data Safety #12
+2. **`get_callers_full`/`get_callees_full` .unwrap_or_default()** — Error Handling #9, Robustness #11
+3. **HNSW save assert_eq! panic** — Robustness #2, Data Safety #9
+4. **Notes file race / no locking** — Data Safety #1, Data Safety #14 (existing #231)
+5. **HNSW temp cleanup remove_dir** — Platform #7, Resource #7
+6. **Temp file cleanup on rename failure** — Robustness #8, Data Safety #11
+7. **cqs_read schema missing required** — Documentation #9, API Design #10
+8. **cqs_batch only 6/20 tools** — API Design #5, Extensibility #7
+9. **Error messages say 'cq' not 'cqs'** — Documentation #3, Documentation #4, Platform #3
+10. **`parse_duration` overflow** — Security #1, Test Coverage #12
+11. **`find_project_root` not canonical** — Platform #1, #5, #6 (root cause)
+
+After de-duplication: **~130 unique findings**
+
+## P1 — Fix Immediately (easy + high impact)
+
+| # | Finding | Source | Status |
+|---|---------|--------|--------|
+| 1 | `config.rs:184` unwrap_or_default destroys config on I/O error | EH#7, Sec#3, DS#12 | |
+| 2 | Watch mode never updates call graph — all graph tools stale | DS#4 | |
+| 3 | `gather.rs` sort-then-truncate discards highest-scored chunks | Algo#1 | |
+| 4 | Error messages say 'cq' not 'cqs' in 7+ places | Doc#3, Doc#4, Plat#3 | |
+| 5 | `parse_duration` integer overflow bypasses 24h cap | Sec#1, TC#12 | |
+| 6 | `cqs_read` schema missing required field | Doc#9, API#10 | |
+| 7 | Dead code: 4 old call graph methods (`calls` table) | CQ#1 | |
+| 8 | Dead code: 5 config accessor methods + 3 constants | CQ#2 | |
+| 9 | Dead code: `get_chunk_by_id`, `delete_notes_by_file`, `all_embeddings`, `batch_size` | CQ#3-6 | |
+| 10 | `find_test_chunks` sync/async duplicate SQL | CQ#8 | |
+| 11 | `parse_target` trailing colon confusing results | Robust#6 | |
+| 12 | `tool_search` doesn't validate threshold range | Robust#7 | |
+| 13 | Duplicated `parse_target` in explain.rs/similar.rs | API#1 | |
+| 14 | Callers/callees response shape asymmetry | API#2 | |
+| 15 | name_only returns bare array vs semantic wrapper | API#3 | |
+| 16 | MCP handle_request errors at debug instead of warn | Obs#1 | |
+| 17 | `ensure_embedder()` no logging for ~500ms init | Obs#2 | |
+| 18 | Watch mode eprintln instead of tracing | Obs#3 | |
+| 19 | MCP tool count says 21, only 20 exist | Doc#1 | |
+| 20 | PRIVACY.md missing data deletion paths | Doc#5 | |
+| 21 | ROADMAP phase/status stale | Doc#7, Doc#8 | |
+| 22 | Lib test count drift (258→262) | Doc#6 | |
+| 23 | `ChunkSummary::from` defaults to Rust on unknown language | Ext#6 | |
+| 24 | `lang_extension()` in diff.rs duplicates registry | Ext#1 | |
+| 25 | MCP schemas have 3 hardcoded language enum arrays | Ext#4 | |
+| 26 | `process_exists` PID u32→i32 negative cast | Robust#5, Sec#4 | |
+| 27 | HNSW temp cleanup uses `remove_dir` not `remove_dir_all` | Plat#7, Res#7 | |
+| 28 | `rewrite_notes_file` leaves orphan temp file | Robust#8, DS#11 | |
+| 29 | `Regex::new` compiled every call in `extract_type_names` | Robust#9 | |
+| 30 | `diff.rs` duplicate cosine_similarity differs from math.rs | Algo#2 | |
+| 31 | `impact.rs` test search depth hardcoded to 5 | Algo#4 | |
+| 32 | `search_reference_by_name` threshold before weight | Algo#5 | |
+| 33 | `is_localhost_origin` case-sensitive | Sec#10 | |
+| 34 | `sanitize_error_message` misses path prefixes | Sec#6 | |
+| 35 | `refs_dir()` unhelpful error in Docker/CI | Plat#8 | |
+| 36 | `touch_updated_at().ok()` swallows errors | Obs#12 | |
+| 37 | `note.rs:117` parse_notes bare `?` no path context | EH#2 | |
+| 38 | `note.rs:145` rewrite bare `?` no path context | EH#1 | |
+| 39 | `cmd_index` bare `?` on create_dir/remove_file | EH#3 | |
+| 40 | `cli/display.rs` bare `?` on file read | EH#6 | |
+| 41 | `cmd_ref_add` bare `?` on fs ops | EH#4 | |
+| 42 | Pipeline needs_reindex error silent | EH#10 | |
+| 43 | ORT cache read error discarded | EH#11 | |
+| 44 | Lock error details discarded | EH#13 | |
+| 45 | `validate_query_length` boundary untested | TC#11 | |
+| 46 | `SearchFilter::validate()` called in 1 of 4 sites | TC#13 | |
+| 47 | `Embedding::new()` no dimension check | API#7 | |
+
+**P1 Total: 47 findings**
+
+---
+
+## P2 — Fix Next (medium effort + high impact, or easy + moderate impact)
+
+| # | Finding | Source | Status |
+|---|---------|--------|--------|
+| 1 | `gather.rs` BFS score from arbitrary parent, not best | Algo#3 | |
+| 2 | `get_callees_full` name ambiguity — returns all overloads | Algo#7 | |
+| 3 | `find_dead_code` trait impl false-positive on `for` loops | Algo#8 | |
+| 4 | `embedding_to_bytes` panics on dim mismatch | Robust#1 | |
+| 5 | HNSW save assert_eq! panics in MCP server | Robust#2, DS#9 | |
+| 6 | `embed_batch` unchecked tensor indexing | Robust#3 | |
+| 7 | `get_callers/callees_full` errors become empty in 6 sites | EH#9, Robust#11 | |
+| 8 | `semantic_diff` N+1 query per matched pair | Perf#1 | |
+| 9 | `gather()` N+1 FTS query per expanded name | Perf#2 | |
+| 10 | `needs_reindex` per-chunk instead of per-file | Perf#3 | |
+| 11 | `find_project_root` not canonical (root cause for 3 bugs) | Plat#6 | |
+| 12 | Pipeline chunks + call graph in separate transactions | DS#3 | |
+| 13 | Notes file no locking (existing #231) | DS#1, DS#14 | |
+| 14 | Config read-modify-write race | DS#2 | |
+| 15 | `tool_add_note` appends without verifying file integrity | DS#8 | |
+| 16 | `embedding_batches` LIMIT/OFFSET unstable under writes | DS#10 | |
+| 17 | `Store::init` DDL without transaction | DS#6 | |
+| 18 | `serve_http` network bind warning-only at library level | Sec#5 | |
+| 19 | `extract_body_keywords` hardcoded stopwords | Ext#2 | |
+| 20 | `structural.rs` no new-language fallback strategy | Ext#3 | |
+| 21 | `extract_return_nl` match arm per language | Ext#5 | |
+| 22 | `cqs_batch` only 6/20 tools | API#5, Ext#7 | |
+| 23 | SearchFilter dual construction — pub fields + unused builders | API#4 | |
+| 24 | `process_exists` Windows tasklist slow/fragile | Plat#2 | |
+| 25 | `note.rs` rename EXDEV on Docker/overlay | Plat#4 | |
+| 26 | `Store::Drop` WAL checkpoint blocks shutdown | Res#8 | |
+| 27 | Pipeline creates 2 Embedders eagerly (~1GB) | Res#3 | |
+| 28 | `count_vectors()` parses entire JSON ID map | Res#5 | |
+| 29 | `search_notes` fetches 1000 embeddings for limit=2 | Res#14 | |
+| 30 | `cqs_read` note matching too broad (substring) | Sec#12 | |
+| 31 | `acquire_index_lock` unbounded recursion | Robust#4 | |
+| 32 | Duplicated JSON in MCP search formatters | CQ#9 | |
+| 33 | GPU failure handling duplicated 3x in pipeline | CQ#10 | |
+| 34 | `Embedding::try_new` dead (doc-example only) | CQ#7 | |
+| 35 | MCP http.rs serialization swallowed | EH#8 | |
+| 36 | `extract_calls_in_chunk` silently discards query errors | EH#5 | |
+| 37 | `gather.rs` silently skips search errors in BFS | EH#12 | |
+
+**P2 Total: 37 findings**
+
+---
+
+## P3 — When Convenient (moderate impact, can batch)
+
+| # | Finding | Source | Status |
+|---|---------|--------|--------|
+| 1 | 13/20 MCP tools have zero integration tests | TC#1 | |
+| 2 | `semantic_diff()` no integration test | TC#2 | |
+| 3 | `gather()` no integration test | TC#3 | |
+| 4 | `find_dead_code()` zero tests | TC#4 | |
+| 5 | `search_reference()`/`search_reference_by_name()` untested | TC#7 | |
+| 6 | `all_chunk_identities()`/`get_chunk_with_embedding()` untested | TC#5 | |
+| 7 | `get_call_graph()` untested | TC#6 | |
+| 8 | Config weight boundary untested | TC#9 | |
+| 9 | MCP search response format divergence untested | TC#10 | |
+| 10 | search_unified_with_index no span | Obs#4 | |
+| 11 | search_by_candidate_ids no span | Obs#5 | |
+| 12 | tool_read/tool_read_focused zero logging | Obs#6 | |
+| 13 | Name-only search no timing | Obs#7 | |
+| 14 | handle_initialize discards client info | Obs#8 | |
+| 15 | Note tools don't log success | Obs#9 | |
+| 16 | enumerate_files no summary count | Obs#10 | |
+| 17 | Pipeline stats not logged at info | Obs#11 | |
+| 18 | Stats response overlapping fields | API#8 | |
+| 19 | Inconsistent param naming (name vs target) | API#6 | |
+| 20 | `node_letter` Mermaid IDs after 26 | API#9, Algo#12 | |
+| 21 | Note slot calc exceeds documented 40% | Algo#9 | |
+| 22 | `BoundedScoreHeap` NaN defense | Algo#10 | |
+| 23 | `cosine_similarity` is dot product (no norm assert) | Algo#11 | |
+| 24 | `diff.rs` language filter by extension not stored field | Algo#6 | |
+| 25 | Watch path comparison non-canonical | Plat#1, Plat#5 | |
+| 26 | CHANGELOG missing comparison links | Doc#2 | |
+| 27 | CHANGELOG dates may be wrong | Doc#10 | |
+| 28 | `split_into_windows` no max_tokens=0 guard | Robust#10 | |
+| 29 | `search_unified_with_index` limit=0 wasted work | Robust#12 | |
+| 30 | context.rs JSON roundtrip in dedup | Robust#13 | |
+| 31 | Adding CLI command needs 3 places | Ext#8 | |
+| 32 | `prune_missing` batched deletes separate txns | DS#7 | |
+| 33 | Schema migration no wrapping transaction | DS#13 | |
+| 34 | `all_chunk_identities` loads all metadata for diff | Res#4 | |
+| 35 | No reference count limit | Res#11 | |
+| 36 | MCP pool idle timeout 300s holds 64MB+ | Res#13 | |
+| 37 | `mmap_size` assumes 64-bit (doc-only) | Plat#9 | |
+
+**P3 Total: 37 findings**
+
+---
+
+## P4 — Defer / Create Issues
+
+| # | Finding | Source | Reason | Status |
+|---|---------|--------|--------|--------|
+| 1 | 14 CLI commands no integration tests | TC#8 | Hard — needs test harness | |
+| 2 | `search_filtered` loads all embeddings (brute-force fallback) | Perf#4 | Hard — streaming rewrite | |
+| 3 | No rate limiting on MCP tool calls | Sec#7 | Medium — low severity for localhost | |
+| 4 | HNSW stale after watch (existing #236) | DS#5 | Hard — incremental HNSW | |
+| 5 | Each ReferenceIndex creates own runtime (existing #257) | Res#2 | Medium — architectural | |
+| 6 | HNSW+CAGRA dual memory during GPU upgrade | Res#1 | Medium — document only | |
+| 7 | No size guard on HNSW graph/data files | Res#12 | Medium — defense in depth | |
+| 8 | Pipeline channel buffers 105MB peak | Res#10 | Document only | |
+| 9 | `FileSystemSource::enumerate()` eager load | Res#9 | Dead code path | |
+| 10 | Watch mode embedder never released | Res#6 | Documented trade-off | |
+| 11 | `tool_read_focused` bypasses path validation | Sec#2 | By design — reads from DB | |
+| 12 | `tool_add_note` path trust | Sec#8 | By design — project_root set at startup | |
+| 13 | `config.rs:load_file` returns None for parse errors | Sec#9 | Existing #264 | |
+| 14 | HNSW checksum path info leak | Sec#11 | Minimal risk | |
+| 15 | `get_call_graph` string clones | Perf#5 | Micro-optimization | |
+| 16 | `search_by_candidate_ids` post-fetch filtering | Perf#6 | Low impact | |
+| 17 | `normalize_for_fts` called 4x per chunk | Perf#7 | Low impact | |
+
+**P4 Total: 17 findings**
+
+---
+
+## Summary
+
+| Priority | Findings | Action |
+|----------|----------|--------|
+| P1 | 47 | Fix immediately — easy, high impact |
+| P2 | 37 | Fix next — medium effort or moderate impact |
+| P3 | 37 | When convenient — test coverage, observability, polish |
+| P4 | 17 | Defer — hard, low impact, or tracked in issues |
+| **Total** | **~138** (after dedup from 157 raw) |

@@ -341,6 +341,9 @@
 
 ### Planned
 
+- [ ] **Mermaid output for `cqs impact`** — `format: "mermaid"` renders caller graph as flowchart. Agents can visualize blast radius of a change.
+- [ ] **Mermaid output for `cqs context`** — `format: "mermaid"` renders module dependency graph (external callers/callees, dependent files).
+- [ ] **Mermaid output for `cqs dead`** — `format: "mermaid"` renders orphan clusters. Visualize dead code relationships.
 - [ ] **Token cost estimates** — include approximate token count in tool responses so agents can budget context window usage
 - [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
 - [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed

@@ -1,1203 +1,992 @@
-# Audit Findings — v0.5.3
+# Audit Findings — v0.9.1
 
-Full 20-category audit. Collection phase — no fixes until all batches complete.
-
-## Batch 1: Code Hygiene
-
-#### Duplicated JSON formatting in MCP search tool
-- **Difficulty:** medium
-- **Location:** `src/mcp/tools/search.rs:248-358`
-- **Description:** `format_unified_results` and `format_tagged_results` have nearly identical code for rendering `UnifiedResult::Code` and `UnifiedResult::Note` as JSON. The code/note JSON serialization block is copy-pasted between the two functions (lines 256-268 vs 311-333). This means any change to the output format must be made in two places. `format_code_result` (line 221) also duplicates the code path JSON but with slightly different path stripping logic.
-- **Suggested fix:** Extract a shared `unified_result_to_json(r: &UnifiedResult) -> Value` helper, have all three functions call it. Add source/path-stripping as optional parameters.
-
-#### Duplicated glob pattern compilation in search
-- **Difficulty:** easy
-- **Location:** `src/search.rs:250-258` and `src/search.rs:417-425`
-- **Description:** The glob pattern compilation logic (`filter.path_pattern.as_ref().and_then(|p| match globset::Glob::new(p) { ... })`) is duplicated between `search_filtered` and `search_by_candidate_ids`. Both blocks are structurally identical, compiling the same pattern with the same warn-and-ignore error handling.
-- **Suggested fix:** Extract a `compile_glob_filter(filter: &SearchFilter) -> Option<GlobMatcher>` helper function. Could live on `SearchFilter` itself.
-
-#### Duplicated note insert logic in store/notes.rs
-- **Difficulty:** easy
-- **Location:** `src/store/notes.rs:56-108` and `src/store/notes.rs:169-234`
-- **Description:** `upsert_notes_batch` and `replace_notes_for_file` contain identical per-note INSERT + FTS DELETE/INSERT logic. The only difference is that `replace_notes_for_file` does a bulk DELETE first. The individual note insertion code (SQL query, mentions serialization, FTS update) is duplicated line-for-line.
-- **Suggested fix:** Extract the per-note insertion into an `insert_note_in_tx(tx, note, embedding, source_str, now)` async helper and call it from both methods.
-
-#### Long function: `run_index_pipeline` (416 lines)
-- **Difficulty:** medium
-- **Location:** `src/cli/pipeline.rs:183-599`
-- **Description:** `run_index_pipeline` is a single 416-line function that sets up channels, spawns 3 threads (parser, GPU embedder, CPU embedder), runs the writer loop, and joins threads. While well-commented, it's difficult to review or modify any single stage because the function scope contains all of them. The GPU embedder thread body alone (lines 331-462) is 130 lines.
-- **Suggested fix:** Extract each pipeline stage into its own function: `spawn_parser_thread(...)`, `spawn_gpu_embedder_thread(...)`, `spawn_cpu_embedder_thread(...)`, `run_writer_loop(...)`. This also makes unit testing individual stages possible.
-
-#### GPU embedder thread has duplicated "send cached + requeue to CPU" pattern
-- **Difficulty:** easy
-- **Location:** `src/cli/pipeline.rs:364-396` and `src/cli/pipeline.rs:419-455`
-- **Description:** The GPU embedder thread has two places where it sends cached results to the writer and requeues un-embedded chunks to the CPU fallback channel. The pattern (check `!prepared.cached.is_empty()`, send EmbeddedBatch, send failed batch to `fail_tx`) is duplicated for the "long batch" pre-filter case and the "GPU error" case.
-- **Suggested fix:** Extract a `requeue_to_cpu(cached, to_embed, file_mtime, embed_tx, fail_tx)` helper.
-
-#### `hnsw.rs` save method has duplicated file_dump block
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:516-537`
-- **Description:** The match on `HnswInner::Owned` vs `HnswInner::Loaded` to call `file_dump` is duplicated — both arms do exactly the same thing, just accessing the HNSW through different paths. This is a minor instance of the broader pattern where `HnswInner`'s two variants require matching to access the inner `Hnsw`.
-- **Suggested fix:** Add a `fn hnsw(&self) -> &Hnsw<'static, f32, DistCosine>` method on `HnswIndex` or `HnswInner` to avoid repeating the match in `save`, `search`, and `get_nb_point`. This consolidates 3 match blocks.
-
-#### `NlTemplate` variants `NoPrefix`, `BodyKeywords`, `Compact`, `DocFirst` only used in model_eval tests
-- **Difficulty:** easy
-- **Location:** `src/nl.rs:266-277`
-- **Description:** The `NlTemplate` enum has 5 variants, but only `Standard` is used in production code (`generate_nl_description` at line 311). The other 4 variants (`NoPrefix`, `BodyKeywords`, `Compact`, `DocFirst`) are only used in `tests/model_eval.rs` for evaluation experiments. This dead code adds complexity to `generate_nl_with_template` with unused branches.
-- **Suggested fix:** Move the experimental variants and `generate_nl_with_template` behind a `#[cfg(test)]` gate, or into the test module. If these are intended for future use, add a doc comment explaining the intended usage.
-
-#### `make_embedding` helper duplicated in hnsw.rs test modules
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:818-832` and `src/hnsw.rs:987-1000`
-- **Description:** The `make_embedding` helper function is defined twice in hnsw.rs — once in `mod tests` (line 818) and once in `mod safety_tests` (line 987). Both create deterministic test embeddings, but with different seed multipliers (0.1 vs 10.0). The naming collision is confusing and the intent divergence (subtle vs clear separation) is not documented.
-- **Suggested fix:** Move `make_embedding` to a shared `#[cfg(test)]` module or parameterize the seed multiplier. At minimum, rename one to clarify intent (e.g., `make_embedding_wide_spread`).
-
-#### `Embedding::new()` bypasses dimension validation
-- **Difficulty:** medium
-- **Location:** `src/embedder.rs:87-89`
-- **Description:** `Embedding::new()` accepts any `Vec<f32>` without validation, while `Embedding::try_new()` validates 769-dim. The unchecked constructor is used extensively in production (hnsw.rs, store/chunks.rs, store/notes.rs, search tests). This creates a latent risk: wrong-sized embeddings silently enter the system and only fail later at `embedding_to_bytes` (which panics) or `cosine_similarity` (which returns None). The docstring says "unchecked" but there's no enforcement elsewhere.
-- **Suggested fix:** Consider making `new()` private or `pub(crate)` and requiring `try_new()` at public API boundaries. Internal code that constructs from known-good sources (model output, DB reads) can use `new()` but external callers should go through validation.
-
-## Batch 1: Module Boundaries
-
-#### search.rs implements Store methods outside the store module
-- **Difficulty:** medium
-- **Location:** `src/search.rs:184`
-- **Description:** `search.rs` contains an `impl Store` block that directly accesses `self.pool` (lines 242, 325) and imports `pub(crate)` types from `store::helpers` (line 16: `embedding_slice`, `ChunkRow`, `ChunkSummary`). This splits the Store implementation across two modules, making it hard to discover the full Store API surface. The `pub(crate)` visibility on `helpers` exists primarily to serve this one external consumer.
-- **Suggested fix:** Move search methods into `store/search.rs` (a new submodule of `store`), or create a `SearchEngine` struct that takes a `&Store` reference and uses only public Store methods. This would let `helpers` stay truly private to `store`.
-
-#### index_notes helper in lib.rs couples lib root to domain logic
-- **Difficulty:** easy
-- **Location:** `src/lib.rs:129-181`
-- **Description:** `lib.rs` contains a 50-line `index_notes` function with embedding, mtime extraction, and database transaction logic. This is domain logic that belongs in a domain module (e.g., `note.rs` or a new `indexing.rs`), not in the crate root. The crate root should only have module declarations and re-exports. Called by both `mcp/server.rs:252` and `cli/watch.rs:296`.
-- **Suggested fix:** Move `index_notes` to `src/note.rs` or `src/store/notes.rs` as a free function or associated method. Both callers already import from those modules.
-
-#### MCP server uses anyhow instead of typed errors
-- **Difficulty:** medium
-- **Location:** `src/mcp/server.rs:8`, `src/mcp/tools/*.rs` (all 7 files)
-- **Description:** Project convention is "thiserror for library errors, anyhow in CLI." The MCP module is library code (exposed via `pub use mcp::{serve_http, serve_stdio}` in lib.rs), yet every MCP file uses `anyhow::Result`. This means library consumers get opaque errors they can't match on, and the MCP boundary doesn't have typed error variants.
-- **Suggested fix:** Create `McpError` enum in `mcp/types.rs` using thiserror, covering tool-not-found, validation, store, and embedder errors. Keep anyhow only at the transport boundary (stdio/http) where errors are serialized to JSON-RPC.
-
-#### pub(crate) NoteEntry directly constructed by MCP tools
-- **Difficulty:** easy
-- **Location:** `src/note.rs:42`, `src/mcp/tools/notes.rs:82`
-- **Description:** `NoteEntry` is `pub(crate)` and constructed directly by `mcp/tools/notes.rs:82` (`crate::note::NoteEntry { sentiment, text, mentions }`). The MCP tool builds a NoteEntry to serialize it as TOML for file append. This couples the MCP module to the internal serialization format of notes. If `NoteEntry` fields change, the MCP tool would break.
-- **Suggested fix:** Add a `NoteEntry::new(text, sentiment, mentions)` constructor or `note::format_toml_entry(text, sentiment, mentions) -> String` to encapsulate the serialization, so MCP doesn't need to know the struct layout.
-
-#### All 14 modules declared pub in lib.rs — no enforced API boundary
-- **Difficulty:** medium
-- **Location:** `src/lib.rs:57-73`
-- **Description:** Every module is `pub mod`, meaning external consumers can reach into `cqs::cli::*`, `cqs::mcp::server::McpServer`, `cqs::store::helpers::*`, etc. The re-exports on lines 75-84 define the intended public API (Embedder, Parser, Store, etc.), but module visibility doesn't enforce it. The `cli` module is particularly concerning — it's the binary's private implementation but publicly accessible from lib.rs. Modules like `math`, `nl`, and `source` are internal utilities with no clear external use case.
-- **Suggested fix:** Change `cli` to `pub(crate) mod cli` (only `main.rs` uses it). Consider `pub(crate)` for `math`, `nl`, `source`, and internal `mcp` submodules, keeping only the re-exported items public.
-
-#### reference.rs duplicates score extraction already on UnifiedResult
-- **Difficulty:** easy
-- **Location:** `src/reference.rs:161-166`
-- **Description:** `tagged_score()` extracts scores by matching `UnifiedResult::Code` and `UnifiedResult::Note` — but `UnifiedResult::score()` (defined at `store/helpers.rs:215`) does exactly the same thing. The free function is redundant. (Also flagged under Code Hygiene for the duplication angle.)
-- **Suggested fix:** Replace `tagged_score(t)` with `t.result.score()` in `merge_results` sort closure (line 149). Remove the `tagged_score` function.
-
-#### store::pool and store::rt are pub(crate) — leaked to search.rs
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:97-98`
-- **Description:** `Store.pool` and `Store.rt` are `pub(crate)`, which allows `search.rs` to directly execute raw SQL queries via `self.pool` (lines 242, 325). This bypasses any abstraction the Store module provides. If you rename `pool`, search.rs breaks. The internal async runtime is also exposed, meaning any crate module could call `self.rt.block_on()`.
-- **Suggested fix:** If search methods move into `store/` (see finding #1), these can become `pub(super)` or private. Otherwise, add specific async query methods to Store that search.rs calls instead of raw pool access.
-
-#### cli::commands::reference imports build_hnsw_index from cli::commands::index
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/reference.rs:14`
-- **Description:** `reference.rs` imports `build_hnsw_index` from `commands::index`, creating an intra-CLI coupling where the `ref add` command depends on the `index` command's internal implementation. If `build_hnsw_index` changes signature or behavior, both commands break.
-- **Suggested fix:** Extract `build_hnsw_index` into a shared CLI utility (e.g., `cli/pipeline.rs` or a new `cli/hnsw.rs`) so both commands depend on a shared utility rather than one command depending on another.
+Full 14-category audit. Collection phase — no fixes until all batches complete.
 
 ## Batch 1: Documentation
 
-#### SECURITY.md says user config is "Not yet implemented" but it works
+#### MCP tool count says 21 but there are only 20 tools
 - **Difficulty:** easy
-- **Location:** `SECURITY.md:87`
-- **Description:** The Filesystem Access table says `~/.config/cqs/` has purpose "User config (future)" and when "Not yet implemented". However, `src/config.rs:69-71` actually loads `~/.config/cqs/config.toml` as the user defaults config file, and this path is documented correctly in both `README.md` and `config.rs` module docs. SECURITY.md is stale — this feature shipped in v0.5.3 with the config/reference system.
-- **Suggested fix:** Update SECURITY.md read access table: change purpose to "User default config" and when to "All operations (if file exists)". Also add `~/.local/share/cqs/refs/` for reference index storage.
+- **Location:** `CLAUDE.md:54`, `ROADMAP.md:315`, `CHANGELOG.md:32`, `PROJECT_CONTINUITY.md:56`
+- **Description:** Multiple docs claim "21 MCP tools" but there are only 20 tool definitions in `src/mcp/tools/mod.rs` (lines 32-462) and 20 handler match arms (lines 484-504). Counting from the CLAUDE.md list also yields 20.
+- **Suggested fix:** Change "21" to "20" in CLAUDE.md, ROADMAP.md, CHANGELOG.md, and PROJECT_CONTINUITY.md.
 
-#### StoreError messages reference `cq` instead of `cqs`
+#### CHANGELOG missing comparison links for v0.7.0 through v0.9.1
 - **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:32-43`
-- **Description:** Four `StoreError` variants display messages referencing `cq` (the old binary name) instead of `cqs`: `SchemaMismatch` says "Run 'cq index --force'", `SchemaNewerThanCq` says "upgrade cq", `MigrationNotSupported` says "'cq index --force'", `ModelMismatch` says "'cq index --force'". Users following these instructions would get "command not found". The binary was renamed to `cqs` but these error messages weren't updated.
-- **Suggested fix:** Replace all `cq` references with `cqs` in the error message strings. Also rename `SchemaNewerThanCq` to `SchemaNewerThanCqs` for consistency.
+- **Location:** `CHANGELOG.md:624` (bottom of file)
+- **Description:** Versions 0.9.1, 0.9.0, 0.8.0, and 0.7.0 have entries at the top of the changelog but no corresponding `[version]: URL` comparison links at the bottom. The last link is for v0.6.0.
+- **Suggested fix:** Add comparison links for v0.7.0, v0.8.0, v0.9.0, and v0.9.1.
 
-#### `search.rs` module doc references nonexistent `SearchEngine`
+#### Error messages still say 'cq' instead of 'cqs' in 5 places
 - **Difficulty:** easy
-- **Location:** `src/search.rs:3`
-- **Description:** The module doc says "This module contains the SearchEngine for code and note search" but there is no `SearchEngine` struct in this module. Search methods are implemented as `impl Store` blocks. The doc also claims "helper functions for similarity scoring" but `cosine_similarity` was moved to `src/math.rs`. The module doc is stale from a prior refactor.
-- **Suggested fix:** Update to: "Search algorithms and name matching. Implements search methods on Store for semantic, hybrid, and index-guided search. See math.rs for similarity scoring."
+- **Location:** `src/mcp/server.rs:58`, `src/cli/commands/query.rs:23`, `src/cli/commands/stats.rs:19`, `src/cli/commands/init.rs:57`, `src/cli/commands/doctor.rs:84`
+- **Description:** The v0.5.3 audit fixed StoreError strings that said "cq" but missed these user-facing messages. Messages like "Run 'cq init && cq index' first" should say "cqs".
+- **Suggested fix:** Replace `'cq ` with `'cqs ` in all 5 locations.
 
-#### `language/mod.rs` feature flag docs missing `lang-c` and `lang-java`
+#### CLI module doc says "cq" not "cqs"
 - **Difficulty:** easy
-- **Location:** `src/language/mod.rs:8-15`
-- **Description:** The module-level doc lists feature flags but omits `lang-c` and `lang-java`, which were added in v0.5.0. The doc lists 5 flags (rust, python, typescript, javascript, go) plus `lang-all`, but `Cargo.toml` defines 7 language features with C and Java in the default set. Users reading the module docs would not know C and Java support exists.
-- **Suggested fix:** Add `- \`lang-c\` - C support (enabled by default)` and `- \`lang-java\` - Java support (enabled by default)` to the feature flag list.
+- **Location:** `src/cli/mod.rs:1`
+- **Description:** The module-level doc comment reads `//! CLI implementation for cq` but the binary is `cqs`.
+- **Suggested fix:** Change to `//! CLI implementation for cqs`.
 
-#### `lib.rs` Quick Start example uses unnecessary `mut` on Embedder
+#### PRIVACY.md missing data deletion paths
 - **Difficulty:** easy
-- **Location:** `src/lib.rs:23`
-- **Description:** The crate-level Quick Start example declares `let mut embedder = Embedder::new()?;` but all `Embedder` methods (`embed_documents`, `embed_query`) take `&self`, not `&mut self`. The `mut` is unnecessary and misleading — it suggests the embedder has mutable state that callers need to manage, when in fact interior mutability (OnceCell, Mutex) handles it.
-- **Suggested fix:** Change to `let embedder = Embedder::new()?;` (remove `mut`).
+- **Location:** `PRIVACY.md:53-57`
+- **Description:** The "Deleting Your Data" section only mentions `.cq/` and `~/.cache/huggingface/`. It omits `~/.config/cqs/` (user config with note_weight, threshold defaults) and `~/.local/share/cqs/` (reference index storage). Both are documented in SECURITY.md as read/write paths.
+- **Suggested fix:** Add `rm -rf ~/.config/cqs/` and `rm -rf ~/.local/share/cqs/` to the deletion instructions.
 
-#### `embedder.rs` module doc is minimal — one line for 1072-line file
+#### Lib test count is 262 but docs say 258
 - **Difficulty:** easy
-- **Location:** `src/embedder.rs:1`
-- **Description:** The module doc is just `//! Embedding generation with ort + tokenizers` for a 1072-line file that handles model downloading, checksum verification, ONNX session management, GPU/CPU provider selection, LRU caching, batch embedding, and tokenization. Key information is buried deep in the file: provider selection logic (line ~233), cache behavior (line ~220), batch size strategy (line ~236). The `Embedder` struct doc (line ~199) is better but not discoverable from the module overview.
-- **Suggested fix:** Expand module doc to mention key design decisions: lazy model loading, provider selection order (CUDA > TensorRT > CPU), query cache (LRU), batch processing, and the 769-dim output format.
+- **Location:** `ROADMAP.md:315`, `PROJECT_CONTINUITY.md:55`
+- **Description:** `cargo test --lib -- --list` reports 262 lib tests, but ROADMAP.md and PROJECT_CONTINUITY.md say "258 lib tests". The count may have drifted after adding tests in v0.9.1.
+- **Suggested fix:** Update to 262 (or whatever the current count is after verification).
 
-#### CONTRIBUTING.md architecture lists `search.rs` as "cosine similarity" — moved to `math.rs`
+#### ROADMAP Phase 5 "Quality" still says "In Progress"
 - **Difficulty:** easy
-- **Location:** `CONTRIBUTING.md:120`
-- **Description:** The Architecture Overview says `search.rs — Search algorithms, cosine similarity, HNSW-guided search`. However, `cosine_similarity` lives in `src/math.rs` (since the math module extraction). The architecture overview is stale for this entry. `math.rs` is not listed in the architecture at all.
-- **Suggested fix:** Update `search.rs` line to "Search algorithms, name matching, HNSW-guided search". Add `math.rs — Vector math utilities (cosine similarity, SIMD)` to the source tree listing.
+- **Location:** `ROADMAP.md:136`
+- **Description:** Phase 5 (Quality) at line 136 says `### Status: In Progress` but all items in it are checked off. Phases 6, 7, and post-v0.8.0 are all marked "Complete". Phase 5 appears to be done.
+- **Suggested fix:** Change to `### Status: Complete` with appropriate version range.
 
-#### `note.rs` module doc references obsolete types
+#### ROADMAP "Current Phase: 5 (Multi-index)" is stale
 - **Difficulty:** easy
-- **Location:** `src/note.rs:3-4`
-- **Description:** The module doc says "Replaces separate Scar and Hunch types with a simpler schema." These types (`Scar`, `Hunch`) no longer exist anywhere in the codebase — they were removed in an earlier version. This historical note is confusing for new contributors who have no context for what Scars and Hunches were.
-- **Suggested fix:** Remove the "Replaces separate Scar and Hunch types" sentence. Replace with a description of what Notes actually are: "Notes are developer observations with sentiment, stored in TOML and indexed for semantic search."
+- **Location:** `ROADMAP.md:75`
+- **Description:** Line 75 says "Current Phase: 5 (Multi-index)" but: (1) Multi-index was part of Phase 5 Quality which is done, (2) Phases 6, 7, and post-v0.8.0 are all complete, (3) the actual current work is "Next: New Languages (SQL + VB.NET)" at line 325. The "Current Phase" label is confusing.
+- **Suggested fix:** Remove the "Current Phase" marker from the completed phase and/or rename the section headers. The actual next work is clearly labeled at line 325.
 
-#### `store/mod.rs` module doc lists only 3 of 5 submodules
+#### cqs_read tool schema missing "required" for path
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:8-11`
-- **Description:** The module structure doc says it has `helpers`, `chunks`, `notes`, and `calls` submodules. But the actual module declaration (lines 13-22) also includes `migrations` (line 15). The `migrations` submodule handles schema upgrades and is non-trivial (has its own error variants in StoreError). Omitting it from the doc makes it less discoverable.
-- **Suggested fix:** Add `- \`migrations\` - Schema version upgrades` to the module structure list.
+- **Location:** `src/mcp/tools/mod.rs:141-153`
+- **Description:** The `cqs_read` tool JSON schema has no `"required"` field. While the implementation (read.rs:19-24) correctly returns an error if both `path` and `focus` are missing, the schema doesn't tell LLM clients that at least one of `path` or `focus` is needed. LLMs may call it with empty arguments and get a confusing error.
+- **Suggested fix:** Add a note in the tool description like "Requires either 'path' or 'focus' parameter" or add `"required": ["path"]` (since `focus` is an alternative path, and the error message already explains you can use focus instead).
 
-## Batch 1: Error Propagation
-
-#### 1. `serde_json::to_string(&note.mentions).unwrap_or_default()` silently drops serialization errors
+#### CHANGELOG v0.9.0 date is same as v0.8.0 (both 2026-02-07)
 - **Difficulty:** easy
-- **Location:** `src/store/notes.rs:74` and `src/store/notes.rs:201`
-- **Description:** If `serde_json::to_string` fails when serializing note mentions, `unwrap_or_default()` returns an empty string `""`, which is not valid JSON for an array. This corrupts the `mentions` column — the note is stored with empty mentions, and later reads via `serde_json::from_str` in `score_note_row` (notes.rs:31) will parse `""` as invalid JSON and fall back to an empty Vec. The note's mentions are permanently lost without any error indication. `Vec<String>` serialization should never realistically fail, but the pattern is still incorrect — if it did fail, the transaction should abort rather than store garbage.
-- **Suggested fix:** Use `?` operator instead. `serde_json::to_string` returning `Err` on `Vec<String>` is effectively impossible, but `?` is both correct and no more complex than `unwrap_or_default()`.
+- **Location:** `CHANGELOG.md:20,34`
+- **Description:** v0.9.0 and v0.8.0 both show date `2026-02-07`. This may be correct (same-day releases) but looks like a copy error since v0.9.1 at line 8 also says `2026-02-06`, meaning three versions in two days. If the dates are accurate, no fix needed.
+- **Suggested fix:** Verify actual release dates. If any are wrong, correct them.
 
-#### 2. `Config::load_file` returns `None` for TOML parse errors — caller can't distinguish missing from malformed
+## Batch 1: Error Handling
+
+#### 1. `rewrite_notes_file` atomic write loses context on temp file errors
+- **Difficulty:** easy
+- **Location:** `src/note.rs:145-146`
+- **Description:** `std::fs::write(&tmp_path, output)?` and `std::fs::rename(&tmp_path, notes_path)?` use bare `?` without `.context()` or `.map_err()`. If the temp file write fails (e.g., disk full, permissions), the error is a raw `io::Error` with no indication of which file or operation failed. The `rewrite_notes_file` function wraps the read with `map_err` (line 129-133) for context, but doesn't do the same for write/rename.
+- **Suggested fix:** Add `.map_err()` wrapping like the read path: `std::fs::write(&tmp_path, output).map_err(|e| NoteError::Io(std::io::Error::new(e.kind(), format!("{}: {}", tmp_path.display(), e))))?;`
+
+#### 2. `parse_notes` bare `?` on file read loses path context
+- **Difficulty:** easy
+- **Location:** `src/note.rs:117`
+- **Description:** `parse_notes()` calls `std::fs::read_to_string(path)?` with bare `?`. The error only contains the OS message (e.g., "No such file or directory") without the path. This contrasts with `rewrite_notes_file` (line 129-133) which carefully wraps the same operation with path context.
+- **Suggested fix:** `std::fs::read_to_string(path).map_err(|e| NoteError::Io(std::io::Error::new(e.kind(), format!("{}: {}", path.display(), e))))?;`
+
+#### 3. `cmd_index` bare `?` on `create_dir_all` and `remove_file` loses path
+- **Difficulty:** easy
+- **Location:** `src/cli/commands/index.rs:29,69`
+- **Description:** `std::fs::create_dir_all(&cq_dir)?` and `std::fs::remove_file(&index_path)?` have bare `?`. If `.cq/` creation fails (permissions) or removing the old index fails (locked by another process), the user gets a raw OS error without the path. Compare with `cmd_init` which uses `.context("Failed to create .cq directory")`.
+- **Suggested fix:** Add `.context()` like `cmd_init`: `std::fs::create_dir_all(&cq_dir).context("Failed to create .cq directory")?;`
+
+#### 4. `cmd_ref_add` bare `?` on filesystem operations
+- **Difficulty:** easy
+- **Location:** `src/cli/commands/reference.rs:85,217`
+- **Description:** `std::fs::create_dir_all(&ref_dir)?` (line 85) and `std::fs::remove_dir_all(&cfg.path)?` (line 217) have bare `?`. If reference directory creation or deletion fails, the error lacks the path and context.
+- **Suggested fix:** `std::fs::create_dir_all(&ref_dir).context(format!("Failed to create reference directory: {}", ref_dir.display()))?;`
+
+#### 5. `extract_calls_in_chunk` silently discards query compilation errors
 - **Difficulty:** medium
-- **Location:** `src/config.rs:91-120`
-- **Description:** `load_file` returns `Option<Self>`, mapping both "file not found" and "parse error" to `None`. The caller in `Config::load` (line 68-74) uses `unwrap_or_default()` for both cases. If a user has a malformed `.cqs.toml`, their config is silently ignored and defaults are used. The only indication is a `tracing::warn`, which users may never see. This is especially problematic for reference configs — a typo in `[[reference]]` means references silently don't load. Existing #241 covers config validation more broadly, but this specific load_file conflation is a distinct error propagation issue.
-- **Suggested fix:** Return `Result<Option<Self>, ConfigError>` where `None` = not found and `Err` = parse error. Or at minimum, print to stderr so the user sees the warning even without tracing.
+- **Location:** `src/parser/calls.rs:32-34`
+- **Description:** `get_call_query(language)` error is matched with `Err(_) => return vec![]` — the actual error reason (e.g., query syntax error, unsupported language) is discarded. Since call graph extraction is important for `cqs_callers`/`cqs_callees`/`cqs_gather` tools, silently returning empty results hides problems. This could mask issues when adding new language support.
+- **Suggested fix:** Log the error: `Err(e) => { tracing::debug!(language = %language, error = %e, "Failed to compile call query"); return vec![]; }`
 
-#### 3. `search_reference` and `search_reference_by_name` swallow search errors, returning empty results
-- **Difficulty:** medium
-- **Location:** `src/reference.rs:78-97` and `src/reference.rs:100-119`
-- **Description:** When a reference search fails (database error, corruption, etc.), the error is logged at `warn` level but the function returns an empty `vec![]`. The caller has no way to distinguish "no results" from "search failed." In multi-index search, this means a broken reference silently drops results rather than surfacing the error. The user sees fewer results without knowing why.
-- **Suggested fix:** Return `Result<Vec<SearchResult>, StoreError>` and let the MCP tool layer decide whether to degrade gracefully. The tool_search function can then include a warning in the response when a reference fails.
-
-#### 4. `get_by_content_hash` returns `None` for database errors — caller can't distinguish missing from failure
+#### 6. `cli/display.rs:read_context_lines` bare `?` on file read
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:217-235`
-- **Description:** `get_by_content_hash` returns `Option<Embedding>`, mapping database errors to `None` via warn+return. The caller treats `None` as "not cached, need to re-embed." On a transient SQLite error (SQLITE_BUSY, lock timeout), this causes unnecessary re-embedding work but won't corrupt data. The signature conflates two semantically different outcomes.
-- **Suggested fix:** Return `Result<Option<Embedding>, StoreError>`. The pipeline can then decide to retry or skip.
+- **Location:** `src/cli/display.rs:22`
+- **Description:** `std::fs::read_to_string(file)?` propagates a bare `io::Error` without the file path. When displaying search results, if a file has been deleted or moved since indexing, the user sees "No such file or directory" without knowing which file. This is a user-facing CLI function.
+- **Suggested fix:** `std::fs::read_to_string(file).with_context(|| format!("Failed to read {}", file.display()))?;`
 
-#### 5. `get_embeddings_by_hashes` silently continues on batch fetch errors
+#### 7. `config.rs:add_reference_to_config` uses `unwrap_or_default` masking non-NotFound errors
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:264-269`
-- **Description:** In the batch loop, if a `fetch_all` fails, the error is logged and the loop `continue`s to the next batch. This means partial results are returned without any indication that some hashes couldn't be checked. During indexing, affected chunks will be re-embedded unnecessarily (performance hit, not correctness).
-- **Suggested fix:** Either accumulate errors and return them, or return `Result` and let the caller decide.
+- **Location:** `src/config.rs:184`
+- **Description:** `std::fs::read_to_string(config_path).unwrap_or_default()` silently treats any read error (permissions, I/O error, encoding error) the same as "file doesn't exist". If the config file exists but is unreadable (wrong permissions, disk error), this silently creates an empty config and overwrites the file on the next write (line 222), destroying the existing config. Contrast with `remove_reference_from_config` (line 236) which properly matches on the error kind.
+- **Suggested fix:** Match on the error kind: `match std::fs::read_to_string(config_path) { Ok(s) => s, Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(), Err(e) => return Err(e.into()) }`
 
-#### 6. `serde_json::to_value(&response).unwrap_or_default()` in HTTP transport produces null on serialization failure
-- **Difficulty:** medium
+#### 8. `MCP http.rs` response serialization swallows failure with `unwrap_or_default`
+- **Difficulty:** easy
 - **Location:** `src/mcp/transports/http.rs:302`
-- **Description:** If the JSON-RPC response fails to serialize (shouldn't happen in practice, but...), `unwrap_or_default()` returns `Value::Null`. The HTTP response will be `200 OK` with body `null`, which is not valid JSON-RPC. Clients will get a confusing null response instead of a proper error.
-- **Suggested fix:** Map serialization failure to a 500 Internal Server Error with a JSON-RPC error object.
+- **Description:** `serde_json::to_value(&response).unwrap_or_default()` silently converts serialization failures into JSON `null`. If `JsonRpcResponse` fails to serialize, the client receives a null response with 200 OK status — making the failure invisible. While unlikely for simple types, custom data in the response could trigger this.
+- **Suggested fix:** `serde_json::to_value(&response).unwrap_or_else(|e| { tracing::warn!("Failed to serialize response: {}", e); serde_json::json!({"error": "internal serialization error"}) })`
 
-#### 7. `check_model_version` silently ignores unparseable dimension values
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:323-332`
-- **Description:** If the stored `dimensions` value exists but can't be parsed as `u32` (line 324: `if let Ok(stored_dim) = dim_str.parse::<u32>()`), the check silently passes. A corrupted dimensions value in metadata means the index will proceed without validating dimensions, potentially leading to incorrect search results if the dimensions actually don't match.
-- **Suggested fix:** Log a warning when parse fails, or return an error. The `if let Ok` pattern here silently drops the parse error.
-
-#### 8. `HnswError::Internal` is used as a catch-all that loses type information
+#### 9. `get_callers_full`/`get_callees_full` errors silently become empty results in 6 MCP/CLI call sites
 - **Difficulty:** medium
-- **Location:** `src/hnsw.rs` (throughout — lines 115, 488, 501, 509, 519, 529, 541, 544, 553, 561, 576, 651, 662, 668, 685, 701)
-- **Description:** Many distinct error conditions in `hnsw.rs` are mapped to `HnswError::Internal(String)`, losing the original error type. IO errors during checksum computation are wrapped as `Internal` instead of `Io`. JSON parse errors, directory creation errors, and file rename errors are all flattened to the same variant. This makes programmatic error handling impossible — callers can't distinguish recoverable IO errors from corruption errors from out-of-memory conditions.
-- **Suggested fix:** Add specific variants: `HnswError::Checksum(String)`, `HnswError::IdMapCorrupted(String)`, `HnswError::SaveFailed { source: std::io::Error, path: PathBuf }`. Keep `Internal` only for truly unexpected conditions.
+- **Location:** `src/mcp/tools/explain.rs:54,60`, `src/mcp/tools/context.rs:56,83`, `src/cli/commands/explain.rs:55,58`, `src/cli/commands/context.rs:41,66`
+- **Description:** Six call sites use `.unwrap_or_default()` on `get_callers_full`/`get_callees_full`. If the database query fails (e.g., corrupted DB, schema mismatch), the user sees functions with "no callers" and "no callees" instead of an error. For `cqs_explain` and `cqs_context`, this gives misleading results — a function appears to have no call graph when really the query failed.
+- **Suggested fix:** At minimum log the error: `server.store.get_callers_full(&chunk.name).unwrap_or_else(|e| { tracing::warn!(name = %chunk.name, error = %e, "Failed to get callers"); vec![] })`
 
-#### 9. Language parse error in `tool_search` silently defaults to Rust
+#### 10. `pipeline.rs` needs_reindex error silently forces re-embedding
 - **Difficulty:** easy
-- **Location:** `src/mcp/tools/search.rs:40`
-- **Description:** `l.parse().unwrap_or(Language::Rust)` — if a client passes an unsupported language string (e.g., "kotlin"), it silently becomes a Rust filter. The user gets results filtered to Rust without knowing their language filter was ignored.
-- **Suggested fix:** Return an error listing valid languages, or log a warning and include it in the response.
+- **Location:** `src/cli/pipeline.rs:294`
+- **Description:** `Err(_) => true` on `store.needs_reindex()` means any database error causes the file to be re-embedded. While "reindex on error" is reasonable as a recovery strategy, discarding the error makes it invisible. If the store has a systematic issue (e.g., corrupted metadata table), every file gets re-embedded with no warning, wasting significant time on large codebases.
+- **Suggested fix:** Log at debug level: `Err(e) => { tracing::debug!(file = %c.file.display(), error = %e, "needs_reindex check failed, will reindex"); true }`
 
-#### 10. Pipeline parser thread swallows parse errors per-file with no aggregate count
+#### 11. `embedder.rs` ORT library detection discards directory read error
 - **Difficulty:** easy
-- **Location:** `src/cli/pipeline.rs:250-254`
-- **Description:** When `parser.parse_file()` fails, it logs a warning and returns an empty vec. There's no counter for parse failures, so `PipelineStats` doesn't include how many files failed to parse. If a parser bug causes widespread failures, the user only sees "indexed 0 chunks" with no explanation. The warnings scroll by in the progress output.
-- **Suggested fix:** Add a `parse_failures: AtomicUsize` counter to `PipelineStats` and increment it in the error branch.
+- **Location:** `src/embedder.rs:610`
+- **Description:** `Err(_) => return` on `std::fs::read_dir(&ort_cache)` silently abandons symlink setup when the cache directory is unreadable. Since this function sets up GPU acceleration paths, a silent failure means the user gets CPU-only performance without knowing why. The function already logs individual entry errors (line 603) but not the top-level directory error.
+- **Suggested fix:** `Err(e) => { tracing::debug!(path = %ort_cache.display(), error = %e, "Cannot read ORT cache directory"); return; }`
 
+#### 12. `gather.rs` silently skips `search_by_name` errors during BFS expansion
+- **Difficulty:** easy
+- **Location:** `src/gather.rs:137`
+- **Description:** `if let Ok(results) = store.search_by_name(name, 1)` silently drops search failures. During BFS expansion in the `cqs_gather` tool, if a name lookup fails, the chunk is silently excluded from the gathered context. This could cause incomplete gather results with no indication of what was missed.
+- **Suggested fix:** Log and continue: `match store.search_by_name(name, 1) { Ok(results) => { /* existing logic */ }, Err(e) => { tracing::debug!(name, error = %e, "Failed to look up chunk during gather expansion"); continue; } }`
+
+#### 13. `cli/files.rs:acquire_index_lock` discards lock error details
+- **Difficulty:** easy
+- **Location:** `src/cli/files.rs:76`
+- **Description:** `Err(_)` on `lock_file.try_lock_exclusive()` discards the OS error. The error could distinguish between "already locked" (EWOULDBLOCK) and actual I/O errors (ENOLCK, EIO). Currently all lock failures are treated as "another process holds the lock", but an actual I/O error should be reported differently since PID-based stale lock recovery won't help.
+- **Suggested fix:** Match on the error and log it: `Err(e) => { tracing::debug!(error = %e, "Lock acquisition failed"); /* existing stale lock recovery */ }`
+
+## Batch 1: Code Quality
+
+#### 1. Old call graph API is entirely dead (4 methods)
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:14-157` (`upsert_calls`, `get_callers`, `get_callees`, `call_stats`)
+- **Description:** These four methods operate on the legacy `calls` table and have zero callers in production code. They were superseded by the `function_calls` table equivalents: `upsert_function_calls`, `get_callers_full`, `get_callees_full`, `function_call_stats`. The old `calls` table itself may also be dead (check schema.sql). `upsert_calls_batch` is the only old-table method still called (from pipeline.rs:584).
+- **Suggested fix:** Remove `upsert_calls`, `get_callers`, `get_callees`, and `call_stats`. If `upsert_calls_batch` is the only survivor, consider migrating it to use `function_calls` table and removing the old `calls` table from schema.sql.
+
+#### 2. Config accessor methods are dead (5 methods)
+- **Difficulty:** easy
+- **Location:** `src/config.rs:154-176` (`limit_or_default`, `threshold_or_default`, `name_boost_or_default`, `quiet_or_default`, `verbose_or_default`)
+- **Description:** All five accessor methods have zero callers. The CLI uses `apply_config_defaults()` pattern instead, and MCP tools use `args.limit.unwrap_or(5)` inline. The associated constants (`DEFAULT_LIMIT`, `DEFAULT_THRESHOLD`, `DEFAULT_NAME_BOOST`) are also unused.
+- **Suggested fix:** Remove all five methods and the three constants.
+
+#### 3. `Store::get_chunk_by_id` is dead
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:460`
+- **Description:** Zero callers. Likely added speculatively and never wired to any feature.
+- **Suggested fix:** Remove.
+
+#### 4. `Store::delete_notes_by_file` is dead
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:227`
+- **Description:** Zero callers. Notes are managed by the `rewrite_notes_file` / `sync_notes` path, not by per-file deletion.
+- **Suggested fix:** Remove.
+
+#### 5. `Store::all_embeddings` is dead
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:613`
+- **Description:** Zero callers (`.all_embeddings()` not called anywhere). Superseded by `embedding_batches()` which provides streaming/batched access and is used by HNSW build.
+- **Suggested fix:** Remove. `embedding_batches` is the correct API.
+
+#### 6. `Embedder::batch_size()` is dead
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:428`
+- **Description:** Zero callers. Batch size is determined internally by the pipeline, not queried from the embedder.
+- **Suggested fix:** Remove.
+
+#### 7. `Embedding::try_new` is dead (doc-example only)
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:106`
+- **Description:** Only appears in doc examples (lines 100, 103), never called in production or test code. The constructor `Embedding::new()` (which panics on wrong dimensions) is used everywhere instead.
+- **Suggested fix:** Remove if the doc example isn't being tested (`cargo test --doc` would catch it). If keeping, consider adding `#[cfg(doc)]` or moving to a test.
+
+#### 8. `find_test_chunks` and `find_test_chunks_async` duplicate identical SQL
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:421-510`
+- **Description:** `find_test_chunks_async` (line 421, private async) and `find_test_chunks` (line 472, public sync) contain the exact same SQL query and mapping logic. The sync version wraps with `rt.block_on`, while `find_dead_code` calls the async version directly. This is copy-paste duplication.
+- **Suggested fix:** Make `find_test_chunks` delegate to `find_test_chunks_async` via `self.rt.block_on(self.find_test_chunks_async())`, eliminating the duplicated SQL.
+
+#### 9. Duplicated JSON construction in MCP search formatters
+- **Difficulty:** medium
+- **Location:** `src/mcp/tools/search.rs:293-403` (`format_unified_results` and `format_tagged_results`)
+- **Description:** Both functions construct identical `serde_json::json!` objects for `UnifiedResult::Code` and `UnifiedResult::Note` variants. The only difference is that `format_tagged_results` adds an optional `"source"` field. Meanwhile, `format_code_result` (line 266) exists as a helper but is only used by `tool_search_name_only`, not by these two formatters.
+- **Suggested fix:** Extract shared JSON construction into helpers (like `format_code_result` already is) and reuse them in both functions.
+
+#### 10. GPU failure handling duplicated 3 times in pipeline.rs
+- **Difficulty:** medium
+- **Location:** `src/cli/pipeline.rs:373-396,434-456`
+- **Description:** The "send cached to writer, requeue un-embedded to CPU" pattern appears 3 times in the GPU embedder thread: (1) long batch pre-filter at line 373, (2) GPU failure at line 434, and (3) the success path has similar but different structure. The first two are nearly identical: check cached not empty, send EmbeddedBatch, send ParsedBatch via fail_tx.
+- **Suggested fix:** Extract a helper like `fn send_cached_and_requeue(cached, to_embed, embed_tx, fail_tx, file_mtimes, counter) -> Result<()>`.
 ## Batch 1: API Design
 
-#### `language` parameter on `cqs_search` silently falls back to Rust on bad input (existing: Error Propagation #9)
+#### 1. Duplicated `parse_target` in explain.rs and similar.rs despite shared resolve.rs
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/explain.rs:11-20`, `src/mcp/tools/similar.rs:11-20`, `src/mcp/tools/resolve.rs:14-23`
+- **Description:** `resolve.rs` was created to centralize the `parse_target` function and the full `resolve_target` flow. `trace.rs`, `impact.rs`, `test_map.rs`, and `read.rs` all use `resolve::resolve_target`. However, `explain.rs` and `similar.rs` still have their own identical private `parse_target` copies and inline the resolution logic (search_by_name + file filter + fallback to index 0). Any fix to target resolution must be applied in 3 places.
+- **Suggested fix:** Replace the local `parse_target` + resolution logic in `explain.rs` and `similar.rs` with calls to `resolve::resolve_target`. `resolve_target` already returns `(ChunkSummary, Vec<SearchResult>)` which provides everything both tools need.
+
+#### 2. Inconsistent response shape between callers and callees tools
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/call_graph.rs:18-34` (callers), `src/mcp/tools/call_graph.rs:54-60` (callees)
+- **Description:** Three response shape differences: (1) Callers changes shape based on empty vs non-empty — adds `message` when empty, adds `count` when non-empty. Callees always returns the same shape with `count`. (2) Callers uses `"callers"` as the array key, callees uses `"calls"`. The natural pair would be `"callers"`/`"callees"`. (3) Callers omits the input function name; callees includes it as `"function"`. LLM clients parsing these must handle two different schemas for symmetric operations.
+- **Suggested fix:** Normalize both to: `{ "function": name, "callers"|"callees": [...], "count": N }`. Always include `count`. Drop the conditional `message` — an empty array conveys "no results".
+
+#### 3. name_only search returns bare array, semantic search returns wrapper object
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/search.rs:204-213` (name_only), `src/mcp/tools/search.rs:327-342` (semantic)
+- **Description:** Semantic search returns `{ "results": [...], "query": "...", "total": N }`. Name-only search (same `cqs_search` tool with `name_only=true`) returns a bare JSON array. A client consuming results from the same tool must check `name_only` to know which format to parse.
+- **Suggested fix:** Wrap name_only results in the same `{ "results": [...], "query": "...", "total": N }` envelope.
+
+#### 4. SearchFilter has pub fields alongside builder methods — dual construction paths
+- **Difficulty:** easy
+- **Location:** `src/store/helpers.rs:277-304` (struct), `src/store/helpers.rs:335-380` (builders)
+- **Description:** `SearchFilter` has 7 `pub` fields AND 8 `with_*` builder methods. All internal callers (explain.rs:65-73, similar.rs:88-96, search.rs:49-64) construct the struct directly via field initialization, ignoring the builders. The `validate()` method is only called in one of several construction sites (search.rs:70-72). The builders add dead API surface that nobody uses internally.
+- **Suggested fix:** Either remove the builders (since nobody uses them and the struct has pub fields anyway) or make fields private and enforce validation through builders. Removing builders is simpler given current usage.
+
+#### 5. `batch` tool only supports 6 of 20 tools
 - **Difficulty:** medium
-- **Location:** `src/mcp/tools/search.rs:39-40`
-- **Description:** When the MCP client passes an invalid language string, `l.parse().unwrap_or(Language::Rust)` silently treats an unrecognized language as Rust. `cqs_search(query="foo", language="ruby")` filters to Rust files with no indication the filter was remapped. The tool schema enumerates valid values, but LLM clients may pass values outside the enum.
-- **Suggested fix:** Return an error for unrecognized language values so the caller knows the filter was rejected.
+- **Location:** `src/mcp/tools/batch.rs:27-37`, `src/mcp/tools/mod.rs:369` (schema enum)
+- **Description:** `cqs_batch` accepts only `search`, `callers`, `callees`, `explain`, `similar`, and `stats` (6 of 20 tools). Notable omissions: `read`, `context`, `impact`, `trace`, `test_map`, `dead`, `gc`, `gather`. The description says "Eliminates round-trip overhead for independent lookups" without clarifying which tools are supported. LLM clients may try batching `context` or `impact` and get "Unknown batch tool" errors.
+- **Suggested fix:** Either expand to support all stateless read-only tools or add the supported list to the description.
 
-#### `SearchFilter` has silent field coupling — `note_weight` ignored by most search methods
+#### 6. Inconsistent parameter naming for function identifier across tools
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/mod.rs` (schema definitions)
+- **Description:** Tools accepting a function identifier use different parameter names: `cqs_callers`, `cqs_callees`, `cqs_explain`, `cqs_impact`, `cqs_test_map` all use `"name"`. `cqs_similar` uses `"target"`. `cqs_trace` uses `"source"`/`"target"`. All accept the same `"file:function"` format. LLM must remember which tools use `name` vs `target` for the same concept.
+- **Suggested fix:** Low severity — `similar` using `target` and `trace` using `source`/`target` make semantic sense. Document the format (`"name or file:name"`) consistently in all tool descriptions rather than renaming (breaking change).
+
+#### 7. `Embedding::new()` bypasses dimension validation
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:87-89` (new), `src/embedder.rs:106-114` (try_new)
+- **Description:** `Embedding::new(data)` accepts any `Vec<f32>` without checking length. `try_new()` validates against `EMBEDDING_DIM` (769). The type is `pub` and re-exported from `lib.rs`, so external consumers can create invalid Embeddings that fail later with confusing HNSW dimension mismatch errors. The v0.5.3 audit addressed `with_sentiment` validation (A16) but not the base constructor.
+- **Suggested fix:** Add `debug_assert_eq!(data.len(), EMBEDDING_DIM)` to `new()` to catch misuse in development builds.
+
+#### 8. `tool_stats` returns overlapping `hnsw_index` and `active_index` fields
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/stats.rs:34-53`
+- **Description:** Stats response includes `hnsw_index` (checks on-disk) and `active_index` (checks in-memory). When HNSW is loaded, both report the same info in different formats: `"1234 vectors (O(log n) search)"` vs `"HNSW (1234 vectors)"`. The disk-vs-memory distinction is an implementation detail LLM consumers don't need. When CAGRA is active, `hnsw_index` shows stale disk info which is confusing.
+- **Suggested fix:** Keep `active_index` and either remove or rename `hnsw_index` to `disk_index`.
+
+#### 9. `node_letter` generates ambiguous Mermaid IDs after 26 nodes
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/trace.rs:215-221`
+- **Description:** `node_letter(i)` generates A-Z for 0-25, then `A1`, `B1` for 26+. The pattern `(i % 26, i / 26)` means i=26 gives `A1` and i=52 gives `A2`. These could collide with user-defined IDs and don't scale cleanly. Unlikely to hit in practice (call chains >26 are rare) but is a latent bug.
+- **Suggested fix:** Use sequential identifiers like `N0`, `N1`, `N2`... which scale indefinitely.
+
+#### 10. `cqs_read` schema doesn't communicate path/focus requirement
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/mod.rs:141-153`
+- **Description:** Cross-reference of Documentation finding. The JSON schema has no `required` field, so LLM clients don't know at least one of `path` or `focus` is needed. Implementation guards this but schema is misleading.
+- **Suggested fix:** Add `"required": ["path"]` since path is the primary parameter and the error message explains focus as alternative.
+
+## Batch 1: Observability
+
+#### 1. MCP handle_request logs errors at debug level instead of warn
+- **Difficulty:** easy
+- **Location:** `src/mcp/server.rs:175`
+- **Description:** When an MCP request fails, the full error is logged at `tracing::debug` level: `tracing::debug!(error = %full_error, "Request error")`. In a server handling LLM tool calls, errors should be visible at the default log level. Users running cqs with default log settings will never see that a tool call failed on the server side.
+- **Suggested fix:** Change `tracing::debug!` to `tracing::warn!` on line 175.
+
+#### 2. ensure_embedder() has no logging for expensive lazy initialization
+- **Difficulty:** easy
+- **Location:** `src/mcp/server.rs:130-150`
+- **Description:** `ensure_embedder()` performs lazy model initialization via `Embedder::new()` or `Embedder::new_cpu()`, which takes ~500ms+ (model loading, ONNX session setup). There is zero logging — no span, no info log. The first MCP tool call that needs embeddings appears to hang with no explanation.
+- **Suggested fix:** Add `tracing::info!(gpu = self.use_gpu, "Initializing embedder")` before the `Embedder::new` call and an info log after success.
+
+#### 3. Watch mode uses eprintln! instead of tracing for warning
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:41`
+- **Description:** Watch mode uses `eprintln!("Warning: --no-ignore is not yet implemented for watch mode")` instead of `tracing::warn!`. This bypasses the tracing subscriber, so it doesn't appear in structured log output and can interleave with progress output. Lines 55-63 also use `println!` for startup messages, which is less critical but inconsistent with tracing-based output elsewhere.
+- **Suggested fix:** Change line 41 to `tracing::warn!("--no-ignore is not yet implemented for watch mode")`. Optionally convert lines 55-63 to `tracing::info!`.
+
+#### 4. search_unified_with_index has no tracing span
+- **Difficulty:** easy
+- **Location:** `src/search.rs:526-605`
+- **Description:** `search_unified_with_index` is the main entry point for MCP search — it orchestrates note search, HNSW lookup, candidate filtering, and result merging. It has no `info_span` or timing. The calling MCP tool handler logs completion, but the search function itself is invisible in span hierarchies. By contrast, `search_filtered` (line 216) and `search_filtered_with_index` (line 396) both have `info_span`.
+- **Suggested fix:** Add `let _span = tracing::info_span!("search_unified_with_index", limit, threshold).entered();` at the top.
+
+#### 5. search_by_candidate_ids has no tracing span
+- **Difficulty:** easy
+- **Location:** `src/search.rs:416-520`
+- **Description:** `search_by_candidate_ids` is the HNSW-guided search path — fetches embeddings by ID, computes cosine similarity, applies filters, and does hybrid name scoring. No tracing span, no logging of candidate count vs result count. The only related log is `tracing::debug!("Index returned {} chunk candidates")` at the call site (line 567), not in this function.
+- **Suggested fix:** Add `let _span = tracing::info_span!("search_by_candidate_ids", candidates = candidate_ids.len(), limit, threshold).entered();`
+
+#### 6. MCP tool_read and tool_read_focused have zero logging
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/read.rs:13-310`
+- **Description:** `tool_read` and `tool_read_focused` perform file reads with note injection and focused function extraction. Neither has any tracing calls. Other MCP tools (search, notes, explain) log their operations. For debugging MCP server behavior, it's useful to know what files are being read and whether focused reads find their target.
+- **Suggested fix:** Add `tracing::debug!(path, "Reading file")` in `tool_read` and `tracing::debug!(focus, "Focused read")` in `tool_read_focused`.
+
+#### 7. Name-only search path has no timing or completion logging
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/search.rs:172-263`
+- **Description:** `tool_search_name_only` performs name-based search across primary and reference indexes but has no timing or completion log. The semantic search path logs completion with timing at info level (lines 137-142, 161-166: "MCP search completed" / "MCP multi-index search completed"). The name-only path returns results silently.
+- **Suggested fix:** Add timing and `tracing::info!(results = count, elapsed_ms, "MCP name-only search completed")` similar to the semantic path.
+
+#### 8. handle_initialize doesn't log connecting client info
+- **Difficulty:** easy
+- **Location:** `src/mcp/server.rs:214-243`
+- **Description:** `handle_initialize` parses the client's name and version from the initialize request but discards them (`let _params`). Logging the connecting client (e.g., "Claude Code v1.2.3", "Cursor v0.45") would help debug MCP compatibility issues and understand which clients connect.
+- **Suggested fix:** Add `tracing::info!(client = %_params.client_info.name, version = %_params.client_info.version, "MCP client connected")`.
+
+#### 9. Note add/update/remove MCP tools don't log success
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/notes.rs:39-129` (add), `131-213` (update), `215-280` (remove)
+- **Description:** `tool_add_note`, `tool_update_note`, and `tool_remove_note` perform file I/O and trigger reindexing, but none log the operation at any level on success. The `reindex_notes` helper logs failures (lines 18, 24) but not success. A debug log would help trace MCP tool activity.
+- **Suggested fix:** Add `tracing::debug!(preview = %text_preview(text), "Note added")` after successful append in `tool_add_note`, and similar for update/remove.
+
+#### 10. enumerate_files has no summary log of files found
+- **Difficulty:** easy
+- **Location:** `src/lib.rs:199-273`
+- **Description:** `enumerate_files` walks the project directory, filters by extension and size, and returns matching paths. It logs individual canonicalization failures (warn for first 3, debug after), but never logs a summary count. For a function that determines the scope of indexing, a summary would help diagnose "why weren't my files indexed?" issues.
+- **Suggested fix:** Add `tracing::info!(count = files.len(), "Enumerated files for indexing")` before the `Ok(files)` return.
+
+#### 11. Pipeline completion stats not logged at info level
+- **Difficulty:** easy
+- **Location:** `src/cli/pipeline.rs:615-620`
+- **Description:** `run_pipeline_concurrent` returns `PipelineStats { total_embedded, total_cached, gpu_failures, parse_errors }` but never logs these stats. The caller (CLI `cmd_index`) shows them in a progress bar, but the stats aren't in structured tracing output. When the pipeline runs from watch mode, the stats are lost entirely.
+- **Suggested fix:** Add `tracing::info!(embedded = total_embedded, cached = total_cached, gpu_failures = ..., parse_errors = ..., "Pipeline completed")` before returning.
+
+#### 12. touch_updated_at().ok() silently swallows errors
+- **Difficulty:** easy
+- **Location:** `src/cli/pipeline.rs:613`
+- **Description:** `store.touch_updated_at().ok()` discards any error from updating the metadata timestamp. If this fails (database locked, disk full), the user gets no indication. The timestamp is used by `cqs gc` to detect staleness, so a silent failure means gc may incorrectly report stale indexes.
+- **Suggested fix:** Change to `if let Err(e) = store.touch_updated_at() { tracing::warn!(error = %e, "Failed to update metadata timestamp"); }`
+
+## Batch 2: Robustness
+
+#### 1. `embedding_to_bytes` panics on dimension mismatch instead of returning error
 - **Difficulty:** medium
-- **Location:** `src/store/helpers.rs:227-265`
-- **Description:** `SearchFilter` has implicit dependencies: `name_boost > 0.0` only works when `query_text` is non-empty; `enable_rrf` requires `query_text`; `note_weight` only matters in `search_unified_with_index` but is silently ignored by `search_filtered` and `search_by_candidate_ids`. A caller can set `note_weight = 0.5`, pass it to `search_filtered`, and get no effect — notes are never searched in that code path. The `validate()` method catches the `query_text` requirement but does not flag context-dependent fields.
-- **Suggested fix:** Document per-field which search methods honor them, or split into method-specific option types.
+- **Location:** `src/store/helpers.rs:500-507`
+- **Description:** `embedding_to_bytes` uses `assert_eq!` to verify the embedding has exactly 769 dimensions. If an `Embedding::new()` was constructed with wrong dimensions (which the unchecked constructor allows), this panics at store insertion time with no recovery path. The panic occurs deep in the indexing pipeline where a graceful skip-and-continue would be safer. This was previously flagged as P3 #4 in the v0.5.3 triage but the assert remains.
+- **Suggested fix:** Return `Result<Vec<u8>, StoreError>` instead of panicking: `if embedding.len() != EXPECTED_DIMENSIONS as usize { return Err(StoreError::DimensionMismatch(...)); }`. Callers can then skip the chunk with a warning.
 
-#### `SearchFilter` conflates filtering with scoring configuration
+#### 2. `HnswIndex::save` panics on HNSW/ID map count mismatch
 - **Difficulty:** medium
-- **Location:** `src/store/helpers.rs:227-265`
-- **Description:** `SearchFilter` mixes two concerns: (1) what to filter (languages, path_pattern) and (2) how to score (name_boost, enable_rrf, note_weight, query_text). The `query_text` field is the raw query string, not a filter, and must match what was embedded. Callers pass both an `Embedding` (from the query) and the same query as `query_text` in the filter, duplicating query information. If these get out of sync, name_boost and RRF use different text than the semantic embedding.
-- **Suggested fix:** Split into `SearchFilter` (languages, path_pattern) and `SearchScoring` (name_boost, enable_rrf, note_weight, query_text). Or accept `query_text` as a separate parameter on search methods.
+- **Location:** `src/hnsw/persist.rs:104-110`
+- **Description:** `HnswIndex::save()` uses `assert_eq!` to verify the HNSW point count matches the ID map length. While this invariant should always hold, if a bug causes divergence (e.g., a failed insert that partially mutates state), the index save panics instead of returning an error. This is especially problematic in the MCP server where a panic poisons the index RwLock, degrading all subsequent requests. An `Err` return would allow the caller to log and fall back to a stale-but-valid index.
+- **Suggested fix:** Replace with `if hnsw_count != self.id_map.len() { return Err(HnswError::Internal(format!("HNSW/ID map count mismatch: ..."))); }`
 
-#### Inconsistent return types for count-of-affected-rows across Store methods
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:24,83,120`, `src/store/notes.rs:56,169,237`
-- **Description:** `delete_by_origin` returns `Result<u32>`, `delete_notes_by_file` returns `Result<u32>`, `upsert_chunks_batch` returns `Result<usize>`, `replace_notes_for_file` returns `Result<usize>`, and `upsert_chunk` returns `Result<()>` (discards count). The type for "how many rows affected" alternates between `u32` and `usize` with no pattern. `u32` comes from casting sqlx's `u64 rows_affected()` — a lossy cast.
-- **Suggested fix:** Standardize on `usize` for all affected-row counts.
+#### 3. `embed_batch` uses unchecked tensor indexing for mean pooling
+- **Difficulty:** medium
+- **Location:** `src/embedder.rs:510-512`
+- **Description:** `data[offset + k]` indexes into the ONNX output tensor without bounds checking. The offset calculation (`i * seq_len * embedding_dim + j * embedding_dim + k`) assumes the tensor shape is exactly `[batch, seq_len, 768]`. If the ONNX model returns an unexpected shape (e.g., model update, corrupted model file, or a different variant), this panics with an index-out-of-bounds. The shape `_shape` is extracted but never validated against expectations.
+- **Suggested fix:** Add shape validation after line 494: `let shape = _shape; if shape.len() != 3 || shape[2] != embedding_dim { return Err(EmbedderError::InferenceError("Unexpected output tensor shape".into())); }` Or use `data.get(offset + k).copied().unwrap_or(0.0)` for defensive indexing.
 
-#### `search_reference` and `search_reference_by_name` are free functions instead of methods
+#### 4. `acquire_index_lock` recursive retry has no depth limit
 - **Difficulty:** easy
-- **Location:** `src/reference.rs:72-119`
-- **Description:** Both take `&ReferenceIndex` as first argument but are standalone free functions. Callers write `reference::search_reference(ref_idx, ...)` instead of `ref_idx.search(...)`. `merge_results` and `load_references` are correctly free functions (operate on collections), but per-index search functions are natural methods.
-- **Suggested fix:** Move to `impl ReferenceIndex` as `fn search(...)` and `fn search_by_name(...)`.
+- **Location:** `src/cli/files.rs:86`
+- **Description:** When a stale lock is detected (dead PID), `acquire_index_lock` removes the lock file and calls itself recursively. If the removal succeeds but another process immediately re-creates the lock, the second call detects a stale lock again (if that process also dies), leading to unbounded recursion. While unlikely in practice (requires rapid PID reuse and process death), the function should limit retry depth.
+- **Suggested fix:** Add a `retry: bool` parameter or use a loop with a single retry: `fn acquire_index_lock_inner(cq_dir: &Path, retried: bool) -> Result<File>` and refuse to retry twice.
 
-#### `Embedding::as_vec()` returns `&Vec<f32>` — Rust API anti-pattern
+#### 5. `process_exists` PID cast from u32 to i32 can produce negative values
 - **Difficulty:** easy
-- **Location:** `src/embedder.rs:147-149`
-- **Description:** `as_vec()` returns `&Vec<f32>`, while `as_slice()` already returns `&[f32]`. `&Vec<T>` as a public return type is a well-known Rust anti-pattern. This method exists solely because hnsw_rs's `parallel_insert_data` takes `&[(&Vec<f32>, usize)]`. Exposing `&Vec<f32>` leaks an implementation detail.
-- **Suggested fix:** Deprecate or `#[doc(hidden)]` `as_vec()`. Convert at the hnsw_rs call site.
+- **Location:** `src/cli/files.rs:23`
+- **Description:** `libc::kill(pid as i32, 0)` casts u32 to i32. PIDs > 2^31 (i32::MAX) would become negative. Linux `pid_max` defaults to 32768 (max 4,194,304 on 64-bit), so this is unreachable via normal PIDs. However, the lock file is user-writable text — a crafted PID > i32::MAX would cast to a negative value, and `kill(-N, 0)` sends to process groups instead of individual processes. This could incorrectly report a stale lock as active (or vice versa).
+- **Suggested fix:** Add `if pid > i32::MAX as u32 { return false; }` guard before the kill call.
 
-#### `HnswIndex::build` has contradictory documentation — "deprecated" yet recommended
+#### 6. `parse_target` returns full string with colon for trailing-colon input
 - **Difficulty:** easy
-- **Location:** `src/hnsw.rs:212-236`
-- **Description:** Doc says "This method is soft-deprecated" but also recommends it for indexes under 50k chunks. No `#[deprecated]` attribute, so no compiler warning. The "When to use" section contradicts the deprecation notice.
-- **Suggested fix:** Either add `#[deprecated]` to make it real, or remove the deprecation notice and keep both as valid choices.
+- **Location:** `src/mcp/tools/resolve.rs:14-23`
+- **Description:** `parse_target("file.rs:")` finds `:` at the end, produces `file = "file.rs"` and `name = ""`. The `!name.is_empty()` guard catches this and falls through to `(None, "file.rs:")` — treating the full string including colon as the function name. This won't match any function in the index. The user gets "No function found matching 'file.rs:'" which is confusing.
+- **Suggested fix:** Strip trailing colon before processing: `let target = target.trim_end_matches(':');` at the top. Then `"file.rs:"` becomes `"file.rs"` and falls through to search by name.
 
-#### `serve_stdio` and `serve_http` have divergent parameter shapes
+#### 7. MCP `tool_search` doesn't validate `threshold` range
 - **Difficulty:** easy
-- **Location:** `src/mcp/transports/stdio.rs:22`, `src/mcp/transports/http.rs:61`
-- **Description:** `serve_stdio(project_root, use_gpu)` takes 2 params. `serve_http(project_root, bind, port, auth_token, use_gpu)` takes 5. Both construct `McpServer` and run it. `use_gpu` appears at different positional slots. Switching transports requires restructuring all arguments.
-- **Suggested fix:** Extract shared fields into `ServerConfig { project_root, use_gpu }`.
+- **Location:** `src/mcp/tools/search.rs:23`
+- **Description:** `threshold` is taken directly from user input with `unwrap_or(0.3)` but never validated. Values outside [0.0, 1.0] are nonsensical for cosine similarity: negative thresholds accept everything, values > 1.0 reject everything. `SearchFilter::validate()` checks `name_boost` and `note_weight` ranges but not `threshold`. A threshold of 2.0 produces zero results with no explanation.
+- **Suggested fix:** Add `let threshold = args.threshold.unwrap_or(0.3).clamp(0.0, 1.0);` to silently clamp, or return an error for out-of-range values.
 
-#### `Store::search()` convenience wrapper is effectively dead code
+#### 8. `rewrite_notes_file` atomic write doesn't clean up temp file on rename failure
 - **Difficulty:** easy
-- **Location:** `src/search.rs:186-193`
-- **Description:** `Store::search(query, limit, threshold)` delegates to `search_filtered()` with default filter. No production code calls it. The lib.rs doc example (line 34) uses it with bare positional numbers `(query, 5, 0.3)`, setting a wrong expectation that this is the normal entry point.
-- **Suggested fix:** Update lib.rs example to show the actual recommended path, or remove `search()`.
+- **Location:** `src/note.rs:144-146`
+- **Description:** If `std::fs::write(&tmp_path, output)` succeeds but `std::fs::rename(&tmp_path, notes_path)` fails (e.g., cross-device path, permissions), the temp file `notes.toml.tmp` is left on disk. Not blocking (next write overwrites it), but the orphan is confusing. More critically, if rename fails persistently, the user's note mutations are silently lost — the original file is unchanged but the function propagates the rename error, so the caller sees a failure but can't recover the written content.
+- **Suggested fix:** Wrap in cleanup: `let result = std::fs::rename(&tmp_path, notes_path); if result.is_err() { let _ = std::fs::remove_file(&tmp_path); } result?;`
 
-#### `needs_reindex` vs `notes_need_reindex` — inconsistent naming for identical pattern
+#### 9. `Regex::new` compiled on every `extract_type_names` call in focused read
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:97` and `src/store/notes.rs:264`
-- **Description:** Chunk check is `store.needs_reindex(path)`. Note check is `store.notes_need_reindex(source_file)`. Same signature, same semantics, different naming — one uses bare verb, the other prefixes with entity name and uses different verb form ("needs" vs "need"). Callers can't predict the name.
-- **Suggested fix:** Standardize: either `needs_reindex` / `notes_needs_reindex` or `chunk_needs_reindex` / `note_needs_reindex`.
+- **Location:** `src/mcp/tools/read.rs:143`
+- **Description:** `regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]+)\b").expect("hardcoded regex")` compiles on every `extract_type_names` invocation. The `expect` is safe (hardcoded pattern), but repeated compilation is wasteful. `tool_read_focused` calls this for each focused read request from the MCP client. Other modules (e.g., `nl.rs:21-23`) use `LazyLock<Regex>` for the same pattern.
+- **Suggested fix:** Use `static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([A-Z][a-zA-Z0-9_]+)\b").unwrap());`
+
+#### 10. `split_into_windows` lacks explicit `max_tokens == 0` guard
+- **Difficulty:** easy
+- **Location:** `src/embedder.rs:316-325`
+- **Description:** `split_into_windows` validates `overlap >= max_tokens / 2` but has no explicit check for `max_tokens == 0`. When `max_tokens = 0`: `max_tokens / 2 = 0`, so `overlap >= 0` is always true, returning an error about overlap. The error message ("overlap (0) must be less than max_tokens/2 (0)") is confusing — it says nothing about max_tokens being zero. The function is only called internally with hardcoded values (128-token windows), so this is unreachable in practice.
+- **Suggested fix:** Add `if max_tokens == 0 { return Err(EmbedderError::TokenizerError("max_tokens must be > 0".into())); }` for clarity.
+
+#### 11. `get_callers_full`/`get_callees_full` errors silently become empty at 6 MCP/CLI sites
+- **Difficulty:** medium
+- **Location:** `src/mcp/tools/explain.rs:54,60`, `src/mcp/tools/context.rs:55,83`, `src/cli/commands/explain.rs:55,58`, `src/cli/commands/context.rs:41,66`
+- **Description:** Six call sites use `.unwrap_or_default()` on `get_callers_full`/`get_callees_full`. If the database query fails (corrupted DB, schema mismatch), the user sees functions with "no callers" and "no callees" instead of an error. For `cqs_explain` and `cqs_context`, this gives misleading results — a function appears isolated when really the query failed. Already noted in Error Handling batch but included here for robustness overlap since it masks failures.
+- **Suggested fix:** At minimum log: `.unwrap_or_else(|e| { tracing::warn!(name = %chunk.name, error = %e, "Failed to get callers"); vec![] })`
+
+#### 12. `search_unified_with_index` limit=0 causes division issues in slot allocation
+- **Difficulty:** easy
+- **Location:** `src/search.rs:575-578`
+- **Description:** If `limit = 0` reaches `search_unified_with_index`, `min_code_slots = ((0 * 3) / 5).max(1) = 1`, `code_count = code_results.len().min(0) = 0`, `reserved_code = 0.min(1) = 0`, `note_slots = 0 - 0 = 0`. This produces empty results, which is correct but wasteful (still runs the full search). The MCP search tool clamps to `limit >= 1`, but internal callers could pass 0. Not a crash, just unnecessary work.
+- **Suggested fix:** Add early return: `if limit == 0 { return Ok(vec![]); }` at the top.
+
+#### 13. `context.rs` unwrap_or on JSON value extraction could mask data issues
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/context.rs:100`
+- **Description:** `c.get("callee").and_then(|v| v.as_str()).unwrap_or("")` extracts from JSON values that were just constructed 4 lines above. The `unwrap_or("")` is safe since the values are guaranteed to be strings (they were just serialized). However, this pattern constructs JSON objects and then immediately parses them back — a sign of unnecessary serialization/deserialization. Not a robustness issue per se, but the indirection makes the deduplication logic harder to reason about.
+- **Suggested fix:** Use a HashSet of callee names directly instead of serializing to JSON and parsing back.
 
 ## Batch 2: Extensibility
 
-#### Adding a new language requires touching 5 places across 3 files
+#### 1. `lang_extension()` in diff.rs duplicates Language knowledge outside the registry
+- **Difficulty:** easy
+- **Location:** `src/diff.rs:219-230`
+- **Description:** `lang_extension()` is a standalone match arm mapping language names to file extensions (`"rust" => "rs"`, `"python" => "py"`, etc.). This duplicates the mapping already in each `LanguageDef.extensions` in the language registry. Adding a new language requires updating this function separately, and the `_ => lang` fallback silently produces wrong results for languages where name != extension (like "rust" for ".rs" or "python" for ".py"). The function is only used in `semantic_diff` for filtering by language.
+- **Suggested fix:** Replace with a registry lookup: `fn lang_extension(lang: &str) -> &str { REGISTRY.get(lang).and_then(|d| d.extensions.first()).copied().unwrap_or(lang) }`. This eliminates the duplication and auto-supports new languages.
+
+#### 2. `extract_body_keywords` stopword lists are hardcoded per-language match arms
 - **Difficulty:** medium
-- **Location:** `src/language/mod.rs:144-160`, `src/language/mod.rs:193-205`, `src/language/mod.rs:226-242`, `src/language/mod.rs:264-283`, `Cargo.toml:102-113`
-- **Description:** To add a new language (e.g., Ruby), you must: (1) create `src/language/ruby.rs` with a `LanguageDef`, (2) add `Language::Ruby` variant to the enum, (3) add arms to `Display`, `FromStr`, and `from_extension`, (4) add `#[cfg(feature)]` + `mod ruby` + `reg.register(ruby::definition())` in `LanguageRegistry::new`, (5) add `lang-ruby` feature to `Cargo.toml`. Steps 2-4 are all in `mod.rs` but spread across 4 separate match/impl blocks that must stay in sync. The `Language` enum, `Display`, `FromStr`, and registry are all manually maintained — adding a variant without updating all four causes a compile error, but there's no macro or test asserting completeness.
-- **Suggested fix:** Use a declarative macro to generate the `Language` enum, `Display`, `FromStr`, and feature-gated registry entries from a single definition table. Or use `strum` derive macros for `Display`/`FromStr` and a single registration macro for the feature-gated blocks.
+- **Location:** `src/nl.rs:609-669`
+- **Description:** `extract_body_keywords()` has a `match language` with 7 arms, each containing a hardcoded `&[&str]` stopword list. Adding a new language requires adding a new match arm with a curated stopword list. The stopword lists aren't part of `LanguageDef`, so the language registry doesn't capture them. This is the only function in `nl.rs` that exhaustively matches on Language — `extract_return_nl` also matches but has a reasonable `_ =>` fallback for most patterns.
+- **Suggested fix:** Add an optional `stopwords: &'static [&'static str]` field to `LanguageDef` and populate it in each language module's `definition()`. Then `extract_body_keywords` can do `language.def().stopwords` instead of matching.
 
-#### MCP tool list is a hardcoded 200-line JSON blob with no tool trait or registration
+#### 3. `structural.rs` pattern matchers have hardcoded Language match arms with no fallback strategy
 - **Difficulty:** medium
-- **Location:** `src/mcp/tools/mod.rs:19-213`
-- **Description:** Adding a new MCP tool requires: (1) write a handler module, (2) add `mod` declaration, (3) manually add a `Tool { name, description, input_schema }` entry to the 200-line `vec![]` in `handle_tools_list`, (4) add a match arm in `handle_tools_call`. Steps 3 and 4 are in different functions with no compile-time check that they're in sync. If you add a tool to the list but forget the dispatch arm (or vice versa), you get a runtime "Unknown tool" error. The JSON schema for each tool is a raw `serde_json::json!` block — no validation that the schema matches the handler's argument parsing.
-- **Suggested fix:** Define a `McpTool` trait with `fn name()`, `fn description()`, `fn schema()`, `fn execute(server, args)`. Each tool module implements the trait. Registration iterates over a `Vec<Box<dyn McpTool>>` for listing and dispatching. This guarantees schema and handler stay together and eliminates the manual dispatch match.
+- **Location:** `src/structural.rs:76-156` (`matches_error_swallow`, `matches_async`, `matches_mutex`, `matches_unsafe`)
+- **Description:** Four structural pattern functions match on `Some(Language::Rust)`, `Some(Language::Python)`, etc. with an `_ =>` fallback that uses generic heuristics. Adding a new language (e.g., SQL) means the new language silently gets generic pattern matching, which may miss language-specific patterns (like SQL's `BEGIN...EXCEPTION WHEN OTHERS THEN NULL; END;` for error swallowing). This isn't a bug — the fallback works — but it's a hidden "new language checklist" item that's easy to miss because there's no compiler warning.
+- **Suggested fix:** Low priority. Document in a "new language checklist" file or comment in `structural.rs` that new languages should audit these pattern matchers for language-specific heuristics. A `LanguageDef` field for structural patterns would be overengineering.
 
-#### Embedding model is hardcoded — swapping requires editing 7 constants and recompiling
-- **Difficulty:** hard
-- **Location:** `src/embedder.rs:14-20`, `src/lib.rs:90`, `src/store/helpers.rs:18`
-- **Description:** The embedding model is baked into constants: `MODEL_REPO` (line 14), `MODEL_FILE` (line 15), `TOKENIZER_FILE` (line 16), `MODEL_BLAKE3` (line 19), `TOKENIZER_BLAKE3` (line 20), `MODEL_DIM` (line 57), `EMBEDDING_DIM` in `lib.rs:90`, `MODEL_NAME` in `helpers.rs:18`. Swapping to a different model (e.g., `e5-large-v2` for 1024-dim) requires changing at least 7 constants, updating the HNSW index dimension check, and recompiling. There's no runtime model selection or config-driven model choice.
-- **Suggested fix:** For now, this is by design (single model simplifies the system). If model swapping becomes a requirement, extract model constants into a `ModelConfig` struct loadable from config. The Store already validates model name and dimensions on open, so the persistence layer is prepared.
+#### 4. MCP tool JSON schemas have 3 hardcoded language enum arrays
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/mod.rs:56,241,284`
+- **Description:** The `cqs_search`, `cqs_diff`, and `cqs_similar` tool schemas each have `"enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"]` hardcoded in JSON. Adding a new language requires updating 3 separate inline JSON blocks. The language registry already has `REGISTRY.all()` which could generate this list dynamically.
+- **Suggested fix:** Generate the enum array from the registry at startup: `let lang_enum: Vec<String> = REGISTRY.all().map(|d| d.name.to_string()).collect();` and insert into each schema. Or define a `fn language_enum_schema() -> Value` helper and call it in all 3 places.
 
-#### HNSW tuning parameters are compile-time constants — no runtime configuration
+#### 5. `extract_return_nl` requires a new match arm for each language
 - **Difficulty:** medium
-- **Location:** `src/hnsw.rs:58-65`
-- **Description:** `MAX_NB_CONNECTION` (M=24), `MAX_LAYER` (16), `EF_CONSTRUCTION` (200), and `EF_SEARCH` (100) are all `const`. The comments note that different workloads would benefit from different values (M=16 for small codebases, M=32 for large). Users cannot tune these without recompiling. In particular, `EF_SEARCH` is the main accuracy/speed knob that users might want to adjust at query time — higher values give better recall at the cost of latency.
-- **Suggested fix:** Make `EF_SEARCH` configurable via `SearchFilter` or a new `IndexConfig`. Keep `M`, `MAX_LAYER`, and `EF_CONSTRUCTION` as compile-time constants since they affect the index structure (changing them requires rebuild anyway).
+- **Location:** `src/nl.rs:447-601`
+- **Description:** `extract_return_nl()` has exhaustive match arms for all 7 languages with language-specific return type extraction logic. Unlike `extract_body_keywords` (stopwords can be data-driven), return type extraction is genuinely different per language (Rust uses `->`, Python uses `->` before `:`, Go uses position after `)`, C/Java put return type before function name). Adding a new language requires writing a new extraction case. No fallback — languages without a match arm return `None` (no return type info in NL description).
+- **Suggested fix:** Low severity. The function is already well-structured with clear patterns. Consider adding a `return_type_hint: Option<fn(&str) -> Option<String>>` to `LanguageDef` for languages that want custom extraction, with the default being `None` (no extraction). This would let language modules self-contain their NL extraction logic.
 
-#### Chunk size limits (100 lines, 100KB) are hardcoded in parser with no override
+#### 6. `ChunkSummary::from(ChunkRow)` defaults to `Language::Rust` on parse failure
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:163-180`
-- **Description:** Functions over 100 lines or 100KB are silently skipped during indexing. These limits are sensible defaults but not configurable. A project with legitimate large generated functions (e.g., parser tables, protocol buffers) would have them silently excluded. The user has no way to know chunks were skipped (only `tracing::debug`) or to override the limit.
-- **Suggested fix:** Move limits to `Config` with defaults matching current values. Consider adding a `--max-chunk-lines` CLI flag. At minimum, surface the skip count in indexing stats.
+- **Location:** `src/store/helpers.rs:122-134`
+- **Description:** When loading chunks from the database, if the stored language string fails to parse, `ChunkSummary` defaults to `Language::Rust`. This was noted in the triage but the extensibility concern is different: when a new language is added and the user has an index from before that language was supported, chunks stored with the new language name will parse fine. But if a chunk was stored with a now-removed language, it silently becomes Rust. The warning is logged but the data is wrong — search results show Rust syntax highlighting and NL generation uses Rust patterns for what might be Python code.
+- **Suggested fix:** Consider a `Language::Unknown` variant or return an error and skip the chunk rather than silently misattributing it.
 
-#### `ChunkType` enum is closed — adding a new type requires core enum change
-- **Difficulty:** easy
-- **Location:** `src/language/mod.rs:70-88`
-- **Description:** `ChunkType` has 8 variants (Function, Method, Class, Struct, Enum, Trait, Interface, Constant). Adding a new type (e.g., `TypeAlias`, `Macro`, `Module`) requires modifying the core enum plus its `Display`, `FromStr`, and the type_map in every language definition that uses it. The type_map in each language file maps tree-sitter capture names to `ChunkType`, so new types need both an enum variant and capture names in queries.
-- **Suggested fix:** This is acceptable for the current scope (8 types covers most use cases). If more types are needed, consider a string-based chunk type with validation, or use `strum` for auto-derived `Display`/`FromStr`.
-
-#### `SignatureStyle` only supports 2 strategies — no custom extraction
-- **Difficulty:** easy
-- **Location:** `src/language/mod.rs:60-67`, `src/parser.rs:275-276`
-- **Description:** `SignatureStyle` has `UntilBrace` and `UntilColon`. The parser match at `parser.rs:275` handles only these two. A language needing a different signature boundary (e.g., Ruby's `end` keyword, Haskell's `=` sign, or SQL's `AS BEGIN`) would require adding a new variant plus a match arm in the parser. The tight coupling between enum variant and parser logic means custom extraction strategies can't be plugged in without modifying core code.
-- **Suggested fix:** Change `SignatureStyle` to accept a closure or char/string pattern: `SignatureStyle::UntilChar(char)` or `SignatureStyle::Custom(fn(&str) -> usize)`. This lets new languages define their own boundary without touching the parser match.
-
-#### `Embedder` max_length (512 tokens) is hardcoded with no override
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:251,272`
-- **Description:** The token limit `max_length: 512` is set in both `Embedder::new()` and `Embedder::new_cpu()`. E5-base-v2 supports 512 tokens, so this is correct for the current model. However, there's no way to override it (e.g., for a model that supports 1024 or 2048 tokens). The value is hardcoded rather than derived from model metadata or config.
-- **Suggested fix:** Low priority — this only matters if the model is swapped. If model configurability is added (see finding #3), include `max_length` in the model config.
-
-#### No plugin or extension points — all capabilities are compiled in
-- **Difficulty:** hard
-- **Location:** Project-wide
-- **Description:** All languages, search modes, MCP tools, and storage backends are compiled into the binary. There's no mechanism for: (1) loading language definitions at runtime (e.g., from a TOML/YAML language spec), (2) registering custom MCP tools from external crates, (3) plugging in alternative storage backends (the schema.sql supports `source_type` field, suggesting multi-source was planned, but Store only handles files). The `VectorIndex` trait (index.rs) is the one extensibility point — it allows HNSW/CAGRA/mock backends. Everything else is closed.
-- **Suggested fix:** This is a design choice that trades extensibility for simplicity and performance. Runtime language loading would require dynamic tree-sitter grammar loading (possible but complex). For MCP tools, a trait-based registration system (finding #2) would be a first step. For storage, the `source_type` column in schema.sql already exists — implementing additional source types (e.g., SQL Server procedures) would work within the existing schema.
-
-## Batch 2: Observability
-
-#### 1. MCP `handle_request` does not log request method or ID
-- **Difficulty:** easy
-- **Location:** `src/mcp/server.rs:155-189`
-- **Description:** `handle_request` processes JSON-RPC requests but never logs which method was called or the request ID. The only log is at debug level on error (line 175). Successful requests produce no log at the handler level. The tool dispatch in `tools/mod.rs:233` logs tool name and timing, but non-tool methods (`initialize`, `initialized`, `tools/list`) produce no trace at all. Diagnosing "why did the server not respond" is impossible without request-level logging.
-- **Suggested fix:** Add `tracing::debug!(method = %request.method, id = ?request.id, "MCP request received")` at the top of `handle_request`, and log the outcome (success/error) with the same fields.
-
-#### 2. `search_filtered` brute-force path produces no timing or result count log
-- **Difficulty:** easy
-- **Location:** `src/search.rs:196-365`
-- **Description:** `search_filtered` has a tracing span (line 203) but never logs the result count, search duration, or which search strategy was used (semantic-only vs hybrid vs RRF). The MCP search tool logs timing (search.rs:99-104), but CLI `cmd_query` calls `search_filtered` directly and gets no timing info at all. Compare to `search_filtered_with_index` which at least logs candidate counts (line 387).
-- **Suggested fix:** Add `tracing::info!(results = results.len(), rows_scanned = rows.len(), rrf = use_rrf, "search_filtered completed")` before returning.
-
-#### 3. Embedder model loading and provider selection have no structured logging
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:233-255` and `src/embedder.rs:686-710`
-- **Description:** `select_provider` / `detect_provider` determine whether CUDA, TensorRT, or CPU is used for inference, but never log the result. The `Embedder::new()` constructor also produces no log. Users debugging slow embedding have no way to confirm which provider is active without instrumenting the code. The first visible log is from `embed_batch` span (line 441), which occurs only when embedding actually happens.
-- **Suggested fix:** Add `tracing::info!(provider = %provider, "Execution provider selected")` in `detect_provider`, and `tracing::info!(provider = %self.provider, batch_size = self.batch_size, "Embedder initialized")` after construction.
-
-#### 4. Watch mode file changes logged to stdout but not to tracing
-- **Difficulty:** easy
-- **Location:** `src/cli/watch.rs:130-135`
-- **Description:** When files change, watch mode prints to stdout (`println!`) but does not emit tracing events. The stdout output is ephemeral — if watch runs as a background service or with `--quiet`, file change activity is lost. The `reindex_files` function (line 215) has a proper tracing span, but the file change detection loop (lines 87-201) has no tracing at all. The debounce logic, pending file counts, and note change detection are invisible to structured logging.
-- **Suggested fix:** Add `tracing::info!(files = files.len(), "Processing file changes")` before reindexing, and `tracing::debug!(pending = pending_files.len(), "File change detected")` in the event handler.
-
-#### 5. `search_by_candidate_ids` has no tracing span or timing
-- **Difficulty:** easy
-- **Location:** `src/search.rs:397-497`
-- **Description:** `search_by_candidate_ids` is the core HNSW-guided search path, called by both `search_filtered_with_index` and `search_unified_with_index`. It has no tracing span, no timing, and no result count log. The parent `search_filtered_with_index` logs candidate count at debug level (line 387), but the actual scoring, filtering, and deduplication within `search_by_candidate_ids` is invisible. If candidate scoring is slow or dedup removes many results, there is no way to diagnose it.
-- **Suggested fix:** Add `tracing::info_span!("search_by_candidate_ids", candidates = candidate_ids.len(), limit = limit)` and log result count before returning.
-
-#### 6. Pipeline thread panics produce generic error with no thread identity
-- **Difficulty:** easy
-- **Location:** `src/cli/pipeline.rs:584-592`
-- **Description:** When pipeline threads panic, the join error is mapped to a generic message like "Parser thread panicked" (line 586). The original panic message (which could contain the root cause) is discarded — `std::thread::JoinHandle::join()` returns the panic payload as `Box<dyn Any>`, but the code throws it away with `map_err(|_|...)`. The GPU and CPU embedder thread panic messages are equally uninformative.
-- **Suggested fix:** Extract the panic message: `map_err(|e| anyhow::anyhow!("Parser thread panicked: {:?}", e.downcast_ref::<&str>().unwrap_or(&"unknown")))`.
-
-#### 7. `load_references` does not log which references were loaded or their weights
-- **Difficulty:** easy
-- **Location:** `src/reference.rs:36-69`
-- **Description:** On success, `load_references` logs "Loaded N reference indexes" (line 65) but not which ones, their weights, or chunk counts. When references are empty (no config), nothing is logged at all. A user with misconfigured reference names has no diagnostic info — they'd need to add a stats call to see whether their references loaded.
-- **Suggested fix:** Log each successfully loaded reference: `tracing::info!(name = %cfg.name, weight = cfg.weight, hnsw = index.is_some(), "Loaded reference index")`.
-
-#### 8. MCP tool call does not log success vs failure status
-- **Difficulty:** easy
-- **Location:** `src/mcp/tools/mod.rs:232-258`
-- **Description:** `handle_tools_call` logs tool name and elapsed time (lines 252-256) regardless of whether the tool succeeded or failed. The log message "MCP tool call completed" is identical for success and error cases. On error, the actual error message is not in the tool-call log — it only appears later in `handle_request` at debug level (server.rs:175). Correlating a slow tool call with its error requires matching timestamps manually.
-- **Suggested fix:** Log `success = result.is_ok()` in the existing info log, and on error also log `error = %e` at warn level.
-
-#### 9. `Store::open` does not log connection pool configuration
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:101-179`
-- **Description:** `Store::open` logs "Database connected" (line 169) but not the pool configuration: max connections (4), idle timeout (300s), busy timeout (5000ms), mmap size (256MB). These are performance-critical settings that differ from SQLite defaults. When diagnosing connection pool exhaustion or SQLITE_BUSY errors, the first question is "what are the pool settings?" — currently unanswerable from logs.
-- **Suggested fix:** Add `tracing::debug!(max_connections = 4, idle_timeout_s = 300, busy_timeout_ms = 5000, "SQLite pool configured")`.
-
-#### 10. `reindex_files` in watch mode does not log which files failed to parse
-- **Difficulty:** easy
-- **Location:** `src/cli/watch.rs:220-240`
-- **Description:** When `parser.parse_file` fails in watch mode (line 236), it logs a warning per file. However, the outer function `reindex_files` returns `Ok(chunks.len())` even if all files failed to parse. The caller (line 148) prints "Indexed 0 chunk(s)" with no indication that files were attempted and failed. There is no aggregate failure count in the return value.
-- **Suggested fix:** Return a struct with both `indexed_count` and `parse_failures` count, or log a summary like `tracing::warn!(failed = failed_count, succeeded = chunks.len(), "Reindex completed with failures")`.
-
-## Batch 2: Panic Paths
-
-#### 1. `embedding_to_bytes` panics on dimension mismatch via `assert_eq!`
+#### 7. `cqs_batch` tool only supports 6 of 20 tools — no programmatic discovery
 - **Difficulty:** medium
-- **Location:** `src/store/helpers.rs:442-448`
-- **Description:** `embedding_to_bytes` uses `assert_eq!(embedding.len(), EXPECTED_DIMENSIONS as usize, ...)` which panics at runtime if the embedding has the wrong number of dimensions. This is called from `store/chunks.rs:50` and `store/notes.rs:84,211` during database writes. While the docstring documents this panic ("# Panics"), it's the only defense — `Embedding::new()` accepts any `Vec<f32>` without validation (see Batch 1 Code Hygiene finding). A bug in the embedder returning 768 instead of 769 dims would crash the indexing pipeline mid-transaction.
-- **Suggested fix:** Return `Result<Vec<u8>, StoreError>` instead of panicking. Or enforce dimension validation in `Embedding::new()` so this assert is truly redundant.
+- **Location:** `src/mcp/tools/batch.rs:27-37`
+- **Description:** The batch tool has a hardcoded match for 6 tools (`search`, `callers`, `callees`, `explain`, `similar`, `stats`). Adding a new MCP tool requires remembering to add it to the batch dispatcher too. The 14 unsupported tools (`read`, `context`, `impact`, `trace`, `test_map`, `dead`, `gc`, `gather`, `diff`, `add_note`, `update_note`, `remove_note`, `audit_mode`, `batch`) can't be batched. The error message lists the valid tools but doesn't match the tool list in `handle_tools_call`. This was partially noted in the API Design findings but the extensibility angle is new: every new tool requires updating both `handle_tools_call` and `tool_batch`.
+- **Suggested fix:** Either (a) route batch through `handle_tools_call` directly (batch wraps the existing dispatcher), or (b) at minimum add `read`, `context`, `impact`, `trace`, `test_map`, `dead`, `gc`, `gather` since these are all read-only. Option (a) eliminates the maintenance burden entirely.
 
-#### 2. `Language::def()` panics with `expect("language not in registry")` in production code
-- **Difficulty:** medium
-- **Location:** `src/language/mod.rs:167`
-- **Description:** `Language::def()` calls `REGISTRY.get(&self.to_string()).expect("language not in registry — check feature flags")`. This is production code called by the parser during indexing (e.g., `language.def().tree_sitter_language`). If a language enum variant exists but its feature flag is disabled at compile time, this panics. Currently all language features are in the default set, but adding a new language without the feature flag or building with `--no-default-features` would hit this.
-- **Suggested fix:** Return `Option<&LanguageDef>` and handle the `None` case gracefully, or document the panic contract more visibly.
-
-#### 3. `Parser::new()` uses `expect("registry/enum mismatch")` during initialization
+#### 8. Adding a new CLI command requires changes in 3 places with no compiler guidance
 - **Difficulty:** easy
-- **Location:** `src/parser.rs:61`
-- **Description:** `Parser::new()` iterates the registry and calls `def.name.parse().expect("registry/enum mismatch")` for each language definition. This panic would fire if a registry entry has a name that doesn't parse to a `Language` enum variant — a developer error. Since `Parser::new()` is called early in the CLI and MCP startup, this would crash the entire process.
-- **Suggested fix:** Map to `ParserError` and propagate via `?`. The function already returns `Result<Self, ParserError>`.
-
-#### 4. `sanitize_error_message` uses `expect("hardcoded regex")` for LazyLock regex compilation
-- **Difficulty:** easy
-- **Location:** `src/mcp/server.rs:198,202` and `src/nl.rs:21,23`
-- **Description:** Four `LazyLock<Regex>` statics use `.expect("hardcoded regex")` or `.expect("valid regex")`. These are hardcoded patterns, so the expect should never fire — but if it did, it would crash the MCP server on the first sanitize call or crash during NL generation.
-- **Suggested fix:** Acceptable risk — hardcoded regex patterns are compile-time invariants. Could add unit tests that force LazyLock initialization to catch regex syntax errors at test time rather than runtime.
-
-#### 5. `unreachable!` in `mcp/tools/search.rs:208` — relies on implicit invariant
-- **Difficulty:** medium
-- **Location:** `src/mcp/tools/search.rs:208`
-- **Description:** `UnifiedResult::Note(_) => unreachable!("name_only search doesn't return notes")` would panic if `search_by_name` or `search_reference_by_name` ever returned note results. Currently this is correct — `search_by_name` only queries the chunks table. But the invariant is implicit and not enforced by the type system. If someone adds note name-search support, this panics at runtime in the MCP server.
-- **Suggested fix:** Replace with a graceful skip or return an error. `unreachable!` should be reserved for truly impossible branches enforced by the type system.
-
-#### 6. `unreachable!` in `mcp/tools/audit.rs:43` — guarded by early return but fragile
-- **Difficulty:** easy
-- **Location:** `src/mcp/tools/audit.rs:43`
-- **Description:** `unreachable!("enabled checked above")` after an early return that checks `args.enabled.is_none()`. The `let Some(enabled) = args.enabled else { unreachable!(...) }` is logically safe but depends on the early return 23 lines above not being refactored away.
-- **Suggested fix:** Replace with `let Some(enabled) = args.enabled else { return Err(anyhow::anyhow!("enabled is required")); }`. Defensive coding is cheap here.
-
-#### 7. `search.rs:316` — `unwrap()` guarded by conditional but fragile coupling
-- **Difficulty:** easy
-- **Location:** `src/search.rs:316`
-- **Description:** `normalized_query.as_ref().unwrap()` is inside an `if use_rrf` block, and `normalized_query` is set to `Some(...)` only when `use_rrf` is true (line 308). The unwrap is currently safe, but the invariant is maintained by two separate code blocks 8 lines apart. Restructuring either block would cause a panic during search.
-- **Suggested fix:** Inline the normalization or use `expect("normalized_query is Some when use_rrf is true")` for a better panic message.
-
-#### 8. `parser.rs:235-236` — tree-sitter row index cast `as u32` with `+ 1` overflow potential
-- **Difficulty:** easy
-- **Location:** `src/parser.rs:235-236` (also lines 395, 512, 524)
-- **Description:** `node.start_position().row as u32 + 1` casts tree-sitter's `usize` row index to `u32`. If `row` exceeds `u32::MAX` (impossible for real files but technically a truncation), the value wraps. The `+ 1` could also overflow if `row` is exactly `u32::MAX - 1` after truncation. Same pattern repeated in 4 locations.
-- **Suggested fix:** Very low practical risk. Could use `u32::try_from(row).unwrap_or(u32::MAX)` for defensive completeness.
-
-#### 9. `cagra.rs:379` — `u64` to `usize` cast truncates on 32-bit platforms
-- **Difficulty:** easy
-- **Location:** `src/cagra.rs:379` (also `cli/commands/index.rs:231`)
-- **Description:** `store.chunk_count()` returns `u64`, cast to `usize` for Vec capacity. On 32-bit platforms (where `usize` is 32 bits), this silently truncates if chunk_count exceeds 4.3 billion. The project targets 64-bit (GPU requirement), making this theoretical.
-- **Suggested fix:** Low risk on 64-bit. Use `usize::try_from(count).map_err(...)` if cross-platform support matters.
-
-#### 10. HNSW `unsafe` blocks — transmute lifetime extension with manual drop ordering
-- **Difficulty:** hard
-- **Location:** `src/hnsw.rs:680-706`
-- **Description:** The HNSW load path uses `unsafe { std::mem::transmute(hnsw) }` to extend a borrow lifetime from `'_` to `'static` (line 692). Safety relies on `LoadedHnsw` drop order ensuring `HnswIo` outlives `Hnsw`. While the safety comments are thorough and the id_map size validation exists (line 696), there is no validation that loaded HNSW data has internally consistent neighbor indices. The `unsafe impl Send` and `unsafe impl Sync` (lines 186-187) rely on external `RwLock` synchronization — if someone accesses `LoadedHnsw` without the lock, data races are possible.
-- **Suggested fix:** Highest-risk area in the codebase. Consider adding a post-load validation step that spot-checks neighbor list indices are in-bounds. Wrap the unsafe in a dedicated `load_hnsw_with_lifetime_extension` function with the safety proof in its doc comment. Reference the specific `RwLock` in the `Send`/`Sync` safety comments.
-
-## Batch 2: Test Coverage
-
-Total test count: 420 functions across 24 test modules (unit + integration).
-
-#### 1. `search_reference` and `search_reference_by_name` have no unit or integration tests
-- **Difficulty:** medium
-- **Location:** `src/reference.rs:72-119`
-- **Description:** The two core reference search functions are untested. `merge_results` has 7 tests and `load_references` has 1 test, but neither `search_reference` nor `search_reference_by_name` has any test coverage. These functions apply weight multipliers and threshold filters — weight application logic (multiply then filter vs filter then multiply) and the error-to-empty-vec degradation are not verified. The only callers are in `src/cli/commands/query.rs:120` and `src/mcp/tools/search.rs:115,184`, both of which are hard to exercise in integration tests without a real reference index on disk.
-- **Suggested fix:** Add unit tests using a test Store with known embeddings. Test: weight multiplication correctness, threshold filtering after weighting, error degradation returning empty vec, name search scoring with weight applied.
-
-#### 2. `BoundedScoreHeap` has no unit tests (existing #239)
-- **Difficulty:** easy
-- **Location:** `src/search.rs:123-182`
-- **Description:** `BoundedScoreHeap` is a private data structure used by `search_filtered` for memory-bounded result tracking. It has `new`, `push`, and `into_sorted_vec` methods with specific behavior: evict lowest when at capacity, handle equal scores, maintain sort order. None of these are directly tested. The struct is only exercised indirectly through `search_filtered` integration tests. Edge cases — push to empty heap, push when score equals minimum, NaN scores, capacity=0 — are not covered.
-- **Suggested fix:** Add unit tests for `BoundedScoreHeap` directly: empty heap returns empty vec, at capacity evicts lowest, below threshold not inserted, equal scores handled, output is sorted descending.
-
-#### 3. `NameMatcher` struct not tested — only `name_match_score` wrapper tested (existing #239)
-- **Difficulty:** easy
-- **Location:** `src/search.rs:23-109`
-- **Description:** Tests exercise `name_match_score()` (the convenience wrapper that creates a new `NameMatcher` per call), but `NameMatcher::new()` + `NameMatcher::score()` are never tested directly. The whole point of `NameMatcher` is to pre-tokenize the query for repeated use — this optimization path is untested. If `new()` incorrectly tokenizes, the bug wouldn't be caught because tests use the wrapper. Edge cases like empty query, single-char query, unicode identifiers, and CamelCase tokenization are not covered.
-- **Suggested fix:** Test `NameMatcher::new("parseConfig").score("config_parser")` directly. Test reuse: create once, call `score()` multiple times, verify consistency. Test edge cases: empty string, single character, unicode.
-
-#### 4. No integration tests for `ref` CLI commands
-- **Difficulty:** medium
-- **Location:** `src/cli/commands/reference.rs`
-- **Description:** `cli_test.rs` has 19 integration tests covering `init`, `index`, `search`, `stats`, `doctor`, `callers`, `callees`, and `completions`. But `ref add`, `ref list`, `ref remove`, and `ref update` have zero integration tests. These are new commands (v0.5.3) that exercise the full path: CLI argument parsing -> config file write -> reference loading -> multi-index search. The only tests are unit tests in `config.rs` (config file read/write) and `reference.rs` (merge_results). The end-to-end path from "user runs `cqs ref add`" to "config is persisted" is untested.
-- **Suggested fix:** Add integration tests in `cli_test.rs`: `test_ref_add_creates_config`, `test_ref_list_shows_references`, `test_ref_remove_deletes_config`. Use tempdir with a minimal indexed reference.
-
-#### 5. `Store::search()` convenience method is only tested indirectly
-- **Difficulty:** easy
-- **Location:** `src/search.rs:186-193`
-- **Description:** `Store::search(query, limit, threshold)` delegates to `search_filtered` with a default filter. No test calls `store.search()` directly — all search tests use `search_filtered`, `search_filtered_with_index`, or `search_unified_with_index`. While this is a trivial wrapper, it is a public API entry point documented in the lib.rs Quick Start example. A test confirming it delegates correctly would prevent accidental breakage.
-- **Suggested fix:** Add one test calling `store.search(query, 5, 0.3)` directly and asserting it returns results.
-
-#### 6. `store/notes.rs` lifecycle functions untested: `notes_need_reindex`, `replace_notes_for_file`, `delete_notes_by_file`
-- **Difficulty:** medium
-- **Location:** `src/store/notes.rs:169-287`
-- **Description:** `store_notes_test.rs` has 4 tests covering `note_embeddings` and `note_stats`. The note write path (`replace_notes_for_file`) and delete path (`delete_notes_by_file`) have no integration tests. `notes_need_reindex` — which checks file mtimes to decide if notes need re-embedding — has no tests either. These are used by `lib.rs:index_notes` and `cli/watch.rs`, and bugs in the mtime comparison or FTS sync would cause notes to never reindex or to reindex every time.
-- **Suggested fix:** Add tests: `test_replace_notes_updates_existing`, `test_delete_notes_by_file_removes_all`, `test_notes_need_reindex_returns_none_when_fresh`.
-
-#### 7. `Embedding::try_new` error case not tested
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:106-114`
-- **Description:** `Embedding::try_new()` validates that the input has exactly 769 dimensions and returns `EmbeddingDimensionError` on mismatch. While the docstring has a doctest showing the error case, there is no dedicated unit test for: wrong dimension returning error, correct dimension returning Ok, boundary dimensions (768, 770, 0). The doc example uses `assert!(invalid.is_err())` without checking the error contents.
-- **Suggested fix:** Add unit tests: `try_new` with 769 dims succeeds, with 768 fails with correct `actual`/`expected` fields, with 0 fails, with u16::MAX fails.
-
-#### 8. `SearchFilter::validate()` does not test NaN and infinity inputs
-- **Difficulty:** easy
-- **Location:** `src/store/helpers.rs:326-376`
-- **Description:** `validate()` uses `!(0.0..=1.0).contains()` which correctly rejects NaN (because NaN is not contained in any range). There are tests for negative values and values > 1.0, but no test confirms NaN is rejected. Similarly, `f32::INFINITY` and `f32::NEG_INFINITY` are not tested. The correctness of NaN handling relies on `contains()` behavior which is non-obvious — a test would document this intentional behavior.
-- **Suggested fix:** Add tests: `validate` with `name_boost = f32::NAN`, `note_weight = f32::INFINITY`, `name_boost = f32::NEG_INFINITY`. All should return `Err`.
-
-#### 9. `search_unified_with_index` note slot allocation logic untested for edge cases (existing #239)
-- **Difficulty:** medium
-- **Location:** `src/search.rs:552-556`
-- **Description:** The note slot allocation formula (`min_code_slots = (limit * 3) / 5`, `note_slots = limit - reserved_code`) determines how many note results are returned vs code results. No test verifies behavior when: all results are notes (0 code results), limit is 1, limit is very large, code results exceed limit. The formula has integer division which could produce unexpected results at small limits (e.g., limit=1: `min_code_slots=0`, so notes could take the only slot). Only `test_search_unified_with_index_returns_both` and `test_search_unified_note_weight_zero_excludes_notes` exist, and they use limit=10 with simple cases.
-- **Suggested fix:** Add tests with limit=1, limit=2, limit=100 with varying code/note result counts to verify slot allocation edge cases.
-
-#### 10. `Store::close()` has no test verifying WAL checkpoint behavior
-- **Difficulty:** medium
-- **Location:** `src/store/mod.rs:537-547`
-- **Description:** `Store::close()` runs a WAL checkpoint (TRUNCATE mode) before closing the pool. No test verifies this works — that after close(), the WAL file is actually cleaned up, or that subsequent opens don't see stale WAL data. The `Drop` implementation also attempts a checkpoint but failures are silently ignored. There's no test confirming the Drop path doesn't panic or leave the database in an inconsistent state.
-- **Suggested fix:** Add test: open store, write data, call `close()`, verify WAL file is truncated or absent, reopen and verify data is intact.
+- **Location:** `src/cli/mod.rs` (Commands enum ~line 97), `src/cli/mod.rs` (run_with match ~line 192), `src/cli/commands/mod.rs`
+- **Description:** Adding a CLI command requires: (1) add variant to `Commands` enum, (2) add match arm in `run_with()`, (3) create handler in `src/cli/commands/`. The `Commands` enum is exhaustively matched, so the compiler catches missing arms in `run_with()` — that's good. But there's no link between the command module and the dispatch; you could create a handler file and forget to wire it. The real friction is that the `Commands` enum and `run_with()` are in the same file but grow independently — `run_with` is already ~60 lines of match arms.
+- **Suggested fix:** Low severity — the compiler catches the critical case (missing match arm). Document the 3-step process in a comment above `Commands`.
 
 ## Batch 2: Algorithm Correctness
 
-#### 1. Glob filter extracts wrong file path from chunk ID in brute-force search
+#### 1. `gather.rs` sorts by file order then truncates, discarding highest-scored chunks
 - **Difficulty:** medium
-- **Location:** `src/search.rs:293-294`
-- **Description:** The glob path extraction uses `id.rfind(':').map(|i| &id[..i])` to strip the file path from chunk IDs. The comment says the format is `path:start-end`, but the actual format (set in `cli/pipeline.rs:247`) is `path:line_start:hash_prefix`. With `rfind(':')`, for ID `src/foo.rs:42:abcd1234`, the result is `src/foo.rs:42` — which includes the line number. A glob pattern like `src/**/*.rs` will NOT match `src/foo.rs:42`. For windowed chunks (`src/foo.rs:42:abcd1234:w0`), rfind gives `src/foo.rs:42:abcd1234` — even worse. Meanwhile, `search_by_candidate_ids` (line 450) correctly uses `chunk_row.origin` for glob matching. This means glob filtering works with HNSW-guided search but is broken for brute-force search.
-- **Suggested fix:** The path has exactly two colons after the file path portion (`line_start:hash`). Either: (a) extract by finding the second-to-last colon, (b) store the origin path separately during scoring, or (c) use the same `chunk_row.origin` approach as `search_by_candidate_ids` by fetching origin data in phase 1.
+- **Location:** `src/gather.rs:147-150`
+- **Description:** After BFS expansion, `gather()` sorts chunks by file path and line number (reading order) and then truncates to `opts.limit`. This means the *limit* highest-scored chunks are not retained — instead, the first *limit* chunks in file order are. A high-relevance function at `src/z.rs:100` (score 0.9) would be discarded in favor of a low-relevance function at `src/a.rs:1` (score 0.1) simply because of alphabetical file ordering. The truncation should happen by score first, then the retained set can be sorted for display.
+- **Suggested fix:** Sort by score descending, truncate to limit, *then* re-sort the survivors by file+line for display order:
+  ```rust
+  chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+  chunks.truncate(opts.limit);
+  chunks.sort_by(|a, b| a.file.cmp(&b.file).then(a.line_start.cmp(&b.line_start)));
+  ```
 
-#### 2. Pipeline assigns wrong file_mtime to chunks from different files in same batch
+#### 2. `diff.rs` has a duplicate cosine_similarity that doesn't match `math.rs`
+- **Difficulty:** easy
+- **Location:** `src/diff.rs:62-74`
+- **Description:** `diff.rs` defines its own `cosine_similarity` function that is a full dot/norm/denom implementation, while the rest of the codebase uses `crate::math::cosine_similarity` which: (1) validates dimensions against `EMBEDDING_DIM`, (2) uses SIMD via `simsimd`, (3) returns `Option<f32>` for error handling, (4) filters non-finite results. The diff version accepts any-length vectors, does no NaN check, returns 0.0 on error (not `None`), and is ~4x slower without SIMD. If embeddings are corrupted or wrong-dimension, `math.rs` would return `None` (skip the pair), but `diff.rs` silently returns 0.0 (marks as "maximally modified").
+- **Suggested fix:** Replace with `crate::math::cosine_similarity(a, b).unwrap_or(0.0)` or better, propagate the `None` as a separate "can't compare" case (which it already handles via the `(None, _) | (_, None)` arm).
+
+#### 3. `gather.rs` BFS uses decayed score from arbitrary parent, not best parent
 - **Difficulty:** medium
-- **Location:** `src/cli/pipeline.rs:299-304`
-- **Description:** All chunks in a parsed batch share a single `file_mtime`, taken from the first chunk's file. But chunks come from multiple files parsed in parallel (`par_iter` over `file_batch`). After `rayon::par_iter` collects all chunks, they're batched by `batch_size=32`. A batch of 32 chunks may span many source files, yet all get the first file's mtime. This corrupts the `source_mtime` column in the database, causing `needs_reindex` (which compares file mtime against stored mtime) to make wrong decisions: files with newer mtimes than the stored value won't be re-indexed, and files with older mtimes may be unnecessarily re-indexed.
-- **Suggested fix:** Track per-chunk mtime. The `file_mtimes` HashMap already maps file paths to mtimes. Either: (a) change `ParsedBatch` to carry per-chunk mtimes, or (b) change `EmbeddedBatch` and `upsert_chunks_batch` to accept per-chunk mtimes instead of a single value.
+- **Location:** `src/gather.rs:125-129`
+- **Description:** During BFS expansion, when a neighbor is first encountered, its score is computed as `base_score * 0.8^(depth+1)` where `base_score` comes from whichever parent happened to dequeue first. BFS doesn't guarantee the highest-scoring parent dequeues first — a low-score seed at depth 0 might discover node X before a high-score seed does. Once X is in `name_scores`, its score is fixed and won't be updated even if a higher-scoring path exists. For example: seed A (score=0.9) calls B calls X. Seed C (score=0.3) calls X directly. If C dequeues before A->B, X gets score 0.3*0.64=0.19 instead of 0.9*0.64*0.8=0.46.
+- **Suggested fix:** Either update `name_scores` if a higher score path is found (`if new_score > existing_score`), or sort the seed queue by descending score before starting BFS.
 
-#### 3. Dedup after RRF/truncation can return fewer results than limit without backfill
+#### 4. `impact.rs` test search depth is hardcoded to 5, ignoring user's `depth` parameter
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/impact.rs:58`
+- **Description:** The user can pass `depth` (clamped to 1-10) to control transitive caller search depth. But the "find tests via reverse BFS" section at line 58 hardcodes `if d >= 5 { continue; }` regardless of the user's depth parameter. If a user requests `depth=10` to find distant callers, the test search still stops at depth 5. If they request `depth=2`, the test search wastefully explores to depth 5. The test search depth should be at least as deep as the user's `depth` parameter.
+- **Suggested fix:** Change `if d >= 5` to `if d >= depth.max(5)` to honor the user's depth while keeping the minimum at 5.
+
+#### 5. `search_reference_by_name` applies threshold filter before weight, inconsistent with `search_reference`
+- **Difficulty:** easy
+- **Location:** `src/reference.rs:89-95` vs `src/reference.rs:75-85`
+- **Description:** `search_reference` (semantic) applies weight first, then filters: `r.score *= weight; results.retain(|r| r.score >= threshold)`. But `search_reference_by_name` filters by `r.score * weight >= threshold` before applying weight, then applies weight. While mathematically equivalent for the threshold check, the code pattern is inconsistent and fragile. More importantly, `search_by_name` returns scores from an entirely different scale (0.5/0.7/0.9/1.0 for FTS relevance) vs semantic search (0.0-1.0 cosine similarity). The same threshold value (e.g., 0.3) means very different things for the two search modes, and the weight multiplication interacts differently with the two scoring scales.
+- **Suggested fix:** Make the code consistent: apply weight first, then filter (matching `search_reference`). Consider whether the FTS scores need a different default threshold when used with references.
+
+#### 6. `diff.rs` language filter matches by file extension, misses stored language field
+- **Difficulty:** easy
+- **Location:** `src/diff.rs:100-113`
+- **Description:** The language filter uses `c.origin.ends_with(&format!(".{}", lang_extension(lang)))` to match chunks by language. This has two problems: (1) it misses files with compound extensions like `.test.ts`, `.d.ts`, `.config.js` where the ending matches incorrectly; (2) it duplicates the extension-to-language mapping from `src/language/mod.rs` into `lang_extension()`. Meanwhile, the chunks already have a language stored in the database (the `ChunkIdentity` struct just doesn't include it). Using the stored language would be more reliable and eliminate the duplicate mapping.
+- **Suggested fix:** Add a `language` field to `ChunkIdentity` (loaded from the chunks table in `all_chunk_identities()`), and filter by `c.language == lang` instead of file extension matching.
+
+#### 7. `get_callees_full` matches by function name only, returns callees from all overloads
 - **Difficulty:** medium
-- **Location:** `src/search.rs:314-361`
-- **Description:** In `search_filtered`, the RRF fusion (or non-RRF truncation) produces `final_scored` capped at `limit`. Parent-based dedup then removes duplicate windows from this already-limited set. If the top 5 results (limit=5) are all windows of the same function, dedup removes 4, returning only 1 result — even though positions 6-10 might have had unique functions. The `search_by_candidate_ids` path partially mitigates this by over-fetching candidates (5x limit from HNSW), but the brute-force path has no over-fetch before dedup.
-- **Suggested fix:** Over-fetch before dedup in the brute-force path: use `limit * 2` (or similar) for the initial scoring/RRF phase, then dedup, then truncate to `limit`. The `semantic_limit = limit * 3` when RRF is enabled helps but only covers the semantic input to RRF, not the final output.
+- **Location:** `src/store/calls.rs:227-244`
+- **Description:** `get_callees_full(caller_name)` queries `WHERE caller_name = ?1` from `function_calls`. If two functions in different files share a name (common in Go, Java, and even Rust across modules), this returns callees from ALL of them. For example, `get_callees_full("new")` returns callees from every `new()` across the project. The `function_calls` table has a `file` column that could disambiguate, but none of the callers pass file context. This affects `cqs_explain`, `cqs_context`, `cqs_trace`, and `cqs_gather` — all of which resolve to a specific chunk with a known file but then query callees by name alone.
+- **Suggested fix:** Add an optional `file` parameter: `get_callees_full(caller_name: &str, file: Option<&Path>)` and add `AND file = ?2` when provided. Update MCP tool call sites to pass the resolved file.
 
-#### 4. Reference semantic search applies threshold BEFORE weight, inconsistent with name search
-- **Difficulty:** easy
-- **Location:** `src/reference.rs:72-97` vs `src/reference.rs:100-119`
-- **Description:** `search_reference` (semantic) passes the caller's `threshold` into `search_filtered_with_index`, which applies it to RAW scores. Weight is then applied after, so a result with raw score 0.35 and weight 0.8 passes threshold=0.3 but has effective score 0.28 — below threshold. `search_reference_by_name` correctly checks `r.score * ref_idx.weight >= threshold` (the weighted score). This inconsistency means semantic reference search can return results below the intended threshold.
-- **Suggested fix:** In `search_reference`, pass `threshold / ref_idx.weight` to the inner search (adjusting for weight), or apply threshold after weighting like `search_reference_by_name` does. Alternatively, pass threshold=0.0 to the inner search and filter afterward.
-
-#### 5. BoundedScoreHeap tie-breaking is first-come-first-served, arbitrary by DB row order
-- **Difficulty:** easy
-- **Location:** `src/search.rs:163-169`
-- **Description:** When the heap is at capacity and a new item has `score == min_score`, it is NOT inserted (the comparison is strict `>`). Tie-breaking is determined by database iteration order (insertion order), which is arbitrary. For threshold-boundary scores where many chunks cluster near the same similarity, this systematically excludes later-indexed files. Exact f32 ties are rare for cosine similarity, so practical impact is low, but the policy is undocumented.
-- **Suggested fix:** Document the tie-breaking policy with a comment. If deterministic tie-breaking matters, add chunk ID as a secondary sort key.
-
-#### 6. Unified search note_slots soft cap does not enforce 60% code guarantee
-- **Difficulty:** easy
-- **Location:** `src/search.rs:552-579`
-- **Description:** The note_slots calculation intends to reserve 60% of slots for code (`min_code_slots = (limit * 3) / 5`). All code results (up to `limit`) are added to the unified list, but notes are pre-limited to `note_slots`. After sort+truncate to `limit`, if notes have higher scores than code, notes can push code results below the 60% minimum. The pre-limiting provides a soft cap but not a hard guarantee. The intent and implementation diverge.
-- **Suggested fix:** If the 60% guarantee is important, enforce it during final truncation. If the current soft-preference behavior is intentional, document it as such.
-
-#### 7. `cosine_similarity` returns dot product without validating input normalization
-- **Difficulty:** easy
-- **Location:** `src/math.rs:12-29`
-- **Description:** The function computes a dot product but is named `cosine_similarity`. The doc comment correctly states "for L2-normalized vectors," but callers use it without normalization checks. If un-normalized embeddings enter the system (model change, embedding corruption, sentiment dimension out of expected range), the dot product returns values outside [-1, 1], silently producing wrong similarity scores. The `is_finite()` check catches NaN/Inf but not out-of-range values.
-- **Suggested fix:** Add a `debug_assert!` that the result is in [-1.01, 1.01] (with epsilon for float imprecision). This catches normalization bugs in development without runtime cost in release builds.
-
-#### 8. `search_by_name` FTS query interpolates normalized text into FTS5 syntax
+#### 8. `find_dead_code` trait impl detection uses content heuristic that false-positives on `for` in body
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:427`
-- **Description:** The FTS query is built as `format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized)`. While `normalize_for_fts` currently strips non-alphanumeric characters, this creates a coupling: the safety of the FTS query depends on the implementation details of `normalize_for_fts`. If `normalize_for_fts` is ever changed to preserve certain characters (e.g., hyphens for kebab-case identifiers), the double-quoting strategy could break. The function mixes content normalization with query construction concerns.
-- **Suggested fix:** Add explicit FTS-escaping (strip or escape double-quotes) at the query construction site, independent of `normalize_for_fts`.
+- **Location:** `src/store/calls.rs:367-372`
+- **Description:** The trait implementation exclusion checks `chunk.content.contains(" for ") && chunk.chunk_type == Method`. This false-positives on any method whose body contains " for " — e.g., a `for` loop, a comment like "// iterate for each item", or a string literal. It also misses: (1) Rust trait impls where `for` is on a different line than the method, (2) Go interface implementations, (3) Java `@Override` methods. A method `fn process(&self) { for item in list { ... } }` would be incorrectly excluded from dead code results.
+- **Suggested fix:** Check the signature or the parent chunk's signature for `impl.*for` pattern rather than the method content. Alternatively, add a `parent_signature` field or `is_trait_impl` boolean during parsing for reliable detection.
 
-#### 9. `extract_return_nl` for Java fails on generic return types with internal spaces
+#### 9. `search_unified_with_index` note slot calculation allows notes to exceed intended 40%
 - **Difficulty:** easy
-- **Location:** `src/nl.rs:575-598`
-- **Description:** For Java, the code takes `words[words.len() - 2]` as the return type. This works for simple types (`int`, `String`) but fails for generic types with spaces: `Map<String, Integer>` is split by whitespace into `["Map<String,", "Integer>", ...]`, and `words[len-2]` picks up a partial generic like `"Integer>"`. The algorithm cannot handle multi-word return types, which occur with generics that have spaces after commas.
-- **Suggested fix:** Accept the limitation with a doc comment noting generic return types may not parse correctly, matching the existing TypeScript caveat at line 524. Alternatively, join all words between the last modifier and the method name as the return type.
+- **Location:** `src/search.rs:588-591`
+- **Description:** The code calculates `reserved_code = code_count.min(min_code_slots)` where `min_code_slots = ((limit * 3) / 5).max(1)`. Then `note_slots = limit.saturating_sub(reserved_code)`. If code search returns fewer results than min_code_slots (e.g., limit=10, min_code_slots=6, but only 2 code results), then reserved_code=2 and note_slots=8. Notes get 80% of slots instead of the intended 40% max. The comment says "60% code reserve" but only reserves as many code slots as there are actual code results. This may be intentional (fill empty code slots with notes) but contradicts the documented behavior.
+- **Suggested fix:** If the 60% code guarantee matters, use `let note_slots = limit.saturating_sub(min_code_slots);` regardless of actual code count. If the current behavior is intentional, update the comment to reflect it: "60% code reserve when available, notes fill remaining slots."
 
-## Batch 3: Memory Management
+#### 10. `BoundedScoreHeap` could get stuck if NaN leaks into min position
+- **Difficulty:** easy
+- **Location:** `src/search.rs:181-193`
+- **Description:** `BoundedScoreHeap::push` compares `score > *min_score` to decide whether to insert. If a NaN ever enters the heap as the minimum element, the comparison `score > NaN` is always false, and no new items can be inserted — the heap becomes permanently stuck. The current code is safe because `cosine_similarity` filters NaN via `is_finite()`, but the heap has no self-defense against this. If a future code path bypasses the cosine_similarity filter, the heap silently produces wrong results.
+- **Suggested fix:** Add `if score.is_nan() { return; }` at the top of `push()` as defensive guard.
 
-#### 1. Brute-force search loads ALL embeddings into memory at once
+#### 11. `cosine_similarity` in `math.rs` is actually dot product, not cosine similarity
+- **Difficulty:** easy
+- **Location:** `src/math.rs:15-28`
+- **Description:** The doc comment correctly says "Cosine similarity for L2-normalized vectors (just dot product)" — this is mathematically sound for normalized vectors. However, the function is called from the entire codebase as the general-purpose similarity measure. If the embedding model is ever changed to one that doesn't L2-normalize outputs, all similarity computations silently become dot products (unbounded, not in [-1,1]), producing wrong search rankings. The `diff.rs` duplicate already handles this correctly with normalization. No production bug today (E5 normalizes), but a latent correctness hazard.
+- **Suggested fix:** Add `debug_assert!` that inputs are approximately unit-norm: `debug_assert!((a.iter().map(|x| x*x).sum::<f32>() - 1.0).abs() < 0.1, "Expected L2-normalized");` Catches misuse in development.
+
+#### 12. `node_letter` in trace.rs generates confusing Mermaid IDs after 26 nodes
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/trace.rs:215-221`
+- **Description:** `node_letter(i)` generates `A`-`Z` for 0-25, then `A1`, `B1` etc. for 26+. The naming scheme is confusing: `A` and `A1` look like parent/child, not sequential peers. At 26*26+26=702 nodes, `node_letter` generates `A27` which is fine technically but doesn't follow standard base-26 conventions. While call chains >26 nodes are rare in practice, the tool has `max_depth` up to 50.
+- **Suggested fix:** Use `N0`, `N1`, `N2`... which scales indefinitely and is unambiguous.
+
+## Batch 2: Platform Behavior
+
+#### 1. Watch mode notes path comparison fails with non-canonical event paths
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:77,97`
+- **Description:** Watch mode constructs `notes_path = root.join("docs/notes.toml")` at line 77 and compares it with `path == notes_path` at line 97. The `root` comes from `find_project_root()` which returns `std::env::current_dir()` — not canonicalized. On macOS, the watcher can return paths through `/private/var/...` while `current_dir()` returns `/var/...` (symlink). On Windows/WSL, the watcher may return UNC paths (`\\?\C:\...`) while `root` has regular paths. The `==` comparison fails, notes changes are silently ignored and fall through to extension checking where `.toml` is not a supported code extension, so it's dropped entirely. Same issue applies to the `path.starts_with(&cq_dir)` check at line 92 — could fail to skip `.cq/` events.
+- **Suggested fix:** Canonicalize `root` at startup: `let root = find_project_root().canonicalize().unwrap_or_else(|_| find_project_root());` and apply `strip_unc_prefix` on Windows. Or use `path.ends_with("docs/notes.toml")` as a more robust check.
+
+#### 2. `process_exists` on Windows shells out to `tasklist` — slow and fragile
+- **Difficulty:** medium
+- **Location:** `src/cli/files.rs:27-34`
+- **Description:** The Windows `process_exists` implementation spawns `tasklist /FI "PID eq N" /NH` and string-matches the output. This has several problems: (1) It's slow (~200ms per invocation vs microseconds for the Unix `kill(pid, 0)` check). (2) `tasklist` output format varies by locale — non-English Windows may format differently. (3) String matching `contains(&pid.to_string())` can false-positive: PID "12" matches in output containing PID "123" or "1234". (4) The function is called in the lock recovery path, so it blocks indexing when a stale lock is detected.
+- **Suggested fix:** Use the `windows-sys` crate: `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)` returns null if the process doesn't exist — instant and locale-independent. Falls back to the current tasklist approach if the API call fails.
+
+#### 3. `cmd_init` prints "cq" instead of "cqs" in user-facing messages
+- **Difficulty:** easy
+- **Location:** `src/cli/commands/init.rs:11,19,57`
+- **Description:** Line 11 doc comment says "Initialize cq", line 19 prints "Initializing cq...", and line 57 prints "Run 'cq index' to index your codebase." All should say "cqs". This was caught for other files in the Documentation and Error Handling batches but `init.rs` was missed. Users following the instructions will get "command not found".
+- **Suggested fix:** Change all three occurrences to use "cqs".
+
+#### 4. `note.rs` atomic write via `rename` can fail with `EXDEV` on overlay/Docker filesystems
+- **Difficulty:** easy
+- **Location:** `src/note.rs:144-146`
+- **Description:** `rewrite_notes_file` creates a temp file with `notes_path.with_extension("toml.tmp")` and renames it to `notes_path`. The temp file is in the same directory, so `rename()` should work. However, on overlay filesystems (Docker bind mounts, some NFS/FUSE), the temp and target can be on different mount points despite appearing co-located, causing `rename()` to fail with `EXDEV` (cross-device link). The error from the bare `?` gives no path context. The HNSW persist code (`src/hnsw/persist.rs:211-226`) has the same pattern.
+- **Suggested fix:** Add a copy+delete fallback: `std::fs::rename(&tmp_path, notes_path).or_else(|e| if e.raw_os_error() == Some(18 /* EXDEV */) { std::fs::copy(&tmp_path, notes_path)?; std::fs::remove_file(&tmp_path) } else { Err(e) })?;` At minimum, add `.map_err()` with path context.
+
+#### 5. Watch mode `strip_prefix` on event paths fails when watcher returns differently-cased paths
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:110`
+- **Description:** `path.strip_prefix(&root)` at line 110 converts watcher event paths to relative paths for indexing. If the watcher returns paths that don't match `root` exactly (different case on case-insensitive filesystems, or symlink resolution differences), `strip_prefix` returns `Err` and the file change is silently ignored via the `if let Ok(rel)` guard. On Windows, `C:\Projects\cq` vs `c:\projects\cq` would fail. On macOS, paths through `/private/var` vs `/var` would fail. Related to finding #1 but affects code file detection, not just notes.
+- **Suggested fix:** Canonicalize `root` at startup (as in #1). The root cause is `find_project_root()` not canonicalizing (#6).
+
+#### 6. `find_project_root` doesn't canonicalize, causing path mismatches downstream
+- **Difficulty:** medium
+- **Location:** `src/cli/config.rs:14-52`
+- **Description:** `find_project_root()` returns a non-canonical path from `std::env::current_dir()`. This path is used as the base for watch mode (#1, #5), for `enumerate_files` (which canonicalizes internally at `src/lib.rs:207` but callers use the un-canonicalized root for display and lock paths), and for MCP server project root. When the CWD contains symlinks, the root and internally-canonicalized paths diverge. `enumerate_files` canonicalizes root at entry, but callers like watch mode use the original non-canonical root for `strip_prefix` and path comparisons.
+- **Suggested fix:** Canonicalize in `find_project_root()`: `let canonical = current.canonicalize().unwrap_or_else(|_| current.to_path_buf()); cqs::strip_unc_prefix(canonical)`. Fixes root cause for #1 and #5.
+
+#### 7. HNSW temp directory cleanup uses `remove_dir` instead of `remove_dir_all`
+- **Difficulty:** easy
+- **Location:** `src/hnsw/persist.rs:229`
+- **Description:** `let _ = std::fs::remove_dir(&temp_dir);` silently fails if the temp directory isn't empty. On Windows, files recently written may still have OS-level handles (antivirus scanners, search indexers). If the rename loop at lines 213-226 fails partway, some files remain in the temp dir. `remove_dir` only removes empty directories, so cleanup fails. The pre-cleanup at line 124-132 correctly uses `remove_dir_all`. Between saves, orphaned temp dirs with partial HNSW data accumulate.
+- **Suggested fix:** Change `remove_dir` to `remove_dir_all` for consistency with the pre-cleanup path.
+
+#### 8. `refs_dir()` returns `None` in minimal environments with unhelpful error
+- **Difficulty:** easy
+- **Location:** `src/reference.rs:163-165`
+- **Description:** `refs_dir()` calls `dirs::data_local_dir()` which returns `None` if the platform's local data directory can't be determined (`$XDG_DATA_HOME` and `$HOME` both unset, or minimal Docker containers). When `refs_dir()` returns `None`, `cmd_ref_add` bails with "Could not determine reference storage directory" — no guidance on WHY or how to fix. Users in Docker/CI environments hit this with no way forward.
+- **Suggested fix:** Improve the error: "Could not determine reference storage directory. Ensure $HOME is set (Linux/macOS) or $LOCALAPPDATA (Windows)." Or fall back to `.cq/refs/` in the project directory.
+
+#### 9. `mmap_size` pragma value assumes 64-bit address space
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:150-152`
+- **Description:** `PRAGMA mmap_size = 268435456` (256MB) assumes 64-bit address space. On 32-bit platforms (~3GB usable), this consumes a significant chunk. SQLite handles this gracefully (falls back to read if mmap fails), so it won't crash, but could cause unexpected memory pressure on 32-bit ARM. The project targets 64-bit primarily but doesn't document this.
+- **Suggested fix:** No code change required — SQLite degrades gracefully. Document "64-bit recommended" in README system requirements.
+
+## Batch 2: Test Coverage
+
+#### 1. 13 of 20 MCP tools have zero integration tests
+- **Difficulty:** medium
+- **Location:** `tests/mcp_test.rs`
+- **Description:** Only 7 MCP tools have integration tests: `cqs_read`, `cqs_search`, `cqs_add_note`, `cqs_callers`, `cqs_callees`, `cqs_audit_mode`, `cqs_stats`. The following 13 tools have no tests at all: `cqs_update_note`, `cqs_remove_note`, `cqs_explain`, `cqs_similar`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_dead`, `cqs_gc`, `cqs_gather`, `cqs_context`, `cqs_diff`, `cqs_batch`. These are all invokable by LLM clients via the MCP protocol — untested means any regression in argument parsing, response shape, or error handling is invisible until a user hits it.
+- **Suggested fix:** Add at minimum smoke tests for each tool: call with valid arguments and verify response has no error. Priority by usage: `cqs_explain`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_batch` (most commonly invoked by LLMs).
+
+#### 2. `semantic_diff` has no integration test — only unit tests for helpers
+- **Difficulty:** medium
+- **Location:** `src/diff.rs:82-215`
+- **Description:** `src/diff.rs` tests cover `cosine_similarity`, `ChunkKey`, and `lang_extension` (8 unit tests), but the main `semantic_diff()` function has zero tests. It performs: store queries for all chunk identities, filtering by language, matching by composite key, embedding comparison with similarity threshold, sorting modified results. None of these integration paths are tested. The function is called by `cqs_diff` MCP tool which also has no tests.
+- **Suggested fix:** Create a test that sets up two stores with known chunks (some shared, some different), calls `semantic_diff()`, and verifies the added/removed/modified/unchanged counts.
+
+#### 3. `gather()` function has no integration test — only unit tests for helpers
+- **Difficulty:** medium
+- **Location:** `src/gather.rs:78-174`
+- **Description:** `gather.rs` tests cover `GatherDirection` parsing, `GatherOptions` defaults, and `get_neighbors()` behavior (7 unit tests). But the main `gather()` function — which orchestrates seed search, BFS expansion, chunk lookup, deduplication, sorting, and truncation — has zero tests. The BFS expansion capping at `MAX_EXPANDED_NODES=200` is untested. The score decay logic (`0.8^depth`) is untested. The deduplication by chunk ID is untested.
+- **Suggested fix:** Create a test with a store containing chunks with known call graph edges, call `gather()` with different `expand_depth` values, and verify the returned chunks include expanded neighbors with decaying scores.
+
+#### 4. `Store::find_dead_code()` has zero tests
+- **Difficulty:** medium
+- **Location:** `src/store/calls.rs:336-415`
+- **Description:** `find_dead_code()` is the core of the `cqs_dead` tool. It performs a complex SQL query (chunks NOT IN callee_name), then applies multiple exclusion heuristics: skip `main`, skip test functions, skip test files, skip trait implementations, skip `#[no_mangle]`. None of these heuristics are tested. If an exclusion regex changes (e.g., the `impl <Type> for` pattern at line ~394), false positives could flood the dead code report.
+- **Suggested fix:** Create a store with: (1) a called function, (2) an uncalled function, (3) `main`, (4) a test function, (5) a trait impl. Verify `find_dead_code` returns only #2 as confident dead code.
+
+#### 5. `Store::all_chunk_identities()` and `get_chunk_with_embedding()` have zero tests
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:478-525`
+- **Description:** `all_chunk_identities()` is used by `semantic_diff()` and `get_chunk_with_embedding()` is used by `diff` and `similar`. Neither has any test — unit or integration. `all_chunk_identities()` returns `ChunkIdentity` structs with `window_idx` and `parent_id` fields extracted from the database — incorrect column mapping would silently return wrong data. `get_chunk_with_embedding()` reconstructs an `Embedding` from raw bytes — corrupt byte data returns `None` with a log, but the happy path is untested.
+- **Suggested fix:** For `all_chunk_identities()`: insert a chunk, call the method, verify the returned identity matches. For `get_chunk_with_embedding()`: insert a chunk with a known embedding, call the method, verify the embedding values match.
+
+#### 6. `Store::get_call_graph()` has zero tests
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:269-291`
+- **Description:** `get_call_graph()` builds forward and reverse adjacency lists from the `function_calls` table. It's used by `gather`, `trace`, `impact`, and `test_map`. No test verifies that the forward/reverse maps are correctly populated. The `store_calls_test.rs` integration tests cover `upsert_function_calls`, `get_callers_full`, and `get_callees_full`, but not `get_call_graph()` which returns a different data structure (`CallGraph` with `HashMap<String, Vec<String>>` instead of `Vec<CallerFull>`).
+- **Suggested fix:** Insert some function call edges, call `get_call_graph()`, verify forward and reverse maps contain the expected entries.
+
+#### 7. `search_reference()` and `search_reference_by_name()` have zero tests
+- **Difficulty:** medium
+- **Location:** `src/reference.rs:72-122`
+- **Description:** `reference.rs` has 12 tests covering `merge_results()`, `validate_ref_name()`, `ref_path()`, and `load_references()` with a missing path. But `search_reference()` and `search_reference_by_name()` — the functions that apply weight multipliers and post-weight threshold filtering — have no tests. The post-weight `retain` filter (line 92) was a v0.5.3 audit fix; if it regresses, weighted results that should be filtered out would leak through.
+- **Suggested fix:** Create a `ReferenceIndex` with a known store and weight, call `search_reference()`, verify scores are multiplied and threshold filtering is applied after weighting.
+
+#### 8. CLI commands `ref`, `watch`, `project`, `explain`, `context`, `trace`, `impact`, `test-map`, `dead` have no integration tests
 - **Difficulty:** hard
-- **Location:** `src/search.rs:237-242`
-- **Description:** `search_filtered` executes `SELECT id, embedding FROM chunks` with `fetch_all`, loading every chunk's embedding into memory simultaneously. Each embedding is 769 * 4 = 3076 bytes. For 100k chunks, this is ~300MB of raw embedding data plus SQLite row overhead, string allocations for IDs, and Vec overhead — easily 500MB+. This is the fallback path when HNSW is unavailable or returns no candidates. The `BoundedScoreHeap` mitigates the result collection phase but not the initial load. With HNSW enabled this path rarely triggers, but when it does (new index, empty HNSW, language/path filter fallback), memory usage spikes to the full dataset.
-- **Suggested fix:** Use cursor-based pagination (`LIMIT/OFFSET`) like `embedding_batches`, scoring each batch and keeping only the bounded heap. This would cap memory at O(batch_size + limit) instead of O(total_chunks).
+- **Location:** `tests/cli_test.rs`
+- **Description:** `cli_test.rs` covers: `help`, `version`, `init`, `stats`, `index`, search, `completions`, `doctor`, `callers`, `callees` (19 tests total). Missing CLI commands: `ref add/update/remove/list`, `watch`, `project register/remove/list/search`, `explain`, `context`, `trace`, `impact`, `test-map`, `dead`, `serve`. These are 14 untested commands. The `ref` and `project` commands involve filesystem state (reference indexes, project registry) and are high-value for correctness.
+- **Suggested fix:** Priority additions: `ref add` + `ref list` (exercises config read/write), `dead` (exercises call graph), `explain` (exercises callers/callees/similar). Each test: set up project, index, run command, verify output.
 
-#### 2. Pipeline channels can buffer up to 768 batches of chunks + embeddings in memory
+#### 9. No tests for `Config::override_with` reference weight boundary behavior
+- **Difficulty:** easy
+- **Location:** `src/config.rs:123-142`
+- **Description:** `Config` tests cover scalar field merging and reference replacement by name. But there's no test for weight boundary behavior: a reference with `weight = 0.0` or `weight = 1.5` passes through `override_with` without validation. The v0.5.3 fresh-eyes audit caught that weight >1.0 can amplify reference scores. The fix was at the CLI layer (`ref add` validates), but `Config::load()` still accepts any weight value from a hand-edited config file. A test that catches this would prevent regression.
+- **Suggested fix:** Add test: config with `weight = 1.5` loads without error. Decide if `Config::load()` should clamp/validate weights or if the current CLI-only validation is sufficient. At minimum, document the design decision.
+
+#### 10. MCP `tool_search` response format divergence between name_only and semantic paths is untested
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/search.rs:172-342`
+- **Description:** When `name_only=true`, `tool_search` returns a bare JSON array. When `name_only=false`, it returns `{"results": [...], "query": "...", "total": N}`. Both paths are invoked via the same `cqs_search` tool. The MCP test `test_cqs_search_name_only_mode` only checks that the tool returns successfully with no error — it doesn't verify the response shape. An LLM client that parses the response would break if the format diverged further.
+- **Suggested fix:** In `test_cqs_search_name_only_mode`, parse the response content and verify it's an array (not wrapped in `{"results": ...}`). In semantic search tests, verify the `{"results": [...], "total": N}` wrapper.
+
+#### 11. `validate_query_length` max length boundary not tested
+- **Difficulty:** easy
+- **Location:** `src/mcp/validation.rs:12-24`
+- **Description:** `validate_query_length` rejects queries longer than `MAX_QUERY_LENGTH` (8192 bytes). The tests cover empty/whitespace rejection and normal strings, but don't test the boundary. A query of exactly 8192 bytes should pass; 8193 should fail. Since this is a security-relevant input validation function, boundary testing matters.
+- **Suggested fix:** Add: `assert!(validate_query_length(&"a".repeat(8192)).is_ok()); assert!(validate_query_length(&"a".repeat(8193)).is_err());`
+
+#### 12. `parse_duration` overflow with very large numbers not tested
+- **Difficulty:** easy
+- **Location:** `src/mcp/validation.rs:27-99`
+- **Description:** `parse_duration("999999999999999999h")` will attempt `i64::parse` on a huge number. The function has a 24-hour cap (line 90), but the intermediate `hours * 60` multiplication happens before the cap check (line 46). For a value like `i64::MAX / 60 + 1`, the multiplication overflows silently in release mode (wraps in debug mode). The cap would then compare against a wrapped value.
+- **Suggested fix:** Add test: `assert!(parse_duration("999999999999999999h").is_err()); assert!(parse_duration("99999999m").is_err());` and consider checking the cap before multiplication or using `checked_mul`.
+
+#### 13. `SearchFilter::validate()` is only called in 1 of 4 construction sites
+- **Difficulty:** easy
+- **Location:** `src/store/helpers.rs:335-380`, `src/mcp/tools/search.rs:70-72`, `src/mcp/tools/explain.rs:65-73`, `src/mcp/tools/similar.rs:88-96`
+- **Description:** `SearchFilter` has a `validate()` method that checks `name_boost` is in [0.0, 1.0], `note_weight` is in [0.0, 2.0], and `threshold` is non-negative. This is called in `tool_search` (search.rs:70-72) but NOT in `explain.rs`, `similar.rs`, or any other tool that constructs a `SearchFilter`. A `name_boost` of 5.0 passed to `cqs_explain` would bypass validation. The existing test `test_search_filter_valid_with_name_boost` tests the validator in isolation but doesn't verify it's actually called.
+- **Suggested fix:** Either make `validate()` mandatory (call in a constructor or make fields private) or add tests that verify invalid parameters are rejected at the tool level for `cqs_explain` and `cqs_similar`.
+
+## Batch 3: Performance
+
+### Performance
+
+#### 1. `semantic_diff` fetches embeddings one-by-one per matched pair (N+1 query)
 - **Difficulty:** medium
-- **Location:** `src/cli/pipeline.rs:192-199`
-- **Description:** Three bounded channels each with `channel_depth = 256`: `parse_tx/rx` (ParsedBatch), `embed_tx/rx` (EmbeddedBatch), and `fail_tx/rx` (ParsedBatch). Each `ParsedBatch` contains up to 32 chunks (strings: id, content, signature, doc, etc.). Each `EmbeddedBatch` contains 32 `(Chunk, Embedding)` pairs — each embedding is ~3KB. In the worst case, all three channels are full: 256 * 32 * ~3KB (embeddings) + chunk strings ≈ 25MB for embeddings alone, plus chunk content (which can be large for code). The `embed_rx` channel is most concerning: 256 * 32 embedded chunks can hold ~8192 chunks with full embeddings in flight. If the writer thread stalls (slow SQLite), backpressure fills these buffers.
-- **Suggested fix:** Reduce `channel_depth` for `embed_tx/rx` (carrying heavier payloads) or reduce to a single shared depth. Consider profiling actual utilization — 256 may be overkill for pipeline smoothing.
+- **Location:** `src/diff.rs:169-196`
+- **Description:** The `semantic_diff` function iterates over `matched_pairs` and calls `get_chunk_with_embedding` individually for each source and target chunk. Each call is a separate SQL query wrapped in `block_on`. For a diff with 500 matched pairs, that's 1000 individual database round-trips. The function already bulk-loads all chunk identities at the start (lines 85-96), but then switches to per-row fetching for embeddings. This is the dominant cost of `cqs_diff` for non-trivial comparisons.
+- **Impact:** For a 500-pair diff, ~1000 SQLite queries instead of 2 batch queries. Estimated 10-50x slower than batched fetching depending on SQLite cache state.
+- **Suggested fix:** Collect all needed chunk IDs from `matched_pairs`, batch-fetch embeddings from source and target stores (using `get_embeddings_by_hashes` or a new `get_embeddings_by_ids` method), then look up per pair from an in-memory HashMap.
 
-#### 3. `all_embeddings()` loads entire index into memory without size guard
+#### 2. `gather()` calls `search_by_name` individually for each BFS-expanded name (N+1 query)
 - **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:488-522`
-- **Description:** `all_embeddings()` calls `fetch_all` on all chunks, then collects into a `Vec<(String, Embedding)>`. For 100k chunks: 100k * (avg 50-char ID string + 769 * 4 bytes embedding) ≈ 350MB. The method has a doc warning ("Warning: This loads all embeddings into memory at once") and recommends `embedding_batches()`, but it is still called from `HnswIndex::build()` callers. No runtime size check prevents OOM — unlike `HnswIndex::load()` which has `MAX_ID_MAP_SIZE`.
-- **Suggested fix:** Add a size check: query `COUNT(*)` first and warn/error if above a threshold (e.g., 50k). Or deprecate with `#[deprecated]` and force callers through `embedding_batches()`.
+- **Location:** `src/gather.rs:136-161`
+- **Description:** After BFS expansion collects up to `MAX_EXPANDED_NODES` (200) names, the function iterates and calls `store.search_by_name(name, 1)` for each one. Each call is a separate FTS5 query wrapped in `block_on`. For a gather with 200 expanded names, that's 200 individual database round-trips. The BFS expansion itself (lines 108-130) is fast (in-memory call graph traversal), but the chunk lookup dominates wall time.
+- **Impact:** For 200 expanded nodes, ~200 FTS queries. Each query is fast individually (~0.1ms), but the overhead of 200 `block_on` + SQL prepare cycles adds up to 50-200ms total.
+- **Suggested fix:** Collect all expanded names into a Vec, then batch-query with a single `WHERE name IN (?, ?, ...)` or use FTS5 `OR` queries to fetch all matching chunks in one round-trip.
 
-#### 4. CAGRA `build_from_store` accumulates full flat_data Vec without streaming to GPU
-- **Difficulty:** medium
-- **Location:** `src/cagra.rs:375-425`
-- **Description:** `build_from_store` streams from SQLite in batches of 10k, but accumulates all data into `flat_data: Vec<f32>` and `id_map: Vec<String>` before calling `build_from_flat`. For 100k chunks: `flat_data` = 100k * 769 * 4 = ~307MB of f32 values. The comment says "cuVS requires all data upfront for GPU index building" — true, but the streaming from SQLite is misleading since it all ends up in one allocation. The Vec will reallocate as it grows since the initial capacity is based on `chunk_count` (correct), but a miscount would cause multiple reallocations each copying hundreds of MB.
-- **Suggested fix:** Low priority since `with_capacity` is correctly sized. Document that streaming here only avoids double-buffering (SQLite rows + flat_data), not total memory. The real fix would require cuVS streaming API support.
-
-#### 5. `count_vectors` deserializes entire JSON id_map file just to count entries
+#### 3. `needs_reindex` called per-chunk instead of per-file during incremental indexing
 - **Difficulty:** easy
-- **Location:** `src/hnsw.rs:731-762`
-- **Description:** `count_vectors()` reads the HNSW id map file into a `String`, then parses the entire JSON array into `Vec<String>`, just to return `.len()`. For a 50k-entry index, the id_map JSON file is ~2.5MB; the parsed Vec allocates ~50k Strings. This is used for `cqs stats` display and on every `cqs watch` cycle. The `MAX_ID_MAP_SIZE` guard (100MB) prevents extreme cases, but the normal case still allocates unnecessarily.
-- **Suggested fix:** Count the number of commas in the JSON string (entries = commas + 1 for non-empty), or store the count as a separate metadata field in the checksum file.
+- **Location:** `src/cli/pipeline.rs:284-297`
+- **Description:** The non-force indexing path calls `store.needs_reindex(&abs_path)` for every chunk emitted by the parser. When a file produces N chunks (e.g., a file with 15 functions produces 15 chunks), `needs_reindex` is called 15 times for the same file. Each call does both `path.metadata()` (filesystem syscall) and a SQL query (`SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1`). The force path correctly deduplicates with `file_mtimes.contains_key()` (line 269), but the non-force path does not check this cache before calling `needs_reindex`.
+- **Impact:** For a project with 3000 chunks across 300 files, ~2700 redundant `needs_reindex` calls (each involving a stat syscall + SQL query). On a full re-scan (no changes), this is the dominant indexing cost.
+- **Suggested fix:** Add `if file_mtimes.contains_key(&c.file) { return file_mtimes[&c.file].is_some(); }` before calling `needs_reindex`, or restructure to group chunks by file before the filter step. The `file_mtimes` HashMap already exists but only gets populated when `needs_reindex` returns `Some`.
 
-#### 6. `extract_body_keywords` creates unbounded HashMap from entire function body
-- **Difficulty:** easy
-- **Location:** `src/nl.rs:606-745`
-- **Description:** `extract_body_keywords` calls `tokenize_identifier(content)` on the full chunk content, then builds a `HashMap<String, usize>` of word frequencies. For a large function body (up to the parser's 100-line/100KB limit), this creates thousands of token strings and HashMap entries. The function is called per-chunk during NL description generation (pipeline.rs prepare_for_embedding), so for 10k chunks it runs 10k times. Only used when template is `BodyKeywords` or `Compact`, which are currently only test templates — so no production impact currently. But if the template is ever made default, this becomes a hot-path allocation.
-- **Suggested fix:** Since only test templates use this, no immediate fix needed. If enabling in production, add a content length cap (e.g., first 2KB only) and use a pre-allocated HashMap with bounded capacity.
-
-#### 7. `normalize_for_fts` builds intermediate strings per-token with no pre-allocation
-- **Difficulty:** easy
-- **Location:** `src/nl.rs:148-198`
-- **Description:** `normalize_for_fts` builds the result string by repeatedly pushing tokens separated by spaces. The inner `tokenize_identifier_iter` creates a new `String` per token (via `std::mem::take`). For a 10KB function body, this might create 500+ small String allocations. The function is called 4 times per chunk upsert (name, signature, content, doc — see `chunks.rs:69-72`), so for an index of 10k chunks: ~40k calls, potentially millions of small String allocations. The `MAX_FTS_OUTPUT_LEN` cap (16KB) bounds output size but not allocation count.
-- **Suggested fix:** Pre-allocate `result` with `String::with_capacity(text.len())` (output is roughly same size as input). The tokenize iterator could reuse a buffer instead of allocating per token.
-
-#### 8. `id_map: Vec<String>` in HNSW duplicates chunk IDs already stored in SQLite
-- **Difficulty:** medium
-- **Location:** `src/hnsw.rs:200-201`
-- **Description:** `HnswIndex` stores a `Vec<String>` mapping internal indices to chunk IDs. For 50k chunks with average 40-char IDs: ~2MB on the heap, plus the JSON serialization on disk (~2.5MB). This is an in-memory copy of data that already exists in the chunks table. The id_map exists because hnsw_rs uses integer indices internally and the mapping must be fast (O(1) by index). But the strings are allocated on every load and live for the process lifetime (the HNSW index is held in an Arc).
-- **Suggested fix:** Consider using interned strings or a string arena to reduce per-string allocation overhead. Or store a hash-based compact representation and look up full IDs from SQLite on result retrieval (trading memory for a DB query per search result).
-
-#### 9. Pipeline `file_mtimes` HashMap grows unbounded within file_batch
-- **Difficulty:** easy
-- **Location:** `src/cli/pipeline.rs:260-261`
-- **Description:** `file_mtimes: HashMap<PathBuf, i64>` is created per `file_batch` (currently 100,000 files per batch). For 100k files with average 50-char paths: ~5MB in HashMap entries. The HashMap is used to avoid double stat() calls, which is correct. However, `file_batch_size = 100_000` means ALL files are processed in a single batch (the comment says "all at once"), so the HashMap holds mtimes for every file. This HashMap is then dropped at the end of the batch loop iteration, creating a large single allocation that's held for the duration of parsing.
-- **Suggested fix:** Low priority — 5MB for 100k files is modest. If memory-constrained, reduce `file_batch_size` or defer mtime lookup to the embedding stage.
-
-#### 10. Search result cloning in `search_by_candidate_ids` allocates full content for scoring
-- **Difficulty:** medium
-- **Location:** `src/search.rs:434-474` and `src/store/chunks.rs:445-479`
-- **Description:** `fetch_chunks_with_embeddings_by_ids_async` fetches full chunk rows (including `content`, `signature`, `doc`) for ALL candidate IDs, even though only the embedding is needed for scoring. With HNSW returning up to `(limit * 5).max(100)` candidates (search.rs:379), that's typically 25-100 full chunk rows loaded into memory for scoring. Each chunk's `content` field can be up to 100KB. The `ChunkRow` is then collected into a Vec for scoring, and after scoring only the top `limit` results are kept. For limit=5 with 100 candidates, 95 chunks' content strings are allocated and immediately discarded.
-- **Suggested fix:** Split into two queries: (1) fetch only id + embedding for candidate scoring, (2) fetch full chunk rows only for the top-N results that pass scoring. This matches how `search_filtered` does it (phase 1: score with embeddings, phase 2: fetch content for top-N).
-
-## Batch 3: Data Integrity
-
-#### 1. `metadata.updated_at` is never written — stats show stale `created_at` value
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:204-228`, `src/store/chunks.rs:354-380`
-- **Description:** The `init()` method writes `created_at` but never writes `updated_at` to the metadata table. The `stats()` method (chunks.rs:364-367) reads `updated_at` from metadata and falls back to `created_at` if missing. Since no code path ever writes an `updated_at` key to metadata, the stats always show the original creation time. Users querying `cqs stats` or the MCP `cqs_stats` tool see `last_indexed` as the index creation time, not the last update time. Incremental re-indexes (via `cqs index` or `cqs watch`) never update this timestamp.
-- **Suggested fix:** Add `UPDATE metadata SET value = ?1 WHERE key = 'updated_at'` (or `INSERT OR REPLACE`) at the end of `upsert_chunks_batch` or in the pipeline completion path. Also insert `updated_at` in `init()`.
-
-#### 2. Schema `init()` is not wrapped in a transaction — crash mid-init leaves partial schema
-- **Difficulty:** medium
-- **Location:** `src/store/mod.rs:182-237`
-- **Description:** `init()` executes each SQL statement from `schema.sql` individually in a loop, followed by 5 separate metadata INSERT statements. None of this is wrapped in a transaction. If the process crashes mid-way (e.g., after creating `chunks` table but before `notes` table), the database has a partial schema with no `schema_version` metadata. On next open, `check_schema_version` reads `schema_version` as 0 (missing) and may attempt migrations from v0 which also don't exist. The partially-created tables would then conflict with `CREATE TABLE IF NOT EXISTS` on retry (safe) but orphaned indexes from the first attempt may cause confusing errors.
-- **Suggested fix:** Wrap the entire `init()` body in a single transaction: `let mut tx = self.pool.begin().await?;` ... `tx.commit().await?;`.
-
-#### 3. Migration steps are not individually wrapped in transactions
-- **Difficulty:** medium
-- **Location:** `src/store/migrations.rs:29-54`
-- **Description:** The `migrate()` function runs each step via `run_migration(pool, version, version+1)` then updates `schema_version` in metadata. But neither `run_migration` nor the individual steps use transactions. If a multi-step migration (e.g., v10->v12 via v10->v11 then v11->v12) crashes after completing step 1 but before updating the metadata version, the database has v11 schema but metadata still says v10. On next open, step v10->v11 runs again on an already-migrated schema. The `IF NOT EXISTS` guideline in the doc comment partially mitigates this, but not all migrations can be made idempotent (e.g., data transformations).
-- **Suggested fix:** Wrap each `run_migration` call + its `schema_version` update in a transaction, so the schema version always matches the actual schema state.
-
-#### 4. HNSW index can be stale after `cqs watch` incremental updates (existing #236)
-- **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:256-272`, `src/cli/commands/index.rs:143-154`
-- **Description:** `cqs index` rebuilds the HNSW index after all database writes. But `cqs watch` only updates SQLite (delete old chunks, insert new chunks) without rebuilding HNSW. The HNSW index on disk still contains the old chunk IDs and embeddings. Search via `search_filtered_with_index` uses the stale HNSW to get candidate IDs, then hydrates from SQLite. If a chunk ID from HNSW no longer exists in SQLite (deleted file), it silently gets no results for that candidate. If a chunk was re-embedded with different content, HNSW returns the old similarity score but SQLite returns the new content — the displayed score doesn't match the actual similarity. Overlap with existing #236 but with specific stale-score detail.
-- **Suggested fix:** Either rebuild HNSW in watch mode after batched updates (expensive but correct), or add staleness detection (compare HNSW vector count vs SQLite chunk count on search, warn if diverged).
-
-#### 5. `ref update` does not prune deleted files from reference index
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/reference.rs:219-275`
-- **Description:** `cmd_ref_update` runs the indexing pipeline and rebuilds HNSW, but never calls `store.prune_missing()`. Compare with `cmd_index` (index.rs:86-87) which explicitly collects `existing_files` and calls `store.prune_missing(&existing_files)`. If files are deleted from the reference source directory, their chunks persist in the reference index database. These stale chunks appear in search results, pointing to files that no longer exist in the source.
-- **Suggested fix:** Add `store.prune_missing(&existing_files)` to `cmd_ref_update` after the pipeline runs, matching the pattern in `cmd_index`.
-
-#### 6. Config `add_reference_to_config` does not check for duplicate names
-- **Difficulty:** easy
-- **Location:** `src/config.rs:180-207`
-- **Description:** `add_reference_to_config` appends a new `[[reference]]` entry to the config file unconditionally. While `cmd_ref_add` (reference.rs:68) checks for duplicates before calling this function, the library function itself has no guard. If called directly (e.g., from a future API or test), it can create multiple `[[reference]]` entries with the same name. On load, `Config::load` gets both entries in the `references` vec. The `override_with` merge (config.rs:127) replaces by name, so the second entry wins in a user+project merge, but within a single file both entries survive. `load_references` (reference.rs:36) then opens the same Store twice, wasting resources and returning duplicate results.
-- **Suggested fix:** Check for existing reference with the same name in `add_reference_to_config` and return an error or update in place.
-
-#### 7. Note ID collision risk when text is modified via `tool_update_note`
-- **Difficulty:** easy
-- **Location:** `src/note.rs:162-163`, `src/mcp/tools/notes.rs:215-237`
-- **Description:** Note IDs are generated by hashing the note text: `blake3::hash(entry.text.as_bytes())`. When `tool_update_note` changes the text via `rewrite_notes_file`, the note gets a NEW ID (because text changed, so hash changed). The old note ID in the database is then orphaned — `replace_notes_for_file` deletes by source_file and re-inserts, so the old ID is cleaned up. But the HNSW index (if notes were included) would still reference the old ID. More importantly, any external system caching note IDs (e.g., an LLM conversation referencing `note:abc123`) will find the ID no longer exists after an update.
-- **Suggested fix:** Document this behavior: note IDs are content-addressed and change when text changes. If stable IDs are needed, consider using a UUID or sequence-based ID instead of content hash.
-
-#### 8. `rewrite_notes_file` atomic rename can fail cross-device on some filesystems
-- **Difficulty:** easy
-- **Location:** `src/note.rs:141`
-- **Description:** `rewrite_notes_file` writes to `notes.toml.tmp` then does `std::fs::rename(&tmp_path, notes_path)`. The rename is atomic only on the same filesystem/mount. Since `tmp_path` uses `with_extension("toml.tmp")` on the same directory, this is normally fine. However, if `notes_path` is on a networked filesystem (NFS, SMB), the rename may not be atomic or may fail. On Windows WSL, cross-mount renames between the WSL filesystem and Windows filesystem fail.
-- **Suggested fix:** Low risk in practice since temp file is in the same directory. Add a fallback: if rename fails, try copy+delete. Or document that notes.toml must be on a local filesystem.
-
-#### 9. `watch` mode delete-then-insert is not atomic — crash between them loses chunks
-- **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:256-272`
-- **Description:** In `reindex_files`, the code first deletes old chunks for each file (`store.delete_by_origin(rel_path)?`) in a loop, then inserts new chunks one at a time (`store.upsert_chunk`). The deletes and inserts are separate operations, not wrapped in a single transaction. If the process crashes after deleting chunks for file A but before inserting new chunks, file A's data is lost from the index. The next `cqs watch` cycle would re-index file A (since its chunks are missing), so this is self-healing but temporarily loses search results. Compare with `replace_notes_for_file` (notes.rs:169) which correctly wraps delete+insert in a single transaction.
-- **Suggested fix:** Wrap the delete+insert for each file in a transaction, or use `delete_by_origin` + `upsert_chunks_batch` within a single transaction scope.
-
-#### 10. `prune_missing` uses per-batch transactions — cross-batch crash leaves partial prune
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:151-212`
-- **Description:** `prune_missing` batches deletions in groups of 100, each in its own transaction. If the process crashes after committing batch 1 but before batch 2, some stale chunks are deleted and some remain. On next run, `prune_missing` re-checks all origins, so the remaining stale chunks are deleted. This is self-healing, but between the crash and next full index, search results include a mix of pruned and un-pruned stale files. The per-batch approach is necessary to stay within SQLite's parameter limit, but the inconsistency window exists.
-- **Suggested fix:** Acceptable — the self-healing behavior makes this a minor concern. Could add a single outer transaction wrapping all batches if atomicity matters, but this risks longer lock hold times on large prunes.
-
-## Batch 3: Concurrency Safety
-
-#### 1. Notes file I/O has no locking — concurrent MCP requests can corrupt notes.toml (existing #231)
-- **Difficulty:** medium
-- **Location:** `src/mcp/tools/notes.rs:119-129` (add_note append), `src/note.rs:125-143` (rewrite_notes_file)
-- **Description:** `tool_add_note` opens notes.toml in append mode and writes, then calls `reindex_notes` which re-parses the whole file. `tool_update_note` and `tool_remove_note` call `rewrite_notes_file` which reads the file, mutates in memory, and writes back (via temp file + rename). The MCP HTTP server handles requests concurrently (axum async handlers), so two simultaneous `cqs_add_note` calls can interleave appends, and a concurrent `cqs_add_note` + `cqs_update_note` can cause the update to overwrite the append (read-modify-write race). The atomic temp+rename in `rewrite_notes_file` prevents partial writes but not lost updates. Note: existing #231 tracks this.
-- **Suggested fix:** Add a Mutex on the McpServer for notes file operations, or use file-level advisory locking (fs4) around all notes.toml I/O.
-
-#### 2. MCP HTTP handler calls blocking `handle_request` on tokio async thread
-- **Difficulty:** medium
-- **Location:** `src/mcp/transports/http.rs:287`
-- **Description:** `handle_mcp_post` is an axum async handler that calls `state.server.handle_request(request)` synchronously. `handle_request` can trigger `ensure_embedder()` which loads a 500MB ONNX model (blocking I/O + GPU init), and `embed_query` which does ONNX inference (CPU/GPU-bound, ~100ms). Store methods call `self.rt.block_on(async { ... })` which blocks the current thread waiting on a *different* tokio runtime. All of this happens on the axum tokio runtime's worker threads. Under concurrent load, blocking worker threads can starve the async executor — other HTTP connections stop progressing. With 4 concurrent search requests each embedding for ~100ms, all worker threads are blocked.
-- **Suggested fix:** Wrap the `handle_request` call in `tokio::task::spawn_blocking(move || { ... })` so blocking work moves to the blocking thread pool. Alternatively, since the HTTP transport creates its own runtime (line 118), ensure it has enough threads.
-
-#### 3. Store's internal tokio runtime called from HTTP handler's tokio runtime — nested runtime risk
-- **Difficulty:** medium
-- **Location:** `src/store/mod.rs:97-99` (Store owns Runtime), `src/mcp/transports/http.rs:118` (serve_http creates Runtime)
-- **Description:** Store has its own `tokio::runtime::Runtime` (used for sqlx async ops via `self.rt.block_on()`). The HTTP transport creates a second `tokio::runtime::Runtime`. When an HTTP request calls store methods, it calls `self.rt.block_on()` from within an axum handler running on the HTTP runtime. Calling `block_on` from within an async context panics on multi-threaded tokio runtimes if the current thread is a tokio worker. Currently this works because axum runs the handler function to completion on one thread and the store's runtime is separate, but this is fragile — if axum changes its execution model or if the handler is wrapped in `spawn_blocking`, the nested runtime call would panic.
-- **Suggested fix:** Document the two-runtime design explicitly. Consider sharing a single runtime (pass the runtime handle to Store instead of creating a new one), or make Store methods truly async.
-
-#### 4. `Embedder` session Mutex held during GPU/CPU inference — serializes all embedding requests
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:284-289`
-- **Description:** `Embedder::session()` returns a `MutexGuard<Session>`, held for the entire `embed_batch` call (line 485-491: tokenize, prepare tensors, run inference, extract output). ONNX inference takes 10-100ms+ depending on batch size. All concurrent embedding requests are serialized through this single Mutex, meaning the MCP server can only embed one query at a time. For the HTTP transport with concurrent search requests, this becomes a bottleneck.
-- **Suggested fix:** This is intentional — ONNX Runtime's `Session::run()` requires `&mut Session`. The serialization is correct for safety. To improve throughput, could create a pool of Sessions (one per CPU core), or document that concurrent search throughput is limited by single-threaded embedding.
-
-#### 5. CAGRA search holds two Mutex locks simultaneously — potential deadlock risk
-- **Difficulty:** medium
-- **Location:** `src/cagra.rs:169-181`
-- **Description:** `CagraIndex::search()` first locks `self.resources` (line 169), then locks `self.index` (line 176) while still holding the resources lock. If any other code path locked these in reverse order (index first, then resources), this would deadlock. Currently no code takes them in reverse — `rebuild_index_with_resources` requires `resources` but is called after `index.take()` releases the index lock, and `build` constructs both locks fresh. However, the dual-lock pattern is fragile and undocumented.
-- **Suggested fix:** Document the lock ordering invariant: "Always acquire `resources` before `index`." Consider restructuring to use a single Mutex protecting both state, since they're always used together during search.
-
-#### 6. Pipeline shares Store across 3 threads via Arc — concurrent `block_on` calls on same Runtime
-- **Difficulty:** medium
-- **Location:** `src/cli/pipeline.rs:211-215`
-- **Description:** Three threads (parser, GPU embedder, CPU embedder) share the Store via `Arc<Store>`. Each calls Store methods like `get_embeddings_by_hashes` and `needs_reindex`, which internally call `self.rt.block_on()`. The Store owns a single `tokio::runtime::Runtime`. Multiple threads calling `block_on` on the same runtime is safe (the runtime is multi-threaded by default), but all three threads plus the main writer thread are competing for the runtime's thread pool and the SQLite connection pool (4 connections). Under heavy load with all threads hitting the DB simultaneously, they can exhaust the pool and wait on `busy_timeout` (5 seconds).
-- **Suggested fix:** The current design works correctly — SQLite WAL mode handles concurrent reads and the pool busy_timeout prevents deadlocks. Consider increasing pool size from 4 to 8 to match the pipeline's parallelism, or document the 4-connection limit as intentional.
-
-#### 7. `HnswIndex` marked Send+Sync via unsafe impl — thread safety depends on undocumented `hnsw_rs` internals
-- **Difficulty:** medium
-- **Location:** `src/hnsw.rs:186-187`
-- **Description:** `LoadedHnsw` has `unsafe impl Send` and `unsafe impl Sync` with a safety comment referencing "external synchronization (RwLock in HnswIndex)." However, `HnswIndex` itself has no RwLock — it's the `Arc<RwLock<Option<Box<dyn VectorIndex>>>>` in `McpServer` that provides synchronization. The HnswIndex could be used without a RwLock (e.g., in tests, in CLI code via `Arc::new(index)` in `hnsw.rs:1088`). The `hnsw_rs` library's `search_neighbours` takes `&self` and appears to be read-only, so concurrent reads are likely safe, but the safety proof references a lock that isn't part of the type. The `Hnsw` struct's thread safety depends on `hnsw_rs` internals that aren't documented.
-- **Suggested fix:** Either add an internal RwLock to HnswIndex (making the unsafe impls provably sound), or update the safety comment to accurately describe the contract: "`Hnsw::search_neighbours` is read-only and safe for concurrent access. All mutation (build, insert) happens before sharing."
-
-#### 8. `check_interrupted` flag is never reset — cannot reuse pipeline after interruption in same process
-- **Difficulty:** easy
-- **Location:** `src/cli/signal.rs:19` (static AtomicBool), `src/cli/pipeline.rs:228,337,470,546`
-- **Description:** `INTERRUPTED` is a process-global `AtomicBool` that is set to `true` on Ctrl+C and never reset. If the pipeline is interrupted, any subsequent pipeline invocation in the same process would see `check_interrupted() == true` and immediately skip all work. Currently the CLI exits after pipeline completes, so this doesn't matter. But if the pipeline were reused (e.g., in a library context, in watch mode triggering reindex after interrupt), the stuck flag would silently prevent all future indexing.
-- **Suggested fix:** Reset `INTERRUPTED` to `false` at the start of `run_index_pipeline`, or before each command execution in the CLI.
-
-#### 9. `OnceLock<Embedder>` race in `ensure_embedder` — two threads may both create expensive Embedder
-- **Difficulty:** easy
-- **Location:** `src/mcp/server.rs:130-150`
-- **Description:** `ensure_embedder` uses `OnceLock` for thread-safe lazy init. Two concurrent requests hitting `ensure_embedder` simultaneously will both miss the `get()` check (line 132), both create an Embedder (~500ms model load, ~500MB memory), and one's Embedder gets discarded by `set()`. This is documented as intentional (line 143: "another thread might have raced us, that's OK") and is correct — no data corruption. But creating two 500MB ONNX sessions simultaneously doubles peak memory and initialization time.
-- **Suggested fix:** Acceptable as-is — the race is rare (only on first search requests arriving simultaneously) and self-healing. Could use `get_or_init` with a blocking initializer to serialize, but `OnceLock::get_or_try_init` is not stabilized.
-
-#### 10. `acquire_index_lock` stale lock detection has TOCTOU race and unbounded recursion
-- **Difficulty:** easy
-- **Location:** `src/cli/files.rs:158-178`
-- **Description:** When the file lock is held, the code reads the PID from the lock file (line 160), checks if the process exists (line 162), and if not, removes the lock file and retries (lines 165-168). Between reading the PID and removing the file, another process could have acquired the lock legitimately. The remove+retry would then interfere with the new lock holder. Additionally, the recursive retry (line 168: `return acquire_index_lock(cq_dir)`) has no depth guard — if two processes race on stale lock cleanup, both could call `acquire_index_lock` recursively without bound (in theory, though in practice the race window is tiny).
-- **Suggested fix:** Low practical risk since this only triggers on stale locks from crashed processes. Add a retry counter to prevent infinite recursion. Could also re-read the PID after re-acquiring the file handle to confirm it's still stale before removing.
-
-## Batch 3: Platform Behavior
-
-#### 1. Watch mode uses `==` on paths without canonicalization — case sensitivity mismatch on /mnt/c
-- **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:97`
-- **Description:** The notes_path comparison `if path == notes_path` compares raw `PathBuf` values. On WSL's `/mnt/c/` filesystem (case-insensitive NTFS), the `notify` watcher may report paths with different casing than what was constructed (e.g., `docs/Notes.toml` vs `docs/notes.toml`). The raw `==` comparison is case-sensitive on Linux, so note changes could be silently missed on case-insensitive filesystems accessed via WSL. The same issue applies to the `path.starts_with(&cq_dir)` check at line 92, though this is less likely to trigger since `.cq` is always lowercase.
-- **Suggested fix:** Canonicalize both paths before comparing, or compare via `to_string_lossy().to_lowercase()` on platforms where the FS is case-insensitive.
-
-#### 2. SQLite `mmap_size` 256MB PRAGMA may not work on WSL /mnt/c/ paths
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:142`
-- **Description:** The `PRAGMA mmap_size = 268435456` (256MB) requests memory-mapped I/O. On WSL2 accessing Windows filesystems via the 9P protocol (`/mnt/c/`), mmap behavior may be degraded or silently fall back to traditional I/O. This is not a correctness bug, but the performance benefit documented in the comment ("256MB memory-mapped I/O for faster reads") may not materialize when the database is on a Windows mount. No error will be returned — SQLite silently degrades. The `.cargo/config.toml` already routes build artifacts to Linux-native paths for performance, but the runtime database stays on /mnt/c/.
-- **Suggested fix:** Document the limitation. Optionally detect /mnt/ paths and skip mmap_size, or recommend placing the `.cq/` directory on a native Linux path for best performance.
-
-#### 3. `delete_by_origin` and watch mode path separator inconsistency
-- **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:39,121`, `src/cli/watch.rs:231,258`
-- **Description:** When storing `origin` paths, `upsert_chunks_batch` uses `chunk.file.to_string_lossy().into_owned()` which preserves platform path separators. Meanwhile, `filesystem.rs:132` explicitly normalizes to forward slashes: `rel_path.to_string_lossy().replace('\\', "/")`. Watch mode (`watch.rs:231`) sets `chunk.file = rel_path.clone()` without normalizing separators before passing to `upsert_chunk`. On a cross-platform scenario, `delete_by_origin` (chunks.rs:121) converts `origin.to_string_lossy()` and does exact string match in SQL. If the stored origin uses `/` (from initial index) but watch passes `\` (from a Windows path event), the DELETE misses and stale+new chunks coexist. In practice on WSL the path separator is always `/`, but the inconsistency between the two code paths is fragile.
-- **Suggested fix:** Normalize path separators to `/` in `delete_by_origin` and `upsert_chunk`/`upsert_chunks_batch`, or ensure all callers normalize before storing.
-
-#### 4. `find_project_root()` does not canonicalize — may return inconsistent paths
-- **Difficulty:** easy
-- **Location:** `src/cli/config.rs:10-42`
-- **Description:** `find_project_root()` returns `current.to_path_buf()` without canonicalization. On WSL, `current_dir()` can return paths with or without symlink resolution depending on how the directory was reached. Other code paths like `enumerate_files` (files.rs:27) canonicalize the root. This means `strip_prefix(&root)` in different code paths may see inconsistent root paths. If the CWD is reached via a symlink, `find_project_root` returns the symlink path while `enumerate_files` works with the canonical (resolved) path, causing `strip_prefix` to fail and files being stored with absolute paths as origins.
-- **Suggested fix:** Add `canonicalize()` in `find_project_root()` with a fallback to the raw path if canonicalization fails.
-
-#### 5. `display.rs:read_context_lines` may return lines with trailing `\r` on CRLF files
-- **Difficulty:** easy
-- **Location:** `src/cli/display.rs:22-23`
-- **Description:** `read_context_lines` calls `std::fs::read_to_string(file)` then `content.lines().collect()`. While `str::lines()` splits on both LF and CRLF, it does NOT strip trailing `\r` from split output when the file uses CRLF endings. This means context lines returned for display will include trailing `\r` characters. In a terminal, `\r` causes the cursor to return to line start, potentially corrupting the visual output of `cqs search --context`. The parser normalizes CRLF to LF for indexing, but the display path re-reads the raw file without normalization.
-- **Suggested fix:** Add `.replace("\r\n", "\n")` before splitting, or `.trim_end_matches('\r')` on each output line.
-
-#### 6. HNSW `save()` multi-file rename is not atomic as a group
-- **Difficulty:** medium
-- **Location:** `src/hnsw.rs:596-614`
-- **Description:** The save function renames four files (graph, data, ids, checksum) individually from temp to final. Each individual rename is atomic, but the group is not. A crash after renaming `hnsw.graph` but before `hnsw.checksum` leaves new graph data with old or missing checksums. The checksum verification on load catches this (load will fail with `ChecksumMismatch`), so the user is never served corrupted results — but they must re-index. On WSL/NTFS specifically, `rename()` across mount points would fail with `EXDEV`, though this doesn't occur here because temp and final are in the same directory.
-- **Suggested fix:** The current design is crash-safe via detection (checksum mismatch). Document: "On crash during save, re-run `cqs index --force`." No code change needed.
-
-#### 7. `notify::RecommendedWatcher` uses inotify which doesn't work on /mnt/c/ in WSL2
-- **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:69`
-- **Description:** `RecommendedWatcher` on Linux uses inotify. inotify does NOT reliably detect changes on WSL2's `/mnt/c/` (9P filesystem) — file modifications made by Windows-side editors do not generate inotify events. Users editing files in VS Code or other Windows editors while running `cqs watch` in WSL will see no reindexing. The `with_poll_interval` config at line 67 only affects poll-based watchers; `RecommendedWatcher` ignores it when inotify is available. Watch mode works correctly for edits made from within WSL or on native Linux filesystems. The gap is specifically: Windows-side edits to files on Windows mounts.
-- **Suggested fix:** Detect `/mnt/` paths and warn users that watch mode may not detect changes from Windows editors. Offer a `--poll` flag that forces `PollWatcher` instead of `RecommendedWatcher`, which works on any filesystem at the cost of CPU usage.
-
-#### 8. Reference paths in config use platform-dependent `PathBuf` serialization
-- **Difficulty:** easy
-- **Location:** `src/config.rs:17-18`
-- **Description:** `ReferenceConfig.path` and `.source` are `PathBuf` with serde `Serialize`/`Deserialize`. TOML serialization of `PathBuf` uses the platform's native representation. A config file written by a Windows-native tool or process (backslash paths like `C:\Users\...`) would not load correctly on Linux, and vice versa. Since the project runs on WSL and config files may be edited by Windows tools or shared across environments (e.g., checked into git), users may encounter "reference not found" errors when the path separator doesn't match.
-- **Suggested fix:** Normalize to forward slashes on deserialization, or document that reference paths must use forward slashes. Alternatively, normalize in `load_references` before calling `Store::open`.
-
-#### 9. `strip_unc_prefix` is a no-op on WSL builds — UNC paths from Windows tools could leak through
-- **Difficulty:** easy
-- **Location:** `src/lib.rs:96-110`
-- **Description:** `strip_unc_prefix` is gated by `#[cfg(windows)]` and `#[cfg(not(windows))]`. On WSL (Linux binary), the `not(windows)` no-op path is compiled. If a path from a Windows tool arrives via stdin, config file, or MCP argument with a `\\?\` prefix, it passes through unstripped. For example, the MCP `cqs_read` tool receives a path argument — if an MCP client on Windows sends a UNC-prefixed path, `server.project_root.join(path)` produces an invalid Linux path. The `file_path.canonicalize()` in `tool_read` would then fail with "No such file," which is handled gracefully, but the error message shows a confusing UNC path.
-- **Suggested fix:** Make `strip_unc_prefix` unconditional (always strip `\\?\` prefix regardless of build target), since the function may receive Windows-origin paths on any platform via MCP.
-
-#### 10. `ensure_ort_provider_libs` silently returns on unrecognized platform with no diagnostic
-- **Difficulty:** easy
-- **Location:** `src/embedder.rs:589-595`
-- **Description:** The function matches `(ARCH, OS)` tuples for 4 platforms (x86_64/aarch64 x linux/macos) and returns early with no log for unrecognized combinations. On architectures like `riscv64` or `s390x`, or on FreeBSD, the function silently skips GPU provider setup. The user sees "CPU" as the provider with no hint that GPU detection was skipped because their platform wasn't handled. With WSL2, `std::env::consts::OS` reports `"linux"` so the x86_64 Linux path works correctly — this finding is about other platforms.
-- **Suggested fix:** Add a debug-level log message on the early return: `tracing::debug!("GPU provider libs not supported for {}/{}", ARCH, OS)`. Helps users troubleshoot GPU setup without adding noise.
-
-### Category: Edge Cases
-
-#### 1. `BoundedScoreHeap::new(0)` silently drops all items — callers get empty results with no error
-- **Difficulty:** easy
-- **Location:** `src/search.rs:148-169`
-- **Description:** `BoundedScoreHeap` with capacity 0 makes `push()` a no-op — the `self.0.len() >= capacity` check is immediately true, and since there's no existing minimum to compare against, every item is silently dropped. No caller currently passes 0 (MCP clamps to 1, CLI defaults to 5), but the library function `search_filtered` accepts `limit: usize` with no lower-bound check. A library consumer calling `store.search_filtered(..., 0, ...)` gets `Ok(vec![])` with no indication that the limit was invalid.
-- **Suggested fix:** Either assert/error on capacity 0 in `BoundedScoreHeap::new`, or clamp limit to `max(1, limit)` at the `search_filtered` entry point.
-
-#### 2. `add_reference_to_config` allows duplicate reference names when called from library code
-- **Difficulty:** easy
-- **Location:** `src/config.rs:180-207`
-- **Description:** The CLI command `cmd_ref_add` checks for duplicates (line 68 of `cli/commands/reference.rs`), but the library function `add_reference_to_config` does not. It reads the TOML, appends the new `[[reference]]` entry, and writes back — no duplicate name check. If a library consumer (or a future CLI path) calls `add_reference_to_config` directly, the config file will have two references with the same name. `load_references` would load both, and search results would contain duplicated hits from the same index with the same source tag.
-- **Suggested fix:** Move the duplicate check into `add_reference_to_config` itself, or document that callers must check first.
-
-#### 3. `ref_path` allows path traversal via reference name — `../../etc/passwd` joins to escape refs directory
-- **Difficulty:** medium
-- **Location:** `src/reference.rs:174-176`
-- **Description:** `ref_path(name)` does `refs_dir().map(|d| d.join(name))`. If `name` is `"../../etc/passwd"`, the result is `~/.local/share/cqs/refs/../../etc/passwd` which resolves to `/etc/passwd`. The CLI `cmd_ref_add` does not sanitize the name argument. While `Store::open` would fail on `/etc/passwd` (not a valid SQLite DB), `cmd_ref_remove` calls `std::fs::remove_dir_all(&cfg.path)` on the stored path — if a malicious config entry stored a traversal path, remove would delete arbitrary directories.
-- **Suggested fix:** Validate reference names: reject any name containing `/`, `\`, `..`, or non-alphanumeric characters beyond `-` and `_`.
-
-#### 4. Config silently accepts invalid values — `limit: 0`, `threshold: -5.0`, `batch_size: 0` all load without error
-- **Difficulty:** easy
-- **Location:** `src/config.rs:50-53`
-- **Description:** `Config` deserializes `limit: Option<usize>`, `threshold: Option<f32>`, and `batch_size: Option<usize>` directly from TOML with no validation. A `.cqs.toml` with `limit = 0` would pass through to `search_filtered` hitting the `BoundedScoreHeap(0)` issue. `threshold = -5.0` would return all results regardless of quality. `batch_size = 0` would cause division-by-zero or infinite loops in the embedding pipeline. The MCP layer clamps its own values, but CLI and library callers trust config values directly.
-- **Suggested fix:** Add a `Config::validate()` method called after `Config::load()`, or validate at deserialization time with serde attributes.
-
-#### 5. `search_unified_with_index` with limit=1 gives 0 code slots — returns only notes
-- **Difficulty:** easy
-- **Location:** `src/search.rs:552-556`
-- **Description:** The slot allocation formula `min_code_slots = (limit * 3) / 5` uses integer division. When `limit = 1`: `(1 * 3) / 5 = 0`. Zero code slots means the unified search returns only notes, never code — the opposite of what a "search for 1 result" caller expects. The MCP layer clamps limit to [1, 20], so limit=1 is a valid input that silently produces note-only results.
-- **Suggested fix:** Use `max(1, (limit * 3) / 5)` to ensure at least one code slot, or switch to ceiling division: `(limit * 3 + 4) / 5`.
-
-#### 6. `rewrite_notes_file` gives opaque IO error when notes.toml doesn't exist
-- **Difficulty:** easy
-- **Location:** `src/note.rs:125-144`
-- **Description:** `rewrite_notes_file` calls `std::fs::read_to_string(path)` as its first operation. If the notes file doesn't exist (fresh project, deleted file), the user gets a raw IO error like "No such file or directory" with no context about which file or what to do about it. The `add_note` path handles missing files correctly (creates the file), but `remove_note` and `update_note` both call `rewrite_notes_file` which assumes the file exists.
-- **Suggested fix:** Either create an empty notes file if missing, or return a descriptive error: "Notes file not found at {path}. Run `cqs add_note` first."
-
-#### 7. `prune_missing` compares PathBuf by byte equality — fails on symlinks and non-canonical paths
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:151-162`
-- **Description:** `prune_missing` builds a `HashSet<PathBuf>` of existing files and removes chunks whose file path isn't in the set. `HashSet::contains` uses `PathBuf`'s `PartialEq`, which compares bytes — no canonicalization. If a file was indexed via a symlink or relative path that differs from the enumerated absolute path, prune would delete the chunk even though the file still exists. On WSL, paths through `/mnt/c/` vs Windows native paths would also mismatch.
-- **Suggested fix:** Canonicalize paths before comparison, or at minimum document that the enumeration and stored paths must use the same normalization.
-
-#### 8. Empty query string bypasses semantic search short-circuit — embeds empty string and returns meaningless scores
-- **Difficulty:** easy
-- **Location:** `src/mcp/tools/search.rs:34-36`
-- **Description:** The `name_only` path checks for empty query (line 141: `args.query.trim().is_empty()`) and returns early. But the semantic search path (line 34) calls `embedder.embed_query(&args.query)` without any empty-query check. An empty string is a valid embedding input (the model produces a vector), but the resulting similarity scores are meaningless — they measure distance from a zero-content query. `validate_query_length` only checks max length (8192), not min length.
-- **Suggested fix:** Add `if args.query.trim().is_empty()` check before the semantic path, returning empty results.
-
-#### 9. NaN score rejection in BoundedScoreHeap relies on undocumented IEEE 754 comparison behavior
-- **Difficulty:** easy
-- **Location:** `src/search.rs:158-162`
-- **Description:** `BoundedScoreHeap::push` uses `if score >= self.0.peek().unwrap().score` to decide whether to replace the minimum. If `score` is NaN, IEEE 754 guarantees this comparison returns false, so NaN scores are silently dropped — which is the correct behavior. However, this relies on an implicit property of floating-point comparison that isn't documented. If someone "optimizes" the comparison to use `!(score < min)` (which is true for NaN), NaN scores would be inserted, potentially corrupting the heap's ordering invariant.
-- **Suggested fix:** Add a comment documenting the NaN-rejection property, or add an explicit `if score.is_nan() { return; }` guard for clarity.
-
-#### 10. `embedding_batches` iterator uses recursive `self.next()` — stack depth proportional to filtered-out rows
-- **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:539-613`
-- **Description:** `EmbeddingBatchIterator::next()` calls itself recursively when the current batch is exhausted and there are more rows to fetch (line ~590: `return self.next()`). Each recursive call processes one batch. If the database has many rows that are all filtered out (e.g., all cached), each `next()` fetches a batch, finds nothing to return, and recurses. With 100K cached rows and batch_size=100, that's 1000 levels of recursion. Rust's default stack is 8MB, and each frame here is relatively small, so ~1000 levels is likely safe — but it's unbounded and could overflow with larger datasets.
-- **Suggested fix:** Convert the recursive call to a loop: `loop { ... }` with `continue` instead of `return self.next()`.
-
-## Batch 4: Algorithmic Complexity
-
-#### 1. Brute-force search loads ALL chunk embeddings from SQLite when no HNSW index
+#### 4. `search_filtered` transfers all embeddings from SQLite even when most are filtered out
 - **Difficulty:** hard
-- **Location:** `src/search.rs:237-303`
-- **Description:** `search_filtered` fetches all rows from chunks (`SELECT id, embedding FROM chunks`) and iterates over every one, computing cosine similarity per row. Without an HNSW index, this is O(n) in the number of chunks, loading every embedding into memory. For a 50K chunk index, that's ~150MB of embedding data loaded and scored per query. The `BoundedScoreHeap` limits memory for the results, but the full table scan still happens. This is the expected fallback when no HNSW exists, but there's no warning at the search entry point when falling back, so users may not realize they're on the slow path.
-- **Suggested fix:** Already mitigated by HNSW. Consider logging a one-time warning when brute-force is used beyond a threshold (e.g., >5K chunks without HNSW). No algorithm change needed — HNSW is the fix.
+- **Location:** `src/search.rs:254-266`
+- **Description:** The brute-force search path builds a SQL query that selects embeddings (`SELECT id, embedding FROM chunks`) with optional WHERE clauses for language/chunk_type, then `fetch_all` loads every matching row into memory before iterating. For unfiltered searches on a 10,000-chunk index, this transfers ~30MB of embedding data (10K x 3KB per 769-dim f32 vector) from SQLite into Rust memory in one shot. The `BoundedScoreHeap` (line 284) bounds result memory to O(limit), but the input side is still O(n). This is the expected behavior for brute-force — the issue is that when HNSW is unavailable (e.g., fresh index, corrupted HNSW), every search pays this cost.
+- **Impact:** ~30MB memory spike per search on a 10K-chunk index. On large projects (50K+ chunks), this could be 150MB+ per query. This is the fallback path, so HNSW availability is the real mitigation.
+- **Suggested fix:** Use streaming iteration instead of `fetch_all` — SQLite supports row-by-row fetching via `fetch(&self.pool)` which returns a `Stream`. Process each row through the scoring pipeline and feed into `BoundedScoreHeap` without materializing all rows. This bounds memory to O(limit) on both input and output sides.
 
-#### 2. `extract_body_keywords` tokenizes entire function content for keyword extraction
+#### 5. `get_call_graph` clones caller/callee strings for both forward and reverse maps
+- **Difficulty:** easy
+- **Location:** `src/store/calls.rs:281-287`
+- **Description:** The loop at line 281 destructures `(caller, callee)` from SQL rows, then clones `caller` to insert into the forward map (line 283) and clones `callee` to insert into the reverse map (line 285). For a project with 2000 call edges, this produces 4000 string clones (caller cloned for forward key + callee cloned for forward value + callee used as reverse key + caller used as reverse value — actually 2 clones per edge). The strings are typically short function names (~30 bytes), so total extra allocation is ~120KB. Low absolute impact but avoidable.
+- **Impact:** ~120KB extra allocation for a 2000-edge graph. Marginal — this is a micro-optimization. Only worth addressing if call graph loading shows up in profiling.
+- **Suggested fix:** Use `Rc<String>` or process rows in two passes (first build forward, then iterate forward to build reverse without extra clones). Alternatively, accept the cost — it's small and the code is readable.
+
+#### 6. `search_by_candidate_ids` parses Language and ChunkType from strings per candidate row
+- **Difficulty:** easy
+- **Location:** `src/search.rs:448-470`
+- **Description:** When the HNSW-guided search path fetches candidate chunks, each row's `language` and `chunk_type` string fields are parsed via `.parse()` (which calls `FromStr` and does string matching) to check against filter criteria. For 200 candidate rows with language+type filters, that's 400 string parse operations. The `Language` and `ChunkType` enums have ~7 and ~8 variants respectively, so each `.parse()` does linear string comparisons. The parsing itself is fast, but it's unnecessary — the SQL WHERE clause could filter these columns before fetching.
+- **Impact:** ~400 string comparisons for a typical filtered search. Microseconds of CPU time — negligible in isolation. The real cost is transferring embedding bytes for rows that will be filtered out.
+- **Suggested fix:** Push language/chunk_type filters into the SQL query (add to WHERE clause) rather than filtering post-fetch. This would also reduce data transfer by excluding non-matching embeddings. The `search_filtered` path already builds dynamic WHERE clauses for these filters (line 214-235).
+
+#### 7. `normalize_for_fts` called 4 times per chunk during upsert with no caching
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:70-73`
+- **Description:** During `upsert_chunks_batch`, each chunk calls `normalize_for_fts` separately on `name`, `signature`, `content`, and `doc`. The function does per-character processing with regex-based camelCase splitting. For a chunk with a 2KB content field, this involves character-by-character iteration plus regex matching. The `name` and `signature` fields are typically short (<100 bytes), but `content` can be significant. There's no caching or memoization of the normalization.
+- **Impact:** For a batch of 32 chunks averaging 1KB content each, ~128KB of text goes through character-by-character processing + regex splitting. Total CPU: ~1-5ms per batch. Modest but multiplied across thousands of chunks during full indexing.
+- **Suggested fix:** Low priority. The normalization is inherently per-field work. Could pre-compute during chunk construction in the parser stage rather than at insert time, moving the work out of the SQLite transaction. This would reduce transaction hold time.
+
+## Batch 3: Security
+
+#### 1. `parse_duration` integer overflow bypasses 24-hour cap via wrapping multiplication
+- **Difficulty:** easy
+- **Location:** `src/mcp/validation.rs:46`
+- **Description:** `parse_duration("153722867280912931h")` parses the hours to `i64`, then computes `hours * 60` at line 46 before the 24-hour cap check at line 90. For values near `i64::MAX / 60`, the multiplication overflows silently in release mode (Rust wraps i64 in release). The wrapped result can be a small positive number that passes the `> MAX_MINUTES` check, producing a bogus `chrono::Duration`. Example: `i64::MAX / 60 + 1 = 153722867280912931`, `153722867280912931 * 60` wraps to a small value. The attacker can set arbitrary audit mode durations, although impact is limited to audit mode expiry timing.
+- **Attack vector:** MCP client sends `cqs_audit_mode` with `expires_in: "153722867280912931h"`. Audit mode silently gets a wrong duration.
+- **Suggested fix:** Use `checked_mul`: `let minutes = hours.checked_mul(60).ok_or_else(|| anyhow::anyhow!("Duration overflow"))?;` Or check `hours > 24` before multiplication.
+
+#### 2. `tool_read_focused` bypasses path traversal protection — reads file content from database
 - **Difficulty:** medium
-- **Location:** `src/nl.rs:606-745`
-- **Description:** `extract_body_keywords` calls `tokenize_identifier(content)` on the full content of every chunk during NL description generation. For a 100-line function (~3KB), this tokenizes every character, builds a HashMap of word frequencies, sorts by frequency, and takes top 10. This runs during indexing for every chunk when `BodyKeywords` or `Compact` templates are active. The `tokenize_identifier` function allocates a new `String` per token and a `Vec<String>` for the result. For large function bodies, this produces hundreds of small string allocations. The sorting step (line 743) is O(m log m) where m is unique tokens — potentially hundreds per function.
-- **Suggested fix:** Cap the input to `extract_body_keywords` at the first ~2KB of content (function bodies beyond that add noise, not signal). Alternatively, use a fixed-size array for the top-10 tracking instead of sorting the entire HashMap.
+- **Location:** `src/mcp/tools/read.rs:207-310`
+- **Description:** `tool_read` (regular read) canonicalizes the path and validates it's within `project_root` (lines 32-45). But `tool_read_focused` takes a `focus` parameter, calls `resolve_target()` which searches the database by name, and returns `chunk.content` — the stored file content from the database. No path validation occurs because no disk read happens. This is NOT a path traversal vulnerability per se (the database only contains chunks from files that were indexed, which are already within the project). However, it means: (1) If files are removed from the project but not re-indexed, `tool_read_focused` still returns their content from the stale database. (2) The focused read path returns raw code content without the file-size check (10MB limit at line 48-56) since chunks are smaller by nature. The actual security risk is minimal — an LLM client already has access to the project root — but the asymmetric protection (regular read validates, focused read doesn't) could surprise security reviewers.
+- **Suggested fix:** Add a comment documenting that focused reads return indexed content, not live disk content, and that path validation is not needed because the index only contains project files.
 
-#### 3. `prune_missing` creates PathBuf from every distinct origin for HashSet lookup
+#### 3. `add_reference_to_config` uses `unwrap_or_default()` masking permission/corruption errors
 - **Difficulty:** easy
-- **Location:** `src/store/chunks.rs:160-163`
-- **Description:** The filter on line 162 creates a `PathBuf::from(origin)` for every distinct origin in the database to check membership in `existing_files`. PathBuf allocation is cheap individually, but with 10K+ files this creates 10K+ allocations that are immediately discarded. The `existing_files` HashSet contains `PathBuf` values, so each comparison requires constructing a PathBuf from the string origin.
-- **Suggested fix:** Convert `existing_files` to `HashSet<String>` (or `HashSet<&str>`) at the call site, or use `.to_string_lossy()` on the PathBuf set entries for comparison. Minor optimization — allocation cost is small relative to the SQL query.
+- **Location:** `src/config.rs:184`
+- **Description:** `std::fs::read_to_string(config_path).unwrap_or_default()` treats ALL read errors (permissions denied, I/O error, encoding error) identically to "file doesn't exist" (empty string). If a config file exists but is unreadable due to wrong permissions or disk corruption, this silently creates an empty config table. The subsequent `std::fs::write` at line 222 then overwrites the existing config file, destroying all references. Contrast with `remove_reference_from_config` at line 236 which properly matches on error kind. Previously noted in Error Handling batch #7 but the security angle is new: reference configs containing `path` and `source` fields pointing to external directories would be silently destroyed.
+- **Attack vector:** If another process temporarily changes config file permissions (e.g., backup software, security scanner), the next `ref add` silently destroys the config.
+- **Suggested fix:** Match on error kind: `match std::fs::read_to_string(config_path) { Ok(s) => s, Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(), Err(e) => return Err(e.into()) }`
 
-#### 4. `merge_results` in reference.rs clones source name per result
+#### 4. `process_exists` PID u32-to-i32 cast can send signal to wrong process group
 - **Difficulty:** easy
-- **Location:** `src/reference.rs:138-145`
-- **Description:** In the inner loop at line 142, `name.clone()` is called for every search result from each reference. If a reference returns 50 results, that's 50 string clones of the same reference name. With multiple references, this multiplies.
-- **Suggested fix:** Use `Arc<String>` or `Rc<String>` for the source name, or change `source: Option<String>` to `source: Option<&str>` with appropriate lifetimes. Minor — the clones are small strings.
+- **Location:** `src/cli/files.rs:23`
+- **Description:** `libc::kill(pid as i32, 0)` casts u32 to i32. PIDs > `i32::MAX` (2,147,483,647) wrap to negative values. `kill(-N, 0)` checks process GROUP `N`, not process `N`. The lock file (`cq_dir/index.lock`) is user-writable plaintext — it contains just a PID number. If a user (or malicious process with write access to `.cq/`) writes a PID value > `i32::MAX` into the lock file, `process_exists` would call `kill` with a negative PID, checking a process group instead. If that process group exists, the stale lock recovery path thinks the process is alive and refuses to acquire the lock, causing a denial-of-service (indexing permanently blocked). Linux `pid_max` is capped at 4,194,304 on 64-bit, so legitimate PIDs never reach `i32::MAX`.
+- **Attack vector:** Write `2147483648` to `.cq/index.lock`. Indexing becomes permanently blocked until manual lock file deletion.
+- **Suggested fix:** Add bounds check: `if pid > i32::MAX as u32 { return false; }` before the `kill` call.
 
-#### 5. `search_by_name` in store/mod.rs re-scores every FTS result with string operations
+#### 5. `serve_http` network bind check is warning-only — CLI enforces but library doesn't
 - **Difficulty:** easy
-- **Location:** `src/store/mod.rs:461-471`
-- **Description:** After FTS returns results (already ranked by BM25), the code re-scores each result with `to_lowercase()` + `starts_with()` + `contains()` string comparisons. This duplicates work that BM25 already accounts for (term proximity and exact match boosting). The `to_lowercase()` call allocates a new string per result. With large result sets (limit=100+), this adds unnecessary allocation overhead.
-- **Suggested fix:** Trust BM25 scoring and use it directly, or at minimum cache the `query_lower` computation outside the closure. The re-scoring provides slightly different semantics (exact > prefix > contains > other) which may be intentional — if so, document why BM25 alone isn't sufficient.
+- **Location:** `src/mcp/transports/http.rs:99-107`, `src/cli/commands/serve.rs:28`
+- **Description:** `serve_http` (the library function) only warns when binding to non-localhost addresses — it does not enforce `--dangerously-allow-network-bind`. The enforcement happens at the CLI layer (`serve.rs:28`) which bails before calling `serve_http`. This is a defense-in-depth gap: any code that calls `serve_http` directly (integration tests, programmatic use, future transports) bypasses the network bind protection. The library function accepts any bind address silently. Additionally, `serve_http` also requires API key for non-localhost binds at the CLI layer (`serve.rs:51`) but has no such check itself — only a cosmetic warning.
+- **Attack vector:** A programmatic caller using `cqs::serve_http(".", "0.0.0.0", 3000, None, false)` would expose the server to the network without authentication and no error.
+- **Suggested fix:** Add the same checks from `serve.rs` into `serve_http` as defense-in-depth: bail if binding to non-localhost without an explicit `allow_network: bool` parameter.
 
-#### 6. `normalize_for_fts` re-tokenizes every word boundary — quadratic on deeply nested identifiers
+#### 6. `sanitize_error_message` regex misses common path prefixes
 - **Difficulty:** easy
-- **Location:** `src/nl.rs:148-198`
-- **Description:** `normalize_for_fts` iterates character by character and calls `tokenize_identifier_iter` on each accumulated word. For typical code this is fine, but the function processes entire chunk content (up to 100KB before the MAX_FTS_OUTPUT_LEN cap). Each identifier goes through the iterator-based tokenizer which checks for CJK, uppercase boundaries, etc. The overall complexity is O(n) in content length which is acceptable, but the constant factor is high due to per-character branching and String allocation per token. The `MAX_FTS_OUTPUT_LEN` cap at 16KB prevents worst-case blowup.
-- **Suggested fix:** This is adequately bounded by MAX_FTS_OUTPUT_LEN. No change needed unless profiling shows this as a bottleneck during indexing.
+- **Location:** `src/mcp/server.rs:196-211`
+- **Description:** The Unix path regex only matches paths starting with `/home/`, `/Users/`, `/tmp/`, `/var/`, `/usr/`, `/opt/`, `/etc/`, `/mnt/`, `/root/`. Paths starting with `/run/`, `/srv/`, `/snap/`, `/proc/`, `/dev/`, `/sys/`, or custom mount points (e.g., `/data/`, `/nfs/`, `/media/`) pass through unsanitized. The Windows regex only matches `Users`, `Windows`, `Program Files` — missing `AppData`, `ProgramData`, `Temp`, and custom drives. The project root itself is stripped first (line 207), which covers the primary case. Remaining paths in error messages could leak system layout info to MCP clients.
+- **Attack vector:** A carefully crafted MCP request that triggers an error involving `/run/`, `/srv/`, or other unmatch paths leaks the path to the client. Low impact for localhost-only service.
+- **Suggested fix:** Use a broader pattern: `/[a-zA-Z0-9_./-]+` for Unix (any absolute path) and `[A-Za-z]:\\[^\s:]+` for Windows (any drive path). Or strip all absolute paths regardless of prefix.
 
-#### 7. `upsert_calls_batch` issues N individual DELETE queries for N unique chunk IDs
+#### 7. No rate limiting on MCP tool calls — resource exhaustion via rapid requests
 - **Difficulty:** medium
-- **Location:** `src/store/calls.rs:60-71`
-- **Description:** Before batch-inserting calls, the code loops over unique chunk IDs and issues a separate `DELETE FROM calls WHERE caller_id = ?1` for each one. With 32 chunks per embedding batch (the default batch_size in pipeline.rs), that's up to 32 individual DELETE statements per batch, each requiring a SQLite round-trip within the transaction. The INSERT is properly batched via `QueryBuilder::push_values`, but the DELETE is not.
-- **Suggested fix:** Batch the DELETE using `WHERE caller_id IN (?, ?, ...)` similar to how `prune_missing` batches its deletes. Collect unique IDs into a Vec, build a single DELETE with placeholders.
+- **Location:** `src/mcp/transports/http.rs:87-89`, `src/mcp/transports/stdio.rs:28`
+- **Description:** The HTTP transport has a 1MB body limit but no rate limiting. The stdio transport processes requests as fast as they arrive. A malicious or misbehaving MCP client can flood the server with `cqs_search` requests that each trigger embedding computation (~50ms+ per query) and database queries. With the HTTP transport, concurrent POST requests all get processed. The embedding model holds GPU memory. Rapid concurrent embedding requests could exhaust GPU/CPU resources and make the system unresponsive. For the intended threat model (trusted local tool), this is low severity, but documented for completeness.
+- **Attack vector:** Localhost HTTP client sends 100 concurrent `cqs_search` requests. Each triggers embedding + HNSW search. CPU/memory spikes.
+- **Suggested fix:** Low priority. Consider adding a semaphore or request queue for embedding operations: `Arc<Semaphore>` with max 4 concurrent embeddings. Or add Tower rate limiting middleware for the HTTP transport.
 
-#### 8. `search_filtered` re-fetches full content for top-N results after scoring
-- **Difficulty:** medium
-- **Location:** `src/search.rs:341-363`
-- **Description:** The two-phase search first scores all embeddings (phase 1), then fetches full chunk content for the top-N IDs (phase 2 at line 343: `fetch_chunks_by_ids_async`). This second query builds a dynamic `WHERE id IN (...)` clause and fetches from SQLite. While this is the right design (avoiding loading full content during scoring), the `fetch_chunks_by_ids_async` function doesn't batch its IDs — if `limit * 3` is large (e.g., 15 for RRF mode), SQLite handles it fine, but the function creates unbatched placeholder strings. For typical limits (5-20), this is fine. The real cost is the two round-trips to SQLite per search.
-- **Suggested fix:** No change needed for current usage. If limit ever grows large, add batching similar to `get_embeddings_by_hashes` (batch size 500).
-
-#### 9. `reference.rs::merge_results` sorts all results even when most will be truncated
+#### 8. `tool_add_note` writes to `docs/notes.toml` without verifying path is within project
 - **Difficulty:** easy
-- **Location:** `src/reference.rs:148-157`
-- **Description:** `merge_results` collects all primary + all reference results into a single Vec, sorts the entire Vec by score, then truncates to `limit`. If there are 5 references each returning 20 results plus 20 primary results, that's 120 items being fully sorted when only the top 5-20 are needed. A partial sort (select top-k) would be O(n) instead of O(n log n).
-- **Suggested fix:** Use `select_nth_unstable_by` to partition around the limit-th element, then sort only the top partition. Or use a `BinaryHeap` bounded to `limit` (similar to `BoundedScoreHeap` in search.rs). Minor — n is typically <200.
+- **Location:** `src/mcp/tools/notes.rs:93`
+- **Description:** `tool_add_note` constructs `notes_path = server.project_root.join("docs/notes.toml")` and writes directly to it. The path is hardcoded relative to project root, so traversal isn't possible through the note content. However, `server.project_root` is set from the MCP initialization and is not re-validated. If `project_root` itself is manipulated (e.g., symlinked), notes could be written outside the intended project. The risk is theoretical — `project_root` is set at server startup from the CLI argument, not from MCP client input. This is consistent with the threat model (trusted user sets project root).
+- **Suggested fix:** No code change needed. Document that `project_root` is trusted and set at server startup, not by the MCP client.
 
-#### 10. `needs_reindex` per-file during indexing — N queries for N files
-- **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:97-117` called from `src/cli/pipeline.rs:282-294`
-- **Description:** In the parser thread (pipeline.rs:282), `store.needs_reindex(&abs_path)` is called for every chunk's file. This issues a separate `SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1` query per file. With 10K files, that's 10K individual SQLite queries during the mtime check phase. The queries are fast (indexed by origin), but the overhead of 10K round-trips adds up.
-- **Suggested fix:** Batch the mtime check: `SELECT origin, source_mtime FROM chunks WHERE origin IN (...)` for each file batch, then check in-memory. This would reduce 10K queries to ~10 batched queries (at batch_size=1000).
-
-## Batch 4: Data Security
-
-#### 1. SSE endpoint missing origin validation
+#### 9. `config.rs:load_file` returns `None` for parse errors, masking TOML injection
 - **Difficulty:** easy
-- **Location:** `src/mcp/transports/http.rs:326-353`
-- **Description:** The `handle_mcp_sse` (GET /mcp) handler validates the API key and `Accept` header, but does NOT call `validate_origin_header()`. The POST handler at line 263 does call it. This means a DNS rebinding attack could establish an SSE connection from a non-localhost origin. While the current SSE endpoint only sends a priming event and keep-alives (no sensitive data yet), this is inconsistent with the POST endpoint's security posture and will become a real vulnerability if server-initiated messages carrying search results are added later.
-- **Suggested fix:** Add `validate_origin_header(&headers)?;` to `handle_mcp_sse` after the API key check, matching the POST handler's pattern.
+- **Location:** `src/config.rs:115-118`
+- **Description:** When `toml::from_str` fails, `load_file` logs a warning and returns `None`, causing the caller to use `Default::default()`. A malformed config file (e.g., a file with a TOML injection that breaks parsing) silently disables all config-based settings including reference weights and search thresholds. The user gets default behavior with no clear indication that their config was ignored. While this doesn't enable direct exploitation, it means a config file modified by a malicious actor to include parsing-breaking content effectively resets all security-relevant settings (reference weights, thresholds) to defaults. Already noted as P3 #1 in v0.5.3 triage (issue #264).
+- **Suggested fix:** Already tracked in issue #264. Consider promoting priority since it affects config integrity.
 
-#### 2. Reference name allows path traversal in storage directory
-- **Difficulty:** medium
-- **Location:** `src/reference.rs:174-175`, `src/cli/commands/reference.rs:82-84`
-- **Description:** `ref_path(name)` joins the user-supplied reference name directly into the storage path: `refs_dir().map(|d| d.join(name))`. A name like `../../etc/evil` would create directories outside the intended `~/.local/share/cqs/refs/` tree. The `create_dir_all` at reference.rs:84 then creates whatever directory structure the attacker specified. While this is a CLI command (requires local access), it violates the principle of validating user input at system boundaries.
-- **Suggested fix:** Validate the reference name contains only alphanumeric characters, hyphens, and underscores. Reject names containing `/`, `\`, or `..`.
-
-#### 3. Reference directory created without restrictive permissions
+#### 10. `is_localhost_origin` doesn't handle uppercase or mixed-case origins
 - **Difficulty:** easy
-- **Location:** `src/cli/commands/reference.rs:84`
-- **Description:** When creating reference index directories via `std::fs::create_dir_all(&ref_dir)`, no Unix permissions are set. Compare with `init.rs:28-29` which sets 0o700 on `.cq/`, `store/mod.rs:159` which sets 0o600 on database files, and `hnsw.rs:587` which sets 0o600 on HNSW files. The reference directory and its database get default umask permissions (typically 0o755 for dirs, 0o644 for files), making the indexed code embeddings world-readable.
-- **Suggested fix:** After `create_dir_all`, set permissions to 0o700 for the directory. The Store::open and HnswIndex::save already handle file-level permissions for their files within the directory.
+- **Location:** `src/mcp/transports/http.rs:199-219`
+- **Description:** `is_localhost_origin` performs case-sensitive prefix matching against lowercase strings like `"http://localhost"`. Per RFC 6454, the scheme and host components of an origin are case-insensitive. A browser sending `Origin: HTTP://LOCALHOST:3000` or `Origin: http://Localhost` would be rejected by the origin validation, even though it's a legitimate localhost request. In practice, browsers normalize origins to lowercase, so this is unlikely to cause real issues. But non-browser MCP clients (curl, custom HTTP clients) might send non-normalized origins and get 403 errors.
+- **Suggested fix:** Lowercase the origin before matching: `let origin_str = origin.to_str().unwrap_or("").to_lowercase();`
 
-#### 4. Config file written without restrictive permissions
-- **Difficulty:** easy
-- **Location:** `src/config.rs:205`, `src/config.rs:240`
-- **Description:** `add_reference_to_config` and `remove_reference_from_config` write to `.cqs.toml` using `std::fs::write()` without setting file permissions. The config file contains filesystem paths (reference source directories, storage paths) that reveal the user's directory structure. While not directly secrets, this is information leakage and inconsistent with the permission hardening applied to other cqs-managed files (database, HNSW, notes, lock file).
-- **Suggested fix:** After writing the config file, set permissions to 0o600 on Unix, matching the pattern used in `notes.rs:112-114`.
-
-#### 5. API key visible in process listing via `--api-key` CLI flag
-- **Difficulty:** medium
-- **Location:** `src/cli/mod.rs:131`, `SECURITY.md:59-61`
-- **Description:** The `--api-key SECRET` CLI flag is documented as "visible in process list" in SECURITY.md. While `--api-key-file` and `CQS_API_KEY` env var alternatives exist, there is no runtime warning when using `--api-key` directly. The `CQS_API_KEY` env var (line 131: `env = "CQS_API_KEY"`) is also visible in `/proc/*/environ` on Linux. SECURITY.md documents this but users may not read it. The recommended `--api-key-file` approach is properly implemented with `zeroize`.
-- **Suggested fix:** Emit a tracing::warn when `--api-key` is used directly (not via file), advising to use `--api-key-file` instead. This is a UX improvement rather than a code fix.
-
-#### 6. Health endpoint exposes version without authentication
-- **Difficulty:** easy
-- **Location:** `src/mcp/transports/http.rs:317-323`
-- **Description:** The `/health` endpoint returns the exact cqs version (`env!("CARGO_PKG_VERSION")`) without requiring any authentication. While the code has a security note acknowledging this is intentional for localhost, when bound to a network address (with `--dangerously-allow-network-bind`), this allows unauthenticated version fingerprinting. An attacker can determine the exact version to check for known vulnerabilities.
-- **Suggested fix:** Either require API key auth on `/health` when bound to non-localhost, or remove the version field from the response when not on localhost.
-
-#### 7. Error sanitization regex misses some path patterns
-- **Difficulty:** easy
-- **Location:** `src/mcp/server.rs:195-211`
-- **Description:** The `sanitize_error_message` regex for Unix paths only matches paths starting with specific prefixes: `/home`, `/Users`, `/tmp`, `/var`, `/usr`, `/opt`, `/etc`, `/mnt`, `/root`. Paths starting with other directories (e.g., `/data/`, `/srv/`, `/media/`, `/run/`) will leak through. The Windows regex similarly only catches `Users`, `Windows`, `Program Files`. This means some internal filesystem paths could be exposed to MCP clients in error messages.
-- **Suggested fix:** Use a broader regex like `r"/[a-zA-Z][^\s:]*/"` for Unix or strip all absolute paths. Alternatively, maintain an allowlist approach but add the missing common prefixes (`/srv`, `/data`, `/media`, `/run`, `/snap`, `/nix`).
-
-#### 8. Database file not encrypted - code embeddings persist in plaintext
+#### 11. HNSW checksum file could be used for limited path information leak
 - **Difficulty:** hard
-- **Location:** `src/store/mod.rs:108`, `SECURITY.md:141-142`
-- **Description:** SECURITY.md explicitly documents "Database is not encrypted - it contains your code." The SQLite database stores code chunks, embeddings, and full function/class content in plaintext. File permissions (0o600) provide OS-level access control, but if the disk is accessed directly (stolen laptop, backup system, shared filesystem), the code is exposed. This is documented and accepted as a design decision for a local tool, but worth noting for environments with compliance requirements.
-- **Suggested fix:** Consider SQLCipher or similar for at-rest encryption as an opt-in feature for sensitive codebases. Low priority for current use case.
+- **Location:** `src/hnsw/persist.rs:42-77`
+- **Description:** `verify_hnsw_checksums` reads a `.hnsw.checksum` file and processes `ext:hash` lines. The `HNSW_EXTENSIONS` whitelist prevents path traversal (only `hnsw.graph`, `hnsw.data`, `hnsw.ids` extensions are accepted). However, the error message for a checksum mismatch includes `path.display()` (line 70-73) which reveals the full filesystem path to the HNSW files. This path is returned in `HnswError::ChecksumMismatch` and could propagate to MCP clients. The `sanitize_error_message` function in server.rs would catch paths starting with common prefixes, but not all paths (see finding #6). Low impact — HNSW files are always in `.cq/` within the project root, which is already stripped by sanitization.
+- **Suggested fix:** No action needed — the project root is stripped by `sanitize_error_message`, and `.cq/` relative paths don't leak sensitive information.
 
-#### 9. Model download over HTTPS but no certificate pinning
+#### 12. `cqs_read` note matching uses substring containment — broad match risk
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/read.rs:86-91`
+- **Description:** Note matching for file context injection uses `path.contains(m)` where `m` is a note's mention string. A note mentioning `"mod"` would match ANY file path containing "mod" — `src/module/foo.rs`, `src/model.rs`, `src/mod.rs`, etc. The matching also checks `m == file_name` and `m == path`, but the `path.contains(m)` fallback is overly broad. This isn't a security vulnerability per se, but it means notes intended for one file can "leak" into the context of unrelated files, potentially causing LLM tools to act on irrelevant warnings or patterns. With audit mode, this is irrelevant (notes suppressed). Without it, a note warning about `"auth"` would appear on every file with "auth" in the path.
+- **Suggested fix:** Tighten matching: require the mention to match a path segment boundary. For example, use `path.contains(&format!("/{}", m))` or `path.split('/').any(|seg| seg == m || seg.starts_with(m))` instead of bare `contains`.
+
+## Batch 3: Resource Management
+
+#### 1. MCP server holds HNSW + CAGRA in memory simultaneously during GPU upgrade
+- **Difficulty:** medium
+- **Location:** `src/mcp/server.rs:73-90`
+- **Description:** When GPU is available, `McpServer::new` loads the HNSW index immediately, then spawns a background thread that opens a separate `Store` and streams all embeddings to build CAGRA. At peak: HNSW graph (~50-100MB for 50k chunks) + CAGRA's flat data copy (50k * 769 * 4 = ~150MB) + CAGRA index on GPU + background Store's runtime and pool. For 100k chunks, peak memory during CAGRA build is ~500MB above baseline. The old HNSW is dropped after swap but the peak matters for memory-constrained systems.
+- **Suggested fix:** Document the peak memory behavior. Consider dropping HNSW before CAGRA build (accepting brute-force during build), or gate CAGRA build on available system memory via `sysinfo` check.
+
+#### 2. Each `ReferenceIndex` creates its own Tokio runtime + SQLite pool — linear scaling with reference count
+- **Difficulty:** medium
+- **Location:** `src/reference.rs:15-24`, `src/store/mod.rs:55-58`
+- **Description:** Each `ReferenceIndex` contains a full `Store`, which creates its own `tokio::Runtime` (1-4 OS threads) and `SqlitePool` (up to 4 connections per pool). With N references, the MCP server holds N+1 runtimes and N+1 pools. A user with 5 references: 6 runtimes (~24 OS threads), 6 pools (~24 SQLite connections), ~6 * 16MB page cache = ~96MB just in SQLite caches. All references are read-only — they could share a single runtime. This is the same underlying issue as RF1 (issue #204/#257) but the reference dimension makes it worse.
+- **Suggested fix:** Add `Store::open_with_runtime(path, rt: &Runtime)` that accepts an external runtime. `McpServer::new` passes its runtime to reference stores. Reduces N+1 runtimes to 1.
+
+#### 3. Pipeline creates two full `Embedder` instances eagerly — ~1GB combined model memory
+- **Difficulty:** medium
+- **Location:** `src/cli/pipeline.rs:345,489`
+- **Description:** `run_index_pipeline` spawns GPU and CPU embedder threads that each call `Embedder::new()` / `Embedder::new_cpu()`, loading a separate ONNX session (~500MB model memory each). The CPU embedder exists as GPU fallback but on systems where GPU works reliably, the CPU thread sits idle with ~500MB allocated. The CPU thread also races on `parse_rx` via `select!` (line 498), potentially stealing work from the faster GPU even when no failures occur.
+- **Suggested fix:** Make CPU embedder lazy — only call `Embedder::new_cpu()` after the first batch arrives on `fail_rx` or `parse_rx_cpu`. This defers ~500MB allocation until actually needed. On GPU-capable systems that never fail, CPU embedder never initializes.
+
+#### 4. `all_chunk_identities()` loads all chunk metadata into memory — `cqs_diff` calls it twice
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:502-520`, `src/diff.rs:91-92`
+- **Description:** `semantic_diff()` calls `all_chunk_identities()` on both source and target stores. Each call loads all rows (minus content/embeddings) via `fetch_all`. For 100k chunks, each `ChunkIdentity` is ~200 bytes = ~20MB. Then `diff.rs` builds two `HashMap<ChunkKey, &ChunkIdentity>` for lookup. Total for diff of two 100k-chunk stores: ~80MB. Not OOM-dangerous on typical machines but notable for mono-repos.
+- **Suggested fix:** Document the O(n) memory. For very large repos, consider paginated diff processing by file. Low priority — diff is an infrequent manual operation.
+
+#### 5. `count_vectors()` parses entire HNSW ID map JSON just to count entries
+- **Difficulty:** easy
+- **Location:** `src/hnsw/persist.rs:346-377`
+- **Description:** `count_vectors()` reads the entire `.hnsw.ids` JSON file, parses it into `Vec<String>`, returns `.len()`. For 100k chunks, the IDs file is ~5MB JSON. Allocates ~10MB (string + parsed vec) just to return a count. Called by `cqs stats` and `cqs_stats` MCP tool. The SQLite `store.chunk_count()` already provides the same number.
+- **Suggested fix:** Use `store.chunk_count()` instead of parsing the ID map file. Or count `","` occurrences in the raw string. Or store count in SQLite metadata during HNSW save.
+
+#### 6. Watch mode embedder (~500MB) never released once initialized
+- **Difficulty:** easy
+- **Location:** `src/cli/watch.rs:85`
+- **Description:** Watch mode uses `OnceCell<Embedder>` — once a file change triggers embedding, the ~500MB ONNX model stays in memory for the session lifetime. In long-running watch sessions with infrequent edits, this holds significant resources. The module docs (lines 3-17) already document this trade-off as intentional.
+- **Suggested fix:** Already documented. For improvement: replace `OnceCell` with `Option<Embedder>` and drop after an idle timeout (e.g., 10 minutes of no changes). Re-init costs ~500ms on next change. Low priority given documentation.
+
+#### 7. HNSW `remove_dir` cleanup fails silently on non-empty temp directories
+- **Difficulty:** easy
+- **Location:** `src/hnsw/persist.rs:229`
+- **Description:** After atomic rename of HNSW files from temp to final, `let _ = std::fs::remove_dir(&temp_dir)` attempts to remove the temp directory. `remove_dir` only removes empty directories. If the rename loop (lines 213-226) fails partway, some files remain in temp and `remove_dir` silently fails. The pre-cleanup at line 124-132 uses `remove_dir_all` correctly. Between saves, orphaned `.index.tmp/` directories with partial HNSW data accumulate in `.cq/`.
+- **Suggested fix:** Change `remove_dir` to `remove_dir_all` for consistency with the pre-cleanup path. Already flagged in Platform Behavior batch but the resource leak angle is distinct.
+
+#### 8. `Store::Drop` WAL checkpoint blocks process exit — no timeout
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:451-463`
+- **Description:** `Store::Drop` calls `rt.block_on(PRAGMA wal_checkpoint(TRUNCATE))`. For large WALs (after indexing 50k+ chunks), this can take 1-5 seconds. During MCP server shutdown, each `Store` (primary + references) checkpoints sequentially. With 3 references: 4 stores * 1-5s = 4-20 seconds of blocked shutdown. The `catch_unwind` wrapper prevents panics but doesn't add a timeout. Users experience the MCP server "hanging" on exit.
+- **Suggested fix:** Add a timeout: wrap the checkpoint in `tokio::time::timeout(Duration::from_secs(3), ...)`. If it times out, log a warning and skip — SQLite will replay WAL on next open.
+
+#### 9. `FileSystemSource::enumerate()` reads all file contents eagerly into a Vec
+- **Difficulty:** easy
+- **Location:** `src/source/filesystem.rs:66-103`
+- **Description:** `FileSystemSource::enumerate()` collects all file paths, then reads every file's full content via `std::fs::read_to_string()`, storing all `SourceItem` objects (with content) in a Vec. For 70k files averaging 5KB: ~350MB for contents + ~7MB for paths. The `Source` trait returns `Vec<SourceItem>` forcing eager collection.
+- **Suggested fix:** This code path is NOT used by the main CLI pipeline (which uses `enumerate_files` + parser lazily) or by MCP. It's only reachable via the `Source::enumerate()` trait method. Verify no production caller uses it. If it's dead in practice, add a doc warning about O(total_file_size) memory.
+
+#### 10. Pipeline channel buffers can hold ~105MB of parsed/embedded chunks at peak
+- **Difficulty:** easy
+- **Location:** `src/cli/pipeline.rs:235`
+- **Description:** Pipeline uses `bounded(256)` channels. Each `ParsedBatch` has up to 32 chunks of parsed code (~5KB avg = ~160KB per batch, 256 batches = ~40MB). The `EmbeddedBatch` adds embeddings (~3KB each, ~256KB per batch, 256 batches = ~65MB). Combined peak: ~105MB. In practice, the writer drains fast (SQLite batch insert is quick on SSD), so channels rarely fill. Backpressure from slow storage could spike this.
+- **Suggested fix:** Current depth (256) is reasonable for throughput. Consider reducing to 64 if memory matters — profiling shows negligible throughput difference on SSD. Document worst-case memory budget in code comment.
+
+#### 11. No limit on number of references loaded — each adds ~20MB baseline memory
+- **Difficulty:** easy
+- **Location:** `src/reference.rs:36-69`
+- **Description:** `load_references()` loads every reference from config without limit. Each `ReferenceIndex` holds a `Store` (~16MB page cache) + optional HNSW index (varies with reference size). A user with 10 references: ~200MB just in connection pools and page caches before any queries. There's no warning or cap.
+- **Suggested fix:** Log a warning if >5 references: `if refs.len() > 5 { tracing::warn!("Loading {} references — consider reducing for lower memory usage", refs.len()); }`. Optionally add a config-level cap (default 10).
+
+#### 12. No size guard on HNSW graph/data files before loading — hnsw_rs allocates unbounded
+- **Difficulty:** medium
+- **Location:** `src/hnsw/persist.rs:291-301`
+- **Description:** `HnswIo::load_hnsw()` deserializes the HNSW graph using bincode. The ID map has a 500MB file size guard (line 256-272), but `.hnsw.graph` and `.hnsw.data` files have no size guard. A corrupted or crafted graph file could cause unbounded memory allocation during deserialization. The checksum verification (line 253) mitigates accidental corruption but not intentional attacks (attacker can update checksums). For 100k chunks: `.hnsw.data` ~300MB, `.hnsw.graph` ~50-100MB — both reasonable. Without a guard, a 10GB crafted file would be loaded.
+- **Suggested fix:** Add file size guards before `load_hnsw()`: `const MAX_GRAPH_SIZE: u64 = 1_073_741_824; // 1GB` and `const MAX_DATA_SIZE: u64 = 2_147_483_648; // 2GB`. Check `std::fs::metadata(&path)?.len()` before loading. Covers ~350k chunks with headroom.
+
+#### 13. MCP server pool idle timeout (300s) holds ~64MB+ in idle SQLite page caches
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:115`
+- **Description:** SQLite pool has `idle_timeout(300s)`. Between LLM interactions, 4 connections stay open for 5 minutes each. Each holds ~16MB page cache (PRAGMA cache_size). Primary store + N references: (N+1) * 4 * 16MB = 64MB+ idle. The 300s timeout was chosen for CLI where the process exits quickly; for MCP server sessions it's excessive.
+- **Suggested fix:** For MCP server, use shorter idle timeout (60s) since re-acquiring a connection is ~1ms. Or reduce `max_connections` to 2 for reference stores (read-only search queries only).
+
+#### 14. `search_notes` fetches 1000 full embedding blobs (~3MB) even when limit is 2
+- **Difficulty:** easy
+- **Location:** `src/store/notes.rs:141-156`
+- **Description:** `search_notes` loads up to `MAX_NOTES_SCAN` (1000) rows including embedding blobs (~3KB each = ~3MB) via `fetch_all`. After scoring, only `limit` (typically 2-5) results are kept. The intermediate `rows` Vec holds all raw data. For limit=2 with 1000 notes: ~3MB loaded, 998 embeddings immediately discarded.
+- **Suggested fix:** Low priority — the 1000-note cap bounds memory. The true fix requires HNSW-based note search (issue #203). Accept as intentional trade-off.
+
+## Batch 3: Data Safety
+
+#### 1. Notes file has no locking — concurrent MCP mutations can corrupt `notes.toml`
+- **Difficulty:** medium
+- **Location:** `src/mcp/tools/notes.rs:93-95` (add), `src/mcp/tools/notes.rs:176` (update), `src/mcp/tools/notes.rs:250` (remove), `src/note.rs:179-218` (rewrite)
+- **Description:** All three note mutation tools (`tool_add_note`, `tool_update_note`, `tool_remove_note`) operate on `docs/notes.toml` without any file locking. In HTTP transport mode, concurrent requests can execute simultaneously. `tool_add_note` uses `OpenOptions::append()` which is atomic at the OS level for small writes — but `tool_update_note` and `tool_remove_note` both call `rewrite_notes_file`, which does read → parse → mutate → serialize → write-to-temp → rename. Two concurrent rewrite operations: (1) both read the same file, (2) both mutate in memory, (3) one renames its temp file over the original, (4) the other renames its temp file, overwriting the first's changes. The losing mutation is silently dropped. The index is then rebuilt from the file, so the in-memory state stays consistent with the (corrupted) file. Existing issue #231 tracks this.
+- **Suggested fix:** Add file-level advisory locking (`fs4::FileExt::lock_exclusive`) around the read-mutate-write cycle in `rewrite_notes_file`. Or serialize all note mutations through a Mutex in the MCP server.
+
+#### 2. Config `add_reference_to_config` read-modify-write race
+- **Difficulty:** easy
+- **Location:** `src/config.rs:175-222`
+- **Description:** `add_reference_to_config` reads the config file, parses it, modifies the TOML table, and writes back. No locking. If two `cqs ref add` commands run concurrently (or a CLI `ref add` races with an MCP `ref add`), one write overwrites the other. The window is small for CLI usage but real for programmatic callers. `remove_reference_from_config` has the same pattern. Both functions also use non-atomic `std::fs::write` (not temp+rename).
+- **Suggested fix:** Use temp-file + atomic rename (like `rewrite_notes_file` does) and add advisory file locking around the read-modify-write cycle.
+
+#### 3. Pipeline writes chunks and call graph in separate transactions
+- **Difficulty:** medium
+- **Location:** `src/cli/pipeline.rs:148-165` (writer loop)
+- **Description:** The indexing pipeline's writer loop calls `upsert_chunks_batch` (which runs in a single transaction) and then `upsert_calls_batch` (separate transaction) for each batch. If the process crashes or is interrupted between these two calls, the database will have chunks without their corresponding call graph entries. The `calls` table has `FOREIGN KEY (caller_id) REFERENCES chunks(id) ON DELETE CASCADE`, so orphaned calls can't exist — but missing calls for existing chunks means `cqs_callers`, `cqs_callees`, `cqs_trace`, and `cqs_dead` return incomplete results until the next full reindex. The same gap exists for `upsert_function_calls` (the full call graph table).
+- **Suggested fix:** Wrap both `upsert_chunks_batch` and `upsert_calls_batch` (and `upsert_function_calls`) in a single transaction per batch. This requires passing an explicit transaction handle rather than each function creating its own.
+
+#### 4. Watch mode never updates call graph
+- **Difficulty:** medium
+- **Location:** `src/cli/watch.rs:116-170` (`reindex_files` function)
+- **Description:** When watch mode detects a file change, `reindex_files` parses the file, embeds chunks, and calls `store.upsert_chunks_batch()` — but never calls `store.upsert_calls_batch()` or `store.upsert_function_calls()`. The call graph data (`calls` and `function_calls` tables) becomes stale for any file modified through watch mode. Tools that depend on the call graph (`cqs_callers`, `cqs_callees`, `cqs_trace`, `cqs_impact`, `cqs_dead`, `cqs_test_map`) return incorrect results. Users must do a full reindex to fix. The parser already extracts call information — it's available in the `Chunk::calls` field — it's just not persisted in watch mode.
+- **Suggested fix:** After `upsert_chunks_batch`, call `store.upsert_calls_batch()` and `store.upsert_function_calls()` with the parsed chunks/calls data.
+
+#### 5. HNSW index stale after watch mode updates (known issue #236)
 - **Difficulty:** hard
-- **Location:** `src/embedder.rs:532-553`
-- **Description:** The model is downloaded from HuggingFace Hub over HTTPS via the `hf_hub` crate. Post-download blake3 checksums verify integrity. However, there is no certificate pinning, meaning a MITM attack with a compromised CA could serve a malicious model. The blake3 checksums in `MODEL_BLAKE3` and `TOKENIZER_BLAKE3` (lines 19-20) mitigate this since they're compiled into the binary and must match. This is actually well-designed - the hardcoded checksums effectively serve as a pin against supply chain attacks.
-- **Suggested fix:** No fix needed. The hardcoded blake3 checksums provide strong integrity verification. This finding is informational - the current design is sound.
+- **Location:** `src/cli/watch.rs:116-170`, `src/hnsw/mod.rs`
+- **Description:** Watch mode updates chunks in SQLite but never rebuilds the HNSW index. New/modified chunks are in the database but not in the HNSW graph. Semantic search falls back to brute-force SQLite scan for these chunks (since `search_by_candidate_ids` only returns IDs from HNSW). The performance impact depends on how many chunks changed since last full index. Tracked as existing issue #236.
+- **Suggested fix:** Incremental HNSW updates — add new vectors to the existing graph without full rebuild. Or periodically rebuild in the background.
 
-## Batch 4: Resource Footprint
+#### 6. `Store::init` executes DDL without a transaction
+- **Difficulty:** easy
+- **Location:** `src/store/mod.rs:73-93` (`init` method)
+- **Description:** `Store::init` splits `schema.sql` by semicolons and executes each DDL statement individually (`sqlx::query(stmt).execute()`). If the process crashes mid-init (e.g., between creating `chunks` table and `chunks_fts`), the database is left in a partially-created state. The next `Store::open` call would find a schema version mismatch (or no version at all) and attempt migration, which may fail because some tables exist and others don't. SQLite supports transactional DDL, so wrapping all statements in a single transaction is straightforward.
+- **Suggested fix:** Wrap all DDL statements in a single transaction: `BEGIN; ...all CREATE TABLE/INDEX...; INSERT metadata schema_version; COMMIT;`
 
-#### 1. Each Store instance creates its own tokio Runtime — references multiply this
+#### 7. `prune_missing` batched deletes use separate transactions per batch
+- **Difficulty:** easy
+- **Location:** `src/store/chunks.rs:166-210` (`prune_missing` method)
+- **Description:** `prune_missing` identifies stale chunks (files no longer on disk) and deletes them in batches of 100, each batch in its own transaction. If the process is interrupted mid-prune, some stale chunks are deleted and others remain. This is not data corruption — the remaining stale chunks will be caught on the next prune — but it means the database is in an inconsistent state where some files are partially pruned. The FTS shadow table is updated within each batch transaction (via triggers), so FTS stays consistent within each batch.
+- **Suggested fix:** Low priority. The current behavior is safe (eventual consistency). For strict atomicity, wrap all batches in a single transaction, but this may hold a write lock for a long time on large prunes.
+
+#### 8. `tool_add_note` appends raw TOML without verifying file parse integrity
+- **Difficulty:** easy
+- **Location:** `src/mcp/tools/notes.rs:93-122`
+- **Description:** `tool_add_note` uses `OpenOptions::append()` to write a raw TOML snippet (`[[note]]\n...`) to `docs/notes.toml`. It does not read the existing file first, so it cannot verify that the file is valid TOML before appending. If the file is currently malformed (e.g., from a previous interrupted write or manual edit), the append succeeds at the OS level but the resulting file is still unparseable. The subsequent `reindex_notes` call will parse the file, fail, and the note appears to be added (no error returned to the user) but is not actually indexed. The next tool call that reads notes will silently have zero notes.
+- **Suggested fix:** Before appending, parse the existing file to verify it's valid TOML. If not, return an error telling the user to fix the file. Or use the read-mutate-write pattern (like `tool_update_note` does) for all note mutations.
+
+#### 9. HNSW `save()` uses `assert_eq!` — panics instead of returning error
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:104`, `src/reference.rs:41-52`
-- **Description:** Every `Store::open()` creates a new `tokio::runtime::Runtime`. The MCP server opens one Store for the primary project, one per reference index (via `load_references`), and potentially another in the CAGRA background thread (line `src/mcp/server.rs:105`). Each Runtime spawns worker threads (default = CPU cores). With 3 references on an 8-core machine, that's 4 Runtimes × 8 threads = 32 threads, mostly idle. The HTTP transport creates yet another Runtime (`src/mcp/transports/http.rs:118`), bringing it to 5 Runtimes × 8 threads = 40 threads.
-- **Suggested fix:** Share a single Runtime across all Store instances, either by accepting an external `Handle` or by using a global/scoped Runtime. The HTTP transport's Runtime could also be shared.
+- **Location:** `src/hnsw/persist.rs:101-104`
+- **Description:** `HnswIndex::save()` calls `assert_eq!(hnsw_count, id_map.len(), ...)` to verify the HNSW graph and ID map are in sync. If they're not (which would indicate a bug elsewhere), this panics and crashes the process. In MCP server mode, this takes down the entire server. The condition should be an invariant, but defensive coding says return an error rather than crash a long-running server. The `load()` function handles this correctly — it returns `HnswError::CountMismatch` for the same condition.
+- **Suggested fix:** Replace `assert_eq!` with an error return: `if hnsw_count != id_map.len() { return Err(HnswError::CountMismatch { ... }); }`
 
-#### 2. SQLite 256MB mmap_size per connection, 4 connections per Store
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:142-144`
-- **Description:** Each connection sets `PRAGMA mmap_size = 268435456` (256MB). With 4 connections per pool and multiple Store instances (primary + references + CAGRA background), the theoretical mmap reservation is 256MB × 4 × N stores. While mmap is virtual memory (not RSS), on 32-bit systems or memory-constrained environments, this address space reservation can fail. For a typical cqs index (10-50MB), 256MB per connection is massively oversized.
-- **Suggested fix:** Scale mmap_size to actual database file size (e.g., `min(file_size * 2, 256MB)`) or reduce to a more modest default like 64MB.
-
-#### 3. 16MB SQLite page cache per connection, multiplied across pools
-- **Difficulty:** easy
-- **Location:** `src/store/mod.rs:134-136`
-- **Description:** `PRAGMA cache_size = -16384` sets 16MB page cache per connection. With 4 connections × N stores, that's 64MB × N of page cache. For the primary store alone that's 64MB. With 3 references, it's 256MB of SQLite page cache total — for what are typically small databases. The default SQLite cache (2MB) is usually sufficient for cqs workloads.
-- **Suggested fix:** Reduce to 4MB (`-4096`) or make it configurable. For read-heavy search workloads, a smaller cache is adequate since the working set is small.
-
-#### 4. CAGRA duplicates full dataset in memory alongside HNSW
-- **Difficulty:** hard
-- **Location:** `src/cagra.rs:62-63`, `src/mcp/server.rs:64-79`
-- **Description:** When GPU is available, the MCP server loads HNSW into memory (for immediate search), then spawns a background thread that opens a second Store, fetches ALL embeddings, and builds a CAGRA index that holds a full copy of the dataset (`dataset: Array2<f32>`) permanently in memory — because cuVS's `search()` consumes the index and needs to rebuild. For 50K chunks at 769 dims × 4 bytes = ~150MB, plus the HNSW index in parallel, plus the background Store's own Runtime/connections. Total: HNSW (~200MB) + CAGRA dataset (~150MB) + CAGRA index (GPU mem) + extra Store overhead.
-- **Suggested fix:** Drop the HNSW index after CAGRA is ready (the RwLock swap already handles this, but HNSW memory isn't freed — verify it's replaced, not accumulated). Document the ~350MB+ RAM cost of GPU mode.
-
-#### 5. CAGRA background Store is never explicitly closed
-- **Difficulty:** easy
-- **Location:** `src/mcp/server.rs:105-123`
-- **Description:** The background CAGRA build thread opens a Store (`Store::open(index_path)`), uses it to fetch embeddings, then the Store is dropped when `build_cagra_background` returns. The Drop impl attempts a WAL checkpoint via `block_on`, which can panic if called from within a tokio async context (though `catch_unwind` guards this). More importantly, the Store's Runtime and 4 SQLite connections stay alive for the entire build duration (which could be minutes for large indexes), then are all cleaned up at once.
-- **Suggested fix:** Call `store.close()` explicitly after `build_from_store` completes, before the index swap. This checkpoints the WAL and releases resources immediately.
-
-#### 6. `tokenizers` crate `http` feature enables unnecessary networking dependencies
-- **Difficulty:** easy
-- **Location:** `Cargo.toml:42`
-- **Description:** The `tokenizers` crate is configured with `features = ["http"]`, which enables the `hf-hub` dependency within tokenizers for downloading tokenizer files from HuggingFace. However, cqs already has its own `hf-hub` dependency (line 43) that handles model+tokenizer downloads. The `http` feature in tokenizers enables a second download path that's never used (cqs loads tokenizers from local files via `Tokenizer::from_file()`). This adds unnecessary code to the binary.
-- **Suggested fix:** Remove the `http` feature: `tokenizers = { version = "0.22" }`. The default features should suffice since cqs loads tokenizer files from disk.
-
-#### 7. `once_cell` dependency is redundant with Rust 1.88 stdlib
-- **Difficulty:** easy
-- **Location:** `Cargo.toml:97`, `src/embedder.rs:5`, `src/parser.rs:3`
-- **Description:** The project requires `rust-version = "1.88"` (Cargo.toml:5) which ships `std::sync::OnceLock` and `std::sync::LazyLock` as stable. The crate uses `once_cell::sync::OnceCell` in two files (`embedder.rs` and `parser.rs`). Meanwhile, other files already use `std::sync::OnceLock` (e.g., `mcp/server.rs:6`) and `std::sync::LazyLock` (e.g., `mcp/transports/http.rs` via lazy regex). This is a redundant dependency that adds binary bloat.
-- **Suggested fix:** Replace `once_cell::sync::OnceCell` with `std::sync::OnceLock` in `embedder.rs` and `parser.rs`, then remove `once_cell` from `Cargo.toml`.
-
-#### 8. Watch mode holds file watcher on entire project tree recursively
+#### 10. `embedding_batches` uses LIMIT/OFFSET pagination — unstable under concurrent writes
 - **Difficulty:** medium
-- **Location:** `src/cli/watch.rs:70`
-- **Description:** `watcher.watch(&root, RecursiveMode::Recursive)` watches the entire project directory tree. For large repos with `node_modules/`, `target/`, `.git/`, or vendor directories, this can consume significant inotify watches (Linux default limit: 8192). The `ignore` crate is available in dependencies but not used for filtering watch targets — only for filtering events after the fact. Each inotify watch is a kernel resource.
-- **Suggested fix:** Use `ignore::WalkBuilder` to enumerate directories respecting `.gitignore`, then watch only those directories individually. Or at minimum, exclude known heavy directories (`target/`, `node_modules/`, `.git/`).
+- **Location:** `src/store/chunks.rs:130-164` (`embedding_batches` method)
+- **Description:** `embedding_batches` paginates through all chunks using `LIMIT ? OFFSET ?` with incrementing offsets. This is used during HNSW rebuild to load all embeddings. If chunks are inserted or deleted between page fetches (e.g., by a concurrent MCP writer in HTTP mode), rows can be skipped or duplicated. Skipped rows won't be in the HNSW index; duplicated rows waste memory but are caught by the HNSW builder's ID deduplication. The impact is that the rebuilt HNSW index may miss some chunks. In practice, HNSW rebuilds happen during `cqs index` (CLI) while the index lock prevents concurrent CLI writers — but the MCP server can still write concurrently if running in HTTP mode.
+- **Suggested fix:** Use keyset pagination (`WHERE id > ? ORDER BY id LIMIT ?`) instead of OFFSET, which is stable under concurrent modifications. Or acquire a shared read lock during the full rebuild.
 
-#### 9. SSE keep-alive stream stays open indefinitely with no idle timeout
+#### 11. `rewrite_notes_file` temp file not cleaned on rename failure
 - **Difficulty:** easy
-- **Location:** `src/mcp/transports/http.rs:348-353`
-- **Description:** The SSE endpoint (`GET /mcp`) creates a stream with `KeepAlive` that sends pings every 15 seconds forever. There's no idle timeout or connection limit. A client that connects and never sends requests holds a TCP connection, a stream task, and keep-alive timer indefinitely. While the connection itself is lightweight, accumulating stale SSE connections (e.g., from crashed clients that don't send TCP RST) consumes file descriptors and memory.
-- **Suggested fix:** Add an idle timeout (e.g., 30 minutes) using `tokio::time::timeout` wrapping the stream, or limit the maximum number of concurrent SSE connections.
+- **Location:** `src/note.rs:210-217`
+- **Description:** `rewrite_notes_file` writes to a temp file (`notes.toml.tmp`) and then renames it over the original. If the rename fails (e.g., cross-device move, permissions), the function returns an error but leaves the temp file on disk. The next call to `rewrite_notes_file` will overwrite the temp file anyway, so this is a cosmetic issue — but on repeated rename failures, the temp file contains the intended state while the original file has the old state, which could confuse users inspecting the directory.
+- **Suggested fix:** Add cleanup in the error path: `if let Err(e) = std::fs::rename(&tmp_path, path) { let _ = std::fs::remove_file(&tmp_path); return Err(e.into()); }`
 
-#### 10. `crossbeam-channel` dependency only used in one file, `mpsc` would suffice
+#### 12. `add_reference_to_config` uses `unwrap_or_default()` — clobbers unreadable config
 - **Difficulty:** easy
-- **Location:** `Cargo.toml:85`, `src/cli/pipeline.rs:14`
-- **Description:** `crossbeam-channel` is only imported in `src/cli/pipeline.rs` for the indexing pipeline. The pipeline uses `bounded` channels for backpressure between parser and embedder threads. While `crossbeam-channel` has better performance characteristics than `std::sync::mpsc`, the pipeline throughput is dominated by ML inference (~100ms per batch), making channel performance negligible. This dependency adds ~50KB to the binary.
-- **Suggested fix:** The `select!` macro IS used (pipeline.rs:475), so stdlib `mpsc` isn't a drop-in. Consider whether the select is essential — if only one channel is being selected on, it can be replaced with a simple `recv`. Otherwise, this dependency is justified and this finding is low priority.
+- **Location:** `src/config.rs:184`
+- **Description:** `std::fs::read_to_string(config_path).unwrap_or_default()` treats ALL read errors (permissions, I/O, encoding) as "file doesn't exist" and starts with an empty string. The subsequent `std::fs::write` at line 222 overwrites the config file. If the config was unreadable due to a transient error (locked by another process, temporary permission issue), this silently destroys all existing reference configurations. `remove_reference_from_config` correctly distinguishes `NotFound` from other errors. Also noted in Security finding #3 and Error Handling batch #7.
+- **Suggested fix:** Match on error kind as `remove_reference_from_config` does: return error for non-NotFound errors.
 
-
-## Batch 4: Input Security
-
-#### 1. Reference name path traversal in `ref_path` and `cmd_ref_add`
-- **Difficulty:** easy
-- **Location:** `src/reference.rs:174-176`, `src/cli/commands/reference.rs:82`
-- **Description:** `ref_path(name)` joins user-provided `name` directly into a filesystem path via `refs_dir().map(|d| d.join(name))`. A name like `../../etc` or `../../../tmp/evil` would escape the refs directory. `cmd_ref_add` calls `ref_path(name)` at line 82 and then creates directories at that path (`std::fs::create_dir_all(&ref_dir)`). While `source` is canonicalized and validated at line 77-79, the `name` parameter has zero sanitization — no check for `/`, `..`, `\`, or other path-special characters. An attacker (or careless user) could create directories and SQLite databases in arbitrary filesystem locations.
-- **Suggested fix:** Validate reference names to allow only `[a-zA-Z0-9_-]` characters, rejecting anything containing `/`, `\`, `..`, or path separators. Apply this validation in both the CLI (`cmd_ref_add`) and `ref_path`.
-
-#### 2. Reference name not validated in `cmd_ref_remove` — arbitrary directory deletion
-- **Difficulty:** easy
-- **Location:** `src/cli/commands/reference.rs:194-217`
-- **Description:** `cmd_ref_remove` loads the reference config, finds the entry by name, removes it from config, then at line 210-212 does `std::fs::remove_dir_all(&cfg.path)` on whatever path was stored in the config. If a previous `ref add` with a traversal name wrote to an unintended location, `ref remove` would `remove_dir_all` that location. Even without a prior traversal attack, a manually-edited `.cqs.toml` with `path = "/important/data"` would cause `ref remove` to delete `/important/data`. There is no confirmation and no check that the path is within the expected refs directory.
-- **Suggested fix:** Before `remove_dir_all`, verify the path is within `refs_dir()`. Alternatively, only allow deletion of paths under the canonical refs storage directory.
-
-#### 3. `tool_read` TOCTOU between canonicalize and file read
+#### 13. Schema migration runs steps without a wrapping transaction
 - **Difficulty:** medium
-- **Location:** `src/mcp/tools/read.rs:19-51`
-- **Description:** The read tool checks `file_path.exists()` at line 19, then canonicalizes at line 24-27, checks `starts_with` at line 35, then reads the file at line 51. Between these steps, a symlink target could change (TOCTOU race). On systems where an attacker controls files within the project directory, they could create a symlink pointing inside the project (passing the canonicalize check), then quickly retarget it to `/etc/shadow` before the `read_to_string` call. In practice this requires a compromised project directory, but the window exists. The use of `canonicalize` (which follows symlinks) correctly rejects out-of-project symlinks, but the gap between canonicalize and read is the vulnerability window.
-- **Suggested fix:** Open the file first (getting a file descriptor), then use `fstat` on the descriptor to verify the path, then read from the descriptor. Or use `O_NOFOLLOW` if symlink following is not desired.
+- **Location:** `src/store/migrations.rs:24-50` (`migrate` function)
+- **Description:** The `migrate()` function runs migration steps sequentially and updates `schema_version` at the end. Each step executes its own SQL. If a step fails or the process crashes mid-migration, the database is left at the old schema version but with partial DDL changes applied. SQLite supports transactional DDL, so a failed `ALTER TABLE` can be rolled back. Currently no active migrations exist (v10 is current and all migration functions return `MigrationNotSupported`), so this is a latent risk for future migrations rather than an active bug.
+- **Suggested fix:** Wrap the entire migration sequence (all steps + version update) in a single transaction. If any step fails, the whole migration rolls back cleanly.
 
-#### 4. FTS query construction in `search_by_name` uses string formatting with user input
+#### 14. HTTP mode concurrent tool calls race on note file mutations
 - **Difficulty:** medium
-- **Location:** `src/store/mod.rs:427`
-- **Description:** `search_by_name` constructs an FTS5 query: `format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized)`. The `normalized` value comes from `normalize_for_fts()` which only emits alphanumeric characters, underscores, and spaces — so FTS5 operators and quotes are stripped. This provides **implicit** protection against FTS5 injection. However, the defense is fragile: if `normalize_for_fts` is ever modified to pass through additional characters (especially `"`, `*`, `OR`, `AND`, `NOT`, `NEAR`, `(`), the FTS query could be manipulated. The security property depends on a function whose documented purpose is text normalization, not security sanitization.
-- **Suggested fix:** Add an explicit FTS5 sanitization step (or an assertion that the normalized string contains no FTS5 special characters) before interpolating into the query string. Add a comment documenting that `normalize_for_fts` is security-load-bearing here.
-
-#### 5. Config file read-modify-write in `add_reference_to_config` is not atomic
-- **Difficulty:** medium
-- **Location:** `src/config.rs:183-207`
-- **Description:** `add_reference_to_config` reads the config file, parses it, modifies it, then writes back with `std::fs::write`. This is a read-modify-write pattern without file locking. Two concurrent `cqs ref add` commands could race: both read the same config, both add their reference, and the second write overwrites the first's addition. Unlike `rewrite_notes_file` which uses atomic write (temp + rename), `config.rs` overwrites in place. A crash during `std::fs::write` could leave the config file truncated or empty.
-- **Suggested fix:** Use atomic write (write to temp file, then rename) like `rewrite_notes_file` does. Consider file locking for concurrent access protection.
-
-#### 6. HNSW checksum verification is optional — warns-only on missing checksums
-- **Difficulty:** medium
-- **Location:** `src/hnsw.rs:104-155`
-- **Description:** `verify_hnsw_checksums` at line 107-111 returns `Ok(())` with only a warning if no checksum file exists. Older indexes without checksums bypass integrity verification entirely. The `load` function at line 638 then deserializes index files using bincode (RUSTSEC-2025-0141, unmaintained) without integrity guarantee. A malicious or corrupted index file could exploit bincode deserialization vulnerabilities. The checksum-on-save approach means checksums are only present for indexes created after the checksum feature was added.
-- **Suggested fix:** Consider making checksums mandatory for loading (fail instead of warn). Provide migration: `cqs index --force` rebuilds with checksums. At minimum, log at a user-visible level.
-
-#### 7. HTTP server allows binding to any interface without restriction
-- **Difficulty:** easy
-- **Location:** `src/mcp/transports/http.rs:97-107`
-- **Description:** `serve_http` accepts a `bind` parameter and binds directly. When bound to `0.0.0.0` without `--api-key`, anyone on the network can access the MCP server, which can read files within the project (via `cqs_read`) and execute searches. The origin validation (`is_localhost_origin`) only blocks browser requests with `Origin` headers — direct HTTP clients (curl, scripts) don't send Origin headers and bypass this protection entirely.
-- **Suggested fix:** Default to `127.0.0.1` only. When binding to non-localhost without an API key, either refuse to start or require an explicit `--insecure` flag.
-
-#### 8. `cqs_read` tool exposes all project files to MCP clients without granular authorization
-- **Difficulty:** medium
-- **Location:** `src/mcp/tools/read.rs:12-131`
-- **Description:** The `tool_read` function reads any file within the project directory and returns its full content. Over HTTP transport without an API key, any client can read source code. The path traversal protection prevents reading outside the project, but within the project there is no authorization granularity — a client can read `.env`, `*.pem`, `*.key`, or credential files. The 10MB limit prevents memory exhaustion but not information disclosure.
-- **Suggested fix:** Consider an allowlist/denylist for sensitive file patterns (`.env`, `*.pem`, `*.key`, `credentials.*`) or add a configuration option to disable the read tool for HTTP transport.
-
-#### 9. `note_weight` and other float params — inconsistent error vs clamp behavior
-- **Difficulty:** easy
-- **Location:** `src/mcp/tools/search.rs:45`, `src/store/helpers.rs:332-335`, `src/mcp/tools/notes.rs:56`
-- **Description:** Float parameters are handled inconsistently: `sentiment` in notes is silently clamped to `[-1.0, 1.0]` (notes.rs:56), while `note_weight` and `name_boost` in search reject out-of-range values with errors (helpers.rs:328-335). This means a client sending `note_weight: 1.5` gets an error, but `sentiment: 5.0` is silently accepted as `1.0`. The inconsistency can confuse API consumers and may mask bugs where a client sends unexpected values.
-- **Suggested fix:** Pick one approach (clamp or reject) and apply consistently across all bounded float parameters.
-
-#### 10. SQL queries use parameterized bindings (positive finding)
-- **Difficulty:** n/a
-- **Location:** `src/store/chunks.rs`, `src/store/notes.rs`, `src/store/mod.rs`
-- **Description:** All SQL queries across the store module use parameterized bindings (`?1`, `?2`, etc.) via sqlx. No string interpolation of user input into SQL. The dynamic placeholder generation for batch operations (e.g., `chunks.rs:178-180`) constructs only the placeholder string (e.g., `?1,?2,?3`) from integer indices, not from user data. This is correct and prevents SQL injection. The one exception is the FTS5 MATCH query in `search_by_name` (finding #4 above) which is protected by `normalize_for_fts`.
-
-## Batch 4: I/O Efficiency
-
-#### 1. notes.toml re-parsed from disk on every MCP note mutation and file read (existing #233)
-- **Difficulty:** medium
-- **Location:** `src/mcp/tools/notes.rs:13-28` and `src/mcp/tools/read.rs:69-116`
-- **Description:** Every `add_note`, `update_note`, and `remove_note` call triggers `reindex_notes()` which calls `parse_notes()` — a full disk read + TOML parse of the entire notes.toml. Similarly, `tool_read` re-parses notes.toml from disk for every file read to inject context comments. For a notes file with 50+ entries, this means redundant disk I/O and TOML parsing on every single MCP tool call. The parsed result is never cached.
-- **Suggested fix:** Cache the parsed notes in the McpServer struct with mtime-based invalidation. Existing #233.
-
-#### 2. `search_filtered` brute-force loads ALL chunk embeddings into memory via `fetch_all`
-- **Difficulty:** hard
-- **Location:** `src/search.rs:196-365`
-- **Description:** When no HNSW index is available (or it returns no candidates), `search_filtered` executes `SELECT id, embedding FROM chunks` with an optional WHERE clause — loading every single embedding (~3KB each) into memory via `fetch_all`. For a 10K chunk index, that's ~30MB of data transferred from SQLite in one call. For 50K chunks, ~150MB. This full table scan is the O(n) fallback that should only happen before HNSW is built, but it also triggers whenever the HNSW index returns empty results (line 383-384 in search.rs falls back to brute-force).
-- **Suggested fix:** For the no-index fallback, consider cursor-based streaming (`fetch()` with async iteration and the BoundedScoreHeap) instead of `fetch_all()` to avoid materializing all embeddings at once. Alternatively, always ensure HNSW is built before enabling search.
-
-#### 3. `reindex_files` in watch mode uses individual `upsert_chunk` instead of batch
-- **Difficulty:** easy
-- **Location:** `src/cli/watch.rs:262-273`
-- **Description:** The `reindex_files` function in watch mode calls `store.upsert_chunk()` in a per-item loop for each (chunk, embedding) pair. `upsert_chunk` delegates to `upsert_chunks_batch` with a single-element slice, meaning each chunk gets its own transaction (BEGIN/COMMIT) and separate FTS operations. The pipeline (`run_index_pipeline`) correctly uses batch upserts with batches of 32. For a file with 20 chunks, watch mode does 20 separate transactions instead of 1.
-- **Suggested fix:** Collect all `(chunk, embedding)` pairs into a Vec and call `store.upsert_chunks_batch()` once, with a shared mtime. Matches the pipeline pattern.
-
-#### 4. `rewrite_notes_file` result discarded, file immediately re-read by `reindex_notes`
-- **Difficulty:** easy
-- **Location:** `src/note.rs:125-144` called from `src/mcp/tools/notes.rs:239`, `src/mcp/tools/notes.rs:301`
-- **Description:** `rewrite_notes_file` reads notes.toml, parses TOML, applies a mutation, serializes, writes atomically, and returns the final `Vec<NoteEntry>`. But callers (`tool_update_note`, `tool_remove_note`) discard this return value. Then `reindex_notes` immediately re-reads the same file from disk, re-parses TOML, and re-generates notes — duplicating the I/O and parsing just performed. The `tool_add_note` path is slightly better (append-only, no rewrite) but still triggers a full re-read via `reindex_notes`.
-- **Suggested fix:** Pass the already-parsed entries from `rewrite_notes_file` into `reindex_notes` instead of having it re-read from disk.
-
-#### 5. `count_vectors` deserializes full HNSW ID map JSON just to count entries
-- **Difficulty:** easy
-- **Location:** `src/hnsw.rs:731-762`
-- **Description:** `HnswIndex::count_vectors()` reads the entire `.hnsw.ids` JSON file into a String, deserializes the full `Vec<String>` (allocating every chunk ID string), then calls `.len()` on it. For a 50K chunk index, the IDs file could be several MB of JSON. All that memory is allocated just to count elements, then immediately freed.
-- **Suggested fix:** Store the vector count as a simple integer in a separate small file (e.g., `.hnsw.count`) written alongside IDs during `save()`. Or count JSON array elements by scanning for commas without full deserialization.
-
-#### 6. Each reference index opens a separate tokio Runtime + SQLite connection pool
-- **Difficulty:** medium
-- **Location:** `src/reference.rs:36-69` via `Store::open`
-- **Description:** `load_references` opens a new `Store` per reference, each with its own tokio Runtime + SQLite connection pool (max 4 connections per pool, per `Store::open`). With 3 references, that's 3 runtimes + up to 12 idle SQLite connections + 3x the PRAGMA setup overhead (WAL, mmap 256MB, cache 16MB). References are read-only during search but get the full read-write connection pool treatment including WAL checkpoint on Drop.
-- **Suggested fix:** Create a `Store::open_readonly` variant that uses `mode=ro`, smaller pool (1 connection), skips WAL checkpoint on drop, and optionally shares an existing tokio RuntimeHandle instead of creating a new one.
-
-#### 7. `search_unified_with_index` always brute-force scans ALL notes from SQLite
-- **Difficulty:** medium
-- **Location:** `src/search.rs:517-521` and `src/store/notes.rs:118-163`
-- **Description:** Even when an HNSW index is available (which includes notes with `note:` prefix), `search_unified_with_index` ignores the index for notes and always falls back to `search_notes()` — a brute-force O(n) scan loading up to 1000 note embeddings (~3KB each = 3MB) and computing cosine similarity for each. The code comment explains this is intentional for immediate searchability of new notes. But the HNSW index already contains notes (they're explicitly filtered out at lines 533-541 and discarded). This means note embeddings are loaded from SQLite on every single search.
-- **Suggested fix:** Use HNSW for notes when available, supplementing with a brute-force scan of only notes added since the last HNSW build (based on `created_at > last_hnsw_build_time`).
-
-#### 8. `tool_add_note` calls `sync_all()` (full fsync + metadata) on every append
-- **Difficulty:** easy
-- **Location:** `src/mcp/tools/notes.rs:128`
-- **Description:** `tool_add_note` calls `file.sync_all()` after appending a note to notes.toml. `sync_all` forces both data and metadata to disk, which can take 5-50ms on spinning disks. `sync_data()` would suffice since we don't need metadata durability for this path — the file is git-tracked, and the subsequent `reindex_notes` read-back implicitly verifies the write succeeded. The notes.toml file is not crash-critical.
-- **Suggested fix:** Replace `sync_all()` with `sync_data()`, or remove the fsync entirely since the file is git-tracked and re-read immediately after.
-
-#### 9. Pipeline `needs_reindex` issues one SQLite query per file during parsing
-- **Difficulty:** medium
-- **Location:** `src/cli/pipeline.rs:278-294` calling `src/store/chunks.rs:97-117`
-- **Description:** In `run_index_pipeline`, the parser thread calls `store.needs_reindex(&abs_path)` per file, issuing `SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1` individually. For a 5K file codebase, that's 5000 SQLite round-trips. Since all files are known upfront (the `files` Vec is passed in), a single `SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'` could fetch all mtimes at once into a HashMap.
-- **Suggested fix:** Bulk-fetch all (origin, source_mtime) pairs into a HashMap before the parsing loop, then check the HashMap instead of per-file queries.
-
-#### 10. `all_embeddings` loads entire embedding table into memory at once
-- **Difficulty:** medium
-- **Location:** `src/store/chunks.rs:488-522`
-- **Description:** `all_embeddings()` does `SELECT id, embedding FROM chunks` with `fetch_all()`, loading every embedding simultaneously. For 50K chunks, that's ~150MB. The method has a deprecation notice pointing to `embedding_batches()`, but `HnswIndex::build()` (the non-batched version) still exists as public API. Any caller reaching `build()` instead of `build_batched()` triggers this full load. The `build()` method itself is only soft-deprecated ("prefer `build_batched`") with no compile-time guard.
-- **Suggested fix:** Verify all production callers use `build_batched()`. If `all_embeddings()` has no non-test callers, gate it with `#[cfg(test)]` to prevent accidental use. Consider making `build()` call `build_batched()` internally.
+- **Location:** `src/mcp/transports/http.rs:87-89`, `src/mcp/tools/notes.rs`
+- **Description:** The HTTP transport processes requests concurrently via axum's async handler. Two concurrent `cqs_update_note` calls (or any combination of note mutation tools) both call `rewrite_notes_file` which does read→parse→mutate→write. This is the same race as finding #1, but specifically via the HTTP transport path. The stdio transport is naturally serialized (one request at a time). The HTTP transport has no request queuing or serialization for write operations. This also affects `cqs_add_note` if called concurrently — while individual appends are OS-atomic for small writes, the subsequent `reindex_notes` call does a full read-parse-embed-store cycle that can race with another append.
+- **Suggested fix:** Add a `Mutex<()>` for note mutations in the MCP server, acquired before any note file operation and released after reindex completes. Or serialize all write operations through a dedicated write task with an mpsc channel.
