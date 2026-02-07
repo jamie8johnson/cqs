@@ -114,7 +114,12 @@ const NOTES_HEADER: &str = "\
 
 /// Parse notes from a notes.toml file
 pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
-    let content = std::fs::read_to_string(path)?;
+    let content = std::fs::read_to_string(path).map_err(|e| {
+        NoteError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {}", path.display(), e),
+        ))
+    })?;
     parse_notes_str(&content)
 }
 

@@ -594,7 +594,10 @@ fn ensure_ort_provider_libs() {
             .filter(|e| e.path().is_dir())
             .map(|e| e.path())
             .next(),
-        Err(_) => return,
+        Err(e) => {
+            tracing::debug!(path = %ort_cache.display(), error = %e, "ORT cache directory not found");
+            return;
+        }
     };
 
     let ort_lib_dir = match ort_lib_dir {
