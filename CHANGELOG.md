@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Flaky `test_loaded_index_multiple_searches` — replaced sin-based test embeddings with well-separated one-hot vectors
 
-## [0.9.0] - 2026-02-07
+## [0.9.0] - 2026-02-06
 
 ### Added
 - **`--chunk-type` filter** (CLI + MCP): narrow search to function/method/class/struct/enum/trait/interface/constant
@@ -621,6 +621,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[0.9.1]: https://github.com/jamie8johnson/cqs/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/jamie8johnson/cqs/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/jamie8johnson/cqs/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/jamie8johnson/cqs/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jamie8johnson/cqs/compare/v0.5.3...v0.6.0
 [0.5.3]: https://github.com/jamie8johnson/cqs/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/jamie8johnson/cqs/compare/v0.5.1...v0.5.2
