@@ -2,19 +2,14 @@
 
 ## Right Now
 
-**Post-Phase 7 features merged** (2026-02-07). PR #280 squash-merged to main.
+**Idle** (2026-02-06). All planned work complete and merged.
 
-All 8 post-roadmap features shipped:
-- Batch A: `--chunk-type` filter + `cqs dead`
-- Batch B: Staleness warnings + `cqs gc`
-- Batch C: `--format mermaid` on trace + `cqs project` cross-project search
-- Batch D: `cqs gather` (smart context assembly) + `--pattern` structural filter
-
-**In progress**: docs review (agent running), then version bump to 0.9.0, changelog, release
-
-### Refactoring roadmapped
-- Split `parser.rs` (1071 lines) → per-language modules under `src/language/`
-- Split `hnsw.rs` (1150 lines) → `src/hnsw/` directory (build, persist, search)
+### What shipped this session
+- v0.9.0 released (from previous context, already on crates.io + GitHub)
+- PR #282: parser.rs → src/parser/ directory (mod.rs, types.rs, chunk.rs, calls.rs)
+- PR #283: hnsw.rs → src/hnsw/ directory (mod.rs, build.rs, search.rs, persist.rs, safety.rs) + flaky test fix
+- PR #284: Token savings messaging — README, Cargo.toml, GitHub description/topics
+- Roadmap refactoring items checked off, flaky test bug resolved
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -24,7 +19,8 @@ All 8 post-roadmap features shipped:
 
 - **Phase 8**: Security (index encryption, rate limiting)
 - **ref install** — deferred from Phase 6, tracked in #255
-- **Relevance feedback** — Feature 9, deferred indefinitely (low impact)
+- **Relevance feedback** — deferred indefinitely (low impact)
+- **`.cq` rename to `.cqs`** — breaking change needing migration, no issue filed yet
 
 ## Open Issues
 
@@ -57,11 +53,12 @@ All 8 post-roadmap features shipped:
 
 ## Architecture
 
-- Version: 0.8.0
+- Version: 0.9.0
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
 - 258 lib tests (no GPU), 0 warnings, clippy clean
-- MCP tools: 21 (search, stats, callers, callees, read, add_note, update_note, remove_note, dead, audit_mode, diff, explain, similar, impact, trace, test_map, batch, context, gc, gather + pattern on search)
+- MCP tools: 21
+- Source layout: parser/ and hnsw/ are now directories (split from monoliths in v0.9.0)
