@@ -94,7 +94,7 @@ pub(crate) fn cmd_project(_cli: &Cli, subcmd: &ProjectCommand) -> Result<()> {
             let embedder = Embedder::new()?;
             let query_embedding = embedder.embed_query(query)?;
 
-            let results = search_across_projects(&query_embedding, *limit, *threshold)?;
+            let results = search_across_projects(&query_embedding, query, *limit, *threshold)?;
 
             if *json {
                 let json_results: Vec<_> = results

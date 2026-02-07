@@ -100,6 +100,7 @@ pub struct CrossProjectResult {
 /// Search across all registered projects
 pub fn search_across_projects(
     query_embedding: &crate::Embedding,
+    query_text: &str,
     limit: usize,
     threshold: f32,
 ) -> Result<Vec<CrossProjectResult>> {
@@ -122,23 +123,30 @@ pub fn search_across_projects(
         }
 
         match crate::Store::open(&index_path) {
-            Ok(store) => match store.search(query_embedding, limit, threshold) {
-                Ok(results) => {
-                    for r in results {
-                        all_results.push(CrossProjectResult {
-                            project_name: entry.name.clone(),
-                            name: r.chunk.name.clone(),
-                            file: make_project_relative(&entry.path, &r.chunk.file),
-                            line_start: r.chunk.line_start,
-                            signature: Some(r.chunk.signature.clone()),
-                            score: r.score,
-                        });
+            Ok(store) => {
+                let filter = crate::store::helpers::SearchFilter {
+                    query_text: query_text.to_string(),
+                    enable_rrf: true,
+                    ..Default::default()
+                };
+                match store.search_filtered(query_embedding, &filter, limit, threshold) {
+                    Ok(results) => {
+                        for r in results {
+                            all_results.push(CrossProjectResult {
+                                project_name: entry.name.clone(),
+                                name: r.chunk.name.clone(),
+                                file: make_project_relative(&entry.path, &r.chunk.file),
+                                line_start: r.chunk.line_start,
+                                signature: Some(r.chunk.signature.clone()),
+                                score: r.score,
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Search failed for project '{}': {}", entry.name, e);
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("Search failed for project '{}': {}", entry.name, e);
-                }
-            },
+            }
             Err(e) => {
                 tracing::warn!("Failed to open project '{}': {}", entry.name, e);
             }

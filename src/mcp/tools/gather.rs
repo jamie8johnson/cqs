@@ -42,7 +42,13 @@ pub fn tool_gather(server: &McpServer, arguments: Value) -> Result<Value> {
         limit,
     };
 
-    let result = gather(&server.store, &query_embedding, &opts, &server.project_root)?;
+    let result = gather(
+        &server.store,
+        &query_embedding,
+        query,
+        &opts,
+        &server.project_root,
+    )?;
 
     let json_chunks: Vec<_> = result
         .chunks

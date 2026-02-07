@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::store::helpers::CallGraph;
+use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::Store;
 
 /// Options for gather operation
@@ -78,11 +78,17 @@ const MAX_EXPANDED_NODES: usize = 200;
 pub fn gather(
     store: &Store,
     query_embedding: &crate::Embedding,
+    query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
 ) -> Result<GatherResult> {
-    // 1. Seed with search results
-    let seed_results = store.search(query_embedding, 5, 0.3)?;
+    // 1. Seed with hybrid RRF search (not raw embedding-only)
+    let filter = SearchFilter {
+        query_text: query_text.to_string(),
+        enable_rrf: true,
+        ..SearchFilter::default()
+    };
+    let seed_results = store.search_filtered(query_embedding, &filter, 5, 0.3)?;
     if seed_results.is_empty() {
         return Ok(GatherResult {
             chunks: Vec::new(),
