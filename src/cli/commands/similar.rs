@@ -159,10 +159,10 @@ mod tests {
 
     #[test]
     fn test_parse_target_empty_name_fallback() {
-        // Trailing colon — treat entire string as name
+        // Trailing colon — stripped per P1 F11 fix
         let (file, name) = parse_target("something:");
         assert_eq!(file, None);
-        assert_eq!(name, "something:");
+        assert_eq!(name, "something");
     }
 
     #[test]
