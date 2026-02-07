@@ -322,7 +322,10 @@ fn test_search_filtered_language() {
     insert_chunks(&store, &[c1, c2], 1.0);
 
     let query = mock_embedding(1.0);
-    let filter = SearchFilter::new().with_language(Language::Rust);
+    let filter = SearchFilter {
+        languages: Some(vec![Language::Rust]),
+        ..SearchFilter::new()
+    };
 
     let results = store.search_filtered(&query, &filter, 10, 0.0).unwrap();
 
