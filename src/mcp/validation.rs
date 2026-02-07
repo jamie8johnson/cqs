@@ -213,4 +213,21 @@ mod tests {
         assert!(parse_duration("h").is_err());
         assert!(parse_duration("hm").is_err());
     }
+
+    #[test]
+    fn test_validate_query_boundary_length() {
+        // Exactly at limit should pass
+        let at_limit = "a".repeat(MAX_QUERY_LENGTH);
+        assert!(validate_query_length(&at_limit).is_ok());
+
+        // One over limit should fail
+        let over_limit = "a".repeat(MAX_QUERY_LENGTH + 1);
+        assert!(validate_query_length(&over_limit).is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_overflow() {
+        // i64::MAX hours should overflow
+        assert!(parse_duration(&format!("{}h", i64::MAX)).is_err());
+    }
 }

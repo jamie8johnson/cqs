@@ -54,6 +54,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: true, // Enable RRF hybrid search by default
         note_weight: cli.note_weight,
     };
+    filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 
     // Load vector index for O(log n) search
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {

@@ -25,7 +25,8 @@ pub fn tool_similar(server: &McpServer, arguments: Value) -> Result<Value> {
         .get("threshold")
         .and_then(|v| v.as_f64())
         .map(|v| v as f32)
-        .unwrap_or(0.3);
+        .unwrap_or(0.3)
+        .clamp(0.0, 1.0);
 
     let language_filter = arguments
         .get("language")
