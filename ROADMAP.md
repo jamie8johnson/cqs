@@ -328,7 +328,7 @@
 
 - [ ] **SQL** — `tree-sitter-sql` crate on crates.io. Stored procedures, functions, views, triggers.
 - [ ] **VB.NET** — `tree-sitter-vb-dotnet` (git dep, not on crates.io). Subs, Functions, Classes, Modules.
-- [ ] P3 audit fixes (#264-266) — quick wins, batch with language PR
+- [x] P3 audit fixes (#264-266) — completed in PR #296
 
 ### Notes
 
@@ -348,6 +348,10 @@
 - [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
 - [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed
 - [ ] **Batch UX** — common batch patterns (e.g., "callers for these N functions") as named shortcuts instead of raw JSON construction
+
+## Parked
+
+- **Markdown support** — `tree-sitter-markdown`, headings as chunks, sections as content. Makes docs/READMEs/specs searchable. No call graph/signatures though — half the tools wouldn't apply.
 
 ## Phase 8: Security
 
