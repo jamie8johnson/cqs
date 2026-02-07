@@ -2,13 +2,12 @@
 
 ## Right Now
 
-**Clean slate** (2026-02-07). All PRs merged, 0 open, all branches cleaned up.
+**Clean slate** (2026-02-07). All PRs merged, 0 open, 0 stale branches (local + remote).
 
 ### Recent merges
+- PR #305: Fix gather/cross-project search to use RRF hybrid instead of raw embedding
 - PR #304: Agent UX quick wins — `note_only` search, `context --summary`, `impact --format mermaid`
-- PR #296: P3 audit fixes (30 findings)
-- PR #295: P2 audit fixes (23 findings)
-- PR #293: P1 audit fixes (43 findings)
+- PR #296-#293: P1/P2/P3 audit fixes (96 total)
 - PR #297/#298: v0.9.2 release
 
 ### P4 audit items tracked in issues
@@ -59,7 +58,7 @@
 
 ## Architecture
 
-- Version: 0.9.2
+- Version: 0.9.3
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)

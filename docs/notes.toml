@@ -127,7 +127,7 @@ mentions = [
 sentiment = 0.5
 text = "WSL has RTX A6000 (49GB VRAM) available for GPU testing. Use conda cuvs environment."
 mentions = [
-    "cagra.rs",
+    "src/cagra.rs",
     "gpu-search",
 ]
 
@@ -229,7 +229,7 @@ text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in
 mentions = [
     "src/mcp/server.rs",
     "src/cagra.rs",
-    "src/hnsw.rs",
+    "src/hnsw/mod.rs",
     "startup",
 ]
 
@@ -266,7 +266,6 @@ sentiment = 0.5
 text = "Inline validation code is hard to find via semantic search. Extract into named functions: validate_api_key, validate_origin_header, etc. 'validate bearer token' query now finds validate_api_key at 0.74 score."
 mentions = [
     "src/mcp/validation.rs",
-    "src/hnsw.rs",
     "discoverability",
 ]
 
@@ -499,8 +498,10 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "v0.9.1 audit found actual MCP tool count is 20, not 21. Multiple docs (CLAUDE.md, ROADMAP, CHANGELOG, PROJECT_CONTINUITY) say 21. Verify by counting tool definitions in src/mcp/tools/mod.rs."
+text = "gather() and search_across_projects() were using store.search() (raw embedding) instead of search_filtered() (RRF hybrid). This caused gather to miss results that cqs_search found via keyword matching. Fixed in PR #305. Rule: never call store.search() in production code — always use search_filtered or search_unified_with_index."
 mentions = [
-    "src/mcp/tools/mod.rs",
-    "CLAUDE.md",
+    "src/gather.rs",
+    "src/project.rs",
+    "store.search",
+    "search_filtered",
 ]

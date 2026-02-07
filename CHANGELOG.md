@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - 2026-02-07
+
+### Fixed
+- **Gather search quality**: `gather()` and `search_across_projects()` now use RRF hybrid search instead of raw embedding-only cosine similarity. Previously missed results that keyword matching would find.
+
+### Added
+- `cqs_search` `note_only` parameter to search notes exclusively
+- `cqs_context` `--summary` mode for condensed file overview
+- `cqs_impact` `--format mermaid` output for dependency diagrams
+
 ## [0.9.2] - 2026-02-07
 
 ### Fixed
@@ -649,6 +659,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[0.9.3]: https://github.com/jamie8johnson/cqs/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/jamie8johnson/cqs/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamie8johnson/cqs/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/jamie8johnson/cqs/compare/v0.8.0...v0.9.0
