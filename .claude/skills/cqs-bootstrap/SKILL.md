@@ -175,7 +175,9 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc` (run `cqs watch` to keep index fresh)
+**`cqs_read`** — use instead of raw `Read` tool. Returns file contents with relevant notes injected as comments. Default to this for any source file.
+
+Tools: `cqs_search`, `cqs_stats`, `cqs_read`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc` (run `cqs watch` to keep index fresh)
 
 ## Audit Mode
 
