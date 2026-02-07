@@ -10,7 +10,15 @@ use crate::Parser;
 
 use super::super::server::McpServer;
 
-/// Get index statistics
+/// Get index statistics.
+///
+/// Response fields:
+/// - `total_chunks`: total indexed code chunks
+/// - `total_files`: unique source files indexed
+/// - `stale_files`: files modified since last index
+/// - `missing_files`: files deleted since last index
+/// - `hnsw_index`: persisted HNSW state on disk
+/// - `active_index`: currently loaded in-memory index type
 pub fn tool_stats(server: &McpServer) -> Result<Value> {
     let stats = server.store.stats()?;
 

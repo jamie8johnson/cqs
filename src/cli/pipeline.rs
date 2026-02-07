@@ -612,12 +612,22 @@ pub(crate) fn run_index_pipeline(
         tracing::warn!(error = %e, "Failed to update timestamp");
     }
 
-    Ok(PipelineStats {
+    let stats = PipelineStats {
         total_embedded,
         total_cached,
         gpu_failures: gpu_failures.load(Ordering::Relaxed),
         parse_errors: parse_errors.load(Ordering::Relaxed),
-    })
+    };
+
+    tracing::info!(
+        total_embedded = stats.total_embedded,
+        total_cached = stats.total_cached,
+        gpu_failures = stats.gpu_failures,
+        parse_errors = stats.parse_errors,
+        "Pipeline indexing complete"
+    );
+
+    Ok(stats)
 }
 
 /// Extract a human-readable message from a thread panic payload.
