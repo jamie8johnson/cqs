@@ -2,19 +2,20 @@
 
 ## Right Now
 
-**v0.9.1 Audit — P1/P2/P3 complete** (2026-02-07). 96 fixes merged across 3 PRs.
+**Clean slate** (2026-02-07). All PRs merged, 0 open, all branches cleaned up.
 
-### Audit status
-- 157 raw findings → ~138 unique after dedup
-- P1: 43 fixes merged (PR #293)
-- P2: 23 fixes merged (PR #295)
-- P3: 30 fixes merged (PR #296) — 6 non-issues, 1 deferred (#19 param naming)
-- P4: 17 findings deferred
-- Files: `docs/audit-findings.md`, `docs/audit-triage.md` (v0.9.1 section appended)
+### Recent merges
+- PR #304: Agent UX quick wins — `note_only` search, `context --summary`, `impact --format mermaid`
+- PR #296: P3 audit fixes (30 findings)
+- PR #295: P2 audit fixes (23 findings)
+- PR #293: P1 audit fixes (43 findings)
+- PR #297/#298: v0.9.2 release
 
-### Post-audit roadmap items
-- Add `format: "mermaid"` output to `cqs_impact`, `cqs_context`, `cqs_dead` — added to ROADMAP.md
-- Architecture/pipeline/ER diagrams for docs
+### P4 audit items tracked in issues
+- #300: Search/algorithm edge cases (5 items)
+- #301: Observability gaps (5 items)
+- #302: Test coverage gaps (4 items)
+- #303: Polish/docs (3 items)
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -65,5 +66,5 @@
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
 - 261 lib + 176 integration tests (no GPU), 0 warnings, clippy clean
-- MCP tools: 20
+- MCP tools: 20 (note_only, summary, mermaid added as params in v0.9.2+)
 - Source layout: parser/ and hnsw/ are now directories (split from monoliths in v0.9.0)

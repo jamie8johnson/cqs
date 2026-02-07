@@ -54,7 +54,13 @@ fn test_gather_basic() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(&store.store, &query, &opts, &PathBuf::from("/tmp"));
+    let result = cqs::gather::gather(
+        &store.store,
+        &query,
+        "test query",
+        &opts,
+        &PathBuf::from("/tmp"),
+    );
 
     assert!(result.is_ok(), "Gather should execute without error");
     let gather_result = result.unwrap();
@@ -81,7 +87,14 @@ fn test_gather_no_expansion() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(&store.store, &query, &opts, &PathBuf::from("/tmp")).unwrap();
+    let result = cqs::gather::gather(
+        &store.store,
+        &query,
+        "test query",
+        &opts,
+        &PathBuf::from("/tmp"),
+    )
+    .unwrap();
 
     // Should only return seed results (no expansion)
     // Depth should be 0 for all results
@@ -138,7 +151,13 @@ fn test_gather_callers_only() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(&store.store, &query, &opts, &PathBuf::from("/tmp"));
+    let result = cqs::gather::gather(
+        &store.store,
+        &query,
+        "test query",
+        &opts,
+        &PathBuf::from("/tmp"),
+    );
 
     assert!(result.is_ok(), "Gather with callers direction should work");
 }
@@ -175,7 +194,13 @@ fn test_gather_callees_only() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(&store.store, &query, &opts, &PathBuf::from("/tmp"));
+    let result = cqs::gather::gather(
+        &store.store,
+        &query,
+        "test query",
+        &opts,
+        &PathBuf::from("/tmp"),
+    );
 
     assert!(result.is_ok(), "Gather with callees direction should work");
 }
