@@ -15,9 +15,9 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor, cmd_explain, cmd_impact,
-    cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref, cmd_serve, cmd_similar, cmd_stats,
-    cmd_test_map, cmd_trace, NotesCommand, RefCommand, ServeConfig,
+    cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor, cmd_explain, cmd_gc,
+    cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref, cmd_serve, cmd_similar,
+    cmd_stats, cmd_test_map, cmd_trace, NotesCommand, RefCommand, ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -264,6 +264,12 @@ enum Commands {
         #[arg(long)]
         include_pub: bool,
     },
+    /// Remove stale chunks and rebuild index
+    Gc {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -344,6 +350,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_test_map(&cli, name, depth, json),
         Some(Commands::Context { ref path, json }) => cmd_context(&cli, path, json),
         Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
+        Some(Commands::Gc { json }) => cmd_gc(json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

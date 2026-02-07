@@ -212,6 +212,54 @@ impl Store {
         })
     }
 
+    /// Count files that are stale (mtime changed) or missing from disk.
+    ///
+    /// Compares stored source_mtime against current filesystem state.
+    /// Only checks files with source_type='file' (not notes or other sources).
+    ///
+    /// Returns `(stale_count, missing_count)`.
+    pub fn count_stale_files(
+        &self,
+        existing_files: &HashSet<PathBuf>,
+    ) -> Result<(u64, u64), StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
+                "SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            let mut stale = 0u64;
+            let mut missing = 0u64;
+
+            for (origin, stored_mtime) in rows {
+                let path = PathBuf::from(&origin);
+                if !existing_files.contains(&path) {
+                    missing += 1;
+                    continue;
+                }
+
+                // Check mtime
+                if let Some(stored) = stored_mtime {
+                    let current_mtime = path
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64);
+
+                    if let Some(current) = current_mtime {
+                        if current > stored {
+                            stale += 1;
+                        }
+                    }
+                }
+            }
+
+            Ok((stale, missing))
+        })
+    }
+
     /// Get embedding by content hash (for reuse when content unchanged)
     ///
     /// Note: Prefer `get_embeddings_by_hashes` for batch lookups in production.

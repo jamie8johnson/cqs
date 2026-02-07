@@ -180,3 +180,90 @@ pub fn index_notes(
 
     Ok(notes.len())
 }
+
+// ============ File Enumeration ============
+
+/// Maximum file size to index (1MB)
+const MAX_FILE_SIZE: u64 = 1_048_576;
+
+/// Enumerate files to index in a project directory.
+///
+/// Respects .gitignore, skips hidden files and large files (>1MB).
+/// Returns relative paths from the project root.
+///
+/// Shared between CLI and MCP server for consistent file enumeration.
+pub fn enumerate_files(
+    root: &Path,
+    parser: &Parser,
+    no_ignore: bool,
+) -> anyhow::Result<Vec<PathBuf>> {
+    use anyhow::Context;
+    use ignore::WalkBuilder;
+
+    let root = strip_unc_prefix(root.canonicalize().context("Failed to canonicalize root")?);
+
+    let walker = WalkBuilder::new(&root)
+        .git_ignore(!no_ignore)
+        .git_global(!no_ignore)
+        .git_exclude(!no_ignore)
+        .ignore(!no_ignore)
+        .hidden(!no_ignore)
+        .follow_links(false)
+        .build();
+
+    let files: Vec<PathBuf> = walker
+        .filter_map(|e| {
+            e.map_err(|err| {
+                tracing::debug!(error = %err, "Failed to read directory entry during walk");
+            })
+            .ok()
+        })
+        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+        .filter(|e| {
+            e.metadata()
+                .map(|m| m.len() <= MAX_FILE_SIZE)
+                .unwrap_or(false)
+        })
+        .filter(|e| {
+            e.path()
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| parser.supported_extensions().contains(&ext))
+                .unwrap_or(false)
+        })
+        .filter_map({
+            let failure_count = std::sync::atomic::AtomicUsize::new(0);
+            move |e| {
+                let path = match e.path().canonicalize() {
+                    Ok(p) => p,
+                    Err(err) => {
+                        let count =
+                            failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if count < 3 {
+                            tracing::warn!(
+                                path = %e.path().display(),
+                                error = %err,
+                                "Failed to canonicalize path, skipping"
+                            );
+                        } else {
+                            tracing::debug!(
+                                path = %e.path().display(),
+                                error = %err,
+                                "Failed to canonicalize path, skipping"
+                            );
+                        }
+                        return None;
+                    }
+                };
+                if path.starts_with(&root) {
+                    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
+                } else {
+                    tracing::warn!("Skipping path outside project: {}", e.path().display());
+                    None
+                }
+            }
+        })
+        .collect();
+
+    Ok(files)
+}

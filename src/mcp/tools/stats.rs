@@ -1,15 +1,24 @@
 //! Stats tool - index statistics
 
+use std::collections::HashSet;
+
 use anyhow::Result;
 use serde_json::Value;
 
 use crate::hnsw::HnswIndex;
+use crate::Parser;
 
 use super::super::server::McpServer;
 
 /// Get index statistics
 pub fn tool_stats(server: &McpServer) -> Result<Value> {
     let stats = server.store.stats()?;
+
+    // Check staleness by scanning filesystem
+    let parser = Parser::new()?;
+    let files = crate::enumerate_files(&server.project_root, &parser, false)?;
+    let file_set: HashSet<_> = files.into_iter().collect();
+    let (stale_count, missing_count) = server.store.count_stale_files(&file_set).unwrap_or((0, 0));
 
     let warning = if stats.total_chunks > 100_000 {
         Some(format!(
@@ -63,9 +72,21 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         })
         .collect();
 
+    let note_count = server.store.note_count().unwrap_or(0);
+    let (call_count, caller_count, callee_count) =
+        server.store.function_call_stats().unwrap_or((0, 0, 0));
+
     let mut result = serde_json::json!({
         "total_chunks": stats.total_chunks,
         "total_files": stats.total_files,
+        "stale_files": stale_count,
+        "missing_files": missing_count,
+        "notes": note_count,
+        "call_graph": {
+            "total_calls": call_count,
+            "unique_callers": caller_count,
+            "unique_callees": callee_count,
+        },
         "by_language": stats.chunks_by_language.iter()
             .map(|(l, c)| (l.to_string(), c))
             .collect::<std::collections::HashMap<_, _>>(),
