@@ -7,7 +7,12 @@ use cqs::Store;
 
 use crate::cli::find_project_root;
 
-pub(crate) fn cmd_context(_cli: &crate::cli::Cli, path: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_context(
+    _cli: &crate::cli::Cli,
+    path: &str,
+    json: bool,
+    summary: bool,
+) -> Result<()> {
     let root = find_project_root();
     let cq_dir = root.join(".cq");
     let index_path = cq_dir.join("index.db");
@@ -86,7 +91,46 @@ pub(crate) fn cmd_context(_cli: &crate::cli::Cli, path: &str, json: bool) -> Res
         }
     }
 
-    if json {
+    if summary {
+        let mut dep_files: Vec<String> = dependent_files.into_iter().collect();
+        dep_files.sort();
+
+        if json {
+            let chunks_summary: Vec<_> = chunks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({"name": c.name, "chunk_type": c.chunk_type.to_string(), "lines": [c.line_start, c.line_end]})
+                })
+                .collect();
+            let output = serde_json::json!({
+                "file": path,
+                "chunk_count": chunks.len(),
+                "chunks": chunks_summary,
+                "external_caller_count": external_callers.len(),
+                "external_callee_count": external_callees.len(),
+                "dependent_files": dep_files,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            use colored::Colorize;
+            println!("{} {}", "Context summary:".cyan(), path.bold());
+            println!("  Chunks: {}", chunks.len());
+            for c in &chunks {
+                println!(
+                    "    {} {} (:{}-{})",
+                    c.chunk_type, c.name, c.line_start, c.line_end
+                );
+            }
+            println!("  External callers: {}", external_callers.len());
+            println!("  External callees: {}", external_callees.len());
+            if !dep_files.is_empty() {
+                println!("  Dependent files:");
+                for f in &dep_files {
+                    println!("    {}", f);
+                }
+            }
+        }
+    } else if json {
         let chunks_json: Vec<_> = chunks
             .iter()
             .map(|c| {

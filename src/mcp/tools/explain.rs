@@ -69,6 +69,7 @@ pub fn tool_explain(server: &McpServer, arguments: Value) -> Result<Value> {
                 query_text: String::new(),
                 enable_rrf: false,
                 note_weight: 0.0,
+                note_only: false,
             };
             let index_guard = server.index.read().unwrap_or_else(|e| {
                 tracing::debug!("Index RwLock poisoned, recovering");

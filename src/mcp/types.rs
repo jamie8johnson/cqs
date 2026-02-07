@@ -121,6 +121,8 @@ pub(crate) struct SearchArgs {
     /// Weight for note scores in results (0.0-1.0, default 1.0)
     /// Lower values make notes rank lower than code with similar semantic scores.
     pub note_weight: Option<f32>,
+    /// Return only notes, skip code search entirely
+    pub note_only: Option<bool>,
     /// Filter which indexes to search. Use "project" for primary, reference names for others.
     pub sources: Option<Vec<String>>,
     /// Filter by structural code pattern (builder, error_swallow, async, mutex, unsafe, recursion)
