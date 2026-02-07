@@ -223,30 +223,6 @@ impl Store {
         })
     }
 
-    /// Delete all notes from a source file
-    pub fn delete_notes_by_file(&self, source_file: &Path) -> Result<u32, StoreError> {
-        let source_str = source_file.to_string_lossy().into_owned();
-
-        self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
-
-            sqlx::query(
-                "DELETE FROM notes_fts WHERE id IN (SELECT id FROM notes WHERE source_file = ?1)",
-            )
-            .bind(&source_str)
-            .execute(&mut *tx)
-            .await?;
-
-            let result = sqlx::query("DELETE FROM notes WHERE source_file = ?1")
-                .bind(&source_str)
-                .execute(&mut *tx)
-                .await?;
-
-            tx.commit().await?;
-            Ok(result.rows_affected() as u32)
-        })
-    }
-
     /// Check if notes file needs reindexing based on mtime.
     ///
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
