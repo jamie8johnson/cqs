@@ -35,7 +35,7 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/release` -- version bump, changelog, publish, GitHub release
 - `/audit` -- 20-category code audit with parallel agents
 - `/pr` -- WSL-safe PR creation (always `--body-file`)
-- `/bootstrap` -- set up tears infrastructure for new projects
+- `/cqs-bootstrap` -- set up tears infrastructure for new projects
 - `/reindex` -- rebuild index with before/after stats
 
 ## Code Search
@@ -255,4 +255,4 @@ None.
 - [ ] ...
 ```
 
-Also set up `.claude/skills/` with portable skills. Use `/bootstrap` if available, or copy from an existing cqs project. Skills are auto-discovered from `.claude/skills/*/SKILL.md`.
+Also set up `.claude/skills/` with portable skills. Use `/cqs-bootstrap` if available, or copy from an existing cqs project. Skills are auto-discovered from `.claude/skills/*/SKILL.md`.
