@@ -337,6 +337,15 @@
 - Each language needs: Language enum variant, extension mapping, grammar loading, query patterns, display impl (~5 changes per #268)
 - After: 9 languages total
 
+## Agent Experience Improvements
+
+### Planned
+
+- [ ] **Token cost estimates** — include approximate token count in tool responses so agents can budget context window usage
+- [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
+- [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed
+- [ ] **Batch UX** — common batch patterns (e.g., "callers for these N functions") as named shortcuts instead of raw JSON construction
+
 ## Phase 8: Security
 
 ### Done
