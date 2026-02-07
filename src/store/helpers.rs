@@ -320,62 +320,22 @@ impl Default for SearchFilter {
 impl SearchFilter {
     /// Create a new SearchFilter with default values.
     ///
-    /// Use builder methods to customize:
+    /// Use struct literal syntax to customize:
     /// ```ignore
-    /// let filter = SearchFilter::new()
-    ///     .with_language(Language::Rust)
-    ///     .with_path_pattern("src/**/*.rs")
-    ///     .with_query("retry logic");
+    /// let filter = SearchFilter {
+    ///     languages: Some(vec![Language::Rust]),
+    ///     path_pattern: Some("src/**/*.rs".to_string()),
+    ///     query_text: "retry logic".to_string(),
+    ///     ..SearchFilter::new()
+    /// };
     /// ```
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Filter results to a specific programming language.
-    pub fn with_language(mut self, lang: Language) -> Self {
-        self.languages = Some(vec![lang]);
-        self
-    }
-
-    /// Filter results to multiple programming languages.
-    pub fn with_languages(mut self, langs: Vec<Language>) -> Self {
-        self.languages = Some(langs);
-        self
-    }
-
-    /// Filter results to specific chunk type(s).
-    pub fn with_chunk_types(mut self, types: Vec<ChunkType>) -> Self {
-        self.chunk_types = Some(types);
-        self
-    }
-
-    /// Filter results by file path glob pattern.
-    pub fn with_path_pattern(mut self, pattern: impl Into<String>) -> Self {
-        self.path_pattern = Some(pattern.into());
-        self
-    }
-
     /// Set the query text (required for name_boost > 0 or enable_rrf).
     pub fn with_query(mut self, query: impl Into<String>) -> Self {
         self.query_text = query.into();
-        self
-    }
-
-    /// Set name boost weight for hybrid search (0.0-1.0).
-    pub fn with_name_boost(mut self, boost: f32) -> Self {
-        self.name_boost = boost;
-        self
-    }
-
-    /// Enable or disable RRF hybrid search.
-    pub fn with_rrf(mut self, enabled: bool) -> Self {
-        self.enable_rrf = enabled;
-        self
-    }
-
-    /// Set note weight multiplier (0.0-1.0).
-    pub fn with_note_weight(mut self, weight: f32) -> Self {
-        self.note_weight = weight;
         self
     }
 

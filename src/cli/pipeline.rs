@@ -177,6 +177,43 @@ fn create_embedded_batch(
     }
 }
 
+/// Flush a GPU-rejected batch to CPU: send cached results to the writer channel,
+/// requeue un-embedded chunks to the CPU fallback channel.
+///
+/// Returns `false` if either channel send fails (receiver dropped), signaling
+/// the caller to break out of its loop.
+fn flush_to_cpu(
+    prepared: PreparedEmbedding,
+    embed_tx: &Sender<EmbeddedBatch>,
+    fail_tx: &Sender<ParsedBatch>,
+    embedded_count: &AtomicUsize,
+) -> bool {
+    if !prepared.cached.is_empty() {
+        let cached_count = prepared.cached.len();
+        embedded_count.fetch_add(cached_count, Ordering::Relaxed);
+        if embed_tx
+            .send(EmbeddedBatch {
+                chunk_embeddings: prepared.cached,
+                cached_count,
+                file_mtimes: prepared.file_mtimes.clone(),
+            })
+            .is_err()
+        {
+            return false;
+        }
+    }
+    if fail_tx
+        .send(ParsedBatch {
+            chunks: prepared.to_embed,
+            file_mtimes: prepared.file_mtimes,
+        })
+        .is_err()
+    {
+        return false;
+    }
+    true
+}
+
 /// Run the indexing pipeline with 3 concurrent stages:
 /// 1. Parser: Parse files in parallel batches
 /// 2. Embedder: Embed chunks (GPU)
@@ -371,29 +408,7 @@ pub(crate) fn run_index_pipeline(
                     max_len,
                     "Routing long batch to CPU (GPU CUDNN limit)"
                 );
-                // Send cached to writer, requeue un-embedded to CPU
-                // (chunks already windowed — CPU windowing pass is a no-op)
-                if !prepared.cached.is_empty() {
-                    let cached_count = prepared.cached.len();
-                    embedded_count_gpu.fetch_add(cached_count, Ordering::Relaxed);
-                    if embed_tx
-                        .send(EmbeddedBatch {
-                            chunk_embeddings: prepared.cached,
-                            cached_count,
-                            file_mtimes: prepared.file_mtimes.clone(),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                if fail_tx
-                    .send(ParsedBatch {
-                        chunks: prepared.to_embed,
-                        file_mtimes: prepared.file_mtimes.clone(),
-                    })
-                    .is_err()
-                {
+                if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count_gpu) {
                     break;
                 }
                 continue;
@@ -420,7 +435,7 @@ pub(crate) fn run_index_pipeline(
                     }
                 }
                 Err(e) => {
-                    // GPU failed - send cached to writer, requeue rest to CPU
+                    // GPU failed - log details, then flush cached + requeue to CPU
                     gpu_failures_clone.fetch_add(prepared.to_embed.len(), Ordering::Relaxed);
                     let files: Vec<_> = prepared
                         .to_embed
@@ -434,28 +449,8 @@ pub(crate) fn run_index_pipeline(
                         ?files,
                         "GPU embedding failed, requeueing to CPU"
                     );
-                    if !prepared.cached.is_empty() {
-                        let cached_count = prepared.cached.len();
-                        embedded_count_gpu.fetch_add(cached_count, Ordering::Relaxed);
-                        if embed_tx
-                            .send(EmbeddedBatch {
-                                chunk_embeddings: prepared.cached,
-                                cached_count,
-                                file_mtimes: prepared.file_mtimes.clone(),
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    if fail_tx
-                        .send(ParsedBatch {
-                            chunks: prepared.to_embed,
-                            file_mtimes: prepared.file_mtimes.clone(),
-                        })
-                        .is_err()
-                    {
-                        break; // CPU thread gone
+                    if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count_gpu) {
+                        break;
                     }
                 }
             }

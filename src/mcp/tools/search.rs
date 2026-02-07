@@ -205,17 +205,7 @@ fn tool_search_name_only(
             .iter()
             .map(|r| format_code_result(r, &server.project_root, None))
             .collect();
-        let wrapped = serde_json::json!({
-            "results": json_results,
-            "query": args.query,
-            "total": json_results.len(),
-        });
-        return Ok(serde_json::json!({
-            "content": [{
-                "type": "text",
-                "text": serde_json::to_string_pretty(&wrapped)?
-            }]
-        }));
+        return build_search_response(json_results, &args.query, None);
     }
 
     // Search references by name
@@ -259,17 +249,7 @@ fn tool_search_name_only(
         })
         .collect();
 
-    let wrapped = serde_json::json!({
-        "results": json_results,
-        "query": args.query,
-        "total": json_results.len(),
-    });
-    Ok(serde_json::json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string_pretty(&wrapped)?
-        }]
-    }))
+    build_search_response(json_results, &args.query, None)
 }
 
 /// Format a single code SearchResult as JSON
@@ -299,45 +279,46 @@ fn format_code_result(
     json
 }
 
-/// Format unified results (no references) — existing format for backward compat
-fn format_unified_results(
-    results: Vec<UnifiedResult>,
+/// Format a single UnifiedResult as JSON (shared by unified and tagged formatters)
+fn format_unified_result_json(result: &UnifiedResult) -> Value {
+    match result {
+        UnifiedResult::Code(r) => {
+            serde_json::json!({
+                "type": "code",
+                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                "line_start": r.chunk.line_start,
+                "line_end": r.chunk.line_end,
+                "name": r.chunk.name,
+                "signature": r.chunk.signature,
+                "language": r.chunk.language.to_string(),
+                "chunk_type": r.chunk.chunk_type.to_string(),
+                "score": r.score,
+                "content": r.chunk.content,
+            })
+        }
+        UnifiedResult::Note(r) => {
+            serde_json::json!({
+                "type": "note",
+                "text": r.note.text,
+                "sentiment": r.note.sentiment,
+                "mentions": r.note.mentions,
+                "score": r.score,
+            })
+        }
+    }
+}
+
+/// Build MCP search response: wraps results array with query/total metadata,
+/// optional audit_mode status, and MCP content envelope.
+fn build_search_response(
+    json_results: Vec<Value>,
     query: &str,
     audit_status: Option<String>,
 ) -> Result<Value> {
-    let json_results: Vec<_> = results
-        .iter()
-        .map(|r| match r {
-            UnifiedResult::Code(r) => {
-                serde_json::json!({
-                    "type": "code",
-                    "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
-                    "line_start": r.chunk.line_start,
-                    "line_end": r.chunk.line_end,
-                    "name": r.chunk.name,
-                    "signature": r.chunk.signature,
-                    "language": r.chunk.language.to_string(),
-                    "chunk_type": r.chunk.chunk_type.to_string(),
-                    "score": r.score,
-                    "content": r.chunk.content,
-                })
-            }
-            UnifiedResult::Note(r) => {
-                serde_json::json!({
-                    "type": "note",
-                    "text": r.note.text,
-                    "sentiment": r.note.sentiment,
-                    "mentions": r.note.mentions,
-                    "score": r.score,
-                })
-            }
-        })
-        .collect();
-
     let mut result = serde_json::json!({
         "results": json_results,
         "query": query,
-        "total": results.len(),
+        "total": json_results.len(),
     });
 
     if let Some(status) = audit_status {
@@ -352,64 +333,33 @@ fn format_unified_results(
     }))
 }
 
+/// Format unified results (no references) — existing format for backward compat
+fn format_unified_results(
+    results: Vec<UnifiedResult>,
+    query: &str,
+    audit_status: Option<String>,
+) -> Result<Value> {
+    let json_results: Vec<_> = results.iter().map(format_unified_result_json).collect();
+    build_search_response(json_results, query, audit_status)
+}
+
 /// Format tagged results (multi-index) with source field
 fn format_tagged_results(
     tagged: Vec<TaggedResult>,
     query: &str,
     audit_status: Option<String>,
 ) -> Result<Value> {
-    let total = tagged.len();
     let json_results: Vec<_> = tagged
         .iter()
         .map(|t| {
-            let mut json = match &t.result {
-                UnifiedResult::Code(r) => {
-                    serde_json::json!({
-                        "type": "code",
-                        "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
-                        "line_start": r.chunk.line_start,
-                        "line_end": r.chunk.line_end,
-                        "name": r.chunk.name,
-                        "signature": r.chunk.signature,
-                        "language": r.chunk.language.to_string(),
-                        "chunk_type": r.chunk.chunk_type.to_string(),
-                        "score": r.score,
-                        "content": r.chunk.content,
-                    })
-                }
-                UnifiedResult::Note(r) => {
-                    serde_json::json!({
-                        "type": "note",
-                        "text": r.note.text,
-                        "sentiment": r.note.sentiment,
-                        "mentions": r.note.mentions,
-                        "score": r.score,
-                    })
-                }
-            };
+            let mut json = format_unified_result_json(&t.result);
             if let Some(source) = &t.source {
                 json["source"] = serde_json::json!(source);
             }
             json
         })
         .collect();
-
-    let mut result = serde_json::json!({
-        "results": json_results,
-        "query": query,
-        "total": total,
-    });
-
-    if let Some(status) = audit_status {
-        result["audit_mode"] = serde_json::json!(status);
-    }
-
-    Ok(serde_json::json!({
-        "content": [{
-            "type": "text",
-            "text": serde_json::to_string_pretty(&result)?
-        }]
-    }))
+    build_search_response(json_results, query, audit_status)
 }
 
 /// Check if a source should be searched based on the sources filter
