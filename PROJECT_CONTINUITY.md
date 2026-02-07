@@ -2,14 +2,7 @@
 
 ## Right Now
 
-**Idle** (2026-02-06). All planned work complete and merged.
-
-### What shipped this session
-- v0.9.0 released (from previous context, already on crates.io + GitHub)
-- PR #282: parser.rs → src/parser/ directory (mod.rs, types.rs, chunk.rs, calls.rs)
-- PR #283: hnsw.rs → src/hnsw/ directory (mod.rs, build.rs, search.rs, persist.rs, safety.rs) + flaky test fix
-- PR #284: Token savings messaging — README, Cargo.toml, GitHub description/topics
-- Roadmap refactoring items checked off, flaky test bug resolved
+**Idle** (2026-02-06). v0.9.1 released — housekeeping (refactors, docs, flaky test fix).
 
 ### Dev environment
 - `~/.bashrc`: `LD_LIBRARY_PATH` for ort CUDA libs
@@ -53,7 +46,7 @@
 
 ## Architecture
 
-- Version: 0.9.0
+- Version: 0.9.1
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
