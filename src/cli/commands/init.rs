@@ -54,7 +54,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     if !cli.quiet {
         println!("Created .cq/");
         println!();
-        println!("Run 'cq index' to index your codebase.");
+        println!("Run 'cqs index' to index your codebase.");
     }
 
     Ok(())

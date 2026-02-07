@@ -52,6 +52,10 @@ If you fork or contribute to the cqs repository:
 To remove all cqs data:
 
 ```bash
-rm -rf .cq/                    # Project index
-rm -rf ~/.cache/huggingface/   # Downloaded model
+rm -rf .cq/                           # Project index
+rm -rf ~/.local/share/cqs/refs/       # Reference indexes
+rm -rf ~/.config/cqs/projects.toml    # Project registry
+rm -f .cqs.toml                       # Project config
+rm -f docs/notes.toml                 # Project notes
+rm -rf ~/.cache/huggingface/          # Downloaded model
 ```

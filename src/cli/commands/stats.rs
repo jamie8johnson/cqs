@@ -16,7 +16,7 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     let index_path = root.join(".cq/index.db");
 
     if !index_path.exists() {
-        bail!("Index not found. Run 'cq init && cq index' first.");
+        bail!("Index not found. Run 'cqs init && cqs index' first.");
     }
 
     let store = Store::open(&index_path)?;

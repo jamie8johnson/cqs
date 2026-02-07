@@ -81,7 +81,7 @@ pub(crate) fn cmd_doctor(_cli: &Cli) -> Result<()> {
         }
     } else {
         println!("  {} Index: not created yet", "[!]".yellow());
-        println!("      Run 'cq index' to create the index");
+        println!("      Run 'cqs index' to create the index");
     }
 
     // Check references

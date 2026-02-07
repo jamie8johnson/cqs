@@ -161,7 +161,11 @@ pub fn merge_results(
 
 /// Default storage directory for reference indexes
 pub fn refs_dir() -> Option<std::path::PathBuf> {
-    dirs::data_local_dir().map(|d| d.join("cqs/refs"))
+    let dir = dirs::data_local_dir();
+    if dir.is_none() {
+        tracing::warn!("Could not determine local data directory for reference storage");
+    }
+    dir.map(|d| d.join("cqs/refs"))
 }
 
 /// Validate a reference name (no path separators or traversal)

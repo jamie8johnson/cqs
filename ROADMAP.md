@@ -312,7 +312,7 @@
 - [x] **`cqs project`** (CLI) — cross-project search via `~/.config/cqs/projects.toml` registry
 - [x] **`cqs gather`** (CLI + MCP) — smart context assembly: BFS call graph expansion from semantic seed results
 - [x] **`--pattern` filter** — post-search structural matching (builder, error_swallow, async, mutex, unsafe, recursion)
-- [x] 21 MCP tools (up from 17), 258 lib tests, 31 new unit tests
+- [x] 20 MCP tools (up from 17), 260 lib tests, 33 new unit tests
 
 ## Refactoring
 

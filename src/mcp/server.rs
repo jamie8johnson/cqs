@@ -55,7 +55,7 @@ impl McpServer {
         let cq_dir = project_root.join(".cq");
 
         if !index_path.exists() {
-            bail!("Index not found. Run 'cq init && cq index' first.");
+            bail!("Index not found. Run 'cqs init && cqs index' first.");
         }
 
         let store = Store::open(&index_path)
@@ -199,11 +199,11 @@ impl McpServer {
     /// or generic descriptions to prevent information leakage to clients.
     pub(crate) fn sanitize_error_message(&self, error: &str) -> String {
         static RE_UNIX: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root)/[^\s:]+")
+            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root|run|srv|proc|snap|Library|Applications|private)/[^\s:]+")
                 .expect("hardcoded regex")
         });
         static RE_WINDOWS: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files)[^\s:]*")
+            regex::Regex::new(r"[A-Za-z]:\\(?:Users|Windows|Program Files|ProgramData|Temp)[^\s:]*")
                 .expect("hardcoded regex")
         });
 
