@@ -16,13 +16,17 @@ pub(crate) fn cmd_trace(
     source: &str,
     target: &str,
     max_depth: usize,
-    json: bool,
+    format: &str,
 ) -> Result<()> {
     let root = find_project_root();
     let index_path = root.join(".cq/index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
+    }
+
+    if !matches!(format, "text" | "json" | "mermaid") {
+        bail!("Invalid format '{}'. Valid: text, json, mermaid", format);
     }
 
     let store = Store::open(&index_path)?;
@@ -36,7 +40,7 @@ pub(crate) fn cmd_trace(
 
     // Trivial case: source == target
     if source_name == target_name {
-        if json {
+        if format == "json" {
             let rel_file = source_chunk
                 .file
                 .strip_prefix(&root)
@@ -50,6 +54,20 @@ pub(crate) fn cmd_trace(
                 "depth": 0
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
+        } else if format == "mermaid" {
+            let rel_file = source_chunk
+                .file
+                .strip_prefix(&root)
+                .unwrap_or(&source_chunk.file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            println!("graph TD");
+            println!(
+                "    A[\"{} ({}:{})\"]",
+                mermaid_escape(&source_name),
+                mermaid_escape(&rel_file),
+                source_chunk.line_start
+            );
         } else {
             println!("{} and {} are the same function.", source_name, target_name);
         }
@@ -62,7 +80,7 @@ pub(crate) fn cmd_trace(
 
     match path {
         Some(names) => {
-            if json {
+            if format == "json" {
                 let mut path_json = Vec::new();
                 for name in &names {
                     let entry = match store.search_by_name(name, 1)?.into_iter().next() {
@@ -93,6 +111,8 @@ pub(crate) fn cmd_trace(
                     "depth": names.len() - 1
                 });
                 println!("{}", serde_json::to_string_pretty(&result)?);
+            } else if format == "mermaid" {
+                format_mermaid(&store, &root, &names)?;
             } else {
                 println!(
                     "Call path from {} to {} ({} hop{}):",
@@ -127,7 +147,7 @@ pub(crate) fn cmd_trace(
             }
         }
         None => {
-            if json {
+            if format == "json" {
                 let result = serde_json::json!({
                     "source": source_name,
                     "target": target_name,
@@ -135,6 +155,13 @@ pub(crate) fn cmd_trace(
                     "message": format!("No call path found within depth {}", max_depth)
                 });
                 println!("{}", serde_json::to_string_pretty(&result)?);
+            } else if format == "mermaid" {
+                // Empty graph with comment
+                println!("graph TD");
+                println!(
+                    "    %% No call path found from {} to {} within depth {}",
+                    source_name, target_name, max_depth
+                );
             } else {
                 println!(
                     "No call path found from {} to {} within depth {}.",
@@ -147,6 +174,58 @@ pub(crate) fn cmd_trace(
     }
 
     Ok(())
+}
+
+/// Format trace path as Mermaid graph TD diagram
+fn format_mermaid(store: &Store, root: &std::path::Path, names: &[String]) -> Result<()> {
+    println!("graph TD");
+
+    // Generate node definitions with labels
+    for (i, name) in names.iter().enumerate() {
+        let label = match store.search_by_name(name, 1)?.into_iter().next() {
+            Some(r) => {
+                let rel = r
+                    .chunk
+                    .file
+                    .strip_prefix(root)
+                    .unwrap_or(&r.chunk.file)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                format!(
+                    "{} ({}:{})",
+                    mermaid_escape(name),
+                    mermaid_escape(&rel),
+                    r.chunk.line_start
+                )
+            }
+            None => mermaid_escape(name),
+        };
+        let node_id = node_letter(i);
+        println!("    {}[\"{}\"]", node_id, label);
+    }
+
+    // Generate edges
+    for i in 0..names.len().saturating_sub(1) {
+        println!("    {} --> {}", node_letter(i), node_letter(i + 1));
+    }
+
+    Ok(())
+}
+
+/// Generate mermaid node ID from index (A, B, C, ..., Z, A1, B1, ...)
+fn node_letter(i: usize) -> String {
+    if i < 26 {
+        ((b'A' + i as u8) as char).to_string()
+    } else {
+        format!("{}{}", ((b'A' + (i % 26) as u8) as char), i / 26)
+    }
+}
+
+/// Escape characters that are special in Mermaid labels
+fn mermaid_escape(s: &str) -> String {
+    s.replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// BFS shortest path through forward adjacency list

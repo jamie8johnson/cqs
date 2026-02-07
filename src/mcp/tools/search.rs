@@ -3,9 +3,10 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::parser::Language;
+use crate::parser::{ChunkType, Language};
 use crate::reference::{self, TaggedResult};
 use crate::store::{SearchFilter, UnifiedResult};
+use crate::structural::Pattern;
 
 use super::super::server::McpServer;
 use super::super::types::SearchArgs;
@@ -34,6 +35,17 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
     let embedder = server.ensure_embedder()?;
     let query_embedding = embedder.embed_query(&args.query)?;
 
+    let chunk_types = args
+        .chunk_type
+        .map(|ct_str| {
+            ct_str
+                .split(',')
+                .map(|s| s.trim().parse::<ChunkType>())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| anyhow::anyhow!("{}", e))
+        })
+        .transpose()?;
+
     let filter = SearchFilter {
         languages: args
             .language
@@ -43,12 +55,16 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
                     .map_err(|_| anyhow::anyhow!("Unknown language '{}'. Supported: rust, python, typescript, javascript, go, c, java", l))
             })
             .transpose()?,
+        chunk_types,
         path_pattern: args.path_pattern,
         name_boost: args.name_boost.unwrap_or(0.2),
         query_text: args.query.clone(),
         enable_rrf: !args.semantic_only.unwrap_or(false), // RRF on by default, disable with semantic_only
         note_weight: args.note_weight.unwrap_or(1.0),
     };
+
+    // Parse structural pattern filter
+    let pattern: Option<Pattern> = args.pattern.as_ref().map(|p| p.parse()).transpose()?;
 
     // Validate filter parameters before search
     filter
@@ -96,6 +112,23 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         }
     } else {
         vec![]
+    };
+
+    // Apply structural pattern filter if specified
+    let primary_results = if let Some(ref pat) = pattern {
+        let mut filtered: Vec<UnifiedResult> = primary_results
+            .into_iter()
+            .filter(|r| match r {
+                UnifiedResult::Code(sr) => {
+                    pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
+                }
+                UnifiedResult::Note(_) => false,
+            })
+            .collect();
+        filtered.truncate(limit);
+        filtered
+    } else {
+        primary_results
     };
 
     // Fast path: no references configured

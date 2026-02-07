@@ -4,6 +4,9 @@
 
 use anyhow::{bail, Context, Result};
 
+use cqs::parser::ChunkType;
+use cqs::store::UnifiedResult;
+use cqs::structural::Pattern;
 use cqs::{reference, Embedder, HnswIndex, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, signal, Cli};
@@ -32,8 +35,19 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         None => None,
     };
 
+    let chunk_types = match &cli.chunk_type {
+        Some(types) => {
+            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
+            Some(parsed.context(
+                "Invalid chunk type. Valid: function, method, class, struct, enum, trait, interface, constant",
+            )?)
+        }
+        None => None,
+    };
+
     let filter = SearchFilter {
         languages,
+        chunk_types,
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),
@@ -86,14 +100,44 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let config = cqs::config::Config::load(&root);
     let references = reference::load_references(&config.references);
 
+    // Parse pattern filter if specified
+    let pattern: Option<Pattern> = cli
+        .pattern
+        .as_ref()
+        .map(|p| p.parse())
+        .transpose()
+        .context("Invalid pattern")?;
+
     // Use unified search with vector index if available
     let results = store.search_unified_with_index(
         &query_embedding,
         &filter,
-        cli.limit,
+        // Fetch more results if pattern filter will reduce them
+        if pattern.is_some() {
+            cli.limit * 3
+        } else {
+            cli.limit
+        },
         cli.threshold,
         index.as_deref(),
     )?;
+
+    // Apply structural pattern filter if specified
+    let results = if let Some(ref pat) = pattern {
+        let mut filtered: Vec<UnifiedResult> = results
+            .into_iter()
+            .filter(|r| match r {
+                UnifiedResult::Code(sr) => {
+                    pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
+                }
+                UnifiedResult::Note(_) => false, // Pattern filter only applies to code
+            })
+            .collect();
+        filtered.truncate(cli.limit);
+        filtered
+    } else {
+        results
+    };
 
     // Fast path: no references configured
     if references.is_empty() {

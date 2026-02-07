@@ -64,6 +64,7 @@ pub fn tool_explain(server: &McpServer, arguments: Value) -> Result<Value> {
         Some((_, embedding)) => {
             let filter = SearchFilter {
                 languages: None,
+                chunk_types: None,
                 path_pattern: None,
                 name_boost: 0.0,
                 query_text: String::new(),

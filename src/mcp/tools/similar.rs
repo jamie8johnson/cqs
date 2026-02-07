@@ -87,6 +87,7 @@ pub fn tool_similar(server: &McpServer, arguments: Value) -> Result<Value> {
     // Search with embedding as query
     let filter = SearchFilter {
         languages: language_filter,
+        chunk_types: None,
         path_pattern: None,
         name_boost: 0.0,
         query_text: String::new(),

@@ -15,9 +15,10 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_context, cmd_diff, cmd_doctor, cmd_explain, cmd_impact,
-    cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref, cmd_serve, cmd_similar, cmd_stats,
-    cmd_test_map, cmd_trace, NotesCommand, RefCommand, ServeConfig,
+    cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor, cmd_explain, cmd_gather,
+    cmd_gc, cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_project, cmd_query, cmd_ref, cmd_serve,
+    cmd_similar, cmd_stats, cmd_test_map, cmd_trace, NotesCommand, ProjectCommand, RefCommand,
+    ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -57,9 +58,17 @@ pub struct Cli {
     #[arg(short = 'l', long)]
     lang: Option<String>,
 
+    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant)
+    #[arg(long)]
+    chunk_type: Option<Vec<String>>,
+
     /// Filter by path pattern (glob)
     #[arg(short = 'p', long)]
     path: Option<String>,
+
+    /// Filter by structural pattern (builder, error_swallow, async, mutex, unsafe, recursion)
+    #[arg(long)]
+    pattern: Option<String>,
 
     /// Output as JSON
     #[arg(long)]
@@ -228,7 +237,10 @@ enum Commands {
         /// Max search depth
         #[arg(long, default_value = "10")]
         max_depth: usize,
-        /// Output as JSON
+        /// Output format: text, json, mermaid
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
     },
@@ -247,6 +259,43 @@ enum Commands {
     Context {
         /// File path relative to project root
         path: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find functions with no callers (dead code detection)
+    Dead {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Include public API functions in the main list
+        #[arg(long)]
+        include_pub: bool,
+    },
+    /// Gather minimal code context to answer a question
+    Gather {
+        /// Search query / question
+        query: String,
+        /// Call graph expansion depth (0=seeds only, max 5)
+        #[arg(long, default_value = "1")]
+        expand: usize,
+        /// Expansion direction: both, callers, callees
+        #[arg(long, default_value = "both")]
+        direction: String,
+        /// Max chunks to return
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Manage cross-project search registry
+    Project {
+        #[command(subcommand)]
+        subcmd: ProjectCommand,
+    },
+    /// Remove stale chunks and rebuild index
+    Gc {
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -322,14 +371,28 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref source,
             ref target,
             max_depth,
+            ref format,
             json,
-        }) => cmd_trace(&cli, source, target, max_depth, json),
+        }) => {
+            let fmt = if json { "json" } else { format.as_str() };
+            cmd_trace(&cli, source, target, max_depth, fmt)
+        }
         Some(Commands::TestMap {
             ref name,
             depth,
             json,
         }) => cmd_test_map(&cli, name, depth, json),
         Some(Commands::Context { ref path, json }) => cmd_context(&cli, path, json),
+        Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
+        Some(Commands::Gather {
+            ref query,
+            expand,
+            ref direction,
+            limit,
+            json,
+        }) => cmd_gather(&cli, query, expand, direction, limit, json),
+        Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
+        Some(Commands::Gc { json }) => cmd_gc(json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

@@ -321,6 +321,146 @@ impl Store {
         })
     }
 
+    /// Find functions/methods never called by indexed code (dead code detection).
+    ///
+    /// Returns two lists:
+    /// - `confident`: Functions with no callers that are likely dead
+    /// - `possibly_dead_pub`: Public functions with no callers (may be used externally)
+    ///
+    /// Exclusions applied:
+    /// - `main` entry point
+    /// - Test functions (via `find_test_chunks()` heuristics)
+    /// - Functions in test files
+    /// - Trait implementations (dynamic dispatch invisible to call graph)
+    /// - `#[no_mangle]` functions (FFI)
+    pub fn find_dead_code(
+        &self,
+        include_pub: bool,
+    ) -> Result<(Vec<ChunkSummary>, Vec<ChunkSummary>), StoreError> {
+        self.rt.block_on(async {
+            // Get all functions/methods with no callers (top-level only, not windowed chunks)
+            let rows: Vec<_> = sqlx::query(
+                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
+                        c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                 FROM chunks c
+                 WHERE c.chunk_type IN ('function', 'method')
+                   AND c.name NOT IN (SELECT DISTINCT callee_name FROM function_calls)
+                   AND c.parent_id IS NULL
+                 ORDER BY c.origin, c.line_start",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            let all_uncalled: Vec<ChunkSummary> = rows
+                .into_iter()
+                .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
+                .collect();
+
+            // Build test name set for exclusion
+            let test_names: std::collections::HashSet<String> = self
+                .find_test_chunks_async()
+                .await?
+                .into_iter()
+                .map(|c| c.name)
+                .collect();
+
+            let mut confident = Vec::new();
+            let mut possibly_dead_pub = Vec::new();
+
+            for chunk in all_uncalled {
+                // Skip main entry point
+                if chunk.name == "main" {
+                    continue;
+                }
+
+                // Skip test functions
+                if test_names.contains(&chunk.name) {
+                    continue;
+                }
+
+                // Skip functions in test files
+                let path_str = chunk.file.to_string_lossy();
+                if path_str.contains("/tests/")
+                    || path_str.contains("_test.")
+                    || path_str.contains(".test.")
+                    || path_str.contains(".spec.")
+                {
+                    continue;
+                }
+
+                // Skip trait implementations (content contains "impl ... for ...")
+                if chunk.content.contains(" for ")
+                    && chunk.chunk_type == crate::parser::ChunkType::Method
+                {
+                    continue;
+                }
+
+                // Skip #[no_mangle] FFI functions
+                if chunk.content.contains("no_mangle") {
+                    continue;
+                }
+
+                // Check if public
+                let is_pub = chunk.content.starts_with("pub ")
+                    || chunk.content.starts_with("pub(")
+                    || chunk.signature.starts_with("pub ")
+                    || chunk.signature.starts_with("pub(");
+
+                if is_pub && !include_pub {
+                    possibly_dead_pub.push(chunk);
+                } else {
+                    confident.push(chunk);
+                }
+            }
+
+            Ok((confident, possibly_dead_pub))
+        })
+    }
+
+    /// Async helper for find_test_chunks (reused by find_dead_code)
+    async fn find_test_chunks_async(&self) -> Result<Vec<ChunkSummary>, StoreError> {
+        let rows: Vec<_> = sqlx::query(
+            "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                    line_start, line_end, parent_id
+             FROM chunks
+             WHERE chunk_type IN ('function', 'method')
+               AND (
+                 name LIKE 'test_%'
+                 OR name LIKE 'Test%'
+                 OR content LIKE '%#[test]%'
+                 OR content LIKE '%@Test%'
+                 OR origin LIKE '%/tests/%'
+                 OR origin LIKE '%\\_test.%' ESCAPE '\\'
+                 OR origin LIKE '%.test.%'
+                 OR origin LIKE '%.spec.%'
+                 OR origin LIKE '%_test.go'
+                 OR origin LIKE '%_test.py'
+               )
+             ORDER BY origin, line_start",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
+            .collect())
+    }
+
+    /// Delete function_calls for files no longer in the chunks table.
+    ///
+    /// Used by GC to clean up orphaned call graph entries after pruning chunks.
+    pub fn prune_stale_calls(&self) -> Result<u64, StoreError> {
+        self.rt.block_on(async {
+            let result = sqlx::query(
+                "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
+            )
+            .execute(&self.pool)
+            .await?;
+            Ok(result.rows_affected())
+        })
+    }
+
     /// Find test chunks using language-specific heuristics.
     ///
     /// Identifies test functions across all 7 supported languages by:

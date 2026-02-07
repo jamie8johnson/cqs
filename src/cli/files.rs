@@ -5,96 +5,14 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use ignore::WalkBuilder;
 
-use cqs::strip_unc_prefix;
-use cqs::Parser as CqParser;
-
-/// Maximum file size to index (1MB)
-const MAX_FILE_SIZE: u64 = 1_048_576;
-
-/// Enumerate files to index
-///
-/// Note on I/O efficiency: WalkBuilder's DirEntry caches metadata from the initial
-/// stat() during directory traversal, so e.metadata() doesn't re-stat. The
-/// canonicalize() call does require a separate syscall for symlink resolution,
-/// but this is unavoidable for correct path validation.
+/// Enumerate files to index (delegates to library implementation)
 pub(crate) fn enumerate_files(
     root: &Path,
-    parser: &CqParser,
+    parser: &cqs::Parser,
     no_ignore: bool,
 ) -> Result<Vec<PathBuf>> {
-    let root = strip_unc_prefix(root.canonicalize().context("Failed to canonicalize root")?);
-
-    let walker = WalkBuilder::new(&root)
-        .git_ignore(!no_ignore)
-        .git_global(!no_ignore)
-        .git_exclude(!no_ignore)
-        .ignore(!no_ignore)
-        .hidden(!no_ignore)
-        .follow_links(false)
-        .build();
-
-    let files: Vec<PathBuf> = walker
-        .filter_map(|e| {
-            e.map_err(|err| {
-                tracing::debug!(error = %err, "Failed to read directory entry during walk");
-            })
-            .ok()
-        })
-        .filter(|e| e.file_type().map(|ft| ft.is_file()).unwrap_or(false))
-        .filter(|e| {
-            // Skip files over size limit
-            e.metadata()
-                .map(|m| m.len() <= MAX_FILE_SIZE)
-                .unwrap_or(false)
-        })
-        .filter(|e| {
-            // Only supported extensions
-            e.path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| parser.supported_extensions().contains(&ext))
-                .unwrap_or(false)
-        })
-        .filter_map({
-            // Track count of canonicalization failures to log at appropriate level
-            let failure_count = std::sync::atomic::AtomicUsize::new(0);
-            move |e| {
-                // Validate path stays within project root and convert to relative
-                let path = match e.path().canonicalize() {
-                    Ok(p) => p,
-                    Err(err) => {
-                        let count =
-                            failure_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        if count < 3 {
-                            tracing::warn!(
-                                path = %e.path().display(),
-                                error = %err,
-                                "Failed to canonicalize path, skipping"
-                            );
-                        } else {
-                            tracing::debug!(
-                                path = %e.path().display(),
-                                error = %err,
-                                "Failed to canonicalize path, skipping"
-                            );
-                        }
-                        return None;
-                    }
-                };
-                if path.starts_with(&root) {
-                    // Store relative path for portability and glob matching
-                    Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
-                } else {
-                    tracing::warn!("Skipping path outside project: {}", e.path().display());
-                    None
-                }
-            }
-        })
-        .collect();
-
-    Ok(files)
+    cqs::enumerate_files(root, parser, no_ignore)
 }
 
 /// Check if a process with the given PID exists

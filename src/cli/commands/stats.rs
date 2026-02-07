@@ -2,9 +2,11 @@
 //!
 //! Displays index statistics.
 
+use std::collections::HashSet;
+
 use anyhow::{bail, Result};
 
-use cqs::{HnswIndex, Store};
+use cqs::{HnswIndex, Parser, Store};
 
 use crate::cli::{find_project_root, Cli};
 
@@ -20,6 +22,12 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     let store = Store::open(&index_path)?;
     let stats = store.stats()?;
 
+    // Check staleness by scanning filesystem
+    let parser = Parser::new()?;
+    let files = crate::cli::enumerate_files(&root, &parser, false)?;
+    let file_set: HashSet<_> = files.into_iter().collect();
+    let (stale_count, missing_count) = store.count_stale_files(&file_set).unwrap_or((0, 0));
+
     let cq_dir = root.join(".cq");
     // Use count_vectors to avoid loading full HNSW index just for stats
     let hnsw_vectors = HnswIndex::count_vectors(&cq_dir, "index");
@@ -30,6 +38,8 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
         let json = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,
+            "stale_files": stale_count,
+            "missing_files": missing_count,
             "notes": note_count,
             "call_graph": {
                 "total_calls": call_count,
@@ -87,6 +97,26 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
                     println!("  Tip: Run 'cqs index' to build HNSW for faster search");
                 }
             }
+        }
+
+        // Staleness warning
+        if stale_count > 0 || missing_count > 0 {
+            println!();
+            if stale_count > 0 {
+                println!(
+                    "Stale: {} file{} changed since last index",
+                    stale_count,
+                    if stale_count == 1 { "" } else { "s" }
+                );
+            }
+            if missing_count > 0 {
+                println!(
+                    "Missing: {} file{} deleted since last index",
+                    missing_count,
+                    if missing_count == 1 { "" } else { "s" }
+                );
+            }
+            println!("  Run 'cqs index' to update, or 'cqs gc' to clean up deleted files");
         }
 
         // Warning for very large indexes

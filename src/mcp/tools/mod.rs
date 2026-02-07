@@ -6,8 +6,11 @@ mod audit;
 mod batch;
 mod call_graph;
 mod context;
+mod dead;
 mod diff;
 mod explain;
+mod gather;
+mod gc;
 mod impact;
 mod notes;
 mod read;
@@ -62,6 +65,11 @@ pub fn handle_tools_list() -> Result<Value> {
                         "description": "Weight for name matching 0.0-1.0 (default: 0.2)",
                         "default": 0.2
                     },
+                    "chunk_type": {
+                        "type": "string",
+                        "enum": ["function", "method", "class", "struct", "enum", "trait", "interface", "constant"],
+                        "description": "Filter by code element type (optional). Can specify multiple comma-separated values."
+                    },
                     "semantic_only": {
                         "type": "boolean",
                         "description": "Disable RRF hybrid search, use pure semantic similarity (default: false)",
@@ -81,6 +89,11 @@ pub fn handle_tools_list() -> Result<Value> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Filter which indexes to search. Use \"project\" for primary, reference names for others. Omit to search all."
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "enum": ["builder", "error_swallow", "async", "mutex", "unsafe", "recursion"],
+                        "description": "Filter results by structural code pattern (optional)"
                     }
                 },
                 "required": ["query"]
@@ -312,6 +325,12 @@ pub fn handle_tools_list() -> Result<Value> {
                         "type": "integer",
                         "description": "Maximum search depth (default: 10)",
                         "default": 10
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["json", "mermaid"],
+                        "description": "Output format (default: json). Use 'mermaid' for diagram output.",
+                        "default": "json"
                     }
                 },
                 "required": ["source", "target"]
@@ -371,6 +390,58 @@ pub fn handle_tools_list() -> Result<Value> {
             }),
         },
         Tool {
+            name: "cqs_gather".into(),
+            description: "Smart context assembly: given a question, return the minimal set of code chunks needed to answer it. Expands seed results via call graph.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language question about the codebase"
+                    },
+                    "expand": {
+                        "type": "integer",
+                        "description": "Call graph expansion depth (0=seeds only, max 5, default: 1)",
+                        "default": 1
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["both", "callers", "callees"],
+                        "description": "Expansion direction (default: both)",
+                        "default": "both"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max chunks to return (default: 10)",
+                        "default": 10
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        Tool {
+            name: "cqs_dead".into(),
+            description: "Find functions with no callers (dead code detection). Returns confident dead code and optionally public API functions that may be unused.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "include_pub": {
+                        "type": "boolean",
+                        "description": "Include public API functions in the main dead code list (default: false, shown separately)",
+                        "default": false
+                    }
+                }
+            }),
+        },
+        Tool {
+            name: "cqs_gc".into(),
+            description: "Check index staleness and report what needs cleanup. Returns stale/missing file counts. Run 'cqs gc' from CLI to actually clean up.".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        Tool {
             name: "cqs_audit_mode".into(),
             description: "Toggle audit mode to exclude notes from search and read results. Use before code audits or fresh-eyes reviews to prevent prior observations from influencing analysis.".into(),
             input_schema: serde_json::json!({
@@ -419,6 +490,9 @@ pub fn handle_tools_call(server: &McpServer, params: Option<Value>) -> Result<Va
         "cqs_add_note" => notes::tool_add_note(server, arguments),
         "cqs_update_note" => notes::tool_update_note(server, arguments),
         "cqs_remove_note" => notes::tool_remove_note(server, arguments),
+        "cqs_gather" => gather::tool_gather(server, arguments),
+        "cqs_dead" => dead::tool_dead(server, arguments),
+        "cqs_gc" => gc::tool_gc(server),
         "cqs_audit_mode" => audit::tool_audit_mode(server, arguments),
         "cqs_diff" => diff::tool_diff(server, arguments),
         "cqs_explain" => explain::tool_explain(server, arguments),
@@ -429,7 +503,7 @@ pub fn handle_tools_call(server: &McpServer, params: Option<Value>) -> Result<Va
         "cqs_batch" => batch::tool_batch(server, arguments),
         "cqs_context" => context::tool_context(server, arguments),
         _ => bail!(
-            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_audit_mode, cqs_diff, cqs_explain, cqs_similar, cqs_impact, cqs_trace, cqs_test_map, cqs_batch, cqs_context",
+            "Unknown tool: '{}'. Available tools: cqs_search, cqs_stats, cqs_callers, cqs_callees, cqs_read, cqs_add_note, cqs_update_note, cqs_remove_note, cqs_gather, cqs_dead, cqs_gc, cqs_audit_mode, cqs_diff, cqs_explain, cqs_similar, cqs_impact, cqs_trace, cqs_test_map, cqs_batch, cqs_context",
             name
         ),
     };

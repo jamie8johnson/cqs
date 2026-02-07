@@ -452,3 +452,8 @@ mentions = [
 sentiment = 0.5
 text = "When adding new MCP tools/capabilities: create a cqs-prefixed skill in .claude/skills/, update bootstrap's portable skills list, and decide if it's project-local or global (~/.claude/skills/). Skill = SKILL.md with frontmatter (name, description, argument-hint) + usage docs. Keep names prefixed to avoid collisions."
 mentions = ["bootstrap/SKILL.md", ".claude/skills/", "src/mcp/tools/mod.rs"]
+
+[[note]]
+sentiment = 0.5
+text = "Batch A shipped: --chunk-type filter for search (CLI + MCP) and cqs dead for dead code detection (CLI + MCP cqs_dead). Use --chunk-type function to find only functions, cqs dead --include-pub for full dead code audit. MCP search tool accepts chunk_type param (comma-separated)."
+mentions = ["src/store/helpers.rs", "SearchFilter", "src/cli/commands/dead.rs", "src/mcp/tools/dead.rs", "find_dead_code"]
