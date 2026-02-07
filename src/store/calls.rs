@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 
 use sqlx::Row;
 
-use super::helpers::{clamp_line_number, CallerInfo, ChunkRow, ChunkSummary, StoreError};
+use super::helpers::{
+    clamp_line_number, CallGraph, CallerInfo, CallerWithContext, ChunkRow, ChunkSummary, StoreError,
+};
 use super::Store;
 
 impl Store {
@@ -256,6 +258,104 @@ impl Store {
             Ok(rows
                 .into_iter()
                 .map(|(name, line)| (name, clamp_line_number(line)))
+                .collect())
+        })
+    }
+
+    /// Load the entire call graph as forward + reverse adjacency lists.
+    ///
+    /// Single SQL scan of `function_calls`. Typically ~2000 edges, fits in memory trivially.
+    /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
+    pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("SELECT caller_name, callee_name FROM function_calls")
+                    .fetch_all(&self.pool)
+                    .await?;
+
+            let mut forward: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+            let mut reverse: std::collections::HashMap<String, Vec<String>> =
+                std::collections::HashMap::new();
+
+            for (caller, callee) in rows {
+                forward
+                    .entry(caller.clone())
+                    .or_default()
+                    .push(callee.clone());
+                reverse.entry(callee).or_default().push(caller);
+            }
+
+            Ok(CallGraph { forward, reverse })
+        })
+    }
+
+    /// Find callers with call-site line numbers for impact analysis.
+    ///
+    /// Returns the caller function name, file, start line, and the specific line
+    /// where the call to `callee_name` occurs.
+    pub fn get_callers_with_context(
+        &self,
+        callee_name: &str,
+    ) -> Result<Vec<CallerWithContext>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+                "SELECT file, caller_name, caller_line, call_line
+                 FROM function_calls
+                 WHERE callee_name = ?1
+                 ORDER BY file, call_line",
+            )
+            .bind(callee_name)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .into_iter()
+                .map(|(file, name, caller_line, call_line)| CallerWithContext {
+                    file: PathBuf::from(file),
+                    name,
+                    line: clamp_line_number(caller_line),
+                    call_line: clamp_line_number(call_line),
+                })
+                .collect())
+        })
+    }
+
+    /// Find test chunks using language-specific heuristics.
+    ///
+    /// Identifies test functions across all 7 supported languages by:
+    /// - Name patterns: `test_*` (Rust/Python), `Test*` (Go)
+    /// - Content patterns: `#[test]` (Rust), `@Test` (Java)
+    /// - Path patterns: `/tests/`, `_test.rs`, `.test.ts`, `.spec.js`, `_test.go`
+    ///
+    /// Uses a broad SQL filter then Rust post-filter for precision.
+    pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                        line_start, line_end, parent_id
+                 FROM chunks
+                 WHERE chunk_type IN ('function', 'method')
+                   AND (
+                     name LIKE 'test_%'
+                     OR name LIKE 'Test%'
+                     OR content LIKE '%#[test]%'
+                     OR content LIKE '%@Test%'
+                     OR origin LIKE '%/tests/%'
+                     OR origin LIKE '%\\_test.%' ESCAPE '\\'
+                     OR origin LIKE '%.test.%'
+                     OR origin LIKE '%.spec.%'
+                     OR origin LIKE '%_test.go'
+                     OR origin LIKE '%_test.py'
+                   )
+                 ORDER BY origin, line_start",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .into_iter()
+                .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
                 .collect())
         })
     }

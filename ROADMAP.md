@@ -285,23 +285,18 @@
 
 ## Phase 7: Token Efficiency
 
-### Rationale
+### Status: Complete (v0.8.0)
 
-Each feature targets a specific multi-tool-call pattern that burns tokens in AI sessions.
+### Done
 
-### Ideas (ordered by projected savings)
-
-1. **`cqs trace`** — Follow a call chain end-to-end. "Trace search from CLI to results" returns the ordered function chain with condensed signatures. Replaces 5-10 sequential file reads per code-flow question. *Highest savings — most common multi-tool pattern.*
-
-2. **`cqs impact`** — "What breaks if I change X?" Returns callers with usage context (the relevant lines, not whole files), plus tests that reference X. Replaces callers + reading each caller's file + grepping tests. ~5 tool calls → 1.
-
-3. **`cqs batch`** — Execute multiple queries in one tool call. `{queries: [{search: "X"}, {callers: "Y"}, {explain: "Z"}]}` → single response. Eliminates round-trip overhead for independent lookups.
-
-4. **`cqs context`** — "What do I need to know to work on module X?" Returns public API, internal types, imports, dependents, and recent notes. Like `explain` but at module/file scope.
-
-5. **`cqs test-map`** — Map functions to tests that exercise them. "What tests cover `search_filtered`?" Returns test names + files. Saves grep rounds before refactoring.
-
-6. **Focused `cqs_read`** — Mode that returns just the target function + its type dependencies (struct defs, trait bounds) instead of the whole file. Cuts file-read tokens by 50-80% in large files.
+- [x] **`cqs trace`** (CLI + MCP) — BFS shortest path between two functions through the call graph. Replaces 5-10 sequential file reads per code-flow question.
+- [x] **`cqs impact`** (CLI + MCP) — "What breaks if I change X?" Returns callers with call-site snippets, plus tests that reference X via reverse BFS. ~5 tool calls → 1.
+- [x] **`cqs test-map`** (CLI + MCP) — Map functions to tests that exercise them with full call chains. Saves grep rounds before refactoring.
+- [x] **`cqs batch`** (MCP-only) — Execute multiple queries in one tool call. Eliminates round-trip overhead for independent lookups. Max 10 queries per batch.
+- [x] **`cqs context`** (CLI + MCP) — Module-level understanding: all chunks, external callers/callees, dependent files, related notes for a file.
+- [x] **Focused `cqs_read`** (MCP) — `focus` parameter returns target function + type dependencies instead of whole file. Cuts file-read tokens by 50-80%.
+- [x] Shared infrastructure: `CallGraph`, `CallerWithContext`, `get_call_graph()`, `find_test_chunks()`, `get_chunks_by_origin()`, shared `resolve.rs` modules
+- [x] 17 MCP tools (up from 12), 4 new CLI subcommands, 431+ tests passing
 
 ## Phase 8: Security
 

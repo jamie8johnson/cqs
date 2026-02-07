@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-02-07
+
+### Added
+- **`cqs trace`** (CLI + MCP): follow a call chain between two functions — BFS shortest path through the call graph with file/line/signature enrichment
+- **`cqs impact`** (CLI + MCP): impact analysis — what breaks if you change a function. Returns callers with call-site snippets, transitive callers (with `--depth`), and affected tests via reverse BFS
+- **`cqs test-map`** (CLI + MCP): map functions to tests that exercise them — finds tests reachable via reverse call graph traversal with full call chains
+- **`cqs batch`** (MCP-only): execute multiple queries in a single tool call — supports search, callers, callees, explain, similar, stats. Max 10 queries per batch
+- **`cqs context`** (CLI + MCP): module-level understanding — lists all chunks, external callers/callees, dependent files, and related notes for a given file
+- **Focused `cqs_read`**: new `focus` parameter on `cqs_read` MCP tool — returns target function + type dependencies instead of the whole file, cutting tokens by 50-80%
+- Store methods: `get_call_graph()`, `get_callers_with_context()`, `find_test_chunks()`, `get_chunks_by_origin()`
+- Shared `resolve.rs` modules for CLI and MCP target resolution (deduplicates parse_target/resolve_target from explain/similar)
+- `CallGraph` and `CallerWithContext` types in store helpers
+- MCP tool count: 12 → 17
+
 ## [0.7.0] - 2026-02-06
 
 ### Added
