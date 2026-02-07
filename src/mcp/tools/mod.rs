@@ -160,7 +160,8 @@ pub fn handle_tools_list() -> Result<Value> {
                         "type": "string",
                         "description": "Function name or file:function. Returns only the target function + its type dependencies instead of the whole file. Cuts tokens by 50-80% in large files."
                     }
-                }
+                },
+                "required": ["path"]
             }),
         },
         Tool {

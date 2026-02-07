@@ -205,10 +205,15 @@ fn tool_search_name_only(
             .iter()
             .map(|r| format_code_result(r, &server.project_root, None))
             .collect();
+        let wrapped = serde_json::json!({
+            "results": json_results,
+            "query": args.query,
+            "total": json_results.len(),
+        });
         return Ok(serde_json::json!({
             "content": [{
                 "type": "text",
-                "text": serde_json::to_string_pretty(&json_results)?
+                "text": serde_json::to_string_pretty(&wrapped)?
             }]
         }));
     }
@@ -254,10 +259,15 @@ fn tool_search_name_only(
         })
         .collect();
 
+    let wrapped = serde_json::json!({
+        "results": json_results,
+        "query": args.query,
+        "total": json_results.len(),
+    });
     Ok(serde_json::json!({
         "content": [{
             "type": "text",
-            "text": serde_json::to_string_pretty(&json_results)?
+            "text": serde_json::to_string_pretty(&wrapped)?
         }]
     }))
 }
