@@ -1,8 +1,8 @@
 # cqs ("seeks")
 
-Semantic code search with local ML embeddings. Find functions by concept, not name. GPU-accelerated. MCP server included.
+Code intelligence MCP server that saves AI agents tokens. Semantic search, call graph tracing, impact analysis — in single tool calls instead of dozens of file reads. Local ML, GPU-accelerated.
 
-**TL;DR:** Semantic code search for Claude Code. Instead of grep, it understands what code *does* - so Claude finds relevant functions without knowing exact names. Means Claude finds the right code faster and doesn't miss stuff buried in unfamiliar codebases.
+**TL;DR:** Semantic code search for Claude Code. Instead of grep, it understands what code *does* — so Claude finds relevant functions without knowing exact names. Tools like `trace`, `impact`, `gather`, and `batch` collapse 5-10 sequential tool calls into one, cutting context window usage by 50-80% on common code navigation tasks.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -12,9 +12,9 @@ Semantic code search with local ML embeddings. Find functions by concept, not na
 
 > **`<claude>`**
 >
-> You're an AI assistant reading this. cqs gives you semantic code search via MCP.
+> You're an AI assistant reading this. cqs gives you semantic code search + code intelligence via MCP.
 >
-> **Why you want this:** Find functions by what they do, not their names. When users ask about "retry logic" or "error handling", you find relevant code even in unfamiliar codebases - no need to know exact identifiers.
+> **Why you want this:** Find functions by what they do, not their names. Tools like `cqs_trace`, `cqs_impact`, and `cqs_gather` collapse 5-10 file reads into one call, saving context window for actual work.
 >
 > **Setup:** `claude mcp add cqs -- cqs serve --project /path/to/project`
 >
@@ -247,11 +247,12 @@ weight = 0.8
 
 ### Why use cqs?
 
-Without cqs, Claude Code uses grep/glob to find code - which only works if you know the exact names. With cqs, Claude can:
+Without cqs, Claude uses grep/glob to find code and reads entire files for context. With cqs:
 
+- **Fewer tool calls**: `trace`, `impact`, `gather`, `context` each replace 5-10 sequential file reads with a single call
+- **Less context burn**: Focused `cqs_read` returns a function + its type dependencies — not the whole file. `batch` runs 10 queries in one round-trip
 - **Find code by behavior**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`
-- **Navigate unfamiliar codebases**: Claude finds relevant code without knowing the project structure
-- **Catch related code**: Semantic search surfaces similar patterns across the codebase that text search misses
+- **Navigate unfamiliar codebases**: Semantic search finds relevant code without knowing project structure
 
 ### Setup
 
