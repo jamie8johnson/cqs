@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, context.rs, resolve.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -113,7 +113,7 @@ src/
     validation.rs - Input validation, path checks
     audit_mode.rs - Audit mode state
     tools/      - MCP tool implementations
-      mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, batch.rs, context.rs, resolve.rs
+      mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, batch.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs
     transports/ - stdio.rs, http.rs transport implementations
   parser.rs     - tree-sitter code parsing (delegates to language/ registry)
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
@@ -125,6 +125,9 @@ src/
   note.rs       - Developer notes with sentiment, rewrite_notes_file()
   diff.rs       - Semantic diff between indexed snapshots
   reference.rs  - Multi-index: ReferenceIndex, load, search, merge
+  gather.rs     - Smart context assembly (BFS call graph expansion)
+  structural.rs - Structural pattern matching on code chunks
+  project.rs    - Cross-project search registry
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API
@@ -133,7 +136,7 @@ src/
     groom-notes/  - Interactive note review and cleanup
     update-tears/ - Session state capture for context persistence
     release/      - Version bump, changelog, publish workflow
-    audit/        - 20-category code audit with parallel agents
+    audit/        - 14-category code audit with parallel agents
     pr/           - WSL-safe PR creation
     cqs-bootstrap/ - New project setup with tears infrastructure
     reindex/      - Rebuild index with before/after stats

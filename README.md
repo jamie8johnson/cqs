@@ -63,8 +63,20 @@ cqs --path "src/*" "config"
 cqs --path "tests/**" "mock"
 cqs --path "**/*.go" "interface"
 
+# By chunk type
+cqs --chunk-type function "retry logic"
+cqs --chunk-type struct "config"
+cqs --chunk-type enum "error types"
+
+# By structural pattern
+cqs --pattern async "request handling"
+cqs --pattern unsafe "memory operations"
+cqs --pattern recursion "tree traversal"
+# Patterns: builder, error_swallow, async, mutex, unsafe, recursion
+
 # Combined
 cqs --lang typescript --path "src/api/*" "authentication"
+cqs --lang rust --chunk-type function --pattern async "database query"
 
 # Hybrid search tuning
 cqs --name-boost 0.2 "retry logic"   # Semantic-heavy (default)
@@ -173,6 +185,29 @@ cqs context src/search.rs
 cqs context src/search.rs --json
 ```
 
+## Maintenance
+
+```bash
+# Find dead code (functions never called by indexed code)
+cqs dead                    # Conservative: excludes main, tests, trait impls
+cqs dead --include-pub      # Include public API functions
+cqs dead --json             # JSON output
+
+# Garbage collection (remove stale index entries)
+cqs gc                      # Prune deleted files, rebuild HNSW
+
+# Cross-project search
+cqs project register mylib /path/to/lib   # Register a project
+cqs project list                          # Show registered projects
+cqs project search "retry logic"          # Search across all projects
+cqs project remove mylib                  # Unregister
+
+# Smart context assembly (gather related code)
+cqs gather "error handling"               # Seed search + call graph expansion
+cqs gather "auth flow" --expand 2         # Deeper expansion
+cqs gather "config" --direction callers   # Only callers, not callees
+```
+
 ## Reference Indexes (Multi-Index Search)
 
 Search across your project and external codebases simultaneously:
@@ -275,11 +310,14 @@ Available tools:
 - `cqs_similar` - find functions similar to a given function (search by example)
 - `cqs_explain` - function card: signature, callers, callees, similar functions
 - `cqs_diff` - semantic diff between indexed snapshots
-- `cqs_trace` - follow call chain between two functions (BFS shortest path)
+- `cqs_trace` - follow call chain between two functions (BFS shortest path). `format: "mermaid"` for diagrams
 - `cqs_impact` - what breaks if you change X? Callers with snippets + affected tests
 - `cqs_test_map` - map functions to tests that exercise them
 - `cqs_batch` - execute multiple queries in one call (up to 10)
 - `cqs_context` - module-level understanding: chunks, callers, callees, notes for a file
+- `cqs_gather` - smart context assembly: seed search + call graph BFS expansion
+- `cqs_dead` - find functions/methods never called by indexed code
+- `cqs_gc` - report index staleness (stale/missing file counts)
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
