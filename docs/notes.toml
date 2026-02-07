@@ -469,34 +469,38 @@ mentions = [
 [[note]]
 sentiment = 0.5
 text = "One-hot embeddings for HNSW test stability: sin-based make_embedding(seed) produced vectors too similar in 769-dim cosine space — HNSW approximate search couldn't reliably rank the exact match. Fix: one-hot-like vectors (0.01 baseline + 1.0 spike at seed-specific dimension). Cosine similarity ~0.01 between seeds, 1.0 for same seed. Reusable pattern for any HNSW test needing well-separated embeddings."
-mentions = ["src/hnsw/safety.rs", "src/hnsw/build.rs", "make_embedding", "flaky test"]
+mentions = [
+    "src/hnsw/safety.rs",
+    "src/hnsw/build.rs",
+    "make_embedding",
+    "flaky test",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Rust impl blocks split across module files: when splitting monolithic .rs into a directory module, impl Foo blocks can live in separate files (chunk.rs, calls.rs each have `impl Parser { ... }`). No trait needed, no delegation. Public API unchanged. Key enabler for the parser/ and hnsw/ refactors."
-mentions = ["src/parser/chunk.rs", "src/parser/calls.rs", "src/hnsw/build.rs", "src/hnsw/search.rs", "src/hnsw/persist.rs"]
+mentions = [
+    "src/parser/chunk.rs",
+    "src/parser/calls.rs",
+    "src/hnsw/build.rs",
+    "src/hnsw/search.rs",
+    "src/hnsw/persist.rs",
+]
 
 [[note]]
 sentiment = 0.5
 text = "Token efficiency tools: cqs_trace, cqs_impact, cqs_gather collapse 5-10 file reads into one MCP call by combining search + call graph traversal server-side. The savings compound: fewer tool calls = fewer round-trips = less context burn. This is the core value prop for AI agent consumers."
-mentions = ["src/mcp/tools/mod.rs", "src/trace.rs", "src/impact.rs", "src/gather.rs"]
-
-[[note]]
-sentiment = -1.0
-text = "v0.9.1 audit: watch mode never updates call graph (function_calls table). All cqs_callers/callees/trace/impact/dead/test_map return stale data for files modified via watch. Must add upsert_function_calls call to reindex_files."
-mentions = ["src/cli/watch.rs", "reindex_files", "upsert_function_calls"]
-
-[[note]]
-sentiment = -1.0
-text = 'v0.9.1 audit: config.rs:184 unwrap_or_default on read_to_string treats ALL errors as "file missing" — permission errors or I/O errors silently destroy config on next write. Fix: match on error kind like remove_reference_from_config does.'
-mentions = ["src/config.rs", "add_reference_to_config"]
-
-[[note]]
-sentiment = -1.0
-text = "v0.9.1 audit: gather.rs sorts by file order THEN truncates to limit — discards highest-scored chunks in favor of alphabetically-first files. Fix: sort by score desc, truncate, then re-sort by file+line for display."
-mentions = ["src/gather.rs", "gather"]
+mentions = [
+    "src/mcp/tools/mod.rs",
+    "src/trace.rs",
+    "src/impact.rs",
+    "src/gather.rs",
+]
 
 [[note]]
 sentiment = -0.5
 text = "v0.9.1 audit found actual MCP tool count is 20, not 21. Multiple docs (CLAUDE.md, ROADMAP, CHANGELOG, PROJECT_CONTINUITY) say 21. Verify by counting tool definitions in src/mcp/tools/mod.rs."
-mentions = ["src/mcp/tools/mod.rs", "CLAUDE.md"]
+mentions = [
+    "src/mcp/tools/mod.rs",
+    "CLAUDE.md",
+]
