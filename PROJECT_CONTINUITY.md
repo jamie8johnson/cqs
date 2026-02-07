@@ -58,7 +58,7 @@
 
 ## Architecture
 
-- Version: 0.9.1
+- Version: 0.9.2
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
