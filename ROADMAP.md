@@ -298,6 +298,40 @@
 - [x] Shared infrastructure: `CallGraph`, `CallerWithContext`, `get_call_graph()`, `find_test_chunks()`, `get_chunks_by_origin()`, shared `resolve.rs` modules
 - [x] 17 MCP tools (up from 12), 4 new CLI subcommands, 431+ tests passing
 
+## Post-v0.8.0: Uncharted Features
+
+### Status: Complete (PR #280)
+
+### Done
+
+- [x] **`--chunk-type` filter** — narrow search to function/method/class/struct/enum/trait/interface/constant (CLI + MCP)
+- [x] **`cqs dead`** (CLI + MCP) — find functions/methods never called by indexed code. Excludes main, tests, trait impls. `--include-pub` for full audit.
+- [x] **Index staleness warnings** — `cqs stats` and MCP stats report stale/missing file counts
+- [x] **`cqs gc`** (CLI + MCP) — prune chunks for deleted files, clean orphan call graph entries, rebuild HNSW
+- [x] **`--format mermaid`** on `cqs trace` — generate Mermaid diagrams from call paths
+- [x] **`cqs project`** (CLI) — cross-project search via `~/.config/cqs/projects.toml` registry
+- [x] **`cqs gather`** (CLI + MCP) — smart context assembly: BFS call graph expansion from semantic seed results
+- [x] **`--pattern` filter** — post-search structural matching (builder, error_swallow, async, mutex, unsafe, recursion)
+- [x] 21 MCP tools (up from 17), 258 lib tests, 31 new unit tests
+
+## Refactoring
+
+### Planned
+
+- [ ] **Split `parser.rs`** (1071 lines) — 7 languages × (parsing + call extraction) in one file
+  - Extract per-language parsing to `src/language/{rust,python,typescript,javascript,go,c,java}.rs`
+  - Keep `parser.rs` as thin orchestrator: language detection → delegate to module
+  - Call extraction can stay with its language or move to `src/language/calls.rs`
+  - Target: `parser.rs` under 200 lines, language modules 80-150 each
+
+- [ ] **Split `hnsw.rs`** (1150 lines) — build, persistence, search, safety all interleaved
+  - `src/hnsw/mod.rs` — public types (HnswIndex, LoadedHnsw, HnswError) + VectorIndex impl
+  - `src/hnsw/build.rs` — `build()`, `build_batched()`, node insertion
+  - `src/hnsw/persist.rs` — `save()`, `load()`, checksum verification
+  - `src/hnsw/search.rs` — search implementation, SIMD cosine
+  - Tests stay with their respective modules
+  - Target: each file 200-350 lines
+
 ## Phase 8: Security
 
 ### Done

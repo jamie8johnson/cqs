@@ -104,6 +104,9 @@ None.
    - `cqs-test-map` — map functions to their tests
    - `cqs-batch` — execute multiple queries in one call
    - `cqs-context` — module-level file overview
+   - `cqs-gather` — smart context assembly (seed search + call graph BFS)
+   - `cqs-dead` — find dead code (functions with no callers)
+   - `cqs-gc` — report index staleness
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
@@ -172,7 +175,7 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context` (run `cqs watch` to keep index fresh)
+Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc` (run `cqs watch` to keep index fresh)
 
 ## Audit Mode
 

@@ -33,7 +33,7 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/update-tears` -- capture state before compaction or task switch
 - `/groom-notes` -- review and clean up stale notes
 - `/release` -- version bump, changelog, publish, GitHub release
-- `/audit` -- 20-category code audit with parallel agents
+- `/audit` -- 14-category code audit with parallel agents
 - `/pr` -- WSL-safe PR creation (always `--body-file`)
 - `/cqs-bootstrap` -- set up tears infrastructure for new projects
 - `/reindex` -- rebuild index with before/after stats
@@ -51,11 +51,13 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-Tools: `cqs_search`, `cqs_stats`, `cqs_similar`, `cqs_explain`, `cqs_diff` (run `cqs watch` to keep index fresh)
+Tools: `cqs_search`, `cqs_stats`, `cqs_callers`, `cqs_callees`, `cqs_read`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc`, `cqs_add_note`, `cqs_update_note`, `cqs_remove_note`, `cqs_audit_mode` (21 tools — run `cqs watch` to keep index fresh)
 
 **`cqs_similar`** — find code similar to a given function. Use for refactoring discovery, finding duplicates.
 **`cqs_explain`** — function card: signature, callers, callees, similar. Collapses 4+ tool calls into 1.
 **`cqs_diff`** — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
+**`cqs_gather`** — smart context assembly: seed search + BFS call graph expansion. One call for "show me everything related to X".
+**`cqs_dead`** — find dead code: functions/methods with no callers in the index.
 
 ## Audit Mode
 

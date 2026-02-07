@@ -227,9 +227,9 @@ mentions = [
 sentiment = 1.0
 text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Eliminated blocking startup delay."
 mentions = [
-    "mcp.rs",
-    "cagra.rs",
-    "hnsw.rs",
+    "src/mcp/server.rs",
+    "src/cagra.rs",
+    "src/hnsw.rs",
     "startup",
 ]
 
@@ -451,9 +451,18 @@ mentions = [
 [[note]]
 sentiment = 0.5
 text = "When adding new MCP tools/capabilities: create a cqs-prefixed skill in .claude/skills/, update bootstrap's portable skills list, and decide if it's project-local or global (~/.claude/skills/). Skill = SKILL.md with frontmatter (name, description, argument-hint) + usage docs. Keep names prefixed to avoid collisions."
-mentions = ["bootstrap/SKILL.md", ".claude/skills/", "src/mcp/tools/mod.rs"]
+mentions = [
+    ".claude/skills/cqs-bootstrap/SKILL.md",
+    ".claude/skills/",
+    "src/mcp/tools/mod.rs",
+]
 
 [[note]]
-sentiment = 0.5
-text = "Batch A shipped: --chunk-type filter for search (CLI + MCP) and cqs dead for dead code detection (CLI + MCP cqs_dead). Use --chunk-type function to find only functions, cqs dead --include-pub for full dead code audit. MCP search tool accepts chunk_type param (comma-separated)."
-mentions = ["src/store/helpers.rs", "SearchFilter", "src/cli/commands/dead.rs", "src/mcp/tools/dead.rs", "find_dead_code"]
+sentiment = -0.5
+text = "test_loaded_index_multiple_searches is flaky in CI. HNSW approximate search with 10 random embeddings doesn't reliably find exact match in top-5. Pre-existing, not related to any feature changes. Rerun CI when it fails."
+mentions = ["src/hnsw.rs", "CI", "flaky test"]
+
+[[note]]
+sentiment = 1.0
+text = "Post-v0.8.0 features shipped across 3 context windows with zero regressions. Tears + MEMORY.md system worked — each window picked up exactly where the last left off. Key: commit per batch, update tears after each commit, keep MEMORY.md under 200 lines."
+mentions = ["PROJECT_CONTINUITY.md", "MEMORY.md", "tears", "workflow"]

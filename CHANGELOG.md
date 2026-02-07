@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-02-07
+
+### Added
+- **`--chunk-type` filter** (CLI + MCP): narrow search to function/method/class/struct/enum/trait/interface/constant
+- **`--pattern` filter** (CLI + MCP): post-search structural matching — builder, error_swallow, async, mutex, unsafe, recursion
+- **`cqs dead`** (CLI + MCP): find functions/methods never called by indexed code. Excludes main, tests, trait impls. `--include-pub` for full audit
+- **`cqs gc`** (CLI + MCP): prune chunks for deleted files, clean orphan call graph entries, rebuild HNSW. MCP reports staleness without modifying
+- **`cqs gather`** (CLI + MCP): smart context assembly — BFS call graph expansion from semantic seed results. `--expand`, `--direction`, `--limit` params
+- **`cqs project`** (CLI): cross-project search via `~/.config/cqs/projects.toml` registry. `register`, `list`, `remove`, `search` subcommands
+- **`--format mermaid`** on `cqs trace`: generate Mermaid diagrams from call paths
+- **Index staleness warnings**: `cqs stats` and MCP stats report stale/missing file counts
+- 31 new unit tests (structural patterns, gather algorithm, project registry)
+- MCP tool count: 17 → 21
+
 ## [0.8.0] - 2026-02-07
 
 ### Added
