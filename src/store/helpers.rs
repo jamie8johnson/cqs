@@ -277,6 +277,8 @@ impl UnifiedResult {
 pub struct SearchFilter {
     /// Filter by programming language(s)
     pub languages: Option<Vec<Language>>,
+    /// Filter by chunk type(s) (function, method, class, struct, enum, trait, interface, constant)
+    pub chunk_types: Option<Vec<ChunkType>>,
     /// Filter by file path glob pattern (e.g., `src/**/*.rs`)
     pub path_pattern: Option<String>,
     /// Weight for name matching in hybrid search (0.0-1.0)
@@ -305,6 +307,7 @@ impl Default for SearchFilter {
     fn default() -> Self {
         Self {
             languages: None,
+            chunk_types: None,
             path_pattern: None,
             name_boost: 0.0,
             query_text: String::new(),
@@ -337,6 +340,12 @@ impl SearchFilter {
     /// Filter results to multiple programming languages.
     pub fn with_languages(mut self, langs: Vec<Language>) -> Self {
         self.languages = Some(langs);
+        self
+    }
+
+    /// Filter results to specific chunk type(s).
+    pub fn with_chunk_types(mut self, types: Vec<ChunkType>) -> Self {
+        self.chunk_types = Some(types);
         self
     }
 

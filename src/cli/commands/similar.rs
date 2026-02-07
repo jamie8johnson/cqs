@@ -91,6 +91,7 @@ pub(crate) fn cmd_similar(
 
     let filter = SearchFilter {
         languages,
+        chunk_types: None,
         path_pattern: cli.path.clone(),
         name_boost: 0.0, // Pure embedding similarity
         query_text: String::new(),

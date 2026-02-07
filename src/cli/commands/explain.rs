@@ -62,6 +62,7 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
         Some((_, embedding)) => {
             let filter = SearchFilter {
                 languages: None,
+                chunk_types: None,
                 path_pattern: None,
                 name_boost: 0.0,
                 query_text: String::new(),

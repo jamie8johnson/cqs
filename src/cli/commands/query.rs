@@ -4,6 +4,7 @@
 
 use anyhow::{bail, Context, Result};
 
+use cqs::parser::ChunkType;
 use cqs::{reference, Embedder, HnswIndex, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, signal, Cli};
@@ -32,8 +33,19 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         None => None,
     };
 
+    let chunk_types = match &cli.chunk_type {
+        Some(types) => {
+            let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
+            Some(parsed.context(
+                "Invalid chunk type. Valid: function, method, class, struct, enum, trait, interface, constant",
+            )?)
+        }
+        None => None,
+    };
+
     let filter = SearchFilter {
         languages,
+        chunk_types,
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),

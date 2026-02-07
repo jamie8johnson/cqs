@@ -112,6 +112,8 @@ pub(crate) struct SearchArgs {
     pub language: Option<String>,
     pub path_pattern: Option<String>,
     pub name_boost: Option<f32>,
+    /// Filter by chunk type (function, method, class, etc.)
+    pub chunk_type: Option<String>,
     pub semantic_only: Option<bool>,
     /// Definition search mode - find by name only, no semantic matching.
     /// Use for "where is X defined?" queries. Much faster than semantic search.

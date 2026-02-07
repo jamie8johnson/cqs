@@ -15,7 +15,7 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_context, cmd_diff, cmd_doctor, cmd_explain, cmd_impact,
+    cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor, cmd_explain, cmd_impact,
     cmd_index, cmd_init, cmd_notes, cmd_query, cmd_ref, cmd_serve, cmd_similar, cmd_stats,
     cmd_test_map, cmd_trace, NotesCommand, RefCommand, ServeConfig,
 };
@@ -56,6 +56,10 @@ pub struct Cli {
     /// Filter by language
     #[arg(short = 'l', long)]
     lang: Option<String>,
+
+    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant)
+    #[arg(long)]
+    chunk_type: Option<Vec<String>>,
 
     /// Filter by path pattern (glob)
     #[arg(short = 'p', long)]
@@ -251,6 +255,15 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Find functions with no callers (dead code detection)
+    Dead {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Include public API functions in the main list
+        #[arg(long)]
+        include_pub: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -330,6 +343,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
         }) => cmd_test_map(&cli, name, depth, json),
         Some(Commands::Context { ref path, json }) => cmd_context(&cli, path, json),
+        Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

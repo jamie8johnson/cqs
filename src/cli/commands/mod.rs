@@ -3,6 +3,7 @@
 //! Each submodule handles one CLI subcommand.
 
 mod context;
+mod dead;
 mod diff;
 mod doctor;
 mod explain;
@@ -21,6 +22,7 @@ mod test_map;
 mod trace;
 
 pub(crate) use context::cmd_context;
+pub(crate) use dead::cmd_dead;
 pub(crate) use diff::cmd_diff;
 pub(crate) use doctor::cmd_doctor;
 pub(crate) use explain::cmd_explain;

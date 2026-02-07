@@ -231,6 +231,16 @@ impl Store {
                 }
             }
 
+            if let Some(ref types) = filter.chunk_types {
+                let placeholders: Vec<_> = (0..types.len())
+                    .map(|i| format!("?{}", bind_values.len() + i + 1))
+                    .collect();
+                conditions.push(format!("chunk_type IN ({})", placeholders.join(",")));
+                for ct in types {
+                    bind_values.push(ct.to_string());
+                }
+            }
+
             let where_clause = if conditions.is_empty() {
                 String::new()
             } else {
@@ -440,6 +450,18 @@ impl Store {
                             chunk_row.language.parse();
                         if let Ok(lang) = row_lang {
                             if !langs.contains(&lang) {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+
+                    if let Some(ref types) = filter.chunk_types {
+                        let row_type: Result<crate::parser::ChunkType, _> =
+                            chunk_row.chunk_type.parse();
+                        if let Ok(ct) = row_type {
+                            if !types.contains(&ct) {
                                 return None;
                             }
                         } else {
