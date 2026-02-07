@@ -109,26 +109,18 @@ pub fn semantic_diff(
 
     // Apply language filter
     let source_ids: Vec<_> = if let Some(lang) = language_filter {
-        let ext = lang
-            .parse::<crate::parser::Language>()
-            .map(|l| l.primary_extension())
-            .unwrap_or(lang);
         source_ids
             .into_iter()
-            .filter(|c| c.chunk_type != "unknown" && c.origin.ends_with(&format!(".{}", ext)))
+            .filter(|c| c.chunk_type != "unknown" && c.language == lang)
             .collect()
     } else {
         source_ids
     };
 
     let target_ids: Vec<_> = if let Some(lang) = language_filter {
-        let ext = lang
-            .parse::<crate::parser::Language>()
-            .map(|l| l.primary_extension())
-            .unwrap_or(lang);
         target_ids
             .into_iter()
-            .filter(|c| c.chunk_type != "unknown" && c.origin.ends_with(&format!(".{}", ext)))
+            .filter(|c| c.chunk_type != "unknown" && c.language == lang)
             .collect()
     } else {
         target_ids

@@ -209,6 +209,8 @@ pub struct ChunkIdentity {
     pub chunk_type: String,
     /// Starting line number (1-indexed)
     pub line_start: u32,
+    /// Programming language
+    pub language: String,
     /// Parent chunk ID (for windowed chunks)
     pub parent_id: Option<String>,
     /// Window index within parent (for long functions split into windows)

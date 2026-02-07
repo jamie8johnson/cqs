@@ -78,7 +78,7 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
     }
 
     // External callees — functions this file calls that live elsewhere
-    let mut external_callees = Vec::new();
+    let mut external_callees: Vec<(String, String)> = Vec::new();
     for chunk in &chunks {
         let chunk_file = chunk.file.to_string_lossy();
         let callees = match server
@@ -93,24 +93,23 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
         };
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str()) {
-                external_callees.push(serde_json::json!({
-                    "callee": callee_name,
-                    "called_from": chunk.name,
-                }));
+                external_callees.push((callee_name, chunk.name.clone()));
             }
         }
     }
 
     // Deduplicate external callees by name
     let mut seen_callees: HashSet<String> = HashSet::new();
-    external_callees.retain(|c| {
-        let name = c
-            .get("callee")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        seen_callees.insert(name)
-    });
+    let external_callees: Vec<Value> = external_callees
+        .into_iter()
+        .filter(|(callee_name, _)| seen_callees.insert(callee_name.clone()))
+        .map(|(callee_name, called_from)| {
+            serde_json::json!({
+                "callee": callee_name,
+                "called_from": called_from,
+            })
+        })
+        .collect();
 
     // Related notes
     let mut notes_json = Vec::new();

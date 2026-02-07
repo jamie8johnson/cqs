@@ -74,7 +74,19 @@ impl Config {
         let project_config = Self::load_file(&project_root.join(".cqs.toml")).unwrap_or_default();
 
         // Project overrides user
-        let merged = user_config.override_with(project_config);
+        let mut merged = user_config.override_with(project_config);
+
+        // Limit reference count
+        const MAX_REFERENCES: usize = 20;
+        if merged.references.len() > MAX_REFERENCES {
+            tracing::warn!(
+                count = merged.references.len(),
+                max = MAX_REFERENCES,
+                "Too many references configured, truncating"
+            );
+            merged.references.truncate(MAX_REFERENCES);
+        }
+
         tracing::debug!(
             limit = ?merged.limit,
             threshold = ?merged.threshold,

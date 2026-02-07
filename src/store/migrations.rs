@@ -37,16 +37,16 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
         "Starting schema migration"
     );
 
+    let mut tx = pool.begin().await?;
     for version in from..to {
         tracing::info!(from = version, to = version + 1, "Running migration step");
-        run_migration(pool, version, version + 1).await?;
+        run_migration(&mut *tx, version, version + 1).await?;
     }
-
-    // Update schema version in metadata
     sqlx::query("UPDATE metadata SET value = ?1 WHERE key = 'schema_version'")
         .bind(to.to_string())
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
 
     tracing::info!(new_version = to, "Schema migration complete");
 
@@ -55,10 +55,14 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
 
 /// Run a single migration step
 #[allow(clippy::match_single_binding)] // Intentional: migration arms will be added here
-async fn run_migration(_pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreError> {
+async fn run_migration(
+    _conn: &mut sqlx::SqliteConnection,
+    from: i32,
+    to: i32,
+) -> Result<(), StoreError> {
     match (from, to) {
         // Future migrations:
-        // (10, 11) => migrate_v10_to_v11(pool).await,
+        // (10, 11) => migrate_v10_to_v11(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }

@@ -618,7 +618,7 @@ impl Store {
     pub fn all_chunk_identities(&self) -> Result<Vec<ChunkIdentity>, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
-                "SELECT id, origin, name, chunk_type, line_start, parent_id, window_idx FROM chunks",
+                "SELECT id, origin, name, chunk_type, language, line_start, parent_id, window_idx FROM chunks",
             )
             .fetch_all(&self.pool)
             .await?;
@@ -631,6 +631,7 @@ impl Store {
                     name: row.get("name"),
                     chunk_type: row.get("chunk_type"),
                     line_start: clamp_line_number(row.get::<i64, _>("line_start")),
+                    language: row.get("language"),
                     parent_id: row.get("parent_id"),
                     window_idx: row
                         .get::<Option<i64>, _>("window_idx")
