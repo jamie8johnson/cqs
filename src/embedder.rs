@@ -311,6 +311,10 @@ impl Embedder {
         max_tokens: usize,
         overlap: usize,
     ) -> Result<Vec<(String, u32)>, EmbedderError> {
+        if max_tokens == 0 {
+            return Ok(vec![]);
+        }
+
         // Validate overlap to prevent exponential window explosion.
         // overlap >= max_tokens/2 means step <= max_tokens/2, causing O(2n/max_tokens) windows
         // instead of O(n/max_tokens). With overlap >= max_tokens, step becomes 1 token = disaster.

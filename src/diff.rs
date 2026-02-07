@@ -57,7 +57,8 @@ impl From<&ChunkIdentity> for ChunkKey {
     }
 }
 
-/// Compute cosine similarity between two embeddings
+/// Full cosine similarity with norm computation.
+/// Used for cross-store comparison where vectors may not share normalization.
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
