@@ -316,25 +316,26 @@
 
 ## Refactoring
 
-### Planned
+### Done (v0.9.1)
 
-- [ ] **Split `parser.rs`** (1071 lines) — 7 languages × (parsing + call extraction) in one file
-  - Extract per-language parsing to `src/language/{rust,python,typescript,javascript,go,c,java}.rs`
-  - Keep `parser.rs` as thin orchestrator: language detection → delegate to module
-  - Call extraction can stay with its language or move to `src/language/calls.rs`
-  - Target: `parser.rs` under 200 lines, language modules 80-150 each
+- [x] **Split `parser.rs`** → `src/parser/` directory (mod.rs, types.rs, chunk.rs, calls.rs)
+- [x] **Split `hnsw.rs`** → `src/hnsw/` directory (mod.rs, build.rs, search.rs, persist.rs, safety.rs)
+- [x] **Fix flaky `test_loaded_index_multiple_searches`** — one-hot embeddings for reliable separation
 
-- [ ] **Split `hnsw.rs`** (1150 lines) — build, persistence, search, safety all interleaved
-  - `src/hnsw/mod.rs` — public types (HnswIndex, LoadedHnsw, HnswError) + VectorIndex impl
-  - `src/hnsw/build.rs` — `build()`, `build_batched()`, node insertion
-  - `src/hnsw/persist.rs` — `save()`, `load()`, checksum verification
-  - `src/hnsw/search.rs` — search implementation, SIMD cosine
-  - Tests stay with their respective modules
-  - Target: each file 200-350 lines
+## Next: New Languages (SQL + VB.NET)
 
-### Bugs
+### Priority: High (needed for VS2005 project)
 
-- [ ] **Flaky `test_loaded_index_multiple_searches`** — HNSW approximate search with random embeddings doesn't reliably find exact match in top-5. Tighten test to use structured embeddings or increase ef_search for test.
+- [ ] **SQL** — `tree-sitter-sql` crate on crates.io. Stored procedures, functions, views, triggers.
+- [ ] **VB.NET** — `tree-sitter-vb-dotnet` (git dep, not on crates.io). Subs, Functions, Classes, Modules.
+- [ ] P3 audit fixes (#264-266) — quick wins, batch with language PR
+
+### Notes
+
+- SQL: stored procs and functions are the main chunk types. Views/triggers optional.
+- VB.NET: grammar from [CodeAnt-AI/tree-sitter-vb-dotnet](https://github.com/CodeAnt-AI/tree-sitter-vb-dotnet). May need vendored C source if git dep doesn't work cleanly.
+- Each language needs: Language enum variant, extension mapping, grammar loading, query patterns, display impl (~5 changes per #268)
+- After: 9 languages total
 
 ## Phase 8: Security
 
