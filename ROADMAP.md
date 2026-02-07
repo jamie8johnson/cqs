@@ -339,9 +339,14 @@
 
 ## Agent Experience Improvements
 
+### Done (PR #304)
+
+- [x] **`note_only` search filter** — `note_only: true` skips code search, returns only notes. Blocked during audit mode.
+- [x] **`context --summary`** — `summary: true` returns chunk names/types + counts instead of full signatures/callers/callees.
+- [x] **Mermaid output for `cqs impact`** — `format: "mermaid"` renders caller graph as flowchart. Target highlighted, callers as boxes, tests as rhombuses.
+
 ### Planned
 
-- [ ] **Mermaid output for `cqs impact`** — `format: "mermaid"` renders caller graph as flowchart. Agents can visualize blast radius of a change.
 - [ ] **Mermaid output for `cqs context`** — `format: "mermaid"` renders module dependency graph (external callers/callees, dependent files).
 - [ ] **Mermaid output for `cqs dead`** — `format: "mermaid"` renders orphan clusters. Visualize dead code relationships.
 - [ ] **Token cost estimates** — include approximate token count in tool responses so agents can budget context window usage

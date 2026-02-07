@@ -34,7 +34,7 @@ pub(crate) fn cmd_gather(
         limit,
     };
 
-    let result = gather(&store, &query_embedding, &opts, &root)?;
+    let result = gather(&store, &query_embedding, query, &opts, &root)?;
 
     if json {
         let json_chunks: Vec<_> = result
