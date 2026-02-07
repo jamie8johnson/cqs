@@ -138,10 +138,13 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
     }))
 }
 
-/// Extract type names from a function signature
-fn extract_type_names(signature: &str) -> Vec<String> {
-    let re = regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]+)\b").expect("hardcoded regex");
-    let common: HashSet<&str> = [
+use std::sync::LazyLock;
+
+static TYPE_NAME_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]+)\b").expect("hardcoded regex"));
+
+static COMMON_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    [
         "String",
         "Vec",
         "Result",
@@ -191,12 +194,15 @@ fn extract_type_names(signature: &str) -> Vec<String> {
         "Deserialize",
     ]
     .into_iter()
-    .collect();
+    .collect()
+});
 
-    let mut names: Vec<String> = re
+/// Extract type names from a function signature
+fn extract_type_names(signature: &str) -> Vec<String> {
+    let mut names: Vec<String> = TYPE_NAME_RE
         .find_iter(signature)
         .map(|m| m.as_str().to_string())
-        .filter(|name| !common.contains(name.as_str()))
+        .filter(|name| !COMMON_TYPES.contains(name.as_str()))
         .collect::<HashSet<_>>()
         .into_iter()
         .collect();

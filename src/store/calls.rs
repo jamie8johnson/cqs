@@ -470,34 +470,7 @@ impl Store {
     ///
     /// Uses a broad SQL filter then Rust post-filter for precision.
     pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
-        self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, parent_id
-                 FROM chunks
-                 WHERE chunk_type IN ('function', 'method')
-                   AND (
-                     name LIKE 'test_%'
-                     OR name LIKE 'Test%'
-                     OR content LIKE '%#[test]%'
-                     OR content LIKE '%@Test%'
-                     OR origin LIKE '%/tests/%'
-                     OR origin LIKE '%\\_test.%' ESCAPE '\\'
-                     OR origin LIKE '%.test.%'
-                     OR origin LIKE '%.spec.%'
-                     OR origin LIKE '%_test.go'
-                     OR origin LIKE '%_test.py'
-                   )
-                 ORDER BY origin, line_start",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-
-            Ok(rows
-                .into_iter()
-                .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
-                .collect())
-        })
+        self.rt.block_on(self.find_test_chunks_async())
     }
 
     /// Get full call graph statistics

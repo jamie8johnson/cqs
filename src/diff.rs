@@ -74,7 +74,12 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if denom == 0.0 {
         0.0
     } else {
-        dot / denom
+        let result = dot / denom;
+        if result.is_finite() {
+            result
+        } else {
+            0.0
+        }
     }
 }
 
@@ -103,24 +108,26 @@ pub fn semantic_diff(
 
     // Apply language filter
     let source_ids: Vec<_> = if let Some(lang) = language_filter {
+        let ext = lang
+            .parse::<crate::parser::Language>()
+            .map(|l| l.primary_extension())
+            .unwrap_or(lang);
         source_ids
             .into_iter()
-            .filter(|c| {
-                c.chunk_type != "unknown"
-                    && c.origin.ends_with(&format!(".{}", lang_extension(lang)))
-            })
+            .filter(|c| c.chunk_type != "unknown" && c.origin.ends_with(&format!(".{}", ext)))
             .collect()
     } else {
         source_ids
     };
 
     let target_ids: Vec<_> = if let Some(lang) = language_filter {
+        let ext = lang
+            .parse::<crate::parser::Language>()
+            .map(|l| l.primary_extension())
+            .unwrap_or(lang);
         target_ids
             .into_iter()
-            .filter(|c| {
-                c.chunk_type != "unknown"
-                    && c.origin.ends_with(&format!(".{}", lang_extension(lang)))
-            })
+            .filter(|c| c.chunk_type != "unknown" && c.origin.ends_with(&format!(".{}", ext)))
             .collect()
     } else {
         target_ids
@@ -214,20 +221,6 @@ pub fn semantic_diff(
     })
 }
 
-/// Map language name to file extension for filtering
-fn lang_extension(lang: &str) -> &str {
-    match lang {
-        "rust" => "rs",
-        "python" => "py",
-        "typescript" => "ts",
-        "javascript" => "js",
-        "go" => "go",
-        "c" => "c",
-        "java" => "java",
-        _ => lang,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,14 +294,22 @@ mod tests {
     }
 
     #[test]
-    fn test_lang_extension() {
-        assert_eq!(lang_extension("rust"), "rs");
-        assert_eq!(lang_extension("python"), "py");
-        assert_eq!(lang_extension("typescript"), "ts");
-        assert_eq!(lang_extension("javascript"), "js");
-        assert_eq!(lang_extension("go"), "go");
-        assert_eq!(lang_extension("c"), "c");
-        assert_eq!(lang_extension("java"), "java");
-        assert_eq!(lang_extension("unknown"), "unknown");
+    fn test_language_primary_extension() {
+        use crate::parser::Language;
+        assert_eq!(Language::Rust.primary_extension(), "rs");
+        assert_eq!(Language::Python.primary_extension(), "py");
+        assert_eq!(Language::TypeScript.primary_extension(), "ts");
+        assert_eq!(Language::JavaScript.primary_extension(), "js");
+        assert_eq!(Language::Go.primary_extension(), "go");
+        assert_eq!(Language::C.primary_extension(), "c");
+        assert_eq!(Language::Java.primary_extension(), "java");
+        // Unknown falls back to input string
+        assert_eq!(
+            "unknown"
+                .parse::<Language>()
+                .map(|l| l.primary_extension())
+                .unwrap_or("unknown"),
+            "unknown"
+        );
     }
 }

@@ -27,6 +27,18 @@ use serde_json::Value;
 use super::server::McpServer;
 use super::types::{Tool, ToolsListResult};
 
+fn language_enum_schema() -> serde_json::Value {
+    serde_json::json!([
+        "rust",
+        "python",
+        "typescript",
+        "javascript",
+        "go",
+        "c",
+        "java"
+    ])
+}
+
 /// Handle tools/list request - return available tools
 pub fn handle_tools_list() -> Result<Value> {
     let tools = vec![
@@ -52,8 +64,7 @@ pub fn handle_tools_list() -> Result<Value> {
                     },
                     "language": {
                         "type": "string",
-                        // Keep in sync with crate::parser::Language variants
-                        "enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"],
+                        "enum": language_enum_schema(),
                         "description": "Filter by language (optional)"
                     },
                     "path_pattern": {
@@ -238,7 +249,7 @@ pub fn handle_tools_list() -> Result<Value> {
                     },
                     "language": {
                         "type": "string",
-                        "enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"],
+                        "enum": language_enum_schema(),
                         "description": "Filter by language (optional)"
                     }
                 },
@@ -281,7 +292,7 @@ pub fn handle_tools_list() -> Result<Value> {
                     },
                     "language": {
                         "type": "string",
-                        "enum": ["rust", "python", "typescript", "javascript", "go", "c", "java"],
+                        "enum": language_enum_schema(),
                         "description": "Filter by language (optional)"
                     }
                 },
