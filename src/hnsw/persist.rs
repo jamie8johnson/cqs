@@ -101,13 +101,13 @@ impl HnswIndex {
 
         // Verify ID map matches HNSW vector count before saving
         let hnsw_count = self.inner.hnsw().get_nb_point();
-        assert_eq!(
-            hnsw_count,
-            self.id_map.len(),
-            "HNSW/ID map count mismatch on save: HNSW has {} vectors but id_map has {}. This is a bug.",
-            hnsw_count,
-            self.id_map.len()
-        );
+        if hnsw_count != self.id_map.len() {
+            return Err(HnswError::Internal(format!(
+                "HNSW/ID map count mismatch on save: HNSW has {} vectors but id_map has {}",
+                hnsw_count,
+                self.id_map.len()
+            )));
+        }
 
         // Ensure target directory exists
         std::fs::create_dir_all(dir).map_err(|e| {

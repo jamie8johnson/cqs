@@ -63,7 +63,10 @@ pub(crate) fn cmd_context(_cli: &crate::cli::Cli, path: &str, json: bool) -> Res
     let mut external_callees = Vec::new();
     let mut seen_callees: HashSet<String> = HashSet::new();
     for chunk in &chunks {
-        let callees = store.get_callees_full(&chunk.name).unwrap_or_default();
+        let chunk_file = chunk.file.to_string_lossy();
+        let callees = store
+            .get_callees_full(&chunk.name, Some(&chunk_file))
+            .unwrap_or_default();
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str())
                 && seen_callees.insert(callee_name.clone())

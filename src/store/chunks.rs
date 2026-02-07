@@ -48,7 +48,7 @@ impl Store {
                 .bind(&chunk.doc)
                 .bind(chunk.line_start as i64)
                 .bind(chunk.line_end as i64)
-                .bind(embedding_to_bytes(embedding))
+                .bind(embedding_to_bytes(embedding)?)
                 .bind(source_mtime)
                 .bind(&now)
                 .bind(&now)

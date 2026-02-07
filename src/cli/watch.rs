@@ -251,7 +251,7 @@ fn reindex_files(
         .embed_documents(&text_refs)?
         .into_iter()
         .map(|e| e.with_sentiment(0.0))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Delete old chunks for these files and insert new ones
     for rel_path in files {

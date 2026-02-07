@@ -44,8 +44,11 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
     // Get callers
     let callers = store.get_callers_full(&chunk.name).unwrap_or_default();
 
-    // Get callees
-    let callees = store.get_callees_full(&chunk.name).unwrap_or_default();
+    // Get callees — scope to the resolved chunk's file to avoid ambiguity
+    let chunk_file = chunk.file.to_string_lossy();
+    let callees = store
+        .get_callees_full(&chunk.name, Some(&chunk_file))
+        .unwrap_or_default();
 
     // Get similar (top 3) using embedding
     let similar = match store.get_chunk_with_embedding(&chunk.id)? {

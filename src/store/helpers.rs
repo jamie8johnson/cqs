@@ -494,22 +494,21 @@ pub fn clamp_line_number(n: i64) -> u32 {
 
 /// Convert embedding to bytes for storage.
 ///
-/// # Panics
-/// Panics if embedding is not exactly 769 dimensions (768 model + 1 sentiment).
-/// This is intentional - storing wrong-sized embeddings corrupts the index.
-pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
-    assert_eq!(
-        embedding.len(),
-        EXPECTED_DIMENSIONS as usize,
-        "Embedding dimension mismatch: expected {}, got {}. This indicates a bug in the embedder.",
-        EXPECTED_DIMENSIONS,
-        embedding.len()
-    );
-    embedding
+/// Returns an error if embedding is not exactly 769 dimensions (768 model + 1 sentiment).
+/// Storing wrong-sized embeddings would corrupt the index.
+pub fn embedding_to_bytes(embedding: &Embedding) -> Result<Vec<u8>, StoreError> {
+    if embedding.len() != EXPECTED_DIMENSIONS as usize {
+        return Err(StoreError::Runtime(format!(
+            "Embedding dimension mismatch: expected {}, got {}. This indicates a bug in the embedder.",
+            EXPECTED_DIMENSIONS,
+            embedding.len()
+        )));
+    }
+    Ok(embedding
         .as_slice()
         .iter()
         .flat_map(|f| f.to_le_bytes())
-        .collect()
+        .collect())
 }
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)

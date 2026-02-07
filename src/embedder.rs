@@ -45,6 +45,12 @@ impl From<ort::Error> for EmbedderError {
     }
 }
 
+impl From<EmbeddingDimensionError> for EmbedderError {
+    fn from(e: EmbeddingDimensionError) -> Self {
+        EmbedderError::InferenceFailed(e.to_string())
+    }
+}
+
 /// A 769-dimensional L2-normalized embedding vector
 ///
 /// Embeddings are produced by E5-base-v2 (768-dim) with an
@@ -117,7 +123,8 @@ impl Embedding {
     ///
     /// Converts a 768-dim model embedding to 769-dim with sentiment.
     /// Sentiment should be -1.0 (negative) to +1.0 (positive).
-    pub fn with_sentiment(mut self, sentiment: f32) -> Self {
+    /// Returns an error if the resulting embedding is not exactly 769 dimensions.
+    pub fn with_sentiment(mut self, sentiment: f32) -> Result<Self, EmbeddingDimensionError> {
         if self.0.len() != MODEL_DIM {
             tracing::warn!(
                 actual = self.0.len(),
@@ -126,7 +133,14 @@ impl Embedding {
             );
         }
         self.0.push(sentiment.clamp(-1.0, 1.0));
-        self
+        // Validate the final 769-dim embedding
+        if self.0.len() != EMBEDDING_DIM {
+            return Err(EmbeddingDimensionError {
+                actual: self.0.len(),
+                expected: EMBEDDING_DIM,
+            });
+        }
+        Ok(self)
     }
 
     /// Get the sentiment (769th dimension) if present
@@ -397,7 +411,7 @@ impl Embedder {
         })?;
 
         // Add neutral sentiment (0.0) as 769th dimension
-        let embedding = base_embedding.with_sentiment(0.0);
+        let embedding = base_embedding.with_sentiment(0.0)?;
 
         // Store in cache (idempotent - duplicate puts for same key are harmless)
         {
@@ -478,7 +492,10 @@ impl Embedder {
         ])?;
 
         // Get the last_hidden_state output: shape [batch, seq_len, 768]
-        let (_shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
+        let hidden_state = outputs.get("last_hidden_state").ok_or_else(|| {
+            EmbedderError::InferenceFailed("Model output missing 'last_hidden_state'".into())
+        })?;
+        let (_shape, data) = hidden_state.try_extract_tensor::<f32>()?;
 
         // Mean pooling over sequence dimension, weighted by attention mask
         let batch_size = texts.len();
@@ -780,7 +797,7 @@ mod tests {
     #[test]
     fn test_embedding_with_sentiment() {
         let emb = Embedding::new(vec![0.5; MODEL_DIM]);
-        let emb_with_sentiment = emb.with_sentiment(0.8);
+        let emb_with_sentiment = emb.with_sentiment(0.8).unwrap();
 
         assert_eq!(emb_with_sentiment.len(), EMBEDDING_DIM);
         assert_eq!(emb_with_sentiment.sentiment(), Some(0.8));
@@ -789,11 +806,15 @@ mod tests {
     #[test]
     fn test_embedding_sentiment_clamped() {
         // Sentiment > 1.0 should be clamped
-        let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(2.0);
+        let emb = Embedding::new(vec![0.5; MODEL_DIM])
+            .with_sentiment(2.0)
+            .unwrap();
         assert_eq!(emb.sentiment(), Some(1.0));
 
         // Sentiment < -1.0 should be clamped
-        let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(-2.0);
+        let emb = Embedding::new(vec![0.5; MODEL_DIM])
+            .with_sentiment(-2.0)
+            .unwrap();
         assert_eq!(emb.sentiment(), Some(-1.0));
     }
 
@@ -994,7 +1015,7 @@ mod tests {
             /// Property: sentiment clamping keeps values in [-1, 1]
             #[test]
             fn prop_sentiment_clamped(sentiment in -10.0f32..10.0f32) {
-                let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(sentiment);
+                let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(sentiment).unwrap();
                 if let Some(s) = emb.sentiment() {
                     prop_assert!(s >= -1.0 && s <= 1.0, "Sentiment {} out of range", s);
                 }

@@ -153,7 +153,7 @@ pub fn index_notes(
         .into_iter()
         .zip(notes.iter())
         .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     // Get file mtime
     let file_mtime = notes_path

@@ -402,8 +402,11 @@ pub(crate) fn run_index_pipeline(
             let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
             match embedder.embed_documents(&text_refs) {
                 Ok(embs) => {
-                    let new_embeddings: Vec<Embedding> =
-                        embs.into_iter().map(|e| e.with_sentiment(0.0)).collect();
+                    let new_embeddings: Vec<Embedding> = embs
+                        .into_iter()
+                        .map(|e| e.with_sentiment(0.0))
+                        .collect::<Result<Vec<_>, _>>()
+                        .context("Embedding dimension error after sentiment append")?;
                     let cached_count = prepared.cached.len();
                     let mut chunk_embeddings = prepared.cached;
                     chunk_embeddings.extend(prepared.to_embed.into_iter().zip(new_embeddings));
@@ -505,7 +508,8 @@ pub(crate) fn run_index_pipeline(
                     .embed_documents(&text_refs)?
                     .into_iter()
                     .map(|e| e.with_sentiment(0.0))
-                    .collect()
+                    .collect::<Result<Vec<_>, _>>()
+                    .context("Embedding dimension error after sentiment append")?
             };
 
             let embedded_batch = create_embedded_batch(

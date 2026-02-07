@@ -34,7 +34,7 @@ async fn insert_note_with_fts(
     .bind(&note.text)
     .bind(note.sentiment)
     .bind(&mentions_json)
-    .bind(embedding_to_bytes(embedding))
+    .bind(embedding_to_bytes(embedding)?)
     .bind(source_str)
     .bind(file_mtime)
     .bind(now)
