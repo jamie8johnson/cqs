@@ -96,13 +96,29 @@ pub fn serve_http(
 
     let addr = format!("{}:{}", bind, port);
 
-    // Warn if binding to non-localhost
+    // Block non-localhost binding unless explicitly opted in
     let is_localhost = bind == "127.0.0.1" || bind == "localhost" || bind == "::1";
     if !is_localhost {
+        let allow_remote = std::env::var("CQS_ALLOW_REMOTE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        if !allow_remote {
+            anyhow::bail!(
+                "Refusing to bind to non-localhost address '{}'. \
+                 Set CQS_ALLOW_REMOTE=1 to allow remote connections.",
+                bind
+            );
+        }
         if has_api_key {
-            tracing::warn!("Binding to {} with API key authentication.", bind);
+            tracing::warn!(
+                "Binding to {} with API key authentication (CQS_ALLOW_REMOTE set).",
+                bind
+            );
         } else {
-            tracing::warn!("Binding to {} WITHOUT authentication!", bind);
+            tracing::warn!(
+                "Binding to {} WITHOUT authentication (CQS_ALLOW_REMOTE set)!",
+                bind
+            );
         }
     }
 
@@ -298,10 +314,13 @@ async fn handle_mcp_post(
         return (StatusCode::ACCEPTED, Json(serde_json::json!(null)));
     }
 
-    (
-        StatusCode::OK,
-        Json(serde_json::to_value(&response).unwrap_or_default()),
-    )
+    match serde_json::to_value(&response) {
+        Ok(v) => (StatusCode::OK, Json(v)),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to serialize MCP response");
+            (StatusCode::OK, Json(serde_json::Value::Null))
+        }
+    }
 }
 
 /// Handle GET /health

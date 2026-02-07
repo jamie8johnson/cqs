@@ -78,18 +78,12 @@ pub fn tool_add_note(server: &McpServer, arguments: Value) -> Result<Value> {
         })
         .unwrap_or_default();
 
-    // Build TOML entry using serde serialization for correct escaping
     let note_entry = crate::note::NoteEntry {
         sentiment,
         text: text.to_string(),
         mentions,
     };
 
-    // Serialize the entry fields, then wrap with [[note]] header
-    let serialized = toml::to_string(&note_entry).context("Failed to serialize note as TOML")?;
-    let entry = format!("\n[[note]]\n{}", serialized);
-
-    // Append to notes.toml
     let notes_path = server.project_root.join("docs/notes.toml");
 
     // Create docs dir if needed
@@ -116,17 +110,13 @@ pub fn tool_add_note(server: &McpServer, arguments: Value) -> Result<Value> {
         }
     }
 
-    // Append entry
-    {
-        use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&notes_path)
-            .context("Failed to open notes.toml")?;
-        file.write_all(entry.as_bytes())
-            .context("Failed to write note")?;
-        file.sync_all().context("Failed to sync note to disk")?;
-    }
+    // Use rewrite_notes_file for atomic write with exclusive locking and TOML integrity.
+    // This re-serializes the entire file, guaranteeing valid TOML output.
+    rewrite_notes_file(&notes_path, |entries| {
+        entries.push(note_entry.clone());
+        Ok(())
+    })
+    .context("Failed to add note")?;
 
     // Re-parse and re-index all notes so the new one is immediately searchable
     let (indexed, index_error) = reindex_notes(server, &notes_path);

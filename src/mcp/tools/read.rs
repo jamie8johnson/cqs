@@ -86,7 +86,7 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
                     .filter(|n| {
                         n.mentions
                             .iter()
-                            .any(|m| m == file_name || m == path || path.contains(m))
+                            .any(|m| m == file_name || m == path || path_matches_mention(path, m))
                     })
                     .collect();
 
@@ -208,6 +208,22 @@ fn extract_type_names(signature: &str) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// Check if a mention matches a path by component suffix matching.
+/// "gather.rs" matches "src/gather.rs" but not "src/gatherer.rs"
+/// "src/store" matches "src/store/chunks.rs" but not "my_src/store.rs"
+fn path_matches_mention(path: &str, mention: &str) -> bool {
+    // Check if mention matches as a path suffix (component-aligned)
+    if let Some(stripped) = path.strip_suffix(mention) {
+        // Must be at component boundary: empty prefix or ends with /
+        stripped.is_empty() || stripped.ends_with('/')
+    } else if let Some(stripped) = path.strip_prefix(mention) {
+        // Check prefix match at component boundary
+        stripped.is_empty() || stripped.starts_with('/')
+    } else {
+        false
+    }
 }
 
 fn tool_read_focused(server: &McpServer, focus: &str, _arguments: &Value) -> Result<Value> {

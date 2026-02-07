@@ -37,16 +37,26 @@ pub fn tool_explain(server: &McpServer, arguments: Value) -> Result<Value> {
     let chunk = &source.chunk;
 
     // Get callers
-    let callers = server
-        .store
-        .get_callers_full(&chunk.name)
-        .unwrap_or_default();
+    let callers = match server.store.get_callers_full(&chunk.name) {
+        Ok(callers) => callers,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get callers for {}", chunk.name);
+            Vec::new()
+        }
+    };
 
-    // Get callees
-    let callees = server
+    // Get callees — scope to the resolved chunk's file to avoid ambiguity
+    let chunk_file = chunk.file.to_string_lossy();
+    let callees = match server
         .store
-        .get_callees_full(&chunk.name)
-        .unwrap_or_default();
+        .get_callees_full(&chunk.name, Some(&chunk_file))
+    {
+        Ok(callees) => callees,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get callees for {}", chunk.name);
+            Vec::new()
+        }
+    };
 
     // Get similar (top 3)
     let similar = match server.store.get_chunk_with_embedding(&chunk.id)? {

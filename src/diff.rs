@@ -172,13 +172,20 @@ pub fn semantic_diff(
         }
     }
 
-    // Compare embeddings for matched pairs
+    // Batch-fetch all embeddings upfront to avoid N+1 queries
+    let source_ids: Vec<&str> = matched_pairs.iter().map(|(s, _)| s.id.as_str()).collect();
+    let target_ids: Vec<&str> = matched_pairs.iter().map(|(_, t)| t.id.as_str()).collect();
+
+    let source_embeddings = source_store.get_embeddings_by_ids(&source_ids)?;
+    let target_embeddings = target_store.get_embeddings_by_ids(&target_ids)?;
+
+    // Compare embeddings for matched pairs using pre-fetched data
     for (source_chunk, target_chunk) in &matched_pairs {
-        let source_emb = source_store.get_chunk_with_embedding(&source_chunk.id)?;
-        let target_emb = target_store.get_chunk_with_embedding(&target_chunk.id)?;
+        let source_emb = source_embeddings.get(&source_chunk.id);
+        let target_emb = target_embeddings.get(&target_chunk.id);
 
         match (source_emb, target_emb) {
-            (Some((_, s_emb)), Some((_, t_emb))) => {
+            (Some(s_emb), Some(t_emb)) => {
                 let sim = cosine_similarity(s_emb.as_slice(), t_emb.as_slice());
                 if sim < threshold {
                     modified.push(DiffEntry {

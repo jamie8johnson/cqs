@@ -72,6 +72,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 
+# Path canonicalization (strips Windows UNC \\?\ prefixes)
+dunce = "1"
+
 # Utilities
 blake3 = "1"
 subtle = "2"

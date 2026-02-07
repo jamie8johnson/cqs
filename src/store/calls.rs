@@ -1,13 +1,20 @@
 //! Call graph storage and queries
 
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
+use regex::Regex;
 use sqlx::Row;
 
 use super::helpers::{
     clamp_line_number, CallGraph, CallerInfo, CallerWithContext, ChunkRow, ChunkSummary, StoreError,
 };
 use super::Store;
+
+/// Matches `impl SomeTrait for SomeType` patterns to detect trait implementations.
+/// Used by `find_dead_code` to skip trait impl methods (invisible to static call graph).
+static TRAIT_IMPL_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"impl\s+\w+\s+for\s+").expect("hardcoded regex"));
 
 impl Store {
     /// Insert or replace call sites for a chunk
@@ -243,15 +250,24 @@ impl Store {
     }
 
     /// Get all callees of a function (from full call graph)
-    pub fn get_callees_full(&self, caller_name: &str) -> Result<Vec<(String, u32)>, StoreError> {
+    ///
+    /// When `file` is provided, scopes to callees of that function in that specific file.
+    /// When `None`, returns callees across all files (backwards compatible, but ambiguous
+    /// for common names like `new`, `parse`, `from_str`).
+    pub fn get_callees_full(
+        &self,
+        caller_name: &str,
+        file: Option<&str>,
+    ) -> Result<Vec<(String, u32)>, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<(String, i64)> = sqlx::query_as(
                 "SELECT DISTINCT callee_name, call_line
                  FROM function_calls
-                 WHERE caller_name = ?1
+                 WHERE caller_name = ?1 AND (?2 IS NULL OR file = ?2)
                  ORDER BY call_line",
             )
             .bind(caller_name)
+            .bind(file)
             .fetch_all(&self.pool)
             .await?;
 
@@ -388,8 +404,8 @@ impl Store {
                     continue;
                 }
 
-                // Skip trait implementations (content contains "impl ... for ...")
-                if chunk.content.contains(" for ")
+                // Skip trait implementations (content matches "impl Trait for Type")
+                if TRAIT_IMPL_RE.is_match(&chunk.content)
                     && chunk.chunk_type == crate::parser::ChunkType::Method
                 {
                     continue;

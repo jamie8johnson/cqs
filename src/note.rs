@@ -3,6 +3,7 @@
 //! Notes are developer observations with sentiment, stored in TOML and
 //! indexed for semantic search.
 
+use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -114,12 +115,30 @@ const NOTES_HEADER: &str = "\
 
 /// Parse notes from a notes.toml file
 pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
+    // Acquire shared lock so concurrent readers don't conflict with writers
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|e| {
+            NoteError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {}", path.display(), e),
+            ))
+        })?;
+    FileExt::lock_shared(&lock_file).map_err(|e| {
+        NoteError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!("Could not lock {} for reading: {}", path.display(), e),
+        ))
+    })?;
+
     let content = std::fs::read_to_string(path).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
             format!("{}: {}", path.display(), e),
         ))
     })?;
+    // lock_file dropped here, releasing shared lock
     parse_notes_str(&content)
 }
 
@@ -127,10 +146,29 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 ///
 /// Reads the file, parses into `NoteEntry` structs, applies `mutate`,
 /// serializes back with the standard header, and writes atomically.
+/// Holds an exclusive file lock for the entire read-modify-write cycle.
 pub(crate) fn rewrite_notes_file(
     notes_path: &Path,
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
+    // Acquire exclusive lock before the read-modify-write cycle
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(notes_path)
+        .map_err(|e| {
+            NoteError::Io(std::io::Error::new(
+                e.kind(),
+                format!("{}: {}", notes_path.display(), e),
+            ))
+        })?;
+    FileExt::lock_exclusive(&lock_file).map_err(|e| {
+        NoteError::Io(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!("Could not lock {} for writing: {}", notes_path.display(), e),
+        ))
+    })?;
+    // lock_file held until end of function (dropped automatically)
+
     let content = std::fs::read_to_string(notes_path).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
@@ -153,19 +191,24 @@ pub(crate) fn rewrite_notes_file(
             format!("{}: {}", tmp_path.display(), e),
         ))
     })?;
-    std::fs::rename(&tmp_path, notes_path).map_err(|e| {
-        // Clean up temp file on rename failure
+    if let Err(rename_err) = std::fs::rename(&tmp_path, notes_path) {
+        // Rename can fail with EXDEV on cross-device (Docker overlayfs, some CI).
+        // Fall back to copy + remove.
+        if let Err(copy_err) = std::fs::copy(&tmp_path, notes_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(NoteError::Io(std::io::Error::new(
+                copy_err.kind(),
+                format!(
+                    "rename {} -> {} failed ({}), copy fallback also failed: {}",
+                    tmp_path.display(),
+                    notes_path.display(),
+                    rename_err,
+                    copy_err
+                ),
+            )));
+        }
         let _ = std::fs::remove_file(&tmp_path);
-        NoteError::Io(std::io::Error::new(
-            e.kind(),
-            format!(
-                "rename {} -> {}: {}",
-                tmp_path.display(),
-                notes_path.display(),
-                e
-            ),
-        ))
-    })?;
+    }
 
     Ok(file.note)
 }

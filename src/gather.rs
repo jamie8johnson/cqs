@@ -129,13 +129,22 @@ pub fn gather(
         }
     }
 
-    // 4. Fetch chunks for all expanded names, deduplicate by id
+    // 4. Batch-fetch chunks for all expanded names, deduplicate by id
+    let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
+    let batch_results = match store.search_by_names_batch(&all_names, 1) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "Batch name search failed, falling back empty");
+            HashMap::new()
+        }
+    };
+
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut chunks: Vec<GatheredChunk> = Vec::new();
 
     for (name, (score, depth)) in &name_scores {
-        if let Ok(results) = store.search_by_name(name, 1) {
-            if let Some(r) = results.into_iter().next() {
+        if let Some(results) = batch_results.get(name) {
+            if let Some(r) = results.first() {
                 // Dedup by chunk id
                 if seen_ids.contains(&r.chunk.id) {
                     continue;

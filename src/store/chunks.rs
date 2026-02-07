@@ -480,6 +480,137 @@ impl Store {
         })
     }
 
+    /// Batch-fetch embeddings by chunk IDs.
+    ///
+    /// Returns a map of chunk ID → Embedding for all found IDs.
+    /// Skips chunks with corrupt embeddings. Batches queries in groups of 500
+    /// to stay within SQLite's parameter limit (~999).
+    ///
+    /// Used by `semantic_diff` to avoid N+1 queries when comparing matched pairs.
+    pub fn get_embeddings_by_ids(
+        &self,
+        ids: &[&str],
+    ) -> Result<HashMap<String, Embedding>, StoreError> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        const BATCH_SIZE: usize = 500;
+        let mut result = HashMap::new();
+
+        self.rt.block_on(async {
+            for batch in ids.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let sql = format!(
+                    "SELECT id, embedding FROM chunks WHERE id IN ({})",
+                    placeholders
+                );
+
+                let rows: Vec<_> = {
+                    let mut q = sqlx::query(&sql);
+                    for id in batch {
+                        q = q.bind(*id);
+                    }
+                    q.fetch_all(&self.pool).await?
+                };
+
+                for row in rows {
+                    let id: String = row.get(0);
+                    let bytes: Vec<u8> = row.get(1);
+                    if let Some(emb) = bytes_to_embedding(&bytes) {
+                        result.insert(id, Embedding::new(emb));
+                    }
+                }
+            }
+            Ok(result)
+        })
+    }
+
+    /// Batch name search: look up multiple names in a single call.
+    ///
+    /// For each name, returns up to `limit_per_name` matching chunks.
+    /// Uses individual FTS queries per name (FTS5 doesn't support OR across
+    /// column-filtered terms efficiently), but all run within a single
+    /// `block_on` call to minimize runtime overhead.
+    ///
+    /// Used by `gather` BFS expansion to avoid N+1 query patterns.
+    pub fn search_by_names_batch(
+        &self,
+        names: &[&str],
+        limit_per_name: usize,
+    ) -> Result<HashMap<String, Vec<super::SearchResult>>, StoreError> {
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result: HashMap<String, Vec<super::SearchResult>> = HashMap::new();
+
+            for name in names {
+                let normalized = normalize_for_fts(name);
+                if normalized.is_empty() {
+                    continue;
+                }
+
+                let fts_query =
+                    format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
+
+                let rows: Vec<_> = sqlx::query(
+                    "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                     FROM chunks c
+                     JOIN chunks_fts f ON c.id = f.id
+                     WHERE chunks_fts MATCH ?1
+                     ORDER BY bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0)
+                     LIMIT ?2",
+                )
+                .bind(&fts_query)
+                .bind(limit_per_name as i64)
+                .fetch_all(&self.pool)
+                .await?;
+
+                let results: Vec<super::SearchResult> = rows
+                    .into_iter()
+                    .map(|row| {
+                        let chunk = ChunkSummary::from(ChunkRow {
+                            id: row.get(0),
+                            origin: row.get(1),
+                            language: row.get(2),
+                            chunk_type: row.get(3),
+                            name: row.get(4),
+                            signature: row.get(5),
+                            content: row.get(6),
+                            doc: row.get(7),
+                            line_start: clamp_line_number(row.get::<i64, _>(8)),
+                            line_end: clamp_line_number(row.get::<i64, _>(9)),
+                            parent_id: row.get(10),
+                        });
+                        let name_lower = chunk.name.to_lowercase();
+                        let query_lower = name.to_lowercase();
+                        let score = if name_lower == query_lower {
+                            1.0
+                        } else if name_lower.starts_with(&query_lower) {
+                            0.9
+                        } else if name_lower.contains(&query_lower) {
+                            0.7
+                        } else {
+                            0.5
+                        };
+                        super::SearchResult { chunk, score }
+                    })
+                    .collect();
+
+                if !results.is_empty() {
+                    result.insert(name.to_string(), results);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
     /// Get identity metadata for all chunks (for diff comparison).
     ///
     /// Returns minimal metadata needed to match chunks across stores.
