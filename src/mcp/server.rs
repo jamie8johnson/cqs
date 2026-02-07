@@ -133,12 +133,17 @@ impl McpServer {
             return Ok(embedder);
         }
 
-        // Slow path: initialize
+        // Slow path: initialize (can take 500ms+ for model loading)
+        let start = std::time::Instant::now();
         let new_embedder = if self.use_gpu {
             Embedder::new()?
         } else {
             Embedder::new_cpu()?
         };
+        tracing::info!(
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "Embedder initialized"
+        );
 
         // Try to set (another thread might have raced us, that's OK)
         let _ = self.embedder.set(new_embedder);
@@ -172,7 +177,7 @@ impl McpServer {
                 // Sanitize error message to avoid exposing internal paths.
                 // Log the full error for debugging, return sanitized version to client.
                 let full_error = e.to_string();
-                tracing::debug!(error = %full_error, "Request error");
+                tracing::warn!(error = %full_error, "Request error");
                 let sanitized = self.sanitize_error_message(&full_error);
                 JsonRpcResponse {
                     jsonrpc: "2.0".into(),

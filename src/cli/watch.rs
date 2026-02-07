@@ -38,7 +38,7 @@ const MAX_PENDING_FILES: usize = 10_000;
 
 pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     if no_ignore {
-        eprintln!("Warning: --no-ignore is not yet implemented for watch mode");
+        tracing::warn!("--no-ignore is not yet implemented for watch mode");
     }
 
     let root = find_project_root();
@@ -290,7 +290,9 @@ fn reindex_files(
         }
     }
 
-    store.touch_updated_at().ok();
+    if let Err(e) = store.touch_updated_at() {
+        tracing::warn!(error = %e, "Failed to update timestamp");
+    }
 
     if !quiet {
         println!("Updated {} file(s)", files.len());
