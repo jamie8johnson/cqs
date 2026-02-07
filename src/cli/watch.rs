@@ -272,6 +272,24 @@ fn reindex_files(
         store.upsert_chunk(chunk, embedding, mtime)?;
     }
 
+    // Extract call graph for changed files
+    for rel_path in files {
+        let abs_path = root.join(rel_path);
+        if !abs_path.exists() {
+            continue;
+        }
+        match parser.parse_file_calls(&abs_path) {
+            Ok(function_calls) => {
+                if let Err(e) = store.upsert_function_calls(rel_path, &function_calls) {
+                    tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update call graph");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(file = %abs_path.display(), error = %e, "Failed to extract calls");
+            }
+        }
+    }
+
     store.touch_updated_at().ok();
 
     if !quiet {
