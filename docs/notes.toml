@@ -560,3 +560,28 @@ mentions = [
     "define_languages",
     "src/language/sql.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "tree-sitter-sequel-tsql v0.4.2 not yet published to crates.io — bracket-quoted identifiers and ALTER PROCEDURE/FUNCTION only available via git dep. Any project using crates.io dep gets v0.4.0 without those fixes."
+mentions = [
+    "Cargo.toml",
+    "tree-sitter-sequel-tsql",
+]
+
+[[note]]
+sentiment = -0.5
+text = "extract_name_fallback() in chunk.rs searches for SQL keywords (PROCEDURE, FUNCTION, VIEW, TRIGGER) but lives in generic parser code. Harmless for non-SQL languages (returns None) but couples generic parsing to SQL-specific knowledge."
+mentions = [
+    "src/parser/chunk.rs",
+    "extract_name_fallback",
+]
+
+[[note]]
+sentiment = -0.5
+text = '''SignatureStyle::UntilAs doesn't handle \r\n line endings. Patterns " AS ", "\nAS\n", "\nAS " won't match "\r\nAS\r\n". Git usually normalizes but raw Windows .sql files will break signature extraction.'''
+mentions = [
+    "src/parser/chunk.rs",
+    "extract_signature",
+    "SignatureStyle::UntilAs",
+]
