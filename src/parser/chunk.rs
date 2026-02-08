@@ -40,13 +40,31 @@ impl Parser {
 
         // Get name capture
         let name_idx = query.capture_index_for_name("name");
-        let name = name_idx
-            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
-            .map(|c| source[c.node.byte_range()].to_string())
+        let name_capture = name_idx.and_then(|idx| m.captures.iter().find(|c| c.index == idx));
+        let mut name = name_capture
+            .map(|c| {
+                let raw = source[c.node.byte_range()].to_string();
+                // Names should never span multiple lines — error recovery in grammars
+                // (especially SQL) can extend nodes past the actual name.
+                raw.lines().next().unwrap_or(&raw).trim().to_string()
+            })
             .unwrap_or_else(|| "<anonymous>".to_string());
 
         // Extract content
         let content = source[node.byte_range()].to_string();
+
+        // Validate name position: if the @name capture is far from the definition
+        // start, tree-sitter error recovery likely matched the wrong node.
+        // Fall back to extracting the name from the content text.
+        if let Some(nc) = name_capture {
+            let name_line = nc.node.start_position().row;
+            let def_line = node.start_position().row;
+            if name_line.saturating_sub(def_line) > 5 {
+                if let Some(extracted) = extract_name_fallback(&content) {
+                    name = extracted;
+                }
+            }
+        }
 
         // Line numbers (1-indexed for display)
         let line_start = node.start_position().row as u32 + 1;
@@ -154,6 +172,31 @@ fn extract_doc_comment(
 
     comments.reverse();
     Some(comments.join("\n"))
+}
+
+/// Extract a name from chunk content when tree-sitter's @name capture is wrong.
+/// Looks for `PROCEDURE name`, `FUNCTION name`, `VIEW name`, or `TRIGGER name`
+/// patterns in the first few lines.
+fn extract_name_fallback(content: &str) -> Option<String> {
+    let upper = content.to_uppercase();
+    for keyword in &["PROCEDURE", "FUNCTION", "VIEW", "TRIGGER"] {
+        if let Some(pos) = upper.find(keyword) {
+            let after_keyword = pos + keyword.len();
+            if after_keyword >= content.len() {
+                continue;
+            }
+            let rest = content[after_keyword..].trim_start();
+            // Name ends at whitespace, '(', '@', or newline
+            let name_end = rest
+                .find(|c: char| c.is_whitespace() || c == '(' || c == '@')
+                .unwrap_or(rest.len());
+            let name = rest[..name_end].trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn infer_chunk_type(node: tree_sitter::Node, language: Language) -> ChunkType {

@@ -3742,9 +3742,9 @@ dependencies = [
 
 [[package]]
 name = "tree-sitter-sequel-tsql"
-version = "0.4.0"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9139d6e55249e7705d7142bd2e1664751217d03741ab9bf57c54d6946519bee2"
+checksum = "08d02793ddf858f2fc6376c7c12d50a4a29797c834b8ddbafe752290d9cbdb59"
 dependencies = [
  "cc",
  "tree-sitter-language",
