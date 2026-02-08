@@ -2,25 +2,17 @@
 
 ## Right Now
 
-**SQL language support** — implementation complete, tests passing. Ready for branch + PR.
+**Clean slate.** v0.9.4 shipped with SQL language support.
 
 ### Uncommitted
-- SQL language support (Part 1: forked tree-sitter-sql, Part 2: cqs integration)
-  - `Cargo.toml`: tree-sitter-sql git dep, lang-sql feature
-  - `src/language/sql.rs`: new module (chunk query, call query, stopwords, extract_return)
-  - `src/language/mod.rs`: SignatureStyle::UntilAs, define_languages! entry for Sql
-  - `src/parser/chunk.rs`: UntilAs match arm in extract_signature
-  - `tests/fixtures/sample.sql`: SQL test fixture (5 objects, GO separators)
-  - `tests/parser_test.rs`: 5 new SQL tests
-  - `tests/eval_test.rs`, `tests/model_eval.rs`: Sql match arms
-  - CLAUDE.md, CONTRIBUTING.md, ROADMAP.md: updated for 8 languages
-- Grammar fork: `jamie8johnson/tree-sitter-sql` (CREATE PROCEDURE, GO, EXEC added)
+None.
 
 ### Recent merges
+- PR #311: Use crates.io dep for tree-sitter-sql
+- PR #310: Release v0.9.4
+- PR #309: SQL language support
 - PR #308: Audit cleanup batch (#265, #264, #241, #267, #239, #232)
 - PR #307: Language extensibility via define_languages! macro (#268)
-- PR #306: v0.9.3 release
-- PR #305: Fix gather/cross-project search to use RRF hybrid
 
 ### P4 audit items tracked in issues
 - #300: Search/algorithm edge cases (5 items)
@@ -77,3 +69,4 @@
 - 286 lib + 233 integration tests (with gpu-search), 0 warnings, clippy clean
 - MCP tools: 20 (note_only, summary, mermaid added as params in v0.9.2+)
 - Source layout: parser/ and hnsw/ are now directories (split from monoliths in v0.9.0)
+- SQL grammar: tree-sitter-sequel-tsql v0.4.0 on crates.io (forked from DerekStride/tree-sitter-sql)

@@ -497,16 +497,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "gather() and search_across_projects() were using store.search() (raw embedding) instead of search_filtered() (RRF hybrid). This caused gather to miss results that cqs_search found via keyword matching. Fixed in PR #305. Rule: never call store.search() in production code — always use search_filtered or search_unified_with_index."
-mentions = [
-    "src/gather.rs",
-    "src/project.rs",
-    "store.search",
-    "search_filtered",
-]
-
-[[note]]
 sentiment = 0.5
 text = "define_languages! macro reduces language addition from 13 scattered changes to 1 macro invocation. Each language: enum variant, extension mapping, grammar loading, query patterns, display impl. Parser tests verify grammar availability at compile time. PR #307."
 mentions = [
@@ -551,4 +541,22 @@ mentions = [
     "src/parser/chunk.rs",
     "src/language/sql.rs",
     "extract_chunk",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Git deps in Cargo.toml block cargo publish. For tree-sitter grammar forks, publish the fork to crates.io under a new name (e.g. tree-sitter-sequel-tsql) then use version dep. One-time effort per grammar fork."
+mentions = [
+    "Cargo.toml",
+    "tree-sitter-sql",
+    "cargo publish",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Adding a new language to cqs requires: (1) tree-sitter grammar crate, (2) one-liner in define_languages! macro, (3) LanguageDef with chunk_query + call_query, (4) test fixture + parser tests, (5) match arms in eval_test.rs and model_eval.rs. The define_languages! macro (PR #307) reduced this from 13 scattered changes."
+mentions = [
+    "src/language/mod.rs",
+    "define_languages",
+    "src/language/sql.rs",
 ]
