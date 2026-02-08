@@ -114,7 +114,7 @@ fn test_search_threshold_performance() {
     for i in 0..1000 {
         let chunk = test_chunk(&format!("func_{}", i), &format!("fn func_{}() {{}}", i));
         // Use golden ratio for better distribution
-        let seed = (i as f32 * 0.618033988749895) % 1.0;
+        let seed = (i as f32 * 0.618_034) % 1.0;
         let embedding = mock_embedding(seed);
         ts.upsert_chunk(&chunk, &embedding, Some(12345))
             .expect("Failed to upsert");

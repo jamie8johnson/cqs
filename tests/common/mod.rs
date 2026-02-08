@@ -61,6 +61,7 @@ impl std::ops::Deref for TestStore {
 }
 
 /// Create a test chunk with sensible defaults
+#[allow(dead_code)]
 pub fn test_chunk(name: &str, content: &str) -> Chunk {
     let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
     Chunk {

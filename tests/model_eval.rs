@@ -17,6 +17,9 @@ use ort::value::Tensor;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Per-model evaluation results: (name, per-language hits/total, total hits, total queries)
+type EvalResults<'a> = Vec<(&'a str, HashMap<Language, (usize, usize)>, usize, usize)>;
+
 // ===== Model Configuration =====
 
 struct ModelConfig {
@@ -450,10 +453,9 @@ impl EvalEmbedder {
         let seq_len = max_len;
         let mut results = Vec::with_capacity(batch_size);
 
-        for i in 0..batch_size {
+        for (i, mask_vec) in attention_mask.iter().enumerate().take(batch_size) {
             let embedding = match self.config.pooling {
                 Pooling::MeanPooling => {
-                    let mask_vec = &attention_mask[i];
                     let mut sum = vec![0.0f32; embedding_dim];
                     let mut count = 0.0f32;
 
@@ -605,7 +607,7 @@ fn test_model_comparison() {
     // Evaluate each model
     eprintln!("=== Model Comparison ===\n");
 
-    let mut all_results: Vec<(&str, HashMap<Language, (usize, usize)>, usize, usize)> = Vec::new();
+    let mut all_results: EvalResults = Vec::new();
 
     for model_config in MODELS {
         eprintln!("--- {} ---", model_config.name);
@@ -779,7 +781,7 @@ fn test_template_comparison() {
         ("DocFirst", NlTemplate::DocFirst),
     ];
 
-    let mut all_results: Vec<(&str, HashMap<Language, (usize, usize)>, usize, usize)> = Vec::new();
+    let mut all_results: EvalResults = Vec::new();
 
     for (template_name, template) in &templates {
         eprintln!("--- {} ---", template_name);

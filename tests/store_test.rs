@@ -744,7 +744,7 @@ fn test_get_call_graph() {
         "func_b should call 1 function"
     );
     assert!(
-        graph.forward.get("func_c").is_none(),
+        !graph.forward.contains_key("func_c"),
         "func_c should call nothing"
     );
 
@@ -760,7 +760,7 @@ fn test_get_call_graph() {
         "func_b should be called by 1 function"
     );
     assert!(
-        graph.reverse.get("func_a").is_none(),
+        !graph.reverse.contains_key("func_a"),
         "func_a should not be called by anyone"
     );
 }
@@ -769,8 +769,6 @@ fn test_get_call_graph() {
 
 #[test]
 fn test_all_chunk_identities() {
-    use cqs::parser::Language;
-
     let store = TestStore::new();
 
     // Insert chunks with various properties

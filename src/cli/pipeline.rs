@@ -738,12 +738,9 @@ mod tests {
 
     #[test]
     fn test_windowing_constants() {
-        // Verify constants are sensible
-        assert!(MAX_TOKENS_PER_WINDOW <= 512, "Should be under E5 limit");
-        assert!(
-            WINDOW_OVERLAP_TOKENS < MAX_TOKENS_PER_WINDOW,
-            "Overlap must be less than window"
-        );
-        assert!(WINDOW_OVERLAP_TOKENS > 0, "Overlap should be positive");
+        // Verify constants are sensible (const blocks for compile-time checks)
+        const { assert!(MAX_TOKENS_PER_WINDOW <= 512) };
+        const { assert!(WINDOW_OVERLAP_TOKENS < MAX_TOKENS_PER_WINDOW) };
+        const { assert!(WINDOW_OVERLAP_TOKENS > 0) };
     }
 }

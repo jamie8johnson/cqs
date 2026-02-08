@@ -44,6 +44,42 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types (Javadoc /** ... */ and regular comments)
 const DOC_NODES: &[&str] = &["line_comment", "block_comment"];
 
+const STOPWORDS: &[&str] = &[
+    "public", "private", "protected", "static", "final", "abstract", "class", "interface",
+    "extends", "implements", "return", "if", "else", "for", "while", "do", "switch", "case",
+    "break", "continue", "new", "this", "super", "try", "catch", "finally", "throw", "throws",
+    "import", "package", "void", "int", "boolean", "string", "true", "false", "null",
+];
+
+fn extract_return(signature: &str) -> Option<String> {
+    // Java: return type is before the method name, similar to C
+    // e.g., "public int add(int a, int b)" or "private static String getName()"
+    if let Some(paren) = signature.find('(') {
+        let before = signature[..paren].trim();
+        let words: Vec<&str> = before.split_whitespace().collect();
+        if words.len() >= 2 {
+            // Last word is method name, second-to-last is return type
+            let ret_type = words[words.len() - 2];
+            if !matches!(
+                ret_type,
+                "void"
+                    | "public"
+                    | "private"
+                    | "protected"
+                    | "static"
+                    | "final"
+                    | "abstract"
+                    | "synchronized"
+                    | "native"
+            ) {
+                let ret_words = crate::nl::tokenize_identifier(ret_type).join(" ");
+                return Some(format!("Returns {}", ret_words));
+            }
+        }
+    }
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "java",
     grammar: || tree_sitter_java::LANGUAGE.into(),
@@ -55,6 +91,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &["class_body", "class_declaration"],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {

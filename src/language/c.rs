@@ -46,6 +46,38 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types
 const DOC_NODES: &[&str] = &["comment"];
 
+const STOPWORDS: &[&str] = &[
+    "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "return",
+    "typedef", "struct", "enum", "union", "void", "int", "char", "float", "double", "long",
+    "short", "unsigned", "signed", "static", "extern", "const", "volatile", "sizeof",
+    "null", "true", "false",
+];
+
+fn extract_return(signature: &str) -> Option<String> {
+    // C: return type is before the function name, e.g., "int add(int a, int b)"
+    if let Some(paren) = signature.find('(') {
+        let before = signature[..paren].trim();
+        let words: Vec<&str> = before.split_whitespace().collect();
+        // Last word is function name, everything before is return type + modifiers
+        if words.len() >= 2 {
+            // Filter out storage class specifiers
+            let type_words: Vec<&str> = words[..words.len() - 1]
+                .iter()
+                .filter(|w| {
+                    !matches!(**w, "static" | "inline" | "extern" | "const" | "volatile")
+                })
+                .copied()
+                .collect();
+            if !type_words.is_empty() && type_words != ["void"] {
+                let ret = type_words.join(" ");
+                let ret_words = crate::nl::tokenize_identifier(&ret).join(" ");
+                return Some(format!("Returns {}", ret_words));
+            }
+        }
+    }
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "c",
     grammar: || tree_sitter_c::LANGUAGE.into(),
@@ -57,6 +89,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &[],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {

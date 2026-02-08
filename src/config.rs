@@ -589,7 +589,7 @@ weight = 0.7
         .unwrap();
 
         // Load config (should clamp weights)
-        let config = Config::load(&dir.path());
+        let config = Config::load(dir.path());
 
         // Find the references
         let over_ref = config.references.iter().find(|r| r.name == "over").unwrap();

@@ -21,8 +21,6 @@ pub use types::{JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 
 #[cfg(test)]
 mod tests {
-    use super::types::JsonRpcRequest;
-
     mod fuzz {
         use super::super::types::JsonRpcRequest;
         use proptest::prelude::*;

@@ -4,6 +4,8 @@
 //! each with its own tree-sitter grammar, query patterns, and extraction rules.
 //!
 //! Languages are registered at compile time based on feature flags.
+//! To add a new language, add one line to the `define_languages!` invocation
+//! and create a language module file (see existing language modules for examples).
 //!
 //! # Feature Flags
 //!
@@ -19,22 +21,102 @@
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-#[cfg(feature = "lang-c")]
-mod c;
-#[cfg(feature = "lang-go")]
-mod go;
-#[cfg(feature = "lang-java")]
-mod java;
-#[cfg(feature = "lang-javascript")]
-mod javascript;
-#[cfg(feature = "lang-python")]
-mod python;
-#[cfg(feature = "lang-rust")]
-mod rust;
-#[cfg(feature = "lang-typescript")]
-mod typescript;
+// ---------------------------------------------------------------------------
+// Macro: define_languages!
+//
+// Generates from a single declaration table:
+//   - Feature-gated `mod` declarations
+//   - `Language` enum with variants and doc comments
+//   - `Display` impl (variant → name string)
+//   - `FromStr` impl (name string → variant, case-insensitive)
+//   - `Language::all_variants()`, `valid_names()`, `valid_names_display()`
+//   - `LanguageRegistry::new()` with feature-gated registrations
+//
+// Adding a language = one new line here + a language module file + Cargo.toml.
+// ---------------------------------------------------------------------------
+macro_rules! define_languages {
+    (
+        $(
+            $(#[doc = $doc:expr])*
+            $variant:ident => $name:literal, feature = $feature:literal, module = $module:ident;
+        )+
+    ) => {
+        // Feature-gated module imports
+        $(
+            #[cfg(feature = $feature)]
+            mod $module;
+        )+
+
+        /// Supported programming languages
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum Language {
+            $(
+                $(#[doc = $doc])*
+                $variant,
+            )+
+        }
+
+        impl std::fmt::Display for Language {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(Language::$variant => write!(f, $name),)+
+                }
+            }
+        }
+
+        impl std::str::FromStr for Language {
+            type Err = ParseLanguageError;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s.to_lowercase().as_str() {
+                    $($name => Ok(Language::$variant),)+
+                    _ => Err(ParseLanguageError { input: s.to_string() }),
+                }
+            }
+        }
+
+        impl Language {
+            /// Returns a slice of all Language variants (regardless of feature flags).
+            ///
+            /// **Note:** Calling `.def()` on a variant whose feature is disabled will panic.
+            /// Use `is_enabled()` to check first, or use `REGISTRY.all()` for enabled-only iteration.
+            pub fn all_variants() -> &'static [Language] {
+                &[$(Language::$variant),+]
+            }
+
+            /// Returns all valid language name strings
+            pub fn valid_names() -> &'static [&'static str] {
+                &[$($name),+]
+            }
+
+            /// Formatted string of valid language names for error messages
+            pub fn valid_names_display() -> String {
+                [$($name),+].join(", ")
+            }
+        }
+
+        impl LanguageRegistry {
+            /// Create a new registry with all enabled languages
+            fn new() -> Self {
+                let mut reg = Self {
+                    by_name: HashMap::new(),
+                    by_extension: HashMap::new(),
+                };
+                $(
+                    #[cfg(feature = $feature)]
+                    reg.register($module::definition());
+                )+
+                reg
+            }
+        }
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Type definitions (prerequisites for language modules and macro expansion)
+// ---------------------------------------------------------------------------
 
 /// A language definition with all parsing configuration
+#[non_exhaustive]
 pub struct LanguageDef {
     /// Language name (e.g., "rust", "python")
     pub name: &'static str,
@@ -56,6 +138,11 @@ pub struct LanguageDef {
     pub method_node_kinds: &'static [&'static str],
     /// Parent node kinds that make a child function a method (e.g., Rust's "impl_item")
     pub method_containers: &'static [&'static str],
+    /// Per-language stopwords for keyword extraction (used by `extract_body_keywords`)
+    pub stopwords: &'static [&'static str],
+    /// Per-language return type extractor (used by NL description generation).
+    /// Returns `None` if the language has no type annotations or the signature has no return type.
+    pub extract_return_nl: fn(&str) -> Option<String>,
 }
 
 /// How to extract function signatures
@@ -142,75 +229,6 @@ impl std::str::FromStr for ChunkType {
     }
 }
 
-/// Supported programming languages
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Language {
-    /// Rust (.rs files)
-    Rust,
-    /// Python (.py, .pyi files)
-    Python,
-    /// TypeScript (.ts, .tsx files)
-    TypeScript,
-    /// JavaScript (.js, .jsx, .mjs, .cjs files)
-    JavaScript,
-    /// Go (.go files)
-    Go,
-    /// C (.c, .h files)
-    C,
-    /// Java (.java files)
-    Java,
-}
-
-impl Language {
-    /// Get the language definition from the registry
-    pub fn def(&self) -> &'static LanguageDef {
-        REGISTRY
-            .get(&self.to_string())
-            .expect("language not in registry — check feature flags")
-    }
-
-    /// Look up a language by file extension
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        REGISTRY
-            .from_extension(ext)
-            .and_then(|def| def.name.parse().ok())
-    }
-
-    /// Get the tree-sitter grammar for this language
-    pub fn grammar(&self) -> tree_sitter::Language {
-        (self.def().grammar)()
-    }
-
-    /// Get the chunk extraction query pattern
-    pub fn query_pattern(&self) -> &'static str {
-        self.def().chunk_query
-    }
-
-    /// Get the primary file extension for this language (e.g., "rs" for Rust)
-    pub fn primary_extension(&self) -> &'static str {
-        self.def().extensions[0]
-    }
-
-    /// Get the call extraction query pattern
-    pub fn call_query_pattern(&self) -> &'static str {
-        self.def().call_query.unwrap_or("")
-    }
-}
-
-impl std::fmt::Display for Language {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Language::Rust => write!(f, "rust"),
-            Language::Python => write!(f, "python"),
-            Language::TypeScript => write!(f, "typescript"),
-            Language::JavaScript => write!(f, "javascript"),
-            Language::Go => write!(f, "go"),
-            Language::C => write!(f, "c"),
-            Language::Java => write!(f, "java"),
-        }
-    }
-}
-
 /// Error returned when parsing an invalid Language string
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseLanguageError {
@@ -222,34 +240,14 @@ impl std::fmt::Display for ParseLanguageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown language: '{}'. Valid options: rust, python, typescript, javascript, go, c, java",
-            self.input
+            "Unknown language: '{}'. Valid options: {}",
+            self.input,
+            Language::valid_names_display()
         )
     }
 }
 
 impl std::error::Error for ParseLanguageError {}
-
-impl std::str::FromStr for Language {
-    type Err = ParseLanguageError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "rust" => Ok(Language::Rust),
-            "python" => Ok(Language::Python),
-            "typescript" => Ok(Language::TypeScript),
-            "javascript" => Ok(Language::JavaScript),
-            "go" => Ok(Language::Go),
-            "c" => Ok(Language::C),
-            "java" => Ok(Language::Java),
-            _ => Err(ParseLanguageError {
-                input: s.to_string(),
-            }),
-        }
-    }
-}
-
-/// Global language registry
-pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry::new);
 
 /// Registry of all supported languages
 pub struct LanguageRegistry {
@@ -260,38 +258,6 @@ pub struct LanguageRegistry {
 }
 
 impl LanguageRegistry {
-    /// Create a new registry with all enabled languages
-    fn new() -> Self {
-        let mut reg = Self {
-            by_name: HashMap::new(),
-            by_extension: HashMap::new(),
-        };
-
-        // Register all enabled languages based on feature flags
-        #[cfg(feature = "lang-rust")]
-        reg.register(rust::definition());
-
-        #[cfg(feature = "lang-python")]
-        reg.register(python::definition());
-
-        #[cfg(feature = "lang-typescript")]
-        reg.register(typescript::definition());
-
-        #[cfg(feature = "lang-javascript")]
-        reg.register(javascript::definition());
-
-        #[cfg(feature = "lang-go")]
-        reg.register(go::definition());
-
-        #[cfg(feature = "lang-c")]
-        reg.register(c::definition());
-
-        #[cfg(feature = "lang-java")]
-        reg.register(java::definition());
-
-        reg
-    }
-
     fn register(&mut self, def: &'static LanguageDef) {
         self.by_name.insert(def.name, def);
         for ext in def.extensions {
@@ -319,6 +285,75 @@ impl LanguageRegistry {
         self.by_extension.keys().copied()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Language registration — one line per language
+// ---------------------------------------------------------------------------
+
+define_languages! {
+    /// Rust (.rs files)
+    Rust => "rust", feature = "lang-rust", module = rust;
+    /// Python (.py, .pyi files)
+    Python => "python", feature = "lang-python", module = python;
+    /// TypeScript (.ts, .tsx files)
+    TypeScript => "typescript", feature = "lang-typescript", module = typescript;
+    /// JavaScript (.js, .jsx, .mjs, .cjs files)
+    JavaScript => "javascript", feature = "lang-javascript", module = javascript;
+    /// Go (.go files)
+    Go => "go", feature = "lang-go", module = go;
+    /// C (.c, .h files)
+    C => "c", feature = "lang-c", module = c;
+    /// Java (.java files)
+    Java => "java", feature = "lang-java", module = java;
+}
+
+// ---------------------------------------------------------------------------
+// Language methods (delegate to LanguageDef — no per-variant match arms)
+// ---------------------------------------------------------------------------
+
+impl Language {
+    /// Get the language definition from the registry
+    pub fn def(&self) -> &'static LanguageDef {
+        REGISTRY
+            .get(&self.to_string())
+            .expect("language not in registry — check feature flags")
+    }
+
+    /// Look up a language by file extension
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        REGISTRY
+            .from_extension(ext)
+            .and_then(|def| def.name.parse().ok())
+    }
+
+    /// Check if this language's feature flag is enabled
+    pub fn is_enabled(&self) -> bool {
+        REGISTRY.get(&self.to_string()).is_some()
+    }
+
+    /// Get the tree-sitter grammar for this language
+    pub fn grammar(&self) -> tree_sitter::Language {
+        (self.def().grammar)()
+    }
+
+    /// Get the chunk extraction query pattern
+    pub fn query_pattern(&self) -> &'static str {
+        self.def().chunk_query
+    }
+
+    /// Get the primary file extension for this language (e.g., "rs" for Rust)
+    pub fn primary_extension(&self) -> &'static str {
+        self.def().extensions[0]
+    }
+
+    /// Get the call extraction query pattern
+    pub fn call_query_pattern(&self) -> &'static str {
+        self.def().call_query.unwrap_or("")
+    }
+}
+
+/// Global language registry
+pub static REGISTRY: LazyLock<LanguageRegistry> = LazyLock::new(LanguageRegistry::new);
 
 #[cfg(test)]
 mod tests {
@@ -454,6 +489,112 @@ mod tests {
         assert_eq!(Language::Rust.def().name, "rust");
         assert_eq!(Language::Python.def().name, "python");
         assert_eq!(Language::Go.def().name, "go");
+    }
+
+    // ===== Macro / extensibility tests =====
+
+    #[test]
+    fn test_all_variants_count() {
+        // Macro-generated all_variants() should agree with registry count (all features enabled)
+        let variant_count = Language::all_variants().len();
+        let registry_count = REGISTRY.all().count();
+        assert_eq!(
+            variant_count, registry_count,
+            "all_variants() has {} but registry has {} (feature mismatch?)",
+            variant_count, registry_count
+        );
+    }
+
+    #[test]
+    fn test_valid_names_roundtrip() {
+        // Every entry in valid_names() should parse via FromStr and round-trip through Display
+        for name in Language::valid_names() {
+            let lang: Language = name.parse().unwrap_or_else(|_| {
+                panic!("valid_names() entry '{}' should parse as Language", name)
+            });
+            assert_eq!(
+                &lang.to_string(),
+                name,
+                "Display for '{}' should round-trip",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_valid_names_display_format() {
+        let display = Language::valid_names_display();
+        // Should contain commas (at least 2 languages)
+        assert!(
+            display.contains(", "),
+            "valid_names_display() should contain commas: {}",
+            display
+        );
+        // Every language name should appear
+        for name in Language::valid_names() {
+            assert!(
+                display.contains(name),
+                "valid_names_display() missing '{}': {}",
+                name,
+                display
+            );
+        }
+    }
+
+    #[test]
+    fn test_language_def_stopwords_nonempty() {
+        // Every language must provide at least one stopword
+        for lang in Language::all_variants() {
+            let def = lang.def();
+            assert!(
+                !def.stopwords.is_empty(),
+                "Language {} has empty stopwords",
+                lang
+            );
+        }
+    }
+
+    #[test]
+    fn test_language_def_extract_return() {
+        // Empty input should never produce a return type for any language
+        for lang in Language::all_variants() {
+            let result = (lang.def().extract_return_nl)("");
+            assert_eq!(
+                result, None,
+                "extract_return_nl(\"\") should be None for {}",
+                lang
+            );
+        }
+
+        // Known signatures per language — verify extraction works through function pointers
+        assert_eq!(
+            (Language::Rust.def().extract_return_nl)("fn foo() -> String"),
+            Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::Python.def().extract_return_nl)("def foo() -> str:"),
+            Some("Returns str".to_string())
+        );
+        assert_eq!(
+            (Language::TypeScript.def().extract_return_nl)("function foo(): string"),
+            Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::JavaScript.def().extract_return_nl)("function foo()"),
+            None
+        );
+        assert_eq!(
+            (Language::Go.def().extract_return_nl)("func foo() string {"),
+            Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::C.def().extract_return_nl)("int add(int a, int b)"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Java.def().extract_return_nl)("public String getName()"),
+            Some("Returns string".to_string())
+        );
     }
 
     // ===== ChunkType tests =====
