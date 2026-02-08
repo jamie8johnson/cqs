@@ -6,8 +6,8 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::gather::{GatherDirection, GatherOptions};
 use cqs::parser::{CallSite, FunctionCalls};
+use cqs::{GatherDirection, GatherOptions};
 use std::path::PathBuf;
 
 #[test]
@@ -54,7 +54,7 @@ fn test_gather_basic() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(
+    let result = cqs::gather(
         &store.store,
         &query,
         "test query",
@@ -87,7 +87,7 @@ fn test_gather_no_expansion() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(
+    let result = cqs::gather(
         &store.store,
         &query,
         "test query",
@@ -151,7 +151,7 @@ fn test_gather_callers_only() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(
+    let result = cqs::gather(
         &store.store,
         &query,
         "test query",
@@ -194,7 +194,7 @@ fn test_gather_callees_only() {
         limit: 10,
     };
     let query = mock_embedding(1.0);
-    let result = cqs::gather::gather(
+    let result = cqs::gather(
         &store.store,
         &query,
         "test query",

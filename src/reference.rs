@@ -75,28 +75,21 @@ pub fn search_reference(
     filter: &SearchFilter,
     limit: usize,
     threshold: f32,
-) -> Vec<SearchResult> {
-    match ref_idx.store.search_filtered_with_index(
+) -> anyhow::Result<Vec<SearchResult>> {
+    let mut results = ref_idx.store.search_filtered_with_index(
         query_embedding,
         filter,
         limit,
         threshold,
         ref_idx.index.as_deref(),
-    ) {
-        Ok(mut results) => {
-            for r in &mut results {
-                r.score *= ref_idx.weight;
-            }
-            // Re-filter after weight: results that passed raw threshold may fall
-            // below after weighting (consistent with name_only path)
-            results.retain(|r| r.score >= threshold);
-            results
-        }
-        Err(e) => {
-            tracing::warn!("Search failed for reference '{}': {}", ref_idx.name, e);
-            vec![]
-        }
+    )?;
+    for r in &mut results {
+        r.score *= ref_idx.weight;
     }
+    // Re-filter after weight: results that passed raw threshold may fall
+    // below after weighting (consistent with name_only path)
+    results.retain(|r| r.score >= threshold);
+    Ok(results)
 }
 
 /// Search a reference by name (for name_only mode), applying weight
@@ -105,20 +98,13 @@ pub fn search_reference_by_name(
     name: &str,
     limit: usize,
     threshold: f32,
-) -> Vec<SearchResult> {
-    match ref_idx.store.search_by_name(name, limit) {
-        Ok(mut results) => {
-            results.retain(|r| r.score * ref_idx.weight >= threshold);
-            for r in &mut results {
-                r.score *= ref_idx.weight;
-            }
-            results
-        }
-        Err(e) => {
-            tracing::warn!("Name search failed for reference '{}': {}", ref_idx.name, e);
-            vec![]
-        }
+) -> anyhow::Result<Vec<SearchResult>> {
+    let mut results = ref_idx.store.search_by_name(name, limit)?;
+    results.retain(|r| r.score * ref_idx.weight >= threshold);
+    for r in &mut results {
+        r.score *= ref_idx.weight;
     }
+    Ok(results)
 }
 
 /// Merge primary results with reference results, sorted by score, truncated to limit

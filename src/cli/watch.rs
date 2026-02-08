@@ -26,7 +26,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, info_span, warn};
 
 use cqs::embedder::{Embedder, Embedding};
-use cqs::nl::generate_nl_description;
+use cqs::generate_nl_description;
 use cqs::note::parse_notes;
 use cqs::parser::Parser as CqParser;
 use cqs::store::Store;

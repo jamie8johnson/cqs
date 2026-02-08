@@ -125,7 +125,7 @@ fn prepare_for_embedding(
     embedder: &Embedder,
     store: &Store,
 ) -> PreparedEmbedding {
-    use cqs::nl::generate_nl_description;
+    use cqs::generate_nl_description;
 
     // Step 1: Apply windowing to split long chunks into overlapping windows
     let windowed_chunks = apply_windowing(batch.chunks, embedder);

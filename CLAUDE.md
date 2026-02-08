@@ -142,6 +142,7 @@ The HNSW disaster: built an index, wrote save/load, marked "done" - but search n
 - `thiserror` for library errors, `anyhow` in CLI
 - No `unwrap()` except in tests
 - GPU detection at runtime, graceful CPU fallback
+- **GPU available** — this machine has an NVIDIA GPU. Use `cargo test --features gpu-search` to include CAGRA tests. Build with `cargo build --features gpu-search` when touching CAGRA code.
 
 ## Documentation
 

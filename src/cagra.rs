@@ -140,6 +140,24 @@ impl CagraIndex {
             .map_err(|e| CagraError::Cuvs(e.to_string()))
     }
 
+    /// Ensure index is rebuilt and stored back in the Mutex.
+    /// Called by IndexRebuilder on drop to guarantee index restoration.
+    fn ensure_index_rebuilt(&self, resources: &cuvs::Resources) {
+        match self.rebuild_index_with_resources(resources) {
+            Ok(idx) => {
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::debug!("CAGRA index mutex poisoned during rebuild, recovering");
+                    poisoned.into_inner()
+                });
+                *guard = Some(idx);
+                tracing::debug!("CAGRA index rebuilt successfully");
+            }
+            Err(e) => {
+                tracing::error!("Failed to rebuild CAGRA index: {}", e);
+            }
+        }
+    }
+
     /// Number of vectors in the index
     pub fn len(&self) -> usize {
         self.id_map.len()
@@ -201,62 +219,15 @@ impl CagraIndex {
         //   - 128 minimum ensures enough candidates for the graph search
         // Trade-off: larger itopk_size = better recall, more GPU memory/compute
         let itopk_size = (k * 2).max(128);
-        let search_params = match cuvs::cagra::SearchParams::new() {
-            Ok(params) => params.set_itopk_size(itopk_size),
-            Err(e) => {
-                tracing::error!("Failed to create search params: {}", e);
-                // Put index back
-                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                    tracing::debug!("CAGRA index mutex poisoned, recovering");
-                    poisoned.into_inner()
-                });
-                *guard = Some(index);
-                return Vec::new();
-            }
-        };
-
-        // Prepare query as 2D array (1 query x EMBEDDING_DIM)
-        let query_host = match Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec())
-        {
-            Ok(arr) => arr,
-            Err(e) => {
-                tracing::error!(
-                    "Invalid query shape (expected {} dims): {}",
-                    EMBEDDING_DIM,
-                    e
-                );
-                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                    tracing::debug!("CAGRA index mutex poisoned, recovering");
-                    poisoned.into_inner()
-                });
-                *guard = Some(index);
-                return Vec::new();
-            }
-        };
-
-        // Copy query to device
-        let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
-            Ok(t) => t,
-            Err(e) => {
-                tracing::error!("Failed to copy query to device: {}", e);
-                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                    tracing::debug!("CAGRA index mutex poisoned, recovering");
-                    poisoned.into_inner()
-                });
-                *guard = Some(index);
-                return Vec::new();
-            }
-        };
-
-        // Prepare output buffers on host, then copy to device
-        let neighbors_host: Array2<u32> = Array2::zeros((1, k));
-        let distances_host: Array2<f32> = Array2::zeros((1, k));
-
-        let neighbors_device =
-            match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
-                Ok(t) => t,
+        // Before consuming the index, create a scope where errors can restore it.
+        // Once we call index.search(), we rely on IndexRebuilder to restore it.
+        // This block handles errors that occur BEFORE the index is consumed.
+        let (search_params, query_device, neighbors_device, distances_device) = {
+            let search_params = match cuvs::cagra::SearchParams::new() {
+                Ok(params) => params.set_itopk_size(itopk_size),
                 Err(e) => {
-                    tracing::error!("Failed to allocate neighbors on device: {}", e);
+                    tracing::error!("Failed to create search params: {}", e);
+                    // Put index back
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                         tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
@@ -266,11 +237,30 @@ impl CagraIndex {
                 }
             };
 
-        let distances_device =
-            match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
+            // Prepare query as 2D array (1 query x EMBEDDING_DIM)
+            let query_host =
+                match Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec()) {
+                    Ok(arr) => arr,
+                    Err(e) => {
+                        tracing::error!(
+                            "Invalid query shape (expected {} dims): {}",
+                            EMBEDDING_DIM,
+                            e
+                        );
+                        let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                            tracing::debug!("CAGRA index mutex poisoned, recovering");
+                            poisoned.into_inner()
+                        });
+                        *guard = Some(index);
+                        return Vec::new();
+                    }
+                };
+
+            // Copy query to device
+            let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!("Failed to allocate distances on device: {}", e);
+                    tracing::error!("Failed to copy query to device: {}", e);
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                         tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
@@ -279,6 +269,52 @@ impl CagraIndex {
                     return Vec::new();
                 }
             };
+
+            // Prepare output buffers on host, then copy to device
+            let neighbors_host: Array2<u32> = Array2::zeros((1, k));
+            let distances_host: Array2<f32> = Array2::zeros((1, k));
+
+            let neighbors_device =
+                match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!("Failed to allocate neighbors on device: {}", e);
+                        let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                            tracing::debug!("CAGRA index mutex poisoned, recovering");
+                            poisoned.into_inner()
+                        });
+                        *guard = Some(index);
+                        return Vec::new();
+                    }
+                };
+
+            let distances_device =
+                match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!("Failed to allocate distances on device: {}", e);
+                        let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                            tracing::debug!("CAGRA index mutex poisoned, recovering");
+                            poisoned.into_inner()
+                        });
+                        *guard = Some(index);
+                        return Vec::new();
+                    }
+                };
+
+            (
+                search_params,
+                query_device,
+                neighbors_device,
+                distances_device,
+            )
+        };
+
+        // Install RAII guard to rebuild index on all exit paths (including panics/early returns)
+        let _rebuilder = IndexRebuilder {
+            cagra: self,
+            resources: &resources,
+        };
 
         // Perform search (consumes index)
         if let Err(e) = index.search(
@@ -305,8 +341,8 @@ impl CagraIndex {
             return Vec::new();
         }
 
-        // Note: index was consumed by search, will be rebuilt on next search
-        // Resources lock is released when this function returns
+        // Note: index will be automatically rebuilt by IndexRebuilder when this function returns
+        // (including on early return or panic)
 
         // Convert results
         let mut results = Vec::with_capacity(k);
@@ -328,6 +364,21 @@ impl CagraIndex {
         }
 
         results
+    }
+}
+
+/// RAII guard that ensures the CAGRA index is rebuilt on drop.
+/// This guarantees index restoration even on early returns or panics.
+#[cfg(feature = "gpu-search")]
+struct IndexRebuilder<'a> {
+    cagra: &'a CagraIndex,
+    resources: &'a cuvs::Resources,
+}
+
+#[cfg(feature = "gpu-search")]
+impl<'a> Drop for IndexRebuilder<'a> {
+    fn drop(&mut self) {
+        self.cagra.ensure_index_rebuilt(self.resources);
     }
 }
 
@@ -649,5 +700,96 @@ mod tests {
         let index = build_test_index(3);
         assert!(!index.is_empty());
         assert_eq!(index.len(), 3);
+    }
+
+    #[test]
+    fn test_search_rebuilds_after_use() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(10);
+
+        // First search consumes the index
+        let results1 = index.search(&make_embedding(0), 3);
+        assert!(!results1.is_empty(), "First search should return results");
+
+        // Verify index was rebuilt by performing another search
+        let results2 = index.search(&make_embedding(5), 3);
+        assert!(
+            !results2.is_empty(),
+            "Second search should return results (index was rebuilt)"
+        );
+
+        // Third search to confirm continued functionality
+        let results3 = index.search(&make_embedding(8), 3);
+        assert!(!results3.is_empty(), "Third search should return results");
+    }
+
+    #[test]
+    fn test_consecutive_searches() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(20);
+
+        // Run multiple searches back-to-back
+        for i in 0..10 {
+            let query = make_embedding(i);
+            let results = index.search(&query, 5);
+            assert!(
+                !results.is_empty(),
+                "Search {} should return results (index should be rebuilt each time)",
+                i
+            );
+            assert!(
+                results.len() <= 5,
+                "Search {} returned too many results: {}",
+                i,
+                results.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_with_invalid_k() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+        let index = build_test_index(5);
+
+        // k=0 should return empty (valid behavior)
+        let results = index.search(&make_embedding(0), 0);
+        assert!(results.is_empty(), "k=0 should return no results");
+
+        // After returning early, next search should still work (index wasn't consumed)
+        let results = index.search(&make_embedding(1), 3);
+        assert!(!results.is_empty(), "Search after k=0 should work");
+    }
+
+    #[test]
+    fn test_search_on_empty_index_then_valid() {
+        let _guard = GPU_LOCK.lock().unwrap();
+        if !require_gpu() {
+            return;
+        }
+
+        // This test verifies that early returns (before index consumption) work correctly
+        let index = build_test_index(5);
+
+        // Query with wrong dimension (returns early before consuming index)
+        let bad_query = Embedding::new(vec![0.5; 100]);
+        let results = index.search(&bad_query, 3);
+        assert!(results.is_empty(), "Bad query should return empty");
+
+        // Now a valid search should work (index wasn't consumed by early return)
+        let good_query = make_embedding(2);
+        let results = index.search(&good_query, 3);
+        assert!(
+            !results.is_empty(),
+            "Good query after bad query should work"
+        );
     }
 }

@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::project::{search_across_projects, ProjectRegistry};
 use cqs::Embedder;
+use cqs::{search_across_projects, ProjectRegistry};
 
 use crate::cli::Cli;
 

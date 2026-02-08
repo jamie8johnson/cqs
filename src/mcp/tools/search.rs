@@ -177,10 +177,12 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         if !should_search_source(&args.sources, &ref_idx.name) {
             continue;
         }
-        let results =
-            reference::search_reference(ref_idx, &query_embedding, &filter, limit, threshold);
-        if !results.is_empty() {
-            ref_results.push((ref_idx.name.clone(), results));
+        match reference::search_reference(ref_idx, &query_embedding, &filter, limit, threshold) {
+            Ok(results) if !results.is_empty() => ref_results.push((ref_idx.name.clone(), results)),
+            Err(e) => {
+                tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed")
+            }
+            _ => {}
         }
     }
 
@@ -249,9 +251,12 @@ fn tool_search_name_only(
         if !should_search_source(&args.sources, &ref_idx.name) {
             continue;
         }
-        let results = reference::search_reference_by_name(ref_idx, &args.query, limit, threshold);
-        if !results.is_empty() {
-            ref_results.push((ref_idx.name.clone(), results));
+        match reference::search_reference_by_name(ref_idx, &args.query, limit, threshold) {
+            Ok(results) if !results.is_empty() => ref_results.push((ref_idx.name.clone(), results)),
+            Err(e) => {
+                tracing::warn!(reference = %ref_idx.name, error = %e, "Reference name search failed")
+            }
+            _ => {}
         }
     }
 

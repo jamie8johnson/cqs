@@ -167,6 +167,7 @@ fn matches_recursion(content: &str, name: &str) -> bool {
 }
 
 /// Filter a list of items by structural pattern
+#[allow(dead_code)] // Public API — used in tests, available for external consumers
 pub fn filter_by_pattern<T, F>(items: Vec<T>, pattern: &Pattern, get_info: F) -> Vec<T>
 where
     F: Fn(&T) -> (&str, &str, Option<Language>),

@@ -2,10 +2,12 @@
 //!
 //! This module provides the `Source` trait for abstracting different
 //! sources of indexable code (filesystem, SQL Server, etc.).
+//!
+//! Not yet wired into the indexing pipeline — reserved for future use.
+
+#![allow(dead_code)]
 
 mod filesystem;
-
-pub use filesystem::FileSystemSource;
 
 use crate::language::{LanguageDef, REGISTRY};
 use std::path::PathBuf;

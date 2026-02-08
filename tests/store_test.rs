@@ -3,7 +3,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::nl::normalize_for_fts;
+use cqs::normalize_for_fts;
 use cqs::parser::{ChunkType, Language};
 use cqs::store::SearchFilter;
 use std::collections::HashSet;
@@ -832,5 +832,152 @@ fn test_get_chunk_with_embedding_nonexistent() {
     assert!(
         result.is_none(),
         "Should return None for non-existent chunk"
+    );
+}
+
+// ===== Store::close() Test (#239) =====
+
+#[test]
+fn test_store_close() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("test_close.db");
+
+    // Open and initialize store
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Insert a chunk to have some data
+        let chunk = test_chunk("test_fn", "fn test_fn() {}");
+        let emb = mock_embedding(1.0);
+        store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
+
+        // Close the store (consumes it)
+        store.close().unwrap();
+    }
+
+    // Reopen to verify database is consistent after close
+    let store = cqs::store::Store::open(&db_path).unwrap();
+    let stats = store.stats().unwrap();
+    assert_eq!(stats.total_chunks, 1, "Chunk should persist after close");
+
+    // Search should still work
+    let results = store.search(&mock_embedding(1.0), 5, 0.0).unwrap();
+    assert_eq!(results.len(), 1, "Should find the persisted chunk");
+}
+
+// ===== FTS Edge Cases Tests (#239) =====
+
+#[test]
+fn test_fts_empty_string() {
+    let store = TestStore::new();
+
+    // Insert a chunk
+    let chunk = test_chunk("test_fn", "fn test_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // Empty string query should not panic
+    let results = store.search_fts("", 5).unwrap();
+    assert!(
+        results.is_empty(),
+        "Empty query should return no results or all results"
+    );
+}
+
+#[test]
+fn test_fts_special_characters() {
+    let store = TestStore::new();
+
+    // Insert chunks with special characters in names
+    let chunk1 = test_chunk("foo::bar", "fn foo::bar() {}");
+    let chunk2 = test_chunk("Vec<T>", "struct Vec<T> {}");
+    let chunk3 = test_chunk("quoted_name", "fn \"quoted\" name");
+
+    store
+        .upsert_chunk(&chunk1, &mock_embedding(0.1), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &mock_embedding(0.2), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk3, &mock_embedding(0.3), Some(12345))
+        .unwrap();
+
+    // Search with special characters - should not panic
+    let results = store.search_fts("foo::bar", 5);
+    assert!(results.is_ok(), "FTS should handle :: in query");
+
+    let results = store.search_fts("Vec<T>", 5);
+    assert!(results.is_ok(), "FTS should handle angle brackets in query");
+
+    let results = store.search_fts("\"quoted\"", 5);
+    assert!(results.is_ok(), "FTS should handle quotes in query");
+}
+
+#[test]
+fn test_fts_sql_injection_characters() {
+    let store = TestStore::new();
+
+    let chunk = test_chunk("test_fn", "fn test_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // SQL-like characters should be sanitized by normalize_for_fts
+    let results = store.search_fts("'; DROP TABLE chunks--", 5);
+    assert!(
+        results.is_ok(),
+        "FTS should safely handle SQL injection attempts"
+    );
+
+    // Should not break or drop tables
+    let stats = store.stats().unwrap();
+    assert_eq!(stats.total_chunks, 1, "Database should remain intact");
+}
+
+#[test]
+fn test_fts_unicode_queries() {
+    let store = TestStore::new();
+
+    // Insert chunks with Unicode content
+    let mut chunk1 = test_chunk("calculate", "fn calculate() {}");
+    chunk1.content = "fn calculate() { /* 计算 */ }".to_string();
+
+    let mut chunk2 = test_chunk("über", "fn über() {}");
+    chunk2.name = "über".to_string();
+
+    store
+        .upsert_chunk(&chunk1, &mock_embedding(0.1), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &mock_embedding(0.2), Some(12345))
+        .unwrap();
+
+    // CJK query
+    let results = store.search_fts("计算", 5);
+    assert!(results.is_ok(), "FTS should handle CJK characters");
+
+    // Diacritics query
+    let results = store.search_fts("über", 5);
+    assert!(results.is_ok(), "FTS should handle diacritics");
+}
+
+#[test]
+fn test_fts_very_long_query() {
+    let store = TestStore::new();
+
+    let chunk = test_chunk("test_fn", "fn test_fn() {}");
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    // Very long query string (1000+ chars)
+    let long_query = "test ".repeat(250); // 1250 characters
+    let results = store.search_fts(&long_query, 5);
+    assert!(
+        results.is_ok(),
+        "FTS should handle very long queries without panic"
     );
 }

@@ -54,25 +54,29 @@
 //! # }
 //! ```
 
+// Public library API modules
 pub mod config;
-pub mod diff;
 pub mod embedder;
 pub mod hnsw;
 pub mod index;
 pub mod language;
-pub mod math;
 pub mod mcp;
-pub mod nl;
 pub mod note;
 pub mod parser;
-pub mod project;
 pub mod reference;
-pub mod search;
-pub mod source;
 pub mod store;
-pub mod structural;
 
-pub mod gather;
+// Internal modules - not part of public library API
+// These are pub(crate) to hide implementation details, but specific items are
+// re-exported below for use by the binary crate (CLI) and integration tests.
+pub(crate) mod diff;
+pub(crate) mod gather;
+pub(crate) mod math;
+pub(crate) mod nl;
+pub(crate) mod project;
+pub(crate) mod search;
+pub(crate) mod source;
+pub(crate) mod structural;
 
 #[cfg(feature = "gpu-search")]
 pub mod cagra;
@@ -84,6 +88,14 @@ pub use mcp::{serve_http, serve_stdio};
 pub use note::parse_notes;
 pub use parser::{Chunk, Parser};
 pub use store::{ModelInfo, SearchFilter, Store};
+
+// Re-exports for binary crate (CLI) - these are NOT part of the public library API
+// but need to be accessible to src/cli/* and tests/
+pub use diff::{semantic_diff, DiffResult};
+pub use gather::{gather, GatherDirection, GatherOptions};
+pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
+pub use project::{search_across_projects, ProjectRegistry};
+pub use structural::Pattern;
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;

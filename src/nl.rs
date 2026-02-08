@@ -28,7 +28,7 @@ static JSDOC_RETURNS_RE: LazyLock<Regex> =
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
 /// use cqs::nl::parse_jsdoc_tags;
 ///
 /// let doc = r#"/**
@@ -65,7 +65,7 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use cqs::nl::tokenize_identifier;
 ///
 /// assert_eq!(tokenize_identifier("parseConfigFile"), vec!["parse", "config", "file"]);
@@ -140,7 +140,7 @@ const MAX_FTS_OUTPUT_LEN: usize = 16384;
 /// # Example
 ///
 /// ```
-/// use cqs::nl::normalize_for_fts;
+/// use cqs::normalize_for_fts;
 ///
 /// assert_eq!(normalize_for_fts("parseConfigFile"), "parse config file");
 /// assert_eq!(normalize_for_fts("fn get_user() {}"), "fn get user");
@@ -283,7 +283,7 @@ pub enum NlTemplate {
 /// # Example
 ///
 /// ```
-/// use cqs::nl::generate_nl_description;
+/// use cqs::generate_nl_description;
 /// use cqs::parser::{Chunk, ChunkType, Language};
 /// use std::path::PathBuf;
 ///

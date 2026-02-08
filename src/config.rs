@@ -68,10 +68,22 @@ impl Config {
     pub fn load(project_root: &Path) -> Self {
         let user_config = dirs::config_dir()
             .map(|d| d.join("cqs/config.toml"))
-            .and_then(|p| Self::load_file(&p))
+            .and_then(|p| match Self::load_file(&p) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Warning: {}", e);
+                    None
+                }
+            })
             .unwrap_or_default();
 
-        let project_config = Self::load_file(&project_root.join(".cqs.toml")).unwrap_or_default();
+        let project_config = match Self::load_file(&project_root.join(".cqs.toml")) {
+            Ok(c) => c.unwrap_or_default(),
+            Err(e) => {
+                eprintln!("Warning: {}", e);
+                Config::default()
+            }
+        };
 
         // Project overrides user
         let mut merged = user_config.override_with(project_config);
@@ -99,6 +111,37 @@ impl Config {
             }
         }
 
+        // Clamp limit to [1, 100]
+        if let Some(ref mut limit) = merged.limit {
+            if *limit == 0 || *limit > 100 {
+                tracing::warn!(
+                    limit = *limit,
+                    "Config limit out of bounds [1, 100], clamping"
+                );
+                *limit = (*limit).clamp(1, 100);
+            }
+        }
+        // Clamp threshold to [0.0, 1.0]
+        if let Some(ref mut t) = merged.threshold {
+            if *t < 0.0 || *t > 1.0 {
+                tracing::warn!(
+                    threshold = *t,
+                    "Config threshold out of bounds [0.0, 1.0], clamping"
+                );
+                *t = t.clamp(0.0, 1.0);
+            }
+        }
+        // Clamp name_boost to [0.0, 1.0]
+        if let Some(ref mut nb) = merged.name_boost {
+            if *nb < 0.0 || *nb > 1.0 {
+                tracing::warn!(
+                    name_boost = *nb,
+                    "Config name_boost out of bounds [0.0, 1.0], clamping"
+                );
+                *nb = nb.clamp(0.0, 1.0);
+            }
+        }
+
         tracing::debug!(
             limit = ?merged.limit,
             threshold = ?merged.threshold,
@@ -112,15 +155,30 @@ impl Config {
     }
 
     /// Load configuration from a specific file
-    fn load_file(path: &Path) -> Option<Self> {
+    fn load_file(path: &Path) -> Result<Option<Self>, String> {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
-                tracing::warn!("Failed to read config {}: {}", path.display(), e);
-                return None;
+                return Err(format!("Failed to read config {}: {}", path.display(), e));
             }
         };
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(path) {
+                let mode = meta.permissions().mode();
+                if mode & 0o077 != 0 {
+                    tracing::warn!(
+                        path = %path.display(),
+                        mode = format!("{:o}", mode & 0o777),
+                        "Config file is accessible by other users. Consider: chmod 600 {}",
+                        path.display()
+                    );
+                }
+            }
+        }
 
         match toml::from_str::<Self>(&content) {
             Ok(config) => {
@@ -134,12 +192,9 @@ impl Config {
                     references = config.references.len(),
                     "Loaded config"
                 );
-                Some(config)
+                Ok(Some(config))
             }
-            Err(e) => {
-                tracing::warn!("Failed to parse config {}: {}", path.display(), e);
-                None
-            }
+            Err(e) => Err(format!("Failed to parse config {}: {}", path.display(), e)),
         }
     }
 
@@ -278,7 +333,7 @@ mod tests {
         let config_path = dir.path().join(".cqs.toml");
         std::fs::write(&config_path, "limit = 10\nthreshold = 0.5\n").unwrap();
 
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.limit, Some(10));
         assert_eq!(config.threshold, Some(0.5));
     }
@@ -287,7 +342,7 @@ mod tests {
     fn test_load_missing_file() {
         let dir = TempDir::new().unwrap();
         let config = Config::load_file(&dir.path().join("nonexistent.toml"));
-        assert!(config.is_none());
+        assert!(config.unwrap().is_none());
     }
 
     #[test]
@@ -297,7 +352,7 @@ mod tests {
         std::fs::write(&config_path, "not valid [[[").unwrap();
 
         let config = Config::load_file(&config_path);
-        assert!(config.is_none());
+        assert!(config.is_err());
     }
 
     #[test]
@@ -341,7 +396,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         )
         .unwrap();
 
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.limit, Some(5));
         assert_eq!(config.references.len(), 2);
         assert_eq!(config.references[0].name, "tokio");
@@ -414,7 +469,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         };
         add_reference_to_config(&config_path, &ref_config).unwrap();
 
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.references.len(), 1);
         assert_eq!(config.references[0].name, "tokio");
     }
@@ -433,7 +488,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         };
         add_reference_to_config(&config_path, &ref_config).unwrap();
 
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.limit, Some(10));
         assert_eq!(config.threshold, Some(0.5));
         assert_eq!(config.references.len(), 1);
@@ -459,7 +514,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         add_reference_to_config(&config_path, &ref1).unwrap();
         add_reference_to_config(&config_path, &ref2).unwrap();
 
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.references.len(), 2);
         assert_eq!(config.references[0].name, "tokio");
         assert_eq!(config.references[1].name, "serde");
@@ -488,7 +543,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         let removed = remove_reference_from_config(&config_path, "tokio").unwrap();
         assert!(removed);
 
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.references.len(), 1);
         assert_eq!(config.references[0].name, "serde");
     }
@@ -527,7 +582,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         remove_reference_from_config(&config_path, "tokio").unwrap();
 
         // Should still be valid config, just no references
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert!(config.references.is_empty());
     }
 
@@ -556,7 +611,7 @@ path = "/home/user/.local/share/cqs/refs/serde"
         assert!(result.unwrap_err().to_string().contains("already exists"));
 
         // Original should be unchanged
-        let config = Config::load_file(&config_path).unwrap();
+        let config = Config::load_file(&config_path).unwrap().unwrap();
         assert_eq!(config.references.len(), 1);
         assert_eq!(config.references[0].weight, 0.8);
     }
@@ -616,5 +671,53 @@ weight = 0.7
             valid_ref.weight, 0.7,
             "Valid weight should remain unchanged"
         );
+    }
+
+    #[test]
+    fn test_threshold_clamping() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // Write config with out-of-bounds threshold
+        std::fs::write(&config_path, "threshold = 1.5\n").unwrap();
+
+        let config = Config::load(dir.path());
+        assert_eq!(config.threshold, Some(1.0));
+    }
+
+    #[test]
+    fn test_name_boost_clamping() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // Write config with out-of-bounds name_boost
+        std::fs::write(&config_path, "name_boost = -0.1\n").unwrap();
+
+        let config = Config::load(dir.path());
+        assert_eq!(config.name_boost, Some(0.0));
+    }
+
+    #[test]
+    fn test_limit_clamping_zero() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // Write config with limit=0
+        std::fs::write(&config_path, "limit = 0\n").unwrap();
+
+        let config = Config::load(dir.path());
+        assert_eq!(config.limit, Some(1));
+    }
+
+    #[test]
+    fn test_limit_clamping_large() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // Write config with limit=200
+        std::fs::write(&config_path, "limit = 200\n").unwrap();
+
+        let config = Config::load(dir.path());
+        assert_eq!(config.limit, Some(100));
     }
 }

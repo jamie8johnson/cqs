@@ -221,3 +221,93 @@ fn test_supported_extensions() {
     assert!(exts.contains(&"js"));
     assert!(exts.contains(&"go"));
 }
+
+// ===== C and Java Parser Fixture Tests (#239) =====
+
+#[test]
+fn test_parse_c_fixture() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.c");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    // C parser may not extract everything - check what we actually got
+    assert!(
+        !chunks.is_empty(),
+        "Should find at least some chunks in C file"
+    );
+
+    // Verify language is correct
+    for chunk in &chunks {
+        assert_eq!(
+            chunk.language,
+            Language::C,
+            "All chunks should be Language::C"
+        );
+    }
+
+    // Note: C parser capabilities depend on tree-sitter-c
+    // Just verify we can parse the file and extract at least some functions
+    let function_count = chunks
+        .iter()
+        .filter(|c| c.chunk_type == ChunkType::Function)
+        .count();
+    assert!(
+        function_count > 0,
+        "Should find at least one function in C file"
+    );
+}
+
+#[test]
+fn test_parse_java_fixture() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("Sample.java");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"TaskManager"),
+        "Should find TaskManager class"
+    );
+    assert!(names.contains(&"addTask"), "Should find addTask method");
+    assert!(
+        names.contains(&"findByName"),
+        "Should find findByName method"
+    );
+    assert!(
+        names.contains(&"getHighPriority"),
+        "Should find getHighPriority method"
+    );
+    assert!(names.contains(&"size"), "Should find size method");
+    assert!(names.contains(&"Task"), "Should find Task class");
+
+    // Verify language
+    for chunk in &chunks {
+        assert_eq!(
+            chunk.language,
+            Language::Java,
+            "All chunks should be Language::Java"
+        );
+    }
+
+    // Verify methods are detected correctly
+    let add_task = chunks.iter().find(|c| c.name == "addTask");
+    assert!(add_task.is_some(), "Should find addTask chunk");
+    let add_task = add_task.unwrap();
+    assert_eq!(
+        add_task.chunk_type,
+        ChunkType::Method,
+        "addTask should be a method"
+    );
+    assert!(
+        add_task.content.contains("tasks.add"),
+        "addTask should contain tasks.add call"
+    );
+
+    // Verify doc comments are extracted
+    let task_manager = chunks.iter().find(|c| c.name == "TaskManager");
+    assert!(task_manager.is_some(), "Should find TaskManager chunk");
+    let task_manager = task_manager.unwrap();
+    if let Some(doc) = &task_manager.doc {
+        assert!(doc.contains("task manager"), "Should extract doc comment");
+    }
+}
