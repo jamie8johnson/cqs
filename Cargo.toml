@@ -36,7 +36,7 @@ tree-sitter-javascript = { version = "0.25", optional = true }
 tree-sitter-go = { version = "0.25", optional = true }
 tree-sitter-c = { version = "0.24", optional = true }
 tree-sitter-java = { version = "0.23", optional = true }
-tree-sitter-sql = { git = "https://github.com/jamie8johnson/tree-sitter-sql", branch = "main", package = "tree-sitter-sequel", optional = true }
+tree-sitter-sql = { version = "0.4", package = "tree-sitter-sequel-tsql", optional = true }
 
 # ML
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
