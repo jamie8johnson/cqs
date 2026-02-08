@@ -3,8 +3,8 @@
 use anyhow::{bail, Result};
 use colored::Colorize;
 
-use cqs::diff::{semantic_diff, DiffResult};
 use cqs::Store;
+use cqs::{semantic_diff, DiffResult};
 
 use crate::cli::find_project_root;
 

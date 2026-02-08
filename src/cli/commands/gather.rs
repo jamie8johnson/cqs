@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use colored::Colorize;
 
-use cqs::gather::{gather, GatherDirection, GatherOptions};
+use cqs::{gather, GatherDirection, GatherOptions};
 use cqs::{Embedder, Store};
 
 use crate::cli::find_project_root;

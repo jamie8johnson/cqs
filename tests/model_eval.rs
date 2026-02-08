@@ -9,8 +9,8 @@
 //! CUDA gate: only BERT-style models (absolute position embeddings) are candidates.
 //! Models with rotary embeddings (nomic, Qwen3) cause ort CPU fallback thrashing.
 
-use cqs::nl::{generate_nl_description, generate_nl_with_template, NlTemplate};
 use cqs::parser::{Language, Parser};
+use cqs::{generate_nl_description, generate_nl_with_template, NlTemplate};
 use ndarray::Array2;
 use ort::session::Session;
 use ort::value::Tensor;

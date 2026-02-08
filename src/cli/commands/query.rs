@@ -6,8 +6,7 @@ use anyhow::{bail, Context, Result};
 
 use cqs::parser::ChunkType;
 use cqs::store::UnifiedResult;
-use cqs::structural::Pattern;
-use cqs::{reference, Embedder, HnswIndex, SearchFilter, Store};
+use cqs::{reference, Embedder, HnswIndex, Pattern, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, signal, Cli};
 
@@ -164,15 +163,18 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     // Multi-index search: search each reference
     let mut ref_results = Vec::new();
     for ref_idx in &references {
-        let r = reference::search_reference(
+        match reference::search_reference(
             ref_idx,
             &query_embedding,
             &filter,
             cli.limit,
             cli.threshold,
-        );
-        if !r.is_empty() {
-            ref_results.push((ref_idx.name.clone(), r));
+        ) {
+            Ok(r) if !r.is_empty() => ref_results.push((ref_idx.name.clone(), r)),
+            Err(e) => {
+                tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed")
+            }
+            _ => {}
         }
     }
 

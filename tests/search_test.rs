@@ -435,7 +435,7 @@ fn test_search_reference_by_name() {
     };
 
     // Search by name
-    let results = cqs::reference::search_reference_by_name(&ref_idx, "search_fn", 10, 0.0);
+    let results = cqs::reference::search_reference_by_name(&ref_idx, "search_fn", 10, 0.0).unwrap();
 
     assert!(!results.is_empty(), "Should find search_fn");
     assert_eq!(results[0].chunk.name, "search_fn");
@@ -465,7 +465,7 @@ fn test_search_reference_by_name_threshold() {
     };
 
     // High threshold should filter out results (score * weight < threshold)
-    let results = cqs::reference::search_reference_by_name(&ref_idx, "test_fn", 10, 0.9);
+    let results = cqs::reference::search_reference_by_name(&ref_idx, "test_fn", 10, 0.9).unwrap();
 
     assert!(
         results.is_empty(),

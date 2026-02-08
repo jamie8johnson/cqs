@@ -20,7 +20,7 @@ use crate::store::{Store, StoreError, UnifiedResult};
 ///
 /// Create once before iterating over search results, then call `score()` for each name.
 /// Avoids re-tokenizing the query for every result.
-pub struct NameMatcher {
+pub(crate) struct NameMatcher {
     query_lower: String,
     query_words: Vec<String>,
 }
@@ -124,7 +124,8 @@ fn compile_glob_filter(pattern: Option<&String>) -> Option<globset::GlobMatcher>
 /// Compute name match score for hybrid search
 ///
 /// For repeated calls with the same query, use `NameMatcher::new(query).score(name)` instead.
-pub fn name_match_score(query: &str, name: &str) -> f32 {
+#[cfg(test)]
+pub(crate) fn name_match_score(query: &str, name: &str) -> f32 {
     NameMatcher::new(query).score(name)
 }
 

@@ -4,7 +4,7 @@
 //! (Ignored by default because embedding generation is slow)
 
 use cqs::embedder::Embedder;
-use cqs::nl::generate_nl_description;
+use cqs::generate_nl_description;
 use cqs::parser::{Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use std::collections::HashMap;

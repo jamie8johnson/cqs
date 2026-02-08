@@ -2,13 +2,34 @@
 
 ## Right Now
 
-**Clean slate** (2026-02-07). All PRs merged, 0 open, 0 stale branches (local + remote).
+**Audit cleanup batch in progress** (2026-02-08). Branch `fix/audit-cleanup-batch`. 6 issues done, not yet committed/PRed.
+
+### Current batch — all code changes done, needs commit + PR
+- #265: search_reference returns Result (was swallowing errors)
+- #264: Config load_file returns Result (was silently ignoring parse errors)
+- #241: Config validation — clamps limit/threshold/name_boost, Unix permission check
+- #267: Module boundaries — 8 modules now pub(crate), re-exports for CLI
+- #239: Test coverage — 13 new tests (Store::close, FTS edge cases, HNSW batch, C/Java fixtures)
+- #232: CAGRA IndexRebuilder RAII guard (behind gpu-search feature)
+
+### Build status
+- 0 warnings, 0 clippy, 496 tests passing (default features)
+- GPU build (`--features gpu-search`): needs env vars, currently testing
+- Fresh-eyes review: done, 0 issues
+
+### GPU build env vars (for `--features gpu-search`)
+```bash
+export CUDA_PATH=/usr/local/cuda
+export CPATH=/usr/local/cuda/include
+export LIBRARY_PATH=/home/user001/miniforge3/lib:/usr/local/cuda/lib64
+export LD_LIBRARY_PATH=/home/user001/miniforge3/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+```
+These are needed because: cuvs-sys uses bindgen (needs CPATH for headers), cmake (needs CUDA_PATH), and linking needs LIBRARY_PATH for libcuvs_c.so (conda) and libcudart.so.
 
 ### Recent merges
-- PR #305: Fix gather/cross-project search to use RRF hybrid instead of raw embedding
-- PR #304: Agent UX quick wins — `note_only` search, `context --summary`, `impact --format mermaid`
-- PR #296-#293: P1/P2/P3 audit fixes (96 total)
-- PR #297/#298: v0.9.2 release
+- PR #307: Language extensibility via define_languages! macro (#268)
+- PR #306: v0.9.3 release
+- PR #305: Fix gather/cross-project search to use RRF hybrid
 
 ### P4 audit items tracked in issues
 - #300: Search/algorithm edge cases (5 items)
@@ -39,22 +60,14 @@
 - #257: Parallel search + shared Runtime
 
 ### Remaining audit items (v0.6.0 audit)
-- #264: Config load_file silently ignores parse errors (P3)
-- #265: search_reference swallows errors (P3)
 - #266: embedding_to_bytes should validate dimensions (P3)
-- #267: Module boundary cleanup (P4)
-- #268: Language extensibility (P4)
 - #269: Brute-force search loads all embeddings (P4)
 - #270: HNSW LoadedHnsw unsafe transmute (P4)
 
 ### P4 Deferred (v0.5.1 audit, still open)
-- #231: Notes file locking
-- #232: CAGRA RAII guard pattern
 - #233: Cache parsed notes.toml in MCP server
 - #236: HNSW-SQLite freshness validation
-- #239: Test coverage gaps (low-priority)
 - #240: embedding_batches cursor pagination
-- #241: Config permission checks
 
 ## Architecture
 
@@ -64,6 +77,6 @@
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 7 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java)
-- 261 lib + 176 integration tests (no GPU), 0 warnings, clippy clean
+- 271 lib + 225 integration tests (+ GPU tests behind gpu-search), 0 warnings, clippy clean
 - MCP tools: 20 (note_only, summary, mermaid added as params in v0.9.2+)
 - Source layout: parser/ and hnsw/ are now directories (split from monoliths in v0.9.0)

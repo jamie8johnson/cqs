@@ -46,7 +46,7 @@ fn test_semantic_diff_basic() {
         .unwrap();
 
     // Run semantic diff with threshold 0.95
-    let diff = cqs::diff::semantic_diff(
+    let diff = cqs::semantic_diff(
         &source_store.store,
         &target_store.store,
         "source",
@@ -91,7 +91,7 @@ fn test_semantic_diff_empty_stores() {
     let target_store = TestStore::new();
 
     // Diff between two empty stores should return empty diff
-    let diff = cqs::diff::semantic_diff(
+    let diff = cqs::semantic_diff(
         &source_store.store,
         &target_store.store,
         "source",
@@ -123,7 +123,7 @@ fn test_semantic_diff_threshold() {
         .unwrap();
 
     // With high threshold (0.995), should detect as modified
-    let diff = cqs::diff::semantic_diff(
+    let diff = cqs::semantic_diff(
         &source_store.store,
         &target_store.store,
         "source",
@@ -168,7 +168,7 @@ fn test_semantic_diff_language_filter() {
     // Target has neither
 
     // Diff with Rust filter should only show rust_fn as removed
-    let diff = cqs::diff::semantic_diff(
+    let diff = cqs::semantic_diff(
         &source_store.store,
         &target_store.store,
         "source",
