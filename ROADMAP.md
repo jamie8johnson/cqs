@@ -326,7 +326,7 @@
 
 ### Priority: High (needed for VS2005 project)
 
-- [x] **SQL** — forked tree-sitter-sql with CREATE PROCEDURE, GO batch separator, EXEC statement support. Stored procedures, functions, views extracted. 8 languages total.
+- [x] **SQL** — forked tree-sitter-sql with CREATE/ALTER PROCEDURE/FUNCTION, GO batch separator, EXEC statement support. T-SQL name extraction with error recovery fallback. 8 languages total.
 - [ ] **VB.NET** — `tree-sitter-vb-dotnet` (git dep, not on crates.io). Subs, Functions, Classes, Modules.
 - [x] P3 audit fixes (#264-266) — completed in PR #296
 - [x] Audit cleanup batch (PR #308): #265 error propagation, #264 config errors, #241 config validation, #267 module boundaries, #239 test coverage, #232 CAGRA RAII guard
