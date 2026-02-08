@@ -120,6 +120,9 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
                 .or_else(|| upper.find(" AS\n"))
                 .unwrap_or(content.len())
         }
+        // Markdown builds its own signatures in the custom parser; this arm
+        // satisfies exhaustiveness but is never reached via extract_chunk().
+        SignatureStyle::Breadcrumb => content.len(),
     };
     let sig = &content[..sig_end];
     // Normalize whitespace

@@ -189,15 +189,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "WSL cargo target is at /home/user001/.cargo-target/cq (not ./target/). Set in .cargo/config.toml to avoid permission issues on /mnt/c/. Remember when running release binaries."
-mentions = [
-    "WSL",
-    ".cargo/config.toml",
-    "target",
-]
-
-[[note]]
 sentiment = 0.5
 text = 'cqs pronounced "seeks" - semantic search that seeks code by behavior, not text matching. grep for known strings, cqs for "how does X work?"'
 mentions = [
@@ -497,15 +488,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "define_languages! macro reduces language addition from 13 scattered changes to 1 macro invocation. Each language: enum variant, extension mapping, grammar loading, query patterns, display impl. Parser tests verify grammar availability at compile time. PR #307."
-mentions = [
-    "src/parser/types.rs",
-    "src/language/mod.rs",
-    "define_languages",
-]
-
-[[note]]
 sentiment = -1.0
 text = "Never call store.search() directly in production code — raw embedding cosine only, no RRF hybrid or keyword matching. Always use search_filtered() or search_unified_with_index(). gather() and search_across_projects() both had this bug, fixed in PR #305."
 mentions = [
@@ -584,4 +566,49 @@ mentions = [
     "src/parser/chunk.rs",
     "extract_signature",
     "SignatureStyle::UntilAs",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Stale /mnt/c/Projects/cq/target/ directory (10GB) was deleted. .cargo/config.toml routes builds to ~/.cargo-target/cq/. The old target/ dir predated the config change and contained a 0.9.4 binary that caused confusion — binary reported wrong version because we kept copying from the stale location."
+mentions = [
+    ".cargo/config.toml",
+    "target/release/cqs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "PDF-to-markdown pipeline works: pymupdf4llm converts AVEVA Historian manuals cleanly. Heading hierarchy preserved (# through ######). Noise: copyright footers, page numbers, ToC dot leaders need stripping. 39 PDFs → 14MB markdown in samples/md/."
+mentions = [
+    "samples/md/",
+    "samples/pdf/",
+    "pymupdf4llm",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Rust regex crate doesn't support lookbehind (?<!). Had to rewrite markdown image link filter from (?<!!)\\[...\\] to match all links then check preceding byte. Common gotcha when porting regex from other languages."
+mentions = [
+    "src/parser/markdown.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Merge-small-sections logic was backwards: small section absorbed the next instead of being absorbed by it. Title (4 lines) ate Section A (37 lines), producing one giant chunk. Direction matters — small merges INTO next, not extends to swallow."
+mentions = [
+    "src/parser/markdown.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Adaptive heading detection works for both standard and inverted hierarchies. Heuristic: 'shallowest heading level appearing more than once, excluding title' = primary split level. Handles AVEVA docs (H2 title → H1 chapters) and standard markdown (H1 title → H2 sections) with same code."
+mentions = [
+    "src/parser/markdown.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = ".mcp.json LD_LIBRARY_PATH was missing miniforge3/lib (libcuvs_c.so) and cuda lib64. MCP server failed to start with 'cannot open shared object file'. The env block in .mcp.json overrides the shell env, so it must be self-contained."
+mentions = [
+    ".mcp.json",
 ]

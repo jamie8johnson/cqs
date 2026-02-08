@@ -2,18 +2,48 @@
 
 ## Right Now
 
-**PR #313 open** — T-SQL name extraction fix (ALTER PROCEDURE/FUNCTION, position-based fallback).
+**Markdown indexing — implementation in progress.** 2026-02-08. Branch: `feat/markdown-indexing`.
 
-### Uncommitted
-None.
+### Done this session
+- Design doc: `docs/plans/2026-02-08-markdown-indexing-design.md`
+- Plan: `/home/user001/.claude/plans/vectorized-swinging-starfish.md` (18 steps, 3 fresh-eyes reviews)
+- Steps 0-14 implemented and passing:
+  - `scripts/clean_md.py` — 7-rule PDF artifact preprocessor (tested on 39 files)
+  - `ChunkType::Section`, `SignatureStyle::Breadcrumb` added
+  - `grammar: Option<fn()>` — made grammar optional for non-tree-sitter languages
+  - All 8 existing language defs updated: `grammar: Some(...)`
+  - `src/language/markdown.rs` — LanguageDef (no grammar, 55 prose stopwords)
+  - `Markdown` registered in `define_languages!`, `lang-markdown` feature flag
+  - `src/parser/markdown.rs` (~370 lines) — adaptive heading parser + cross-ref extraction
+  - Parser wiring: 5 dispatch points guarded in mod.rs + calls.rs
+  - NL description for Section chunks (breadcrumb + name + preview)
+  - MCP schema + CLI error message updated with "section"
+  - diff.rs test updated
+  - eval tests updated (Language match exhaustiveness)
+  - `.mcp.json` fixed (added miniforge3/lib + cuda to LD_LIBRARY_PATH)
+- 298 lib + 233 integration tests pass, 0 warnings, clippy clean
+
+### Remaining
+- Steps 15-17: test fixture (`tests/fixtures/sample.md`) + integration tests
+- No PR yet — needs commit first
+
+### Key implementation details
+- **Adaptive heading detection**: "shallowest heading level appearing more than once" = primary split level. Handles both standard (H1→H2→H3) and inverted (H2→H1→H3) AVEVA hierarchies.
+- **Merge logic**: small sections (<30 lines) merge INTO the next big section (not the other way)
+- **Regex fix**: Rust `regex` crate doesn't support lookbehind — filter image links by checking preceding `!` byte
+- **Overflow split**: excludes title level from candidates (inverted hierarchy fix)
+
+### Uncommitted (26 files)
+- All changes listed above — nothing committed yet on `feat/markdown-indexing`
+- `docs/plans/2026-02-08-markdown-indexing-design.md` — design doc
+- `scripts/clean_md.py` — preprocessor
+- `src/language/markdown.rs` — language def
+- `src/parser/markdown.rs` — parser
 
 ### Recent merges
-- PR #312: Update tears for v0.9.4 release
+- PR #314: Release v0.9.5
+- PR #313: T-SQL name extraction fix
 - PR #311: Use crates.io dep for tree-sitter-sql
-- PR #310: Release v0.9.4
-- PR #309: SQL language support
-- PR #308: Audit cleanup batch (#265, #264, #241, #267, #239, #232)
-- PR #307: Language extensibility via define_languages! macro (#268)
 
 ### P4 audit items tracked in issues
 - #300: Search/algorithm edge cases (5 items)
@@ -22,22 +52,22 @@ None.
 - #303: Polish/docs (3 items)
 
 ### Dev environment
-- `~/.bashrc`: CUDA/conda/cmake env vars above non-interactive guard (CUDA_PATH, CPATH, LIBRARY_PATH, LD_LIBRARY_PATH, CMAKE_PREFIX_PATH, miniforge3/bin in PATH)
-- `~/.config/systemd/user/cqs-watch.service`: auto-starts `cqs watch` on WSL boot
+- `~/.bashrc`: CUDA/conda/cmake env vars above non-interactive guard
+- `.mcp.json`: fixed LD_LIBRARY_PATH to include miniforge3/lib + cuda lib64
 - GPU: RTX A6000, always use `--features gpu-search`
-- Node.js 25+ via conda (for tree-sitter grammar development)
+- `pymupdf4llm` installed via conda for PDF→MD conversion
 
 ### Known limitations
-- T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar — only PostgreSQL-style triggers work
-- `type_map` field in LanguageDef is defined but never read (dead code — extract_chunk uses hardcoded capture_types)
+- T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar
+- `type_map` field in LanguageDef is defined but never read (dead code)
 
 ## Parked
 
-- **VB.NET language support** — next language after SQL
+- **VB.NET language support** — parked, VS2005 project delayed
+- **Post-index name matching** — follow-up PR for fuzzy cross-doc references (substring matching of chunk names across docs)
 - **Phase 8**: Security (index encryption, rate limiting)
 - **ref install** — deferred from Phase 6, tracked in #255
-- **Relevance feedback** — deferred indefinitely (low impact)
-- **`.cq` rename to `.cqs`** — breaking change needing migration, no issue filed yet
+- **`.cq` rename to `.cqs`** — breaking change needing migration
 
 ## Open Issues
 
@@ -66,8 +96,9 @@ None.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
-- 8 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL)
-- 286 lib + 233 integration tests (with gpu-search), 0 warnings, clippy clean
-- MCP tools: 20 (note_only, summary, mermaid added as params in v0.9.2+)
-- Source layout: parser/ and hnsw/ are now directories (split from monoliths in v0.9.0)
-- SQL grammar: tree-sitter-sequel-tsql v0.4.2 on crates.io (forked from DerekStride/tree-sitter-sql)
+- 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
+- 298 lib + 233 integration tests (with gpu-search), 0 warnings, clippy clean
+- MCP tools: 20
+- Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
+- SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
+- Build target: `~/.cargo-target/cq/` (Linux FS)

@@ -80,7 +80,7 @@ fn extract_return(signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "c",
-    grammar: || tree_sitter_c::LANGUAGE.into(),
+    grammar: Some(|| tree_sitter_c::LANGUAGE.into()),
     extensions: &["c", "h"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

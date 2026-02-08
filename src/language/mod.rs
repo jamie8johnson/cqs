@@ -120,8 +120,8 @@ macro_rules! define_languages {
 pub struct LanguageDef {
     /// Language name (e.g., "rust", "python")
     pub name: &'static str,
-    /// Function to get the tree-sitter grammar
-    pub grammar: fn() -> tree_sitter::Language,
+    /// Function to get the tree-sitter grammar (None for non-tree-sitter languages like Markdown)
+    pub grammar: Option<fn() -> tree_sitter::Language>,
     /// File extensions for this language
     pub extensions: &'static [&'static str],
     /// Tree-sitter query for extracting code chunks
@@ -155,6 +155,8 @@ pub enum SignatureStyle {
     UntilColon,
     /// Extract until standalone `AS` keyword (SQL)
     UntilAs,
+    /// Signature is built by the parser as a breadcrumb path (Markdown)
+    Breadcrumb,
 }
 
 /// Type of code element extracted by the parser
@@ -176,6 +178,8 @@ pub enum ChunkType {
     Interface,
     /// Constant or static variable
     Constant,
+    /// Documentation section (Markdown)
+    Section,
 }
 
 impl std::fmt::Display for ChunkType {
@@ -189,6 +193,7 @@ impl std::fmt::Display for ChunkType {
             ChunkType::Trait => write!(f, "trait"),
             ChunkType::Interface => write!(f, "interface"),
             ChunkType::Constant => write!(f, "constant"),
+            ChunkType::Section => write!(f, "section"),
         }
     }
 }
@@ -204,7 +209,7 @@ impl std::fmt::Display for ParseChunkTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant",
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section",
             self.input
         )
     }
@@ -224,6 +229,7 @@ impl std::str::FromStr for ChunkType {
             "trait" => Ok(ChunkType::Trait),
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
+            "section" => Ok(ChunkType::Section),
             _ => Err(ParseChunkTypeError {
                 input: s.to_string(),
             }),
@@ -309,6 +315,8 @@ define_languages! {
     Java => "java", feature = "lang-java", module = java;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
+    /// Markdown (.md, .mdx files)
+    Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,9 +343,14 @@ impl Language {
         REGISTRY.get(&self.to_string()).is_some()
     }
 
-    /// Get the tree-sitter grammar for this language
+    /// Get the tree-sitter grammar for this language.
+    /// Panics if the language has no grammar (e.g., Markdown uses a custom parser).
     pub fn grammar(&self) -> tree_sitter::Language {
-        (self.def().grammar)()
+        let grammar_fn = self
+            .def()
+            .grammar
+            .unwrap_or_else(|| panic!("{} has no tree-sitter grammar — use custom parser", self));
+        grammar_fn()
     }
 
     /// Get the chunk extraction query pattern
@@ -396,6 +409,11 @@ mod tests {
         assert!(REGISTRY.from_extension("java").is_some());
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
+        #[cfg(feature = "lang-markdown")]
+        {
+            assert!(REGISTRY.from_extension("md").is_some());
+            assert!(REGISTRY.from_extension("mdx").is_some());
+        }
         assert!(REGISTRY.from_extension("xyz").is_none());
     }
 
@@ -436,17 +454,28 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-markdown")]
+        {
+            expected += 1;
+        }
         assert_eq!(all.len(), expected);
     }
 
     #[test]
     #[cfg(feature = "lang-rust")]
     fn test_language_grammar() {
-        // Verify we can get grammars
+        // Verify we can get grammars for tree-sitter languages
         let rust = REGISTRY.get("rust").unwrap();
-        let grammar = (rust.grammar)();
+        let grammar = (rust.grammar.unwrap())();
         // Just verify grammar is valid by checking ABI version
         assert!(grammar.abi_version() > 0);
+    }
+
+    #[test]
+    #[cfg(feature = "lang-markdown")]
+    fn test_markdown_no_grammar() {
+        let md = REGISTRY.get("markdown").unwrap();
+        assert!(md.grammar.is_none());
     }
 
     // ===== Language tests =====
@@ -467,6 +496,8 @@ mod tests {
         assert_eq!(Language::from_extension("h"), Some(Language::C));
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
+        assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
+        assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
     }
 
@@ -481,6 +512,7 @@ mod tests {
         assert_eq!("c".parse::<Language>().unwrap(), Language::C);
         assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
+        assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
 
@@ -494,6 +526,7 @@ mod tests {
         assert_eq!(Language::C.to_string(), "c");
         assert_eq!(Language::Java.to_string(), "java");
         assert_eq!(Language::Sql.to_string(), "sql");
+        assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
     #[test]
@@ -618,6 +651,10 @@ mod tests {
             (Language::Sql.def().extract_return_nl)("CREATE PROCEDURE dbo.usp_Foo"),
             None
         );
+        assert_eq!(
+            (Language::Markdown.def().extract_return_nl)("any markdown content"),
+            None
+        );
     }
 
     // ===== ChunkType tests =====
@@ -675,6 +712,7 @@ mod tests {
             ChunkType::Trait,
             ChunkType::Interface,
             ChunkType::Constant,
+            ChunkType::Section,
         ];
         for ct in types {
             let s = ct.to_string();

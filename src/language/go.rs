@@ -103,7 +103,7 @@ fn extract_return(signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "go",
-    grammar: || tree_sitter_go::LANGUAGE.into(),
+    grammar: Some(|| tree_sitter_go::LANGUAGE.into()),
     extensions: &["go"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

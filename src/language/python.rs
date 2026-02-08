@@ -51,7 +51,7 @@ fn extract_return(signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "python",
-    grammar: || tree_sitter_python::LANGUAGE.into(),
+    grammar: Some(|| tree_sitter_python::LANGUAGE.into()),
     extensions: &["py", "pyi"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

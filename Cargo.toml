@@ -104,7 +104,7 @@ once_cell = "1"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql", "lang-markdown"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -115,7 +115,8 @@ lang-go = ["dep:tree-sitter-go"]
 lang-c = ["dep:tree-sitter-c"]
 lang-java = ["dep:tree-sitter-java"]
 lang-sql = ["dep:tree-sitter-sql"]
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql"]
+lang-markdown = []  # No external deps — custom parser
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql", "lang-markdown"]
 
 # Other features
 # encrypt feature removed - sqlx doesn't support SQLCipher directly

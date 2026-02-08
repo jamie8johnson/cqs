@@ -303,6 +303,7 @@ mod tests {
         assert_eq!(Language::Go.primary_extension(), "go");
         assert_eq!(Language::C.primary_extension(), "c");
         assert_eq!(Language::Java.primary_extension(), "java");
+        assert_eq!(Language::Markdown.primary_extension(), "md");
         // Unknown falls back to input string
         assert_eq!(
             "unknown"

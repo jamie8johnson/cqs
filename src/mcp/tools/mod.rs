@@ -75,7 +75,7 @@ pub fn handle_tools_list() -> Result<Value> {
                     },
                     "chunk_type": {
                         "type": "string",
-                        "enum": ["function", "method", "class", "struct", "enum", "trait", "interface", "constant"],
+                        "enum": ["function", "method", "class", "struct", "enum", "trait", "interface", "constant", "section"],
                         "description": "Filter by code element type (optional). Can specify multiple comma-separated values."
                     },
                     "semantic_only": {
