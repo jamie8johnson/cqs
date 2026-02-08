@@ -60,8 +60,9 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         }
     };
 
-    // Collect reference info
-    let references: Vec<_> = server
+    // Collect reference info (hot-reload if config changed)
+    let ref_guard = server.ensure_references_fresh();
+    let references: Vec<_> = ref_guard
         .references
         .iter()
         .map(|r| {

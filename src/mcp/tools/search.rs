@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::parser::{ChunkType, Language};
-use crate::reference::{self, TaggedResult};
+use crate::reference::{self, ReferenceIndex, TaggedResult};
 use crate::store::{SearchFilter, UnifiedResult};
 use crate::structural::Pattern;
 
@@ -24,7 +24,8 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
 
     // Determine which sources to search
     let search_project = should_search_source(&args.sources, "project");
-    let has_refs = !server.references.is_empty();
+    let ref_guard = server.ensure_references_fresh();
+    let has_refs = !ref_guard.references.is_empty();
 
     // Definition search mode - find by name only, skip embedding
     if args.name_only.unwrap_or(false) {
@@ -160,7 +161,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
     };
 
     // Fast path: no references configured
-    if !has_refs || !has_matching_refs(server, &args.sources) {
+    if !has_refs || !has_matching_refs(&ref_guard.references, &args.sources) {
         let search_ms = search_start.elapsed().as_millis();
         tracing::info!(
             results = primary_results.len(),
@@ -173,7 +174,7 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
 
     // Multi-index search: search each reference
     let mut ref_results = Vec::new();
-    for ref_idx in &server.references {
+    for ref_idx in &ref_guard.references {
         if !should_search_source(&args.sources, &ref_idx.name) {
             continue;
         }
@@ -217,7 +218,8 @@ fn tool_search_name_only(
         }));
     }
 
-    let has_refs = !server.references.is_empty();
+    let ref_guard = server.ensure_references_fresh();
+    let has_refs = !ref_guard.references.is_empty();
 
     // Primary name search
     let primary_results: Vec<_> = if search_project {
@@ -232,7 +234,7 @@ fn tool_search_name_only(
     };
 
     // Fast path: no references
-    if !has_refs || !has_matching_refs(server, &args.sources) {
+    if !has_refs || !has_matching_refs(&ref_guard.references, &args.sources) {
         let json_results: Vec<_> = primary_results
             .iter()
             .map(|r| format_code_result(r, &server.project_root, None))
@@ -247,7 +249,7 @@ fn tool_search_name_only(
 
     // Search references by name
     let mut ref_results = Vec::new();
-    for ref_idx in &server.references {
+    for ref_idx in &ref_guard.references {
         if !should_search_source(&args.sources, &ref_idx.name) {
             continue;
         }
@@ -416,9 +418,8 @@ fn should_search_source(sources: &Option<Vec<String>>, name: &str) -> bool {
 }
 
 /// Check if any configured references match the sources filter
-fn has_matching_refs(server: &McpServer, sources: &Option<Vec<String>>) -> bool {
-    server
-        .references
+fn has_matching_refs(references: &[ReferenceIndex], sources: &Option<Vec<String>>) -> bool {
+    references
         .iter()
         .any(|r| should_search_source(sources, &r.name))
 }

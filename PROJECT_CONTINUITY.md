@@ -2,37 +2,30 @@
 
 ## Right Now
 
-**Releasing v0.9.6.** 2026-02-08.
+**Testing markdown indexing with AVEVA docs reference.** 2026-02-08.
 
-### Done
-- Markdown indexing merged (PR #315)
-- Design doc: `docs/plans/2026-02-08-markdown-indexing-design.md`
-- 18-step plan fully implemented:
-  - `scripts/clean_md.py` — 7-rule PDF artifact preprocessor (tested on 39 files)
-  - `ChunkType::Section`, `SignatureStyle::Breadcrumb` added
-  - `grammar: Option<fn()>` — made grammar optional for non-tree-sitter languages
-  - All 8 existing language defs updated: `grammar: Some(...)`
-  - `src/language/markdown.rs` — LanguageDef (no grammar, 55 prose stopwords)
-  - `Markdown` registered in `define_languages!`, `lang-markdown` feature flag
-  - `src/parser/markdown.rs` (~370 lines) — adaptive heading parser + cross-ref extraction
-  - Parser wiring: 5 dispatch points guarded in mod.rs + calls.rs
-  - NL description for Section chunks (breadcrumb + name + preview)
-  - MCP schema + CLI error message updated with "section"
-  - diff.rs test updated
-  - eval tests updated (Language match exhaustiveness)
-  - `.mcp.json` fixed (added miniforge3/lib + cuda to LD_LIBRARY_PATH)
-- 298 lib + 233 integration tests pass, 0 warnings, clippy clean
+### Hot-reload branch
+- Branch `feat/reference-hot-reload`, commit `f2cc890`
+- Changes in `src/mcp/server.rs`, `src/mcp/tools/search.rs`, `src/mcp/tools/stats.rs`
+- Design: mtime-based lazy reload with `RwLock<ReferenceState>`, double-check locking
+- Needs: PR, merge
 
-### Key implementation details
-- **Adaptive heading detection**: "shallowest heading level appearing more than once" = primary split level. Handles both standard (H1→H2→H3) and inverted (H2→H1→H3) AVEVA hierarchies.
-- **Merge logic**: small sections (<30 lines) merge INTO the next big section (not the other way)
-- **Regex fix**: Rust `regex` crate doesn't support lookbehind — filter image links by checking preceding `!` byte
-- **Overflow split**: excludes title level from candidates (inverted hierarchy fix)
+### AVEVA docs reference testing
+- `aveva-docs` reference: 5662 chunks from 39 markdown files in `samples/md/`
+- Source: PDF→MD converted AVEVA System Platform docs (pymupdf4llm)
+- Semantic search working — tested historian scripting, WebView2, MES, supply chain queries
+- Identified 38 cross-referenced docs missing from the set (MES alone = 15 gaps)
+- User will convert more PDFs to fill gaps
 
-### Recent merges
-- PR #314: Release v0.9.5
-- PR #313: T-SQL name extraction fix
-- PR #311: Use crates.io dep for tree-sitter-sql
+### Bugs found during testing
+- **#318**: `ref update` silently prunes all chunks when binary lacks language support (v0.9.5 binary didn't know markdown, pruned entire index)
+- **#319**: `ref remove` leaves stale metadata, blocking re-add with same name (UNIQUE constraint on metadata table)
+- Root cause of #318: release binary was v0.9.5, not rebuilt after v0.9.6 merge. Fixed by rebuilding and installing.
+
+### Pending
+- `.cqs.toml` — untracked, has aveva-docs reference config
+- `PROJECT_CONTINUITY.md` — modified (this update)
+- Release binary now v0.9.6 (rebuilt and installed to `~/.cargo/bin/cqs`)
 
 ### P4 audit items tracked in issues
 - #300: Search/algorithm edge cases (5 items)
@@ -59,6 +52,10 @@
 - **`.cq` rename to `.cqs`** — breaking change needing migration
 
 ## Open Issues
+
+### Reference index bugs (new)
+- #318: ref update silently prunes all chunks when binary lacks language support
+- #319: ref remove leaves stale metadata, blocking re-add with same name
 
 ### External/Waiting
 - #106: ort stable (currently 2.0.0-rc.11)

@@ -226,16 +226,6 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = 'Conda env vars for LD_LIBRARY_PATH: `conda env config vars set LD_LIBRARY_PATH="..."` in cuvs env. Auto-sets on activate. No more manual export.'
-mentions = [
-    "conda",
-    "LD_LIBRARY_PATH",
-    "WSL",
-    "cuvs",
-]
-
-[[note]]
-sentiment = 0.5
 text = "--bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
 mentions = [
     "src/cli/mod.rs",
@@ -258,15 +248,6 @@ text = "Inline validation code is hard to find via semantic search. Extract into
 mentions = [
     "src/mcp/validation.rs",
     "discoverability",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Path traversal via checksum file: verify_hnsw_checksums read extensions from file, could be '../../../etc/passwd'. Fixed with HNSW_EXTENSIONS allowlist. Low severity (local read-only) but still worth hardening."
-mentions = [
-    "src/hnsw/persist.rs",
-    "security",
-    "path traversal",
 ]
 
 [[note]]
@@ -571,10 +552,7 @@ mentions = [
 [[note]]
 sentiment = -1.0
 text = "Stale /mnt/c/Projects/cq/target/ directory (10GB) was deleted. .cargo/config.toml routes builds to ~/.cargo-target/cq/. The old target/ dir predated the config change and contained a 0.9.4 binary that caused confusion — binary reported wrong version because we kept copying from the stale location."
-mentions = [
-    ".cargo/config.toml",
-    "target/release/cqs",
-]
+mentions = [".cargo/config.toml"]
 
 [[note]]
 sentiment = 0.5
@@ -587,28 +565,55 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Rust regex crate doesn't support lookbehind (?<!). Had to rewrite markdown image link filter from (?<!!)\\[...\\] to match all links then check preceding byte. Common gotcha when porting regex from other languages."
-mentions = [
-    "src/parser/markdown.rs",
-]
+text = '''Rust regex crate doesn't support lookbehind (?<!). Had to rewrite markdown image link filter from (?<!!)\[...\] to match all links then check preceding byte. Common gotcha when porting regex from other languages.'''
+mentions = ["src/parser/markdown.rs"]
 
 [[note]]
 sentiment = -0.5
 text = "Merge-small-sections logic was backwards: small section absorbed the next instead of being absorbed by it. Title (4 lines) ate Section A (37 lines), producing one giant chunk. Direction matters — small merges INTO next, not extends to swallow."
-mentions = [
-    "src/parser/markdown.rs",
-]
+mentions = ["src/parser/markdown.rs"]
 
 [[note]]
 sentiment = 0.5
 text = "Adaptive heading detection works for both standard and inverted hierarchies. Heuristic: 'shallowest heading level appearing more than once, excluding title' = primary split level. Handles AVEVA docs (H2 title → H1 chapters) and standard markdown (H1 title → H2 sections) with same code."
-mentions = [
-    "src/parser/markdown.rs",
-]
+mentions = ["src/parser/markdown.rs"]
 
 [[note]]
 sentiment = -0.5
 text = ".mcp.json LD_LIBRARY_PATH was missing miniforge3/lib (libcuvs_c.so) and cuda lib64. MCP server failed to start with 'cannot open shared object file'. The env block in .mcp.json overrides the shell env, so it must be self-contained."
+mentions = [".mcp.json"]
+
+[[note]]
+sentiment = 0.5
+text = "MCP server hot-reloads references via mtime-based lazy reload. `ensure_references_fresh()` checks `.cqs.toml` and user config mtimes on each search/stats call. Uses RwLock<ReferenceState> with double-check locking. No restart needed after `ref add`/`ref remove`."
 mentions = [
-    ".mcp.json",
+    "src/mcp/server.rs",
+    "src/mcp/tools/search.rs",
+    "src/mcp/tools/stats.rs",
+    "ensure_references_fresh",
+]
+
+[[note]]
+sentiment = -1.0
+text = "ref update with a binary that doesn't support a language silently prunes ALL chunks for that language. v0.9.5 binary didn't know markdown, ran ref update, wiped 5662 chunks. No warning. Filed #318."
+mentions = [
+    "src/cli/commands/reference.rs",
+    "ref update",
+]
+
+[[note]]
+sentiment = -0.5
+text = "ref remove doesn't clean up metadata table rows. Re-adding same reference name hits UNIQUE constraint. Workaround: rm -rf the ref directory. Filed #319."
+mentions = [
+    "src/cli/commands/reference.rs",
+    "ref remove",
+    "ref add",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Always verify release binary version matches latest code before testing features. Previous session used debug build for markdown indexing but never rebuilt release. cqs --version catches this."
+mentions = [
+    "release binary",
+    "cargo build --release",
 ]
