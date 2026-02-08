@@ -36,6 +36,7 @@ tree-sitter-javascript = { version = "0.25", optional = true }
 tree-sitter-go = { version = "0.25", optional = true }
 tree-sitter-c = { version = "0.24", optional = true }
 tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-sql = { git = "https://github.com/jamie8johnson/tree-sitter-sql", branch = "main", package = "tree-sitter-sequel", optional = true }
 
 # ML
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
@@ -103,7 +104,7 @@ once_cell = "1"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -113,7 +114,8 @@ lang-javascript = ["dep:tree-sitter-javascript"]
 lang-go = ["dep:tree-sitter-go"]
 lang-c = ["dep:tree-sitter-c"]
 lang-java = ["dep:tree-sitter-java"]
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java"]
+lang-sql = ["dep:tree-sitter-sql"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql"]
 
 # Other features
 # encrypt feature removed - sqlx doesn't support SQLCipher directly
