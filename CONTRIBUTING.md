@@ -95,7 +95,7 @@ src/
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
-    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs, sql.rs
+    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs, sql.rs, markdown.rs
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation
@@ -115,11 +115,12 @@ src/
     tools/      - MCP tool implementations
       mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, batch.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs
     transports/ - stdio.rs, http.rs transport implementations
-  parser/       - Tree-sitter code parsing (delegates to language/ registry)
+  parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), supported_extensions()
     types.rs    - Chunk, CallSite, FunctionCalls, ParserError
     chunk.rs    - Chunk extraction, signatures, doc comments
     calls.rs    - Call graph extraction, callee filtering
+    markdown.rs - Heading-based markdown parser, cross-reference extraction
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
   search.rs     - Search algorithms, name matching, HNSW-guided search
   math.rs       - Vector math utilities (cosine similarity, SIMD)

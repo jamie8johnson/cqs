@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.6] - 2026-02-08
+
+### Added
+- **Markdown language support**: 9th language. Indexes `.md` and `.mdx` files with heading-based chunking, adaptive heading detection (handles both standard and inverted hierarchies), and cross-reference extraction from links and backtick function patterns.
+- `ChunkType::Section` for documentation chunks
+- `SignatureStyle::Breadcrumb` for heading-path signatures (e.g., "Doc Title > Chapter > Subsection")
+- `scripts/clean_md.py` for one-time PDF-to-markdown artifact preprocessing
+- `lang-markdown` feature flag (enabled by default)
+- Optional `grammar` field on `LanguageDef` for non-tree-sitter languages
+
 ## [0.9.5] - 2026-02-08
 
 ### Fixed

@@ -2,12 +2,12 @@
 
 ## Right Now
 
-**Markdown indexing — implementation in progress.** 2026-02-08. Branch: `feat/markdown-indexing`.
+**Releasing v0.9.6.** 2026-02-08.
 
-### Done this session
+### Done
+- Markdown indexing merged (PR #315)
 - Design doc: `docs/plans/2026-02-08-markdown-indexing-design.md`
-- Plan: `/home/user001/.claude/plans/vectorized-swinging-starfish.md` (18 steps, 3 fresh-eyes reviews)
-- Steps 0-14 implemented and passing:
+- 18-step plan fully implemented:
   - `scripts/clean_md.py` — 7-rule PDF artifact preprocessor (tested on 39 files)
   - `ChunkType::Section`, `SignatureStyle::Breadcrumb` added
   - `grammar: Option<fn()>` — made grammar optional for non-tree-sitter languages
@@ -23,22 +23,11 @@
   - `.mcp.json` fixed (added miniforge3/lib + cuda to LD_LIBRARY_PATH)
 - 298 lib + 233 integration tests pass, 0 warnings, clippy clean
 
-### Remaining
-- Steps 15-17: test fixture (`tests/fixtures/sample.md`) + integration tests
-- No PR yet — needs commit first
-
 ### Key implementation details
 - **Adaptive heading detection**: "shallowest heading level appearing more than once" = primary split level. Handles both standard (H1→H2→H3) and inverted (H2→H1→H3) AVEVA hierarchies.
 - **Merge logic**: small sections (<30 lines) merge INTO the next big section (not the other way)
 - **Regex fix**: Rust `regex` crate doesn't support lookbehind — filter image links by checking preceding `!` byte
 - **Overflow split**: excludes title level from candidates (inverted hierarchy fix)
-
-### Uncommitted (26 files)
-- All changes listed above — nothing committed yet on `feat/markdown-indexing`
-- `docs/plans/2026-02-08-markdown-indexing-design.md` — design doc
-- `scripts/clean_md.py` — preprocessor
-- `src/language/markdown.rs` — language def
-- `src/parser/markdown.rs` — parser
 
 ### Recent merges
 - PR #314: Release v0.9.5
@@ -91,7 +80,7 @@
 
 ## Architecture
 
-- Version: 0.9.5
+- Version: 0.9.6
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
