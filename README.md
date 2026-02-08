@@ -372,6 +372,8 @@ Implements MCP Streamable HTTP spec 2025-11-25 with Origin validation and protoc
 - Go
 - C
 - Java
+- SQL (T-SQL, PostgreSQL)
+- Markdown (.md, .mdx — heading-based chunking with cross-reference extraction)
 
 ## Indexing
 
@@ -386,11 +388,12 @@ cqs index --dry-run    # Show what would be indexed
 
 ## How It Works
 
-1. Parses code with tree-sitter to extract:
+1. Parses code to extract:
    - Functions and methods
    - Classes and structs
    - Enums, traits, interfaces
    - Constants
+   - Documentation sections (Markdown)
 2. Generates embeddings with E5-base-v2 (runs locally)
    - Includes doc comments for better semantic matching
 3. Stores in SQLite with vector search + FTS5 keyword index
