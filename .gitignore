@@ -29,5 +29,6 @@ proptest-regressions/
 .env.*.local
 credentials.toml
 .cq/
+.cqs.toml
 .cargo/
 samples/

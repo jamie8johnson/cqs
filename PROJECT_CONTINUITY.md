@@ -2,22 +2,30 @@
 
 ## Right Now
 
-**Reference hot-reload implemented, needs commit/PR.** 2026-02-08.
+**Testing markdown indexing with AVEVA docs reference.** 2026-02-08.
 
-### In progress
-- Hot-reload for MCP server reference indexes — implemented on `main` (uncommitted)
+### Hot-reload branch
+- Branch `feat/reference-hot-reload`, commit `f2cc890`
 - Changes in `src/mcp/server.rs`, `src/mcp/tools/search.rs`, `src/mcp/tools/stats.rs`
 - Design: mtime-based lazy reload with `RwLock<ReferenceState>`, double-check locking
-- All tests pass (544 total), clippy clean, 0 warnings
-- Needs: branch, commit, PR, merge
+- Needs: PR, merge
+
+### AVEVA docs reference testing
+- `aveva-docs` reference: 5662 chunks from 39 markdown files in `samples/md/`
+- Source: PDF→MD converted AVEVA System Platform docs (pymupdf4llm)
+- Semantic search working — tested historian scripting, WebView2, MES, supply chain queries
+- Identified 38 cross-referenced docs missing from the set (MES alone = 15 gaps)
+- User will convert more PDFs to fill gaps
+
+### Bugs found during testing
+- **#318**: `ref update` silently prunes all chunks when binary lacks language support (v0.9.5 binary didn't know markdown, pruned entire index)
+- **#319**: `ref remove` leaves stale metadata, blocking re-add with same name (UNIQUE constraint on metadata table)
+- Root cause of #318: release binary was v0.9.5, not rebuilt after v0.9.6 merge. Fixed by rebuilding and installing.
 
 ### Pending
-- `.cqs.toml` created by `ref add` — untracked, has aveva-docs reference config
-- AVEVA reference is temporary (for testing only) — `cqs ref remove aveva-docs` when done
-
-### Recent merges
-- PR #316: Release v0.9.6
-- PR #315: Markdown indexing support
+- `.cqs.toml` — untracked, has aveva-docs reference config
+- `PROJECT_CONTINUITY.md` — modified (this update)
+- Release binary now v0.9.6 (rebuilt and installed to `~/.cargo/bin/cqs`)
 
 ### P4 audit items tracked in issues
 - #300: Search/algorithm edge cases (5 items)
@@ -44,6 +52,10 @@
 - **`.cq` rename to `.cqs`** — breaking change needing migration
 
 ## Open Issues
+
+### Reference index bugs (new)
+- #318: ref update silently prunes all chunks when binary lacks language support
+- #319: ref remove leaves stale metadata, blocking re-add with same name
 
 ### External/Waiting
 - #106: ort stable (currently 2.0.0-rc.11)
