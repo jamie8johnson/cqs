@@ -153,6 +153,8 @@ pub enum SignatureStyle {
     UntilBrace,
     /// Extract until colon `:` (Python)
     UntilColon,
+    /// Extract until standalone `AS` keyword (SQL)
+    UntilAs,
 }
 
 /// Type of code element extracted by the parser
@@ -305,6 +307,8 @@ define_languages! {
     C => "c", feature = "lang-c", module = c;
     /// Java (.java files)
     Java => "java", feature = "lang-java", module = java;
+    /// SQL (.sql files)
+    Sql => "sql", feature = "lang-sql", module = sql;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +394,8 @@ mod tests {
         }
         #[cfg(feature = "lang-java")]
         assert!(REGISTRY.from_extension("java").is_some());
+        #[cfg(feature = "lang-sql")]
+        assert!(REGISTRY.from_extension("sql").is_some());
         assert!(REGISTRY.from_extension("xyz").is_none());
     }
 
@@ -426,6 +432,10 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-sql")]
+        {
+            expected += 1;
+        }
         assert_eq!(all.len(), expected);
     }
 
@@ -456,6 +466,7 @@ mod tests {
         assert_eq!(Language::from_extension("c"), Some(Language::C));
         assert_eq!(Language::from_extension("h"), Some(Language::C));
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
+        assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("unknown"), None);
     }
 
@@ -469,6 +480,7 @@ mod tests {
         );
         assert_eq!("c".parse::<Language>().unwrap(), Language::C);
         assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
+        assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert!("invalid".parse::<Language>().is_err());
     }
 
@@ -481,6 +493,7 @@ mod tests {
         assert_eq!(Language::Go.to_string(), "go");
         assert_eq!(Language::C.to_string(), "c");
         assert_eq!(Language::Java.to_string(), "java");
+        assert_eq!(Language::Sql.to_string(), "sql");
     }
 
     #[test]
@@ -594,6 +607,16 @@ mod tests {
         assert_eq!(
             (Language::Java.def().extract_return_nl)("public String getName()"),
             Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::Sql.def().extract_return_nl)(
+                "CREATE FUNCTION dbo.fn_Calc(@id INT) RETURNS DECIMAL(10,2)"
+            ),
+            Some("Returns decimal".to_string())
+        );
+        assert_eq!(
+            (Language::Sql.def().extract_return_nl)("CREATE PROCEDURE dbo.usp_Foo"),
+            None
         );
     }
 

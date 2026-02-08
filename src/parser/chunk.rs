@@ -92,6 +92,16 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
     let sig_end = match language.def().signature_style {
         SignatureStyle::UntilBrace => content.find('{').unwrap_or(content.len()),
         SignatureStyle::UntilColon => content.find(':').unwrap_or(content.len()),
+        SignatureStyle::UntilAs => {
+            // Case-insensitive search for AS as a standalone word
+            let upper = content.to_uppercase();
+            upper
+                .find(" AS ")
+                .or_else(|| upper.find("\nAS\n"))
+                .or_else(|| upper.find("\nAS "))
+                .or_else(|| upper.find(" AS\n"))
+                .unwrap_or(content.len())
+        }
     };
     let sig = &content[..sig_end];
     // Normalize whitespace

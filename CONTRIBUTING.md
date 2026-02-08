@@ -95,7 +95,7 @@ src/
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
-    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs
+    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs, sql.rs
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation

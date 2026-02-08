@@ -289,6 +289,7 @@ fn fixture_path(lang: Language) -> PathBuf {
         Language::Go => "go",
         Language::C => "c",
         Language::Java => "java",
+        Language::Sql => "sql",
     };
     PathBuf::from(manifest_dir)
         .join("tests")

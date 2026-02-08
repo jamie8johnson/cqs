@@ -311,3 +311,119 @@ fn test_parse_java_fixture() {
         assert!(doc.contains("task manager"), "Should extract doc comment");
     }
 }
+
+// ===== SQL tests =====
+
+#[test]
+fn test_parse_sql_fixture() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sql");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    // 2 procs + 1 function + 1 view = 4 chunks
+    // (T-SQL trigger syntax not supported by grammar — PostgreSQL triggers only)
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 chunks, got {}",
+        chunks.len()
+    );
+
+    // Stored procedure
+    let proc = chunks.iter().find(|c| c.name.contains("usp_GetOrders"));
+    assert!(proc.is_some(), "Should find usp_GetOrders procedure");
+    let proc = proc.unwrap();
+    assert_eq!(proc.chunk_type, ChunkType::Function);
+    assert_eq!(proc.language, Language::Sql);
+
+    // Function
+    let func = chunks.iter().find(|c| c.name.contains("fn_CalcTotal"));
+    assert!(func.is_some(), "Should find fn_CalcTotal function");
+    assert_eq!(func.unwrap().chunk_type, ChunkType::Function);
+
+    // View
+    let view = chunks
+        .iter()
+        .find(|c| c.name.contains("vw_ActiveCustomers"));
+    assert!(view.is_some(), "Should find vw_ActiveCustomers view");
+    assert_eq!(view.unwrap().chunk_type, ChunkType::Constant);
+}
+
+#[test]
+fn test_sql_signature_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sql");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    let func = chunks
+        .iter()
+        .find(|c| c.name.contains("fn_CalcTotal"))
+        .expect("Should find fn_CalcTotal");
+    // Signature should stop at AS, not include the body
+    assert!(
+        func.signature.contains("fn_CalcTotal"),
+        "Signature should contain function name: {}",
+        func.signature
+    );
+    assert!(
+        !func.signature.contains("BEGIN"),
+        "Signature should stop before BEGIN: {}",
+        func.signature
+    );
+}
+
+#[test]
+fn test_sql_schema_qualified_names() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sql");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    let proc = chunks
+        .iter()
+        .find(|c| c.name.contains("usp_GetOrders"))
+        .expect("Should find usp_GetOrders");
+    // Schema prefix should be preserved in the name
+    assert!(
+        proc.name.contains("dbo"),
+        "Should preserve schema prefix: {}",
+        proc.name
+    );
+}
+
+#[test]
+fn test_sql_go_separator() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sql");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    // GO separators should not prevent multi-batch parsing
+    // 4 chunks span multiple GO-separated batches
+    assert!(
+        chunks.len() >= 4,
+        "GO separators should not break parsing, got {} chunks",
+        chunks.len()
+    );
+}
+
+#[test]
+fn test_sql_call_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sql");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    // usp_ProcessOrder should have EXEC call in its body
+    let process = chunks
+        .iter()
+        .find(|c| c.name.contains("usp_ProcessOrder"))
+        .expect("Should find usp_ProcessOrder");
+    assert!(
+        process.content.contains("EXEC"),
+        "usp_ProcessOrder body should contain EXEC call"
+    );
+
+    // Extract actual calls from the procedure body
+    let calls = parser.extract_calls(&process.content, Language::Sql, 0, process.content.len(), 0);
+    assert!(
+        !calls.is_empty(),
+        "Should extract calls from usp_ProcessOrder"
+    );
+}
