@@ -34,7 +34,13 @@ pub fn tool_similar(server: &McpServer, arguments: Value) -> Result<Value> {
         .map(|l| {
             l.parse::<crate::parser::Language>()
                 .map(|lang| vec![lang])
-                .map_err(|_| anyhow::anyhow!("Unknown language '{}'. Supported: rust, python, typescript, javascript, go, c, java", l))
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "Unknown language '{}'. Supported: {}",
+                        l,
+                        crate::parser::Language::valid_names_display()
+                    )
+                })
         })
         .transpose()?;
 

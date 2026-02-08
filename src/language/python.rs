@@ -30,6 +30,25 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types (sibling comments and standalone strings before a definition)
 const DOC_NODES: &[&str] = &["string", "comment"];
 
+const STOPWORDS: &[&str] = &[
+    "def", "class", "self", "return", "if", "elif", "else", "for", "while", "import",
+    "from", "as", "with", "try", "except", "finally", "raise", "pass", "break", "continue",
+    "and", "or", "not", "in", "is", "true", "false", "none", "lambda", "yield", "global",
+    "nonlocal",
+];
+
+fn extract_return(signature: &str) -> Option<String> {
+    if let Some(arrow) = signature.rfind("->") {
+        let ret = signature[arrow + 2..].trim().trim_end_matches(':');
+        if ret.is_empty() {
+            return None;
+        }
+        let ret_words = crate::nl::tokenize_identifier(ret).join(" ");
+        return Some(format!("Returns {}", ret_words));
+    }
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "python",
     grammar: || tree_sitter_python::LANGUAGE.into(),
@@ -41,6 +60,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &["class_definition"],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {

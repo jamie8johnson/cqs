@@ -50,9 +50,13 @@ pub fn tool_search(server: &McpServer, arguments: Value) -> Result<Value> {
         languages: args
             .language
             .map(|l| {
-                l.parse::<Language>()
-                    .map(|lang| vec![lang])
-                    .map_err(|_| anyhow::anyhow!("Unknown language '{}'. Supported: rust, python, typescript, javascript, go, c, java", l))
+                l.parse::<Language>().map(|lang| vec![lang]).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Unknown language '{}'. Supported: {}",
+                        l,
+                        Language::valid_names_display()
+                    )
+                })
             })
             .transpose()?,
         chunk_types,

@@ -67,9 +67,10 @@ pub(crate) fn cmd_similar(
 
     // Build search filter (code only, no notes)
     let languages = match &cli.lang {
-        Some(l) => Some(vec![l.parse().context(
-            "Invalid language. Valid: rust, python, typescript, javascript, go, c, java",
-        )?]),
+        Some(l) => Some(vec![l.parse().context(format!(
+            "Invalid language. Valid: {}",
+            cqs::parser::Language::valid_names_display()
+        ))?]),
         None => None,
     };
 

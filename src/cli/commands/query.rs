@@ -29,9 +29,10 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let query_embedding = embedder.embed_query(query)?;
 
     let languages = match &cli.lang {
-        Some(l) => Some(vec![l.parse().context(
-            "Invalid language. Valid: rust, python, typescript, javascript, go, c, java",
-        )?]),
+        Some(l) => Some(vec![l.parse().context(format!(
+            "Invalid language. Valid: {}",
+            cqs::parser::Language::valid_names_display()
+        ))?]),
         None => None,
     };
 

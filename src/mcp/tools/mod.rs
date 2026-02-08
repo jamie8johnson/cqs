@@ -28,15 +28,12 @@ use super::server::McpServer;
 use super::types::{Tool, ToolsListResult};
 
 fn language_enum_schema() -> serde_json::Value {
-    serde_json::json!([
-        "rust",
-        "python",
-        "typescript",
-        "javascript",
-        "go",
-        "c",
-        "java"
-    ])
+    serde_json::Value::Array(
+        crate::language::Language::valid_names()
+            .iter()
+            .map(|n| serde_json::Value::String((*n).to_string()))
+            .collect(),
+    )
 }
 
 /// Handle tools/list request - return available tools
@@ -539,4 +536,23 @@ pub fn handle_tools_call(server: &McpServer, params: Option<Value>) -> Result<Va
         "MCP tool call completed"
     );
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_enum_schema_matches_variants() {
+        let schema = language_enum_schema();
+        let schema_array = schema.as_array().expect("schema should be an array");
+        let variant_count = crate::language::Language::all_variants().len();
+        assert_eq!(
+            schema_array.len(),
+            variant_count,
+            "language_enum_schema() has {} entries but all_variants() has {}",
+            schema_array.len(),
+            variant_count
+        );
+    }
 }

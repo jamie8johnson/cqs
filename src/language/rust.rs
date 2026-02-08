@@ -52,6 +52,25 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types
 const DOC_NODES: &[&str] = &["line_comment", "block_comment"];
 
+const STOPWORDS: &[&str] = &[
+    "fn", "let", "mut", "pub", "use", "impl", "mod", "struct", "enum", "trait", "type",
+    "where", "const", "static", "unsafe", "async", "await", "move", "ref", "self", "super",
+    "crate", "return", "if", "else", "for", "while", "loop", "match", "break", "continue",
+    "as", "in", "true", "false", "some", "none", "ok", "err",
+];
+
+fn extract_return(signature: &str) -> Option<String> {
+    if let Some(arrow) = signature.find("->") {
+        let ret = signature[arrow + 2..].trim();
+        if ret.is_empty() {
+            return None;
+        }
+        let ret_words = crate::nl::tokenize_identifier(ret).join(" ");
+        return Some(format!("Returns {}", ret_words));
+    }
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "rust",
     grammar: || tree_sitter_rust::LANGUAGE.into(),
@@ -63,6 +82,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &["impl_item", "trait_item"],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {

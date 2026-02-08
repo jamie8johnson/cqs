@@ -46,6 +46,61 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types
 const DOC_NODES: &[&str] = &["comment"];
 
+const STOPWORDS: &[&str] = &[
+    "func", "var", "const", "type", "struct", "interface", "return", "if", "else", "for",
+    "range", "switch", "case", "break", "continue", "go", "defer", "select", "chan", "map",
+    "package", "import", "true", "false", "nil",
+];
+
+fn extract_return(signature: &str) -> Option<String> {
+    // Go: `func name(params) returnType {` or `func (recv) name(params) returnType {`
+    // Strip trailing { first
+    let sig = signature.trim_end_matches('{').trim();
+
+    if sig.ends_with(')') {
+        // Check if it's a multi-return like (string, error)
+        // Find the matching ( for the final )
+        let mut depth = 0;
+        let mut start_idx = None;
+        for (i, c) in sig.char_indices().rev() {
+            match c {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        start_idx = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if let Some(start) = start_idx {
+            // Check if there's a ) before this ( - that would be the params close
+            let before = &sig[..start].trim();
+            if before.ends_with(')') {
+                // Multi-return: extract the (...)
+                let ret = &sig[start..];
+                if !ret.is_empty() {
+                    return Some(format!("Returns {}", ret));
+                }
+            }
+        }
+        return None;
+    } else {
+        // Plain return type after last )
+        if let Some(paren) = sig.rfind(')') {
+            let ret = sig[paren + 1..].trim();
+            if ret.is_empty() {
+                return None;
+            }
+            let ret_words = crate::nl::tokenize_identifier(ret).join(" ");
+            return Some(format!("Returns {}", ret_words));
+        }
+    }
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "go",
     grammar: || tree_sitter_go::LANGUAGE.into(),
@@ -57,6 +112,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &["method_declaration"],
     method_containers: &[],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {

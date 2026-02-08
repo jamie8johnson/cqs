@@ -443,161 +443,11 @@ fn extract_params_nl(signature: &str) -> Option<String> {
 }
 
 /// Extract return type from signature as natural language.
+///
+/// Delegates to the language-specific `extract_return_nl` function pointer
+/// stored in each language's `LanguageDef`.
 fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
-    match lang {
-        Language::Rust => {
-            if let Some(arrow) = signature.find("->") {
-                let ret = signature[arrow + 2..].trim();
-                if ret.is_empty() {
-                    return None;
-                }
-                let ret_words = tokenize_identifier(ret).join(" ");
-                return Some(format!("Returns {}", ret_words));
-            }
-        }
-        Language::Go => {
-            // Go: `func name(params) returnType {` or `func (recv) name(params) returnType {`
-            // Return type is between the params close-paren and the opening brace
-            // For multiple returns: `func name() (string, error) {`
-
-            // Strip trailing { first
-            let sig = signature.trim_end_matches('{').trim();
-
-            // Go return type extraction using parenthesis depth tracking.
-            // Handles:
-            // - func foo() error                    → Returns error
-            // - func foo() (int, error)             → Returns (int, error)
-            // - func (r *Receiver) Name() error    → Returns error
-            // - func (r *Receiver) Name() (int, error) → Returns (int, error)
-            //
-            // Known limitation: Complex function return types like `func() (func() error)`
-            // may not parse perfectly, but produce acceptable search text.
-            //
-            // Strategy: if last char is ), return type is wrapped in ()
-            // Otherwise return type is plain text after the last )
-            if sig.ends_with(')') {
-                // Check if it's a multi-return like (string, error) or just empty params ()
-                // Find the matching ( for the final )
-                let mut depth = 0;
-                let mut start_idx = None;
-                for (i, c) in sig.char_indices().rev() {
-                    match c {
-                        ')' => depth += 1,
-                        '(' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                start_idx = Some(i);
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if let Some(start) = start_idx {
-                    // Check if there's a ) before this ( - that would be the params close
-                    let before = &sig[..start].trim();
-                    if before.ends_with(')') {
-                        // Multi-return: extract the (...)
-                        let ret = &sig[start..];
-                        if !ret.is_empty() {
-                            return Some(format!("Returns {}", ret));
-                        }
-                    }
-                }
-                // Either no multi-return or empty params - fall through to return None
-                return None;
-            } else {
-                // Plain return type after last )
-                if let Some(paren) = sig.rfind(')') {
-                    let ret = sig[paren + 1..].trim();
-                    if ret.is_empty() {
-                        return None;
-                    }
-                    let ret_words = tokenize_identifier(ret).join(" ");
-                    return Some(format!("Returns {}", ret_words));
-                }
-            }
-        }
-        Language::TypeScript => {
-            // Note: rfind may match incorrectly on complex signatures like
-            // `function foo(): (x: number) => string` - proper parsing would require
-            // tracking parenthesis depth. This handles the common case.
-            if let Some(colon) = signature.rfind("):") {
-                let ret = signature[colon + 2..].trim();
-                if ret.is_empty() {
-                    return None;
-                }
-                let ret_words = tokenize_identifier(ret).join(" ");
-                return Some(format!("Returns {}", ret_words));
-            }
-        }
-        Language::Python => {
-            if let Some(arrow) = signature.rfind("->") {
-                let ret = signature[arrow + 2..].trim().trim_end_matches(':');
-                if ret.is_empty() {
-                    return None;
-                }
-                let ret_words = tokenize_identifier(ret).join(" ");
-                return Some(format!("Returns {}", ret_words));
-            }
-        }
-        Language::JavaScript => {
-            // JavaScript doesn't have type annotations in signatures
-            // JSDoc parsing handled separately
-        }
-        Language::C => {
-            // C: return type is before the function name, e.g., "int add(int a, int b)"
-            // Extract the type words before the function name (last identifier before '(')
-            if let Some(paren) = signature.find('(') {
-                let before = signature[..paren].trim();
-                let words: Vec<&str> = before.split_whitespace().collect();
-                // Last word is function name, everything before is return type + modifiers
-                if words.len() >= 2 {
-                    // Filter out storage class specifiers
-                    let type_words: Vec<&str> = words[..words.len() - 1]
-                        .iter()
-                        .filter(|w| {
-                            !matches!(**w, "static" | "inline" | "extern" | "const" | "volatile")
-                        })
-                        .copied()
-                        .collect();
-                    if !type_words.is_empty() && type_words != ["void"] {
-                        let ret = type_words.join(" ");
-                        let ret_words = tokenize_identifier(&ret).join(" ");
-                        return Some(format!("Returns {}", ret_words));
-                    }
-                }
-            }
-        }
-        Language::Java => {
-            // Java: return type is before the method name, similar to C
-            // e.g., "public int add(int a, int b)" or "private static String getName()"
-            if let Some(paren) = signature.find('(') {
-                let before = signature[..paren].trim();
-                let words: Vec<&str> = before.split_whitespace().collect();
-                if words.len() >= 2 {
-                    // Last word is method name, second-to-last is return type
-                    let ret_type = words[words.len() - 2];
-                    if !matches!(
-                        ret_type,
-                        "void"
-                            | "public"
-                            | "private"
-                            | "protected"
-                            | "static"
-                            | "final"
-                            | "abstract"
-                            | "synchronized"
-                            | "native"
-                    ) {
-                        let ret_words = tokenize_identifier(ret_type).join(" ");
-                        return Some(format!("Returns {}", ret_words));
-                    }
-                }
-            }
-        }
-    }
-    None
+    (lang.def().extract_return_nl)(signature)
 }
 
 /// Extract meaningful keywords from function body, filtering language noise.
@@ -606,129 +456,7 @@ fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
 pub fn extract_body_keywords(content: &str, language: Language) -> Vec<String> {
     use std::collections::HashMap;
 
-    let stopwords: &[&str] = match language {
-        Language::Rust => &[
-            "fn", "let", "mut", "pub", "use", "impl", "mod", "struct", "enum", "trait", "type",
-            "where", "const", "static", "unsafe", "async", "await", "move", "ref", "self", "super",
-            "crate", "return", "if", "else", "for", "while", "loop", "match", "break", "continue",
-            "as", "in", "true", "false", "some", "none", "ok", "err",
-        ],
-        Language::Python => &[
-            "def", "class", "self", "return", "if", "elif", "else", "for", "while", "import",
-            "from", "as", "with", "try", "except", "finally", "raise", "pass", "break", "continue",
-            "and", "or", "not", "in", "is", "true", "false", "none", "lambda", "yield", "global",
-            "nonlocal",
-        ],
-        Language::TypeScript | Language::JavaScript => &[
-            "function",
-            "const",
-            "let",
-            "var",
-            "return",
-            "if",
-            "else",
-            "for",
-            "while",
-            "do",
-            "switch",
-            "case",
-            "break",
-            "continue",
-            "new",
-            "this",
-            "class",
-            "extends",
-            "import",
-            "export",
-            "from",
-            "default",
-            "try",
-            "catch",
-            "finally",
-            "throw",
-            "async",
-            "await",
-            "true",
-            "false",
-            "null",
-            "undefined",
-            "typeof",
-            "instanceof",
-            "void",
-        ],
-        Language::Go => &[
-            "func",
-            "var",
-            "const",
-            "type",
-            "struct",
-            "interface",
-            "return",
-            "if",
-            "else",
-            "for",
-            "range",
-            "switch",
-            "case",
-            "break",
-            "continue",
-            "go",
-            "defer",
-            "select",
-            "chan",
-            "map",
-            "package",
-            "import",
-            "true",
-            "false",
-            "nil",
-        ],
-        Language::C => &[
-            "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "return",
-            "typedef", "struct", "enum", "union", "void", "int", "char", "float", "double", "long",
-            "short", "unsigned", "signed", "static", "extern", "const", "volatile", "sizeof",
-            "null", "true", "false",
-        ],
-        Language::Java => &[
-            "public",
-            "private",
-            "protected",
-            "static",
-            "final",
-            "abstract",
-            "class",
-            "interface",
-            "extends",
-            "implements",
-            "return",
-            "if",
-            "else",
-            "for",
-            "while",
-            "do",
-            "switch",
-            "case",
-            "break",
-            "continue",
-            "new",
-            "this",
-            "super",
-            "try",
-            "catch",
-            "finally",
-            "throw",
-            "throws",
-            "import",
-            "package",
-            "void",
-            "int",
-            "boolean",
-            "string",
-            "true",
-            "false",
-            "null",
-        ],
-    };
+    let stopwords: &[&str] = language.def().stopwords;
 
     // Count word frequencies
     let mut freq: HashMap<String, usize> = HashMap::new();
@@ -1018,13 +746,11 @@ mod tests {
             /// Fuzz: extract_return_nl should never panic for all languages
             #[test]
             fn fuzz_extract_return_no_panic(sig in "\\PC{0,200}") {
-                let _ = extract_return_nl(&sig, Language::Rust);
-                let _ = extract_return_nl(&sig, Language::Python);
-                let _ = extract_return_nl(&sig, Language::TypeScript);
-                let _ = extract_return_nl(&sig, Language::JavaScript);
-                let _ = extract_return_nl(&sig, Language::Go);
-                let _ = extract_return_nl(&sig, Language::C);
-                let _ = extract_return_nl(&sig, Language::Java);
+                // Exercise all language variants via all_variants() — automatically
+                // covers new languages when added to define_languages!
+                for lang in Language::all_variants() {
+                    let _ = extract_return_nl(&sig, *lang);
+                }
             }
         }
     }

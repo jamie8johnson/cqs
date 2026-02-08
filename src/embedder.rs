@@ -1000,7 +1000,7 @@ mod tests {
             fn prop_sentiment_clamped(sentiment in -10.0f32..10.0f32) {
                 let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(sentiment);
                 if let Some(s) = emb.sentiment() {
-                    prop_assert!(s >= -1.0 && s <= 1.0, "Sentiment {} out of range", s);
+                    prop_assert!((-1.0..=1.0).contains(&s), "Sentiment {} out of range", s);
                 }
             }
 
@@ -1037,7 +1037,7 @@ mod tests {
                 .expect("token_count failed");
             // E5-base-v2 tokenizer: "hello" and "world" are single tokens
             assert!(
-                count >= 2 && count <= 4,
+                (2..=4).contains(&count),
                 "Expected 2-4 tokens, got {}",
                 count
             );

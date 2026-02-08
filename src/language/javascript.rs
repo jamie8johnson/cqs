@@ -45,6 +45,19 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types
 const DOC_NODES: &[&str] = &["comment"];
 
+const STOPWORDS: &[&str] = &[
+    "function", "const", "let", "var", "return", "if", "else", "for", "while", "do",
+    "switch", "case", "break", "continue", "new", "this", "class", "extends", "import",
+    "export", "from", "default", "try", "catch", "finally", "throw", "async", "await",
+    "true", "false", "null", "undefined", "typeof", "instanceof", "void",
+];
+
+fn extract_return(_signature: &str) -> Option<String> {
+    // JavaScript doesn't have type annotations in signatures.
+    // JSDoc parsing is handled separately in NL generation.
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "javascript",
     grammar: || tree_sitter_javascript::LANGUAGE.into(),
@@ -56,6 +69,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &["class_body", "class_declaration"],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {

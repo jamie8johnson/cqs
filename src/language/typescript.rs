@@ -53,6 +53,26 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 /// Doc comment node types
 const DOC_NODES: &[&str] = &["comment"];
 
+const STOPWORDS: &[&str] = &[
+    "function", "const", "let", "var", "return", "if", "else", "for", "while", "do",
+    "switch", "case", "break", "continue", "new", "this", "class", "extends", "import",
+    "export", "from", "default", "try", "catch", "finally", "throw", "async", "await",
+    "true", "false", "null", "undefined", "typeof", "instanceof", "void",
+];
+
+fn extract_return(signature: &str) -> Option<String> {
+    // TypeScript: return type after `):` e.g. `function foo(): string`
+    if let Some(colon) = signature.rfind("):") {
+        let ret = signature[colon + 2..].trim();
+        if ret.is_empty() {
+            return None;
+        }
+        let ret_words = crate::nl::tokenize_identifier(ret).join(" ");
+        return Some(format!("Returns {}", ret_words));
+    }
+    None
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "typescript",
     grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
@@ -64,6 +84,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &["class_body", "class_declaration"],
+    stopwords: STOPWORDS,
+    extract_return_nl: extract_return,
 };
 
 pub fn definition() -> &'static LanguageDef {
