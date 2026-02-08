@@ -505,3 +505,50 @@ mentions = [
     "store.search",
     "search_filtered",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "define_languages! macro reduces language addition from 13 scattered changes to 1 macro invocation. Each language: enum variant, extension mapping, grammar loading, query patterns, display impl. Parser tests verify grammar availability at compile time. PR #307."
+mentions = [
+    "src/parser/types.rs",
+    "src/language/mod.rs",
+    "define_languages",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Never call store.search() directly in production code — raw embedding cosine only, no RRF hybrid or keyword matching. Always use search_filtered() or search_unified_with_index(). gather() and search_across_projects() both had this bug, fixed in PR #305."
+mentions = [
+    "src/gather.rs",
+    "src/project.rs",
+    "src/store/mod.rs",
+    "search_filtered",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Config::load_file() was silently swallowing parse errors — returned None for both missing files and broken TOML. Fixed in PR #308 to return Result. Always propagate config errors; silent failures hide misconfig until runtime."
+mentions = [
+    "src/config.rs",
+    "Config::load_file",
+    "error handling",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Bashrc non-interactive guard (case $- in *i*) blocks all exports below it for tool shells. CUDA/lib env vars must go ABOVE the guard. Session lost 30min to LD_LIBRARY_PATH not reaching cargo test."
+mentions = [
+    "~/.bashrc",
+    "LD_LIBRARY_PATH",
+    "CUDA_PATH",
+    "gpu-search",
+]
+
+[[note]]
+sentiment = -0.5
+text = """Tree-sitter query capture names must match extract_chunk's hardcoded capture_types: "function", "struct", "class", "enum", "trait", "interface", "const". Using @constant instead of @const silently drops matches — no error, just missing chunks."""
+mentions = [
+    "src/parser/chunk.rs",
+    "src/language/sql.rs",
+    "extract_chunk",
+]
