@@ -4,7 +4,7 @@
       "command": "/home/user001/.cargo-target/cq/debug/cqs",
       "args": ["serve", "--project", "/mnt/c/projects/cq"],
       "env": {
-        "LD_LIBRARY_PATH": "/home/user001/.cargo-target/cq/debug:/usr/lib/x86_64-linux-gnu"
+        "LD_LIBRARY_PATH": "/home/user001/miniforge3/lib:/usr/local/cuda/lib64:/home/user001/.cargo-target/cq/debug:/usr/lib/x86_64-linux-gnu"
       }
     }
   }

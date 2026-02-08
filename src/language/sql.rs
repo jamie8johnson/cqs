@@ -67,7 +67,7 @@ fn extract_return(signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "sql",
-    grammar: || tree_sitter_sql::LANGUAGE.into(),
+    grammar: Some(|| tree_sitter_sql::LANGUAGE.into()),
     extensions: &["sql"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

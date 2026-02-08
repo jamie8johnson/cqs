@@ -82,7 +82,7 @@ fn extract_return(signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "java",
-    grammar: || tree_sitter_java::LANGUAGE.into(),
+    grammar: Some(|| tree_sitter_java::LANGUAGE.into()),
     extensions: &["java"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

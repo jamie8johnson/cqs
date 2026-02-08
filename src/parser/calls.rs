@@ -18,6 +18,11 @@ impl Parser {
         end_byte: usize,
         line_offset: u32,
     ) -> Vec<CallSite> {
+        // Grammar-less languages (Markdown) — no tree-sitter call extraction
+        if language.def().grammar.is_none() {
+            return vec![];
+        }
+
         let grammar = language.grammar();
         let mut parser = tree_sitter::Parser::new();
         if parser.set_language(&grammar).is_err() {
@@ -74,6 +79,11 @@ impl Parser {
     ///
     /// Convenience method that extracts calls from the chunk's content.
     pub fn extract_calls_from_chunk(&self, chunk: &super::types::Chunk) -> Vec<CallSite> {
+        // Markdown chunks use custom reference extraction
+        if chunk.language == Language::Markdown {
+            return crate::parser::markdown::extract_calls_from_markdown_chunk(chunk);
+        }
+
         self.extract_calls(
             &chunk.content,
             chunk.language,
@@ -118,6 +128,11 @@ impl Parser {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let language = Language::from_extension(ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
+
+        // Grammar-less languages (Markdown) use custom reference extraction
+        if language.def().grammar.is_none() {
+            return crate::parser::markdown::parse_markdown_references(&source, path);
+        }
 
         let grammar = language.grammar();
         let mut parser = tree_sitter::Parser::new();

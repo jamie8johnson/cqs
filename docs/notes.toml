@@ -584,3 +584,31 @@ mentions = [
     "samples/pdf/",
     "pymupdf4llm",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Rust regex crate doesn't support lookbehind (?<!). Had to rewrite markdown image link filter from (?<!!)\\[...\\] to match all links then check preceding byte. Common gotcha when porting regex from other languages."
+mentions = [
+    "src/parser/markdown.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Merge-small-sections logic was backwards: small section absorbed the next instead of being absorbed by it. Title (4 lines) ate Section A (37 lines), producing one giant chunk. Direction matters — small merges INTO next, not extends to swallow."
+mentions = [
+    "src/parser/markdown.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Adaptive heading detection works for both standard and inverted hierarchies. Heuristic: 'shallowest heading level appearing more than once, excluding title' = primary split level. Handles AVEVA docs (H2 title → H1 chapters) and standard markdown (H1 title → H2 sections) with same code."
+mentions = [
+    "src/parser/markdown.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = ".mcp.json LD_LIBRARY_PATH was missing miniforge3/lib (libcuvs_c.so) and cuda lib64. MCP server failed to start with 'cannot open shared object file'. The env block in .mcp.json overrides the shell env, so it must be self-contained."
+mentions = [
+    ".mcp.json",
+]

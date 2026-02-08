@@ -75,7 +75,7 @@ fn extract_return(signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "typescript",
-    grammar: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+    grammar: Some(|| tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
     extensions: &["ts", "tsx"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

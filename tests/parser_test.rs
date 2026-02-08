@@ -427,3 +427,159 @@ fn test_sql_call_extraction() {
         "Should extract calls from usp_ProcessOrder"
     );
 }
+
+// ===== Markdown tests =====
+
+#[test]
+fn test_parse_markdown_fixture() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.md");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(!chunks.is_empty(), "Should find chunks in markdown file");
+
+    // All chunks should be Section type and Markdown language
+    for chunk in &chunks {
+        assert_eq!(chunk.chunk_type, ChunkType::Section);
+        assert_eq!(chunk.language, Language::Markdown);
+    }
+
+    // Should have sections from the fixture
+    let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"Getting Started"),
+        "Should find 'Getting Started' section, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"Advanced Topics"),
+        "Should find 'Advanced Topics' section, got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_markdown_breadcrumb_signatures() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.md");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    // H2 sections should have title in breadcrumb
+    let getting_started = chunks.iter().find(|c| c.name == "Getting Started");
+    assert!(getting_started.is_some(), "Should find 'Getting Started'");
+    let gs = getting_started.unwrap();
+    assert!(
+        gs.signature.contains("Sample Documentation"),
+        "Breadcrumb should contain title, got: {}",
+        gs.signature
+    );
+}
+
+#[test]
+fn test_markdown_code_block_headings_ignored() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.md");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+
+    // Headings inside code blocks should NOT appear as chunk names
+    assert!(
+        !names.contains(&"This heading inside a code block should NOT be parsed"),
+        "Should not parse heading inside code block, got: {:?}",
+        names
+    );
+    assert!(
+        !names.contains(&"Also not a heading"),
+        "Should not parse heading inside code block, got: {:?}",
+        names
+    );
+}
+
+#[test]
+fn test_markdown_cross_references() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.md");
+    let refs = parser.parse_file_calls(&path).unwrap();
+
+    let all_callees: Vec<&str> = refs
+        .iter()
+        .flat_map(|fc| fc.calls.iter().map(|c| c.callee_name.as_str()))
+        .collect();
+
+    // Should find markdown links
+    assert!(
+        all_callees.contains(&"Configuration Guide"),
+        "Should extract link text, got: {:?}",
+        all_callees
+    );
+    assert!(
+        all_callees.contains(&"API Reference"),
+        "Should extract link text, got: {:?}",
+        all_callees
+    );
+
+    // Should find backtick function references
+    assert!(
+        all_callees.contains(&"TagRead"),
+        "Should extract backtick function ref, got: {:?}",
+        all_callees
+    );
+    assert!(
+        all_callees.contains(&"Module.func"),
+        "Should extract backtick module.func ref, got: {:?}",
+        all_callees
+    );
+    assert!(
+        all_callees.contains(&"Class::method"),
+        "Should extract backtick Class::method ref, got: {:?}",
+        all_callees
+    );
+}
+
+#[test]
+fn test_markdown_image_links_skipped() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.md");
+    let refs = parser.parse_file_calls(&path).unwrap();
+
+    let all_callees: Vec<&str> = refs
+        .iter()
+        .flat_map(|fc| fc.calls.iter().map(|c| c.callee_name.as_str()))
+        .collect();
+
+    // Image links should NOT be extracted as references
+    assert!(
+        !all_callees.contains(&"architecture diagram"),
+        "Should NOT extract image link text, got: {:?}",
+        all_callees
+    );
+}
+
+#[test]
+fn test_markdown_code_blocks_in_content() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.md");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    // Code blocks should stay in their parent chunk's content
+    let has_code_block = chunks.iter().any(|c| c.content.contains("def example():"));
+    assert!(
+        has_code_block,
+        "Code block content should be preserved in parent chunk"
+    );
+}
+
+#[test]
+fn test_markdown_supported_extensions() {
+    let parser = Parser::new().unwrap();
+    let exts = parser.supported_extensions();
+    assert!(exts.contains(&"md"), "Should support .md extension");
+    assert!(exts.contains(&"mdx"), "Should support .mdx extension");
+}
+
+#[test]
+fn test_markdown_language_from_extension() {
+    assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
+    assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
+}

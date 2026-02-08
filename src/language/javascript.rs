@@ -60,7 +60,7 @@ fn extract_return(_signature: &str) -> Option<String> {
 
 static DEFINITION: LanguageDef = LanguageDef {
     name: "javascript",
-    grammar: || tree_sitter_javascript::LANGUAGE.into(),
+    grammar: Some(|| tree_sitter_javascript::LANGUAGE.into()),
     extensions: &["js", "jsx", "mjs", "cjs"],
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),

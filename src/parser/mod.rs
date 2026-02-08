@@ -7,6 +7,7 @@
 
 mod calls;
 mod chunk;
+pub mod markdown;
 pub mod types;
 
 pub use types::{CallSite, Chunk, ChunkType, FunctionCalls, Language, ParserError, SignatureStyle};
@@ -50,10 +51,13 @@ impl Parser {
         let mut call_queries = HashMap::new();
 
         // Initialize empty OnceCells for each registered language
+        // (skip grammar-less languages like Markdown — they use custom parsers)
         for def in crate::language::REGISTRY.all() {
             let lang: Language = def.name.parse().expect("registry/enum mismatch");
-            queries.insert(lang, OnceCell::new());
-            call_queries.insert(lang, OnceCell::new());
+            if def.grammar.is_some() {
+                queries.insert(lang, OnceCell::new());
+                call_queries.insert(lang, OnceCell::new());
+            }
         }
 
         Ok(Self {
@@ -134,6 +138,11 @@ impl Parser {
 
         let language = Language::from_extension(ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
+
+        // Grammar-less languages (Markdown) use custom parsers
+        if language.def().grammar.is_none() {
+            return crate::parser::markdown::parse_markdown_chunks(&source, path);
+        }
 
         let grammar = language.grammar();
         let mut parser = tree_sitter::Parser::new();

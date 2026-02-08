@@ -313,6 +313,19 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
 
 /// Generate NL description using a specific template variant.
 pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
+    // Section chunks (markdown): breadcrumb + name + content preview.
+    // Prose sections don't have parameters, return types, or code structure.
+    if chunk.chunk_type == ChunkType::Section {
+        let mut parts = Vec::new();
+        if !chunk.signature.is_empty() {
+            parts.push(chunk.signature.clone());
+        }
+        parts.push(chunk.name.clone());
+        let preview: String = chunk.content.replace("**", "").chars().take(200).collect();
+        parts.push(preview);
+        return parts.join(". ");
+    }
+
     let mut parts = Vec::new();
 
     // Shared: doc comment
@@ -341,6 +354,7 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         ChunkType::Trait => "trait",
         ChunkType::Interface => "interface",
         ChunkType::Constant => "constant",
+        ChunkType::Section => "section", // unreachable — early return above
     };
 
     // DocFirst: minimal metadata when doc exists
