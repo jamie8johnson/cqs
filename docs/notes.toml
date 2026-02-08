@@ -189,15 +189,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "WSL cargo target is at /home/user001/.cargo-target/cq (not ./target/). Set in .cargo/config.toml to avoid permission issues on /mnt/c/. Remember when running release binaries."
-mentions = [
-    "WSL",
-    ".cargo/config.toml",
-    "target",
-]
-
-[[note]]
 sentiment = 0.5
 text = 'cqs pronounced "seeks" - semantic search that seeks code by behavior, not text matching. grep for known strings, cqs for "how does X work?"'
 mentions = [
@@ -497,15 +488,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "define_languages! macro reduces language addition from 13 scattered changes to 1 macro invocation. Each language: enum variant, extension mapping, grammar loading, query patterns, display impl. Parser tests verify grammar availability at compile time. PR #307."
-mentions = [
-    "src/parser/types.rs",
-    "src/language/mod.rs",
-    "define_languages",
-]
-
-[[note]]
 sentiment = -1.0
 text = "Never call store.search() directly in production code — raw embedding cosine only, no RRF hybrid or keyword matching. Always use search_filtered() or search_unified_with_index(). gather() and search_across_projects() both had this bug, fixed in PR #305."
 mentions = [
@@ -584,4 +566,21 @@ mentions = [
     "src/parser/chunk.rs",
     "extract_signature",
     "SignatureStyle::UntilAs",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Stale /mnt/c/Projects/cq/target/ directory (10GB) was deleted. .cargo/config.toml routes builds to ~/.cargo-target/cq/. The old target/ dir predated the config change and contained a 0.9.4 binary that caused confusion — binary reported wrong version because we kept copying from the stale location."
+mentions = [
+    ".cargo/config.toml",
+    "target/release/cqs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "PDF-to-markdown pipeline works: pymupdf4llm converts AVEVA Historian manuals cleanly. Heading hierarchy preserved (# through ######). Noise: copyright footers, page numbers, ToC dot leaders need stripping. 39 PDFs → 14MB markdown in samples/md/."
+mentions = [
+    "samples/md/",
+    "samples/pdf/",
+    "pymupdf4llm",
 ]

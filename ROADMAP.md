@@ -322,21 +322,21 @@
 - [x] **Split `hnsw.rs`** → `src/hnsw/` directory (mod.rs, build.rs, search.rs, persist.rs, safety.rs)
 - [x] **Fix flaky `test_loaded_index_multiple_searches`** — one-hot embeddings for reliable separation
 
-## Next: New Languages (SQL + VB.NET)
+## New Languages
 
-### Priority: High (needed for VS2005 project)
+### Done
 
 - [x] **SQL** — forked tree-sitter-sql with CREATE/ALTER PROCEDURE/FUNCTION, GO batch separator, EXEC statement support. T-SQL name extraction with error recovery fallback. 8 languages total.
-- [ ] **VB.NET** — `tree-sitter-vb-dotnet` (git dep, not on crates.io). Subs, Functions, Classes, Modules.
 - [x] P3 audit fixes (#264-266) — completed in PR #296
 - [x] Audit cleanup batch (PR #308): #265 error propagation, #264 config errors, #241 config validation, #267 module boundaries, #239 test coverage, #232 CAGRA RAII guard
 
+### Parked
+
+- [ ] **VB.NET** — `tree-sitter-vb-dotnet` (git dep, not on crates.io). Subs, Functions, Classes, Modules. VS2005 project delayed.
+
 ### Notes
 
-- SQL: stored procs and functions are the main chunk types. Views/triggers optional.
-- VB.NET: grammar from [CodeAnt-AI/tree-sitter-vb-dotnet](https://github.com/CodeAnt-AI/tree-sitter-vb-dotnet). May need vendored C source if git dep doesn't work cleanly.
 - Each language needs: Language enum variant, extension mapping, grammar loading, query patterns, display impl (~5 changes per #268)
-- After VB.NET: 9 languages total
 
 ## Agent Experience Improvements
 
