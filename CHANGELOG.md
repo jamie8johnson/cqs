@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.4] - 2026-02-07
+
+### Added
+- **SQL language support**: 8th language. Parses stored procedures, functions, and views from `.sql` files via forked [tree-sitter-sql](https://github.com/jamie8johnson/tree-sitter-sql) grammar with `CREATE PROCEDURE`, `GO` batch separator, and `EXEC` statement support.
+- `SignatureStyle::UntilAs` for SQL's `AS BEGIN...END` pattern
+- Schema-qualified name preservation (`dbo.usp_GetOrders`)
+- SQL call graph extraction (function invocations + `EXEC`/`EXECUTE` statements)
+
 ## [0.9.3] - 2026-02-07
 
 ### Fixed
