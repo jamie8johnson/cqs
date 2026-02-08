@@ -10,6 +10,12 @@ const CHUNK_QUERY: &str = r#"
 (create_procedure
   (object_reference) @name) @function
 
+(alter_function
+  (object_reference) @name) @function
+
+(alter_procedure
+  (object_reference) @name) @function
+
 (create_view
   (object_reference) @name) @const
 
@@ -36,7 +42,7 @@ const TYPE_MAP: &[(&str, ChunkType)] = &[
 const DOC_NODES: &[&str] = &["comment", "marginalia"];
 
 const STOPWORDS: &[&str] = &[
-    "create", "procedure", "function", "view", "trigger", "begin", "end", "declare", "set",
+    "create", "alter", "procedure", "function", "view", "trigger", "begin", "end", "declare", "set",
     "select", "from", "where", "insert", "into", "update", "delete", "exec", "execute", "as",
     "returns", "return", "if", "else", "while", "and", "or", "not", "null", "int", "varchar",
     "nvarchar", "decimal", "table", "on", "after", "before", "instead", "of", "for", "each",
