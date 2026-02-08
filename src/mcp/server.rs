@@ -3,7 +3,8 @@
 //! The McpServer handles JSON-RPC requests and coordinates tool execution.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, RwLockReadGuard};
+use std::time::SystemTime;
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -24,6 +25,15 @@ use super::types::{
 /// MCP protocol version
 pub const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
+/// Cached reference indexes with config file mtimes for hot-reload detection
+pub(crate) struct ReferenceState {
+    pub(crate) references: Vec<ReferenceIndex>,
+    /// mtime of project `.cqs.toml` (None if file missing)
+    project_config_mtime: Option<SystemTime>,
+    /// mtime of user `~/.config/cqs/config.toml` (None if file missing)
+    user_config_mtime: Option<SystemTime>,
+}
+
 /// MCP Server
 ///
 /// Uses interior mutability (OnceLock, Mutex) to allow concurrent read access
@@ -40,8 +50,8 @@ pub struct McpServer {
     pub(crate) use_gpu: bool,
     /// Audit mode state (interior mutability for concurrent access)
     pub(crate) audit_mode: Mutex<AuditMode>,
-    /// Reference indexes for multi-index search
-    pub(crate) references: Vec<ReferenceIndex>,
+    /// Reference indexes for multi-index search (hot-reloaded on config change)
+    pub(crate) references: RwLock<ReferenceState>,
 }
 
 impl McpServer {
@@ -81,6 +91,7 @@ impl McpServer {
         // Load reference indexes from config
         let config = crate::config::Config::load(project_root);
         let references = crate::reference::load_references(&config.references);
+        let (project_config_mtime, user_config_mtime) = config_mtimes(project_root);
 
         Ok(Self {
             store,
@@ -89,7 +100,11 @@ impl McpServer {
             index,
             use_gpu,
             audit_mode: Mutex::new(AuditMode::default()),
-            references,
+            references: RwLock::new(ReferenceState {
+                references,
+                project_config_mtime,
+                user_config_mtime,
+            }),
         })
     }
 
@@ -262,4 +277,63 @@ impl McpServer {
         let embedder = self.ensure_embedder()?;
         crate::index_notes(notes, notes_path, embedder, &self.store)
     }
+
+    /// Ensure reference indexes are fresh (hot-reload on config change).
+    ///
+    /// Checks `.cqs.toml` and user config mtimes. If either changed,
+    /// reloads config and rebuilds reference indexes under a write lock.
+    /// Returns a read guard for concurrent access.
+    pub(crate) fn ensure_references_fresh(&self) -> RwLockReadGuard<'_, ReferenceState> {
+        let (project_mtime, user_mtime) = config_mtimes(&self.project_root);
+
+        // Fast path: read lock, check mtimes
+        {
+            let guard = self.references.read().unwrap_or_else(|e| {
+                tracing::debug!("References RwLock poisoned, recovering");
+                e.into_inner()
+            });
+            if guard.project_config_mtime == project_mtime && guard.user_config_mtime == user_mtime
+            {
+                return guard;
+            }
+        }
+
+        // Slow path: config changed, take write lock and reload
+        {
+            let mut guard = self.references.write().unwrap_or_else(|e| {
+                tracing::debug!("References RwLock poisoned, recovering");
+                e.into_inner()
+            });
+
+            // Double-check: another thread may have reloaded while we waited
+            if guard.project_config_mtime != project_mtime || guard.user_config_mtime != user_mtime
+            {
+                let config = crate::config::Config::load(&self.project_root);
+                let references = crate::reference::load_references(&config.references);
+                tracing::info!(count = references.len(), "Hot-reloaded reference indexes");
+                *guard = ReferenceState {
+                    references,
+                    project_config_mtime: project_mtime,
+                    user_config_mtime: user_mtime,
+                };
+            }
+        }
+
+        // Retake read lock
+        self.references.read().unwrap_or_else(|e| {
+            tracing::debug!("References RwLock poisoned, recovering");
+            e.into_inner()
+        })
+    }
+}
+
+/// Get mtimes of both config files (project `.cqs.toml` and user config).
+fn config_mtimes(project_root: &Path) -> (Option<SystemTime>, Option<SystemTime>) {
+    let project_mtime = std::fs::metadata(project_root.join(".cqs.toml"))
+        .and_then(|m| m.modified())
+        .ok();
+    let user_mtime = dirs::config_dir()
+        .map(|d| d.join("cqs/config.toml"))
+        .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+    (project_mtime, user_mtime)
 }
