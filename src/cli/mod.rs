@@ -15,10 +15,10 @@ pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
-    cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor, cmd_explain, cmd_gather,
-    cmd_gc, cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_project, cmd_query, cmd_ref, cmd_serve,
-    cmd_similar, cmd_stats, cmd_test_map, cmd_trace, NotesCommand, ProjectCommand, RefCommand,
-    ServeConfig,
+    cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
+    cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_project,
+    cmd_query, cmd_read, cmd_ref, cmd_serve, cmd_similar, cmd_stats, cmd_test_map, cmd_trace,
+    NotesCommand, ProjectCommand, RefCommand, ServeConfig,
 };
 use config::apply_config_defaults;
 
@@ -73,6 +73,14 @@ pub struct Cli {
     /// Filter by structural pattern (builder, error_swallow, async, mutex, unsafe, recursion)
     #[arg(long)]
     pattern: Option<String>,
+
+    /// Definition search: find by name only, skip embedding (faster)
+    #[arg(long)]
+    name_only: bool,
+
+    /// Pure semantic similarity, disable RRF hybrid search
+    #[arg(long)]
+    semantic_only: bool,
 
     /// Output as JSON
     #[arg(long)]
@@ -310,6 +318,29 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Toggle audit mode (exclude notes from search/read)
+    #[command(name = "audit-mode")]
+    AuditMode {
+        /// State: on or off (omit to query current state)
+        state: Option<String>,
+        /// Expiry duration (e.g., "30m", "1h", "2h30m")
+        #[arg(long, default_value = "30m")]
+        expires: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read a file with notes injected as comments
+    Read {
+        /// File path relative to project root
+        path: String,
+        /// Focus on a specific function (returns only that function + type deps)
+        #[arg(long)]
+        focus: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -411,6 +442,16 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_gather(&cli, query, expand, direction, limit, json),
         Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
+        Some(Commands::AuditMode {
+            ref state,
+            ref expires,
+            json,
+        }) => cmd_audit_mode(state.as_deref(), expires, json),
+        Some(Commands::Read {
+            ref path,
+            ref focus,
+            json,
+        }) => cmd_read(path, focus.as_deref(), json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -662,6 +703,7 @@ mod tests {
                     assert!(!warnings);
                     assert!(!patterns);
                 }
+                _ => panic!("Expected List subcommand"),
             },
             _ => panic!("Expected Notes command"),
         }
@@ -675,6 +717,95 @@ mod tests {
                 NotesCommand::List { warnings, .. } => {
                     assert!(warnings);
                 }
+                _ => panic!("Expected List subcommand"),
+            },
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_notes_add() {
+        let cli = Cli::try_parse_from(["cqs", "notes", "add", "test note", "--sentiment", "-0.5"])
+            .unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                NotesCommand::Add {
+                    text, sentiment, ..
+                } => {
+                    assert_eq!(text, "test note");
+                    assert!((*sentiment - (-0.5)).abs() < 0.001);
+                }
+                _ => panic!("Expected Add subcommand"),
+            },
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_notes_add_with_mentions() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "notes",
+            "add",
+            "test note",
+            "--mentions",
+            "src/lib.rs,src/main.rs",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                NotesCommand::Add { mentions, .. } => {
+                    let m = mentions.as_ref().unwrap();
+                    assert_eq!(m.len(), 2);
+                    assert_eq!(m[0], "src/lib.rs");
+                    assert_eq!(m[1], "src/main.rs");
+                }
+                _ => panic!("Expected Add subcommand"),
+            },
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_notes_remove() {
+        let cli = Cli::try_parse_from(["cqs", "notes", "remove", "some note text"]).unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                NotesCommand::Remove { text, .. } => {
+                    assert_eq!(text, "some note text");
+                }
+                _ => panic!("Expected Remove subcommand"),
+            },
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_notes_update() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "notes",
+            "update",
+            "old text",
+            "--new-text",
+            "new text",
+            "--new-sentiment",
+            "0.5",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Notes { ref subcmd }) => match subcmd {
+                NotesCommand::Update {
+                    text,
+                    new_text,
+                    new_sentiment,
+                    ..
+                } => {
+                    assert_eq!(text, "old text");
+                    assert_eq!(new_text.as_deref(), Some("new text"));
+                    assert!((new_sentiment.unwrap() - 0.5).abs() < 0.001);
+                }
+                _ => panic!("Expected Update subcommand"),
             },
             _ => panic!("Expected Notes command"),
         }

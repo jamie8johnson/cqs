@@ -23,8 +23,13 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     let store = Store::open(&index_path)?;
-    let embedder = Embedder::new()?;
 
+    // Name-only mode: search by function/struct name, skip embedding entirely
+    if cli.name_only {
+        return cmd_query_name_only(cli, &store, query, &root);
+    }
+
+    let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
 
     let languages = match &cli.lang {
@@ -51,7 +56,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         path_pattern: cli.path.clone(),
         name_boost: cli.name_boost,
         query_text: query.to_string(),
-        enable_rrf: true, // Enable RRF hybrid search by default
+        enable_rrf: !cli.semantic_only, // RRF on by default, disable with --semantic-only
         note_weight: cli.note_weight,
         note_only: cli.note_only,
     };
@@ -98,6 +103,41 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         }
     };
 
+    // Check audit mode for note exclusion
+    let audit_mode = cqs::audit::load_audit_state(&cq_dir);
+    if audit_mode.is_active() && cli.note_only {
+        bail!("--note-only is unavailable during audit mode");
+    }
+
+    // Use unified search, or code-only if audit mode active
+    let results = if audit_mode.is_active() {
+        // Audit mode: search code only, skip notes
+        let code_results = store.search_filtered_with_index(
+            &query_embedding,
+            &filter,
+            if cli.pattern.is_some() {
+                cli.limit * 3
+            } else {
+                cli.limit
+            },
+            cli.threshold,
+            index.as_deref(),
+        )?;
+        code_results.into_iter().map(UnifiedResult::Code).collect()
+    } else {
+        store.search_unified_with_index(
+            &query_embedding,
+            &filter,
+            if cli.pattern.is_some() {
+                cli.limit * 3
+            } else {
+                cli.limit
+            },
+            cli.threshold,
+            index.as_deref(),
+        )?
+    };
+
     // Load references for multi-index search
     let config = cqs::config::Config::load(&root);
     let references = reference::load_references(&config.references);
@@ -109,20 +149,6 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         .map(|p| p.parse())
         .transpose()
         .context("Invalid pattern")?;
-
-    // Use unified search with vector index if available
-    let results = store.search_unified_with_index(
-        &query_embedding,
-        &filter,
-        // Fetch more results if pattern filter will reduce them
-        if pattern.is_some() {
-            cli.limit * 3
-        } else {
-            cli.limit
-        },
-        cli.threshold,
-        index.as_deref(),
-    )?;
 
     // Apply structural pattern filter if specified
     let results = if let Some(ref pat) = pattern {
@@ -193,6 +219,36 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         display::display_tagged_results_json(&tagged, query)?;
     } else {
         display::display_tagged_results(&tagged, &root, cli.no_content, cli.context)?;
+    }
+
+    Ok(())
+}
+
+/// Name-only search: find by function/struct name, no embedding needed
+fn cmd_query_name_only(
+    cli: &Cli,
+    store: &Store,
+    query: &str,
+    root: &std::path::Path,
+) -> Result<()> {
+    let results = store.search_by_name(query, cli.limit)?;
+
+    if results.is_empty() {
+        if cli.json {
+            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        } else {
+            println!("No results found.");
+        }
+        std::process::exit(signal::ExitCode::NoResults as i32);
+    }
+
+    // Convert to UnifiedResult for display
+    let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
+
+    if cli.json {
+        display::display_unified_results_json(&unified, query)?;
+    } else {
+        display::display_unified_results(&unified, root, cli.no_content, cli.context)?;
     }
 
     Ok(())

@@ -7,11 +7,12 @@ argument-hint: "<function_name> [--limit 5] [--threshold 0.3] [--lang rust]"
 
 # Similar
 
-Call `cqs_similar` MCP tool. Parse arguments:
-
+Parse arguments:
 - First positional arg = `target` — function name or `file:function` (required)
-- `--limit <n>` → max results (default 5, max 20)
-- `--threshold <n>` → minimum similarity (default 0.3)
-- `--lang <language>` → filter by language
+- `--limit <n>` — max results (default 5, max 20)
+- `--threshold <n>` — minimum similarity (default 0.3)
+- `--lang <language>` — filter by language
 
-Useful for refactoring discovery, finding duplicates, and understanding patterns.
+Run via Bash: `cqs similar "<target>" [--limit N] [--threshold F] [--lang L] --json -q`
+
+Present the results to the user. Useful for refactoring discovery, finding duplicates, and understanding patterns.

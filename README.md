@@ -228,10 +228,10 @@ cqs "spawn async task"    # Finds results in project AND tokio reference
 
 Reference results are ranked with a weight multiplier (default 0.8) so project results naturally appear first at equal similarity.
 
-**MCP integration**: The `cqs_search` tool gains a `sources` parameter to filter which indexes to search:
-- Omit `sources` to search all indexes
-- `sources: ["project"]` — search only the primary project
-- `sources: ["tokio"]` — search only the tokio reference
+**Source filtering**: Use the `--sources` flag to filter which indexes to search:
+- Omit to search all indexes
+- `--sources project` — search only the primary project
+- `--sources tokio` — search only the tokio reference
 
 References are configured in `.cqs.toml`:
 
@@ -250,7 +250,7 @@ weight = 0.8
 Without cqs, Claude uses grep/glob to find code and reads entire files for context. With cqs:
 
 - **Fewer tool calls**: `trace`, `impact`, `gather`, `context` each replace 5-10 sequential file reads with a single call
-- **Less context burn**: Focused `cqs_read` returns a function + its type dependencies — not the whole file. `batch` runs 10 queries in one round-trip
+- **Less context burn**: Focused `cqs read --focus` returns a function + its type dependencies — not the whole file
 - **Find code by behavior**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`
 - **Navigate unfamiliar codebases**: Semantic search finds relevant code without knowing project structure
 
@@ -292,34 +292,33 @@ GPU: ~12ms warm queries. CPU (default): ~22ms. Server starts instantly with HNSW
 ```markdown
 ## Code Search
 
-Use `cqs_search` for semantic code search instead of grep/glob when looking for:
+Use `cqs search` for semantic code search instead of grep/glob when looking for:
 - Functions by behavior ("retry with backoff", "parse config")
 - Implementation patterns ("error handling", "database connection")
 - Code where you don't know the exact name
 
-Available tools:
-- `cqs_search` - semantic search with `language`, `path_pattern`, `threshold`, `limit`, `name_boost`, `note_weight`, `semantic_only`, `name_only`, `note_only`, `sources`, `pattern`
-  - Use `name_only=true` for "where is X defined?" queries (skips embedding, searches function names directly)
-  - Use `note_only=true` to search only notes (skip code results)
-- `cqs_stats` - index stats, chunk counts, HNSW index status
-- `cqs_callers` - find functions that call a given function
-- `cqs_callees` - find functions called by a given function
-- `cqs_read` - read file with context notes injected as comments (use `focus` param for function + type deps only)
-- `cqs_add_note` - add observation to project memory (indexed for future searches)
-- `cqs_update_note` - update an existing note's text, sentiment, or mentions
-- `cqs_remove_note` - remove a note from project memory
-- `cqs_audit_mode` - toggle audit mode to exclude notes from search/read results
-- `cqs_similar` - find functions similar to a given function (search by example)
-- `cqs_explain` - function card: signature, callers, callees, similar functions
-- `cqs_diff` - semantic diff between indexed snapshots
-- `cqs_trace` - follow call chain between two functions (BFS shortest path). `format: "mermaid"` for diagrams
-- `cqs_impact` - what breaks if you change X? Callers with snippets + affected tests. `format: "mermaid"` for diagrams
-- `cqs_test_map` - map functions to tests that exercise them
-- `cqs_batch` - execute multiple queries in one call (up to 10)
-- `cqs_context` - module-level understanding: chunks, callers, callees, notes for a file. `summary: true` for counts only
-- `cqs_gather` - smart context assembly: seed search + call graph BFS expansion
-- `cqs_dead` - find functions/methods never called by indexed code
-- `cqs_gc` - report index staleness (stale/missing file counts)
+Key commands (all support `--json`):
+- `cqs "query"` - semantic search (hybrid RRF by default)
+- `cqs "name" --name-only` - definition lookup (fast, no embedding)
+- `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
+- `cqs "query" --note-only` - search only notes (skip code results)
+- `cqs read <path>` - file with context notes injected as comments
+- `cqs read --focus <function>` - function + type dependencies only
+- `cqs stats` - index stats, chunk counts, HNSW index status
+- `cqs callers <function>` - find functions that call a given function
+- `cqs callees <function>` - find functions called by a given function
+- `cqs notes add/update/remove` - manage project memory notes
+- `cqs audit-mode on/off` - toggle audit mode (exclude notes from search/read)
+- `cqs similar <function>` - find functions similar to a given function
+- `cqs explain <function>` - function card: signature, callers, callees, similar
+- `cqs diff --source <ref>` - semantic diff between indexed snapshots
+- `cqs trace <source> <target>` - follow call chain (BFS shortest path)
+- `cqs impact <function>` - what breaks if you change X? Callers + affected tests
+- `cqs test-map <function>` - map functions to tests that exercise them
+- `cqs context <file>` - module-level: chunks, callers, callees, notes
+- `cqs gather "query"` - smart context assembly: seed search + call graph BFS
+- `cqs dead` - find functions/methods never called by indexed code
+- `cqs gc` - report/clean stale index entries
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```

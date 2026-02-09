@@ -7,6 +7,10 @@ argument-hint: "<file_path>"
 
 # Context
 
-Call `cqs_context` MCP tool with `path` set to the user's argument.
+Parse arguments:
+- First positional arg = file path (required)
+- `--summary` — return counts only instead of full details
 
-Returns a module overview for the given file: all chunks (signatures), external callers, external callees, dependent files, and related notes. Useful for understanding a file's role before making changes.
+Run via Bash: `cqs context "<path>" [--summary] --json -q`
+
+Present the results to the user. Returns a module overview: all chunks (signatures), external callers, external callees, dependent files, and related notes. Useful for understanding a file's role before making changes.

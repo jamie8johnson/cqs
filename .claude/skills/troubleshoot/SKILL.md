@@ -1,6 +1,6 @@
 ---
 name: troubleshoot
-description: Diagnose common cqs issues — stale index, MCP not connecting, model download, schema mismatch.
+description: Diagnose common cqs issues — stale index, model download, schema mismatch, MCP not connecting.
 disable-model-invocation: false
 argument-hint: ""
 ---
@@ -29,7 +29,7 @@ Should contain `index.db` and `hnsw.bin`. If missing: `cqs init && cqs index`.
 
 ### 3. Is the index populated?
 
-Call `cqs_stats` MCP tool (or `cqs stats`). Check:
+Run `cqs stats`. Check:
 - Chunk count > 0
 - Last update is recent
 - Expected languages are present

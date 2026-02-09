@@ -7,6 +7,6 @@ argument-hint: ""
 
 # GC
 
-Call `cqs_gc` MCP tool. No arguments.
+Run via Bash: `cqs gc --json -q`
 
-Reports index staleness: stale file count and missing file count. The CLI version (`cqs gc`) prunes chunks for deleted files, cleans orphan call graph entries, and rebuilds HNSW. The MCP version is read-only.
+Present the results to the user. Reports index staleness: stale file count and missing file count. The CLI `gc` command also prunes chunks for deleted files, cleans orphan call graph entries, and rebuilds HNSW.

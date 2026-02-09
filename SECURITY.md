@@ -82,7 +82,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 | Project source files | Parsing and embedding | `cqs index`, `cqs watch` |
 | `.cq/index.db` | SQLite database | All operations |
 | `.cq/hnsw.*` | Vector index files | Search operations |
-| `docs/notes.toml` | Developer notes | Search, `cqs_read` |
+| `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
 | `~/.local/share/cqs/refs/*/` | Reference indexes (read-only during search) | Search operations |
@@ -96,7 +96,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 | `.cq/hnsw.*` | Vector index | `cqs index` |
 | `.cq/checksums.bin` | File change detection | `cqs index` |
 | `.cq/cqs.pid` | Process lock file | `cqs watch` |
-| `docs/notes.toml` | Developer notes | `cqs_add_note`, `cqs_update_note`, `cqs_remove_note` |
+| `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index storage | `cqs ref add`, `cqs ref update` |
 
 ### Process Operations
@@ -107,7 +107,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 
 ### Path Traversal Protection
 
-The `cqs_read` MCP tool validates paths:
+The `cqs read` command validates paths:
 
 ```rust
 let canonical = file_path.canonicalize()?;

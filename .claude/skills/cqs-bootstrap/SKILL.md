@@ -1,6 +1,6 @@
 ---
 name: cqs-bootstrap
-description: One-command setup for cqs in a new project — MCP config, skills, tears infrastructure, CLAUDE.md, init, index.
+description: One-command setup for cqs in a new project — skills, tears infrastructure, CLAUDE.md, init, index.
 disable-model-invocation: false
 argument-hint: "[project_path]"
 ---
@@ -110,41 +110,19 @@ None.
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
-### Phase 3: MCP Server Config
+### Phase 3: cqs Init & Index
 
-6. Create `.mcp.json` in project root (if it doesn't exist) or add cqs to existing:
+6. Run `cqs init` (creates `.cq/` directory with database)
+7. Run `cqs index` (indexes all source files + notes)
+8. Verify with `cqs stats` — should show chunk count > 0
 
-```json
-{
-  "mcpServers": {
-    "cqs": {
-      "command": "cqs",
-      "args": ["serve", "--project", "."]
-    }
-  }
-}
-```
+### Phase 4: .gitignore
 
-**Notes on the MCP config:**
-- Uses bare `cqs` command (assumes it's in PATH via `~/.cargo/bin/`)
-- Uses `.` for project path — Claude Code resolves this relative to project root
-- If user has a custom install path, ask them and adjust
-- If `LD_LIBRARY_PATH` is needed (GPU/CUDA), add an `env` field
-- `.mcp.json` is checked into git (shared config for all collaborators)
+9. Add `.cq/` to `.gitignore` if not already present (the index database is local, not shared)
 
-### Phase 4: cqs Init & Index
+### Phase 5: CLAUDE.md Integration
 
-7. Run `cqs init` (creates `.cq/` directory with database)
-8. Run `cqs index` (indexes all source files + notes)
-9. Verify with `cqs stats` — should show chunk count > 0
-
-### Phase 5: .gitignore
-
-10. Add `.cq/` to `.gitignore` if not already present (the index database is local, not shared)
-
-### Phase 6: CLAUDE.md Integration
-
-11. If CLAUDE.md exists, **append** the cqs sections below. If it doesn't exist, create it with these sections plus a basic header.
+10. If CLAUDE.md exists, **append** the cqs sections below. If it doesn't exist, create it with these sections plus a basic header.
 
 **Check for existing sections first** — don't duplicate if the user already has cqs config in their CLAUDE.md.
 
@@ -164,26 +142,30 @@ Skills are auto-discovered — they appear in `/` autocomplete automatically.
 
 ## Code Search
 
-**Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching.
+**Use `cqs search` instead of grep/glob.** It finds code by what it does, not text matching.
+
+```bash
+cqs "search query" --json          # semantic search
+cqs "function_name" --name-only    # definition lookup (fast, no embedding)
+cqs "query" --semantic-only        # pure vector similarity, no RRF
+```
 
 Use it for:
 - Exploring unfamiliar code
 - Finding implementations by behavior
 - When you don't know exact names
 
-**Definition search:** Use `name_only=true` for "where is X defined?" queries. Skips embedding, searches function/struct names directly. Faster than glob.
-
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-**`cqs_read`** — use instead of raw `Read` for indexed source files. Returns file contents with relevant notes injected as comments. Use raw `Read` for non-indexed files (config, markdown, lock files).
+**`cqs read <path>`** — use instead of raw `Read` for indexed source files. Returns file contents with relevant notes injected as comments. Use raw `Read` for non-indexed files (config, markdown, lock files).
 
-Tools: `cqs_search`, `cqs_stats`, `cqs_callers`, `cqs_callees`, `cqs_read`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc`, `cqs_add_note`, `cqs_update_note`, `cqs_remove_note`, `cqs_audit_mode` (20 tools — run `cqs watch` to keep index fresh)
+Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 
 ## Audit Mode
 
 Before audits or fresh-eyes reviews:
-`cqs_audit_mode(true)` to exclude notes and force direct code examination.
-After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
+`cqs audit-mode on` to exclude notes and force direct code examination.
+After: `cqs audit-mode off` or let it auto-expire (30 min default).
 
 ## Continuity (Tears)
 
@@ -192,16 +174,16 @@ After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
 * `docs/notes.toml` -- observations with sentiment (indexed by cqs)
 
-**Use `cqs_add_note` to add notes** - it indexes immediately. Direct file edits require `cqs index` to become searchable.
+**Use `cqs notes add` to add notes** — it indexes immediately. Direct file edits require `cqs index` to become searchable.
 
 **Sentiment is DISCRETE** — only 5 valid values: -1, -0.5, 0, 0.5, 1
 ```
 
-### Phase 7: Verify
+### Phase 6: Verify
 
-12. Run `cqs stats` to confirm indexing worked
-13. Test a search: `cqs search "main entry point"` (should return results)
-14. Report summary: files created, chunks indexed, skills installed
+11. Run `cqs stats` to confirm indexing worked
+12. Test a search: `cqs "main entry point" --json` (should return results)
+13. Report summary: files created, chunks indexed, skills installed
 
 ## Rules
 
@@ -209,4 +191,3 @@ After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
 - **Append, don't replace** CLAUDE.md content
 - **Ask before** modifying `.gitignore` if it has complex rules
 - If `cqs` binary isn't found, stop and tell the user to install it first
-- If `.mcp.json` already has a `cqs` entry, don't duplicate — just verify it's correct

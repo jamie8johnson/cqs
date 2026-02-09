@@ -55,6 +55,7 @@
 //! ```
 
 // Public library API modules
+pub mod audit;
 pub mod config;
 pub mod embedder;
 pub mod hnsw;
@@ -84,8 +85,12 @@ pub mod cagra;
 pub use embedder::{Embedder, Embedding};
 pub use hnsw::HnswIndex;
 pub use index::{IndexResult, VectorIndex};
+pub use mcp::parse_duration;
 pub use mcp::{serve_http, serve_stdio};
-pub use note::parse_notes;
+pub use note::{
+    parse_notes, path_matches_mention, rewrite_notes_file, NoteEntry, NoteError, NoteFile,
+    NOTES_HEADER,
+};
 pub use parser::{Chunk, Parser};
 pub use store::{ModelInfo, SearchFilter, Store};
 

@@ -43,6 +43,8 @@ pub fn tool_audit_mode(server: &McpServer, arguments: Value) -> Result<Value> {
         unreachable!("enabled checked above");
     };
 
+    let cq_dir = server.project_root.join(".cq");
+
     if enabled {
         // Parse expires_in duration (default 30m)
         let expires_in = args.expires_in.as_deref().unwrap_or("30m");
@@ -51,6 +53,11 @@ pub fn tool_audit_mode(server: &McpServer, arguments: Value) -> Result<Value> {
 
         audit_mode.enabled = true;
         audit_mode.expires_at = Some(expires_at);
+
+        // Persist to disk so CLI can read the same state
+        if let Err(e) = crate::audit::save_audit_state(&cq_dir, &audit_mode) {
+            tracing::warn!("Failed to persist audit mode: {}", e);
+        }
 
         let result = serde_json::json!({
             "audit_mode": true,
@@ -68,6 +75,11 @@ pub fn tool_audit_mode(server: &McpServer, arguments: Value) -> Result<Value> {
     } else {
         audit_mode.enabled = false;
         audit_mode.expires_at = None;
+
+        // Persist to disk
+        if let Err(e) = crate::audit::save_audit_state(&cq_dir, &audit_mode) {
+            tracing::warn!("Failed to persist audit mode: {}", e);
+        }
 
         let result = serde_json::json!({
             "audit_mode": false,

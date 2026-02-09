@@ -40,7 +40,7 @@ pub enum NoteError {
 
 /// Raw note entry from TOML (round-trippable via serde)
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub(crate) struct NoteEntry {
+pub struct NoteEntry {
     /// Sentiment: -1.0 (negative/pain) to +1.0 (positive/gain)
     #[serde(default)]
     pub sentiment: f32,
@@ -53,7 +53,7 @@ pub(crate) struct NoteEntry {
 
 /// TOML file structure (round-trippable via serde)
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct NoteFile {
+pub struct NoteFile {
     #[serde(default)]
     pub note: Vec<NoteEntry>,
 }
@@ -106,7 +106,7 @@ impl Note {
 }
 
 /// File header preserved across rewrites
-const NOTES_HEADER: &str = "\
+pub const NOTES_HEADER: &str = "\
 # Notes - unified memory for AI collaborators
 # Surprises (prediction errors) worth remembering
 # sentiment: DISCRETE values only: -1, -0.5, 0, 0.5, 1
@@ -147,7 +147,7 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
 /// Reads the file, parses into `NoteEntry` structs, applies `mutate`,
 /// serializes back with the standard header, and writes atomically.
 /// Holds an exclusive file lock for the entire read-modify-write cycle.
-pub(crate) fn rewrite_notes_file(
+pub fn rewrite_notes_file(
     notes_path: &Path,
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
@@ -242,6 +242,22 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
         .collect();
 
     Ok(notes)
+}
+
+/// Check if a mention matches a path by component suffix matching.
+/// "gather.rs" matches "src/gather.rs" but not "src/gatherer.rs"
+/// "src/store" matches "src/store/chunks.rs" but not "my_src/store.rs"
+pub fn path_matches_mention(path: &str, mention: &str) -> bool {
+    // Check if mention matches as a path suffix (component-aligned)
+    if let Some(stripped) = path.strip_suffix(mention) {
+        // Must be at component boundary: empty prefix or ends with /
+        stripped.is_empty() || stripped.ends_with('/')
+    } else if let Some(stripped) = path.strip_prefix(mention) {
+        // Check prefix match at component boundary
+        stripped.is_empty() || stripped.starts_with('/')
+    } else {
+        false
+    }
 }
 
 #[cfg(test)]

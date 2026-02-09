@@ -27,7 +27,7 @@ Run: `cqs watch [--debounce <ms>] [--no-ignore]`
 ## When to use
 
 - During active development to keep search results current
-- Before relying on `cqs_search` results if you've made recent changes
+- Before relying on `cqs search` results if you've made recent changes
 - Not needed if you manually run `cqs index` when needed
 
 ## Alternative

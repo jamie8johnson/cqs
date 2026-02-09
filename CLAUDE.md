@@ -40,32 +40,48 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 
 ## Code Search
 
-**Use `cqs_search` instead of grep/glob.** It finds code by what it does, not text matching.
+**Use `cqs search` instead of grep/glob.** It finds code by what it does, not text matching. All commands invoked via Bash.
+
+```bash
+cqs "search query" --json              # semantic search (default: hybrid RRF)
+cqs "function_name" --name-only --json # definition lookup (fast, no embedding)
+cqs "query" --semantic-only --json     # pure vector similarity, no keyword RRF
+cqs "query" --lang rust --path "src/cli/**" --json  # scoped search
+```
 
 Use it for:
 - Exploring unfamiliar code
 - Finding implementations by behavior
 - When you don't know exact names
 
-**Definition search:** Use `name_only=true` for "where is X defined?" queries. Skips embedding, searches function/struct names directly. Faster than glob.
-
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-Tools: `cqs_search`, `cqs_stats`, `cqs_callers`, `cqs_callees`, `cqs_read`, `cqs_similar`, `cqs_explain`, `cqs_diff`, `cqs_trace`, `cqs_impact`, `cqs_test_map`, `cqs_batch`, `cqs_context`, `cqs_gather`, `cqs_dead`, `cqs_gc`, `cqs_add_note`, `cqs_update_note`, `cqs_remove_note`, `cqs_audit_mode` (20 tools — run `cqs watch` to keep index fresh)
+**Key commands** (all support `--json`):
+- `cqs read <path>` — file contents with notes injected as comments. Use instead of raw `Read` for indexed source files.
+- `cqs read --focus <function>` — focused read: function + type dependencies only. Saves tokens.
+- `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
+- `cqs explain <function>` — function card: signature, callers, callees, similar. Collapses 4+ lookups into 1.
+- `cqs diff --source <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
+- `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion.
+- `cqs dead` — find dead code: functions/methods with no callers in the index.
+- `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
+- `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
+- `cqs test-map <function>` — map function to tests that exercise it.
+- `cqs trace <source> <target>` — shortest call path between two functions.
+- `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
+- `cqs stats` — index statistics.
+- `cqs gc` — report/clean stale index entries.
+- `cqs notes add/update/remove` — manage project notes.
+- `cqs audit-mode on/off` — toggle audit mode.
 
-**`cqs_read`** — **use instead of raw `Read` for indexed source files.** Returns file contents with relevant notes injected as comments. Same content, richer context. Use raw `Read` for non-indexed files (config, markdown, lock files).
-**`cqs_similar`** — find code similar to a given function. Use for refactoring discovery, finding duplicates.
-**`cqs_explain`** — function card: signature, callers, callees, similar. Collapses 4+ tool calls into 1.
-**`cqs_diff`** — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
-**`cqs_gather`** — smart context assembly: seed search + BFS call graph expansion. One call for "show me everything related to X".
-**`cqs_dead`** — find dead code: functions/methods with no callers in the index.
+Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 
 ## Audit Mode
 
 Before audits, fresh-eyes reviews, clear-eyes reviews, or unbiased code assessment:
-`cqs_audit_mode(true)` to exclude notes and force direct code examination.
+`cqs audit-mode on` to exclude notes and force direct code examination.
 
-After: `cqs_audit_mode(false)` or let it auto-expire (30 min default).
+After: `cqs audit-mode off` or let it auto-expire (30 min default).
 
 **Triggers:** audit, fresh eyes, clear eyes, unbiased review, independent review, security audit
 
@@ -113,7 +129,7 @@ Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
 3. Infrastructure: Security, Data Safety, Performance, Resource Management
 
 **Execution:**
-1. Enable audit mode before each batch (`cqs_audit_mode(true, expires_in="2h")`)
+1. Enable audit mode before each batch (`cqs audit-mode on --expires 2h`)
 2. `TeamCreate` per batch, agents per category (sonnet for judgment, haiku for mechanical)
 3. Each agent writes findings to `docs/audit-findings.md` (append, don't overwrite)
 4. Shutdown team, cleanup before next batch
@@ -182,7 +198,14 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
 * `docs/notes.toml` -- observations with sentiment (indexed by cqs)
 
-**Use `cqs_add_note` to add notes** - it indexes immediately. Direct file edits require `cqs watch` or `cqs index` to become searchable.
+**Use `cqs notes add` to add notes** — it indexes immediately. Direct file edits require `cqs watch` or `cqs index` to become searchable.
+
+```bash
+cqs notes add "note text" --sentiment -0.5 --mentions file.rs,concept
+cqs notes update "exact text" --new-text "updated" --new-sentiment 0.5
+cqs notes remove "exact text"
+cqs notes list --json
+```
 
 **Sentiment is DISCRETE** - only 5 valid values:
 | Value | Meaning |
