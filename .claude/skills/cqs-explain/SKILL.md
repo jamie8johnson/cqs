@@ -7,8 +7,9 @@ argument-hint: "<function_name>"
 
 # Explain
 
-Call `cqs_explain` MCP tool with `name` set to the user's argument.
+Parse arguments:
+- First positional arg = function name or `file:function` (required)
 
-Accepts function name or `file:function` format (e.g., `search_filtered` or `src/search.rs:search_filtered`).
+Run via Bash: `cqs explain "<name>" --json -q`
 
-Returns a comprehensive function card: signature, docstring, callers, callees, and similar functions. Collapses what would be 4+ separate tool calls into 1.
+Present the results to the user. Returns a comprehensive function card: signature, docstring, callers, callees, and similar functions. Collapses 4+ separate lookups into 1.

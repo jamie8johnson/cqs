@@ -28,7 +28,7 @@ Review all notes in `docs/notes.toml` — clean up stale ones and suggest new on
 
 4. **Get approval**: Present the list of proposed changes. Ask the user to confirm before making changes.
 
-5. **Execute**: Use `cqs_remove_note` / `cqs_update_note` MCP tools. If the MCP server isn't running, edit `docs/notes.toml` directly.
+5. **Execute**: Use `cqs notes remove` / `cqs notes update` CLI commands. If the CLI isn't available, edit `docs/notes.toml` directly.
 
 6. **Report**: Show before/after count and what was changed.
 
@@ -46,7 +46,7 @@ After pruning, scan for note-worthy events that aren't already captured:
 3. **Cross-check existing notes**: Don't suggest notes that duplicate existing ones
 4. **Present suggestions**: Show proposed notes with text, sentiment, and mentions
 5. **Get approval**: User confirms which to add
-6. **Execute**: Use `cqs_add_note` for each approved suggestion
+6. **Execute**: Use `cqs notes add` for each approved suggestion
 
 ### What makes a good note
 

@@ -2,6 +2,7 @@
 //!
 //! Each submodule handles one CLI subcommand.
 
+mod audit_mode;
 mod context;
 mod dead;
 mod diff;
@@ -16,6 +17,7 @@ mod init;
 mod notes;
 mod project;
 mod query;
+mod read;
 mod reference;
 pub(crate) mod resolve;
 mod serve;
@@ -24,6 +26,7 @@ mod stats;
 mod test_map;
 mod trace;
 
+pub(crate) use audit_mode::cmd_audit_mode;
 pub(crate) use context::cmd_context;
 pub(crate) use dead::cmd_dead;
 pub(crate) use diff::cmd_diff;
@@ -38,6 +41,7 @@ pub(crate) use init::cmd_init;
 pub(crate) use notes::{cmd_notes, NotesCommand};
 pub(crate) use project::{cmd_project, ProjectCommand};
 pub(crate) use query::cmd_query;
+pub(crate) use read::cmd_read;
 pub(crate) use reference::{cmd_ref, RefCommand};
 pub(crate) use serve::{cmd_serve, ServeConfig};
 pub(crate) use similar::cmd_similar;

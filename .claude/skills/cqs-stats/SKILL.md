@@ -7,4 +7,6 @@ argument-hint: ""
 
 # Stats
 
-Call `cqs_stats` MCP tool (no arguments). Display the results clearly — chunk counts by language, total indexed, last update time.
+Run via Bash: `cqs stats -q`
+
+Present the results clearly — chunk counts by language, total indexed, last update time.

@@ -7,11 +7,13 @@ argument-hint: "<text> [--sentiment -1|-0.5|0|0.5|1] [--mentions file1,file2]"
 
 # Add Note
 
-Call `cqs_add_note` MCP tool. Parse arguments:
+Parse arguments:
 
-- First positional arg (or quoted string) = `text` (required)
+- First positional arg (or quoted string) = text (required)
 - `--sentiment <value>` → only discrete values: -1, -0.5, 0, 0.5, 1
-- `--mentions <file1,file2,...>` → array of file paths or concepts
+- `--mentions <file1,file2,...>` → comma-separated file paths or concepts
+
+Run via Bash: `cqs notes add "<text>" [--sentiment N] [--mentions a,b,c] -q`
 
 ## Sentiment guide
 
@@ -23,4 +25,4 @@ Call `cqs_add_note` MCP tool. Parse arguments:
 | `0.5` | Notable gain (useful pattern) |
 | `1` | Major win (saved significant time/effort) |
 
-Notes are indexed immediately and surface in future `cqs_search` results.
+Notes are indexed immediately and surface in future `cqs` search results.

@@ -7,24 +7,26 @@ argument-hint: "<query> [--lang rust] [--limit 10] [--name-only] [--semantic-onl
 
 # Search
 
-Semantic code search using `cqs_search` MCP tool.
+Parse arguments from the invocation:
 
-## Usage
+- First positional arg = query (required)
+- `--lang <language>` → `--lang` filter (rust, python, typescript, javascript, go, c, java, sql, markdown)
+- `--limit <n>` → `-n` (default 5, max 20)
+- `--threshold <n>` → `-t` (default 0.3)
+- `--name-only` → definition search, skips embedding. Use for "where is X defined?"
+- `--semantic-only` → pure vector similarity, no hybrid RRF
+- `--path <glob>` → `-p` path pattern filter (e.g., `src/mcp/**`)
+- `--chunk-type <T>` → `--chunk-type` (function, method, class, struct, enum, trait, interface, constant, section)
+- `--pattern <P>` → `--pattern` (builder, error_swallow, async, mutex, unsafe, recursion)
+- `--note-only` → return only notes, skip code search
+- `--note-weight <F>` → weight for note scores 0.0-1.0 (default 1.0)
 
-Call `cqs_search` with the user's query. Parse arguments from the invocation:
+Run via Bash: `cqs "<query>" [flags] --json -q`
 
-- First positional arg = `query` (required)
-- `--lang <language>` → `language` filter (rust, python, typescript, javascript, go, c, java)
-- `--limit <n>` → `limit` (default 5, max 20)
-- `--threshold <n>` → `threshold` (default 0.3)
-- `--name-only` → `name_only: true` — definition search, skips embedding. Use for "where is X defined?"
-- `--semantic-only` → `semantic_only: true` — pure vector similarity, no hybrid RRF
-- `--path <glob>` → `path_pattern` filter (e.g., `src/mcp/**`)
-- `--sources <name,...>` → `sources` array — filter which indexes (e.g., `project`, reference names)
+Present the results to the user.
 
 ## Examples
 
 - `/cqs-search retry with exponential backoff` — find retry logic by concept
 - `/cqs-search Store::open --name-only` — find where Store::open is defined
 - `/cqs-search error handling --lang rust --path src/mcp/**` — scoped search
-- `/cqs-search authentication --sources project,stdlib` — multi-index search

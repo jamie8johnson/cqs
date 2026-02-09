@@ -27,7 +27,7 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
 
 1. **Archive previous findings**: Rename `docs/audit-findings.md` to `docs/audit-findings-vPREVIOUS.md` (e.g., `audit-findings-v0.5.3.md`). Start fresh — old findings live in the triage file.
 
-2. **Enable audit mode**: `cqs_audit_mode(true, expires_in="2h")` — prevents stale notes from biasing review
+2. **Enable audit mode**: `cqs audit-mode on --expires 2h -q` — prevents stale notes from biasing review
 
 ### Per-Batch
 
@@ -53,7 +53,7 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
    - P4: Hard or low impact → create issues
    - **Write triage to `docs/audit-triage.md`** — append a new version section with P1-P4 tables (include Status column). This survives context compaction.
 
-8. **Disable audit mode**: `cqs_audit_mode(false)`
+8. **Disable audit mode**: `cqs audit-mode off -q`
 
 ## Category Scopes
 

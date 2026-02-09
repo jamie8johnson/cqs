@@ -7,6 +7,10 @@ argument-hint: "<exact_text>"
 
 # Remove Note
 
-Call `cqs_remove_note` MCP tool with `text` set to exact text of the note to delete.
+Parse arguments:
+
+- First positional arg = exact text of the note to delete
+
+Run via Bash: `cqs notes remove "<text>" -q`
 
 Tip: Use `/cqs-search` or `/groom-notes` first to find the exact text of notes to remove.

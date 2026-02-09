@@ -7,9 +7,10 @@ argument-hint: "<function_name> [--depth 1]"
 
 # Impact
 
-Call `cqs_impact` MCP tool. Parse arguments:
+Parse arguments:
+- First positional arg = function name to analyze (required)
+- `--depth <n>` — caller depth, 1 = direct only (default 1)
 
-- First positional arg = `name` — function to analyze (required)
-- `--depth <n>` → caller depth (default 1 = direct callers only)
+Run via Bash: `cqs impact "<name>" [--depth N] --json -q`
 
-Returns callers with call-site snippets and affected tests via reverse BFS. Collapses ~5 tool calls (callers + reading each caller file + grepping tests) into 1.
+Present the results to the user. Returns callers with call-site snippets and affected tests via reverse BFS.

@@ -29,7 +29,12 @@ Update these sections:
 
 ### docs/notes.toml
 
-Add notes for any surprises from this session using `cqs_add_note`:
+Add notes for any surprises from this session via CLI:
+
+```bash
+cqs notes add "note text" --sentiment 0.5 --mentions file.rs,concept
+```
+
 - Bugs that were non-obvious (sentiment: -1 or -0.5)
 - Patterns that worked well (sentiment: 0.5 or 1)
 - Observations worth remembering (sentiment: 0)
@@ -41,5 +46,4 @@ Add notes for any surprises from this session using `cqs_add_note`:
 - Don't log activity — git history has that
 - Focus on state that would be lost: what's in progress, what decisions were made, what's blocked
 - Keep PROJECT_CONTINUITY.md concise — it's read on every resume
-- If `cqs_add_note` is available (MCP server running), use it. Otherwise edit notes.toml directly.
 - Check for dirty files with `git status` and note uncommitted work in Pending Changes

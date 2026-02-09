@@ -7,10 +7,11 @@ argument-hint: "<source> <target> [--max-depth 10]"
 
 # Trace
 
-Call `cqs_trace` MCP tool. Parse arguments:
-
+Parse arguments:
 - First positional arg = `source` — starting function name (required)
 - Second positional arg = `target` — destination function name (required)
-- `--max-depth <n>` → maximum BFS depth (default 10)
+- `--max-depth <n>` — maximum BFS depth (default 10)
 
-Returns the shortest call path from source to target with file/line/signature for each step. Saves 5-10 sequential file reads per code-flow question.
+Run via Bash: `cqs trace "<source>" "<target>" [--max-depth N] --json -q`
+
+Present the results to the user. Returns the shortest call path from source to target with file/line/signature for each step.

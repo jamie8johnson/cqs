@@ -1,22 +1,25 @@
 ---
 name: cqs-batch
-description: Execute multiple cqs queries in a single tool call. MCP-only, max 10.
+description: Execute multiple cqs queries in parallel via Bash.
 disable-model-invocation: false
 argument-hint: "<query1> <query2> ..."
 ---
 
 # Batch
 
-Call `cqs_batch` MCP tool. Build a `queries` array from the user's arguments.
+No single CLI command for batch queries. Instead, run multiple `cqs` commands in parallel via Bash tool calls.
 
-Each query is `{"tool": "<tool_name>", "arguments": {...}}`. Supported tools: search, callers, callees, explain, similar, stats.
+Parse the user's arguments into individual commands. Supported operations:
 
-Example: if user says `/cqs-batch search "retry logic" callers search_filtered`, build:
-```json
-{"queries": [
-  {"tool": "search", "arguments": {"query": "retry logic"}},
-  {"tool": "callers", "arguments": {"name": "search_filtered"}}
-]}
-```
+- `search "<query>"` → `cqs "<query>" --json -q`
+- `callers <name>` → `cqs callers <name> --json -q`
+- `callees <name>` → `cqs callees <name> --json -q`
+- `explain <name>` → `cqs explain <name> --json -q`
+- `similar <name>` → `cqs similar <name> --json -q`
+- `stats` → `cqs stats --json -q`
 
-Max 10 queries per batch. Returns per-query results or errors.
+Example: if user says `/cqs-batch search "retry logic" callers search_filtered`, run two parallel Bash calls:
+1. `cqs "retry logic" --json -q`
+2. `cqs callers search_filtered --json -q`
+
+Present all results together.

@@ -7,9 +7,10 @@ argument-hint: "<function_name> [--depth 5]"
 
 # Test Map
 
-Call `cqs_test_map` MCP tool. Parse arguments:
+Parse arguments:
+- First positional arg = function name to find tests for (required)
+- `--depth <n>` — max reverse BFS depth (default 5)
 
-- First positional arg = `name` — function to find tests for (required)
-- `--depth <n>` → max reverse BFS depth (default 5)
+Run via Bash: `cqs test-map "<name>" [--depth N] --json -q`
 
-Returns tests reachable via reverse call graph with full call chains. Useful before refactoring to know which tests to run.
+Present the results to the user. Returns tests reachable via reverse call graph with full call chains. Useful before refactoring to know which tests to run.

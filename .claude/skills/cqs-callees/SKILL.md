@@ -7,6 +7,9 @@ argument-hint: "<function_name>"
 
 # Callees
 
-Call `cqs_callees` MCP tool with `name` set to the user's argument.
+Parse arguments:
+- First positional arg = function name (required)
 
-Shows all functions called by the named function. Useful for understanding what a function depends on.
+Run via Bash: `cqs callees "<name>" --json -q`
+
+Present the results to the user. Shows all functions called by the named function. Useful for understanding dependencies.

@@ -7,9 +7,9 @@ argument-hint: "<function_name>"
 
 # Callers
 
-Call `cqs_callers` MCP tool with `name` set to the user's argument.
+Parse arguments:
+- First positional arg = function name (required)
 
-Shows all call sites for the named function. Useful for:
-- Impact analysis before refactoring
-- Verifying a function is actually called (dead code check)
-- Understanding how a function is used
+Run via Bash: `cqs callers "<name>" --json -q`
+
+Present the results to the user. Shows all call sites for the named function. Useful for impact analysis, dead code checks, and understanding usage patterns.
