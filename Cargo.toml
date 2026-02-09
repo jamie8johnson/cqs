@@ -63,7 +63,7 @@ keyring = { version = "3", optional = true }
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
 simsimd = "6"
-cuvs = { version = "25.12", optional = true }
+cuvs = { version = "26.2", optional = true }
 
 # Text processing
 regex = "1"

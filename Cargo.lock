@@ -772,9 +772,9 @@ dependencies = [
 
 [[package]]
 name = "cuvs"
-version = "25.12.0"
+version = "26.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f998005c7c124b6602801f479f428f3f94ee013d9233244bd39006b57fa8264"
+checksum = "9778fa1e16f42539772496e9adba2a29c67dca84bcb0d247795f9cb3135ba87d"
 dependencies = [
  "cuvs-sys",
  "ndarray 0.15.6",
@@ -782,9 +782,9 @@ dependencies = [
 
 [[package]]
 name = "cuvs-sys"
-version = "25.12.0"
+version = "26.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e59f4bacc9ec0d873a1f18f9d93e673ad7b2a3bffe99a43ddb6349a051aefb5a"
+checksum = "d4cad121da7a7ac908965352ffeac029a93fb0e3a1278a271f7204098b8724e9"
 dependencies = [
  "bindgen",
  "cmake",
