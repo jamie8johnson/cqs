@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.7] - 2026-02-08
+
+### Added
+- **CLI-first migration**: All cqs features now available via CLI without MCP server. New commands: `cqs notes add/update/remove`, `cqs audit-mode on/off`, `cqs read <path> [--focus fn]`. New search flags: `--name-only`, `--semantic-only`. File-based audit mode persistence (`.cqs/audit-mode.json`) shared between CLI and MCP.
+- **Hot-reload reference indexes**: MCP server detects config file changes and reloads reference indexes automatically. No restart needed after `cqs ref add/remove`.
+
+### Fixed
+- **Renamed `.cq/` index directory to `.cqs/`** for consistency with binary name, config directory, and config file. Auto-migration renames existing `.cq/` directories on first access. Cross-project search falls back to `.cq/` for unmigrated projects.
+
 ## [0.9.6] - 2026-02-08
 
 ### Added
