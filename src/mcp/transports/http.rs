@@ -375,7 +375,7 @@ async fn handle_mcp_sse(
 
 /// Generate a simple unique ID for SSE events
 fn uuid_simple() -> String {
-    use rand::Rng;
+    use rand::RngExt;
     use std::time::{SystemTime, UNIX_EPOCH};
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
