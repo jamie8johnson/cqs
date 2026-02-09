@@ -43,7 +43,7 @@ pub fn tool_audit_mode(server: &McpServer, arguments: Value) -> Result<Value> {
         unreachable!("enabled checked above");
     };
 
-    let cq_dir = server.project_root.join(".cq");
+    let cqs_dir = crate::resolve_index_dir(&server.project_root);
 
     if enabled {
         // Parse expires_in duration (default 30m)
@@ -55,7 +55,7 @@ pub fn tool_audit_mode(server: &McpServer, arguments: Value) -> Result<Value> {
         audit_mode.expires_at = Some(expires_at);
 
         // Persist to disk so CLI can read the same state
-        if let Err(e) = crate::audit::save_audit_state(&cq_dir, &audit_mode) {
+        if let Err(e) = crate::audit::save_audit_state(&cqs_dir, &audit_mode) {
             tracing::warn!("Failed to persist audit mode: {}", e);
         }
 
@@ -77,7 +77,7 @@ pub fn tool_audit_mode(server: &McpServer, arguments: Value) -> Result<Value> {
         audit_mode.expires_at = None;
 
         // Persist to disk
-        if let Err(e) = crate::audit::save_audit_state(&cq_dir, &audit_mode) {
+        if let Err(e) = crate::audit::save_audit_state(&cqs_dir, &audit_mode) {
             tracing::warn!("Failed to persist audit mode: {}", e);
         }
 

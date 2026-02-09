@@ -17,7 +17,7 @@ pub(crate) enum ProjectCommand {
     Register {
         /// Project name (used for identification)
         name: String,
-        /// Path to project root (must have .cq/index.db)
+        /// Path to project root (must have .cqs/index.db)
         path: PathBuf,
     },
     /// List registered projects
@@ -66,7 +66,9 @@ pub(crate) fn cmd_project(_cli: &Cli, subcmd: &ProjectCommand) -> Result<()> {
             } else {
                 println!("Registered projects:");
                 for entry in &registry.project {
-                    let status = if entry.path.join(".cq/index.db").exists() {
+                    let status = if entry.path.join(".cqs/index.db").exists()
+                        || entry.path.join(".cq/index.db").exists()
+                    {
                         "ok".green().to_string()
                     } else {
                         "missing index".red().to_string()

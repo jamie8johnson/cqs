@@ -42,8 +42,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     }
 
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("No index found. Run 'cqs index' first.");
@@ -75,7 +75,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let mut last_event = std::time::Instant::now();
     let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
-    let cq_dir = dunce::canonicalize(&cq_dir).unwrap_or(cq_dir);
+    let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or(cqs_dir);
     let notes_path = dunce::canonicalize(&notes_path).unwrap_or(notes_path);
 
     // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
@@ -91,8 +91,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
             Ok(Ok(event)) => {
                 for path in event.paths {
                     let path = dunce::canonicalize(&path).unwrap_or(path);
-                    // Skip .cq directory
-                    if path.starts_with(&cq_dir) {
+                    // Skip .cqs directory
+                    if path.starts_with(&cqs_dir) {
                         continue;
                     }
 

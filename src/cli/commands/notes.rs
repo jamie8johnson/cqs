@@ -99,7 +99,7 @@ fn reindex_notes_cli(root: &std::path::Path) -> (usize, Option<String>) {
                 Ok(e) => e,
                 Err(e) => return (0, Some(format!("Failed to create embedder: {}", e))),
             };
-            let index_path = root.join(".cq/index.db");
+            let index_path = cqs::resolve_index_dir(root).join("index.db");
             let store = match cqs::Store::open(&index_path) {
                 Ok(s) => s,
                 Err(e) => return (0, Some(format!("Failed to open index: {}", e))),

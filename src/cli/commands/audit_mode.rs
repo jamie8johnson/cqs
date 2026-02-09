@@ -14,15 +14,15 @@ use crate::cli::find_project_root;
 /// Handle audit-mode command
 pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
+    let cqs_dir = cqs::resolve_index_dir(&root);
 
-    if !cq_dir.exists() {
-        bail!("No .cq directory found. Run 'cqs init' first.");
+    if !cqs_dir.exists() {
+        bail!("No .cqs directory found. Run 'cqs init' first.");
     }
 
     // Query current state if no argument
     let Some(state) = state else {
-        let mode = load_audit_state(&cq_dir);
+        let mode = load_audit_state(&cqs_dir);
         if json {
             let result = if mode.is_active() {
                 serde_json::json!({
@@ -56,7 +56,7 @@ pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> 
                 enabled: true,
                 expires_at: Some(expires_at),
             };
-            save_audit_state(&cq_dir, &mode)?;
+            save_audit_state(&cqs_dir, &mode)?;
 
             if json {
                 let result = serde_json::json!({
@@ -78,7 +78,7 @@ pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> 
                 enabled: false,
                 expires_at: None,
             };
-            save_audit_state(&cq_dir, &mode)?;
+            save_audit_state(&cqs_dir, &mode)?;
 
             if json {
                 let result = serde_json::json!({

@@ -16,15 +16,15 @@ use super::build_hnsw_index;
 /// Run garbage collection on the index
 pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
     }
 
     // Acquire lock to prevent race with watch/index
-    let _lock = acquire_index_lock(&cq_dir)?;
+    let _lock = acquire_index_lock(&cqs_dir)?;
 
     let store = Store::open(&index_path)?;
 
@@ -44,7 +44,7 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
 
     // Rebuild HNSW if we pruned anything
     let hnsw_vectors = if pruned_chunks > 0 {
-        build_hnsw_index(&store, &cq_dir)?
+        build_hnsw_index(&store, &cqs_dir)?
     } else {
         None
     };

@@ -60,7 +60,7 @@ fn test_version_output() {
 
 #[test]
 #[serial]
-fn test_init_creates_cq_directory() {
+fn test_init_creates_cqs_directory() {
     let dir = TempDir::new().expect("Failed to create temp dir");
 
     cqs()
@@ -68,11 +68,11 @@ fn test_init_creates_cq_directory() {
         .current_dir(dir.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("Created .cq/"));
+        .stdout(predicate::str::contains("Created .cqs/"));
 
     assert!(
-        dir.path().join(".cq").exists(),
-        ".cq directory should exist"
+        dir.path().join(".cqs").exists(),
+        ".cqs directory should exist"
     );
 }
 
@@ -139,12 +139,12 @@ fn test_stats_shows_counts() {
 #[test]
 #[serial]
 fn test_index_auto_initializes() {
-    // Index command auto-creates .cq if it doesn't exist
+    // Index command auto-creates .cqs if it doesn't exist
     let dir = setup_project();
 
     assert!(
-        !dir.path().join(".cq").exists(),
-        ".cq should not exist before index"
+        !dir.path().join(".cqs").exists(),
+        ".cqs should not exist before index"
     );
 
     cqs()
@@ -155,8 +155,8 @@ fn test_index_auto_initializes() {
         .stdout(predicate::str::contains("Index complete"));
 
     assert!(
-        dir.path().join(".cq").exists(),
-        ".cq should exist after index"
+        dir.path().join(".cqs").exists(),
+        ".cqs should exist after index"
     );
 }
 

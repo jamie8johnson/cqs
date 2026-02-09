@@ -112,13 +112,13 @@ None.
 
 ### Phase 3: cqs Init & Index
 
-6. Run `cqs init` (creates `.cq/` directory with database)
+6. Run `cqs init` (creates `.cqs/` directory with database)
 7. Run `cqs index` (indexes all source files + notes)
 8. Verify with `cqs stats` — should show chunk count > 0
 
 ### Phase 4: .gitignore
 
-9. Add `.cq/` to `.gitignore` if not already present (the index database is local, not shared)
+9. Add `.cqs/` to `.gitignore` if not already present (the index database is local, not shared)
 
 ### Phase 5: CLAUDE.md Integration
 

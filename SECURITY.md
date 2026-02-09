@@ -80,8 +80,8 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 | Path | Purpose | When |
 |------|---------|------|
 | Project source files | Parsing and embedding | `cqs index`, `cqs watch` |
-| `.cq/index.db` | SQLite database | All operations |
-| `.cq/hnsw.*` | Vector index files | Search operations |
+| `.cqs/index.db` | SQLite database | All operations |
+| `.cqs/hnsw.*` | Vector index files | Search operations |
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
@@ -91,11 +91,11 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 
 | Path | Purpose | When |
 |------|---------|------|
-| `.cq/` directory | Index storage | `cqs init` |
-| `.cq/index.db` | SQLite database | `cqs index`, note operations |
-| `.cq/hnsw.*` | Vector index | `cqs index` |
-| `.cq/checksums.bin` | File change detection | `cqs index` |
-| `.cq/cqs.pid` | Process lock file | `cqs watch` |
+| `.cqs/` directory | Index storage | `cqs init` |
+| `.cqs/index.db` | SQLite database | `cqs index`, note operations |
+| `.cqs/hnsw.*` | Vector index | `cqs index` |
+| `.cqs/checksums.bin` | File change detection | `cqs index` |
+| `.cqs/cqs.pid` | Process lock file | `cqs watch` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index storage | `cqs ref add`, `cqs ref update` |
 
@@ -139,9 +139,9 @@ Reference names are validated to prevent path traversal: no `/`, `\`, or `..` al
 
 ## Index Storage
 
-- Stored in `.cq/index.db` (SQLite with WAL mode)
+- Stored in `.cqs/index.db` (SQLite with WAL mode)
 - Contains: code chunks, embeddings (769-dim vectors), file metadata
-- Add `.cq/` to `.gitignore` to avoid committing
+- Add `.cqs/` to `.gitignore` to avoid committing
 - Database is **not encrypted** - it contains your code
 
 ## CI/CD Security

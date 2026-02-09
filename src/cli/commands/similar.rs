@@ -42,8 +42,8 @@ pub(crate) fn cmd_similar(
     json: bool,
 ) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -86,7 +86,7 @@ pub(crate) fn cmd_similar(
     };
 
     // Load vector index
-    let index = HnswIndex::try_load(&cq_dir);
+    let index = HnswIndex::try_load(&cqs_dir);
 
     // Search with the chunk's embedding as query (request one extra to exclude self)
     let results = store.search_filtered_with_index(

@@ -16,7 +16,7 @@ pub(crate) fn cmd_diff(
     json: bool,
 ) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
+    let cqs_dir = cqs::resolve_index_dir(&root);
 
     // Load config to find reference paths
     let config = cqs::config::Config::load(&root);
@@ -47,7 +47,7 @@ pub(crate) fn cmd_diff(
     // Resolve target store
     let target_label = target.unwrap_or("project");
     let target_store = if target_label == "project" {
-        let index_path = cq_dir.join("index.db");
+        let index_path = cqs_dir.join("index.db");
         if !index_path.exists() {
             bail!("Project index not found. Run 'cqs init && cqs index' first.");
         }

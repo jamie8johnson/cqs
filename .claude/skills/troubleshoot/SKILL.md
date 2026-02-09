@@ -22,7 +22,7 @@ If not found: `cargo install --path .` (from source) or check `~/.cargo/bin/` is
 ### 2. Is the project initialized?
 
 ```bash
-ls -la .cq/
+ls -la .cqs/
 ```
 
 Should contain `index.db` and `hnsw.bin`. If missing: `cqs init && cqs index`.

@@ -617,3 +617,19 @@ mentions = [
     "release binary",
     "cargo build --release",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "CLI-first migration: clap allow_negative_numbers=true is required for args that accept negative floats like --sentiment -0.5, otherwise clap parses -0 as an unknown flag"
+mentions = [
+    "src/cli/commands/notes.rs",
+    "clap",
+]
+
+[[note]]
+sentiment = 0.5
+text = "File-based audit mode (.cqs/audit-mode.json with RFC 3339 expiry) solves the stateless CLI problem — MCP held state in-memory Mutex, but CLI needs persistence. Both now read/write the same file."
+mentions = [
+    "src/audit.rs",
+    ".cqs/audit-mode.json",
+]

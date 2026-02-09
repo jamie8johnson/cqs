@@ -40,15 +40,15 @@ When auto-migration isn't available, the only option is a full rebuild:
 
 ```bash
 # Back up the old index (just in case)
-cp -r .cq/ .cq.backup/
+cp -r .cqs/ .cq.backup/
 
 # Delete and rebuild
-rm -rf .cq/
+rm -rf .cqs/
 cqs init
 cqs index
 ```
 
-This re-parses all source files and re-embeds them. Notes in `docs/notes.toml` are preserved (they live outside `.cq/`).
+This re-parses all source files and re-embeds them. Notes in `docs/notes.toml` are preserved (they live outside `.cqs/`).
 
 ### 5. Rebuild references too
 
@@ -85,7 +85,7 @@ rm -rf .cq.backup/
 
 ## Notes
 
-- `.cq/` is gitignored — rebuilding only costs time, not data
+- `.cqs/` is gitignored — rebuilding only costs time, not data
 - Notes (`docs/notes.toml`) are never lost — they're separate from the index
 - Schema version is stored in `metadata` table: `SELECT value FROM metadata WHERE key = 'schema_version'`
 - Current version: v10 (check `src/store/helpers.rs:CURRENT_SCHEMA_VERSION`)

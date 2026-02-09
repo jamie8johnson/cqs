@@ -11,7 +11,7 @@ use crate::cli::{find_project_root, Cli};
 /// Find functions/methods with no callers in the indexed codebase
 pub(crate) fn cmd_dead(cli: &Cli, json: bool, include_pub: bool) -> Result<()> {
     let root = find_project_root();
-    let index_path = root.join(".cq/index.db");
+    let index_path = cqs::resolve_index_dir(&root).join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");

@@ -61,8 +61,8 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     let content = std::fs::read_to_string(&file_path).context("Failed to read file")?;
 
     // Check audit mode
-    let cq_dir = root.join(".cq");
-    let audit_mode = load_audit_state(&cq_dir);
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let audit_mode = load_audit_state(&cqs_dir);
     let mut context_header = String::new();
 
     if let Some(status) = audit_mode.status_line() {
@@ -208,8 +208,8 @@ fn extract_type_names(signature: &str) -> Vec<String> {
 
 fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -234,7 +234,7 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     ));
 
     // Note injection
-    let audit_mode = load_audit_state(&cq_dir);
+    let audit_mode = load_audit_state(&cqs_dir);
     if let Some(status) = audit_mode.status_line() {
         output.push_str(&format!("// {}\n", status));
     }

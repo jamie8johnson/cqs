@@ -1,6 +1,6 @@
 //! Init command for cqs
 //!
-//! Creates .cq/ directory and downloads the embedding model.
+//! Creates .cqs/ directory and downloads the embedding model.
 
 use anyhow::{Context, Result};
 
@@ -8,29 +8,29 @@ use cqs::Embedder;
 
 use crate::cli::{find_project_root, Cli};
 
-/// Initialize cq in a project directory
+/// Initialize cqs in a project directory
 ///
-/// Creates `.cq/` directory, downloads the embedding model, and warms up the embedder.
+/// Creates `.cqs/` directory, downloads the embedding model, and warms up the embedder.
 pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
+    let cqs_dir = root.join(cqs::INDEX_DIR);
 
     if !cli.quiet {
-        println!("Initializing cq...");
+        println!("Initializing cqs...");
     }
 
-    // Create .cq directory
-    std::fs::create_dir_all(&cq_dir).context("Failed to create .cq directory")?;
+    // Create .cqs directory
+    std::fs::create_dir_all(&cqs_dir).context("Failed to create .cqs directory")?;
 
-    // Set restrictive permissions on .cq directory (Unix only)
+    // Set restrictive permissions on .cqs directory (Unix only)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&cq_dir, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700));
     }
 
     // Create .gitignore
-    let gitignore = cq_dir.join(".gitignore");
+    let gitignore = cqs_dir.join(".gitignore");
     std::fs::write(
         &gitignore,
         "index.db\nindex.db-wal\nindex.db-shm\nindex.lock\n",
@@ -52,7 +52,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     embedder.warm()?;
 
     if !cli.quiet {
-        println!("Created .cq/");
+        println!("Created .cqs/");
         println!();
         println!("Run 'cqs index' to index your codebase.");
     }

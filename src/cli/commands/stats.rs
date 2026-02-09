@@ -13,7 +13,8 @@ use crate::cli::{find_project_root, Cli};
 /// Display index statistics (chunk counts, languages, types)
 pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     let root = find_project_root();
-    let index_path = root.join(".cq/index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -28,9 +29,8 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     let file_set: HashSet<_> = files.into_iter().collect();
     let (stale_count, missing_count) = store.count_stale_files(&file_set).unwrap_or((0, 0));
 
-    let cq_dir = root.join(".cq");
     // Use count_vectors to avoid loading full HNSW index just for stats
-    let hnsw_vectors = HnswIndex::count_vectors(&cq_dir, "index");
+    let hnsw_vectors = HnswIndex::count_vectors(&cqs_dir, "index");
     let note_count = store.note_count().unwrap_or(0);
     let (call_count, caller_count, callee_count) = store.function_call_stats().unwrap_or((0, 0, 0));
 

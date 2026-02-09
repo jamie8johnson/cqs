@@ -61,8 +61,8 @@ impl McpServer {
     /// thread to build CAGRA GPU index. Queries use HNSW until CAGRA is ready.
     pub fn new(project_root: impl AsRef<Path>, use_gpu: bool) -> Result<Self> {
         let project_root = project_root.as_ref();
-        let index_path = project_root.join(".cq/index.db");
-        let cq_dir = project_root.join(".cq");
+        let cqs_dir = crate::resolve_index_dir(project_root);
+        let index_path = cqs_dir.join("index.db");
 
         if !index_path.exists() {
             bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -72,7 +72,7 @@ impl McpServer {
             .with_context(|| format!("Failed to open index at {}", index_path.display()))?;
 
         // Load HNSW first (fast) - wrap in Arc<RwLock> for background upgrade
-        let hnsw = HnswIndex::try_load(&cq_dir);
+        let hnsw = HnswIndex::try_load(&cqs_dir);
         let index = Arc::new(RwLock::new(hnsw));
 
         // Spawn background CAGRA build if GPU available.

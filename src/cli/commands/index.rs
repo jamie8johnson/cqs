@@ -21,18 +21,18 @@ use crate::cli::{
 pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
     reset_interrupted();
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
-    // Ensure .cq directory exists
-    if !cq_dir.exists() {
-        std::fs::create_dir_all(&cq_dir)
-            .with_context(|| format!("Failed to create {}", cq_dir.display()))?;
+    // Ensure .cqs directory exists
+    if !cqs_dir.exists() {
+        std::fs::create_dir_all(&cqs_dir)
+            .with_context(|| format!("Failed to create {}", cqs_dir.display()))?;
     }
 
     // Acquire lock (unless dry run)
     let _lock = if !dry_run {
-        Some(acquire_index_lock(&cq_dir)?)
+        Some(acquire_index_lock(&cqs_dir)?)
     } else {
         None
     };
@@ -155,7 +155,7 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
             println!("Building HNSW index...");
         }
 
-        if let Some(total) = build_hnsw_index(&store, &cq_dir)? {
+        if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
             if !cli.quiet {
                 println!("  HNSW index: {} vectors", total);
             }
@@ -236,7 +236,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 ///
 /// Notes are excluded from HNSW — they use brute-force search from SQLite
 /// so that notes added via MCP are immediately searchable without rebuild.
-pub(crate) fn build_hnsw_index(store: &Store, cq_dir: &Path) -> Result<Option<usize>> {
+pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
     let chunk_count = store.chunk_count()? as usize;
 
     if chunk_count == 0 {
@@ -248,7 +248,7 @@ pub(crate) fn build_hnsw_index(store: &Store, cq_dir: &Path) -> Result<Option<us
     let chunk_batches = store.embedding_batches(HNSW_BATCH_SIZE);
 
     let hnsw = HnswIndex::build_batched(chunk_batches, chunk_count)?;
-    hnsw.save(cq_dir, "index")?;
+    hnsw.save(cqs_dir, "index")?;
 
     Ok(Some(hnsw.len()))
 }
