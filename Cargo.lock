@@ -115,9 +115,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.100"
+version = "1.0.101"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a23eb6b1614318a8071c9b2521f36b424b2c83db5eb3a0fead4a6c0809af6e61"
+checksum = "5f0e0fee31ef5ed1ba1316088939cea399010ed7731dba877ed44aeb407a75ea"
 
 [[package]]
 name = "arrayref"
@@ -454,9 +454,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.56"
+version = "4.5.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a75ca66430e33a14957acc24c5077b503e7d374151b2b4b3a10c83b4ceb4be0e"
+checksum = "6899ea499e3fb9305a65d5ebf6e3d2248c5fab291f300ad0a704fbe142eae31a"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -464,9 +464,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.56"
+version = "4.5.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "793207c7fa6300a0608d1080b858e5fdbe713cdc1c8db9fb17777d8a13e63df0"
+checksum = "7b12c8b680195a62a8364d16b8447b01b6c2c8f9aaf68bee653be34d4245e238"
 dependencies = [
  "anstream",
  "anstyle",
@@ -518,12 +518,11 @@ checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
 name = "colored"
-version = "2.2.0"
+version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c"
+checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "lazy_static",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -793,9 +792,9 @@ dependencies = [
 
 [[package]]
 name = "cuvs"
-version = "25.12.0"
+version = "26.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f998005c7c124b6602801f479f428f3f94ee013d9233244bd39006b57fa8264"
+checksum = "9778fa1e16f42539772496e9adba2a29c67dca84bcb0d247795f9cb3135ba87d"
 dependencies = [
  "cuvs-sys",
  "ndarray 0.15.6",
@@ -803,9 +802,9 @@ dependencies = [
 
 [[package]]
 name = "cuvs-sys"
-version = "25.12.0"
+version = "26.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e59f4bacc9ec0d873a1f18f9d93e673ad7b2a3bffe99a43ddb6349a051aefb5a"
+checksum = "d4cad121da7a7ac908965352ffeac029a93fb0e3a1278a271f7204098b8724e9"
 dependencies = [
  "bindgen",
  "cmake",

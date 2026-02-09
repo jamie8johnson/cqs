@@ -63,7 +63,7 @@ keyring = { version = "3", optional = true }
 # Vector search (HNSW default, cuVS optional)
 hnsw_rs = "0.3"
 simsimd = "6"
-cuvs = { version = "25.12", optional = true }
+cuvs = { version = "26.2", optional = true }
 
 # Text processing
 regex = "1"
@@ -89,7 +89,7 @@ rayon = "1"
 crossbeam-channel = "0.5"
 chrono = "0.4"
 globset = "0.4"
-colored = "2"
+colored = "3"
 indicatif = "0.18"
 anyhow = "1"
 thiserror = "2"
