@@ -15,8 +15,8 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
 
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -81,7 +81,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                     }
                     Err(e) => {
                         tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
-                        HnswIndex::try_load(&cq_dir)
+                        HnswIndex::try_load(&cqs_dir)
                     }
                 }
             } else {
@@ -94,17 +94,17 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                 } else {
                     tracing::debug!("GPU not available, using HNSW");
                 }
-                HnswIndex::try_load(&cq_dir)
+                HnswIndex::try_load(&cqs_dir)
             }
         }
         #[cfg(not(feature = "gpu-search"))]
         {
-            HnswIndex::try_load(&cq_dir)
+            HnswIndex::try_load(&cqs_dir)
         }
     };
 
     // Check audit mode for note exclusion
-    let audit_mode = cqs::audit::load_audit_state(&cq_dir);
+    let audit_mode = cqs::audit::load_audit_state(&cqs_dir);
     if audit_mode.is_active() && cli.note_only {
         bail!("--note-only is unavailable during audit mode");
     }

@@ -10,8 +10,8 @@ use super::resolve::parse_target;
 
 pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");
@@ -73,7 +73,7 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
                 note_weight: 0.0,
                 note_only: false,
             };
-            let index = HnswIndex::try_load(&cq_dir);
+            let index = HnswIndex::try_load(&cqs_dir);
             let sim_results = store.search_filtered_with_index(
                 &embedding,
                 &filter,

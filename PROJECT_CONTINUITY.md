@@ -2,42 +2,23 @@
 
 ## Right Now
 
-**Testing markdown indexing with AVEVA docs reference.** 2026-02-08.
+**Rename `.cq/` → `.cqs/` (issue #260).** 2026-02-08. Branch: `fix/rename-cq-to-cqs`.
 
-### Hot-reload branch
-- Branch `feat/reference-hot-reload`, commit `f2cc890`
-- Changes in `src/mcp/server.rs`, `src/mcp/tools/search.rs`, `src/mcp/tools/stats.rs`
-- Design: mtime-based lazy reload with `RwLock<ReferenceState>`, double-check locking
-- Needs: PR, merge
+Consistency rename — index directory `.cq/` → `.cqs/` to match binary name, config dir, config file.
+Auto-migration: `resolve_index_dir()` in `src/lib.rs` renames `.cq/` → `.cqs/` on first access.
 
-### AVEVA docs reference testing
-- `aveva-docs` reference: 5662 chunks from 39 markdown files in `samples/md/`
-- Source: PDF→MD converted AVEVA System Platform docs (pymupdf4llm)
-- Semantic search working — tested historian scripting, WebView2, MES, supply chain queries
-- Identified 38 cross-referenced docs missing from the set (MES alone = 15 gaps)
-- User will convert more PDFs to fill gaps
-
-### Bugs found during testing
-- **#318**: `ref update` silently prunes all chunks when binary lacks language support (v0.9.5 binary didn't know markdown, pruned entire index)
-- **#319**: `ref remove` leaves stale metadata, blocking re-add with same name (UNIQUE constraint on metadata table)
-- Root cause of #318: release binary was v0.9.5, not rebuilt after v0.9.6 merge. Fixed by rebuilding and installing.
+### What's done
+- Central `INDEX_DIR` constant + `resolve_index_dir()` migration helper in `src/lib.rs`
+- All ~40 hardcoded `.cq` references in src/ and tests/ updated
+- Variable renames: `cq_dir` → `cqs_dir` throughout
+- Dual fallback in `project.rs` (cross-project search works with unmigrated projects)
+- Docs updated: SECURITY.md, PRIVACY.md, skills (migrate, troubleshoot, bootstrap)
+- All 302 lib + 233 integration tests pass, clippy clean
 
 ### Pending
+- Commit, PR, merge
+- Release binary update after merge
 - `.cqs.toml` — untracked, has aveva-docs reference config
-- `PROJECT_CONTINUITY.md` — modified (this update)
-- Release binary now v0.9.6 (rebuilt and installed to `~/.cargo/bin/cqs`)
-
-### P4 audit items tracked in issues
-- #300: Search/algorithm edge cases (5 items)
-- #301: Observability gaps (5 items)
-- #302: Test coverage gaps (4 items)
-- #303: Polish/docs (3 items)
-
-### Dev environment
-- `~/.bashrc`: CUDA/conda/cmake env vars above non-interactive guard
-- `.mcp.json`: fixed LD_LIBRARY_PATH to include miniforge3/lib + cuda lib64
-- GPU: RTX A6000, always use `--features gpu-search`
-- `pymupdf4llm` installed via conda for PDF→MD conversion
 
 ### Known limitations
 - T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar
@@ -45,11 +26,12 @@
 
 ## Parked
 
+- **AVEVA docs reference testing** — 5662 chunks from 39 markdown files, 38 cross-referenced docs still missing. User converting more PDFs.
 - **VB.NET language support** — parked, VS2005 project delayed
 - **Post-index name matching** — follow-up PR for fuzzy cross-doc references (substring matching of chunk names across docs)
 - **Phase 8**: Security (index encryption, rate limiting)
 - **ref install** — deferred from Phase 6, tracked in #255
-- **`.cq` rename to `.cqs`** — breaking change needing migration
+- **`.cq` rename to `.cqs`** — in progress on branch `fix/rename-cq-to-cqs`
 
 ## Open Issues
 
@@ -83,8 +65,8 @@
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- 298 lib + 233 integration tests (with gpu-search), 0 warnings, clippy clean
-- MCP tools: 20
+- 302 lib + 233 integration tests (with gpu-search), 0 warnings, clippy clean
+- MCP tools: 20 (also available as CLI commands now)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
 - Build target: `~/.cargo-target/cq/` (Linux FS)

@@ -19,7 +19,7 @@ pub(crate) fn cmd_trace(
     format: &str,
 ) -> Result<()> {
     let root = find_project_root();
-    let index_path = root.join(".cq/index.db");
+    let index_path = cqs::resolve_index_dir(&root).join("index.db");
 
     if !index_path.exists() {
         bail!("Index not found. Run 'cqs init && cqs index' first.");

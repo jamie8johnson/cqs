@@ -105,7 +105,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Download model and create .cq/
+    /// Download model and create .cqs/
     Init,
     /// Check model, index, hardware
     Doctor,

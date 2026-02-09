@@ -48,8 +48,8 @@ impl ProjectRegistry {
 
     /// Register a project (replaces existing entry with same name)
     pub fn register(&mut self, name: String, path: PathBuf) -> Result<()> {
-        // Validate the path has a .cq directory
-        if !path.join(".cq/index.db").exists() {
+        // Validate the path has a .cqs (or legacy .cq) directory
+        if !path.join(".cqs/index.db").exists() && !path.join(".cq/index.db").exists() {
             bail!(
                 "No cqs index found at {}. Run 'cqs init && cqs index' there first.",
                 path.display()
@@ -112,7 +112,15 @@ pub fn search_across_projects(
     let mut all_results = Vec::new();
 
     for entry in &registry.project {
-        let index_path = entry.path.join(".cq/index.db");
+        // Prefer .cqs, fall back to legacy .cq
+        let index_path = {
+            let new_path = entry.path.join(".cqs/index.db");
+            if new_path.exists() {
+                new_path
+            } else {
+                entry.path.join(".cq/index.db")
+            }
+        };
         if !index_path.exists() {
             tracing::warn!(
                 "Skipping project '{}' — index not found at {}",

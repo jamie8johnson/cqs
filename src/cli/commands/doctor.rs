@@ -9,13 +9,13 @@ use cqs::{Embedder, Parser as CqParser, Store};
 
 use crate::cli::{find_project_root, Cli};
 
-/// Run diagnostic checks on cq installation and index
+/// Run diagnostic checks on cqs installation and index
 ///
 /// Reports runtime info, embedding provider, model status, and index statistics.
 pub(crate) fn cmd_doctor(_cli: &Cli) -> Result<()> {
     let root = find_project_root();
-    let cq_dir = root.join(".cq");
-    let index_path = cq_dir.join("index.db");
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
 
     println!("Runtime:");
 

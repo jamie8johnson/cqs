@@ -10,7 +10,7 @@ cqs processes your code entirely on your machine. Nothing is transmitted externa
 
 ## What Gets Stored
 
-When you run `cqs index`, the following is stored in `.cq/index.db`:
+When you run `cqs index`, the following is stored in `.cqs/index.db`:
 
 - Code chunks (functions, methods, documentation sections)
 - Embedding vectors (769-dimensional floats: 768 from E5-base-v2 + 1 sentiment dimension)
@@ -52,7 +52,7 @@ If you fork or contribute to the cqs repository:
 To remove all cqs data:
 
 ```bash
-rm -rf .cq/                           # Project index
+rm -rf .cqs/                          # Project index
 rm -rf ~/.local/share/cqs/refs/       # Reference indexes
 rm -rf ~/.config/cqs/projects.toml    # Project registry
 rm -f .cqs.toml                       # Project config

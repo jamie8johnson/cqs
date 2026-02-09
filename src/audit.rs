@@ -3,7 +3,7 @@
 //! During code audits or fresh-eyes reviews, audit mode prevents prior
 //! observations from influencing analysis by excluding notes from results.
 //!
-//! State is persisted to `.cq/audit-mode.json` so both CLI and MCP can
+//! State is persisted to `.cqs/audit-mode.json` so both CLI and MCP can
 //! share audit mode state across invocations.
 
 use anyhow::{Context, Result};
@@ -65,10 +65,10 @@ struct AuditModeFile {
     expires_at: Option<String>,
 }
 
-/// Load audit mode state from `.cq/audit-mode.json`.
+/// Load audit mode state from `.cqs/audit-mode.json`.
 /// Returns default (inactive) if file is missing, expired, or unreadable.
-pub fn load_audit_state(cq_dir: &Path) -> AuditMode {
-    let path = cq_dir.join("audit-mode.json");
+pub fn load_audit_state(cqs_dir: &Path) -> AuditMode {
+    let path = cqs_dir.join("audit-mode.json");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(_) => return AuditMode::default(),
@@ -101,9 +101,9 @@ pub fn load_audit_state(cq_dir: &Path) -> AuditMode {
     mode
 }
 
-/// Save audit mode state to `.cq/audit-mode.json`.
-pub fn save_audit_state(cq_dir: &Path, mode: &AuditMode) -> Result<()> {
-    let path = cq_dir.join("audit-mode.json");
+/// Save audit mode state to `.cqs/audit-mode.json`.
+pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
+    let path = cqs_dir.join("audit-mode.json");
     let file = AuditModeFile {
         enabled: mode.enabled,
         expires_at: mode.expires_at.map(|t| t.to_rfc3339()),

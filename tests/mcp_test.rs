@@ -11,12 +11,12 @@ fn setup_test_server() -> (TempDir, cqs::mcp::McpServer) {
     let dir = TempDir::new().unwrap();
     let project_root = dir.path().to_path_buf();
 
-    // Create .cq directory and empty index
-    let cq_dir = project_root.join(".cq");
-    std::fs::create_dir_all(&cq_dir).unwrap();
+    // Create .cqs directory and empty index
+    let cqs_dir = project_root.join(".cqs");
+    std::fs::create_dir_all(&cqs_dir).unwrap();
 
     // Initialize store with empty database
-    let index_path = cq_dir.join("index.db");
+    let index_path = cqs_dir.join("index.db");
     let store = cqs::store::Store::open(&index_path).unwrap();
     store
         .init(&cqs::store::ModelInfo {
@@ -1367,14 +1367,14 @@ mod server_tests {
     use std::process::{Command, Stdio};
     use tempfile::TempDir;
 
-    /// Setup a project directory with .cq initialized
+    /// Setup a project directory with .cqs initialized
     fn setup_project() -> TempDir {
         let dir = TempDir::new().unwrap();
-        let cq_dir = dir.path().join(".cq");
-        std::fs::create_dir_all(&cq_dir).unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
 
         // Initialize store
-        let index_path = cq_dir.join("index.db");
+        let index_path = cqs_dir.join("index.db");
         let store = cqs::store::Store::open(&index_path).unwrap();
         store
             .init(&cqs::store::ModelInfo {

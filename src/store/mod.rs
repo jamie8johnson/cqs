@@ -98,7 +98,7 @@ use crate::nl::normalize_for_fts;
 /// use cqs::Store;
 /// use std::path::Path;
 ///
-/// let store = Store::open(Path::new(".cq/index.db"))?;
+/// let store = Store::open(Path::new(".cqs/index.db"))?;
 /// let stats = store.stats()?;
 /// println!("Indexed {} chunks", stats.total_chunks);
 /// # Ok::<(), anyhow::Error>(())

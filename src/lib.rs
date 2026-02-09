@@ -21,7 +21,7 @@
 //! // Initialize components
 //! let parser = Parser::new()?;
 //! let embedder = Embedder::new()?;
-//! let store = Store::open(std::path::Path::new(".cq/index.db"))?;
+//! let store = Store::open(std::path::Path::new(".cqs/index.db"))?;
 //!
 //! // Parse and embed a file
 //! let chunks = parser.parse_file(std::path::Path::new("src/main.rs"))?;
@@ -106,6 +106,33 @@ pub use structural::Pattern;
 pub use cagra::CagraIndex;
 
 use std::path::PathBuf;
+
+/// Name of the per-project index directory (created by `cqs init`).
+pub const INDEX_DIR: &str = ".cqs";
+
+/// Legacy index directory name (pre-v0.9.7). Used for auto-migration.
+const LEGACY_INDEX_DIR: &str = ".cq";
+
+/// Resolve the index directory for a project, migrating from `.cq/` to `.cqs/` if needed.
+///
+/// If the legacy `.cq/` exists and `.cqs/` does not, renames it automatically.
+/// Falls back gracefully if the rename fails (e.g., permissions).
+pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
+    let new_dir = project_root.join(INDEX_DIR);
+    let old_dir = project_root.join(LEGACY_INDEX_DIR);
+
+    if old_dir.exists() && !new_dir.exists() && std::fs::rename(&old_dir, &new_dir).is_ok() {
+        eprintln!("Migrated index directory from .cq/ to .cqs/");
+    }
+
+    if new_dir.exists() {
+        new_dir
+    } else if old_dir.exists() {
+        old_dir
+    } else {
+        new_dir
+    }
+}
 
 /// Embedding dimension: 768 from E5-base-v2 model + 1 sentiment dimension.
 /// Single source of truth — all modules import this constant.
