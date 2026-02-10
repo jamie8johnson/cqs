@@ -105,8 +105,6 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
     Ok(chrono::Duration::minutes(total_minutes))
 }
 
-pub use crate::strip_unc_prefix;
-
 #[cfg(test)]
 mod tests {
     use super::*;

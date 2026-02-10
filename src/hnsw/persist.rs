@@ -400,22 +400,9 @@ impl HnswIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::EMBEDDING_DIM;
     use tempfile::TempDir;
 
-    fn make_embedding(seed: u32) -> crate::embedder::Embedding {
-        let mut v = vec![0.0f32; EMBEDDING_DIM];
-        for (i, val) in v.iter_mut().enumerate() {
-            *val = ((seed as f32 * 0.1) + (i as f32 * 0.001)).sin();
-        }
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for val in &mut v {
-                *val /= norm;
-            }
-        }
-        crate::embedder::Embedding::new(v)
-    }
+    use crate::hnsw::make_test_embedding as make_embedding;
 
     #[test]
     fn test_save_and_load() {

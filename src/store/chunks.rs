@@ -587,17 +587,7 @@ impl Store {
                             line_end: clamp_line_number(row.get::<i64, _>(9)),
                             parent_id: row.get(10),
                         });
-                        let name_lower = chunk.name.to_lowercase();
-                        let query_lower = name.to_lowercase();
-                        let score = if name_lower == query_lower {
-                            1.0
-                        } else if name_lower.starts_with(&query_lower) {
-                            0.9
-                        } else if name_lower.contains(&query_lower) {
-                            0.7
-                        } else {
-                            0.5
-                        };
+                        let score = super::score_name_match(&chunk.name, name);
                         super::SearchResult { chunk, score }
                     })
                     .collect();

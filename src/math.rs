@@ -29,6 +29,34 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
     }
 }
 
+/// Full cosine similarity with norm computation.
+/// Used for cross-store comparison where vectors may not share normalization
+/// and may have arbitrary dimensions (not necessarily EMBEDDING_DIM).
+pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f32;
+    let mut norm_a = 0.0f32;
+    let mut norm_b = 0.0f32;
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        norm_a += x * x;
+        norm_b += y * y;
+    }
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom == 0.0 {
+        0.0
+    } else {
+        let result = dot / denom;
+        if result.is_finite() {
+            result
+        } else {
+            0.0
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

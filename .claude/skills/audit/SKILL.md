@@ -41,6 +41,30 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
    - Instruction to read `docs/audit-findings.md` first — skip anything already reported by earlier batches in this audit
    - Instruction to append findings to `docs/audit-findings.md`
    - Format: `## [Category]\n\n#### [Finding title]\n- **Difficulty:** easy | medium | hard\n- **Location:** ...\n- **Description:** ...\n- **Suggested fix:** ...`
+   - The **cqs tools** section below — agents should use cqs for exploration, not just raw file reads
+
+## cqs Tools for Agents
+
+Include this block in every agent prompt so they can use the project's own search tool:
+
+```
+## cqs Available (via Bash)
+
+You have `cqs` on PATH. Use it for faster code exploration — still read source directly to verify findings.
+
+- `cqs "query" --json` — semantic search (finds code by concept, not text)
+- `cqs "name" --name-only --json` — definition lookup by function/type name
+- `cqs dead --json` — find dead code (uncalled functions)
+- `cqs callers <fn> --json` — who calls this function
+- `cqs callees <fn> --json` — what this function calls
+- `cqs explain <fn> --json` — function card (signature, callers, callees, similar)
+- `cqs similar <fn> --json` — find duplicate/similar code
+- `cqs context <file> --json` — module overview (chunks, callers, callees)
+- `cqs gather "query" --json` — smart context: seed search + call graph BFS
+- `cqs impact <fn> --json` — what breaks if you change this
+- `cqs test-map <fn> --json` — tests that exercise this function
+- `cqs trace <source> <target> --json` — shortest call path between two functions
+```
 
 6. **Shutdown team** after all agents complete
 

@@ -2,12 +2,11 @@
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use std::collections::HashSet;
 
+use crate::focused_read::extract_type_names;
 use crate::note::{parse_notes, path_matches_mention};
 
 use super::super::server::McpServer;
-use super::super::validation::strip_unc_prefix;
 
 /// Read a file with context from notes
 pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
@@ -30,18 +29,10 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
         bail!("File not found: {}", path);
     }
 
-    // Path traversal protection (strip UNC prefix on Windows for consistent comparison)
-    let canonical = strip_unc_prefix(
-        file_path
-            .canonicalize()
-            .context("Failed to canonicalize path")?,
-    );
-    let project_canonical = strip_unc_prefix(
-        server
-            .project_root
-            .canonicalize()
-            .context("Failed to canonicalize project root")?,
-    );
+    // Path traversal protection (dunce strips Windows UNC prefix automatically)
+    let canonical = dunce::canonicalize(&file_path).context("Failed to canonicalize path")?;
+    let project_canonical =
+        dunce::canonicalize(&server.project_root).context("Failed to canonicalize project root")?;
     if !canonical.starts_with(&project_canonical) {
         bail!("Path traversal not allowed: {}", path);
     }
@@ -106,18 +97,10 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
                     );
 
                     for n in relevant {
-                        let sentiment_label = if n.sentiment() < -0.3 {
-                            "WARNING"
-                        } else if n.sentiment() > 0.3 {
-                            "PATTERN"
-                        } else {
-                            "NOTE"
-                        };
-                        // First line of text only
                         if let Some(first_line) = n.text.lines().next() {
                             context_header.push_str(&format!(
                                 "// [{}] {}\n",
-                                sentiment_label,
+                                n.sentiment_label(),
                                 first_line.trim()
                             ));
                         }
@@ -140,78 +123,6 @@ pub fn tool_read(server: &McpServer, arguments: Value) -> Result<Value> {
             "text": enriched_content
         }]
     }))
-}
-
-use std::sync::LazyLock;
-
-static TYPE_NAME_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]+)\b").expect("hardcoded regex"));
-
-static COMMON_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "String",
-        "Vec",
-        "Result",
-        "Option",
-        "Box",
-        "Arc",
-        "Rc",
-        "HashMap",
-        "HashSet",
-        "BTreeMap",
-        "BTreeSet",
-        "Path",
-        "PathBuf",
-        "Value",
-        "Error",
-        "Self",
-        "None",
-        "Some",
-        "Ok",
-        "Err",
-        "Mutex",
-        "RwLock",
-        "Cow",
-        "Pin",
-        "Future",
-        "Iterator",
-        "Display",
-        "Debug",
-        "Clone",
-        "Default",
-        "Send",
-        "Sync",
-        "Sized",
-        "Copy",
-        "From",
-        "Into",
-        "AsRef",
-        "AsMut",
-        "Deref",
-        "DerefMut",
-        "Read",
-        "Write",
-        "Seek",
-        "BufRead",
-        "ToString",
-        "Serialize",
-        "Deserialize",
-    ]
-    .into_iter()
-    .collect()
-});
-
-/// Extract type names from a function signature
-fn extract_type_names(signature: &str) -> Vec<String> {
-    let mut names: Vec<String> = TYPE_NAME_RE
-        .find_iter(signature)
-        .map(|m| m.as_str().to_string())
-        .filter(|name| !COMMON_TYPES.contains(name.as_str()))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    names.sort();
-    names
 }
 
 fn tool_read_focused(server: &McpServer, focus: &str, _arguments: &Value) -> Result<Value> {
@@ -257,15 +168,12 @@ fn tool_read_focused(server: &McpServer, focus: &str, _arguments: &Value) -> Res
                     })
                     .collect();
                 for n in &relevant {
-                    let label = if n.sentiment() < -0.3 {
-                        "WARNING"
-                    } else if n.sentiment() > 0.3 {
-                        "PATTERN"
-                    } else {
-                        "NOTE"
-                    };
                     if let Some(first_line) = n.text.lines().next() {
-                        output.push_str(&format!("// [{}] {}\n", label, first_line.trim()));
+                        output.push_str(&format!(
+                            "// [{}] {}\n",
+                            n.sentiment_label(),
+                            first_line.trim()
+                        ));
                     }
                 }
                 if !relevant.is_empty() {

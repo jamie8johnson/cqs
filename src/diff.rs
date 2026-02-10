@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::math::full_cosine_similarity;
 use crate::store::{ChunkIdentity, Store, StoreError};
 
 /// A single diff entry
@@ -53,33 +54,6 @@ impl From<&ChunkIdentity> for ChunkKey {
             name: c.name.clone(),
             chunk_type: c.chunk_type.clone(),
             line_start: c.line_start,
-        }
-    }
-}
-
-/// Full cosine similarity with norm computation.
-/// Used for cross-store comparison where vectors may not share normalization.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        norm_a += x * x;
-        norm_b += y * y;
-    }
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        let result = dot / denom;
-        if result.is_finite() {
-            result
-        } else {
-            0.0
         }
     }
 }
@@ -179,7 +153,7 @@ pub fn semantic_diff(
 
         match (source_emb, target_emb) {
             (Some(s_emb), Some(t_emb)) => {
-                let sim = cosine_similarity(s_emb.as_slice(), t_emb.as_slice());
+                let sim = full_cosine_similarity(s_emb.as_slice(), t_emb.as_slice());
                 if sim < threshold {
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
@@ -229,33 +203,33 @@ mod tests {
     fn test_cosine_similarity_identical() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![1.0, 0.0, 0.0];
-        assert!((cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
+        assert!((full_cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_cosine_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        assert!(cosine_similarity(&a, &b).abs() < 1e-6);
+        assert!(full_cosine_similarity(&a, &b).abs() < 1e-6);
     }
 
     #[test]
     fn test_cosine_similarity_opposite() {
         let a = vec![1.0, 0.0];
         let b = vec![-1.0, 0.0];
-        assert!((cosine_similarity(&a, &b) + 1.0).abs() < 1e-6);
+        assert!((full_cosine_similarity(&a, &b) + 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn test_cosine_similarity_empty() {
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert_eq!(full_cosine_similarity(&[], &[]), 0.0);
     }
 
     #[test]
     fn test_cosine_similarity_zero_vector() {
         let a = vec![0.0, 0.0];
         let b = vec![1.0, 0.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
+        assert_eq!(full_cosine_similarity(&a, &b), 0.0);
     }
 
     #[test]

@@ -103,6 +103,20 @@ impl Note {
     pub fn is_pattern(&self) -> bool {
         self.sentiment > SENTIMENT_POSITIVE_THRESHOLD
     }
+
+    /// Get the human-readable sentiment label for this note.
+    ///
+    /// Returns "WARNING" for negative, "PATTERN" for positive, "NOTE" for neutral.
+    /// Used by both CLI and MCP read commands for note injection headers.
+    pub fn sentiment_label(&self) -> &'static str {
+        if self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD {
+            "WARNING"
+        } else if self.sentiment > SENTIMENT_POSITIVE_THRESHOLD {
+            "PATTERN"
+        } else {
+            "NOTE"
+        }
+    }
 }
 
 /// File header preserved across rewrites

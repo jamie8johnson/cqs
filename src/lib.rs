@@ -71,7 +71,9 @@ pub mod store;
 // These are pub(crate) to hide implementation details, but specific items are
 // re-exported below for use by the binary crate (CLI) and integration tests.
 pub(crate) mod diff;
+pub(crate) mod focused_read;
 pub(crate) mod gather;
+pub(crate) mod impact;
 pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod project;
@@ -97,9 +99,12 @@ pub use store::{ModelInfo, SearchFilter, Store};
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API
 // but need to be accessible to src/cli/* and tests/
 pub use diff::{semantic_diff, DiffResult};
+pub use focused_read::extract_type_names;
 pub use gather::{gather, GatherDirection, GatherOptions};
+pub use impact::{analyze_impact, impact_to_json, impact_to_mermaid, ImpactResult};
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use project::{search_across_projects, ProjectRegistry};
+pub use search::{parse_target, resolve_target};
 pub use structural::Pattern;
 
 #[cfg(feature = "gpu-search")]
