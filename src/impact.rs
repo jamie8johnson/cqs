@@ -89,21 +89,24 @@ fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<Cal
 
 /// Extract a snippet around the call site from the caller's indexed content
 fn extract_call_snippet(store: &Store, caller: &CallerWithContext) -> Option<String> {
-    store
-        .search_by_name(&caller.name, 1)
-        .ok()
-        .and_then(|r| r.into_iter().next())
-        .and_then(|r| {
-            let lines: Vec<&str> = r.chunk.content.lines().collect();
-            let offset = caller.call_line.saturating_sub(r.chunk.line_start) as usize;
-            if offset < lines.len() {
-                let start = offset.saturating_sub(1);
-                let end = (offset + 2).min(lines.len());
-                Some(lines[start..end].join("\n"))
-            } else {
-                None
-            }
-        })
+    let result = match store.search_by_name(&caller.name, 1) {
+        Ok(results) => results.into_iter().next(),
+        Err(e) => {
+            tracing::warn!(caller = %caller.name, error = %e, "Failed to fetch call snippet");
+            return None;
+        }
+    };
+    result.and_then(|r| {
+        let lines: Vec<&str> = r.chunk.content.lines().collect();
+        let offset = caller.call_line.saturating_sub(r.chunk.line_start) as usize;
+        if offset < lines.len() {
+            let start = offset.saturating_sub(1);
+            let end = (offset + 2).min(lines.len());
+            Some(lines[start..end].join("\n"))
+        } else {
+            None
+        }
+    })
 }
 
 /// Find tests that transitively call the target via reverse BFS
@@ -157,17 +160,20 @@ fn find_transitive_callers(
         if let Some(callers) = graph.reverse.get(&current) {
             for caller_name in callers {
                 if visited.insert(caller_name.clone()) {
-                    if let Some(r) = store
-                        .search_by_name(caller_name, 1)
-                        .ok()
-                        .and_then(|r| r.into_iter().next())
-                    {
-                        result.push(TransitiveCaller {
-                            name: caller_name.clone(),
-                            file: r.chunk.file,
-                            line: r.chunk.line_start,
-                            depth: d + 1,
-                        });
+                    match store.search_by_name(caller_name, 1) {
+                        Ok(results) => {
+                            if let Some(r) = results.into_iter().next() {
+                                result.push(TransitiveCaller {
+                                    name: caller_name.clone(),
+                                    file: r.chunk.file,
+                                    line: r.chunk.line_start,
+                                    depth: d + 1,
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(caller = %caller_name, error = %e, "Failed to look up transitive caller");
+                        }
                     }
                     queue.push_back((caller_name.clone(), d + 1));
                 }

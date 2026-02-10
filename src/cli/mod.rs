@@ -349,6 +349,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
 
+    // Clamp limit to prevent usize::MAX wrapping to -1 in SQLite queries
+    cli.limit = cli.limit.clamp(1, 100);
+
     match cli.command {
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(&cli),
@@ -957,6 +960,28 @@ mod tests {
     }
 
     // ===== ExitCode tests =====
+
+    #[test]
+    fn test_cli_limit_clamped_to_valid_range() {
+        // Verify that extremely large limits get clamped to 100
+        let mut cli = Cli::try_parse_from(["cqs", "-n", "999", "query"]).unwrap();
+        let config = cqs::config::Config::default();
+        apply_config_defaults(&mut cli, &config);
+        cli.limit = cli.limit.clamp(1, 100);
+        assert_eq!(cli.limit, 100);
+
+        // Verify that limit 0 gets clamped to 1
+        let mut cli = Cli::try_parse_from(["cqs", "-n", "0", "query"]).unwrap();
+        apply_config_defaults(&mut cli, &config);
+        cli.limit = cli.limit.clamp(1, 100);
+        assert_eq!(cli.limit, 1);
+
+        // Verify normal limits pass through
+        let mut cli = Cli::try_parse_from(["cqs", "-n", "10", "query"]).unwrap();
+        apply_config_defaults(&mut cli, &config);
+        cli.limit = cli.limit.clamp(1, 100);
+        assert_eq!(cli.limit, 10);
+    }
 
     #[test]
     fn test_exit_code_values() {

@@ -51,16 +51,30 @@ pub fn resolve_target(
         )));
     }
 
-    let matched = if let Some(file) = file_filter {
-        results.iter().position(|r| {
+    let idx = if let Some(file) = file_filter {
+        let matched = results.iter().position(|r| {
             let path = r.chunk.file.to_string_lossy();
             path.ends_with(file) || path.contains(file)
-        })
+        });
+        match matched {
+            Some(i) => i,
+            None => {
+                let found_in: Vec<_> = results
+                    .iter()
+                    .take(3)
+                    .map(|r| r.chunk.file.to_string_lossy().to_string())
+                    .collect();
+                return Err(StoreError::Runtime(format!(
+                    "No function '{}' found in file matching '{}'. Found in: {}",
+                    name,
+                    file,
+                    found_in.join(", ")
+                )));
+            }
+        }
     } else {
-        None
+        0
     };
-
-    let idx = matched.unwrap_or(0);
     let chunk = results[idx].chunk.clone();
     Ok((chunk, results))
 }
@@ -157,6 +171,45 @@ impl NameMatcher {
 
         (overlap / total) * 0.5 // Max 0.5 for partial word overlap
     }
+}
+
+/// Extract file path from a chunk ID.
+///
+/// Standard format: `"path:line_start:hash_prefix"` (3 segments from right)
+/// Windowed format: `"path:line_start:hash_prefix:window_idx"` (4 segments)
+///
+/// The hash_prefix is always 8 hex chars. The window_idx is a small integer (0-9).
+/// We detect windowed IDs by checking if the last segment is a short digit-only string
+/// (window index), then strip the appropriate number of trailing segments.
+fn extract_file_from_chunk_id(id: &str) -> &str {
+    // Strip last segment
+    let Some(last_colon) = id.rfind(':') else {
+        return id;
+    };
+    let last_seg = &id[last_colon + 1..];
+
+    // Determine how many segments to strip from the right:
+    // - Standard: 2 (hash_prefix, line_start)
+    // - Windowed: 3 (window_idx, hash_prefix, line_start)
+    // Window index is a short numeric string (typically 0-9)
+    let segments_to_strip = if !last_seg.is_empty()
+        && last_seg.len() <= 2
+        && last_seg.bytes().all(|b| b.is_ascii_digit())
+    {
+        3
+    } else {
+        2
+    };
+
+    let mut end = id.len();
+    for _ in 0..segments_to_strip {
+        if let Some(i) = id[..end].rfind(':') {
+            end = i;
+        } else {
+            break;
+        }
+    }
+    &id[..end]
 }
 
 /// Compile a glob pattern into a matcher, logging and ignoring invalid patterns.
@@ -361,13 +414,7 @@ impl Store {
                 };
 
                 if let Some(ref matcher) = glob_matcher {
-                    // Extract file path from chunk ID (format: "path:line_start:hash_prefix").
-                    // Strip ":hash_prefix" then ":line_start" with two rfind calls.
-                    let file_part = id
-                        .rfind(':')
-                        .and_then(|i| id[..i].rfind(':'))
-                        .map(|i| &id[..i])
-                        .unwrap_or(&id);
+                    let file_part = extract_file_from_chunk_id(&id);
                     if !matcher.is_match(file_part) {
                         continue;
                     }
@@ -756,5 +803,46 @@ mod tests {
     fn test_compile_glob_filter_invalid() {
         let pattern = "[invalid".to_string();
         assert!(compile_glob_filter(Some(&pattern)).is_none());
+    }
+
+    // ===== extract_file_from_chunk_id tests =====
+
+    #[test]
+    fn test_extract_file_standard_chunk_id() {
+        // Standard: "path:line_start:hash_prefix"
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345"),
+            "src/foo.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_file_windowed_chunk_id() {
+        // Windowed: "path:line_start:hash_prefix:window_idx"
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:0"),
+            "src/foo.rs"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:3"),
+            "src/foo.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_file_nested_path() {
+        assert_eq!(
+            extract_file_from_chunk_id("src/cli/commands/mod.rs:42:deadbeef"),
+            "src/cli/commands/mod.rs"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("src/cli/commands/mod.rs:42:deadbeef:1"),
+            "src/cli/commands/mod.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_file_no_colons() {
+        assert_eq!(extract_file_from_chunk_id("justanid"), "justanid");
     }
 }

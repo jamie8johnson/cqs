@@ -97,6 +97,19 @@ fn is_cjk(c: char) -> bool {
 /// expands text (e.g., "ABCD" → "a b c d" doubles length).
 const MAX_FTS_OUTPUT_LEN: usize = 16384;
 
+/// Find the largest byte index ≤ `index` that is on a UTF-8 char boundary.
+/// Equivalent to `str::floor_char_boundary` (stable since 1.91) but works with MSRV 1.88.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Normalize code text for FTS5 indexing.
 ///
 /// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
@@ -141,9 +154,8 @@ pub fn normalize_for_fts(text: &str) -> String {
 
             // Cap output to prevent memory issues - truncate at last space boundary
             if result.len() >= MAX_FTS_OUTPUT_LEN {
-                let truncate_at = result[..MAX_FTS_OUTPUT_LEN]
-                    .rfind(' ')
-                    .unwrap_or(MAX_FTS_OUTPUT_LEN);
+                let boundary = floor_char_boundary(&result, MAX_FTS_OUTPUT_LEN);
+                let truncate_at = result[..boundary].rfind(' ').unwrap_or(boundary);
                 result.truncate(truncate_at);
                 return result;
             }
@@ -163,10 +175,8 @@ pub fn normalize_for_fts(text: &str) -> String {
 
     // Final cap check - truncate at last space to avoid splitting words
     if result.len() > MAX_FTS_OUTPUT_LEN {
-        // Find last space before the limit to avoid mid-word truncation
-        let truncate_at = result[..MAX_FTS_OUTPUT_LEN]
-            .rfind(' ')
-            .unwrap_or(MAX_FTS_OUTPUT_LEN);
+        let boundary = floor_char_boundary(&result, MAX_FTS_OUTPUT_LEN);
+        let truncate_at = result[..boundary].rfind(' ').unwrap_or(boundary);
         result.truncate(truncate_at);
     }
     result
@@ -677,6 +687,24 @@ mod tests {
         assert_eq!(normalize_for_fts("hello"), "hello");
         assert_eq!(normalize_for_fts("HelloWorld"), "hello world");
         assert_eq!(normalize_for_fts("get_user_name"), "get user name");
+    }
+
+    #[test]
+    fn test_normalize_for_fts_cjk_truncation_no_panic() {
+        // CJK characters are 3 bytes each in UTF-8. Build a string of CJK chars
+        // that exceeds MAX_FTS_OUTPUT_LEN so truncation triggers inside multi-byte chars.
+        // Each CJK char becomes a separate token with spaces: "X Y Z ..." so
+        // output length ~ 2*num_chars. Need enough to exceed 16384.
+        let cjk_heavy: String = "获".repeat(10000);
+        let result = normalize_for_fts(&cjk_heavy);
+        assert!(
+            result.len() <= super::MAX_FTS_OUTPUT_LEN,
+            "CJK FTS output should be capped but was {}",
+            result.len()
+        );
+        // Verify the result is valid UTF-8 (implicit — it's a String)
+        // and doesn't end mid-character
+        assert!(result.is_char_boundary(result.len()));
     }
 
     // ===== Fuzz tests =====

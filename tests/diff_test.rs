@@ -13,7 +13,24 @@ fn test_semantic_diff_basic() {
     let source_c = test_chunk("func_c", "fn func_c() { 3 + 3 }");
 
     let emb_same = mock_embedding(1.0);
-    let emb_different = mock_embedding(0.5);
+    // mock_embedding(x) fills all 768 dims with x then normalizes — scalar multiples
+    // all normalize to the same direction. Build a genuinely different direction instead:
+    // first half positive, second half negative, so cosine similarity with emb_same ≈ 0.
+    let emb_different = {
+        let mut v = vec![0.0f32; 768];
+        for i in 0..384 {
+            v[i] = 1.0;
+        }
+        for i in 384..768 {
+            v[i] = -1.0;
+        }
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        for x in &mut v {
+            *x /= norm;
+        }
+        v.push(0.0); // 769th sentiment dim
+        cqs::Embedding::new(v)
+    };
 
     source_store
         .upsert_chunk(&source_a, &emb_same, Some(12345))
@@ -69,7 +86,13 @@ fn test_semantic_diff_basic() {
         "func_d should be in added list"
     );
 
-    // func_b may be in modified (different embeddings, if similarity < threshold)
+    // func_b should be in modified (genuinely different embedding direction, similarity ≈ 0 < 0.95)
+    assert!(
+        diff.modified.iter().any(|c| c.name == "func_b"),
+        "func_b should be in modified list (different embeddings). Modified: {:?}",
+        diff.modified.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+
     // func_a should not be in any list (same content and embedding)
     let all_changed: Vec<&str> = diff
         .modified

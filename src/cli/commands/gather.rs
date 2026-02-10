@@ -57,6 +57,7 @@ pub(crate) fn cmd_gather(
             "query": query,
             "chunks": json_chunks,
             "expansion_capped": result.expansion_capped,
+            "search_degraded": result.search_degraded,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if result.chunks.is_empty() {
@@ -70,6 +71,12 @@ pub(crate) fn cmd_gather(
         );
         if result.expansion_capped {
             println!("{}", "Warning: expansion capped at 200 nodes".yellow());
+        }
+        if result.search_degraded {
+            println!(
+                "{}",
+                "Warning: batch name search failed, results may be incomplete".yellow()
+            );
         }
         println!();
 

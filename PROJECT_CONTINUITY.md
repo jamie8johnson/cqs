@@ -5,12 +5,18 @@
 **v0.9.7 audit fix session.** 2026-02-10.
 
 ### Active
-- PR1 (Foundation): 3 parallel agents running — extracting shared modules + dedup (11 fixes)
-  - Agent A: CQ-1, CQ-2, CQ-5, CQ-7 (search.rs, focused_read.rs, store/helpers.rs)
-  - Agent B: CQ-3, CQ-4 (note.rs, impact.rs)
-  - Agent C: CQ-6, CQ-8, CQ-9, CQ-10, PB4 (diff.rs, markdown.rs, nl.rs, hnsw/mod.rs)
-- Branch: `audit/pr1-foundation`
-- Team: `pr1-foundation`
+- PR2 (Critical Bugs): 3 parallel agents running — 10 bug fixes
+  - Agent A: R7/S10 (nl.rs byte truncation), R8/EH13 (notes byte truncation), AC10 (chunk ID path), EH11 (resolve fallback)
+  - Agent B: AC5 (dead code trait impl), R4 (CLI limit clamp), AC2 (gather determinism), EH4 (gather fallback)
+  - Agent C: EH5/EH6 (impact .ok() swallowing), TC1 (tautological gather test), TC12 (diff modified assert)
+- Branch: `audit-pr2-critical-bugs`
+- Team: `pr2-bugs`
+
+### Completed
+- PR1 (Foundation): merged as PR #333 — extracted shared modules + dedup (11 fixes)
+  - New: src/focused_read.rs, src/impact.rs
+  - Modified: search.rs, store/helpers.rs, note.rs, math.rs, diff.rs, markdown.rs, nl.rs, hnsw/mod.rs, cli/commands/impact.rs, mcp/tools/impact.rs, cli/commands/read.rs, mcp/tools/read.rs, cli/commands/resolve.rs, mcp/tools/resolve.rs, mcp/validation.rs, lib.rs, store/mod.rs, store/chunks.rs
+- Release binary updated after PR1 merge
 
 ### Plan
 Full audit fix plan at `/home/user001/.claude/plans/witty-strolling-melody.md`

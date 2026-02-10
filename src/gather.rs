@@ -69,6 +69,8 @@ pub struct GatheredChunk {
 pub struct GatherResult {
     pub chunks: Vec<GatheredChunk>,
     pub expansion_capped: bool,
+    /// True if batch name search failed and results may be incomplete
+    pub search_degraded: bool,
 }
 
 /// Maximum nodes in BFS expansion to prevent blowup on hub functions
@@ -93,6 +95,7 @@ pub fn gather(
         return Ok(GatherResult {
             chunks: Vec::new(),
             expansion_capped: false,
+            search_degraded: false,
         });
     }
 
@@ -137,11 +140,11 @@ pub fn gather(
 
     // 4. Batch-fetch chunks for all expanded names, deduplicate by id
     let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
-    let batch_results = match store.search_by_names_batch(&all_names, 1) {
-        Ok(r) => r,
+    let (batch_results, search_degraded) = match store.search_by_names_batch(&all_names, 1) {
+        Ok(r) => (r, false),
         Err(e) => {
-            tracing::warn!(error = %e, "Batch name search failed, falling back empty");
-            HashMap::new()
+            tracing::warn!(error = %e, "Batch name search failed, results may be incomplete");
+            (HashMap::new(), true)
         }
     };
 
@@ -176,18 +179,26 @@ pub fn gather(
         }
     }
 
-    // 5. Sort by score desc, truncate to limit, then re-sort by file → line_start
+    // 5. Sort by score desc (with name tiebreak for determinism), truncate to limit,
+    //    then re-sort by file → line_start → name for stable reading order.
     chunks.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.name.cmp(&b.name))
     });
     chunks.truncate(opts.limit);
-    chunks.sort_by(|a, b| a.file.cmp(&b.file).then(a.line_start.cmp(&b.line_start)));
+    chunks.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
 
     Ok(GatherResult {
         chunks,
         expansion_capped,
+        search_degraded,
     })
 }
 
