@@ -235,34 +235,36 @@ mod tests {
 
     #[test]
     fn test_registry_get() {
+        let tmp = std::env::temp_dir();
         let reg = ProjectRegistry {
             project: vec![
                 ProjectEntry {
                     name: "foo".to_string(),
-                    path: PathBuf::from("/tmp/foo"),
+                    path: tmp.join("foo"),
                 },
                 ProjectEntry {
                     name: "bar".to_string(),
-                    path: PathBuf::from("/tmp/bar"),
+                    path: tmp.join("bar"),
                 },
             ],
         };
-        assert_eq!(reg.get("foo").unwrap().path, PathBuf::from("/tmp/foo"));
-        assert_eq!(reg.get("bar").unwrap().path, PathBuf::from("/tmp/bar"));
+        assert_eq!(reg.get("foo").unwrap().path, tmp.join("foo"));
+        assert_eq!(reg.get("bar").unwrap().path, tmp.join("bar"));
         assert!(reg.get("baz").is_none());
     }
 
     #[test]
     fn test_registry_remove_in_memory() {
+        let tmp = std::env::temp_dir();
         let mut reg = ProjectRegistry {
             project: vec![
                 ProjectEntry {
                     name: "a".to_string(),
-                    path: PathBuf::from("/a"),
+                    path: tmp.join("a"),
                 },
                 ProjectEntry {
                     name: "b".to_string(),
-                    path: PathBuf::from("/b"),
+                    path: tmp.join("b"),
                 },
             ],
         };
@@ -277,36 +279,37 @@ mod tests {
 
     #[test]
     fn test_registry_serialization_roundtrip() {
+        let tmp = std::env::temp_dir();
         let reg = ProjectRegistry {
             project: vec![ProjectEntry {
                 name: "test".to_string(),
-                path: PathBuf::from("/tmp/test"),
+                path: tmp.join("test"),
             }],
         };
         let toml_str = toml::to_string_pretty(&reg).unwrap();
         let parsed: ProjectRegistry = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.project.len(), 1);
         assert_eq!(parsed.project[0].name, "test");
-        assert_eq!(parsed.project[0].path, PathBuf::from("/tmp/test"));
+        assert_eq!(parsed.project[0].path, tmp.join("test"));
     }
 
     #[test]
     fn test_make_project_relative() {
-        let root = Path::new("/home/user/project");
-        let file = Path::new("/home/user/project/src/main.rs");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let sub = root.join("src").join("main.rs");
         assert_eq!(
-            make_project_relative(root, file),
+            make_project_relative(root, &sub),
             PathBuf::from("src/main.rs")
         );
     }
 
     #[test]
     fn test_make_project_relative_not_child() {
-        let root = Path::new("/home/user/project");
-        let file = Path::new("/other/path/file.rs");
-        assert_eq!(
-            make_project_relative(root, file),
-            PathBuf::from("/other/path/file.rs")
-        );
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let file = dir_b.path().join("file.rs");
+        // File outside project root returns full path unchanged
+        assert_eq!(make_project_relative(dir_a.path(), &file), file,);
     }
 }

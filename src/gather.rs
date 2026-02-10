@@ -25,6 +25,33 @@ pub struct GatherOptions {
     pub decay_factor: f32,
 }
 
+impl GatherOptions {
+    pub fn with_expand_depth(mut self, depth: usize) -> Self {
+        self.expand_depth = depth;
+        self
+    }
+    pub fn with_direction(mut self, direction: GatherDirection) -> Self {
+        self.direction = direction;
+        self
+    }
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+    pub fn with_seed_limit(mut self, limit: usize) -> Self {
+        self.seed_limit = limit;
+        self
+    }
+    pub fn with_seed_threshold(mut self, threshold: f32) -> Self {
+        self.seed_threshold = threshold;
+        self
+    }
+    pub fn with_decay_factor(mut self, factor: f32) -> Self {
+        self.decay_factor = factor;
+        self
+    }
+}
+
 impl Default for GatherOptions {
     fn default() -> Self {
         Self {
@@ -350,5 +377,22 @@ mod tests {
         let callers = get_neighbors(&graph, "D", GatherDirection::Callers);
         assert_eq!(callers.len(), 1);
         assert_eq!(callers[0], "B");
+    }
+
+    #[test]
+    fn test_gather_options_builder() {
+        let opts = GatherOptions::default()
+            .with_expand_depth(3)
+            .with_direction(GatherDirection::Callers)
+            .with_limit(20)
+            .with_seed_limit(10)
+            .with_seed_threshold(0.5)
+            .with_decay_factor(0.9);
+        assert_eq!(opts.expand_depth, 3);
+        assert!(matches!(opts.direction, GatherDirection::Callers));
+        assert_eq!(opts.limit, 20);
+        assert_eq!(opts.seed_limit, 10);
+        assert!((opts.seed_threshold - 0.5).abs() < f32::EPSILON);
+        assert!((opts.decay_factor - 0.9).abs() < f32::EPSILON);
     }
 }

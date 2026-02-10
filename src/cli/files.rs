@@ -29,7 +29,12 @@ fn process_exists(pid: u32) -> bool {
     Command::new("tasklist")
         .args(["/FI", &format!("PID eq {}", pid), "/NH"])
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .map(|o| {
+            let output = String::from_utf8_lossy(&o.stdout);
+            // tasklist /FI "PID eq N" does exact filtering.
+            // "INFO:" appears when no process matches; its absence means a match.
+            !output.contains("INFO:")
+        })
         .unwrap_or(false)
 }
 

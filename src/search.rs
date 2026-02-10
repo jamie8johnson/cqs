@@ -285,7 +285,7 @@ impl BoundedScoreHeap {
 
         // At capacity - only insert if better than current minimum
         if let Some(Reverse((OrderedFloat(min_score), _))) = self.heap.peek() {
-            if score > *min_score {
+            if score >= *min_score {
                 self.heap.pop();
                 self.heap.push(Reverse((OrderedFloat(score), id)));
             }
@@ -850,5 +850,19 @@ mod tests {
     #[test]
     fn test_extract_file_no_colons() {
         assert_eq!(extract_file_from_chunk_id("justanid"), "justanid");
+    }
+
+    // ===== BoundedScoreHeap tests =====
+
+    #[test]
+    fn test_bounded_heap_equal_scores() {
+        let mut heap = BoundedScoreHeap::new(2);
+        heap.push("a".to_string(), 0.5);
+        heap.push("b".to_string(), 0.5);
+        heap.push("c".to_string(), 0.5);
+        let results = heap.into_sorted_vec();
+        assert_eq!(results.len(), 2);
+        // c should replace one of the earlier entries (no iteration-order bias)
+        assert!(results.iter().any(|(id, _)| id == "c"));
     }
 }
