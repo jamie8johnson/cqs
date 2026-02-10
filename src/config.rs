@@ -167,15 +167,19 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(path) {
-                let mode = meta.permissions().mode();
-                if mode & 0o077 != 0 {
-                    tracing::warn!(
-                        path = %path.display(),
-                        mode = format!("{:o}", mode & 0o777),
-                        "Config file is accessible by other users. Consider: chmod 600 {}",
-                        path.display()
-                    );
+            // Skip permission check on WSL mounts — NTFS always reports 777
+            let is_wsl_mount = path.to_str().is_some_and(|p| p.starts_with("/mnt/"));
+            if !is_wsl_mount {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    let mode = meta.permissions().mode();
+                    if mode & 0o077 != 0 {
+                        tracing::warn!(
+                            path = %path.display(),
+                            mode = format!("{:o}", mode & 0o777),
+                            "Config file is accessible by other users. Consider: chmod 600 {}",
+                            path.display()
+                        );
+                    }
                 }
             }
         }
