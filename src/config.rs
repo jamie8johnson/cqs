@@ -9,6 +9,20 @@
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Detect if running under Windows Subsystem for Linux (cached)
+fn is_wsl() -> bool {
+    static IS_WSL: OnceLock<bool> = OnceLock::new();
+    *IS_WSL.get_or_init(|| {
+        std::fs::read_to_string("/proc/version")
+            .map(|v| {
+                let lower = v.to_lowercase();
+                lower.contains("microsoft") || lower.contains("wsl")
+            })
+            .unwrap_or(false)
+    })
+}
 
 /// Reference index configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,8 +198,8 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Skip permission check on WSL mounts — NTFS always reports 777
-            let is_wsl_mount = path.to_str().is_some_and(|p| p.starts_with("/mnt/"));
+            // Skip permission check on WSL (NTFS always reports 777) or /mnt/ paths
+            let is_wsl_mount = is_wsl() || path.to_str().is_some_and(|p| p.starts_with("/mnt/"));
             if !is_wsl_mount {
                 if let Ok(meta) = std::fs::metadata(path) {
                     let mode = meta.permissions().mode();

@@ -27,8 +27,11 @@ use super::helpers::CURRENT_SCHEMA_VERSION;
 
 /// Run all migrations from stored version to current version
 pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreError> {
-    if from >= to {
-        return Ok(()); // Nothing to do
+    if from == to {
+        return Ok(()); // Already at target version
+    }
+    if from > to {
+        return Err(StoreError::SchemaNewerThanCq(from));
     }
 
     tracing::info!(

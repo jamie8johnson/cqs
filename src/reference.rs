@@ -90,6 +90,9 @@ pub fn search_reference(
     limit: usize,
     threshold: f32,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    let _span =
+        tracing::info_span!("search_reference", name = %ref_idx.name, weight = ref_idx.weight)
+            .entered();
     let mut results = ref_idx.store.search_filtered_with_index(
         query_embedding,
         filter,
@@ -113,6 +116,9 @@ pub fn search_reference_by_name(
     limit: usize,
     threshold: f32,
 ) -> anyhow::Result<Vec<SearchResult>> {
+    let _span =
+        tracing::info_span!("search_reference_by_name", ref_name = %ref_idx.name, query = name)
+            .entered();
     let mut results = ref_idx.store.search_by_name(name, limit)?;
     results.retain(|r| r.score * ref_idx.weight >= threshold);
     for r in &mut results {

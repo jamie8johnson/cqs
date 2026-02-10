@@ -389,8 +389,10 @@ impl Embedder {
                 poisoned.into_inner()
             });
             if let Some(cached) = cache.get(text) {
+                tracing::trace!(query = text, "Embedding cache hit");
                 return Ok(cached.clone());
             }
+            tracing::trace!(query = text, "Embedding cache miss");
         }
 
         // Compute embedding (outside lock - allows parallel queries)
@@ -410,6 +412,7 @@ impl Embedder {
                 poisoned.into_inner()
             });
             cache.put(text.to_string(), embedding.clone());
+            tracing::trace!(query = text, cache_len = cache.len(), "Embedding cached");
         }
 
         Ok(embedding)

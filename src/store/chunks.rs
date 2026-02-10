@@ -796,12 +796,32 @@ impl Store {
     /// Returns minimal metadata needed to match chunks across stores.
     /// Loads all rows but only lightweight columns (no content or embeddings).
     pub fn all_chunk_identities(&self) -> Result<Vec<ChunkIdentity>, StoreError> {
+        self.all_chunk_identities_filtered(None)
+    }
+
+    /// Like `all_chunk_identities` but with an optional language filter.
+    ///
+    /// When `language` is `Some`, only chunks matching that language are returned,
+    /// avoiding loading all chunks into memory when only one language is needed.
+    pub fn all_chunk_identities_filtered(
+        &self,
+        language: Option<&str>,
+    ) -> Result<Vec<ChunkIdentity>, StoreError> {
         self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT id, origin, name, chunk_type, language, line_start, parent_id, window_idx FROM chunks",
-            )
-            .fetch_all(&self.pool)
-            .await?;
+            let rows: Vec<_> = if let Some(lang) = language {
+                sqlx::query(
+                    "SELECT id, origin, name, chunk_type, language, line_start, parent_id, window_idx FROM chunks WHERE language = ?1",
+                )
+                .bind(lang)
+                .fetch_all(&self.pool)
+                .await?
+            } else {
+                sqlx::query(
+                    "SELECT id, origin, name, chunk_type, language, line_start, parent_id, window_idx FROM chunks",
+                )
+                .fetch_all(&self.pool)
+                .await?
+            };
 
             Ok(rows
                 .iter()

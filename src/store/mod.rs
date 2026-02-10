@@ -276,8 +276,13 @@ impl Store {
     }
 
     /// Create a new index
+    ///
+    /// Wraps all DDL and metadata inserts in a single transaction so a
+    /// crash mid-init cannot leave a partial schema.
     pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
         self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
             // Create tables - execute each statement separately
             let schema = include_str!("../schema.sql");
             for statement in schema.split(';') {
@@ -293,7 +298,7 @@ impl Store {
                 if stmt.is_empty() {
                     continue;
                 }
-                sqlx::query(stmt).execute(&self.pool).await?;
+                sqlx::query(stmt).execute(&mut *tx).await?;
             }
 
             // Store metadata (OR REPLACE handles re-init after incomplete cleanup)
@@ -301,28 +306,30 @@ impl Store {
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("schema_version")
                 .bind(CURRENT_SCHEMA_VERSION.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("model_name")
                 .bind(&model_info.name)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("dimensions")
                 .bind(model_info.dimensions.to_string())
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("created_at")
                 .bind(&now)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("cq_version")
                 .bind(env!("CARGO_PKG_VERSION"))
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
+
+            tx.commit().await?;
 
             tracing::info!(
                 schema_version = CURRENT_SCHEMA_VERSION,
@@ -666,7 +673,7 @@ impl Drop for Store {
                     .execute(&self.pool)
                     .await
             }) {
-                tracing::debug!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
+                tracing::warn!(error = %e, "WAL checkpoint on drop failed (non-fatal)");
             }
         }));
         // Pool closes automatically when dropped

@@ -404,11 +404,11 @@ impl Store {
                 std::collections::HashMap::new();
 
             for (caller, callee) in rows {
-                forward
-                    .entry(caller.clone())
+                reverse
+                    .entry(callee.clone())
                     .or_default()
-                    .push(callee.clone());
-                reverse.entry(callee).or_default().push(caller);
+                    .push(caller.clone());
+                forward.entry(caller).or_default().push(callee);
             }
 
             Ok(CallGraph { forward, reverse })

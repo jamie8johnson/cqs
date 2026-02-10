@@ -72,38 +72,26 @@ pub fn semantic_diff(
 ) -> Result<DiffResult, StoreError> {
     let _span = tracing::info_span!("semantic_diff").entered();
 
-    // Load identities from both stores
-    let source_ids = source_store.all_chunk_identities()?;
-    let target_ids = target_store.all_chunk_identities()?;
+    // Load identities from both stores (push language filter into SQL when present)
+    let source_ids = source_store.all_chunk_identities_filtered(language_filter)?;
+    let target_ids = target_store.all_chunk_identities_filtered(language_filter)?;
 
     // Collapse windowed chunks: keep only window_idx=0 (or None)
+    // When language filter is active, also exclude "unknown" chunk types
     let source_ids: Vec<_> = source_ids
         .into_iter()
-        .filter(|c| c.window_idx.is_none_or(|i| i == 0))
+        .filter(|c| {
+            c.window_idx.is_none_or(|i| i == 0)
+                && (language_filter.is_none() || c.chunk_type != "unknown")
+        })
         .collect();
     let target_ids: Vec<_> = target_ids
         .into_iter()
-        .filter(|c| c.window_idx.is_none_or(|i| i == 0))
+        .filter(|c| {
+            c.window_idx.is_none_or(|i| i == 0)
+                && (language_filter.is_none() || c.chunk_type != "unknown")
+        })
         .collect();
-
-    // Apply language filter
-    let source_ids: Vec<_> = if let Some(lang) = language_filter {
-        source_ids
-            .into_iter()
-            .filter(|c| c.chunk_type != "unknown" && c.language == lang)
-            .collect()
-    } else {
-        source_ids
-    };
-
-    let target_ids: Vec<_> = if let Some(lang) = language_filter {
-        target_ids
-            .into_iter()
-            .filter(|c| c.chunk_type != "unknown" && c.language == lang)
-            .collect()
-    } else {
-        target_ids
-    };
 
     tracing::debug!(
         source_count = source_ids.len(),

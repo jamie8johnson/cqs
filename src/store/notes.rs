@@ -260,7 +260,12 @@ impl Store {
         })
     }
 
-    /// Get note statistics (total, warnings, patterns)
+    /// Get note statistics (total, warnings, patterns).
+    ///
+    /// Uses `SENTIMENT_NEGATIVE_THRESHOLD` (-0.3) and `SENTIMENT_POSITIVE_THRESHOLD` (0.3)
+    /// to classify notes. These thresholds work with discrete sentiment values
+    /// (-1, -0.5, 0, 0.5, 1) -- negative values (-1, -0.5) count as warnings,
+    /// positive values (0.5, 1) count as patterns.
     pub fn note_stats(&self) -> Result<NoteStats, StoreError> {
         self.rt.block_on(async {
             let (total, warnings, patterns): (i64, i64, i64) = sqlx::query_as(
@@ -303,5 +308,23 @@ impl Store {
 
             Ok(results)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
+
+    #[test]
+    fn sentiment_thresholds_match_discrete_values() {
+        // Discrete sentiment values: -1, -0.5, 0, 0.5, 1
+        // Negative threshold must sit between -0.5 and 0 so that
+        // -0.5 counts as a warning but 0 does not.
+        assert!(SENTIMENT_NEGATIVE_THRESHOLD > -0.5);
+        assert!(SENTIMENT_NEGATIVE_THRESHOLD < 0.0);
+        // Positive threshold must sit between 0 and 0.5 so that
+        // 0.5 counts as a pattern but 0 does not.
+        assert!(SENTIMENT_POSITIVE_THRESHOLD > 0.0);
+        assert!(SENTIMENT_POSITIVE_THRESHOLD < 0.5);
     }
 }
