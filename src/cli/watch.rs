@@ -139,6 +139,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                     // Reindex code files if any changed
                     if !pending_files.is_empty() {
                         let files: Vec<PathBuf> = pending_files.drain().collect();
+                        pending_files.shrink_to(64);
                         if !cli.quiet {
                             println!("\n{} file(s) changed, reindexing...", files.len());
                             for f in &files {
@@ -256,24 +257,62 @@ fn reindex_files(
         return Ok(0);
     }
 
-    // Generate embeddings with neutral sentiment for code chunks
-    let texts: Vec<String> = chunks.iter().map(generate_nl_description).collect();
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let embeddings: Vec<Embedding> = embedder
-        .embed_documents(&text_refs)?
-        .into_iter()
-        .map(|e| e.with_sentiment(0.0))
-        .collect();
+    // Check content hash cache to skip re-embedding unchanged chunks
+    let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+    let existing = store.get_embeddings_by_hashes(&hashes);
+
+    let mut cached: Vec<(usize, Embedding)> = Vec::new();
+    let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();
+    for (i, chunk) in chunks.iter().enumerate() {
+        if let Some(emb) = existing.get(&chunk.content_hash) {
+            cached.push((i, emb.clone()));
+        } else {
+            to_embed.push((i, chunk));
+        }
+    }
+
+    // Only embed chunks that don't have cached embeddings
+    let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {
+        vec![]
+    } else {
+        let texts: Vec<String> = to_embed
+            .iter()
+            .map(|(_, c)| generate_nl_description(c))
+            .collect();
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        embedder
+            .embed_documents(&text_refs)?
+            .into_iter()
+            .map(|e| e.with_sentiment(0.0))
+            .collect()
+    };
+
+    // Merge cached and new embeddings in original chunk order
+    let mut embeddings: Vec<Embedding> = vec![Embedding::new(vec![]); chunks.len()];
+    for (i, emb) in cached {
+        embeddings[i] = emb;
+    }
+    for ((i, _), emb) in to_embed.into_iter().zip(new_embeddings) {
+        embeddings[i] = emb;
+    }
 
     // Delete old chunks for these files and insert new ones
     for rel_path in files {
         store.delete_by_origin(rel_path)?;
     }
 
+    // Group chunks by file for batch upsert with per-file mtime
     let mut mtime_cache: HashMap<&std::path::Path, Option<i64>> = HashMap::new();
+    let mut by_file: HashMap<&std::path::Path, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
     for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
-        let mtime = *mtime_cache.entry(chunk.file.as_path()).or_insert_with(|| {
-            let abs_path = root.join(&chunk.file);
+        by_file
+            .entry(chunk.file.as_path())
+            .or_default()
+            .push((chunk.clone(), embedding.clone()));
+    }
+    for (file, pairs) in &by_file {
+        let mtime = *mtime_cache.entry(file).or_insert_with(|| {
+            let abs_path = root.join(file);
             abs_path
                 .metadata()
                 .and_then(|m| m.modified())
@@ -281,7 +320,7 @@ fn reindex_files(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
         });
-        store.upsert_chunk(chunk, embedding, mtime)?;
+        store.upsert_chunks_batch(pairs, mtime)?;
     }
 
     // Extract call graph for changed files

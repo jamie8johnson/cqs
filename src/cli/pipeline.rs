@@ -461,9 +461,10 @@ pub(crate) fn run_index_pipeline(
     });
 
     // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
+    // CPU embedder is lazy-initialized on first batch to save ~500MB when GPU handles everything.
     let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let embedder = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
         let store = store_for_cpu;
+        let mut embedder: Option<Embedder> = None;
 
         loop {
             if check_interrupted() {
@@ -488,16 +489,24 @@ pub(crate) fn run_index_pipeline(
                 },
             };
 
+            // Lazy-init CPU embedder on first batch
+            let emb = match &embedder {
+                Some(e) => e,
+                None => {
+                    let e = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
+                    embedder.insert(e)
+                }
+            };
+
             // Prepare batch: windowing, cache check, text generation
-            let prepared = prepare_for_embedding(batch, &embedder, &store);
+            let prepared = prepare_for_embedding(batch, emb, &store);
 
             // Embed new chunks (CPU only)
             let new_embeddings: Vec<Embedding> = if prepared.to_embed.is_empty() {
                 vec![]
             } else {
                 let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
-                embedder
-                    .embed_documents(&text_refs)?
+                emb.embed_documents(&text_refs)?
                     .into_iter()
                     .map(|e| e.with_sentiment(0.0))
                     .collect()

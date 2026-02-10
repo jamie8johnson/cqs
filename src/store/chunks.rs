@@ -532,9 +532,8 @@ impl Store {
     /// Batch name search: look up multiple names in a single call.
     ///
     /// For each name, returns up to `limit_per_name` matching chunks.
-    /// Uses individual FTS queries per name (FTS5 doesn't support OR across
-    /// column-filtered terms efficiently), but all run within a single
-    /// `block_on` call to minimize runtime overhead.
+    /// Batches names into groups of 20 and issues a combined FTS OR query
+    /// per batch, then post-filters results to assign to matching names.
     ///
     /// Used by `gather` BFS expansion to avoid N+1 query patterns.
     pub fn search_by_names_batch(
@@ -549,15 +548,25 @@ impl Store {
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<super::SearchResult>> = HashMap::new();
 
-            for name in names {
-                let normalized = normalize_for_fts(name);
-                if normalized.is_empty() {
-                    continue;
-                }
+            // Normalize all names upfront, keeping originals for scoring
+            let normalized_names: Vec<(&str, String)> = names
+                .iter()
+                .map(|n| (*n, normalize_for_fts(n)))
+                .filter(|(_, norm)| !norm.is_empty())
+                .collect();
 
-                let fts_query =
-                    format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
+            // Batch into groups of 20 to avoid overly complex FTS queries
+            const BATCH_SIZE: usize = 20;
+            for batch in normalized_names.chunks(BATCH_SIZE) {
+                // Build combined FTS query with OR
+                let fts_terms: Vec<String> = batch
+                    .iter()
+                    .map(|(_, norm)| format!("name:\"{}\" OR name:\"{}\"*", norm, norm))
+                    .collect();
+                let combined_fts = fts_terms.join(" OR ");
 
+                // Single query for the batch with higher limit
+                let total_limit = limit_per_name * batch.len();
                 let rows: Vec<_> = sqlx::query(
                     "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
                      FROM chunks c
@@ -566,34 +575,41 @@ impl Store {
                      ORDER BY bm25(chunks_fts, 10.0, 1.0, 1.0, 1.0)
                      LIMIT ?2",
                 )
-                .bind(&fts_query)
-                .bind(limit_per_name as i64)
+                .bind(&combined_fts)
+                .bind(total_limit as i64)
                 .fetch_all(&self.pool)
                 .await?;
 
-                let results: Vec<super::SearchResult> = rows
-                    .into_iter()
-                    .map(|row| {
-                        let chunk = ChunkSummary::from(ChunkRow {
-                            id: row.get(0),
-                            origin: row.get(1),
-                            language: row.get(2),
-                            chunk_type: row.get(3),
-                            name: row.get(4),
-                            signature: row.get(5),
-                            content: row.get(6),
-                            doc: row.get(7),
-                            line_start: clamp_line_number(row.get::<i64, _>(8)),
-                            line_end: clamp_line_number(row.get::<i64, _>(9)),
-                            parent_id: row.get(10),
-                        });
-                        let score = super::score_name_match(&chunk.name, name);
-                        super::SearchResult { chunk, score }
-                    })
-                    .collect();
+                // Post-filter: assign each row to matching names
+                for row in rows {
+                    let chunk = ChunkSummary::from(ChunkRow {
+                        id: row.get(0),
+                        origin: row.get(1),
+                        language: row.get(2),
+                        chunk_type: row.get(3),
+                        name: row.get(4),
+                        signature: row.get(5),
+                        content: row.get(6),
+                        doc: row.get(7),
+                        line_start: clamp_line_number(row.get::<i64, _>(8)),
+                        line_end: clamp_line_number(row.get::<i64, _>(9)),
+                        parent_id: row.get(10),
+                    });
 
-                if !results.is_empty() {
-                    result.insert(name.to_string(), results);
+                    // Find which query names this result matches
+                    for (original_name, _normalized) in batch {
+                        let score = super::score_name_match(&chunk.name, original_name);
+                        if score > 0.0 {
+                            let entry = result.entry(original_name.to_string()).or_default();
+                            if entry.len() < limit_per_name {
+                                entry.push(super::SearchResult {
+                                    chunk: chunk.clone(),
+                                    score,
+                                });
+                            }
+                            break;
+                        }
+                    }
                 }
             }
 

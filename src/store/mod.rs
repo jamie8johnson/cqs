@@ -203,6 +203,72 @@ impl Store {
         Ok(store)
     }
 
+    /// Open an existing index in read-only mode with reduced resources.
+    ///
+    /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
+    /// Suitable for reference stores and background builds that only read data.
+    pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| StoreError::Runtime(e.to_string()))?;
+
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let db_url = format!("sqlite://{}?mode=ro", path_str);
+
+        let pool = rt.block_on(async {
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .idle_timeout(std::time::Duration::from_secs(300))
+                .after_connect(|conn, _meta| {
+                    Box::pin(async move {
+                        sqlx::query("PRAGMA foreign_keys = ON")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA journal_mode = WAL")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA busy_timeout = 5000")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA synchronous = NORMAL")
+                            .execute(&mut *conn)
+                            .await?;
+                        // 4MB page cache (reduced from 16MB)
+                        sqlx::query("PRAGMA cache_size = -4096")
+                            .execute(&mut *conn)
+                            .await?;
+                        sqlx::query("PRAGMA temp_store = MEMORY")
+                            .execute(&mut *conn)
+                            .await?;
+                        // 64MB mmap (reduced from 256MB)
+                        sqlx::query("PRAGMA mmap_size = 67108864")
+                            .execute(&mut *conn)
+                            .await?;
+                        Ok(())
+                    })
+                })
+                .connect(&db_url)
+                .await
+        })?;
+
+        let store = Self {
+            pool,
+            rt,
+            closed: AtomicBool::new(false),
+        };
+
+        // Skip permissions setting (read-only, no file creation)
+
+        tracing::info!(path = %path.display(), "Database connected (read-only)");
+
+        store.check_schema_version(path)?;
+        store.check_model_version()?;
+        store.check_cq_version();
+
+        Ok(store)
+    }
+
     /// Create a new index
     pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
         self.rt.block_on(async {

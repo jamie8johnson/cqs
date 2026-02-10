@@ -273,15 +273,16 @@ impl HnswIndex {
             )));
         }
 
-        // Load ID map
-        let id_map_json = std::fs::read_to_string(&id_map_path).map_err(|e| {
+        // Load ID map via streaming parse to avoid holding raw JSON + parsed Vec simultaneously
+        let id_map_file = std::fs::File::open(&id_map_path).map_err(|e| {
             HnswError::Internal(format!(
-                "Failed to read ID map {}: {}",
+                "Failed to open ID map {}: {}",
                 id_map_path.display(),
                 e
             ))
         })?;
-        let id_map: Vec<String> = serde_json::from_str(&id_map_json)
+        let id_map_reader = std::io::BufReader::new(id_map_file);
+        let id_map: Vec<String> = serde_json::from_reader(id_map_reader)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
 
         // Load HNSW graph using LoadedHnsw for proper memory management

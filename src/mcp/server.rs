@@ -117,7 +117,7 @@ impl McpServer {
         tracing::info!("MCP: Building CAGRA GPU index in background...");
 
         // Open a separate store connection for the background thread
-        let store = match Store::open(index_path) {
+        let store = match Store::open_readonly(index_path) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!("MCP: Failed to open store for CAGRA build: {}", e);
