@@ -58,6 +58,10 @@ pub struct Config {
     pub quiet: Option<bool>,
     /// Enable verbose mode by default
     pub verbose: Option<bool>,
+    /// Default note weight for unified search (overridden by --note-weight)
+    pub note_weight: Option<f32>,
+    /// Default note-only mode (overridden by --note-only)
+    pub note_only: Option<bool>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -71,7 +75,7 @@ impl Config {
             .and_then(|p| match Self::load_file(&p) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("Warning: {}", e);
+                    tracing::warn!(error = %e, "Failed to load config file");
                     None
                 }
             })
@@ -80,7 +84,7 @@ impl Config {
         let project_config = match Self::load_file(&project_root.join(".cqs.toml")) {
             Ok(c) => c.unwrap_or_default(),
             Err(e) => {
-                eprintln!("Warning: {}", e);
+                tracing::warn!(error = %e, "Failed to load config file");
                 Config::default()
             }
         };
@@ -141,11 +145,23 @@ impl Config {
                 *nb = nb.clamp(0.0, 1.0);
             }
         }
+        // Clamp note_weight to [0.0, 1.0]
+        if let Some(ref mut nw) = merged.note_weight {
+            if *nw < 0.0 || *nw > 1.0 {
+                tracing::warn!(
+                    note_weight = *nw,
+                    "Config note_weight out of bounds [0.0, 1.0], clamping"
+                );
+                *nw = nw.clamp(0.0, 1.0);
+            }
+        }
 
         tracing::debug!(
             limit = ?merged.limit,
             threshold = ?merged.threshold,
             name_boost = ?merged.name_boost,
+            note_weight = ?merged.note_weight,
+            note_only = ?merged.note_only,
             quiet = ?merged.quiet,
             verbose = ?merged.verbose,
             references = merged.references.len(),
@@ -220,6 +236,8 @@ impl Config {
             name_boost: other.name_boost.or(self.name_boost),
             quiet: other.quiet.or(self.quiet),
             verbose: other.verbose.or(self.verbose),
+            note_weight: other.note_weight.or(self.note_weight),
+            note_only: other.note_only.or(self.note_only),
             references: refs,
         }
     }

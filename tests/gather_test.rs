@@ -52,6 +52,7 @@ fn test_gather_basic() {
         expand_depth: 1,
         direction: GatherDirection::Both,
         limit: 10,
+        ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
     let result = cqs::gather(
@@ -88,6 +89,7 @@ fn test_gather_no_expansion() {
         expand_depth: 0,
         direction: GatherDirection::Both,
         limit: 10,
+        ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
     let result = cqs::gather(
@@ -152,6 +154,7 @@ fn test_gather_callers_only() {
         expand_depth: 1,
         direction: GatherDirection::Callers,
         limit: 10,
+        ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
     let result = cqs::gather(
@@ -195,6 +198,7 @@ fn test_gather_callees_only() {
         expand_depth: 1,
         direction: GatherDirection::Callees,
         limit: 10,
+        ..GatherOptions::default()
     };
     let query = mock_embedding(1.0);
     let result = cqs::gather(

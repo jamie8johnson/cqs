@@ -4,7 +4,10 @@ use anyhow::{bail, Result};
 use serde_json::Value;
 
 use super::super::server::McpServer;
-use super::{call_graph, explain, search, similar, stats};
+use super::{
+    audit, call_graph, context, dead, diff, explain, gather, gc, impact, notes, read, search,
+    similar, stats, test_map, trace,
+};
 
 pub fn tool_batch(server: &McpServer, arguments: Value) -> Result<Value> {
     let queries = arguments
@@ -31,8 +34,23 @@ pub fn tool_batch(server: &McpServer, arguments: Value) -> Result<Value> {
             "explain" => explain::tool_explain(server, args),
             "similar" => similar::tool_similar(server, args),
             "stats" => stats::tool_stats(server),
+            "gather" => gather::tool_gather(server, args),
+            "impact" => impact::tool_impact(server, args),
+            "trace" => trace::tool_trace(server, args),
+            "test_map" => test_map::tool_test_map(server, args),
+            "context" => context::tool_context(server, args),
+            "dead" => dead::tool_dead(server, args),
+            "read" => read::tool_read(server, args),
+            "diff" => diff::tool_diff(server, args),
+            "gc" => gc::tool_gc(server),
+            "audit_mode" => audit::tool_audit_mode(server, args),
+            "add_note" => notes::tool_add_note(server, args),
+            "update_note" => notes::tool_update_note(server, args),
+            "remove_note" => notes::tool_remove_note(server, args),
             _ => Err(anyhow::anyhow!(
-                "Unknown batch tool: '{}'. Valid: search, callers, callees, explain, similar, stats",
+                "Unknown batch tool: '{}'. Valid: search, callers, callees, explain, similar, stats, \
+                 gather, impact, trace, test_map, context, dead, read, diff, gc, audit_mode, \
+                 add_note, update_note, remove_note",
                 tool
             )),
         };
@@ -50,7 +68,10 @@ pub fn tool_batch(server: &McpServer, arguments: Value) -> Result<Value> {
                     .unwrap_or(val.clone());
                 serde_json::json!({"tool": tool, "result": inner})
             }
-            Err(e) => serde_json::json!({"tool": tool, "error": e.to_string()}),
+            Err(e) => {
+                tracing::warn!(tool = %tool, error = %e, "Batch tool execution failed");
+                serde_json::json!({"tool": tool, "error": e.to_string()})
+            }
         };
         results.push(entry);
     }

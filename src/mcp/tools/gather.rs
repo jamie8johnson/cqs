@@ -40,6 +40,7 @@ pub fn tool_gather(server: &McpServer, arguments: Value) -> Result<Value> {
         expand_depth: expand,
         direction,
         limit,
+        ..GatherOptions::default()
     };
 
     let result = gather(

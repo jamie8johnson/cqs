@@ -34,6 +34,13 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
 /// and may have arbitrary dimensions (not necessarily EMBEDDING_DIM).
 pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
+        if a.len() != b.len() {
+            tracing::warn!(
+                a_len = a.len(),
+                b_len = b.len(),
+                "full_cosine_similarity: dimension mismatch"
+            );
+        }
         return 0.0;
     }
     let mut dot = 0.0f32;

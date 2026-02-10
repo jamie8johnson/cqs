@@ -219,6 +219,7 @@ impl Store {
             }
 
             tx.commit().await?;
+            tracing::info!(source = %source_str, count = notes.len(), "Notes replaced successfully");
             Ok(notes.len())
         })
     }

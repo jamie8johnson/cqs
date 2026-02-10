@@ -110,4 +110,14 @@ pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config)
             cli.verbose = true;
         }
     }
+    if (cli.note_weight - 1.0).abs() < f32::EPSILON {
+        if let Some(note_weight) = config.note_weight {
+            cli.note_weight = note_weight;
+        }
+    }
+    if !cli.note_only {
+        if let Some(true) = config.note_only {
+            cli.note_only = true;
+        }
+    }
 }

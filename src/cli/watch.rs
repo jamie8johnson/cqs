@@ -75,8 +75,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     let mut last_event = std::time::Instant::now();
     let debounce = Duration::from_millis(debounce_ms);
     let notes_path = root.join("docs/notes.toml");
-    let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or(cqs_dir);
-    let notes_path = dunce::canonicalize(&notes_path).unwrap_or(notes_path);
+    let cqs_dir = dunce::canonicalize(&cqs_dir).unwrap_or_else(|e| {
+        tracing::debug!(path = %cqs_dir.display(), error = %e, "canonicalize failed, using original");
+        cqs_dir
+    });
+    let notes_path = dunce::canonicalize(&notes_path).unwrap_or_else(|e| {
+        tracing::debug!(path = %notes_path.display(), error = %e, "canonicalize failed, using original");
+        notes_path
+    });
 
     // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
     // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
@@ -90,7 +96,10 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
                 for path in event.paths {
-                    let path = dunce::canonicalize(&path).unwrap_or(path);
+                    let path = dunce::canonicalize(&path).unwrap_or_else(|e| {
+                        tracing::debug!(path = %path.display(), error = %e, "canonicalize failed, using original");
+                        path
+                    });
                     // Skip .cqs directory
                     if path.starts_with(&cqs_dir) {
                         continue;

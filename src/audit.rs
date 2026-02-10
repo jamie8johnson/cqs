@@ -110,6 +110,11 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     };
     let content = serde_json::to_string_pretty(&file).context("Failed to serialize audit mode")?;
     std::fs::write(&path, content).context("Failed to write audit-mode.json")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 

@@ -326,7 +326,7 @@
 
 ### Done
 
-- [x] **SQL** — forked tree-sitter-sql with CREATE/ALTER PROCEDURE/FUNCTION, GO batch separator, EXEC statement support. T-SQL name extraction with error recovery fallback. 8 languages total.
+- [x] **SQL** — forked tree-sitter-sql with CREATE/ALTER PROCEDURE/FUNCTION, GO batch separator, EXEC statement support. T-SQL name extraction with error recovery fallback. 9 languages total (Markdown added in v0.9.6).
 - [x] P3 audit fixes (#264-266) — completed in PR #296
 - [x] Audit cleanup batch (PR #308): #265 error propagation, #264 config errors, #241 config validation, #267 module boundaries, #239 test coverage, #232 CAGRA RAII guard
 
@@ -356,8 +356,6 @@
 - [ ] **Batch UX** — common batch patterns (e.g., "callers for these N functions") as named shortcuts instead of raw JSON construction
 
 ## Parked
-
-- **Markdown support** — `tree-sitter-markdown`, headings as chunks, sections as content. Makes docs/READMEs/specs searchable. No call graph/signatures though — half the tools wouldn't apply.
 
 ## Phase 8: Security
 

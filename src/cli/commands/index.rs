@@ -175,6 +175,7 @@ fn extract_call_graph(
     files: &HashSet<PathBuf>,
     store: &Store,
 ) -> Result<usize> {
+    let _span = tracing::info_span!("extract_call_graph", file_count = files.len()).entered();
     let mut total_calls = 0;
     for file in files {
         let abs_path = root.join(file);
@@ -190,6 +191,7 @@ fn extract_call_graph(
             }
         }
     }
+    tracing::info!(total_calls, "Call graph extraction complete");
     Ok(total_calls)
 }
 
@@ -238,6 +240,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 /// so that notes added via MCP are immediately searchable without rebuild.
 pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
     let chunk_count = store.chunk_count()? as usize;
+    let _span = tracing::info_span!("build_hnsw_index", chunk_count).entered();
 
     if chunk_count == 0 {
         return Ok(None);

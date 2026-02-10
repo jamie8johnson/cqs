@@ -16,6 +16,8 @@ pub(crate) fn cmd_gather(
     limit: usize,
     json: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_gather", query_len = query.len(), expand, limit).entered();
+
     let root = find_project_root();
     let index_path = cqs::resolve_index_dir(&root).join("index.db");
 
@@ -32,6 +34,7 @@ pub(crate) fn cmd_gather(
         expand_depth: expand.clamp(0, 5),
         direction: dir,
         limit,
+        ..GatherOptions::default()
     };
 
     let result = gather(&store, &query_embedding, query, &opts, &root)?;

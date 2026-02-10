@@ -15,6 +15,8 @@ use super::build_hnsw_index;
 
 /// Run garbage collection on the index
 pub(crate) fn cmd_gc(json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_gc").entered();
+
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -38,9 +40,11 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
 
     // Prune chunks for missing files
     let pruned_chunks = store.prune_missing(&file_set)?;
+    tracing::debug!(pruned_chunks, "Chunks pruned");
 
     // Prune orphan call graph entries
     let pruned_calls = store.prune_stale_calls()?;
+    tracing::debug!(pruned_calls, "Calls pruned");
 
     // Rebuild HNSW if we pruned anything
     let hnsw_vectors = if pruned_chunks > 0 {

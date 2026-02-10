@@ -177,12 +177,18 @@ impl Store {
             use std::os::unix::fs::PermissionsExt;
             let restrictive = std::fs::Permissions::from_mode(0o600);
             // Main database file
-            let _ = std::fs::set_permissions(path, restrictive.clone());
+            if let Err(e) = std::fs::set_permissions(path, restrictive.clone()) {
+                tracing::debug!(path = %path.display(), error = %e, "Failed to set permissions");
+            }
             // WAL and SHM files (may not exist yet, ignore errors)
             let wal_path = path.with_extension("db-wal");
             let shm_path = path.with_extension("db-shm");
-            let _ = std::fs::set_permissions(&wal_path, restrictive.clone());
-            let _ = std::fs::set_permissions(&shm_path, restrictive);
+            if let Err(e) = std::fs::set_permissions(&wal_path, restrictive.clone()) {
+                tracing::debug!(path = %wal_path.display(), error = %e, "Failed to set permissions");
+            }
+            if let Err(e) = std::fs::set_permissions(&shm_path, restrictive) {
+                tracing::debug!(path = %shm_path.display(), error = %e, "Failed to set permissions");
+            }
         }
 
         tracing::info!(path = %path.display(), "Database connected");
@@ -347,6 +353,8 @@ impl Store {
                             EXPECTED_DIMENSIONS,
                         ));
                     }
+                } else {
+                    tracing::warn!(dim = %dim_str, "Failed to parse stored dimension");
                 }
             }
 
