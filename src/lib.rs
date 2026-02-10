@@ -15,7 +15,6 @@
 //!
 //! ```no_run
 //! use cqs::{Embedder, Parser, Store};
-//! use cqs::store::ModelInfo;
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! // Initialize components
@@ -127,7 +126,7 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     let old_dir = project_root.join(LEGACY_INDEX_DIR);
 
     if old_dir.exists() && !new_dir.exists() && std::fs::rename(&old_dir, &new_dir).is_ok() {
-        eprintln!("Migrated index directory from .cq/ to .cqs/");
+        tracing::info!("Migrated index directory from .cq/ to .cqs/");
     }
 
     if new_dir.exists() {

@@ -29,15 +29,15 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `normalize_for_fts` byte-slices CJK text → panic (MCP crashable) | R7/S10 | medium | |
-| 2 | `notes list` byte-truncation `&note.text[..117]` → panic on CJK | R8/EH13 | easy | |
-| 3 | Windowed chunk ID path extraction via `rfind(':')` breaks glob filter | AC10 | easy | |
-| 4 | Dead code detection trait impl check matches method body, not impl block | AC5 | medium | |
-| 5 | `resolve_target` silently returns wrong-file result on filter miss | EH11 | medium | |
-| 6 | CLI `--limit` not clamped — `usize::MAX as i64` wraps to -1, returns all rows | R4 | easy | |
-| 7 | `gather()` BFS non-deterministic output (HashMap iteration order) | AC2 | easy | |
-| 8 | Tautological assertion in gather test (`!empty || empty`) | TC1 | easy | |
-| 9 | Diff test never asserts on `modified` list | TC12 | easy | |
+| 1 | `normalize_for_fts` byte-slices CJK text → panic (MCP crashable) | R7/S10 | medium | PR #334 |
+| 2 | `notes list` byte-truncation `&note.text[..117]` → panic on CJK | R8/EH13 | easy | PR #334 |
+| 3 | Windowed chunk ID path extraction via `rfind(':')` breaks glob filter | AC10 | easy | PR #334 |
+| 4 | Dead code detection trait impl check matches method body, not impl block | AC5 | medium | PR #334 |
+| 5 | `resolve_target` silently returns wrong-file result on filter miss | EH11 | medium | PR #334 |
+| 6 | CLI `--limit` not clamped — `usize::MAX as i64` wraps to -1, returns all rows | R4 | easy | PR #334 |
+| 7 | `gather()` BFS non-deterministic output (HashMap iteration order) | AC2 | easy | PR #334 |
+| 8 | Tautological assertion in gather test (`!empty || empty`) | TC1 | easy | PR #334 |
+| 9 | Diff test never asserts on `modified` list | TC12 | easy | PR #334 |
 
 ### Duplication / Code Quality
 
@@ -128,9 +128,9 @@ After de-duplication: **~140 unique findings**
 | 2 | Diff ChunkKey includes line_start → false add+remove on reorder | AC4 | medium | |
 | 3 | `search_across_projects` never uses HNSW (always O(n)) | AC7 | medium | |
 | 4 | Unified search note slots over-allocated when code sparse | AC1 | medium | |
-| 5 | impact/test_map MCP tools swallow DB errors with `.ok()` | EH5 | medium | |
-| 6 | impact/test_map CLI tools swallow DB errors with `.ok()` | EH6 | medium | |
-| 7 | `gather()` silently falls back to empty on batch search failure | EH4 | medium | |
+| 5 | impact/test_map MCP tools swallow DB errors with `.ok()` | EH5 | medium | PR #334 |
+| 6 | impact/test_map CLI tools swallow DB errors with `.ok()` | EH6 | medium | PR #334 |
+| 7 | `gather()` silently falls back to empty on batch search failure | EH4 | medium | PR #334 |
 
 ### Duplication (medium)
 

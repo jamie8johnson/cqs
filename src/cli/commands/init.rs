@@ -26,7 +26,9 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700));
+        if let Err(e) = std::fs::set_permissions(&cqs_dir, std::fs::Permissions::from_mode(0o700)) {
+            tracing::debug!(error = %e, "Failed to set .cqs directory permissions");
+        }
     }
 
     // Create .gitignore

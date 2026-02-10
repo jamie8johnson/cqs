@@ -218,7 +218,7 @@ fn cmd_notes_add(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
-            eprintln!("Warning: {}", err);
+            tracing::warn!(error = %err, "Note operation warning");
         }
     }
 
@@ -314,7 +314,7 @@ fn cmd_notes_update(
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
-            eprintln!("Warning: {}", err);
+            tracing::warn!(error = %err, "Note operation warning");
         }
     }
 
@@ -377,7 +377,7 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
             println!("Indexed {} notes.", indexed);
         }
         if let Some(err) = index_error {
-            eprintln!("Warning: {}", err);
+            tracing::warn!(error = %err, "Note operation warning");
         }
     }
 

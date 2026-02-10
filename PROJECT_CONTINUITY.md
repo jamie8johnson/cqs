@@ -5,18 +5,20 @@
 **v0.9.7 audit fix session.** 2026-02-10.
 
 ### Active
-- PR2 (Critical Bugs): 3 parallel agents running — 10 bug fixes
-  - Agent A: R7/S10 (nl.rs byte truncation), R8/EH13 (notes byte truncation), AC10 (chunk ID path), EH11 (resolve fallback)
-  - Agent B: AC5 (dead code trait impl), R4 (CLI limit clamp), AC2 (gather determinism), EH4 (gather fallback)
-  - Agent C: EH5/EH6 (impact .ok() swallowing), TC1 (tautological gather test), TC12 (diff modified assert)
-- Branch: `audit-pr2-critical-bugs`
-- Team: `pr2-bugs`
+- Next: PR3 (Mechanical Improvements) — 33 fixes across eprintln→tracing, docs, observability, error handling, permissions, extensibility
 
 ### Completed
+- PR2 (Critical Bugs): merged as PR #334 — 10 bug fixes
+  - nl.rs: floor_char_boundary for CJK-safe truncation (R7/S10)
+  - notes.rs: char_indices preview truncation (R8/EH13)
+  - search.rs: windowed chunk ID path + resolve_target error on filter miss (AC10, EH11)
+  - calls.rs: TRAIT_METHOD_NAMES set for dead code detection (AC5)
+  - cli/mod.rs: limit clamp 1..100 (R4)
+  - gather.rs: deterministic sort + search_degraded flag (AC2, EH4)
+  - impact.rs: tracing::warn instead of .ok() (EH5/EH6)
+  - tests: non-tautological assertions (TC1, TC12)
 - PR1 (Foundation): merged as PR #333 — extracted shared modules + dedup (11 fixes)
-  - New: src/focused_read.rs, src/impact.rs
-  - Modified: search.rs, store/helpers.rs, note.rs, math.rs, diff.rs, markdown.rs, nl.rs, hnsw/mod.rs, cli/commands/impact.rs, mcp/tools/impact.rs, cli/commands/read.rs, mcp/tools/read.rs, cli/commands/resolve.rs, mcp/tools/resolve.rs, mcp/validation.rs, lib.rs, store/mod.rs, store/chunks.rs
-- Release binary updated after PR1 merge
+- Release binary updated after PR2 merge
 
 ### Plan
 Full audit fix plan at `/home/user001/.claude/plans/witty-strolling-melody.md`
@@ -71,7 +73,7 @@ Full audit fix plan at `/home/user001/.claude/plans/witty-strolling-melody.md`
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- 302 lib + 233 integration tests (with gpu-search), 0 warnings, clippy clean
+- 310 lib + 243 integration tests (with gpu-search), 0 warnings, clippy clean
 - MCP tools: 20 (also available as CLI commands now)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)

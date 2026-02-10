@@ -203,7 +203,9 @@ impl HnswIndex {
             for ext in &["hnsw.ids", "hnsw.graph", "hnsw.data", "hnsw.checksum"] {
                 let path = temp_dir.join(format!("{}.{}", basename, ext));
                 if path.exists() {
-                    let _ = std::fs::set_permissions(&path, restrictive.clone());
+                    if let Err(e) = std::fs::set_permissions(&path, restrictive.clone()) {
+                        tracing::debug!(path = %path.display(), error = %e, "Failed to set HNSW file permissions");
+                    }
                 }
             }
         }
@@ -226,7 +228,7 @@ impl HnswIndex {
         }
 
         // Clean up temp directory
-        let _ = std::fs::remove_dir(&temp_dir);
+        let _ = std::fs::remove_dir_all(&temp_dir);
 
         tracing::info!(
             "HNSW index saved: {} vectors (with checksums)",

@@ -449,6 +449,7 @@ impl Store {
 
             let mut confident = Vec::new();
             let mut possibly_dead_pub = Vec::new();
+            let total_uncalled = all_uncalled.len();
 
             for chunk in all_uncalled {
                 // Skip main entry point
@@ -503,6 +504,13 @@ impl Store {
                 }
             }
 
+            tracing::debug!(
+                total_uncalled,
+                confident = confident.len(),
+                possibly_dead = possibly_dead_pub.len(),
+                "Dead code analysis complete"
+            );
+
             Ok((confident, possibly_dead_pub))
         })
     }
@@ -547,7 +555,11 @@ impl Store {
             )
             .execute(&self.pool)
             .await?;
-            Ok(result.rows_affected())
+            let count = result.rows_affected();
+            if count > 0 {
+                tracing::info!(pruned = count, "Pruned stale call graph entries");
+            }
+            Ok(count)
         })
     }
 

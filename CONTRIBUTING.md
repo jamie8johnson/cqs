@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, serve.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -138,6 +138,9 @@ src/
   gather.rs     - Smart context assembly (BFS call graph expansion)
   structural.rs - Structural pattern matching on code chunks
   project.rs    - Cross-project search registry
+  audit.rs    - Audit mode persistence (file-based, shared CLI/MCP)
+  focused_read.rs - Focused read logic (extract type dependencies)
+  impact.rs       - Impact analysis (callers + affected tests)
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API

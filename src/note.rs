@@ -193,12 +193,18 @@ pub fn rewrite_notes_file(
 
     mutate(&mut file.note)?;
 
-    let serialized = toml::to_string_pretty(&file)?;
-
-    let output = format!("{}\n{}", NOTES_HEADER, serialized);
-
     // Atomic write: temp file + rename
     let tmp_path = notes_path.with_extension("toml.tmp");
+
+    let serialized = match toml::to_string_pretty(&file) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+    };
+
+    let output = format!("{}\n{}", NOTES_HEADER, serialized);
     std::fs::write(&tmp_path, &output).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),

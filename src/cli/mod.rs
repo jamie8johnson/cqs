@@ -915,6 +915,8 @@ mod tests {
             quiet: Some(true),
             verbose: Some(true),
             references: vec![],
+            note_weight: None,
+            note_only: None,
         };
         apply_config_defaults(&mut cli, &config);
 
@@ -935,6 +937,8 @@ mod tests {
             quiet: Some(true),
             verbose: Some(true),
             references: vec![],
+            note_weight: None,
+            note_only: None,
         };
         apply_config_defaults(&mut cli, &config);
 

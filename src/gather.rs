@@ -20,6 +20,9 @@ pub struct GatherOptions {
     pub expand_depth: usize,
     pub direction: GatherDirection,
     pub limit: usize,
+    pub seed_limit: usize,
+    pub seed_threshold: f32,
+    pub decay_factor: f32,
 }
 
 impl Default for GatherOptions {
@@ -28,6 +31,9 @@ impl Default for GatherOptions {
             expand_depth: 1,
             direction: GatherDirection::Both,
             limit: 10,
+            seed_limit: 5,
+            seed_threshold: 0.3,
+            decay_factor: 0.8,
         }
     }
 }
@@ -84,13 +90,27 @@ pub fn gather(
     opts: &GatherOptions,
     project_root: &Path,
 ) -> Result<GatherResult> {
+    let _span = tracing::info_span!(
+        "gather",
+        query_len = query_text.len(),
+        expand_depth = opts.expand_depth,
+        limit = opts.limit
+    )
+    .entered();
+
     // 1. Seed with hybrid RRF search (not raw embedding-only)
     let filter = SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: true,
         ..SearchFilter::default()
     };
-    let seed_results = store.search_filtered(query_embedding, &filter, 5, 0.3)?;
+    let seed_results = store.search_filtered(
+        query_embedding,
+        &filter,
+        opts.seed_limit,
+        opts.seed_threshold,
+    )?;
+    tracing::debug!(seed_count = seed_results.len(), "Seed search complete");
     if seed_results.is_empty() {
         return Ok(GatherResult {
             chunks: Vec::new(),
@@ -130,13 +150,18 @@ pub fn gather(
                 if !name_scores.contains_key(&neighbor) {
                     // Expanded nodes get a decaying score based on depth
                     let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
-                    let decay = 0.8_f32.powi((depth + 1) as i32);
+                    let decay = opts.decay_factor.powi((depth + 1) as i32);
                     name_scores.insert(neighbor.clone(), (base_score * decay, depth + 1));
                     queue.push_back((neighbor, depth + 1));
                 }
             }
         }
     }
+    tracing::debug!(
+        expanded_nodes = name_scores.len(),
+        expansion_capped,
+        "BFS expansion complete"
+    );
 
     // 4. Batch-fetch chunks for all expanded names, deduplicate by id
     let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
@@ -178,6 +203,8 @@ pub fn gather(
             }
         }
     }
+
+    tracing::debug!(chunk_count = chunks.len(), "Chunks assembled");
 
     // 5. Sort by score desc (with name tiebreak for determinism), truncate to limit,
     //    then re-sort by file → line_start → name for stable reading order.

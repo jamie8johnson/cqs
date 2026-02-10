@@ -67,6 +67,8 @@ pub fn semantic_diff(
     threshold: f32,
     language_filter: Option<&str>,
 ) -> Result<DiffResult, StoreError> {
+    let _span = tracing::info_span!("semantic_diff").entered();
+
     // Load identities from both stores
     let source_ids = source_store.all_chunk_identities()?;
     let target_ids = target_store.all_chunk_identities()?;
@@ -99,6 +101,12 @@ pub fn semantic_diff(
     } else {
         target_ids
     };
+
+    tracing::debug!(
+        source_count = source_ids.len(),
+        target_count = target_ids.len(),
+        "Loaded chunk identities"
+    );
 
     // Build lookup maps: key → (id, identity)
     let source_map: HashMap<ChunkKey, &ChunkIdentity> =

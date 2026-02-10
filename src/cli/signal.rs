@@ -30,7 +30,7 @@ pub fn setup_signal_handler() {
         }
         eprintln!("\nInterrupted. Finishing current batch...");
     }) {
-        eprintln!("Warning: Failed to set Ctrl+C handler: {e}");
+        tracing::warn!(error = %e, "Failed to set Ctrl+C handler");
     }
 }
 

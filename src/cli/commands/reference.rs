@@ -311,17 +311,18 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     if pruned > 0 && existing_chunks > 0 {
         let remaining = existing_chunks.saturating_sub(pruned as u64);
         if remaining == 0 {
-            eprintln!(
-                "Warning: All {} chunks were pruned. The index is now empty.\n\
-                 If this was unintentional, re-index with 'cqs ref update {name}'.",
+            tracing::warn!(
                 pruned,
+                name,
+                "All chunks were pruned. The index is now empty. \
+                 If this was unintentional, re-index with 'cqs ref update'.",
             );
         } else if (pruned as u64) > existing_chunks / 2 {
-            eprintln!(
-                "Warning: Pruned {} of {} chunks (>{:.0}%). Verify source path is correct.",
+            tracing::warn!(
                 pruned,
                 existing_chunks,
-                (pruned as f64 / existing_chunks as f64) * 100.0,
+                pct = (pruned as f64 / existing_chunks as f64) * 100.0,
+                "Pruned over 50% of chunks. Verify source path is correct.",
             );
         }
     }

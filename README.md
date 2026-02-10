@@ -138,7 +138,6 @@ Find function call relationships:
 ```bash
 cqs callers <name>   # Functions that call <name>
 cqs callees <name>   # Functions called by <name>
-cqs notes list       # List all project notes with sentiment
 ```
 
 Use cases:
@@ -147,6 +146,15 @@ Use cases:
 - **Entry point discovery**: Find functions with no callers
 
 Call graph is indexed across all files - callers are found regardless of which file they're in.
+
+## Notes
+
+```bash
+cqs notes list       # List all project notes with sentiment
+cqs notes add "text" --sentiment -0.5 --mentions file.rs  # Add a note
+cqs notes update "text" --new-text "updated"               # Update a note
+cqs notes remove "text"                                    # Remove a note
+```
 
 ## Discovery Tools
 
@@ -228,7 +236,7 @@ cqs "spawn async task"    # Finds results in project AND tokio reference
 
 Reference results are ranked with a weight multiplier (default 0.8) so project results naturally appear first at equal similarity.
 
-**Source filtering**: Use the `--sources` flag to filter which indexes to search:
+**Source filtering** (MCP tool parameter only): Use `sources` to filter which indexes to search:
 - Omit to search all indexes
 - `--sources project` — search only the primary project
 - `--sources tokio` — search only the tokio reference
