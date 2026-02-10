@@ -410,6 +410,9 @@ impl Store {
     /// - `confident`: Functions with no callers that are likely dead
     /// - `possibly_dead_pub`: Public functions with no callers (may be used externally)
     ///
+    /// Uses two-phase query: lightweight metadata first, then content only for
+    /// candidates that pass name/test/path filters (avoids loading large function bodies).
+    ///
     /// Exclusions applied:
     /// - `main` entry point
     /// - Test functions (via `find_test_chunks()` heuristics)
@@ -421,10 +424,10 @@ impl Store {
         include_pub: bool,
     ) -> Result<(Vec<ChunkSummary>, Vec<ChunkSummary>), StoreError> {
         self.rt.block_on(async {
-            // Get all functions/methods with no callers (top-level only, not windowed chunks)
+            // Phase 1: Lightweight query without content/doc
             let rows: Vec<_> = sqlx::query(
                 "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
-                        c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                        c.line_start, c.line_end, c.parent_id
                  FROM chunks c
                  WHERE c.chunk_type IN ('function', 'method')
                    AND c.name NOT IN (SELECT DISTINCT callee_name FROM function_calls)
@@ -434,10 +437,33 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            let all_uncalled: Vec<ChunkSummary> = rows
+            // Build lightweight summaries (no content/doc yet)
+            struct LightChunk {
+                id: String,
+                file: PathBuf,
+                language: String,
+                chunk_type: String,
+                name: String,
+                signature: String,
+                line_start: u32,
+                line_end: u32,
+            }
+
+            let all_uncalled: Vec<LightChunk> = rows
                 .into_iter()
-                .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
+                .map(|row| LightChunk {
+                    id: row.get(0),
+                    file: PathBuf::from(row.get::<String, _>(1)),
+                    language: row.get(2),
+                    chunk_type: row.get(3),
+                    name: row.get(4),
+                    signature: row.get(5),
+                    line_start: clamp_line_number(row.get::<i64, _>(6)),
+                    line_end: clamp_line_number(row.get::<i64, _>(7)),
+                })
                 .collect();
+
+            let total_uncalled = all_uncalled.len();
 
             // Build test name set for exclusion
             let test_names: std::collections::HashSet<String> = self
@@ -447,22 +473,16 @@ impl Store {
                 .map(|c| c.name)
                 .collect();
 
-            let mut confident = Vec::new();
-            let mut possibly_dead_pub = Vec::new();
-            let total_uncalled = all_uncalled.len();
+            // Phase 1 filtering: name/test/path checks (don't need content)
+            let mut candidates: Vec<LightChunk> = Vec::new();
 
             for chunk in all_uncalled {
-                // Skip main entry point
                 if chunk.name == "main" {
                     continue;
                 }
-
-                // Skip test functions
                 if test_names.contains(&chunk.name) {
                     continue;
                 }
-
-                // Skip functions in test files
                 let path_str = chunk.file.to_string_lossy();
                 if path_str.contains("/tests/")
                     || path_str.contains("_test.")
@@ -472,30 +492,86 @@ impl Store {
                     continue;
                 }
 
-                // Skip trait implementations (invisible to static call graph).
-                // Check 1: content/signature contains "impl Trait for Type" (works when
-                //          the chunk includes the enclosing impl block header).
-                // Check 2: method name matches a well-known trait method name. Method
-                //          chunks typically contain just the fn body, not the impl header,
-                //          so the regex alone misses most trait impls.
-                if chunk.chunk_type == crate::parser::ChunkType::Method
-                    && (TRAIT_IMPL_RE.is_match(&chunk.content)
-                        || TRAIT_IMPL_RE.is_match(&chunk.signature)
-                        || TRAIT_METHOD_NAMES.contains(&chunk.name.as_str()))
+                // Methods with well-known trait names can be skipped without content
+                if chunk.chunk_type == "method" && TRAIT_METHOD_NAMES.contains(&chunk.name.as_str())
                 {
                     continue;
                 }
 
+                // Signature-only trait impl check
+                if chunk.chunk_type == "method" && TRAIT_IMPL_RE.is_match(&chunk.signature) {
+                    continue;
+                }
+
+                candidates.push(chunk);
+            }
+
+            // Phase 2: Batch-fetch content for remaining candidates
+            let candidate_ids: Vec<String> = candidates.iter().map(|c| c.id.clone()).collect();
+            let mut content_map: std::collections::HashMap<String, (String, Option<String>)> =
+                std::collections::HashMap::new();
+
+            const BATCH_SIZE: usize = 500;
+            for batch in candidate_ids.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT id, content, doc FROM chunks WHERE id IN ({})",
+                    placeholders
+                );
+                let mut q = sqlx::query(&sql);
+                for id in batch {
+                    q = q.bind(id);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let id: String = row.get(0);
+                    let content: String = row.get(1);
+                    let doc: Option<String> = row.get(2);
+                    content_map.insert(id, (content, doc));
+                }
+            }
+
+            // Phase 2 filtering with content
+            let mut confident = Vec::new();
+            let mut possibly_dead_pub = Vec::new();
+
+            for light in candidates {
+                let (content, doc) = content_map
+                    .remove(&light.id)
+                    .unwrap_or_else(|| (String::new(), None));
+
+                // Content-based trait impl check for methods
+                if light.chunk_type == "method" && TRAIT_IMPL_RE.is_match(&content) {
+                    continue;
+                }
+
                 // Skip #[no_mangle] FFI functions
-                if chunk.content.contains("no_mangle") {
+                if content.contains("no_mangle") {
                     continue;
                 }
 
                 // Check if public
-                let is_pub = chunk.content.starts_with("pub ")
-                    || chunk.content.starts_with("pub(")
-                    || chunk.signature.starts_with("pub ")
-                    || chunk.signature.starts_with("pub(");
+                let is_pub = content.starts_with("pub ")
+                    || content.starts_with("pub(")
+                    || light.signature.starts_with("pub ")
+                    || light.signature.starts_with("pub(");
+
+                let chunk = ChunkSummary::from(ChunkRow {
+                    id: light.id,
+                    origin: light.file.to_string_lossy().into_owned(),
+                    language: light.language,
+                    chunk_type: light.chunk_type,
+                    name: light.name,
+                    signature: light.signature,
+                    content,
+                    doc,
+                    line_start: light.line_start,
+                    line_end: light.line_end,
+                    parent_id: None,
+                });
 
                 if is_pub && !include_pub {
                     possibly_dead_pub.push(chunk);

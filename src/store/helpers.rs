@@ -578,11 +578,7 @@ pub fn embedding_to_bytes(embedding: &Embedding) -> Vec<u8> {
         EXPECTED_DIMENSIONS,
         embedding.len()
     );
-    embedding
-        .as_slice()
-        .iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
+    bytemuck::cast_slice::<f32, u8>(embedding.as_slice()).to_vec()
 }
 
 /// Zero-copy view of embedding bytes as f32 slice (for hot paths)
