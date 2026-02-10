@@ -43,12 +43,12 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 10 | Duplicate `cosine_similarity` in diff.rs (different behavior from math.rs) | A5/CQ-6 | easy | |
-| 11 | Duplicate name scoring logic in store | A4/CQ-7 | easy | |
-| 12 | resolve.rs copied identically between CLI and MCP (52 lines x2) | CQ-1 | easy | |
-| 13 | Per-call `Regex::new().unwrap()` in markdown parser (should be LazyLock) | CQ-8/R1 | easy | |
-| 14 | Duplicate `make_embedding` test helper across HNSW modules | CQ-10 | easy | |
-| 15 | Duplicate tokenization impl in nl.rs (function + iterator) | CQ-9 | easy | |
+| 10 | Duplicate `cosine_similarity` in diff.rs (different behavior from math.rs) | A5/CQ-6 | easy | PR #333 |
+| 11 | Duplicate name scoring logic in store | A4/CQ-7 | easy | PR #333 |
+| 12 | resolve.rs copied identically between CLI and MCP (52 lines x2) | CQ-1 | easy | PR #333 |
+| 13 | Per-call `Regex::new().unwrap()` in markdown parser (should be LazyLock) | CQ-8/R1 | easy | PR #333 |
+| 14 | Duplicate `make_embedding` test helper across HNSW modules | CQ-10 | easy | PR #333 |
+| 15 | Duplicate tokenization impl in nl.rs (function + iterator) | CQ-9 | easy | PR #333 |
 
 ### eprintln → tracing (5 locations)
 
@@ -102,7 +102,7 @@ After de-duplication: **~140 unique findings**
 |---|---------|--------|------------|--------|
 | 42 | `save_audit_state` no 0o600 permissions | PB5 | easy | |
 | 43 | `ProjectRegistry.save()` no 0o600 permissions | PB6 | easy | |
-| 44 | Inconsistent canonicalization (3 patterns, dunce already a dep) | PB4 | easy | |
+| 44 | Inconsistent canonicalization (3 patterns, dunce already a dep) | PB4 | easy | PR #333 |
 | 45 | HNSW temp cleanup uses `remove_dir` not `remove_dir_all` | PB9 | easy | |
 
 ### Extensibility (easy)
@@ -136,10 +136,10 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 8 | Focused-read logic (TYPE_NAME_RE, COMMON_TYPES) duplicated CLI/MCP | CQ-2 | medium | |
-| 9 | Note injection logic duplicated in 4 places | CQ-3 | medium | |
-| 10 | Impact command duplicated CLI/MCP (377+256 lines) | CQ-4 | medium | |
-| 11 | JSON result formatting duplicated in 5+ locations | CQ-5 | medium | |
+| 8 | Focused-read logic (TYPE_NAME_RE, COMMON_TYPES) duplicated CLI/MCP | CQ-2 | medium | PR #333 |
+| 9 | Note injection logic duplicated in 4 places | CQ-3 | medium | PR #333 |
+| 10 | Impact command duplicated CLI/MCP (377+256 lines) | CQ-4 | medium | PR #333 |
+| 11 | JSON result formatting duplicated in 5+ locations | CQ-5 | medium | PR #333 |
 
 ### Performance (high-impact easy/medium)
 

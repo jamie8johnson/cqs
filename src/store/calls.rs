@@ -16,6 +16,73 @@ use super::Store;
 static TRAIT_IMPL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"impl\s+\w+\s+for\s+").expect("hardcoded regex"));
 
+/// Well-known trait method names across languages.
+///
+/// Methods with these names inside `impl` blocks are almost always trait implementations
+/// that won't appear in the static call graph (called via dynamic dispatch).
+/// Used as a fallback when `TRAIT_IMPL_RE` can't match (method chunks don't include
+/// the enclosing `impl Trait for Type` header).
+const TRAIT_METHOD_NAMES: &[&str] = &[
+    // std::fmt
+    "fmt",
+    // std::convert
+    "from",
+    "into",
+    "try_from",
+    "try_into",
+    // std::ops
+    "deref",
+    "deref_mut",
+    "drop",
+    "index",
+    "index_mut",
+    "add",
+    "sub",
+    "mul",
+    "div",
+    "rem",
+    "neg",
+    "not",
+    "bitor",
+    "bitand",
+    "bitxor",
+    "shl",
+    "shr",
+    // std::cmp
+    "eq",
+    "ne",
+    "partial_cmp",
+    "cmp",
+    // std::hash
+    "hash",
+    // std::clone
+    "clone",
+    "clone_from",
+    // std::default
+    "default",
+    // std::iter
+    "next",
+    "into_iter",
+    // std::io
+    "read",
+    "write",
+    "flush",
+    // std::str
+    "from_str",
+    // std::convert / std::borrow
+    "as_ref",
+    "as_mut",
+    "borrow",
+    "borrow_mut",
+    // serde
+    "serialize",
+    "deserialize",
+    // std::error
+    "source",
+    // std::future
+    "poll",
+];
+
 impl Store {
     /// Insert or replace call sites for a chunk
     pub fn upsert_calls(
@@ -404,9 +471,16 @@ impl Store {
                     continue;
                 }
 
-                // Skip trait implementations (content matches "impl Trait for Type")
-                if TRAIT_IMPL_RE.is_match(&chunk.content)
-                    && chunk.chunk_type == crate::parser::ChunkType::Method
+                // Skip trait implementations (invisible to static call graph).
+                // Check 1: content/signature contains "impl Trait for Type" (works when
+                //          the chunk includes the enclosing impl block header).
+                // Check 2: method name matches a well-known trait method name. Method
+                //          chunks typically contain just the fn body, not the impl header,
+                //          so the regex alone misses most trait impls.
+                if chunk.chunk_type == crate::parser::ChunkType::Method
+                    && (TRAIT_IMPL_RE.is_match(&chunk.content)
+                        || TRAIT_IMPL_RE.is_match(&chunk.signature)
+                        || TRAIT_METHOD_NAMES.contains(&chunk.name.as_str()))
                 {
                     continue;
                 }

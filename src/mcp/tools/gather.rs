@@ -71,6 +71,7 @@ pub fn tool_gather(server: &McpServer, arguments: Value) -> Result<Value> {
         "query": query,
         "chunks": json_chunks,
         "expansion_capped": result.expansion_capped,
+        "search_degraded": result.search_degraded,
     });
 
     Ok(serde_json::json!({

@@ -445,9 +445,15 @@ fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool) -> Result
     for note in &filtered {
         let sentiment_marker = format!("[{:+.1}]", note.sentiment);
 
-        // Truncate text for display
-        let preview = if note.text.len() > 120 {
-            format!("{}...", &note.text[..117])
+        // Truncate text for display (char-safe)
+        let preview = if note.text.chars().count() > 120 {
+            let end = note
+                .text
+                .char_indices()
+                .nth(117)
+                .map(|(i, _)| i)
+                .unwrap_or(note.text.len());
+            format!("{}...", &note.text[..end])
         } else {
             note.text.clone()
         };

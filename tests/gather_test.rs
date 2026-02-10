@@ -65,11 +65,14 @@ fn test_gather_basic() {
     assert!(result.is_ok(), "Gather should execute without error");
     let gather_result = result.unwrap();
 
-    // Should find at least some chunks (exact count depends on search + expansion)
-    assert!(
-        !gather_result.chunks.is_empty() || gather_result.chunks.is_empty(),
-        "Gather should return results (or empty if search found nothing)"
-    );
+    // Verify gather results are well-formed when present
+    for chunk in &gather_result.chunks {
+        assert!(!chunk.name.is_empty(), "Gathered chunk should have a name");
+        assert!(
+            chunk.depth <= 1,
+            "With expand_depth=1, max depth should be 1"
+        );
+    }
 }
 
 #[test]
