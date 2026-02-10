@@ -263,10 +263,9 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
                 })
             })
             .collect();
-        output
-            .as_object_mut()
-            .unwrap()
-            .insert("transitive_callers".into(), serde_json::json!(trans_json));
+        if let Some(obj) = output.as_object_mut() {
+            obj.insert("transitive_callers".into(), serde_json::json!(trans_json));
+        }
     }
 
     output

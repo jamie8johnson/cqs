@@ -779,15 +779,15 @@ mod tests {
 
     #[test]
     fn test_embedding_new() {
-        let data = vec![1.0, 2.0, 3.0];
+        let data = vec![0.5; EMBEDDING_DIM];
         let emb = Embedding::new(data.clone());
         assert_eq!(emb.as_slice(), &data);
     }
 
     #[test]
     fn test_embedding_len() {
-        let emb = Embedding::new(vec![1.0; 768]);
-        assert_eq!(emb.len(), 768);
+        let emb = Embedding::new(vec![1.0; MODEL_DIM]);
+        assert_eq!(emb.len(), MODEL_DIM);
     }
 
     #[test]
@@ -795,7 +795,7 @@ mod tests {
         let empty = Embedding::new(vec![]);
         assert!(empty.is_empty());
 
-        let non_empty = Embedding::new(vec![1.0]);
+        let non_empty = Embedding::new(vec![1.0; EMBEDDING_DIM]);
         assert!(!non_empty.is_empty());
     }
 
@@ -821,23 +821,23 @@ mod tests {
 
     #[test]
     fn test_embedding_sentiment_none_without_769_dims() {
-        let emb = Embedding::new(vec![0.5; 768]);
+        let emb = Embedding::new(vec![0.5; MODEL_DIM]);
         assert_eq!(emb.sentiment(), None);
 
-        let emb = Embedding::new(vec![0.5; 100]);
+        let emb = Embedding::new(vec![]);
         assert_eq!(emb.sentiment(), None);
     }
 
     #[test]
     fn test_embedding_into_inner() {
-        let data = vec![1.0, 2.0, 3.0];
+        let data = vec![1.0; EMBEDDING_DIM];
         let emb = Embedding::new(data.clone());
         assert_eq!(emb.into_inner(), data);
     }
 
     #[test]
     fn test_embedding_as_vec() {
-        let data = vec![1.0, 2.0, 3.0];
+        let data = vec![1.0; EMBEDDING_DIM];
         let emb = Embedding::new(data.clone());
         assert_eq!(emb.as_vec(), &data);
     }
@@ -1024,7 +1024,8 @@ mod tests {
 
             /// Property: Embedding length is preserved through operations
             #[test]
-            fn prop_embedding_length_preserved(len in 1usize..1000) {
+            fn prop_embedding_length_preserved(use_model_dim in proptest::bool::ANY) {
+                let len = if use_model_dim { MODEL_DIM } else { EMBEDDING_DIM };
                 let emb = Embedding::new(vec![0.5; len]);
                 prop_assert_eq!(emb.len(), len);
                 prop_assert_eq!(emb.as_slice().len(), len);

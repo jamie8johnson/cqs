@@ -82,8 +82,12 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         .collect();
 
     let note_count = server.store.note_count().unwrap_or(0);
-    let (call_count, caller_count, callee_count) =
-        server.store.function_call_stats().unwrap_or((0, 0, 0));
+    let fc_stats = server.store.function_call_stats().unwrap_or_default();
+    let (call_count, caller_count, callee_count) = (
+        fc_stats.total_calls,
+        fc_stats.unique_callers,
+        fc_stats.unique_callees,
+    );
 
     let mut result = serde_json::json!({
         "total_chunks": stats.total_chunks,

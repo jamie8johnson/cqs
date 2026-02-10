@@ -84,6 +84,12 @@ pub use helpers::MODEL_NAME;
 /// Score a chunk name against a query for definition search.
 pub use helpers::score_name_match;
 
+/// Statistics about call graph entries (chunk-level calls table).
+pub use calls::CallStats;
+
+/// Detailed function call statistics (function_calls table).
+pub use calls::FunctionCallStats;
+
 // Internal use
 use helpers::{clamp_line_number, ChunkRow};
 

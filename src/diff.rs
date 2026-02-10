@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use crate::language::ChunkType;
 use crate::math::full_cosine_similarity;
 use crate::store::{ChunkIdentity, Store, StoreError};
 
@@ -16,7 +17,7 @@ pub struct DiffEntry {
     /// Source file path
     pub file: String,
     /// Type of code element
-    pub chunk_type: String,
+    pub chunk_type: ChunkType,
     /// Embedding similarity (only for Modified)
     pub similarity: Option<f32>,
 }
@@ -39,12 +40,15 @@ pub struct DiffResult {
 }
 
 /// Composite key for matching chunks across stores
+///
+/// Uses (file, name, type) as semantic identity. Deliberately excludes `line_start`
+/// so that moving a function to a different line (e.g., adding code above it) doesn't
+/// cause a false removed+added pair.
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
 struct ChunkKey {
     origin: String,
     name: String,
-    chunk_type: String,
-    line_start: u32,
+    chunk_type: ChunkType,
 }
 
 impl From<&ChunkIdentity> for ChunkKey {
@@ -52,8 +56,7 @@ impl From<&ChunkIdentity> for ChunkKey {
         ChunkKey {
             origin: c.origin.clone(),
             name: c.name.clone(),
-            chunk_type: c.chunk_type.clone(),
-            line_start: c.line_start,
+            chunk_type: c.chunk_type.parse().unwrap_or(ChunkType::Function),
         }
     }
 }
@@ -129,7 +132,10 @@ pub fn semantic_diff(
             added.push(DiffEntry {
                 name: target_chunk.name.clone(),
                 file: target_chunk.origin.clone(),
-                chunk_type: target_chunk.chunk_type.clone(),
+                chunk_type: target_chunk
+                    .chunk_type
+                    .parse()
+                    .unwrap_or(ChunkType::Function),
                 similarity: None,
             });
         }
@@ -141,7 +147,10 @@ pub fn semantic_diff(
             removed.push(DiffEntry {
                 name: source_chunk.name.clone(),
                 file: source_chunk.origin.clone(),
-                chunk_type: source_chunk.chunk_type.clone(),
+                chunk_type: source_chunk
+                    .chunk_type
+                    .parse()
+                    .unwrap_or(ChunkType::Function),
                 similarity: None,
             });
         }
@@ -166,7 +175,10 @@ pub fn semantic_diff(
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
                         file: target_chunk.origin.clone(),
-                        chunk_type: target_chunk.chunk_type.clone(),
+                        chunk_type: target_chunk
+                            .chunk_type
+                            .parse()
+                            .unwrap_or(ChunkType::Function),
                         similarity: Some(sim),
                     });
                 } else {
@@ -178,7 +190,10 @@ pub fn semantic_diff(
                 modified.push(DiffEntry {
                     name: target_chunk.name.clone(),
                     file: target_chunk.origin.clone(),
-                    chunk_type: target_chunk.chunk_type.clone(),
+                    chunk_type: target_chunk
+                        .chunk_type
+                        .parse()
+                        .unwrap_or(ChunkType::Function),
                     similarity: None,
                 });
             }
@@ -245,32 +260,44 @@ mod tests {
         let k1 = ChunkKey {
             origin: "src/foo.rs".into(),
             name: "bar".into(),
-            chunk_type: "function".into(),
-            line_start: 10,
+            chunk_type: ChunkType::Function,
         };
         let k2 = ChunkKey {
             origin: "src/foo.rs".into(),
             name: "bar".into(),
-            chunk_type: "function".into(),
-            line_start: 10,
+            chunk_type: ChunkType::Function,
         };
         assert_eq!(k1, k2);
     }
 
     #[test]
-    fn test_chunk_key_different_line() {
-        // Java overloads: same name, different line
+    fn test_chunk_key_different_line_same_identity() {
+        // Moving a function to a different line should NOT change its identity
         let k1 = ChunkKey {
             origin: "Foo.java".into(),
             name: "process".into(),
-            chunk_type: "method".into(),
-            line_start: 10,
+            chunk_type: ChunkType::Method,
         };
         let k2 = ChunkKey {
             origin: "Foo.java".into(),
             name: "process".into(),
-            chunk_type: "method".into(),
-            line_start: 25,
+            chunk_type: ChunkType::Method,
+        };
+        assert_eq!(k1, k2);
+    }
+
+    #[test]
+    fn test_chunk_key_different_type() {
+        // Same name but different chunk type should NOT match
+        let k1 = ChunkKey {
+            origin: "src/foo.rs".into(),
+            name: "Foo".into(),
+            chunk_type: ChunkType::Struct,
+        };
+        let k2 = ChunkKey {
+            origin: "src/foo.rs".into(),
+            name: "Foo".into(),
+            chunk_type: ChunkType::Function,
         };
         assert_ne!(k1, k2);
     }

@@ -545,7 +545,10 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
     // Markdown links (not images): [text](url)
     // Rust regex doesn't support lookbehind, so match all links then filter images
     for cap in LINK_RE.captures_iter(text) {
-        let match_start = cap.get(0).unwrap().start();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
+        let match_start = full_match.start();
         // Skip image links: preceded by '!'
         if match_start > 0 && text.as_bytes()[match_start - 1] == b'!' {
             continue;
@@ -567,7 +570,10 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
         let full_ref = &cap[1];
         let callee_name = full_ref.to_string();
         if !callee_name.is_empty() && seen.insert(callee_name.clone()) {
-            let match_start = cap.get(0).unwrap().start();
+            let Some(full_match) = cap.get(0) else {
+                continue;
+            };
+            let match_start = full_match.start();
             let line_number = text[..match_start].matches('\n').count() as u32 + 1;
             calls.push(CallSite {
                 callee_name,

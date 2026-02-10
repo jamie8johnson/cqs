@@ -168,12 +168,20 @@ pub fn search_across_projects(
 
         match crate::Store::open(&index_path) {
             Ok(store) => {
+                let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
+                let index = crate::hnsw::HnswIndex::try_load(cqs_dir);
                 let filter = crate::store::helpers::SearchFilter {
                     query_text: query_text.to_string(),
                     enable_rrf: true,
                     ..Default::default()
                 };
-                match store.search_filtered(query_embedding, &filter, limit, threshold) {
+                match store.search_filtered_with_index(
+                    query_embedding,
+                    &filter,
+                    limit,
+                    threshold,
+                    index.as_deref(),
+                ) {
                     Ok(results) => {
                         for r in results {
                             all_results.push(CrossProjectResult {

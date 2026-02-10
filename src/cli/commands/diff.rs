@@ -150,7 +150,7 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
             serde_json::json!({
                 "name": e.name,
                 "file": e.file,
-                "type": e.chunk_type,
+                "type": e.chunk_type.to_string(),
             })
         })
         .collect();
@@ -162,7 +162,7 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
             serde_json::json!({
                 "name": e.name,
                 "file": e.file,
-                "type": e.chunk_type,
+                "type": e.chunk_type.to_string(),
             })
         })
         .collect();
@@ -174,7 +174,7 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
             serde_json::json!({
                 "name": e.name,
                 "file": e.file,
-                "type": e.chunk_type,
+                "type": e.chunk_type.to_string(),
                 "similarity": e.similarity,
             })
         })

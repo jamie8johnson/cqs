@@ -697,10 +697,16 @@ impl Store {
 
         // Slot allocation: reserve minimum 60% for code results, up to 40% for notes.
         // This prevents notes from dominating while still surfacing relevant observations.
+        // When code results are sparse, cap notes to the proportional amount (40%)
+        // rather than letting them fill all remaining slots.
         let min_code_slots = ((limit * 3) / 5).max(1);
         let code_count = code_results.len().min(limit);
-        let reserved_code = code_count.min(min_code_slots);
-        let note_slots = limit.saturating_sub(reserved_code);
+        let note_slots = if code_count >= min_code_slots {
+            limit.saturating_sub(code_count)
+        } else {
+            // Code is sparse — still cap notes to proportional amount
+            limit.saturating_sub(min_code_slots)
+        };
 
         let mut unified: Vec<crate::store::UnifiedResult> = code_results
             .into_iter()

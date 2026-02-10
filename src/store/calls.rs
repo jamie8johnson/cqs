@@ -11,10 +11,49 @@ use super::helpers::{
 };
 use super::Store;
 
+/// Statistics about call graph entries (chunk-level calls table)
+#[derive(Debug, Clone, Default)]
+pub struct CallStats {
+    /// Total number of call edges
+    pub total_calls: u64,
+    /// Number of distinct callee names
+    pub unique_callees: u64,
+}
+
+/// Detailed function call statistics (function_calls table)
+#[derive(Debug, Clone, Default)]
+pub struct FunctionCallStats {
+    /// Total number of call edges
+    pub total_calls: u64,
+    /// Number of distinct caller function names
+    pub unique_callers: u64,
+    /// Number of distinct callee function names
+    pub unique_callees: u64,
+}
+
 /// Matches `impl SomeTrait for SomeType` patterns to detect trait implementations.
 /// Used by `find_dead_code` to skip trait impl methods (invisible to static call graph).
 static TRAIT_IMPL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"impl\s+\w+\s+for\s+").expect("hardcoded regex"));
+
+/// Test function/method name patterns (SQL LIKE syntax).
+/// Matches naming conventions: `test_*` (Rust/Python), `Test*` (Go).
+const TEST_NAME_PATTERNS: &[&str] = &["test_%", "Test%"];
+
+/// Test content markers — language-specific annotations/decorators.
+/// Detected via `content LIKE '%marker%'` in SQL.
+const TEST_CONTENT_MARKERS: &[&str] = &["#[test]", "@Test"];
+
+/// Test path patterns — directories and file suffixes (SQL LIKE syntax).
+/// Uses ESCAPE '\\' for literal underscores.
+const TEST_PATH_PATTERNS: &[&str] = &[
+    "%/tests/%",
+    "%\\_test.%",
+    "%.test.%",
+    "%.spec.%",
+    "%_test.go",
+    "%_test.py",
+];
 
 /// Well-known trait method names across languages.
 ///
@@ -216,14 +255,17 @@ impl Store {
     }
 
     /// Get call graph statistics
-    pub fn call_stats(&self) -> Result<(u64, u64), StoreError> {
+    pub fn call_stats(&self) -> Result<CallStats, StoreError> {
         self.rt.block_on(async {
             let (total_calls, unique_callees): (i64, i64) =
                 sqlx::query_as("SELECT COUNT(*), COUNT(DISTINCT callee_name) FROM calls")
                     .fetch_one(&self.pool)
                     .await?;
 
-            Ok((total_calls as u64, unique_callees as u64))
+            Ok(CallStats {
+                total_calls: total_calls as u64,
+                unique_callees: unique_callees as u64,
+            })
         })
     }
 
@@ -593,27 +635,35 @@ impl Store {
 
     /// Async helper for find_test_chunks (reused by find_dead_code)
     async fn find_test_chunks_async(&self) -> Result<Vec<ChunkSummary>, StoreError> {
-        let rows: Vec<_> = sqlx::query(
+        // Build OR clauses from centralized test pattern constants
+        let mut clauses: Vec<String> = Vec::new();
+        for pat in TEST_NAME_PATTERNS {
+            clauses.push(format!("name LIKE '{pat}'"));
+        }
+        for marker in TEST_CONTENT_MARKERS {
+            clauses.push(format!("content LIKE '%{marker}%'"));
+        }
+        for pat in TEST_PATH_PATTERNS {
+            if pat.contains("\\_") {
+                clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
+            } else {
+                clauses.push(format!("origin LIKE '{pat}'"));
+            }
+        }
+        let filter = clauses.join("\n                 OR ");
+
+        let sql = format!(
             "SELECT id, origin, language, chunk_type, name, signature, content, doc,
                     line_start, line_end, parent_id
              FROM chunks
              WHERE chunk_type IN ('function', 'method')
                AND (
-                 name LIKE 'test_%'
-                 OR name LIKE 'Test%'
-                 OR content LIKE '%#[test]%'
-                 OR content LIKE '%@Test%'
-                 OR origin LIKE '%/tests/%'
-                 OR origin LIKE '%\\_test.%' ESCAPE '\\'
-                 OR origin LIKE '%.test.%'
-                 OR origin LIKE '%.spec.%'
-                 OR origin LIKE '%_test.go'
-                 OR origin LIKE '%_test.py'
+                 {filter}
                )
-             ORDER BY origin, line_start",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+             ORDER BY origin, line_start"
+        );
+
+        let rows: Vec<_> = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -652,7 +702,7 @@ impl Store {
     }
 
     /// Get full call graph statistics
-    pub fn function_call_stats(&self) -> Result<(u64, u64, u64), StoreError> {
+    pub fn function_call_stats(&self) -> Result<FunctionCallStats, StoreError> {
         self.rt.block_on(async {
             let (total_calls, unique_callers, unique_callees): (i64, i64, i64) = sqlx::query_as(
                 "SELECT COUNT(*), COUNT(DISTINCT caller_name), COUNT(DISTINCT callee_name) FROM function_calls",
@@ -660,11 +710,11 @@ impl Store {
             .fetch_one(&self.pool)
             .await?;
 
-            Ok((
-                total_calls as u64,
-                unique_callers as u64,
-                unique_callees as u64,
-            ))
+            Ok(FunctionCallStats {
+                total_calls: total_calls as u64,
+                unique_callers: unique_callers as u64,
+                unique_callees: unique_callees as u64,
+            })
         })
     }
 }

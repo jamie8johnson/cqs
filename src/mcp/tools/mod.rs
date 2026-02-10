@@ -26,6 +26,7 @@ use serde_json::Value;
 
 use super::server::McpServer;
 use super::types::{Tool, ToolsListResult};
+use crate::structural::Pattern;
 
 fn language_enum_schema() -> serde_json::Value {
     serde_json::Value::Array(
@@ -105,7 +106,7 @@ pub fn handle_tools_list() -> Result<Value> {
                     },
                     "pattern": {
                         "type": "string",
-                        "enum": ["builder", "error_swallow", "async", "mutex", "unsafe", "recursion"],
+                        "enum": Pattern::all_names().iter().map(|s| Value::String(s.to_string())).collect::<Vec<_>>(),
                         "description": "Filter results by structural code pattern (optional)"
                     }
                 },
