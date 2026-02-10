@@ -14,6 +14,14 @@ use crate::embedder::Embedding;
 use crate::nl::normalize_for_fts;
 use crate::parser::{Chunk, ChunkType, Language};
 
+/// Normalize a path to forward slashes for consistent origin storage.
+///
+/// On Windows, `Path::to_string_lossy()` produces backslashes which causes
+/// mismatches when querying with forward-slash paths.
+fn normalize_origin(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 impl Store {
     /// Insert or update chunks in batch (10x faster than individual inserts)
     ///
@@ -37,7 +45,7 @@ impl Store {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 )
                 .bind(&chunk.id)
-                .bind(chunk.file.to_string_lossy().into_owned())
+                .bind(normalize_origin(&chunk.file))
                 .bind("file")
                 .bind(chunk.language.to_string())
                 .bind(chunk.chunk_type.to_string())
@@ -48,7 +56,7 @@ impl Store {
                 .bind(&chunk.doc)
                 .bind(chunk.line_start as i64)
                 .bind(chunk.line_end as i64)
-                .bind(embedding_to_bytes(embedding))
+                .bind(embedding_to_bytes(embedding)?)
                 .bind(source_mtime)
                 .bind(&now)
                 .bind(&now)
@@ -106,7 +114,7 @@ impl Store {
         self.rt.block_on(async {
             let row: Option<(Option<i64>,)> =
                 sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
-                    .bind(path.to_string_lossy().into_owned())
+                    .bind(normalize_origin(path))
                     .fetch_optional(&self.pool)
                     .await?;
 
@@ -119,7 +127,7 @@ impl Store {
 
     /// Delete all chunks for an origin (file path or source identifier)
     pub fn delete_by_origin(&self, origin: &Path) -> Result<u32, StoreError> {
-        let origin_str = origin.to_string_lossy().into_owned();
+        let origin_str = normalize_origin(origin);
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -138,6 +146,172 @@ impl Store {
 
             tx.commit().await?;
             Ok(result.rows_affected() as u32)
+        })
+    }
+
+    /// Atomically replace all chunks for a file in a single transaction.
+    ///
+    /// Deletes existing chunks (+ FTS) for the origin, then inserts new chunks.
+    /// This prevents data loss from crashes between separate delete and insert calls.
+    pub fn replace_file_chunks(
+        &self,
+        origin: &Path,
+        chunks: &[(Chunk, Embedding)],
+        source_mtime: Option<i64>,
+    ) -> Result<usize, StoreError> {
+        let origin_str = normalize_origin(origin);
+
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
+            // Delete existing FTS entries for this origin
+            sqlx::query(
+                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
+            )
+            .bind(&origin_str)
+            .execute(&mut *tx)
+            .await?;
+
+            // Delete existing chunks for this origin
+            sqlx::query("DELETE FROM chunks WHERE origin = ?1")
+                .bind(&origin_str)
+                .execute(&mut *tx)
+                .await?;
+
+            // Insert new chunks + FTS
+            let now = chrono::Utc::now().to_rfc3339();
+            for (chunk, embedding) in chunks {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                )
+                .bind(&chunk.id)
+                .bind(normalize_origin(&chunk.file))
+                .bind("file")
+                .bind(chunk.language.to_string())
+                .bind(chunk.chunk_type.to_string())
+                .bind(&chunk.name)
+                .bind(&chunk.signature)
+                .bind(&chunk.content)
+                .bind(&chunk.content_hash)
+                .bind(&chunk.doc)
+                .bind(chunk.line_start as i64)
+                .bind(chunk.line_end as i64)
+                .bind(embedding_to_bytes(embedding)?)
+                .bind(source_mtime)
+                .bind(&now)
+                .bind(&now)
+                .bind(&chunk.parent_id)
+                .bind(chunk.window_idx.map(|i| i as i64))
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                    .bind(&chunk.id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                sqlx::query(
+                    "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .bind(&chunk.id)
+                .bind(normalize_for_fts(&chunk.name))
+                .bind(normalize_for_fts(&chunk.signature))
+                .bind(normalize_for_fts(&chunk.content))
+                .bind(chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default())
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            tx.commit().await?;
+            Ok(chunks.len())
+        })
+    }
+
+    /// Atomically upsert chunks and their call graph in a single transaction.
+    ///
+    /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
+    /// preventing inconsistency from crashes between separate operations.
+    pub fn upsert_chunks_and_calls(
+        &self,
+        chunks: &[(Chunk, Embedding)],
+        source_mtime: Option<i64>,
+        calls: &[(String, crate::parser::CallSite)],
+    ) -> Result<usize, StoreError> {
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+
+            // Upsert chunks + FTS
+            let now = chrono::Utc::now().to_rfc3339();
+            for (chunk, embedding) in chunks {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                )
+                .bind(&chunk.id)
+                .bind(normalize_origin(&chunk.file))
+                .bind("file")
+                .bind(chunk.language.to_string())
+                .bind(chunk.chunk_type.to_string())
+                .bind(&chunk.name)
+                .bind(&chunk.signature)
+                .bind(&chunk.content)
+                .bind(&chunk.content_hash)
+                .bind(&chunk.doc)
+                .bind(chunk.line_start as i64)
+                .bind(chunk.line_end as i64)
+                .bind(embedding_to_bytes(embedding)?)
+                .bind(source_mtime)
+                .bind(&now)
+                .bind(&now)
+                .bind(&chunk.parent_id)
+                .bind(chunk.window_idx.map(|i| i as i64))
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                    .bind(&chunk.id)
+                    .execute(&mut *tx)
+                    .await?;
+
+                sqlx::query(
+                    "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .bind(&chunk.id)
+                .bind(normalize_for_fts(&chunk.name))
+                .bind(normalize_for_fts(&chunk.signature))
+                .bind(normalize_for_fts(&chunk.content))
+                .bind(chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default())
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            // Upsert calls: delete old calls for these chunk IDs, insert new ones
+            if !calls.is_empty() {
+                let mut seen_ids = std::collections::HashSet::new();
+                for (chunk_id, _) in calls {
+                    if seen_ids.insert(chunk_id.as_str()) {
+                        sqlx::query("DELETE FROM calls WHERE caller_id = ?1")
+                            .bind(chunk_id)
+                            .execute(&mut *tx)
+                            .await?;
+                    }
+                }
+
+                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
+                    sqlx::QueryBuilder::new(
+                        "INSERT INTO calls (caller_id, callee_name, line_number) ",
+                    );
+                query_builder.push_values(calls.iter(), |mut b, (chunk_id, call)| {
+                    b.push_bind(chunk_id)
+                        .push_bind(&call.callee_name)
+                        .push_bind(call.line_number as i64);
+                });
+                query_builder.build().execute(&mut *tx).await?;
+            }
+
+            tx.commit().await?;
+            Ok(chunks.len())
         })
     }
 

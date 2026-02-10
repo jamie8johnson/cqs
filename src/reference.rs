@@ -37,6 +37,20 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     let mut refs = Vec::with_capacity(configs.len());
 
     for cfg in configs {
+        // Warn if reference path is a symlink (trust boundary)
+        if cfg
+            .path
+            .symlink_metadata()
+            .map(|m| m.is_symlink())
+            .unwrap_or(false)
+        {
+            tracing::warn!(
+                name = cfg.name,
+                path = %cfg.path.display(),
+                "Reference path is a symlink — verify it points to a trusted location"
+            );
+        }
+
         let db_path = cfg.path.join("index.db");
         let store = match Store::open(&db_path) {
             Ok(s) => s,

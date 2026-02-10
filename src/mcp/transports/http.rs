@@ -288,13 +288,19 @@ async fn handle_mcp_post(
             && version_str != MCP_PROTOCOL_VERSION
             && version_str != "2025-03-26"
         {
+            // Truncate to prevent log/response amplification from oversized headers
+            let version_display = if version_str.len() > 32 {
+                &version_str[..32]
+            } else {
+                version_str
+            };
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({
                     "jsonrpc": "2.0",
                     "error": {
                         "code": -32600,
-                        "message": format!("Unsupported protocol version: {}. Supported: {}", version_str, MCP_PROTOCOL_VERSION)
+                        "message": format!("Unsupported protocol version: {}. Supported: {}", version_display, MCP_PROTOCOL_VERSION)
                     }
                 })),
             );

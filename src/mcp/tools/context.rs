@@ -19,8 +19,13 @@ pub fn tool_context(server: &McpServer, arguments: Value) -> Result<Value> {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Resolve origin — try both relative and absolute forms
+    // Resolve origin — canonicalize and validate against project root
     let abs_path = server.project_root.join(path);
+    let abs_path = dunce::canonicalize(&abs_path)
+        .map_err(|e| anyhow::anyhow!("Invalid path '{}': {}", path, e))?;
+    if !abs_path.starts_with(&server.project_root) {
+        bail!("Path '{}' is outside the project root", path);
+    }
     let origin = abs_path.to_string_lossy().to_string();
 
     let mut chunks = server.store.get_chunks_by_origin(&origin)?;
