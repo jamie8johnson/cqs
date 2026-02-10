@@ -2,22 +2,17 @@
 
 ## Right Now
 
-**Rename `.cq/` → `.cqs/` (issue #260).** 2026-02-08. Branch: `fix/rename-cq-to-cqs`.
+**Bug fixes session.** 2026-02-10. Reference index bugs #318 and #319 fixed.
 
-Consistency rename — index directory `.cq/` → `.cqs/` to match binary name, config dir, config file.
-Auto-migration: `resolve_index_dir()` in `src/lib.rs` renames `.cq/` → `.cqs/` on first access.
-
-### What's done
-- Central `INDEX_DIR` constant + `resolve_index_dir()` migration helper in `src/lib.rs`
-- All ~40 hardcoded `.cq` references in src/ and tests/ updated
-- Variable renames: `cq_dir` → `cqs_dir` throughout
-- Dual fallback in `project.rs` (cross-project search works with unmigrated projects)
-- Docs updated: SECURITY.md, PRIVACY.md, skills (migrate, troubleshoot, bootstrap)
-- All 302 lib + 233 integration tests pass, clippy clean
+### What shipped
+- PR #330: fix ref remove cleanup + ref update prune guard (fixes #318, #319)
+  - `ref remove` falls back to canonical `ref_path()` for directory cleanup
+  - `Store::init` uses `INSERT OR REPLACE` for metadata resilience
+  - `ref update` aborts when binary finds 0 files but index has chunks
+  - `ref update` warns on large prune operations (>50% of chunks)
+- Release binary updated
 
 ### Pending
-- Commit, PR, merge
-- Release binary update after merge
 - `.cqs.toml` — untracked, has aveva-docs reference config
 
 ### Known limitations
@@ -31,13 +26,8 @@ Auto-migration: `resolve_index_dir()` in `src/lib.rs` renames `.cq/` → `.cqs/`
 - **Post-index name matching** — follow-up PR for fuzzy cross-doc references (substring matching of chunk names across docs)
 - **Phase 8**: Security (index encryption, rate limiting)
 - **ref install** — deferred from Phase 6, tracked in #255
-- **`.cq` rename to `.cqs`** — in progress on branch `fix/rename-cq-to-cqs`
 
 ## Open Issues
-
-### Reference index bugs (new)
-- #318: ref update silently prunes all chunks when binary lacks language support
-- #319: ref remove leaves stale metadata, blocking re-add with same name
 
 ### External/Waiting
 - #106: ort stable (currently 2.0.0-rc.11)
@@ -59,7 +49,7 @@ Auto-migration: `resolve_index_dir()` in `src/lib.rs` renames `.cq/` → `.cqs/`
 
 ## Architecture
 
-- Version: 0.9.6
+- Version: 0.9.7
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
@@ -70,3 +60,4 @@ Auto-migration: `resolve_index_dir()` in `src/lib.rs` renames `.cq/` → `.cqs/`
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
 - Build target: `~/.cargo-target/cq/` (Linux FS)
+- NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
