@@ -212,11 +212,22 @@ fn cmd_ref_remove(name: &str) -> Result<()> {
         bail!("Reference '{}' not found in config.", name);
     }
 
-    // Delete reference directory if it exists
+    // Delete reference directory — try config path first, fall back to ref_path()
+    let mut dir_deleted = false;
     if let Some(cfg) = ref_config {
         if cfg.path.exists() {
             std::fs::remove_dir_all(&cfg.path)
                 .with_context(|| format!("Failed to remove {}", cfg.path.display()))?;
+            dir_deleted = true;
+        }
+    }
+    // Fallback: delete via canonical ref_path (handles config parse mismatches)
+    if !dir_deleted {
+        if let Some(ref_dir) = reference::ref_path(name) {
+            if ref_dir.exists() {
+                std::fs::remove_dir_all(&ref_dir)
+                    .with_context(|| format!("Failed to remove {}", ref_dir.display()))?;
+            }
         }
     }
 
@@ -249,9 +260,32 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     let db_path = ref_config.path.join("index.db");
     let ref_dir = &ref_config.path;
 
+    // Get current chunk count before modifying anything
+    let existing_chunks = if db_path.exists() {
+        Store::open(&db_path)
+            .ok()
+            .and_then(|s| s.chunk_count().ok())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
     // Enumerate files
     let parser = CqParser::new()?;
     let files = enumerate_files(source, &parser, false)?;
+
+    // Guard: if the binary finds 0 files but the index has chunks, abort.
+    // This happens when the binary doesn't support languages in the index.
+    if files.is_empty() && existing_chunks > 0 {
+        bail!(
+            "No supported files found in '{}', but the index has {} chunks.\n\
+             This usually means the binary doesn't support the language(s) in the index.\n\
+             Rebuild with a binary that supports the required languages, or use \
+             'cqs ref remove {name}' and re-add.",
+            source.display(),
+            existing_chunks,
+        );
+    }
 
     if !cli.quiet {
         println!("Updating reference '{}' ({} files)...", name, files.len());
@@ -272,6 +306,26 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     let store = Store::open(&db_path)?;
     let existing_files: HashSet<_> = files.into_iter().collect();
     let pruned = store.prune_missing(&existing_files)?;
+
+    // Guard: if pruning would remove >50% of existing chunks, warn loudly
+    if pruned > 0 && existing_chunks > 0 {
+        let remaining = existing_chunks.saturating_sub(pruned as u64);
+        if remaining == 0 {
+            eprintln!(
+                "Warning: All {} chunks were pruned. The index is now empty.\n\
+                 If this was unintentional, re-index with 'cqs ref update {name}'.",
+                pruned,
+            );
+        } else if (pruned as u64) > existing_chunks / 2 {
+            eprintln!(
+                "Warning: Pruned {} of {} chunks (>{:.0}%). Verify source path is correct.",
+                pruned,
+                existing_chunks,
+                (pruned as f64 / existing_chunks as f64) * 100.0,
+            );
+        }
+    }
+
     if !cli.quiet && pruned > 0 {
         println!("  Pruned: {} (deleted files)", pruned);
     }
