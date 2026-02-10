@@ -2,13 +2,27 @@
 
 ## Right Now
 
-**Bug fixes + housekeeping session.** 2026-02-10.
+**v0.9.7 audit fix session.** 2026-02-10.
 
-### What shipped
-- PR #330: fix ref remove cleanup + ref update prune guard (fixes #318, #319)
-- PR #331: update tears + suppress WSL mount permission warning in config.rs
-- PR #332: archive audit files per-version, start fresh each audit
-- Release binary updated
+### Active
+- PR1 (Foundation): 3 parallel agents running — extracting shared modules + dedup (11 fixes)
+  - Agent A: CQ-1, CQ-2, CQ-5, CQ-7 (search.rs, focused_read.rs, store/helpers.rs)
+  - Agent B: CQ-3, CQ-4 (note.rs, impact.rs)
+  - Agent C: CQ-6, CQ-8, CQ-9, CQ-10, PB4 (diff.rs, markdown.rs, nl.rs, hnsw/mod.rs)
+- Branch: `audit/pr1-foundation`
+- Team: `pr1-foundation`
+
+### Plan
+Full audit fix plan at `/home/user001/.claude/plans/witty-strolling-melody.md`
+- 8 PRs, ~141 fixes, dependency-ordered
+- PR1: Foundation (11) → PR2: Bugs (10) → PR3: Mechanical (33) → PR4: Performance (10) → PR5: Safety+Security (14) → PR6: API+Algorithm (13) → PR7: P3 Polish (45) → PR8: P4 Issues (5)
+- Fresh-eyes reviewed twice: fixed 10 file conflicts, 3 missing findings, 4 wrong counts
+
+### Earlier this session
+- Ran full 14-category audit (3 batches, 14 agents) → 161 raw findings
+- Triaged to 144 unique (P1:49, P2:45, P3:45, P4:5) in `docs/audit-triage.md`
+- Updated audit skill with cqs tools block for agents
+- Archived previous audit files as v0.9.1
 
 ### Pending
 - `.cqs.toml` — untracked, has aveva-docs reference config
@@ -36,14 +50,12 @@
 - #256: Cross-store dedup
 - #257: Parallel search + shared Runtime
 
-### Remaining audit items
-- #269: Brute-force search loads all embeddings (P4)
-- #270: HNSW LoadedHnsw unsafe transmute (P4)
-
-### P4 Deferred (v0.5.1 audit, still open)
-- #233: Cache parsed notes.toml in MCP server
+### Remaining audit items (P4 deferred)
+- #269: Brute-force search loads all embeddings
 - #236: HNSW-SQLite freshness validation
-- #240: embedding_batches cursor pagination
+- #302: CAGRA OOM guard
+- TC6: embed_documents tests (no issue yet)
+- X8: MCP schema generation from types (no issue yet)
 
 ## Architecture
 

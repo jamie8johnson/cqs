@@ -74,32 +74,7 @@ pub fn parse_jsdoc_tags(doc: &str) -> JsDocInfo {
 /// assert_eq!(tokenize_identifier("获取用户"), vec!["获", "取", "用", "户"]); // CJK: one token per character
 /// ```
 pub fn tokenize_identifier(s: &str) -> Vec<String> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-
-    for c in s.chars() {
-        if c == '_' || c == '-' || c == ' ' {
-            if !current.is_empty() {
-                // Use std::mem::take to avoid clone - moves String out and leaves empty String
-                words.push(std::mem::take(&mut current));
-            }
-        } else if is_cjk(c) {
-            // CJK characters become individual tokens (no word boundaries in CJK)
-            if !current.is_empty() {
-                words.push(std::mem::take(&mut current));
-            }
-            words.push(c.to_string());
-        } else if c.is_uppercase() && !current.is_empty() {
-            words.push(std::mem::take(&mut current));
-            current.push(c.to_lowercase().next().unwrap_or(c));
-        } else {
-            current.push(c.to_lowercase().next().unwrap_or(c));
-        }
-    }
-    if !current.is_empty() {
-        words.push(current);
-    }
-    words
+    tokenize_identifier_iter(s).collect()
 }
 
 /// Returns true for CJK Unified Ideographs and common CJK ranges.

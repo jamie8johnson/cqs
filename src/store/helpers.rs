@@ -151,6 +151,46 @@ pub struct SearchResult {
     pub score: f32,
 }
 
+impl SearchResult {
+    /// Serialize to JSON with consistent field order and platform-normalized paths.
+    ///
+    /// Normalizes file paths to forward slashes for cross-platform consistency.
+    /// Includes all chunk metadata plus score.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "file": self.chunk.file.to_string_lossy().replace('\\', "/"),
+            "line_start": self.chunk.line_start,
+            "line_end": self.chunk.line_end,
+            "name": self.chunk.name,
+            "signature": self.chunk.signature,
+            "language": self.chunk.language.to_string(),
+            "chunk_type": self.chunk.chunk_type.to_string(),
+            "score": self.score,
+            "content": self.chunk.content,
+        })
+    }
+
+    /// Serialize to JSON with file paths relative to a project root.
+    ///
+    /// Strips the prefix and normalizes to forward slashes.
+    pub fn to_json_relative(&self, root: &std::path::Path) -> serde_json::Value {
+        serde_json::json!({
+            "file": self.chunk.file.strip_prefix(root)
+                .unwrap_or(&self.chunk.file)
+                .to_string_lossy()
+                .replace('\\', "/"),
+            "line_start": self.chunk.line_start,
+            "line_end": self.chunk.line_end,
+            "name": self.chunk.name,
+            "signature": self.chunk.signature,
+            "language": self.chunk.language.to_string(),
+            "chunk_type": self.chunk.chunk_type.to_string(),
+            "score": self.score,
+            "content": self.chunk.content,
+        })
+    }
+}
+
 /// Caller information from the full call graph
 ///
 /// Unlike ChunkSummary, this doesn't require a chunk to exist -
@@ -250,6 +290,20 @@ pub struct NoteSearchResult {
     pub score: f32,
 }
 
+impl NoteSearchResult {
+    /// Serialize to JSON with consistent field order.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "note",
+            "id": self.note.id,
+            "text": self.note.text,
+            "sentiment": self.note.sentiment,
+            "mentions": self.note.mentions,
+            "score": self.score,
+        })
+    }
+}
+
 /// Unified search result (code chunk or note)
 ///
 /// Search can return both code chunks and notes. This enum allows
@@ -268,6 +322,32 @@ impl UnifiedResult {
         match self {
             UnifiedResult::Code(r) => r.score,
             UnifiedResult::Note(r) => r.score,
+        }
+    }
+
+    /// Serialize to JSON with consistent field order.
+    ///
+    /// Code results include `"type": "code"` prefix; note results include `"type": "note"`.
+    pub fn to_json(&self) -> serde_json::Value {
+        match self {
+            UnifiedResult::Code(r) => {
+                let mut json = r.to_json();
+                json["type"] = serde_json::json!("code");
+                json
+            }
+            UnifiedResult::Note(r) => r.to_json(),
+        }
+    }
+
+    /// Serialize to JSON with file paths relative to a project root.
+    pub fn to_json_relative(&self, root: &std::path::Path) -> serde_json::Value {
+        match self {
+            UnifiedResult::Code(r) => {
+                let mut json = r.to_json_relative(root);
+                json["type"] = serde_json::json!("code");
+                json
+            }
+            UnifiedResult::Note(r) => r.to_json(),
         }
     }
 }
@@ -446,6 +526,29 @@ pub struct IndexStats {
     pub model_name: String,
     /// Database schema version
     pub schema_version: i32,
+}
+
+// ============ Name Scoring ============
+
+/// Score a chunk name against a query for definition search (search_by_name).
+///
+/// Returns a score between 0.0 and 1.0:
+/// - 1.0: exact match (case-insensitive)
+/// - 0.9: prefix match
+/// - 0.7: substring match
+/// - 0.5: FTS matched but no obvious name relationship
+pub fn score_name_match(name: &str, query: &str) -> f32 {
+    let name_lower = name.to_lowercase();
+    let query_lower = query.to_lowercase();
+    if name_lower == query_lower {
+        1.0
+    } else if name_lower.starts_with(&query_lower) {
+        0.9
+    } else if name_lower.contains(&query_lower) {
+        0.7
+    } else {
+        0.5
+    }
 }
 
 // ============ Line Number Conversion ============

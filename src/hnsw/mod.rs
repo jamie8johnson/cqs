@@ -182,6 +182,23 @@ impl VectorIndex for HnswIndex {
     }
 }
 
+/// Shared test helper: create a deterministic normalized embedding from a seed.
+/// Uses sin-based values for reproducible but varied vectors.
+#[cfg(test)]
+pub(crate) fn make_test_embedding(seed: u32) -> Embedding {
+    let mut v = vec![0.0f32; crate::EMBEDDING_DIM];
+    for (i, val) in v.iter_mut().enumerate() {
+        *val = ((seed as f32 * 0.1) + (i as f32 * 0.001)).sin();
+    }
+    let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for val in &mut v {
+            *val /= norm;
+        }
+    }
+    Embedding::new(v)
+}
+
 #[cfg(test)]
 mod send_sync_tests {
     use super::*;

@@ -4,10 +4,9 @@
 //! Respects audit mode (skips notes if active).
 
 use anyhow::{bail, Context, Result};
-use std::collections::HashSet;
-use std::sync::LazyLock;
 
 use cqs::audit::load_audit_state;
+use cqs::extract_type_names;
 use cqs::note::{parse_notes, path_matches_mention};
 use cqs::Store;
 
@@ -29,20 +28,10 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
         bail!("File not found: {}", path);
     }
 
-    // Path traversal protection
-    let canonical = file_path
-        .canonicalize()
-        .context("Failed to canonicalize path")?;
-    let project_canonical = root
-        .canonicalize()
-        .context("Failed to canonicalize project root")?;
-    #[cfg(not(windows))]
-    let (canonical, project_canonical) = (canonical, project_canonical);
-    #[cfg(windows)]
-    let (canonical, project_canonical) = (
-        cqs::strip_unc_prefix(canonical),
-        cqs::strip_unc_prefix(project_canonical),
-    );
+    // Path traversal protection (dunce strips Windows UNC prefix automatically)
+    let canonical = dunce::canonicalize(&file_path).context("Failed to canonicalize path")?;
+    let project_canonical =
+        dunce::canonicalize(&root).context("Failed to canonicalize project root")?;
     if !canonical.starts_with(&project_canonical) {
         bail!("Path traversal not allowed: {}", path);
     }
@@ -96,17 +85,10 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
                     );
 
                     for n in relevant {
-                        let sentiment_label = if n.sentiment() < -0.3 {
-                            "WARNING"
-                        } else if n.sentiment() > 0.3 {
-                            "PATTERN"
-                        } else {
-                            "NOTE"
-                        };
                         if let Some(first_line) = n.text.lines().next() {
                             context_header.push_str(&format!(
                                 "// [{}] {}\n",
-                                sentiment_label,
+                                n.sentiment_label(),
                                 first_line.trim()
                             ));
                         }
@@ -134,76 +116,6 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     }
 
     Ok(())
-}
-
-static TYPE_NAME_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\b([A-Z][a-zA-Z0-9_]+)\b").expect("hardcoded regex"));
-
-static COMMON_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
-    [
-        "String",
-        "Vec",
-        "Result",
-        "Option",
-        "Box",
-        "Arc",
-        "Rc",
-        "HashMap",
-        "HashSet",
-        "BTreeMap",
-        "BTreeSet",
-        "Path",
-        "PathBuf",
-        "Value",
-        "Error",
-        "Self",
-        "None",
-        "Some",
-        "Ok",
-        "Err",
-        "Mutex",
-        "RwLock",
-        "Cow",
-        "Pin",
-        "Future",
-        "Iterator",
-        "Display",
-        "Debug",
-        "Clone",
-        "Default",
-        "Send",
-        "Sync",
-        "Sized",
-        "Copy",
-        "From",
-        "Into",
-        "AsRef",
-        "AsMut",
-        "Deref",
-        "DerefMut",
-        "Read",
-        "Write",
-        "Seek",
-        "BufRead",
-        "ToString",
-        "Serialize",
-        "Deserialize",
-    ]
-    .into_iter()
-    .collect()
-});
-
-/// Extract type names from a function signature
-fn extract_type_names(signature: &str) -> Vec<String> {
-    let mut names: Vec<String> = TYPE_NAME_RE
-        .find_iter(signature)
-        .map(|m| m.as_str().to_string())
-        .filter(|name| !COMMON_TYPES.contains(name.as_str()))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    names.sort();
-    names
 }
 
 fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
@@ -252,15 +164,12 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
                     })
                     .collect();
                 for n in &relevant {
-                    let label = if n.sentiment() < -0.3 {
-                        "WARNING"
-                    } else if n.sentiment() > 0.3 {
-                        "PATTERN"
-                    } else {
-                        "NOTE"
-                    };
                     if let Some(first_line) = n.text.lines().next() {
-                        output.push_str(&format!("// [{}] {}\n", label, first_line.trim()));
+                        output.push_str(&format!(
+                            "// [{}] {}\n",
+                            n.sentiment_label(),
+                            first_line.trim()
+                        ));
                     }
                 }
                 if !relevant.is_empty() {

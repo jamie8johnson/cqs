@@ -5,10 +5,19 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use regex::Regex;
 
 use super::types::{CallSite, Chunk, ChunkType, FunctionCalls, Language, ParserError};
+
+/// Pre-compiled regex for markdown links: [text](url)
+static LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").expect("valid regex"));
+
+/// Pre-compiled regex for backtick function references: `Name()`, `Module.func()`
+static FUNC_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"`([\w.:]+)\([^)]*\)`").expect("valid regex"));
 
 /// Minimum section size (lines) — smaller sections merge with next
 const MIN_SECTION_LINES: usize = 30;
@@ -535,8 +544,7 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
 
     // Markdown links (not images): [text](url)
     // Rust regex doesn't support lookbehind, so match all links then filter images
-    let link_re = Regex::new(r"\[([^\]]+)\]\(([^)]+)\)").unwrap();
-    for cap in link_re.captures_iter(text) {
+    for cap in LINK_RE.captures_iter(text) {
         let match_start = cap.get(0).unwrap().start();
         // Skip image links: preceded by '!'
         if match_start > 0 && text.as_bytes()[match_start - 1] == b'!' {
@@ -554,8 +562,7 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
     }
 
     // Backtick function references: `Name()`, `Module.func()`, `Class::method(args)`
-    let func_re = Regex::new(r"`([\w.:]+)\([^)]*\)`").unwrap();
-    for cap in func_re.captures_iter(text) {
+    for cap in FUNC_RE.captures_iter(text) {
         // Extract the name before the parentheses
         let full_ref = &cap[1];
         let callee_name = full_ref.to_string();

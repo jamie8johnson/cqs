@@ -81,6 +81,9 @@ pub use helpers::EXPECTED_DIMENSIONS;
 /// Name of the embedding model used.
 pub use helpers::MODEL_NAME;
 
+/// Score a chunk name against a query for definition search.
+pub use helpers::score_name_match;
+
 // Internal use
 use helpers::{clamp_line_number, ChunkRow};
 
@@ -473,18 +476,7 @@ impl Store {
                         line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
                     });
-                    // Score based on exact match vs prefix match
-                    let name_lower = chunk.name.to_lowercase();
-                    let query_lower = name.to_lowercase();
-                    let score = if name_lower == query_lower {
-                        1.0 // Exact match
-                    } else if name_lower.starts_with(&query_lower) {
-                        0.9 // Prefix match
-                    } else if name_lower.contains(&query_lower) {
-                        0.7 // Contains
-                    } else {
-                        0.5 // FTS matched but not obviously
-                    };
+                    let score = score_name_match(&chunk.name, name);
                     SearchResult { chunk, score }
                 })
                 .collect();
