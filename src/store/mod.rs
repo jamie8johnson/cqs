@@ -215,29 +215,29 @@ impl Store {
                 sqlx::query(stmt).execute(&self.pool).await?;
             }
 
-            // Store metadata
+            // Store metadata (OR REPLACE handles re-init after incomplete cleanup)
             let now = chrono::Utc::now().to_rfc3339();
-            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("schema_version")
                 .bind(CURRENT_SCHEMA_VERSION.to_string())
                 .execute(&self.pool)
                 .await?;
-            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("model_name")
                 .bind(&model_info.name)
                 .execute(&self.pool)
                 .await?;
-            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("dimensions")
                 .bind(model_info.dimensions.to_string())
                 .execute(&self.pool)
                 .await?;
-            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("created_at")
                 .bind(&now)
                 .execute(&self.pool)
                 .await?;
-            sqlx::query("INSERT INTO metadata (key, value) VALUES (?1, ?2)")
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)")
                 .bind("cq_version")
                 .bind(env!("CARGO_PKG_VERSION"))
                 .execute(&self.pool)
