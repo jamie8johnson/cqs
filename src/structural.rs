@@ -48,6 +48,18 @@ impl std::fmt::Display for Pattern {
 }
 
 impl Pattern {
+    /// All valid pattern names (for schema generation and validation)
+    pub fn all_names() -> &'static [&'static str] {
+        &[
+            "builder",
+            "error_swallow",
+            "async",
+            "mutex",
+            "unsafe",
+            "recursion",
+        ]
+    }
+
     /// Check if a code chunk matches this pattern
     pub fn matches(&self, content: &str, name: &str, language: Option<Language>) -> bool {
         match self {
@@ -220,16 +232,23 @@ mod tests {
 
     #[test]
     fn test_pattern_display_roundtrip() {
-        for name in &[
-            "builder",
-            "error_swallow",
-            "async",
-            "mutex",
-            "unsafe",
-            "recursion",
-        ] {
+        for name in Pattern::all_names() {
             let p: Pattern = name.parse().unwrap();
             assert_eq!(p.to_string(), *name);
+        }
+    }
+
+    #[test]
+    fn test_all_names_covers_all_variants() {
+        // Ensure all_names has the same count as the roundtrip test variants
+        // If a new variant is added to Pattern but not to all_names(), this fails
+        assert_eq!(Pattern::all_names().len(), 6);
+        for name in Pattern::all_names() {
+            assert!(
+                name.parse::<Pattern>().is_ok(),
+                "all_names entry '{}' failed to parse",
+                name
+            );
         }
     }
 

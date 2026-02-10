@@ -146,13 +146,21 @@ pub fn gather(
             }
 
             let neighbors = get_neighbors(&graph, &name, opts.direction);
+            let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
+            let decay = opts.decay_factor.powi((depth + 1) as i32);
+            let new_score = base_score * decay;
             for neighbor in neighbors {
-                if !name_scores.contains_key(&neighbor) {
-                    // Expanded nodes get a decaying score based on depth
-                    let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
-                    let decay = opts.decay_factor.powi((depth + 1) as i32);
-                    name_scores.insert(neighbor.clone(), (base_score * decay, depth + 1));
-                    queue.push_back((neighbor, depth + 1));
+                match name_scores.entry(neighbor.clone()) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((new_score, depth + 1));
+                        queue.push_back((neighbor, depth + 1));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if new_score > e.get().0 {
+                            e.insert((new_score, depth + 1));
+                            // Don't re-add to queue — already explored or queued
+                        }
+                    }
                 }
             }
         }

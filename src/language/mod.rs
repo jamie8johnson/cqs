@@ -324,11 +324,18 @@ define_languages! {
 // ---------------------------------------------------------------------------
 
 impl Language {
-    /// Get the language definition from the registry
+    /// Get the language definition, or `None` if its feature flag is disabled.
+    pub fn try_def(&self) -> Option<&'static LanguageDef> {
+        REGISTRY.get(&self.to_string())
+    }
+
+    /// Get the language definition from the registry.
+    ///
+    /// # Panics
+    /// Panics if the language's feature flag is disabled.
     pub fn def(&self) -> &'static LanguageDef {
-        REGISTRY
-            .get(&self.to_string())
-            .expect("language not in registry — check feature flags")
+        self.try_def()
+            .unwrap_or_else(|| panic!("Language '{}' not in registry — check feature flags", self))
     }
 
     /// Look up a language by file extension

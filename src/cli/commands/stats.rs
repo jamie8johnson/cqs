@@ -32,7 +32,12 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     // Use count_vectors to avoid loading full HNSW index just for stats
     let hnsw_vectors = HnswIndex::count_vectors(&cqs_dir, "index");
     let note_count = store.note_count().unwrap_or(0);
-    let (call_count, caller_count, callee_count) = store.function_call_stats().unwrap_or((0, 0, 0));
+    let fc_stats = store.function_call_stats().unwrap_or_default();
+    let (call_count, caller_count, callee_count) = (
+        fc_stats.total_calls,
+        fc_stats.unique_callers,
+        fc_stats.unique_callees,
+    );
 
     if cli.json {
         let json = serde_json::json!({

@@ -219,9 +219,9 @@ fn test_get_callees_not_found() {
 fn test_call_stats_empty() {
     let store = TestStore::new();
 
-    let (total, unique) = store.call_stats().unwrap();
-    assert_eq!(total, 0);
-    assert_eq!(unique, 0);
+    let stats = store.call_stats().unwrap();
+    assert_eq!(stats.total_calls, 0);
+    assert_eq!(stats.unique_callees, 0);
 }
 
 #[test]
@@ -273,7 +273,7 @@ fn test_call_stats_populated() {
         )
         .unwrap();
 
-    let (total, unique) = store.call_stats().unwrap();
-    assert_eq!(total, 4, "Total calls: foo, bar, foo, baz");
-    assert_eq!(unique, 3, "Unique callees: foo, bar, baz");
+    let stats = store.call_stats().unwrap();
+    assert_eq!(stats.total_calls, 4, "Total calls: foo, bar, foo, baz");
+    assert_eq!(stats.unique_callees, 3, "Unique callees: foo, bar, baz");
 }

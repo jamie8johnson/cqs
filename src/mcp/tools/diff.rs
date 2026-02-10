@@ -87,7 +87,7 @@ pub fn tool_diff(server: &McpServer, arguments: Value) -> Result<Value> {
             serde_json::json!({
                 "name": e.name,
                 "file": e.file,
-                "type": e.chunk_type,
+                "type": e.chunk_type.to_string(),
             })
         })
         .collect();
@@ -99,7 +99,7 @@ pub fn tool_diff(server: &McpServer, arguments: Value) -> Result<Value> {
             serde_json::json!({
                 "name": e.name,
                 "file": e.file,
-                "type": e.chunk_type,
+                "type": e.chunk_type.to_string(),
             })
         })
         .collect();
@@ -111,7 +111,7 @@ pub fn tool_diff(server: &McpServer, arguments: Value) -> Result<Value> {
             serde_json::json!({
                 "name": e.name,
                 "file": e.file,
-                "type": e.chunk_type,
+                "type": e.chunk_type.to_string(),
                 "similarity": e.similarity,
             })
         })

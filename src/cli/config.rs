@@ -6,6 +6,12 @@ use std::path::PathBuf;
 
 use super::Cli;
 
+// Default values for CLI options — must match the clap `default_value` attributes in `Cli` (cli/mod.rs)
+pub(crate) const DEFAULT_LIMIT: usize = 5;
+pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
+pub(crate) const DEFAULT_NAME_BOOST: f32 = 0.2;
+pub(crate) const DEFAULT_NOTE_WEIGHT: f32 = 1.0;
+
 /// Find project root by looking for common markers.
 ///
 /// For Cargo projects, detects workspace roots: if a `Cargo.toml` is found,
@@ -85,17 +91,17 @@ fn find_cargo_workspace_root(from: &std::path::Path) -> Option<PathBuf> {
 pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config) {
     // Only apply config if CLI has default values
     // (we can't detect if user explicitly passed the default, so this is imperfect)
-    if cli.limit == 5 {
+    if cli.limit == DEFAULT_LIMIT {
         if let Some(limit) = config.limit {
             cli.limit = limit;
         }
     }
-    if (cli.threshold - 0.3).abs() < f32::EPSILON {
+    if (cli.threshold - DEFAULT_THRESHOLD).abs() < f32::EPSILON {
         if let Some(threshold) = config.threshold {
             cli.threshold = threshold;
         }
     }
-    if (cli.name_boost - 0.2).abs() < f32::EPSILON {
+    if (cli.name_boost - DEFAULT_NAME_BOOST).abs() < f32::EPSILON {
         if let Some(name_boost) = config.name_boost {
             cli.name_boost = name_boost;
         }
@@ -110,7 +116,7 @@ pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config)
             cli.verbose = true;
         }
     }
-    if (cli.note_weight - 1.0).abs() < f32::EPSILON {
+    if (cli.note_weight - DEFAULT_NOTE_WEIGHT).abs() < f32::EPSILON {
         if let Some(note_weight) = config.note_weight {
             cli.note_weight = note_weight;
         }
