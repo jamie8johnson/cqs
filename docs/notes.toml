@@ -633,3 +633,49 @@ mentions = [
     "src/audit.rs",
     ".cqs/audit-mode.json",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "rand 0.10 renamed Rng trait to RngExt — single call site in mcp/transports/http.rs"
+mentions = [
+    "http.rs",
+    "rand",
+]
+
+[[note]]
+sentiment = -0.5
+text = "cuvs Rust crate passes CI without GPU feature, but gpu-search build requires matching libcuvs conda package version"
+mentions = [
+    "cuvs",
+    "gpu-search",
+]
+
+[[note]]
+sentiment = -0.5
+text = "dependency-review.yml had dtolnay/rust-action typo — was failing silently every Monday"
+mentions = ["dependency-review.yml"]
+
+[[note]]
+sentiment = 0.5
+text = "cuDNN via conda (conda-forge) keeps libcudnn.so.9 in miniforge3/lib which is already on LD_LIBRARY_PATH — no path changes needed"
+mentions = [
+    "cudnn",
+    "LD_LIBRARY_PATH",
+]
+
+[[note]]
+sentiment = -0.5
+text = "ref remove must delete via both config path AND canonical ref_path() — config parse mismatches can leave orphaned directories with stale metadata"
+mentions = [
+    "reference.rs",
+    "ref_path",
+]
+
+[[note]]
+sentiment = -0.5
+text = "ref update enumerate_files returning 0 files + existing chunks = language mismatch, must abort not prune"
+mentions = [
+    "reference.rs",
+    "enumerate_files",
+    "prune_missing",
+]
