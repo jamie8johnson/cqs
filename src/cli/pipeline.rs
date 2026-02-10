@@ -555,26 +555,7 @@ pub(crate) fn run_index_pipeline(
             break;
         }
 
-        // Group by file for correct per-file mtime (batches may span multiple files)
-        if batch.file_mtimes.len() <= 1 {
-            // Fast path: single file or no mtimes — use existing batch upsert
-            let mtime = batch.file_mtimes.values().next().copied();
-            store.upsert_chunks_batch(&batch.chunk_embeddings, mtime)?;
-        } else {
-            // Multi-file batch: group by file and upsert with correct per-file mtime
-            let mut by_file: std::collections::HashMap<&std::path::Path, Vec<&(Chunk, Embedding)>> =
-                std::collections::HashMap::new();
-            for pair in &batch.chunk_embeddings {
-                by_file.entry(pair.0.file.as_path()).or_default().push(pair);
-            }
-            for (file, pairs) in by_file {
-                let mtime = batch.file_mtimes.get(file).copied();
-                let owned: Vec<_> = pairs.into_iter().cloned().collect();
-                store.upsert_chunks_batch(&owned, mtime)?;
-            }
-        }
-
-        // Extract and batch-store function calls (single transaction per batch)
+        // Extract call graph for this batch
         let all_calls: Vec<_> = batch
             .chunk_embeddings
             .iter()
@@ -587,8 +568,33 @@ pub(crate) fn run_index_pipeline(
                 }
             })
             .collect();
-        if !all_calls.is_empty() {
-            store.upsert_calls_batch(&all_calls)?;
+
+        // Atomically upsert chunks + calls in a single transaction per file group
+        if batch.file_mtimes.len() <= 1 {
+            // Fast path: single file or no mtimes
+            let mtime = batch.file_mtimes.values().next().copied();
+            store.upsert_chunks_and_calls(&batch.chunk_embeddings, mtime, &all_calls)?;
+        } else {
+            // Multi-file batch: group by file and upsert with correct per-file mtime
+            let mut by_file: std::collections::HashMap<&std::path::Path, Vec<&(Chunk, Embedding)>> =
+                std::collections::HashMap::new();
+            for pair in &batch.chunk_embeddings {
+                by_file.entry(pair.0.file.as_path()).or_default().push(pair);
+            }
+
+            // Build a set of chunk IDs per file for filtering calls
+            for (file, pairs) in by_file {
+                let mtime = batch.file_mtimes.get(file).copied();
+                let owned: Vec<_> = pairs.into_iter().cloned().collect();
+                let chunk_ids: std::collections::HashSet<&str> =
+                    owned.iter().map(|(c, _)| c.id.as_str()).collect();
+                let file_calls: Vec<_> = all_calls
+                    .iter()
+                    .filter(|(id, _)| chunk_ids.contains(id.as_str()))
+                    .cloned()
+                    .collect();
+                store.upsert_chunks_and_calls(&owned, mtime, &file_calls)?;
+            }
         }
 
         total_embedded += batch.chunk_embeddings.len();

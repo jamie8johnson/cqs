@@ -296,12 +296,7 @@ fn reindex_files(
         embeddings[i] = emb;
     }
 
-    // Delete old chunks for these files and insert new ones
-    for rel_path in files {
-        store.delete_by_origin(rel_path)?;
-    }
-
-    // Group chunks by file for batch upsert with per-file mtime
+    // Group chunks by file and atomically replace (delete + insert in single transaction)
     let mut mtime_cache: HashMap<&std::path::Path, Option<i64>> = HashMap::new();
     let mut by_file: HashMap<&std::path::Path, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
     for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
@@ -320,7 +315,7 @@ fn reindex_files(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
         });
-        store.upsert_chunks_batch(pairs, mtime)?;
+        store.replace_file_chunks(file, pairs, mtime)?;
     }
 
     // Extract call graph for changed files

@@ -6,6 +6,7 @@
 //!
 //! CLI flags override all config file values.
 
+use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -224,6 +225,11 @@ impl Config {
         let mut refs = self.references;
         for proj_ref in other.references {
             if let Some(pos) = refs.iter().position(|r| r.name == proj_ref.name) {
+                tracing::warn!(
+                    name = proj_ref.name,
+                    "Project config overrides user reference '{}'",
+                    proj_ref.name
+                );
                 refs[pos] = proj_ref;
             } else {
                 refs.push(proj_ref);
@@ -248,6 +254,15 @@ pub fn add_reference_to_config(
     config_path: &Path,
     ref_config: &ReferenceConfig,
 ) -> anyhow::Result<()> {
+    // Acquire exclusive lock for the entire read-modify-write cycle
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(config_path)?;
+    FileExt::lock_exclusive(&lock_file)?;
+
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -290,7 +305,21 @@ pub fn add_reference_to_config(
         _ => anyhow::bail!("'reference' in config is not an array"),
     }
 
-    std::fs::write(config_path, toml::to_string_pretty(&table)?)?;
+    // Atomic write: temp file + rename (while holding lock)
+    let tmp_path = config_path.with_extension("toml.tmp");
+    let serialized = toml::to_string_pretty(&table)?;
+    std::fs::write(&tmp_path, &serialized)?;
+    if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
+        if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            anyhow::bail!(
+                "rename failed ({}), copy fallback failed: {}",
+                rename_err,
+                copy_err
+            );
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+    }
 
     // Restrict permissions — config may contain paths revealing project structure
     #[cfg(unix)]
@@ -299,16 +328,25 @@ pub fn add_reference_to_config(
         let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
     }
 
+    // lock_file dropped here, releasing exclusive lock
     Ok(())
 }
 
 /// Remove a reference from a config file by name (read-modify-write)
 pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::Result<bool> {
-    let content = match std::fs::read_to_string(config_path) {
-        Ok(c) => c,
+    // Acquire exclusive lock for the entire read-modify-write cycle
+    let lock_file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(config_path)
+    {
+        Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
     };
+    FileExt::lock_exclusive(&lock_file)?;
+
+    let content = std::fs::read_to_string(config_path)?;
 
     let mut table: toml::Table = content
         .parse()
@@ -333,7 +371,21 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
     };
 
     if removed {
-        std::fs::write(config_path, toml::to_string_pretty(&table)?)?;
+        // Atomic write: temp file + rename (while holding lock)
+        let tmp_path = config_path.with_extension("toml.tmp");
+        let serialized = toml::to_string_pretty(&table)?;
+        std::fs::write(&tmp_path, &serialized)?;
+        if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
+            if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                anyhow::bail!(
+                    "rename failed ({}), copy fallback failed: {}",
+                    rename_err,
+                    copy_err
+                );
+            }
+            let _ = std::fs::remove_file(&tmp_path);
+        }
 
         #[cfg(unix)]
         {
@@ -341,6 +393,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
             let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
         }
     }
+    // lock_file dropped here, releasing exclusive lock
     Ok(removed)
 }
 

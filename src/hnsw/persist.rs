@@ -101,13 +101,13 @@ impl HnswIndex {
 
         // Verify ID map matches HNSW vector count before saving
         let hnsw_count = self.inner.hnsw().get_nb_point();
-        assert_eq!(
-            hnsw_count,
-            self.id_map.len(),
-            "HNSW/ID map count mismatch on save: HNSW has {} vectors but id_map has {}. This is a bug.",
-            hnsw_count,
-            self.id_map.len()
-        );
+        if hnsw_count != self.id_map.len() {
+            return Err(HnswError::Internal(format!(
+                "HNSW/ID map count mismatch on save: HNSW has {} vectors but id_map has {}. This is a bug.",
+                hnsw_count,
+                self.id_map.len()
+            )));
+        }
 
         // Ensure target directory exists
         std::fs::create_dir_all(dir).map_err(|e| {
@@ -216,14 +216,19 @@ impl HnswIndex {
             let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
             let final_path = dir.join(format!("{}.{}", basename, ext));
             if temp_path.exists() {
-                std::fs::rename(&temp_path, &final_path).map_err(|e| {
-                    HnswError::Internal(format!(
-                        "Failed to rename {} to {}: {}",
-                        temp_path.display(),
-                        final_path.display(),
-                        e
-                    ))
-                })?;
+                if let Err(rename_err) = std::fs::rename(&temp_path, &final_path) {
+                    // Cross-device fallback (Docker overlayfs, NFS, etc.)
+                    std::fs::copy(&temp_path, &final_path).map_err(|copy_err| {
+                        HnswError::Internal(format!(
+                            "Failed to rename {} → {} ({}), copy fallback also failed: {}",
+                            temp_path.display(),
+                            final_path.display(),
+                            rename_err,
+                            copy_err
+                        ))
+                    })?;
+                    let _ = std::fs::remove_file(&temp_path);
+                }
             }
         }
 

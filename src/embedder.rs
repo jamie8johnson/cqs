@@ -482,12 +482,30 @@ impl Embedder {
         ])?;
 
         // Get the last_hidden_state output: shape [batch, seq_len, 768]
-        let (_shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
+        let (shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
 
-        // Mean pooling over sequence dimension, weighted by attention mask
+        // Validate tensor shape: expect [batch_size, seq_len, 768]
         let batch_size = texts.len();
         let seq_len = max_len;
-        let embedding_dim = 768;
+        if shape.len() != 3 {
+            return Err(EmbedderError::InferenceFailed(format!(
+                "Unexpected tensor shape: expected 3 dimensions [batch, seq, dim], got {} dimensions",
+                shape.len()
+            )));
+        }
+        let embedding_dim = shape[2] as usize;
+        if embedding_dim != 768 {
+            return Err(EmbedderError::InferenceFailed(format!(
+                "Unexpected embedding dimension: expected 768, got {}",
+                embedding_dim
+            )));
+        }
+        if shape[0] as usize != batch_size {
+            return Err(EmbedderError::InferenceFailed(format!(
+                "Tensor batch size mismatch: expected {}, got {}",
+                batch_size, shape[0]
+            )));
+        }
         let mut results = Vec::with_capacity(batch_size);
 
         for (i, mask_vec) in attention_mask.iter().enumerate().take(batch_size) {

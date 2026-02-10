@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 
 /// Global registry of indexed cqs projects
@@ -41,14 +42,43 @@ impl ProjectRegistry {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("Failed to create {}", parent.display()))?;
         }
+        // Acquire exclusive lock for the write
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("Failed to open {} for locking", path.display()))?;
+        FileExt::lock_exclusive(&lock_file)
+            .with_context(|| format!("Failed to lock {}", path.display()))?;
+
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(&path, &content)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        // Atomic write: temp file + rename
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, &content)
+            .with_context(|| format!("Failed to write {}", tmp.display()))?;
+        if let Err(rename_err) = std::fs::rename(&tmp, &path) {
+            // Cross-device fallback (Docker overlayfs, some CI)
+            if let Err(copy_err) = std::fs::copy(&tmp, &path) {
+                let _ = std::fs::remove_file(&tmp);
+                bail!(
+                    "rename {} -> {} failed ({}), copy fallback failed: {}",
+                    tmp.display(),
+                    path.display(),
+                    rename_err,
+                    copy_err
+                );
+            }
+            let _ = std::fs::remove_file(&tmp);
+        }
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
         }
+        // lock_file dropped here, releasing exclusive lock
         Ok(())
     }
 

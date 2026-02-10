@@ -129,8 +129,9 @@ pub const NOTES_HEADER: &str = "\
 
 /// Parse notes from a notes.toml file
 pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
-    // Acquire shared lock so concurrent readers don't conflict with writers
-    let lock_file = std::fs::OpenOptions::new()
+    // Acquire shared lock and read from the locked handle directly
+    use std::io::Read;
+    let mut lock_file = std::fs::OpenOptions::new()
         .read(true)
         .open(path)
         .map_err(|e| {
@@ -146,7 +147,8 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
         ))
     })?;
 
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    let mut content = String::new();
+    lock_file.read_to_string(&mut content).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
             format!("{}: {}", path.display(), e),

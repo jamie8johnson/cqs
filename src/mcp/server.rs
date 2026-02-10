@@ -214,7 +214,7 @@ impl McpServer {
     /// or generic descriptions to prevent information leakage to clients.
     pub(crate) fn sanitize_error_message(&self, error: &str) -> String {
         static RE_UNIX: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root|run|srv|proc|snap|Library|Applications|private)/[^\s:]+")
+            regex::Regex::new(r"/(?:home|Users|tmp|var|usr|opt|etc|mnt|root|run|srv|proc|snap|Library|Applications|private|data|workspace|workspaces|nix|app|builds|store)/[^\s:]+")
                 .expect("hardcoded regex")
         });
         static RE_WINDOWS: LazyLock<regex::Regex> = LazyLock::new(|| {
