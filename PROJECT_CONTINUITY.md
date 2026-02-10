@@ -5,20 +5,29 @@
 **v0.9.7 audit fix session.** 2026-02-10.
 
 ### Active
-- Next: PR3 (Mechanical Improvements) — 33 fixes across eprintln→tracing, docs, observability, error handling, permissions, extensibility
+- Next: PR7 (P3 Polish) — 45 fixes: test coverage, observability, resource management, remaining P3
 
-### Completed
-- PR2 (Critical Bugs): merged as PR #334 — 10 bug fixes
-  - nl.rs: floor_char_boundary for CJK-safe truncation (R7/S10)
-  - notes.rs: char_indices preview truncation (R8/EH13)
-  - search.rs: windowed chunk ID path + resolve_target error on filter miss (AC10, EH11)
-  - calls.rs: TRAIT_METHOD_NAMES set for dead code detection (AC5)
-  - cli/mod.rs: limit clamp 1..100 (R4)
-  - gather.rs: deterministic sort + search_degraded flag (AC2, EH4)
-  - impact.rs: tracing::warn instead of .ok() (EH5/EH6)
-  - tests: non-tautological assertions (TC1, TC12)
-- PR1 (Foundation): merged as PR #333 — extracted shared modules + dedup (11 fixes)
-- Release binary updated after PR2 merge
+### Completed This Session
+- PR6 (API+Algorithm): merged as PR #338 — 13 fixes
+  - DiffEntry typed fields, ChunkKey excludes line_start (A1, AC4)
+  - Note slot capping, gather BFS best-score, search_across_projects HNSW (AC1, AC3, AC7)
+  - Named CallStats structs, test pattern constants (A3, X4)
+  - Language::try_def(), Pattern::all_names(), config defaults (R2, X2, X9)
+  - Impact/markdown unwrap removal (R3, R5)
+- PR5 (Safety+Security): merged as PR #337 — 14 fixes
+  - Config/project file locking, atomic writes (DS4/S9, DS5)
+  - Watch/pipeline atomic operations (DS3, DS2)
+  - Path normalization, traversal validation (PB1/PB2/DS11, S2)
+  - Notes locked read, error sanitization (DS7, S3, S4, S5/S6)
+  - HNSW/embedder assert→Result, tensor validation (R9, R10, R6)
+  - HNSW cross-device rename fallback (PB3)
+
+### Completed Prior Sessions
+- PR4 (Performance): merged as PR #336 — 10 fixes
+- PR3 (Mechanical): merged as PR #335 — 33 fixes
+- PR2 (Critical Bugs): merged as PR #334 — 10 fixes
+- PR1 (Foundation): merged as PR #333 — 11 fixes
+- Release binary updated after each merge
 
 ### Plan
 Full audit fix plan at `/home/user001/.claude/plans/witty-strolling-melody.md`

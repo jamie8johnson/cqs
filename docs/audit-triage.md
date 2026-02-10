@@ -124,10 +124,10 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `gather()` BFS assigns first-discovered score, not best | AC3 | medium | |
-| 2 | Diff ChunkKey includes line_start → false add+remove on reorder | AC4 | medium | |
-| 3 | `search_across_projects` never uses HNSW (always O(n)) | AC7 | medium | |
-| 4 | Unified search note slots over-allocated when code sparse | AC1 | medium | |
+| 1 | `gather()` BFS assigns first-discovered score, not best | AC3 | medium | PR #338 |
+| 2 | Diff ChunkKey includes line_start → false add+remove on reorder | AC4 | medium | PR #338 |
+| 3 | `search_across_projects` never uses HNSW (always O(n)) | AC7 | medium | PR #338 |
+| 4 | Unified search note slots over-allocated when code sparse | AC1 | medium | PR #338 |
 | 5 | impact/test_map MCP tools swallow DB errors with `.ok()` | EH5 | medium | PR #334 |
 | 6 | impact/test_map CLI tools swallow DB errors with `.ok()` | EH6 | medium | PR #334 |
 | 7 | `gather()` silently falls back to empty on batch search failure | EH4 | medium | PR #334 |
@@ -145,75 +145,75 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 12 | Watch mode per-chunk upsert (50 txns vs 1) | P2 | easy | |
-| 13 | Watch mode re-embeds all chunks (no content-hash cache) | P3 | easy | |
-| 14 | `embedding_to_bytes` per-float iterator instead of memcpy | P7 | easy | |
-| 15 | `search_by_names_batch` N+1 FTS queries | P4 | medium | |
-| 16 | `find_dead_code` loads full content for all candidates | P10 | easy | |
+| 12 | Watch mode per-chunk upsert (50 txns vs 1) | P2 | easy | PR #336 |
+| 13 | Watch mode re-embeds all chunks (no content-hash cache) | P3 | easy | PR #336 |
+| 14 | `embedding_to_bytes` per-float iterator instead of memcpy | P7 | easy | PR #336 |
+| 15 | `search_by_names_batch` N+1 FTS queries | P4 | medium | PR #336 |
+| 16 | `find_dead_code` loads full content for all candidates | P10 | easy | PR #336 |
 
 ### Data Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 17 | Config read-modify-write race (no file lock) | DS4/S9 | medium | |
-| 18 | Watch mode delete + reinsert not atomic | DS3 | medium | |
-| 19 | Pipeline chunks + call graph in separate transactions | DS2 | medium | |
-| 20 | `ProjectRegistry.save()` no locking or atomic write | DS5 | easy | |
-| 21 | `parse_notes` reads via separate handle after lock | DS7 | easy | |
+| 17 | Config read-modify-write race (no file lock) | DS4/S9 | medium | PR #337 |
+| 18 | Watch mode delete + reinsert not atomic | DS3 | medium | PR #337 |
+| 19 | Pipeline chunks + call graph in separate transactions | DS2 | medium | PR #337 |
+| 20 | `ProjectRegistry.save()` no locking or atomic write | DS5 | easy | PR #337 |
+| 21 | `parse_notes` reads via separate handle after lock | DS7 | easy | PR #337 |
 
 ### Security
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 22 | `tool_context` no path traversal validation | S2 | medium | |
-| 23 | Reference config `path` allows arbitrary filesystem access | S5 | medium | |
-| 24 | Project .cqs.toml can override user config references | S6 | medium | |
-| 25 | `sanitize_error_message` misses path prefixes | S3 | easy | |
-| 26 | MCP protocol version header reflected unsanitized | S4 | easy | |
+| 22 | `tool_context` no path traversal validation | S2 | medium | PR #337 |
+| 23 | Reference config `path` allows arbitrary filesystem access | S5 | medium | PR #337 |
+| 24 | Project .cqs.toml can override user config references | S6 | medium | PR #337 |
+| 25 | `sanitize_error_message` misses path prefixes | S3 | easy | PR #337 |
+| 26 | MCP protocol version header reflected unsanitized | S4 | easy | PR #337 |
 
 ### Robustness (medium)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 27 | HNSW save `assert_eq!` panics in MCP context | R9 | medium | |
-| 28 | `embedding_to_bytes` `assert_eq!` panics | R10 | medium | |
-| 29 | `embed_batch` discards tensor shape, trusts hardcoded dim | R6 | medium | |
+| 27 | HNSW save `assert_eq!` panics in MCP context | R9 | medium | PR #337 |
+| 28 | `embedding_to_bytes` `assert_eq!` panics | R10 | medium | PR #337 |
+| 29 | `embed_batch` discards tensor shape, trusts hardcoded dim | R6 | medium | PR #337 |
 
 ### Platform (medium)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 30 | Watch mode path separator mismatch (Windows chunk duplication) | PB1/PB2/DS11 | medium | |
-| 31 | HNSW save no cross-device rename fallback | PB3 | medium | |
+| 30 | Watch mode path separator mismatch (Windows chunk duplication) | PB1/PB2/DS11 | medium | PR #337 |
+| 31 | HNSW save no cross-device rename fallback | PB3 | medium | PR #337 |
 
 ### Resource Management (easy)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 32 | Store page cache 16MB x 4 x N stores (up to 384MB) | RM6 | easy | |
-| 33 | HNSW ID map load doubles memory during parse | RM7 | easy | |
-| 34 | Pipeline creates 2 Embedders simultaneously (~1GB) | RM12 | easy | |
-| 35 | Background CAGRA opens second Store with full pool | RM5 | easy | |
-| 36 | Watch `pending_files` retains capacity after burst | RM9 | easy | |
+| 32 | Store page cache 16MB x 4 x N stores (up to 384MB) | RM6 | easy | PR #336 |
+| 33 | HNSW ID map load doubles memory during parse | RM7 | easy | PR #336 |
+| 34 | Pipeline creates 2 Embedders simultaneously (~1GB) | RM12 | easy | PR #336 |
+| 35 | Background CAGRA opens second Store with full pool | RM5 | easy | PR #336 |
+| 36 | Watch `pending_files` retains capacity after burst | RM9 | easy | PR #336 |
 
 ### API Design / Types
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 37 | `ChunkIdentity`/`DiffEntry` use String where enums exist | A1 | easy | |
-| 38 | `call_stats`/`function_call_stats` return unnamed tuples | A3 | easy | |
-| 39 | `Embedding::new()` skips dim validation (unsafe-by-default) | A7 | easy | |
-| 40 | `Language::def()` panics on registry desync | R2 | easy | |
-| 41 | `as_object_mut().unwrap()` in impact JSON | R3 | easy | |
-| 42 | `cap.get(0).unwrap()` in markdown extraction | R5 | easy | |
+| 37 | `ChunkIdentity`/`DiffEntry` use String where enums exist | A1 | easy | PR #338 |
+| 38 | `call_stats`/`function_call_stats` return unnamed tuples | A3 | easy | PR #338 |
+| 39 | `Embedding::new()` skips dim validation (unsafe-by-default) | A7 | easy | PR #338 (by design) |
+| 40 | `Language::def()` panics on registry desync | R2 | easy | PR #338 |
+| 41 | `as_object_mut().unwrap()` in impact JSON | R3 | easy | PR #338 |
+| 42 | `cap.get(0).unwrap()` in markdown extraction | R5 | easy | PR #338 |
 
 ### Extensibility (medium)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 43 | `apply_config_defaults` magic numbers detect unset flags | X9 | medium | |
-| 44 | Test-file patterns hardcoded in SQL, duplicated in Rust | X4 | medium | |
-| 45 | Adding structural Pattern requires 5 changes + MCP schema | X2 | medium | |
+| 43 | `apply_config_defaults` magic numbers detect unset flags | X9 | medium | PR #338 |
+| 44 | Test-file patterns hardcoded in SQL, duplicated in Rust | X4 | medium | PR #338 |
+| 45 | Adding structural Pattern requires 5 changes + MCP schema | X2 | medium | PR #338 |
 
 **P2 Total: 45 findings**
 
