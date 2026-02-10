@@ -133,7 +133,9 @@ Full design: `docs/plans/2026-02-04-20-category-audit-design.md`
 2. `TeamCreate` per batch, agents per category (sonnet for judgment, haiku for mechanical)
 3. Each agent writes findings to `docs/audit-findings.md` (append, don't overwrite)
 4. Shutdown team, cleanup before next batch
-5. After all batches: triage into `docs/audit-triage.md` (append version section with P1-P4 tables), then fix
+5. After all batches: triage into `docs/audit-triage.md` (fresh file with P1-P4 tables), then fix
+
+**Archive workflow:** Before each audit, rename existing `audit-findings.md` and `audit-triage.md` with version suffix (e.g., `audit-findings-v0.9.1.md`). Each audit starts fresh.
 
 **Why:** Findings get lost when context compacts. Issues make work visible to future sessions.
 
