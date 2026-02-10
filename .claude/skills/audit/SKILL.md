@@ -25,7 +25,7 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
 
 ### Setup
 
-1. **Archive previous findings**: Rename `docs/audit-findings.md` to `docs/audit-findings-vPREVIOUS.md` (e.g., `audit-findings-v0.5.3.md`). Start fresh — old findings live in the triage file.
+1. **Archive previous audit**: If `docs/audit-findings.md` or `docs/audit-triage.md` exist, rename both with the version suffix (e.g., `audit-findings-v0.9.1.md`, `audit-triage-v0.9.1.md`). Each audit starts with fresh files.
 
 2. **Enable audit mode**: `cqs audit-mode on --expires 2h -q` — prevents stale notes from biasing review
 
@@ -37,7 +37,7 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
 
 5. **Each teammate prompt must include**:
    - Their category scope (from table below)
-   - Instruction to read `docs/audit-triage.md` first — skip anything already triaged
+   - Instruction to read archived triage files (e.g., `docs/audit-triage-v*.md`) — skip anything already triaged in prior audits
    - Instruction to read `docs/audit-findings.md` first — skip anything already reported by earlier batches in this audit
    - Instruction to append findings to `docs/audit-findings.md`
    - Format: `## [Category]\n\n#### [Finding title]\n- **Difficulty:** easy | medium | hard\n- **Location:** ...\n- **Description:** ...\n- **Suggested fix:** ...`
@@ -51,7 +51,7 @@ Run the 14-category code audit. Full design: `docs/plans/2026-02-04-20-category-
    - P2: Medium effort + high impact → fix in batch
    - P3: Easy + low impact → fix if time
    - P4: Hard or low impact → create issues
-   - **Write triage to `docs/audit-triage.md`** — append a new version section with P1-P4 tables (include Status column). This survives context compaction.
+   - **Write triage to `docs/audit-triage.md`** — fresh file with P1-P4 tables (include Status column). This survives context compaction.
 
 8. **Disable audit mode**: `cqs audit-mode off -q`
 

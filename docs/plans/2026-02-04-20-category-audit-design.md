@@ -129,12 +129,15 @@ For each batch (1-3):
 
 ## Artifacts
 
-- `docs/audit-findings.md` - raw findings from collection
+- `docs/audit-findings.md` - raw findings from collection (fresh each audit)
+- `docs/audit-triage.md` - prioritized findings with status tracking (fresh each audit)
+- `docs/audit-findings-v{VERSION}.md` - archived findings from prior audits
+- `docs/audit-triage-v{VERSION}.md` - archived triage from prior audits
 - `docs/plans/2026-02-04-20-category-audit-design.md` - this design doc
 - GitHub issues for findings being fixed
-- Clean code
 
 ## History
 
 - **v0.5.1**: First audit. 20 categories, 4 batches. ~85 actionable findings from ~120 raw. P1-P3 fixed in 3 PRs, 13 P4 deferred as issues (#231-241).
 - **v0.5.3**: Second audit. 20 categories, 4 batches. 193 raw findings, ~120 unique (38% duplication). Identified consolidation opportunity → redesigned to 14 categories / 3 batches for next run.
+- **v0.9.1**: Third audit. 14 categories, 3 batches. 96 fixes across 3 PRs (#293, #295, #296). 17 P4 deferred (issues #300-#303). Adopted archive workflow — each audit starts fresh with `audit-findings.md` and `audit-triage.md`.
