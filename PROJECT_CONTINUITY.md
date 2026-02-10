@@ -2,14 +2,12 @@
 
 ## Right Now
 
-**Bug fixes session.** 2026-02-10. Reference index bugs #318 and #319 fixed.
+**Bug fixes + housekeeping session.** 2026-02-10.
 
 ### What shipped
 - PR #330: fix ref remove cleanup + ref update prune guard (fixes #318, #319)
-  - `ref remove` falls back to canonical `ref_path()` for directory cleanup
-  - `Store::init` uses `INSERT OR REPLACE` for metadata resilience
-  - `ref update` aborts when binary finds 0 files but index has chunks
-  - `ref update` warns on large prune operations (>50% of chunks)
+- PR #331: update tears + suppress WSL mount permission warning in config.rs
+- PR #332: archive audit files per-version, start fresh each audit
 - Release binary updated
 
 ### Pending
