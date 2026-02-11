@@ -3,7 +3,6 @@
 //! Notes are developer observations with sentiment, stored in TOML and
 //! indexed for semantic search.
 
-use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
@@ -140,7 +139,7 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
                 format!("{}: {}", path.display(), e),
             ))
         })?;
-    FileExt::lock_shared(&lock_file).map_err(|e| {
+    lock_file.lock_shared().map_err(|e| {
         NoteError::Io(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
             format!("Could not lock {} for reading: {}", path.display(), e),
@@ -177,7 +176,7 @@ pub fn rewrite_notes_file(
                 format!("{}: {}", notes_path.display(), e),
             ))
         })?;
-    FileExt::lock_exclusive(&lock_file).map_err(|e| {
+    lock_file.lock().map_err(|e| {
         NoteError::Io(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
             format!("Could not lock {} for writing: {}", notes_path.display(), e),
