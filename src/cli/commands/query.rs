@@ -186,23 +186,27 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Multi-index search: search each reference
-    let mut ref_results = Vec::new();
-    for ref_idx in &references {
-        match reference::search_reference(
-            ref_idx,
-            &query_embedding,
-            &filter,
-            cli.limit,
-            cli.threshold,
-        ) {
-            Ok(r) if !r.is_empty() => ref_results.push((ref_idx.name.clone(), r)),
-            Err(e) => {
-                tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed")
+    // Multi-index search: search references in parallel
+    use rayon::prelude::*;
+    let ref_results: Vec<_> = references
+        .par_iter()
+        .filter_map(|ref_idx| {
+            match reference::search_reference(
+                ref_idx,
+                &query_embedding,
+                &filter,
+                cli.limit,
+                cli.threshold,
+            ) {
+                Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
+                Err(e) => {
+                    tracing::warn!(reference = %ref_idx.name, error = %e, "Reference search failed");
+                    None
+                }
+                _ => None,
             }
-            _ => {}
-        }
-    }
+        })
+        .collect();
 
     let tagged = reference::merge_results(results, ref_results, cli.limit);
 

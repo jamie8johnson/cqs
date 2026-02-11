@@ -127,7 +127,10 @@ pub fn search_reference_by_name(
     Ok(results)
 }
 
-/// Merge primary results with reference results, sorted by score, truncated to limit
+/// Merge primary results with reference results, sorted by score, truncated to limit.
+///
+/// Deduplicates code results with identical content across stores — keeps the
+/// highest-scoring occurrence. Notes (project-local) are never deduplicated.
 pub fn merge_results(
     primary: Vec<UnifiedResult>,
     refs: Vec<(String, Vec<SearchResult>)>,
@@ -153,12 +156,23 @@ pub fn merge_results(
         }
     }
 
-    // Sort by score descending
+    // Sort by score descending (highest first)
     tagged.sort_by(|a, b| {
         b.result
             .score()
             .partial_cmp(&a.result.score())
             .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Deduplicate code results by content hash (keeps highest-scoring occurrence).
+    // Notes are never deduplicated — they're project-local and unique.
+    let mut seen_hashes = std::collections::HashSet::new();
+    tagged.retain(|t| match &t.result {
+        UnifiedResult::Code(r) => {
+            let hash = blake3::hash(r.chunk.content.as_bytes());
+            seen_hashes.insert(hash)
+        }
+        UnifiedResult::Note(_) => true,
     });
 
     tagged.truncate(limit);
@@ -366,6 +380,65 @@ mod tests {
         assert!(validate_ref_name("tokio").is_ok());
         assert!(validate_ref_name("my-ref").is_ok());
         assert!(validate_ref_name("ref_v2").is_ok());
+    }
+
+    #[test]
+    fn test_merge_deduplicates_by_content() {
+        // Same content in primary and reference — keep highest score
+        let primary = vec![UnifiedResult::Code(SearchResult {
+            chunk: ChunkSummary {
+                id: "primary-id".to_string(),
+                file: std::path::PathBuf::from("src/foo.rs"),
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::parser::ChunkType::Function,
+                name: "foo".to_string(),
+                signature: String::new(),
+                content: "fn foo() {}".to_string(), // same content
+                doc: None,
+                line_start: 1,
+                line_end: 1,
+            },
+            score: 0.9,
+        })];
+        let refs = vec![(
+            "ref1".to_string(),
+            vec![SearchResult {
+                chunk: ChunkSummary {
+                    id: "ref-id".to_string(),
+                    file: std::path::PathBuf::from("src/foo.rs"),
+                    language: crate::parser::Language::Rust,
+                    chunk_type: crate::parser::ChunkType::Function,
+                    name: "foo".to_string(),
+                    signature: String::new(),
+                    content: "fn foo() {}".to_string(), // same content
+                    doc: None,
+                    line_start: 1,
+                    line_end: 1,
+                },
+                score: 0.7,
+            }],
+        )];
+
+        let merged = merge_results(primary, refs, 10);
+        // Should have 1 result (deduped), not 2
+        assert_eq!(merged.len(), 1);
+        // Kept the highest-scoring one (primary, 0.9)
+        assert!(merged[0].source.is_none());
+        assert!((merged[0].result.score() - 0.9).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_merge_dedup_keeps_notes() {
+        // Notes should never be deduplicated, even with same score
+        let primary = vec![
+            UnifiedResult::Note(make_note_result("a note", 0.85)),
+            UnifiedResult::Note(make_note_result("a note", 0.85)), // duplicate note text
+        ];
+        let refs: Vec<(String, Vec<SearchResult>)> = vec![];
+
+        let merged = merge_results(primary, refs, 10);
+        // Both notes should be kept (notes are never deduped)
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]

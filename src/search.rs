@@ -351,28 +351,15 @@ impl Store {
                 }
             }
 
-            let where_clause = if conditions.is_empty() {
-                String::new()
-            } else {
-                format!(" WHERE {}", conditions.join(" AND "))
-            };
-
             let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
             let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
             let semantic_limit = if use_rrf { limit * 3 } else { limit };
 
-            let sql = if use_hybrid {
-                format!("SELECT id, embedding, name FROM chunks{}", where_clause)
+            // Select columns: always id + embedding, optionally name for hybrid scoring
+            let columns = if use_hybrid {
+                "rowid, id, embedding, name"
             } else {
-                format!("SELECT id, embedding FROM chunks{}", where_clause)
-            };
-
-            let rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
-                for val in &bind_values {
-                    q = q.bind(val);
-                }
-                q.fetch_all(&self.pool).await?
+                "rowid, id, embedding"
             };
 
             // Compile glob pattern once outside the loop (not per-chunk).
@@ -393,35 +380,74 @@ impl Store {
             // This bounds memory to O(semantic_limit) instead of O(total_chunks).
             let mut score_heap = BoundedScoreHeap::new(semantic_limit);
 
-            for row in &rows {
-                let id: String = row.get(0);
-                let embedding_bytes: Vec<u8> = row.get(1);
-                let name: Option<String> = if use_hybrid { row.get(2) } else { None };
+            // Cursor-based batching: load embeddings in batches of 5000 instead of
+            // all at once. This bounds memory to O(batch_size) instead of O(total_chunks).
+            // Uses the same cursor pattern as EmbeddingBatchIterator in store/chunks.rs.
+            const BRUTE_FORCE_BATCH_SIZE: i64 = 5000;
+            let mut last_rowid: i64 = 0;
+            loop {
+                let rowid_condition = format!("rowid > ?{}", bind_values.len() + 1);
+                let limit_param = format!("?{}", bind_values.len() + 2);
 
-                let Some(embedding) = embedding_slice(&embedding_bytes) else {
-                    continue;
-                };
-                let Some(embedding_score) = cosine_similarity(query.as_slice(), embedding) else {
-                    continue;
-                };
-
-                let score = if let Some(ref matcher) = name_matcher {
-                    let n = name.as_deref().unwrap_or("");
-                    let name_score = matcher.score(n);
-                    (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
+                let batch_where = if conditions.is_empty() {
+                    format!(" WHERE {} ORDER BY rowid ASC LIMIT {}", rowid_condition, limit_param)
                 } else {
-                    embedding_score
+                    format!(
+                        " WHERE {} AND {} ORDER BY rowid ASC LIMIT {}",
+                        conditions.join(" AND "),
+                        rowid_condition,
+                        limit_param
+                    )
                 };
 
-                if let Some(ref matcher) = glob_matcher {
-                    let file_part = extract_file_from_chunk_id(&id);
-                    if !matcher.is_match(file_part) {
-                        continue;
+                let sql = format!("SELECT {} FROM chunks{}", columns, batch_where);
+                let batch: Vec<_> = {
+                    let mut q = sqlx::query(&sql);
+                    for val in &bind_values {
+                        q = q.bind(val);
                     }
-                }
+                    q = q.bind(last_rowid);
+                    q = q.bind(BRUTE_FORCE_BATCH_SIZE);
+                    q.fetch_all(&self.pool).await?
+                };
 
-                if score >= threshold {
-                    score_heap.push(id, score);
+                if batch.is_empty() {
+                    break;
+                }
+                last_rowid = batch.last().unwrap().get::<i64, _>("rowid");
+
+                for row in &batch {
+                    let id: String = row.get("id");
+                    let embedding_bytes: Vec<u8> = row.get("embedding");
+                    let name: Option<String> = if use_hybrid { row.get("name") } else { None };
+
+                    let Some(embedding) = embedding_slice(&embedding_bytes) else {
+                        continue;
+                    };
+                    let Some(embedding_score) = cosine_similarity(query.as_slice(), embedding)
+                    else {
+                        continue;
+                    };
+
+                    let score = if let Some(ref matcher) = name_matcher {
+                        let n = name.as_deref().unwrap_or("");
+                        let name_score = matcher.score(n);
+                        (1.0 - filter.name_boost) * embedding_score
+                            + filter.name_boost * name_score
+                    } else {
+                        embedding_score
+                    };
+
+                    if let Some(ref matcher) = glob_matcher {
+                        let file_part = extract_file_from_chunk_id(&id);
+                        if !matcher.is_match(file_part) {
+                            continue;
+                        }
+                    }
+
+                    if score >= threshold {
+                        score_heap.push(id, score);
+                    }
                 }
             }
 

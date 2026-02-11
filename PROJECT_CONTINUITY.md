@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**Post-MCP cleanup and release.** 2026-02-10.
+**v0.10.0 released.** 2026-02-10.
 
-MCP server removed in PR #352 (merged). Now: groom notes, review docs, release v0.10.0.
+MCP server removed (PR #352), v0.10.0 released (PR #353). Published to crates.io and GitHub.
 
 ### Pending
 - `.cqs.toml` — untracked, has aveva-docs reference config
