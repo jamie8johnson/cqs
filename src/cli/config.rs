@@ -126,6 +126,11 @@ pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config)
             cli.note_only = true;
         }
     }
+    if !cli.no_stale_check {
+        if let Some(false) = config.stale_check {
+            cli.no_stale_check = true;
+        }
+    }
 }
 
 #[cfg(test)]

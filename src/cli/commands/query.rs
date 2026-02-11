@@ -178,7 +178,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let parents_ref = if cli.expand { Some(&parents) } else { None };
 
     // Proactive staleness warning (stderr, doesn't pollute JSON)
-    if !cli.quiet {
+    if !cli.quiet && !cli.no_stale_check {
         let origins: Vec<&str> = results
             .iter()
             .filter_map(|r| match r {
