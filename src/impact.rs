@@ -74,10 +74,41 @@ pub struct FunctionHints {
     pub test_count: usize,
 }
 
+/// Core implementation — accepts pre-loaded graph and test chunks.
+///
+/// Use this when processing multiple functions to avoid loading the graph
+/// N times (e.g., scout, which processes 10+ functions).
+pub fn compute_hints_with_graph(
+    graph: &CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+    function_name: &str,
+    prefetched_caller_count: Option<usize>,
+) -> FunctionHints {
+    let caller_count = match prefetched_caller_count {
+        Some(n) => n,
+        None => graph
+            .reverse
+            .get(function_name)
+            .map(|v| v.len())
+            .unwrap_or(0),
+    };
+    let ancestors = reverse_bfs(graph, function_name, MAX_TEST_SEARCH_DEPTH);
+    let test_count = test_chunks
+        .iter()
+        .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
+        .count();
+
+    FunctionHints {
+        caller_count,
+        test_count,
+    }
+}
+
 /// Compute caller count and test count for a single function.
 ///
-/// Pass `prefetched_caller_count` to avoid re-querying callers when the
-/// caller already has them (e.g., `explain` fetches callers before this).
+/// Convenience wrapper that loads graph internally. Pass `prefetched_caller_count`
+/// to avoid re-querying callers when the caller already has them (e.g., `explain`
+/// fetches callers before this).
 pub fn compute_hints(
     store: &Store,
     function_name: &str,
@@ -89,16 +120,12 @@ pub fn compute_hints(
     };
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
-    let ancestors = reverse_bfs(&graph, function_name, MAX_TEST_SEARCH_DEPTH);
-    let test_count = test_chunks
-        .iter()
-        .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
-        .count();
-
-    Ok(FunctionHints {
-        caller_count,
-        test_count,
-    })
+    Ok(compute_hints_with_graph(
+        &graph,
+        &test_chunks,
+        function_name,
+        Some(caller_count),
+    ))
 }
 
 /// Build caller info with call-site snippets

@@ -18,8 +18,8 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
-    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_similar, cmd_stale, cmd_stats,
-    cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
+    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_scout, cmd_similar, cmd_stale,
+    cmd_stats, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -367,6 +367,17 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Pre-investigation dashboard: search, group, count callers/tests, check staleness
+    Scout {
+        /// Task description to investigate
+        task: String,
+        /// Max file groups to return
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -480,6 +491,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit,
             json,
         }) => cmd_where(&cli, description, limit, json),
+        Some(Commands::Scout {
+            ref task,
+            limit,
+            json,
+        }) => cmd_scout(&cli, task, limit, json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
