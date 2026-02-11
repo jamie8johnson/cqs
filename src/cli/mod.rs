@@ -218,6 +218,9 @@ enum Commands {
         /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
+        /// Suggest tests for untested callers
+        #[arg(long)]
+        suggest_tests: bool,
     },
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
@@ -404,9 +407,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             depth,
             ref format,
             json,
+            suggest_tests,
         }) => {
             let fmt = if json { "json" } else { format.as_str() };
-            cmd_impact(&cli, name, depth, fmt)
+            cmd_impact(&cli, name, depth, fmt, suggest_tests)
         }
         Some(Commands::ImpactDiff {
             ref base,
