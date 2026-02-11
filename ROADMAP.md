@@ -322,6 +322,16 @@
 - [x] **Split `hnsw.rs`** → `src/hnsw/` directory (mod.rs, build.rs, search.rs, persist.rs, safety.rs)
 - [x] **Fix flaky `test_loaded_index_multiple_searches`** — one-hot embeddings for reliable separation
 
+### Done (v0.9.8)
+
+- [x] **14-category audit v4** — 161 raw → 144 unique findings, 125 fixed across 9 PRs (#333-#343)
+  - Shared module extraction (CLI/MCP dedup), critical bug fixes, mechanical improvements
+  - Performance: batch upserts, embedding cache, FTS batching, lazy loading
+  - Safety: config/project locking, atomic operations, integrity checks
+  - Security: FTS sanitization, path validation, trust boundaries
+  - API: typed structs, dimension validation, builder patterns
+  - 75 new tests, 339 lib tests total
+
 ## New Languages
 
 ### Done

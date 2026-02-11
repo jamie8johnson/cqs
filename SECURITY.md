@@ -22,6 +22,9 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 3. **DNS rebinding**: Origin validation rejects `localhost.evil.com` style attacks
 4. **Timing attacks**: API key validation uses constant-time comparison
 5. **Resource exhaustion**: Query length limits, request body limits
+6. **FTS injection**: Search queries sanitized before SQLite FTS5 MATCH operations
+7. **Database corruption**: `PRAGMA quick_check` on every database open
+8. **Reference config trust**: Warnings logged when reference configs override project settings
 
 ### What We Don't Protect Against
 
@@ -81,7 +84,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 |------|---------|------|
 | Project source files | Parsing and embedding | `cqs index`, `cqs watch` |
 | `.cqs/index.db` | SQLite database | All operations |
-| `.cqs/hnsw.*` | Vector index files | Search operations |
+| `.cqs/index.hnsw.*` | Vector index files | Search operations |
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
@@ -93,8 +96,7 @@ The `--api-key-file` option uses `zeroize` to clear the key from memory when dro
 |------|---------|------|
 | `.cqs/` directory | Index storage | `cqs init` |
 | `.cqs/index.db` | SQLite database | `cqs index`, note operations |
-| `.cqs/hnsw.*` | Vector index | `cqs index` |
-| `.cqs/checksums.bin` | File change detection | `cqs index` |
+| `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
 | `.cqs/cqs.pid` | Process lock file | `cqs watch` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index storage | `cqs ref add`, `cqs ref update` |

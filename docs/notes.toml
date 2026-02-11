@@ -150,7 +150,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 12.0, WSL2"
+text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 13.1, WSL2"
 mentions = [
     "hardware",
     "benchmarking",
@@ -252,7 +252,7 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via LIMIT/OFFSET, HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
+text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via cursor pagination (WHERE rowid > N), HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
     "src/store/chunks.rs",
     "src/hnsw/build.rs",
@@ -480,15 +480,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Config::load_file() was silently swallowing parse errors — returned None for both missing files and broken TOML. Fixed in PR #308 to return Result. Always propagate config errors; silent failures hide misconfig until runtime."
-mentions = [
-    "src/config.rs",
-    "Config::load_file",
-    "error handling",
-]
-
-[[note]]
-sentiment = -0.5
 text = "Bashrc non-interactive guard (case $- in *i*) blocks all exports below it for tool shells. CUDA/lib env vars must go ABOVE the guard. Session lost 30min to LD_LIBRARY_PATH not reaching cargo test."
 mentions = [
     "~/.bashrc",
@@ -550,11 +541,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "Stale /mnt/c/Projects/cq/target/ directory (10GB) was deleted. .cargo/config.toml routes builds to ~/.cargo-target/cq/. The old target/ dir predated the config change and contained a 0.9.4 binary that caused confusion — binary reported wrong version because we kept copying from the stale location."
-mentions = [".cargo/config.toml"]
-
-[[note]]
 sentiment = 0.5
 text = "PDF-to-markdown pipeline works: pymupdf4llm converts AVEVA Historian manuals cleanly. Heading hierarchy preserved (# through ######). Noise: copyright footers, page numbers, ToC dot leaders need stripping. 39 PDFs → 14MB markdown in samples/md/."
 mentions = [
@@ -594,23 +580,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "ref update with a binary that doesn't support a language silently prunes ALL chunks for that language. v0.9.5 binary didn't know markdown, ran ref update, wiped 5662 chunks. No warning. Filed #318."
-mentions = [
-    "src/cli/commands/reference.rs",
-    "ref update",
-]
-
-[[note]]
-sentiment = -0.5
-text = "ref remove doesn't clean up metadata table rows. Re-adding same reference name hits UNIQUE constraint. Workaround: rm -rf the ref directory. Filed #319."
-mentions = [
-    "src/cli/commands/reference.rs",
-    "ref remove",
-    "ref add",
-]
-
-[[note]]
 sentiment = -0.5
 text = "Always verify release binary version matches latest code before testing features. Previous session used debug build for markdown indexing but never rebuilt release. cqs --version catches this."
 mentions = [
@@ -635,25 +604,12 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "rand 0.10 renamed Rng trait to RngExt — single call site in mcp/transports/http.rs"
-mentions = [
-    "http.rs",
-    "rand",
-]
-
-[[note]]
 sentiment = -0.5
 text = "cuvs Rust crate passes CI without GPU feature, but gpu-search build requires matching libcuvs conda package version"
 mentions = [
     "cuvs",
     "gpu-search",
 ]
-
-[[note]]
-sentiment = -0.5
-text = "dependency-review.yml had dtolnay/rust-action typo — was failing silently every Monday"
-mentions = ["dependency-review.yml"]
 
 [[note]]
 sentiment = 0.5
@@ -664,18 +620,35 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "ref remove must delete via both config path AND canonical ref_path() — config parse mismatches can leave orphaned directories with stale metadata"
+sentiment = 1.0
+text = "v0.9.7 audit: 14 categories / 3 batches → 161 raw → 144 unique findings. 125 fixed across 9 PRs (#333-#343). 5 P4 deferred as issues. 11 P3 deferred (lower ROI). 339 lib tests, 0 warnings, clippy clean."
 mentions = [
-    "reference.rs",
-    "ref_path",
+    "docs/audit-triage.md",
+    "docs/audit-findings.md",
+]
+
+[[note]]
+sentiment = 0.5
+text = "SQLite integrity check on every Store::open via PRAGMA quick_check. Catches B-tree corruption early with StoreError::Corruption. Added in PR #343 (DS12)."
+mentions = [
+    "src/store/mod.rs",
+    "src/store/helpers.rs",
 ]
 
 [[note]]
 sentiment = -0.5
-text = "ref update enumerate_files returning 0 files + existing chunks = language mismatch, must abort not prune"
+text = "FTS5 queries need sanitization — special chars (quotes, parens, +, -, ^, :) and reserved words (OR, AND, NOT, NEAR) cause MATCH failures. sanitize_fts_query() strips them before all FTS calls."
 mentions = [
-    "reference.rs",
-    "enumerate_files",
-    "prune_missing",
+    "src/store/mod.rs",
+    "FTS5",
+    "sanitize_fts_query",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Embedder clear_session() releases ~500MB ONNX session memory for long-running processes. Session lazily re-initializes on next embed call. Use during idle periods in watch/serve."
+mentions = [
+    "src/embedder.rs",
+    "clear_session",
+    "OnceCell",
 ]
