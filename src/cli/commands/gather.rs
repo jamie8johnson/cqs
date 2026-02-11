@@ -40,7 +40,7 @@ pub(crate) fn cmd_gather(
     let result = gather(&store, &query_embedding, query, &opts, &root)?;
 
     // Proactive staleness warning
-    if !cli.quiet && !result.chunks.is_empty() {
+    if !cli.quiet && !cli.no_stale_check && !result.chunks.is_empty() {
         let origins: Vec<&str> = result
             .chunks
             .iter()

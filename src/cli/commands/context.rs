@@ -39,7 +39,7 @@ pub(crate) fn cmd_context(
     }
 
     // Proactive staleness warning
-    if !cli.quiet {
+    if !cli.quiet && !cli.no_stale_check {
         staleness::warn_stale_results(&store, &[&origin]);
     }
 

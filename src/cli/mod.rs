@@ -101,6 +101,10 @@ pub struct Cli {
     #[arg(short, long)]
     quiet: bool,
 
+    /// Disable staleness checks (skip per-file mtime comparison)
+    #[arg(long)]
+    no_stale_check: bool,
+
     /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
     pub verbose: bool,
@@ -909,6 +913,7 @@ mod tests {
             references: vec![],
             note_weight: None,
             note_only: None,
+            stale_check: None,
         };
         apply_config_defaults(&mut cli, &config);
 
@@ -931,6 +936,7 @@ mod tests {
             references: vec![],
             note_weight: None,
             note_only: None,
+            stale_check: None,
         };
         apply_config_defaults(&mut cli, &config);
 

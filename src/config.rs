@@ -52,6 +52,7 @@ fn default_ref_weight() -> f32 {
 /// name_boost = 0.2    # Weight for name matching
 /// quiet = false       # Suppress progress output
 /// verbose = false     # Enable verbose logging
+/// stale_check = false # Disable per-file staleness checks
 ///
 /// [[reference]]
 /// name = "tokio"
@@ -76,6 +77,8 @@ pub struct Config {
     pub note_weight: Option<f32>,
     /// Default note-only mode (overridden by --note-only)
     pub note_only: Option<bool>,
+    /// Disable staleness checks (useful on NFS or slow filesystems)
+    pub stale_check: Option<bool>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -268,6 +271,7 @@ impl Config {
             verbose: other.verbose.or(self.verbose),
             note_weight: other.note_weight.or(self.note_weight),
             note_only: other.note_only.or(self.note_only),
+            stale_check: other.stale_check.or(self.stale_check),
             references: refs,
         }
     }
@@ -818,5 +822,26 @@ weight = 0.7
 
         let config = Config::load(dir.path());
         assert_eq!(config.limit, Some(100));
+    }
+
+    #[test]
+    fn test_stale_check_config() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // stale_check = false disables staleness warnings
+        std::fs::write(&config_path, "stale_check = false\n").unwrap();
+        let config = Config::load(dir.path());
+        assert_eq!(config.stale_check, Some(false));
+
+        // stale_check = true (explicit enable, default behavior)
+        std::fs::write(&config_path, "stale_check = true\n").unwrap();
+        let config = Config::load(dir.path());
+        assert_eq!(config.stale_check, Some(true));
+
+        // Not set: defaults to None
+        std::fs::write(&config_path, "limit = 5\n").unwrap();
+        let config = Config::load(dir.path());
+        assert_eq!(config.stale_check, None);
     }
 }
