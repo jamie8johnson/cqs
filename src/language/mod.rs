@@ -130,8 +130,6 @@ pub struct LanguageDef {
     pub call_query: Option<&'static str>,
     /// How to extract signatures
     pub signature_style: SignatureStyle,
-    /// Mapping from tree-sitter capture names to chunk types
-    pub type_map: &'static [(&'static str, ChunkType)],
     /// Node types that contain doc comments
     pub doc_nodes: &'static [&'static str],
     /// Node kinds that are themselves methods (e.g., Go's "method_declaration")

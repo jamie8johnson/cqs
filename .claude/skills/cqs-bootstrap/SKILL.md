@@ -162,7 +162,24 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-**`cqs read <path>`** — use instead of raw `Read` for indexed source files. Returns file contents with relevant notes injected as comments. Use raw `Read` for non-indexed files (config, markdown, lock files).
+**Key commands** (all support `--json`):
+- `cqs read <path>` — file with notes injected. Use instead of raw `Read` for indexed source files.
+- `cqs read --focus <function>` — function + type dependencies only. Saves tokens.
+- `cqs explain <function>` — function card: signature, callers, callees, similar.
+- `cqs similar <function>` — find similar code. Refactoring discovery, duplicates.
+- `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
+- `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
+- `cqs gather "query"` — smart context assembly: seed search + call graph BFS.
+- `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes.
+- `cqs where "description"` — placement suggestion for new code.
+- `cqs related <function>` — co-occurrence: shared callers, callees, types.
+- `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
+- `cqs trace <source> <target>` — shortest call path between two functions.
+- `cqs test-map <function>` — map function to tests that exercise it.
+- `cqs dead` — find functions/methods with no callers.
+- `cqs stale` — check index freshness.
+- `cqs stats` — index statistics.
+- `cqs notes add/update/remove` — manage project notes.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 
