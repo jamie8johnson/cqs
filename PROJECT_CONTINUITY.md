@@ -5,22 +5,22 @@
 **v0.9.7 audit fix session.** 2026-02-10.
 
 ### Active
-- Next: PR7 (P3 Polish) — 45 fixes: test coverage, observability, resource management, remaining P3
+- Next: PR7c (remaining P3) or PR8 (P4 issues) — 18 unfixed P3 remain
+- Remaining P3: TC2-TC5, TC8, TC9, TC14 (test coverage), A2, A9 (API), P8, P11 (perf), RM1, RM3, RM4, RM8 (resources), DS12 (data safety), X7 (extensibility)
 
 ### Completed This Session
+- PR7b (P3 batch 2): merged as PR #341 — 14 fixes
+  - Test coverage: TC7, TC10, TC11, TC13, TC15
+  - Performance: P6 (FTS dedup), P9 (pipeline clone), DS9 (cursor pagination)
+  - Security: S1 (FTS sanitization)
+  - API docs: A6, A8 (verified), EH12, S8 (verified), RM10 (documented)
+- PR7a (P3 batch 1): merged as PR #340 — 13 fixes
+  - Data safety: DS1, DS10, DS13
+  - Algorithm: AC8, AC6, A10, RM11
+  - Perf: P12. Observability: O10, O11
+  - Platform: PB7, S7, PB8
 - PR6 (API+Algorithm): merged as PR #338 — 13 fixes
-  - DiffEntry typed fields, ChunkKey excludes line_start (A1, AC4)
-  - Note slot capping, gather BFS best-score, search_across_projects HNSW (AC1, AC3, AC7)
-  - Named CallStats structs, test pattern constants (A3, X4)
-  - Language::try_def(), Pattern::all_names(), config defaults (R2, X2, X9)
-  - Impact/markdown unwrap removal (R3, R5)
 - PR5 (Safety+Security): merged as PR #337 — 14 fixes
-  - Config/project file locking, atomic writes (DS4/S9, DS5)
-  - Watch/pipeline atomic operations (DS3, DS2)
-  - Path normalization, traversal validation (PB1/PB2/DS11, S2)
-  - Notes locked read, error sanitization (DS7, S3, S4, S5/S6)
-  - HNSW/embedder assert→Result, tensor validation (R9, R10, R6)
-  - HNSW cross-device rename fallback (PB3)
 
 ### Completed Prior Sessions
 - PR4 (Performance): merged as PR #336 — 10 fixes
