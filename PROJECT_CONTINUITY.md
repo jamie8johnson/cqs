@@ -2,34 +2,19 @@
 
 ## Right Now
 
-**v0.12.0 released.** 2026-02-11.
+**v0.12.1 released.** 2026-02-11. Clean tree, notes groomed (72→71).
 
-7 agent experience features shipped (PRs #365-#370), bootstrap fix (#371), release PR #372.
-Published to crates.io, GitHub release created, release binary updated.
-
-Cleaned up: 57 stale remote branches pruned, awesome-mcp-servers PR #1783 closed (MCP removed).
-Roadmap archived — completed phases moved to `docs/roadmap-archive.md`.
-Notes groomed: 76 → 70 (removed hardware specs, pronunciation, stale observations).
-
-### Planning next
-- Pre-built release binaries (GitHub Actions)
-- Skill grouping / organization
-- Delete `type_map` dead code
-- Scout note matching precision
-- `cqs plan` R&D
-
-### Known limitations
-- T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar
-- `type_map` field in LanguageDef is defined but never read (dead code)
+Uncommitted: `docs/notes.toml` — merged 2 note pairs, added 3 new notes (watcher WSL loop, scout matching bug, cqs plan R&D).
 
 ## Parked
 
-- **AVEVA docs reference testing** — 5662 chunks from 39 markdown files, 38 cross-referenced docs still missing. User converting more PDFs.
-- **VB.NET language support** — parked, VS2005 project delayed
-- **Post-index name matching** — follow-up PR for fuzzy cross-doc references
+- **Pre-built release binaries** (GitHub Actions) — deferred
+- **`cqs plan` skill** — template-based planning using scout/impact data
+- **AVEVA docs reference testing** — 5662 chunks from 39 markdown files
+- **VB.NET language support** — VS2005 project delayed
+- **Post-index name matching** — fuzzy cross-doc references
 - **Phase 8**: Security (index encryption)
-- **ref install** — deferred from Phase 6, tracked in #255
-- **Speculative R&D: `cqs plan`** — strong AI planning. Revisit when `scout` usage data available.
+- **ref install** — deferred, tracked in #255
 
 ## Open Issues
 
@@ -45,7 +30,7 @@ Notes groomed: 76 → 70 (removed hardware specs, pronunciation, stale observati
 
 ## Architecture
 
-- Version: 0.12.0
+- Version: 0.12.1
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
