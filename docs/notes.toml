@@ -302,15 +302,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "`--json` is a top-level Cli flag, not a subcommand flag. Correct: `cqs --json stats`, NOT `cqs stats --json`. Same for callers/callees. Could be improved by adding it to subcommands too."
-mentions = [
-    "src/cli/mod.rs",
-    "--json",
-    "clap",
-]
-
-[[note]]
 sentiment = 0.5
 text = "Multi-index architecture: each reference gets its own Store + HNSW. Score-based merge with weight multiplier (default 0.8). Parallel search via rayon (PR #354). Cross-store dedup via blake3 content hash."
 mentions = [
@@ -621,4 +612,28 @@ text = "Pre-audit security sweep found 10 issues in code that passed 3 prior aud
 mentions = [
     "audit",
     "security",
+]
+
+[[note]]
+sentiment = -0.5
+text = "CRLF line ending drift in WSL: Edit tool on /mnt/c/ NTFS files can silently introduce CRLF, causing full-file diffs of unchanged files. Always check git diff --stat before committing. Use git checkout -- <file> to restore."
+mentions = [
+    "WSL",
+    "git",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Half-open vs inclusive interval overlap: hunk [start, start+count) vs chunk [line_start, line_end]. Correct: start <= end_inclusive && exclusive_end > start_inclusive. Using >= with exclusive end is the classic off-by-one."
+mentions = [
+    "src/impact.rs",
+    "map_hunks_to_functions",
+]
+
+[[note]]
+sentiment = 0.5
+text = "compute_hints accepts prefetched_caller_count to avoid duplicate get_callers_full() when caller already has the data. Pattern: pass Optional<precomputed> to helper functions that would otherwise re-query."
+mentions = [
+    "src/impact.rs",
+    "compute_hints",
 ]
