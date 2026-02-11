@@ -62,6 +62,7 @@ pub(crate) mod related;
 pub(crate) mod search;
 pub(crate) mod source;
 pub(crate) mod structural;
+pub(crate) mod where_to_add;
 
 #[cfg(feature = "gpu-search")]
 pub mod cagra;
@@ -92,6 +93,7 @@ pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use search::{parse_target, resolve_target};
 pub use structural::Pattern;
+pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, PlacementResult};
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;
