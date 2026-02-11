@@ -286,14 +286,19 @@ pub fn generate_nl_description(chunk: &Chunk) -> String {
 /// Generate NL description using a specific template variant.
 pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String {
     // Section chunks (markdown): breadcrumb + name + content preview.
-    // Prose sections don't have parameters, return types, or code structure.
+    // Markdown IS natural language, so we embed more content than code chunks.
+    // E5-base-v2 handles ~512 tokens (~2000 chars). Budget:
+    //   breadcrumb ~25 tokens + name ~12 tokens + preview ~450 tokens = ~487 tokens.
     if chunk.chunk_type == ChunkType::Section {
         let mut parts = Vec::new();
         if !chunk.signature.is_empty() {
             parts.push(chunk.signature.clone());
         }
         parts.push(chunk.name.clone());
-        let preview: String = chunk.content.replace("**", "").chars().take(200).collect();
+        let preview: String = strip_markdown_noise(&chunk.content)
+            .chars()
+            .take(1800)
+            .collect();
         parts.push(preview);
         return parts.join(". ");
     }
@@ -434,6 +439,58 @@ fn extract_params_nl(signature: &str) -> Option<String> {
 /// stored in each language's `LanguageDef`.
 fn extract_return_nl(signature: &str, lang: Language) -> Option<String> {
     (lang.def().extract_return_nl)(signature)
+}
+
+// Pre-compiled regexes for markdown noise stripping
+static MD_HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^#{1,6}\s+").expect("valid regex"));
+static MD_IMAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!\[([^\]]*)\]\([^)]*\)").expect("valid regex"));
+static MD_LINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\([^)]*\)").expect("valid regex"));
+static HTML_TAG_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<[^>]+>").expect("valid regex"));
+static MULTI_WHITESPACE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[ \t]{2,}").expect("valid regex"));
+static MULTI_NEWLINE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\n{3,}").expect("valid regex"));
+
+/// Strip markdown formatting noise for cleaner embedding text.
+///
+/// Removes heading prefixes, image syntax, simplifies links to just text,
+/// strips bold/italic markers, HTML tags, and collapses whitespace.
+/// Keeps inline code content (strips backticks but preserves text).
+pub fn strip_markdown_noise(content: &str) -> String {
+    let mut result = content.to_string();
+
+    // Remove heading prefixes (## Foo → Foo)
+    result = MD_HEADING_RE.replace_all(&result, "").to_string();
+
+    // Remove image syntax entirely (![alt](url) → "")
+    result = MD_IMAGE_RE.replace_all(&result, "").to_string();
+
+    // Simplify links: [text](url) → text
+    result = MD_LINK_RE.replace_all(&result, "$1").to_string();
+
+    // Strip HTML tags
+    result = HTML_TAG_RE.replace_all(&result, "").to_string();
+
+    // Strip bold/italic markers
+    result = result.replace("***", "");
+    result = result.replace("**", "");
+    result = result.replace('*', "");
+
+    // Strip backticks but keep content
+    result = result.replace("```", "");
+    result = result.replace('`', "");
+
+    // Collapse multiple spaces/tabs
+    result = MULTI_WHITESPACE_RE.replace_all(&result, " ").to_string();
+
+    // Collapse multiple newlines
+    result = MULTI_NEWLINE_RE.replace_all(&result, "\n\n").to_string();
+
+    result.trim().to_string()
 }
 
 /// Extract meaningful keywords from function body, filtering language noise.
@@ -692,6 +749,107 @@ mod tests {
         // Verify the result is valid UTF-8 (implicit — it's a String)
         // and doesn't end mid-character
         assert!(result.is_char_boundary(result.len()));
+    }
+
+    // ===== Markdown NL tests =====
+
+    fn make_section_chunk(content: &str, signature: &str, name: &str) -> Chunk {
+        Chunk {
+            id: "test.md:1:abcd1234".to_string(),
+            file: PathBuf::from("test.md"),
+            language: Language::Markdown,
+            chunk_type: ChunkType::Section,
+            name: name.to_string(),
+            signature: signature.to_string(),
+            content: content.to_string(),
+            line_start: 1,
+            line_end: 10,
+            doc: None,
+            content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
+        }
+    }
+
+    #[test]
+    fn test_markdown_nl_uses_full_content() {
+        // 3000 chars of content — should use 1800 char preview
+        let content = "a".repeat(3000);
+        let chunk = make_section_chunk(&content, "Title > Section", "Section");
+        let nl = generate_nl_description(&chunk);
+        // Breadcrumb + name + 1800 chars of content
+        assert!(nl.contains("Title > Section"));
+        assert!(nl.contains("Section"));
+        // Should be much longer than the old 200 char limit
+        assert!(nl.len() > 500, "NL should be >500 chars, got {}", nl.len());
+        // But not include all 3000 chars
+        assert!(
+            nl.len() < 2500,
+            "NL should be <2500 chars, got {}",
+            nl.len()
+        );
+    }
+
+    #[test]
+    fn test_markdown_nl_short_content() {
+        let chunk = make_section_chunk("Short section content here.", "Guide > Intro", "Intro");
+        let nl = generate_nl_description(&chunk);
+        assert!(nl.contains("Guide > Intro"));
+        assert!(nl.contains("Intro"));
+        assert!(nl.contains("Short section content here."));
+    }
+
+    #[test]
+    fn test_strip_markdown_noise() {
+        // Bold/italic
+        assert_eq!(strip_markdown_noise("**bold** text"), "bold text");
+        assert_eq!(strip_markdown_noise("*italic* text"), "italic text");
+        assert_eq!(strip_markdown_noise("***both*** text"), "both text");
+
+        // Headings
+        assert_eq!(
+            strip_markdown_noise("## Heading\nContent"),
+            "Heading\nContent"
+        );
+        assert_eq!(strip_markdown_noise("### Deep\nStuff"), "Deep\nStuff");
+
+        // Links → text only
+        assert_eq!(
+            strip_markdown_noise("[Click here](https://example.com)"),
+            "Click here"
+        );
+        assert_eq!(
+            strip_markdown_noise("[Config](config.md#section)"),
+            "Config"
+        );
+
+        // Images removed entirely
+        assert_eq!(strip_markdown_noise("![alt text](image.png)"), "");
+
+        // HTML tags
+        assert_eq!(strip_markdown_noise("<br>line<br/>break"), "linebreak");
+        assert_eq!(
+            strip_markdown_noise("<table><tr><td>data</td></tr></table>"),
+            "data"
+        );
+
+        // Backticks → keep content
+        assert_eq!(strip_markdown_noise("`code_here`"), "code_here");
+        assert_eq!(
+            strip_markdown_noise("```rust\nlet x = 1;\n```"),
+            "rust\nlet x = 1;"
+        );
+
+        // Whitespace collapse
+        assert_eq!(strip_markdown_noise("a   b\t\tc"), "a b c");
+        assert_eq!(strip_markdown_noise("a\n\n\n\nb"), "a\n\nb");
+    }
+
+    #[test]
+    fn test_strip_markdown_noise_empty() {
+        assert_eq!(strip_markdown_noise(""), "");
+        assert_eq!(strip_markdown_noise("   "), "");
+        assert_eq!(strip_markdown_noise("\n\n\n"), "");
     }
 
     // ===== Fuzz tests =====

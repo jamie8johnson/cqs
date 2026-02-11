@@ -364,6 +364,9 @@
 - [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
 - [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed
 - [ ] **Batch UX** — common batch patterns (e.g., "callers for these N functions") as named shortcuts instead of raw JSON construction
+- [ ] **Table-aware Markdown chunking** — keep tables as atomic chunks or split row-wise with headers preserved. Prevents incoherent embedding of partial table data.
+- [ ] **Parent retrieval (small-to-big)** — when a small chunk matches, also surface its parent section for context. Flag in search results indicating a parent is available.
+- [ ] **Hypothetical question embedding** — generate "what question does this chunk answer?" and embed alongside content. Aligns query embeddings (questions) with chunk embeddings (answers). One extra embedding per chunk at index time.
 
 ## Parked
 
