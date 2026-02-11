@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-02-10
+
+### Added
+- **CLI integration test harness** (#300): 27 new integration tests covering trace, impact, test-map, context, gather, explain, similar, audit-mode, notes, project, and read commands.
+- **Embedding pipeline tests** (#344): 9 integration tests for document embedding, batch processing, determinism, and query vs document prefix differentiation.
+- **Cross-store dedup** (#256): Reference search results deduplicated by content hash (blake3) — identical code from multiple indexes no longer appears twice.
+- **Parallel reference search** (#257): Reference indexes searched concurrently via rayon instead of sequentially.
+- **Streaming brute-force search** (#269): Cursor-based batching (5000 rows) replaces `fetch_all()` in brute-force path, reducing peak memory from O(total chunks) to O(batch size).
+- **HNSW file size guards** (#303): Graph (500MB) and data (1GB) file size checks before deserialization prevent OOM on corrupted/malicious index files.
+- **CAGRA OOM guard** (#302): 2GB allocation limit check before `Vec::with_capacity()` in GPU index building.
+
+### Fixed
+- **FTS5 injection defense-in-depth**: RRF search path now sanitizes FTS queries after normalization, closing a gap where special characters could reach MATCH.
+- **HNSW checksum enforcement**: Missing checksum file now returns an error instead of silently loading unverified data.
+- **Reference removal containment**: `ref remove` uses `dunce::canonicalize` + `starts_with` to verify deletion target is inside refs root directory.
+- **Symlink reference rejection**: Symlink reference paths are skipped instead of loaded, preventing trust boundary bypass.
+- **Display file size guard**: 10MB limit on files read for display, preventing accidental large file reads.
+- **Config/notes size guards**: 1MB limit on config files, 10MB on notes files before `read_to_string`.
+- **Similar command overflow**: `limit + 1` uses `saturating_add` to prevent overflow on `usize::MAX`.
+- **Predictable temp file paths**: Notes temp files include PID suffix to prevent predictable path attacks.
+- **Call graph edge cap**: 500K edge limit on call graph queries prevents unbounded memory on enormous codebases.
+- **Trace depth validation**: `--max-depth` clamped to 1..50 via clap value parser.
+
 ## [0.10.0] - 2026-02-10
 
 ### Removed
