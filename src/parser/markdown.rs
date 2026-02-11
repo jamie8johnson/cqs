@@ -193,6 +193,29 @@ pub fn parse_markdown_references(
         }
     }
 
+    // Bridge edge: file stem → title heading.
+    // Connects file-stem-based references (from other docs' links) to the actual
+    // section name in this document, enabling graph traversal across documents.
+    // Example: "config" → "Configuration Guide" so that a link [X](config.md)
+    // from another doc can reach sections in this doc via BFS.
+    if let Some(title) = headings.first() {
+        let file_stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if file_stem.len() > 1 && file_stem != title.text {
+            results.push(FunctionCalls {
+                name: file_stem,
+                line_start: 1,
+                calls: vec![CallSite {
+                    callee_name: title.text.clone(),
+                    line_number: 1,
+                }],
+            });
+        }
+    }
+
     Ok(results)
 }
 
@@ -537,6 +560,46 @@ fn build_breadcrumb(title: &str, heading_stack: &[String]) -> String {
     parts.join(" > ")
 }
 
+/// Extract file stem from a relative .md/.mdx URL.
+///
+/// Returns None for external URLs (http/https), absolute paths, or non-markdown targets.
+fn extract_md_file_stem(url: &str) -> Option<String> {
+    // Skip external URLs
+    if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("//") {
+        return None;
+    }
+    // Skip absolute paths
+    if url.starts_with('/') {
+        return None;
+    }
+    // Strip anchor fragment before checking extension
+    let path_part = url.split('#').next().unwrap_or(url);
+    // Check for .md or .mdx extension
+    if !path_part.ends_with(".md") && !path_part.ends_with(".mdx") {
+        return None;
+    }
+    // Extract file stem (last path component without extension)
+    let filename = path_part.rsplit('/').next().unwrap_or(path_part);
+    let stem = filename
+        .strip_suffix(".mdx")
+        .or_else(|| filename.strip_suffix(".md"))?;
+    if stem.is_empty() || stem.len() == 1 {
+        return None;
+    }
+    Some(stem.to_string())
+}
+
+/// Extract anchor fragment from a URL.
+///
+/// Returns the part after `#` if present and non-empty.
+fn extract_anchor(url: &str) -> Option<String> {
+    let anchor = url.split_once('#')?.1;
+    if anchor.is_empty() {
+        return None;
+    }
+    Some(anchor.to_string())
+}
+
 /// Extract cross-references (links + backtick function patterns) from text
 fn extract_references_from_text(text: &str) -> Vec<CallSite> {
     let mut calls = Vec::new();
@@ -554,13 +617,34 @@ fn extract_references_from_text(text: &str) -> Vec<CallSite> {
             continue;
         }
         let link_text = cap[1].to_string();
+        let line_number = text[..match_start].matches('\n').count() as u32 + 1;
+
         // Use the link text as the callee name — it's what the author chose to reference
         if !link_text.is_empty() && seen.insert(link_text.clone()) {
-            let line_number = text[..match_start].matches('\n').count() as u32 + 1;
             calls.push(CallSite {
                 callee_name: link_text,
                 line_number,
             });
+        }
+
+        // For .md/.mdx links, also emit file stem as callee (cross-document link)
+        let url = cap[2].to_string();
+        if let Some(stem) = extract_md_file_stem(&url) {
+            if seen.insert(stem.clone()) {
+                calls.push(CallSite {
+                    callee_name: stem,
+                    line_number,
+                });
+            }
+        }
+        // For anchor links, emit the anchor as callee (cross-section reference)
+        if let Some(anchor) = extract_anchor(&url) {
+            if seen.insert(anchor.clone()) {
+                calls.push(CallSite {
+                    callee_name: anchor,
+                    line_number,
+                });
+            }
         }
     }
 
@@ -712,6 +796,15 @@ mod tests {
             .iter()
             .flat_map(|fc| fc.calls.iter().map(|c| c.callee_name.as_str()))
             .collect();
+        // Link text
+        assert!(all_callees.contains(&"TagRead"));
+        // File stem from link URL
+        assert!(
+            all_callees.contains(&"api"),
+            "Should extract file stem 'api' from api.md link: {:?}",
+            all_callees
+        );
+        // Backtick function ref
         assert!(all_callees.contains(&"TagRead"));
     }
 
@@ -726,6 +819,12 @@ mod tests {
             .collect();
         assert!(!all_callees.contains(&"screenshot"));
         assert!(all_callees.contains(&"real link"));
+        // File stem extracted from other.md
+        assert!(
+            all_callees.contains(&"other"),
+            "Should extract file stem 'other': {:?}",
+            all_callees
+        );
     }
 
     #[test]
@@ -736,6 +835,226 @@ mod tests {
         let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
         assert!(names.contains(&"Module.func"));
         assert!(names.contains(&"Class::method"));
+    }
+
+    // ===== Cross-document link extraction tests =====
+
+    #[test]
+    fn test_link_extracts_file_stem() {
+        let text = "[Configuration Guide](config.md)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"Configuration Guide"));
+        assert!(
+            names.contains(&"config"),
+            "Should extract file stem: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_link_extracts_anchor() {
+        let text = "[Database Settings](config.md#db-settings)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"Database Settings"));
+        assert!(
+            names.contains(&"config"),
+            "Should extract file stem: {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"db-settings"),
+            "Should extract anchor: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_link_extracts_both_stem_and_anchor() {
+        let text = "[X](foo.md#bar)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"X"));
+        assert!(names.contains(&"foo"));
+        assert!(names.contains(&"bar"));
+    }
+
+    #[test]
+    fn test_external_links_no_stem() {
+        let text = "[Docs](https://example.com/page.md) and [API](http://api.com)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        // Link text is still extracted
+        assert!(names.contains(&"Docs"));
+        assert!(names.contains(&"API"));
+        // But no file stems from external URLs
+        assert!(
+            !names.contains(&"page"),
+            "Should not extract stem from external URL: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_self_anchor_link() {
+        let text = "[Jump to setup](#setup-instructions)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"Jump to setup"));
+        assert!(
+            names.contains(&"setup-instructions"),
+            "Should extract self-anchor: {:?}",
+            names
+        );
+        // No file stem (no .md target)
+    }
+
+    #[test]
+    fn test_link_with_directory_prefix() {
+        let text = "[Setup](../guides/setup-guide.md)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(names.contains(&"Setup"));
+        assert!(
+            names.contains(&"setup-guide"),
+            "Should extract stem from last path component: {:?}",
+            names
+        );
+        // Should NOT include directory prefix
+        assert!(!names.contains(&"../guides/setup-guide"));
+    }
+
+    #[test]
+    fn test_link_non_md_target() {
+        let text = "[Source](main.rs) and [Schema](schema.sql)";
+        let calls = extract_references_from_text(text);
+        let names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
+        // Link text extracted
+        assert!(names.contains(&"Source"));
+        assert!(names.contains(&"Schema"));
+        // No file stems — only .md/.mdx targets
+        assert!(
+            !names.contains(&"main"),
+            "Should not extract stem from .rs: {:?}",
+            names
+        );
+        assert!(
+            !names.contains(&"schema"),
+            "Should not extract stem from .sql: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn test_extract_md_file_stem_helper() {
+        assert_eq!(
+            extract_md_file_stem("config.md"),
+            Some("config".to_string())
+        );
+        assert_eq!(extract_md_file_stem("page.mdx"), Some("page".to_string()));
+        assert_eq!(
+            extract_md_file_stem("dir/file.md"),
+            Some("file".to_string())
+        );
+        assert_eq!(
+            extract_md_file_stem("../other/doc.md"),
+            Some("doc".to_string())
+        );
+        assert_eq!(
+            extract_md_file_stem("config.md#anchor"),
+            Some("config".to_string())
+        );
+        assert_eq!(extract_md_file_stem("https://example.com/page.md"), None);
+        assert_eq!(extract_md_file_stem("http://foo.md"), None);
+        assert_eq!(extract_md_file_stem("/absolute/path.md"), None);
+        assert_eq!(extract_md_file_stem("code.rs"), None);
+        assert_eq!(extract_md_file_stem(""), None);
+        assert_eq!(extract_md_file_stem(".md"), None); // empty stem
+        assert_eq!(extract_md_file_stem("a.md"), None); // single-char stem
+    }
+
+    #[test]
+    fn test_extract_anchor_helper() {
+        assert_eq!(
+            extract_anchor("file.md#section"),
+            Some("section".to_string())
+        );
+        assert_eq!(
+            extract_anchor("#local-anchor"),
+            Some("local-anchor".to_string())
+        );
+        assert_eq!(extract_anchor("file.md"), None);
+        assert_eq!(extract_anchor("file.md#"), None); // empty anchor
+        assert_eq!(extract_anchor(""), None);
+    }
+
+    // ===== Bridge edge tests =====
+
+    #[test]
+    fn test_bridge_edge_emitted() {
+        let source = "# Configuration Guide\n\n## Database\n\nSome content.\n";
+        let path = PathBuf::from("config.md");
+        let refs = parse_markdown_references(source, &path).unwrap();
+
+        // Should have a bridge edge: "config" → "Configuration Guide"
+        let bridge = refs.iter().find(|fc| fc.name == "config");
+        assert!(
+            bridge.is_some(),
+            "Should emit bridge edge for file stem 'config': {:?}",
+            refs.iter().map(|fc| &fc.name).collect::<Vec<_>>()
+        );
+        let bridge = bridge.unwrap();
+        assert_eq!(bridge.calls.len(), 1);
+        assert_eq!(bridge.calls[0].callee_name, "Configuration Guide");
+    }
+
+    #[test]
+    fn test_bridge_edge_skipped_when_stem_equals_title() {
+        // File stem "overview" matches title "overview" — no bridge needed
+        let source = "# overview\n\nContent here.\n";
+        let path = PathBuf::from("overview.md");
+        let refs = parse_markdown_references(source, &path).unwrap();
+
+        let bridge = refs.iter().find(|fc| fc.name == "overview");
+        assert!(
+            bridge.is_none(),
+            "Should not emit bridge when stem equals title: {:?}",
+            refs.iter().map(|fc| &fc.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_bridge_edge_skipped_no_headings() {
+        let source = "Just plain text with no headings at all.\n";
+        let path = PathBuf::from("notes.md");
+        let refs = parse_markdown_references(source, &path).unwrap();
+
+        // No headings → no bridge edge (early return path)
+        let bridge = refs.iter().find(|fc| fc.name == "notes");
+        assert!(
+            bridge.is_none(),
+            "Should not emit bridge when no headings: {:?}",
+            refs.iter().map(|fc| &fc.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_bridge_edge_with_directory_path() {
+        let source = "# AVEVA System Platform\n\nContent.\n";
+        let path = PathBuf::from("docs/aveva-system-platform.md");
+        let refs = parse_markdown_references(source, &path).unwrap();
+
+        let bridge = refs.iter().find(|fc| fc.name == "aveva-system-platform");
+        assert!(
+            bridge.is_some(),
+            "Should emit bridge using file stem from full path: {:?}",
+            refs.iter().map(|fc| &fc.name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            bridge.unwrap().calls[0].callee_name,
+            "AVEVA System Platform"
+        );
     }
 
     #[test]
