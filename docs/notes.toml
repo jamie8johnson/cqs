@@ -194,21 +194,11 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "CUDA compatibility is the primary gate for embedding model selection. E5-base-v2 was chosen for absolute position embeddings (full CUDA coverage). Any replacement model must be BERT-style (no rotary embeddings) to avoid ort Gather op CPU fallback. Qwen3-Embedding is excluded for this reason."
+text = "Embedding model: E5-base-v2, chosen for CUDA compatibility (absolute position embeddings, no rotary). Eval showed E5-base, BGE-base, E5-large all at 100% Recall@5 — saturated, no reason to switch. Any replacement must be BERT-style to avoid ort Gather op CPU fallback."
 mentions = [
-    "embedder.rs",
+    "src/embedder.rs",
     "CUDA",
     "model selection",
-    "E5",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Model eval complete (Phase 1): E5-base-v2, BGE-base-en-v1.5, and E5-large-v2 all scored 100% Recall@5 on 50-query eval suite. Eval is saturated - need harder queries to differentiate models. Decision: stay with E5-base-v2 (smallest, proven, no schema change needed). Phase 2 (model switch) skipped."
-mentions = [
-    "embedder.rs",
-    "model selection",
-    "eval",
     "E5",
 ]
 
@@ -332,11 +322,13 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "Splitting monolithic .rs files into directories: trait method imports (e.g. `use hnsw_rs::api::AnnT`) don't carry across submodule files — each file needs its own import. Caught as build error after initial split."
+sentiment = 0.5
+text = "Module splitting patterns: impl Foo blocks can live in separate files (no trait needed, public API unchanged). But trait method imports (e.g. `use hnsw_rs::api::AnnT`) don't carry across submodule files — each file needs its own. Used for parser/ and hnsw/ directory refactors in v0.9.0."
 mentions = [
-    "src/hnsw/search.rs",
+    "src/parser/chunk.rs",
+    "src/parser/calls.rs",
     "src/hnsw/build.rs",
+    "src/hnsw/search.rs",
     "src/hnsw/persist.rs",
 ]
 
@@ -348,17 +340,6 @@ mentions = [
     "src/hnsw/build.rs",
     "make_embedding",
     "flaky test",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Rust impl blocks split across module files: when splitting monolithic .rs into a directory module, impl Foo blocks can live in separate files (chunk.rs, calls.rs each have `impl Parser { ... }`). No trait needed, no delegation. Public API unchanged. Key enabler for the parser/ and hnsw/ refactors."
-mentions = [
-    "src/parser/chunk.rs",
-    "src/parser/calls.rs",
-    "src/hnsw/build.rs",
-    "src/hnsw/search.rs",
-    "src/hnsw/persist.rs",
 ]
 
 [[note]]
@@ -603,4 +584,29 @@ text = "7-feature plan executed cleanly across multiple sessions. Plan file stru
 mentions = [
     "plans",
     "agent-experience",
+]
+
+[[note]]
+sentiment = -0.5
+text = "WSL inotify over 9P delivers duplicate/delayed events for the same file change, causing watch mode to reindex in a loop. Fix: track last-indexed mtime per file, skip events where mtime hasn't changed."
+mentions = [
+    "src/cli/watch.rs",
+    "WSL",
+    "inotify",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Scout note matching: m.ends_with(f) was wrong direction — matched when mention contains file path as suffix. Only f.ends_with(m) with path-component boundary check is correct. General lesson: string suffix matching on paths needs boundary guards."
+mentions = [
+    "src/scout.rs",
+    "note_mention_matches_file",
+]
+
+[[note]]
+sentiment = 0.0
+text = "cqs plan R&D: data layer works (scout+callers+impact+test-map finds relevant code and blast radius). Missing: reasoning layer (task-type templates like 'add flag' = Cli+Config+wiring+gating). Abstract queries score poorly; name-based lookups work. Better as a skill than a command."
+mentions = [
+    "src/scout.rs",
+    "cqs plan",
 ]
