@@ -12,6 +12,7 @@ pub(crate) fn cmd_context(
     path: &str,
     json: bool,
     summary: bool,
+    compact: bool,
 ) -> Result<()> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -40,6 +41,60 @@ pub(crate) fn cmd_context(
     // Proactive staleness warning
     if !cli.quiet {
         staleness::warn_stale_results(&store, &[&origin]);
+    }
+
+    // Compact mode: signatures-only TOC with caller/callee counts
+    if compact {
+        let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+        let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_default();
+        let callee_counts = store.get_callee_counts_batch(&names).unwrap_or_default();
+
+        if json {
+            let entries: Vec<_> = chunks
+                .iter()
+                .map(|c| {
+                    let cc = caller_counts.get(&c.name).copied().unwrap_or(0);
+                    let ce = callee_counts.get(&c.name).copied().unwrap_or(0);
+                    serde_json::json!({
+                        "name": c.name,
+                        "chunk_type": c.chunk_type.to_string(),
+                        "signature": c.signature,
+                        "lines": [c.line_start, c.line_end],
+                        "caller_count": cc,
+                        "callee_count": ce,
+                    })
+                })
+                .collect();
+            let output = serde_json::json!({
+                "file": path,
+                "chunk_count": chunks.len(),
+                "chunks": entries,
+            });
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            use colored::Colorize;
+            println!("{} ({} chunks)", path.bold(), chunks.len());
+            for c in &chunks {
+                let cc = caller_counts.get(&c.name).copied().unwrap_or(0);
+                let ce = callee_counts.get(&c.name).copied().unwrap_or(0);
+                let sig = if c.signature.is_empty() {
+                    c.name.clone()
+                } else {
+                    c.signature.clone()
+                };
+                let caller_label = if cc == 1 { "caller" } else { "callers" };
+                let callee_label = if ce == 1 { "callee" } else { "callees" };
+                println!(
+                    "  {}  [{} {}, {} {}]",
+                    sig.dimmed(),
+                    cc,
+                    caller_label,
+                    ce,
+                    callee_label,
+                );
+            }
+        }
+        return Ok(());
     }
 
     let chunk_names: HashSet<&str> = chunks.iter().map(|c| c.name.as_str()).collect();

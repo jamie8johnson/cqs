@@ -718,6 +718,88 @@ impl Store {
         self.rt.block_on(self.find_test_chunks_async())
     }
 
+    /// Caller counts for multiple functions in one query.
+    ///
+    /// Returns how many callers each function has. Functions not in the call graph
+    /// won't appear in the result map (caller count is implicitly 0).
+    pub fn get_caller_counts_batch(
+        &self,
+        names: &[&str],
+    ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+        if names.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result = std::collections::HashMap::new();
+
+            const BATCH_SIZE: usize = 500;
+            for batch in names.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT callee_name, COUNT(*) FROM function_calls WHERE callee_name IN ({}) GROUP BY callee_name",
+                    placeholders
+                );
+                let mut q = sqlx::query(&sql);
+                for name in batch {
+                    q = q.bind(name);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let name: String = row.get(0);
+                    let count: i64 = row.get(1);
+                    result.insert(name, count as u64);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
+    /// Callee counts for multiple functions in one query.
+    ///
+    /// Returns how many callees each function has. Functions not in the call graph
+    /// won't appear in the result map (callee count is implicitly 0).
+    pub fn get_callee_counts_batch(
+        &self,
+        names: &[&str],
+    ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+        if names.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result = std::collections::HashMap::new();
+
+            const BATCH_SIZE: usize = 500;
+            for batch in names.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT caller_name, COUNT(DISTINCT callee_name) FROM function_calls WHERE caller_name IN ({}) GROUP BY caller_name",
+                    placeholders
+                );
+                let mut q = sqlx::query(&sql);
+                for name in batch {
+                    q = q.bind(name);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let name: String = row.get(0);
+                    let count: i64 = row.get(1);
+                    result.insert(name, count as u64);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
     /// Get full call graph statistics
     pub fn function_call_stats(&self) -> Result<FunctionCallStats, StoreError> {
         self.rt.block_on(async {
@@ -733,5 +815,125 @@ impl Store {
                 unique_callees: unique_callees as u64,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::helpers::ModelInfo;
+
+    fn setup_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    fn seed_call_graph(store: &Store) {
+        // A calls B and C; B calls C; D calls B
+        let calls = vec![
+            crate::parser::FunctionCalls {
+                name: "func_a".to_string(),
+                line_start: 1,
+                calls: vec![
+                    crate::parser::CallSite {
+                        callee_name: "func_b".to_string(),
+                        line_number: 2,
+                    },
+                    crate::parser::CallSite {
+                        callee_name: "func_c".to_string(),
+                        line_number: 3,
+                    },
+                ],
+            },
+            crate::parser::FunctionCalls {
+                name: "func_b".to_string(),
+                line_start: 10,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "func_c".to_string(),
+                    line_number: 11,
+                }],
+            },
+            crate::parser::FunctionCalls {
+                name: "func_d".to_string(),
+                line_start: 20,
+                calls: vec![crate::parser::CallSite {
+                    callee_name: "func_b".to_string(),
+                    line_number: 21,
+                }],
+            },
+        ];
+        store
+            .upsert_function_calls(Path::new("src/test.rs"), &calls)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_get_caller_counts_batch() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        let counts = store
+            .get_caller_counts_batch(&["func_b", "func_c"])
+            .unwrap();
+        // func_b is called by func_a and func_d
+        assert_eq!(counts.get("func_b").copied().unwrap_or(0), 2);
+        // func_c is called by func_a and func_b
+        assert_eq!(counts.get("func_c").copied().unwrap_or(0), 2);
+    }
+
+    #[test]
+    fn test_get_callee_counts_batch() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        let counts = store
+            .get_callee_counts_batch(&["func_a", "func_b", "func_d"])
+            .unwrap();
+        // func_a calls func_b and func_c
+        assert_eq!(counts.get("func_a").copied().unwrap_or(0), 2);
+        // func_b calls func_c
+        assert_eq!(counts.get("func_b").copied().unwrap_or(0), 1);
+        // func_d calls func_b
+        assert_eq!(counts.get("func_d").copied().unwrap_or(0), 1);
+    }
+
+    #[test]
+    fn test_get_caller_counts_batch_empty() {
+        let (store, _dir) = setup_store();
+        let counts = store.get_caller_counts_batch(&[]).unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_get_callee_counts_batch_empty() {
+        let (store, _dir) = setup_store();
+        let counts = store.get_callee_counts_batch(&[]).unwrap();
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_get_caller_counts_batch_unknown_names() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        let counts = store
+            .get_caller_counts_batch(&["nonexistent_func", "also_missing"])
+            .unwrap();
+        // Unknown names shouldn't appear in result
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn test_get_callee_counts_batch_unknown_names() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        let counts = store
+            .get_callee_counts_batch(&["nonexistent_func"])
+            .unwrap();
+        assert!(counts.is_empty());
     }
 }

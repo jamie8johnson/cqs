@@ -269,6 +269,9 @@ enum Commands {
         /// Return summary counts instead of full details
         #[arg(long)]
         summary: bool,
+        /// Signatures-only TOC with caller/callee counts (no code bodies)
+        #[arg(long)]
+        compact: bool,
     },
     /// Find functions with no callers (dead code detection)
     Dead {
@@ -418,7 +421,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref path,
             json,
             summary,
-        }) => cmd_context(&cli, path, json, summary),
+            compact,
+        }) => cmd_context(&cli, path, json, summary, compact),
         Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
         Some(Commands::Gather {
             ref query,
