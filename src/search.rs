@@ -658,7 +658,7 @@ impl Store {
         let skip_notes = filter.note_weight <= 0.0;
 
         // Notes always use brute-force search from SQLite (capped at 1000).
-        // This ensures notes added via MCP are immediately searchable without
+        // This ensures notes are immediately searchable without
         // waiting for an HNSW rebuild. HNSW is only used for chunks (10k-100k+).
         let note_results = if skip_notes {
             vec![]

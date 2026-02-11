@@ -385,7 +385,7 @@ impl HnswIndex {
     }
 
     /// Load HNSW index if available, wrapped as VectorIndex trait object.
-    /// Shared helper used by both CLI and MCP server.
+    /// Shared helper for CLI commands.
     pub fn try_load(cq_dir: &Path) -> Option<Box<dyn VectorIndex>> {
         if Self::exists(cq_dir, "index") {
             match Self::load(cq_dir, "index") {

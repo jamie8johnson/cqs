@@ -4,14 +4,6 @@
 #   -1 = serious pain, -0.5 = notable pain, 0 = neutral, 0.5 = notable gain, 1 = major win
 
 [[note]]
-sentiment = -1.0
-text = 'MCP tools/call responses MUST wrap in {"content":[{"type":"text","text":"..."}]}. Returning plain JSON causes silent failure - tool runs but results appear empty in Claude Code.'
-mentions = [
-    "src/mcp/tools/mod.rs",
-    "tools/call",
-]
-
-[[note]]
 sentiment = -0.5
 text = 'trailing_var_arg in clap eats flags after the query. `cqs "foo" -n 5` parses as query "foo -n 5". Removed it - users quote multi-word queries, flags work anywhere.'
 mentions = [
@@ -95,15 +87,6 @@ mentions = [
     "embedder.rs",
     "ort",
     "DirectML",
-]
-
-[[note]]
-sentiment = 0.5
-text = "MCP 0.13s query latency is real-time usable. Was 1.3s before optimization (CPU embedder init per query). 10x improvement from caching embedder instance."
-mentions = [
-    "src/mcp/server.rs",
-    "src/embedder.rs",
-    "latency",
 ]
 
 [[note]]
@@ -218,7 +201,6 @@ mentions = [
 sentiment = 1.0
 text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Eliminated blocking startup delay."
 mentions = [
-    "src/mcp/server.rs",
     "src/cagra.rs",
     "src/hnsw/mod.rs",
     "startup",
@@ -226,17 +208,17 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "--bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
+text = "HTTP server --bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
 mentions = [
     "src/cli/mod.rs",
-    "src/mcp/validation.rs",
+    "src/audit.rs",
     "--bind",
     "auth",
 ]
 
 [[note]]
 sentiment = 0.5
-text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API so cli.rs/mcp.rs didn't need changes. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
+text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
 mentions = [
     "src/store/mod.rs",
     "Cargo.toml",
@@ -246,7 +228,7 @@ mentions = [
 sentiment = 0.5
 text = "Inline validation code is hard to find via semantic search. Extract into named functions: validate_api_key, validate_origin_header, etc. 'validate bearer token' query now finds validate_api_key at 0.74 score."
 mentions = [
-    "src/mcp/validation.rs",
+    "src/audit.rs",
     "discoverability",
 ]
 
@@ -262,11 +244,10 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight, MCP note_weight. Useful when notes dominate due to high semantic match."
+text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight flag. Useful when notes dominate due to high semantic match."
 mentions = [
     "SearchFilter",
     "src/search.rs",
-    "src/mcp/tools/search.rs",
     "src/cli/mod.rs",
 ]
 
@@ -331,11 +312,10 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Notes removed from HNSW/CAGRA index entirely. Always brute-force from SQLite (capped 1000). Fixes #230 staleness. HNSW is chunk-only now. Also added cqs_update_note and cqs_remove_note MCP tools with atomic TOML rewrite via rewrite_notes_file()."
+text = "Notes removed from HNSW/CAGRA index entirely. Always brute-force from SQLite (capped 1000). Fixes #230 staleness. HNSW is chunk-only now. CLI note commands use atomic TOML rewrite via rewrite_notes_file()."
 mentions = [
     "src/search.rs",
     "src/note.rs",
-    "src/mcp/tools/notes.rs",
     "src/cli/commands/index.rs",
 ]
 
@@ -411,11 +391,10 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "When adding new MCP tools/capabilities: create a cqs-prefixed skill in .claude/skills/, update bootstrap's portable skills list, and decide if it's project-local or global (~/.claude/skills/). Skill = SKILL.md with frontmatter (name, description, argument-hint) + usage docs. Keep names prefixed to avoid collisions."
+text = "Create cqs-prefixed skills in .claude/skills/ to extend agent capabilities. Skill = SKILL.md with frontmatter (name, description, argument-hint) + usage docs. Update bootstrap's portable skills list and decide if project-local or global (~/.claude/skills/). Keep names prefixed to avoid collisions."
 mentions = [
     ".claude/skills/cqs-bootstrap/SKILL.md",
     ".claude/skills/",
-    "src/mcp/tools/mod.rs",
 ]
 
 [[note]]
@@ -460,9 +439,8 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Token efficiency tools: cqs_trace, cqs_impact, cqs_gather collapse 5-10 file reads into one MCP call by combining search + call graph traversal server-side. The savings compound: fewer tool calls = fewer round-trips = less context burn. This is the core value prop for AI agent consumers."
+text = "CLI trace/impact/gather tools combine search + call graph traversal to collapse 5-10 file reads into one semantic operation. Saves tokens via server-side context assembly. Design applies to any AI consumer that values efficiency."
 mentions = [
-    "src/mcp/tools/mod.rs",
     "src/trace.rs",
     "src/impact.rs",
     "src/gather.rs",
@@ -558,21 +536,6 @@ mentions = ["src/parser/markdown.rs"]
 
 [[note]]
 sentiment = -0.5
-text = ".mcp.json LD_LIBRARY_PATH was missing miniforge3/lib (libcuvs_c.so) and cuda lib64. MCP server failed to start with 'cannot open shared object file'. The env block in .mcp.json overrides the shell env, so it must be self-contained."
-mentions = [".mcp.json"]
-
-[[note]]
-sentiment = 0.5
-text = "MCP server hot-reloads references via mtime-based lazy reload. `ensure_references_fresh()` checks `.cqs.toml` and user config mtimes on each search/stats call. Uses RwLock<ReferenceState> with double-check locking. No restart needed after `ref add`/`ref remove`."
-mentions = [
-    "src/mcp/server.rs",
-    "src/mcp/tools/search.rs",
-    "src/mcp/tools/stats.rs",
-    "ensure_references_fresh",
-]
-
-[[note]]
-sentiment = -0.5
 text = "Always verify release binary version matches latest code before testing features. Previous session used debug build for markdown indexing but never rebuilt release. cqs --version catches this."
 mentions = [
     "release binary",
@@ -589,7 +552,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "File-based audit mode (.cqs/audit-mode.json with RFC 3339 expiry) solves the stateless CLI problem — MCP held state in-memory Mutex, but CLI needs persistence. Both now read/write the same file."
+text = "File-based audit mode (.cqs/audit-mode.json with RFC 3339 expiry) persists state across CLI invocations. Simple alternative to in-memory state tracking."
 mentions = [
     "src/audit.rs",
     ".cqs/audit-mode.json",
@@ -653,20 +616,3 @@ mentions = [
     "disk-space",
 ]
 
-[[note]]
-sentiment = 0.5
-text = "MCP server lazy-reloads HNSW via index.hnsw.checksum mtime as sentinel. Checksum file written last by save(), so safe freshness indicator. maybe_reload_hnsw() called from search/similar/explain/stats — cheap fs::metadata stat per request."
-mentions = [
-    "src/mcp/server.rs",
-    "src/hnsw/persist.rs",
-    "maybe_reload_hnsw",
-]
-
-[[note]]
-sentiment = -0.5
-text = "maybe_reload_hnsw() replaces GPU CAGRA with CPU HNSW when disk index changes. Freshness trumps GPU speed (~12ms HNSW vs ~6ms CAGRA). CAGRA background build will re-promote on next server restart."
-mentions = [
-    "src/mcp/server.rs",
-    "src/cagra.rs",
-    "maybe_reload_hnsw",
-]

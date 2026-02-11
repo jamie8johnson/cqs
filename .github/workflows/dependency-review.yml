@@ -28,26 +28,6 @@ jobs:
           cargo outdated --root-deps-only 2>&1 | tee -a $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-  check-mcp-spec:
-    name: Check MCP Specification
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check MCP spec version
-        run: |
-          echo "## MCP Spec Version" >> $GITHUB_STEP_SUMMARY
-
-          # Fetch current spec version from the website
-          CURRENT=$(curl -s https://modelcontextprotocol.io/specification | grep -oP '\d{4}-\d{2}-\d{2}' | head -1 || echo "unknown")
-          OUR_VERSION="2025-11-25"
-
-          echo "Current MCP spec: **$CURRENT**" >> $GITHUB_STEP_SUMMARY
-          echo "Our implementation: **$OUR_VERSION**" >> $GITHUB_STEP_SUMMARY
-
-          if [ "$CURRENT" != "$OUR_VERSION" ] && [ "$CURRENT" != "unknown" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "⚠️ **MCP spec may have changed!** Review: https://modelcontextprotocol.io/specification" >> $GITHUB_STEP_SUMMARY
-          fi
-
   check-model:
     name: Check Embedding Model
     runs-on: ubuntu-latest

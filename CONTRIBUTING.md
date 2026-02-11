@@ -106,15 +106,6 @@ src/
     calls.rs    - Call graph storage and queries
     helpers.rs  - Types, embedding conversion functions
     migrations.rs - Schema migration framework
-  mcp/          - MCP server implementation
-    mod.rs      - McpServer, JSON-RPC handling
-    server.rs   - Request routing, error sanitization
-    types.rs    - JSON-RPC types
-    validation.rs - Input validation, path checks
-    audit_mode.rs - Audit mode state
-    tools/      - MCP tool implementations
-      mod.rs, search.rs, read.rs, notes.rs, stats.rs, call_graph.rs, audit.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, test_map.rs, batch.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs
-    transports/ - stdio.rs, http.rs transport implementations
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), supported_extensions()
     types.rs    - Chunk, CallSite, FunctionCalls, ParserError

@@ -1,6 +1,6 @@
 ---
 name: troubleshoot
-description: Diagnose common cqs issues — stale index, model download, schema mismatch, MCP not connecting.
+description: Diagnose common cqs issues — stale index, model download, schema mismatch, connection issues.
 disable-model-invocation: false
 argument-hint: ""
 ---
@@ -57,7 +57,7 @@ ls -la ~/.cache/huggingface/hub/models--intfloat--e5-base-v2/
 If missing or incomplete, cqs downloads on first use. Check network access to huggingface.co.
 If corrupted: delete the directory and let cqs re-download (blake3 checksums verify integrity).
 
-### 6. MCP server connecting?
+### 6. Server mode working?
 
 ```bash
 cqs serve --stdio 2>/dev/null
@@ -66,7 +66,6 @@ cqs serve --stdio 2>/dev/null
 Should start without error. Common issues:
 - Port conflict (HTTP mode): another process on the port
 - API key mismatch: check `CQS_API_KEY` env var or `--api-key-file`
-- Check Claude Code MCP config: `.claude/mcp.json` or global `~/.claude/mcp.json`
 
 ### 7. Index stale?
 

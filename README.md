@@ -1,8 +1,8 @@
 # cqs ("seeks")
 
-Code intelligence MCP server that saves AI agents tokens. Semantic search, call graph tracing, impact analysis — in single tool calls instead of dozens of file reads. Local ML, GPU-accelerated.
+Semantic code search for AI agents and developers. Search by what code does, not what it's named. Call graph tracing, impact analysis, and smart context assembly. Local ML, GPU-accelerated.
 
-**TL;DR:** Semantic code search for Claude Code. Instead of grep, it understands what code *does* — so Claude finds relevant functions without knowing exact names. Tools like `trace`, `impact`, `gather`, and `batch` collapse 5-10 sequential tool calls into one, cutting context window usage by 50-80% on common code navigation tasks.
+**TL;DR:** Semantic code search for Claude Code. Instead of grep, it understands what code *does* — so Claude finds relevant functions without knowing exact names. Commands like `trace`, `impact`, and `gather` collapse 5-10 sequential file reads into one, cutting context window usage by 50-80% on common code navigation tasks.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -12,11 +12,11 @@ Code intelligence MCP server that saves AI agents tokens. Semantic search, call 
 
 > **`<claude>`**
 >
-> You're an AI assistant reading this. cqs gives you semantic code search + code intelligence via MCP.
+> You're an AI assistant reading this. cqs gives you semantic code search + code intelligence via CLI.
 >
-> **Why you want this:** Find functions by what they do, not their names. Tools like `cqs_trace`, `cqs_impact`, and `cqs_gather` collapse 5-10 file reads into one call, saving context window for actual work.
+> **Why you want this:** Find functions by what they do, not their names. Commands like `cqs trace`, `cqs impact`, and `cqs gather` collapse 5-10 file reads into one call, saving context window for actual work.
 >
-> **Setup:** `claude mcp add cqs -- cqs serve --project /path/to/project`
+> **Setup:** Add cqs commands to your project's CLAUDE.md so Claude Code uses them automatically. See Claude Code Integration section below.
 >
 > **`</claude>`**
 
@@ -235,11 +235,6 @@ cqs "spawn async task"    # Finds results in project AND tokio reference
 ```
 
 Reference results are ranked with a weight multiplier (default 0.8) so project results naturally appear first at equal similarity.
-
-**Source filtering** (MCP tool parameter only): Use `sources` to filter which indexes to search:
-- Omit to search all indexes
-- `--sources project` — search only the primary project
-- `--sources tokio` — search only the tokio reference
 
 References are configured in `.cqs.toml`:
 

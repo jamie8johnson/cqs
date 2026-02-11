@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- MCP server (`src/mcp/`, `cqs serve` command). All functionality available via CLI + skills.
+- `cqs batch` command (was MCP-only, no CLI equivalent).
+- Dependencies: axum, tower, tower-http, futures, tokio-stream, subtle, zeroize.
+- Tokio slimmed from 6 features to 2 (`rt-multi-thread`, `time`).
+
+### Changed
+- `parse_duration()` moved from `src/mcp/validation.rs` to `src/audit.rs`.
+
 ## [0.9.9] - 2026-02-10
 
 ### Fixed

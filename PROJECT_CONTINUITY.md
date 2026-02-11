@@ -2,17 +2,22 @@
 
 ## Right Now
 
-**Post-release maintenance.** 2026-02-10.
+**MCP server removed.** 2026-02-10.
+
+Steps 1-13 complete. Remaining: close issues #345/#301, rebuild release binary, reindex.
 
 ### Completed This Session
-- PR #348: HNSW staleness fix (#236) — watch rebuilds HNSW after reindexing, MCP lazy-reloads via mtime check
-- PR #349: MSRV bump 1.88→1.93 — removed fs4 dep (std file locking), removed custom floor_char_boundary (std since 1.91), added MSRV CI job
-- Issue #236 closed
-- Release binary updated
+- Moved `parse_duration()` from `src/mcp/validation.rs` → `src/audit.rs`
+- Deleted `src/mcp/` (27 files, ~4649 lines), `tests/mcp_test.rs` (~1565 lines), `src/cli/commands/serve.rs`
+- Removed 7 deps (axum, tower, tower-http, futures, tokio-stream, subtle, zeroize)
+- Slimmed tokio from 6 features to 2 (`rt-multi-thread`, `time`)
+- Fixed all MCP references across source, docs, notes, skills
+- Build clean, all tests pass, clippy clean
 
 ### Completed Prior Sessions
-- v0.9.8 released with 125 audit fixes across 9 PRs (#333-#343)
-- Notes groomed: 8 removed, 2 updated, 4 added (79 → 75)
+- v0.9.9 released
+- PR #348: HNSW staleness fix (#236)
+- PR #349: MSRV bump 1.88→1.93, dropped fs4
 
 ### Pending
 - `.cqs.toml` — untracked, has aveva-docs reference config
@@ -25,8 +30,8 @@
 
 - **AVEVA docs reference testing** — 5662 chunks from 39 markdown files, 38 cross-referenced docs still missing. User converting more PDFs.
 - **VB.NET language support** — parked, VS2005 project delayed
-- **Post-index name matching** — follow-up PR for fuzzy cross-doc references (substring matching of chunk names across docs)
-- **Phase 8**: Security (index encryption, rate limiting)
+- **Post-index name matching** — follow-up PR for fuzzy cross-doc references
+- **Phase 8**: Security (index encryption)
 - **ref install** — deferred from Phase 6, tracked in #255
 
 ## Open Issues
@@ -44,7 +49,6 @@
 - #269: Brute-force search loads all embeddings
 - #302: CAGRA OOM guard
 - #344: embed_documents tests
-- #345: MCP schema generation from types
 
 ## Architecture
 
@@ -55,8 +59,7 @@
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- 339 lib + 243 integration tests (with gpu-search), 0 warnings, clippy clean
-- MCP tools: 20 (also available as CLI commands now)
+- CLI-only (MCP server removed)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
 - Build target: `~/.cargo-target/cq/` (Linux FS)

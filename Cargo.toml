@@ -3,16 +3,15 @@ name = "cqs"
 version = "0.9.9"
 edition = "2021"
 rust-version = "1.93"
-description = "Semantic code search and code intelligence for AI agents. Find functions by concept, trace call chains, assess impact — in single tool calls. Local ML, MCP server."
+description = "Semantic code search and code intelligence for AI agents. Find functions by concept, trace call chains, assess impact — in single tool calls. Local ML embeddings."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"
 readme = "README.md"
-keywords = ["code-search", "semantic-search", "mcp-server", "embeddings", "vector-search"]
+keywords = ["code-search", "semantic-search", "code-intelligence", "embeddings", "vector-search"]
 categories = ["command-line-utilities", "development-tools"]
 exclude = [
     ".claude/",
-    ".mcp.json",
     ".githooks/",
     "CLAUDE.md",
     "PROJECT_CONTINUITY.md",
@@ -47,14 +46,7 @@ ndarray = "0.17"
 ndarray_015 = { package = "ndarray", version = "0.15", optional = true }
 
 # Async
-tokio = { version = "1", features = ["rt-multi-thread", "fs", "sync", "time", "macros", "signal"] }
-
-# HTTP (for SSE transport)
-axum = "0.8"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["cors", "limit"] }
-futures = "0.3"
-tokio-stream = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
 # Storage (sqlx async SQLite)
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
@@ -78,8 +70,6 @@ dunce = "1"
 
 # Utilities
 blake3 = "1"
-subtle = "2"
-zeroize = "1"
 bytemuck = { version = "1", features = ["derive"] }
 ignore = "0.4"
 notify = { version = "8", features = ["serde"] }
