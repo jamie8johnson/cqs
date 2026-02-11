@@ -183,6 +183,7 @@ cqs trace cmd_query search_filtered --max-depth 5
 # Impact analysis: what breaks if I change this function?
 cqs impact search_filtered                # direct callers + affected tests
 cqs impact search_filtered --depth 3      # transitive callers
+cqs impact search_filtered --suggest-tests  # suggest tests for untested callers
 
 # Map functions to their tests
 cqs test-map search_filtered
@@ -190,7 +191,16 @@ cqs test-map search_filtered --depth 3 --json
 
 # Module overview: chunks, callers, callees, notes for a file
 cqs context src/search.rs
-cqs context src/search.rs --json
+cqs context src/search.rs --compact       # signatures + caller/callee counts only
+
+# Co-occurrence analysis: what else to review when touching a function
+cqs related search_filtered               # shared callers, callees, types
+
+# Placement suggestion: where to add new code
+cqs where "rate limiting middleware"       # best file, insertion point, local patterns
+
+# Pre-investigation dashboard: plan before you code
+cqs scout "add retry logic to search"     # search + callers + tests + staleness + notes
 ```
 
 ## Maintenance
@@ -294,7 +304,11 @@ Key commands (all support `--json`):
 - `cqs impact-diff [--base REF]` - diff-aware impact: changed functions, callers, tests to re-run
 - `cqs test-map <function>` - map functions to tests that exercise them
 - `cqs context <file>` - module-level: chunks, callers, callees, notes
+- `cqs context <file> --compact` - signatures + caller/callee counts only
 - `cqs gather "query"` - smart context assembly: seed search + call graph BFS
+- `cqs related <function>` - co-occurrence: shared callers, callees, types
+- `cqs where "description"` - suggest where to add new code
+- `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
 - `cqs dead` - find functions/methods never called by indexed code
 - `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries
