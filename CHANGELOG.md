@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`cqs stale`**: New command to check index freshness. Lists files modified since last index and files in the index that no longer exist on disk. Supports `--json`, `--count-only`.
+- **Proactive staleness warnings**: Search, explain, gather, and context commands now warn on stderr when results come from stale files. Suppressed with `-q`.
+- **`cqs-stale` skill**: Agent skill for index freshness checks.
+
 ## [0.11.0] - 2026-02-11
 
 ### Added

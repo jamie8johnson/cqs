@@ -7,7 +7,7 @@ use sqlx::Row;
 
 use super::helpers::{
     bytes_to_embedding, clamp_line_number, embedding_to_bytes, ChunkIdentity, ChunkRow,
-    ChunkSummary, IndexStats, StoreError,
+    ChunkSummary, IndexStats, StaleFile, StaleReport, StoreError,
 };
 use super::Store;
 use crate::embedder::Embedding;
@@ -449,6 +449,128 @@ impl Store {
             }
 
             Ok((stale, missing))
+        })
+    }
+
+    /// List files that are stale (mtime changed) or missing from disk.
+    ///
+    /// Like `count_stale_files()` but returns full details for display.
+    /// Requires `existing_files` from `enumerate_files()` (~100ms for 10k files).
+    pub fn list_stale_files(
+        &self,
+        existing_files: &HashSet<PathBuf>,
+    ) -> Result<StaleReport, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
+                "SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            let total_indexed = rows.len() as u64;
+            let mut stale = Vec::new();
+            let mut missing = Vec::new();
+
+            for (origin, stored_mtime) in rows {
+                let path = PathBuf::from(&origin);
+                if !existing_files.contains(&path) {
+                    missing.push(origin);
+                    continue;
+                }
+
+                let stored = match stored_mtime {
+                    Some(m) => m,
+                    None => {
+                        // NULL mtime → treat as stale (can't verify freshness)
+                        stale.push(StaleFile {
+                            origin,
+                            stored_mtime: 0,
+                            current_mtime: 0,
+                        });
+                        continue;
+                    }
+                };
+
+                let current_mtime = path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+
+                if let Some(current) = current_mtime {
+                    if current > stored {
+                        stale.push(StaleFile {
+                            origin,
+                            stored_mtime: stored,
+                            current_mtime: current,
+                        });
+                    }
+                }
+            }
+
+            Ok(StaleReport {
+                stale,
+                missing,
+                total_indexed,
+            })
+        })
+    }
+
+    /// Check if specific origins are stale (mtime changed on disk).
+    ///
+    /// Lightweight per-query check: only examines the given origins, not the
+    /// entire index. O(result_count), not O(index_size).
+    ///
+    /// Returns the set of stale origin paths.
+    pub fn check_origins_stale(&self, origins: &[&str]) -> Result<HashSet<String>, StoreError> {
+        if origins.is_empty() {
+            return Ok(HashSet::new());
+        }
+
+        self.rt.block_on(async {
+            // Batch query: get stored mtimes for these origins
+            let placeholders: String = (1..=origins.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT origin, source_mtime FROM chunks WHERE origin IN ({}) GROUP BY origin",
+                placeholders
+            );
+
+            let mut query = sqlx::query_as::<_, (String, Option<i64>)>(&sql);
+            for origin in origins {
+                query = query.bind(*origin);
+            }
+            let rows = query.fetch_all(&self.pool).await?;
+
+            let mut stale = HashSet::new();
+            for (origin, stored_mtime) in rows {
+                let stored = match stored_mtime {
+                    Some(m) => m,
+                    None => {
+                        stale.insert(origin);
+                        continue;
+                    }
+                };
+
+                let path = PathBuf::from(&origin);
+                let current_mtime = path
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64);
+
+                if let Some(current) = current_mtime {
+                    if current > stored {
+                        stale.insert(origin);
+                    }
+                }
+            }
+
+            Ok(stale)
         })
     }
 
@@ -1362,5 +1484,295 @@ mod tests {
         let (store, _dir) = setup_store();
         let chunks = store.get_chunks_by_origin("nonexistent.rs").unwrap();
         assert!(chunks.is_empty());
+    }
+
+    // ===== list_stale_files tests =====
+
+    #[test]
+    fn test_list_stale_files_empty_index() {
+        let (store, _dir) = setup_store();
+        let existing = HashSet::new();
+        let report = store.list_stale_files(&existing).unwrap();
+        assert!(report.stale.is_empty());
+        assert!(report.missing.is_empty());
+        assert_eq!(report.total_indexed, 0);
+    }
+
+    #[test]
+    fn test_list_stale_files_all_fresh() {
+        let (store, dir) = setup_store();
+
+        // Create a real file and index it
+        let file_path = dir.path().join("src/fresh.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn fresh() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "fresh".to_string(),
+            signature: "fn fresh()".to_string(),
+            content: "fn fresh() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+
+        // Get current mtime
+        let mtime = file_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
+            .unwrap();
+
+        let mut existing = HashSet::new();
+        existing.insert(file_path);
+        let report = store.list_stale_files(&existing).unwrap();
+        assert!(report.stale.is_empty());
+        assert!(report.missing.is_empty());
+        assert_eq!(report.total_indexed, 1);
+    }
+
+    #[test]
+    fn test_list_stale_files_detects_modified() {
+        let (store, dir) = setup_store();
+
+        let file_path = dir.path().join("src/stale.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn stale() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "stale".to_string(),
+            signature: "fn stale()".to_string(),
+            content: "fn stale() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+
+        // Store with an old mtime (before the file was created)
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(1000))
+            .unwrap();
+
+        let mut existing = HashSet::new();
+        existing.insert(file_path);
+        let report = store.list_stale_files(&existing).unwrap();
+        assert_eq!(report.stale.len(), 1);
+        assert_eq!(report.stale[0].stored_mtime, 1000);
+        assert!(report.stale[0].current_mtime > 1000);
+        assert!(report.missing.is_empty());
+        assert_eq!(report.total_indexed, 1);
+    }
+
+    #[test]
+    fn test_list_stale_files_detects_missing() {
+        let (store, _dir) = setup_store();
+
+        let c = make_chunk("gone", "/nonexistent/file.rs");
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(1000))
+            .unwrap();
+
+        // existing_files doesn't contain the path
+        let existing = HashSet::new();
+        let report = store.list_stale_files(&existing).unwrap();
+        assert!(report.stale.is_empty());
+        assert_eq!(report.missing.len(), 1);
+        assert_eq!(report.total_indexed, 1);
+    }
+
+    #[test]
+    fn test_list_stale_files_null_mtime() {
+        let (store, dir) = setup_store();
+
+        let file_path = dir.path().join("src/null.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn null() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "null".to_string(),
+            signature: "fn null()".to_string(),
+            content: "fn null() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+
+        // Store with None mtime (will be NULL in DB)
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], None)
+            .unwrap();
+
+        let mut existing = HashSet::new();
+        existing.insert(file_path);
+        let report = store.list_stale_files(&existing).unwrap();
+        assert_eq!(
+            report.stale.len(),
+            1,
+            "NULL mtime should be treated as stale"
+        );
+    }
+
+    // ===== check_origins_stale tests =====
+
+    #[test]
+    fn test_check_origins_stale_empty_list() {
+        let (store, _dir) = setup_store();
+        let stale = store.check_origins_stale(&[]).unwrap();
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_check_origins_stale_all_fresh() {
+        let (store, dir) = setup_store();
+
+        let file_path = dir.path().join("src/fresh.rs");
+        std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+        std::fs::write(&file_path, "fn fresh() {}").unwrap();
+
+        let origin = file_path.to_string_lossy().to_string();
+        let c = Chunk {
+            id: format!("{}:1:abc", origin),
+            file: file_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "fresh".to_string(),
+            signature: "fn fresh()".to_string(),
+            content: "fn fresh() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "abc".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+
+        let mtime = file_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        store
+            .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
+            .unwrap();
+
+        let stale = store.check_origins_stale(&[&origin]).unwrap();
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_check_origins_stale_mixed() {
+        let (store, dir) = setup_store();
+
+        // Fresh file
+        let fresh_path = dir.path().join("src/fresh.rs");
+        std::fs::create_dir_all(fresh_path.parent().unwrap()).unwrap();
+        std::fs::write(&fresh_path, "fn fresh() {}").unwrap();
+
+        let fresh_origin = fresh_path.to_string_lossy().to_string();
+        let c_fresh = Chunk {
+            id: format!("{}:1:fresh", fresh_origin),
+            file: fresh_path.clone(),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "fresh".to_string(),
+            signature: "fn fresh()".to_string(),
+            content: "fn fresh() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "fresh".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+
+        let fresh_mtime = fresh_path
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        store
+            .upsert_chunks_batch(&[(c_fresh, mock_embedding(1.0))], Some(fresh_mtime))
+            .unwrap();
+
+        // Stale file (stored with old mtime)
+        let stale_path = dir.path().join("src/stale.rs");
+        std::fs::write(&stale_path, "fn stale() {}").unwrap();
+
+        let stale_origin = stale_path.to_string_lossy().to_string();
+        let c_stale = Chunk {
+            id: format!("{}:1:stale", stale_origin),
+            file: stale_path,
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "stale".to_string(),
+            signature: "fn stale()".to_string(),
+            content: "fn stale() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            content_hash: "stale".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+
+        store
+            .upsert_chunks_batch(&[(c_stale, mock_embedding(2.0))], Some(1000))
+            .unwrap();
+
+        let stale = store
+            .check_origins_stale(&[&fresh_origin, &stale_origin])
+            .unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(stale.contains(&stale_origin));
+        assert!(!stale.contains(&fresh_origin));
+    }
+
+    #[test]
+    fn test_check_origins_stale_unknown_origin() {
+        let (store, _dir) = setup_store();
+        let stale = store.check_origins_stale(&["nonexistent/file.rs"]).unwrap();
+        assert!(
+            stale.is_empty(),
+            "Unknown origin should not appear in stale set"
+        );
     }
 }

@@ -108,6 +108,7 @@ None.
    - `cqs-gather` — smart context assembly (seed search + call graph BFS)
    - `cqs-dead` — find dead code (functions with no callers)
    - `cqs-gc` — report index staleness
+   - `cqs-stale` — check index freshness (files changed since last index)
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 

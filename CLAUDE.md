@@ -64,6 +64,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs diff --source <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
 - `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion.
 - `cqs dead` — find dead code: functions/methods with no callers in the index.
+- `cqs stale` — check index freshness: files modified since last index.
 - `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.

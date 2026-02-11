@@ -10,7 +10,7 @@ use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, HnswIndex, Pattern, SearchFilter, Store};
 
-use crate::cli::{display, find_project_root, signal, Cli};
+use crate::cli::{display, find_project_root, signal, staleness, Cli};
 
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
@@ -176,6 +176,22 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         HashMap::new()
     };
     let parents_ref = if cli.expand { Some(&parents) } else { None };
+
+    // Proactive staleness warning (stderr, doesn't pollute JSON)
+    if !cli.quiet {
+        let origins: Vec<&str> = results
+            .iter()
+            .filter_map(|r| match r {
+                UnifiedResult::Code(sr) => Some(sr.chunk.file.to_str().unwrap_or("")),
+                UnifiedResult::Note(_) => None,
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !origins.is_empty() {
+            staleness::warn_stale_results(&store, &origins);
+        }
+    }
 
     // Fast path: no references configured
     if references.is_empty() {
