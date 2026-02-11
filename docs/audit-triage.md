@@ -234,10 +234,10 @@ After de-duplication: **~140 unique findings**
 |---|---------|--------|------------|--------|
 | 3 | 11/20 MCP tools untested | TC2 | medium | |
 | 4 | 11 CLI commands untested | TC3 | medium | |
-| 5 | `search_filtered` no unit tests | TC4 | medium | |
+| 5 | `search_filtered` no unit tests | TC4 | medium | Fixed PR #343 |
 | 6 | `search_across_projects` zero tests | TC5 | medium | |
-| 7 | `store/chunks.rs` 817 lines no inline tests | TC8 | medium | |
-| 8 | `reference.rs` load/search no direct tests | TC9 | medium | |
+| 7 | `store/chunks.rs` 817 lines no inline tests | TC8 | medium | Fixed PR #343 |
+| 8 | `reference.rs` load/search no direct tests | TC9 | medium | Fixed PR #343 |
 | 9 | `cmd_gc` zero tests | TC10 | easy | PR #341 |
 | 10 | `cmd_dead` no CLI integration test | TC11 | easy | PR #341 |
 | 11 | MCP error assertions only check `is_some()` | TC15 | easy | PR #341 |
@@ -249,7 +249,7 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 15 | Asymmetric callers/callees return types | A2 | medium | |
+| 15 | Asymmetric callers/callees return types | A2 | medium | Fixed PR #343 |
 | 16 | `SearchFilter` mixed encapsulation (pub fields + builder) | A6 | easy | PR #341 |
 | 17 | `serve_stdio`/`serve_http` inconsistent path param types | A8 | easy | PR #341 (already consistent) |
 | 18 | Note/NoteEntry/NoteSummary naming overload | A9 | medium | |
@@ -262,7 +262,7 @@ After de-duplication: **~140 unique findings**
 | 20 | `normalize_for_fts` called 4x per chunk | P6 | easy | PR #341 |
 | 21 | Diff loads all identities even with language filter | P5 | medium | PR #340 (RM11) |
 | 22 | `search_across_projects` new Store per project per search | P8 | medium | |
-| 23 | Gather loads entire call graph every invocation | P11 | medium | |
+| 23 | Gather loads entire call graph every invocation | P11 | medium | Fixed PR #343 |
 | 24 | Pipeline writer clones chunk+embedding pairs | P9 | easy | PR #341 |
 | 25 | `get_call_graph` clones all strings into both maps | P12 | easy | PR #340 |
 
@@ -273,7 +273,7 @@ After de-duplication: **~140 unique findings**
 | 26 | `semantic_diff` loads all matched-pair embeddings at once | RM1 | medium | |
 | 27 | Reference hot-reload blocks search during WAL checkpoint | RM3 | medium | |
 | 28 | Each Store creates own tokio Runtime (7+ with refs) | RM4 | medium | |
-| 29 | Embedder ~500MB persists forever via OnceLock | RM8 | easy | |
+| 29 | Embedder ~500MB persists forever via OnceLock | RM8 | easy | Fixed PR #343 |
 | 30 | HNSW+CAGRA held simultaneously during upgrade | RM10 | easy | PR #341 (not in HNSW files) |
 | 31 | `all_chunk_identities` loads full table no SQL filter | RM11 | easy | PR #340 |
 
@@ -284,7 +284,7 @@ After de-duplication: **~140 unique findings**
 | 32 | `embedding_batches` LIMIT/OFFSET unstable under writes | DS9 | medium | PR #341 |
 | 33 | Store::init() DDL without transaction | DS1 | medium | PR #340 |
 | 34 | WAL checkpoint failure silently returns Ok | DS13 | easy | PR #340 |
-| 35 | No SQLite integrity check on open | DS12 | medium | |
+| 35 | No SQLite integrity check on open | DS12 | medium | Fixed PR #343 |
 | 36 | Schema migration no downgrade guard | DS10 | medium | PR #340 |
 
 ### Security
@@ -326,8 +326,8 @@ After de-duplication: **~140 unique findings**
 |---|---------|--------|------------|--------|
 | 1 | `search_filtered` brute-force loads all embeddings | P1 | hard | existing #269 |
 | 2 | HNSW not rebuilt after watch updates | DS6 | hard | existing #236 |
-| 3 | `embed_documents` no tests (requires model) | TC6 | hard | |
-| 4 | MCP tool schemas handwritten JSON, not generated | X8 | hard | |
+| 3 | `embed_documents` no tests (requires model) | TC6 | hard | Issue #344 |
+| 4 | MCP tool schemas handwritten JSON, not generated | X8 | hard | Issue #345 |
 | 5 | CAGRA `build_from_store` no OOM guard on pre-alloc | RM2 | medium | existing #302 |
 
 **P4 Total: 5 findings**

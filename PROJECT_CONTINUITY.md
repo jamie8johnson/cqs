@@ -5,10 +5,15 @@
 **v0.9.7 audit fix session.** 2026-02-10.
 
 ### Active
-- Next: PR7c (remaining P3) or PR8 (P4 issues) — 18 unfixed P3 remain
-- Remaining P3: TC2-TC5, TC8, TC9, TC14 (test coverage), A2, A9 (API), P8, P11 (perf), RM1, RM3, RM4, RM8 (resources), DS12 (data safety), X7 (extensibility)
+- v0.9.7 audit complete. 125 fixes across PRs 1-7c + 5 P4 issues filed. 11 P3 deferred (lower ROI).
+- Remaining P3 (unfixed): TC2, TC3, TC5, TC14, A9, P8, RM1, RM3, RM4, X7
 
 ### Completed This Session
+- PR7c (P3 batch 3): merged as PR #343 — 7 fixes
+  - Test coverage: TC4 (search_filtered), TC8 (chunks.rs), TC9 (reference.rs) — 30 new tests
+  - Data safety: DS12 (SQLite integrity check on open)
+  - Performance: P11 (gather call graph doc)
+  - API docs: A2 (callers/callees asymmetry), RM8 (embedder lifecycle + clear_session)
 - PR7b (P3 batch 2): merged as PR #341 — 14 fixes
   - Test coverage: TC7, TC10, TC11, TC13, TC15
   - Performance: P6 (FTS dedup), P9 (pipeline clone), DS9 (cursor pagination)
@@ -71,8 +76,8 @@ Full audit fix plan at `/home/user001/.claude/plans/witty-strolling-melody.md`
 - #269: Brute-force search loads all embeddings
 - #236: HNSW-SQLite freshness validation
 - #302: CAGRA OOM guard
-- TC6: embed_documents tests (no issue yet)
-- X8: MCP schema generation from types (no issue yet)
+- #344: embed_documents tests
+- #345: MCP schema generation from types
 
 ## Architecture
 
