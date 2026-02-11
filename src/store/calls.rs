@@ -200,7 +200,14 @@ impl Store {
         })
     }
 
-    /// Find all chunks that call a given function name
+    /// Get all chunks that call the named function.
+    ///
+    /// Takes a function **name** (not ID) because multiple definitions may share
+    /// a name across files. Returns full [`ChunkSummary`] with file, line, and
+    /// signature context for display.
+    ///
+    /// For the reverse direction, see [`get_callees`] which returns callee names
+    /// from a specific chunk ID.
     pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
         tracing::debug!(callee_name, "querying callers from chunks");
 
@@ -240,7 +247,14 @@ impl Store {
         })
     }
 
-    /// Get all function names called by a given chunk
+    /// Get all function names called by a given chunk.
+    ///
+    /// Takes a chunk **ID** (unique) rather than a name. Returns only callee
+    /// **names** (not full chunks) because:
+    /// - Callees may not exist in the index (external functions)
+    /// - Callers typically chain: `get_callees` → `get_callers` for graph traversal
+    ///
+    /// For richer callee data, see [`get_callers_with_context`].
     pub fn get_callees(&self, chunk_id: &str) -> Result<Vec<String>, StoreError> {
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(

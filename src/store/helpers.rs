@@ -46,6 +46,8 @@ pub enum StoreError {
         "Dimension mismatch: index has {0}-dim embeddings, current model expects {1}. Run 'cqs index --force' to rebuild."
     )]
     DimensionMismatch(u32, u32),
+    #[error("Database integrity check failed: {0}")]
+    Corruption(String),
 }
 
 /// Raw row from chunks table (crate-internal, used by search module)

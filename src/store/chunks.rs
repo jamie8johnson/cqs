@@ -1041,3 +1041,309 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
 // SAFETY: Once `done` is set to true, `next()` always returns None.
 // This is guaranteed by the check at the start of `next()`.
 impl<'a> std::iter::FusedIterator for EmbeddingBatchIterator<'a> {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embedder::Embedding;
+    use crate::parser::{Chunk, ChunkType, Language};
+    use crate::store::helpers::ModelInfo;
+    use crate::store::Store;
+
+    fn setup_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    fn mock_embedding(seed: f32) -> Embedding {
+        let mut v = vec![seed; 768];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v.push(0.0);
+        Embedding::new(v)
+    }
+
+    fn make_chunk(name: &str, file: &str) -> Chunk {
+        let content = format!("fn {}() {{ /* body */ }}", name);
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("{}:1:{}", file, &hash[..8]),
+            file: PathBuf::from(file),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+        }
+    }
+
+    // ===== upsert_chunks_batch tests =====
+
+    #[test]
+    fn test_upsert_chunks_batch_insert_and_fetch() {
+        let (store, _dir) = setup_store();
+
+        let c1 = make_chunk("alpha", "src/a.rs");
+        let c2 = make_chunk("beta", "src/b.rs");
+        let emb = mock_embedding(1.0);
+
+        let count = store
+            .upsert_chunks_batch(
+                &[(c1.clone(), emb.clone()), (c2.clone(), emb.clone())],
+                Some(100),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        // Verify via stats
+        let stats = store.stats().unwrap();
+        assert_eq!(stats.total_chunks, 2);
+        assert_eq!(stats.total_files, 2);
+
+        // Verify via chunk_count
+        assert_eq!(store.chunk_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn test_upsert_chunks_batch_updates_existing() {
+        let (store, _dir) = setup_store();
+
+        let c1 = make_chunk("alpha", "src/a.rs");
+        let emb1 = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c1.clone(), emb1)], Some(100))
+            .unwrap();
+
+        // Re-insert same chunk with different embedding
+        let emb2 = mock_embedding(2.0);
+        store
+            .upsert_chunks_batch(&[(c1.clone(), emb2.clone())], Some(200))
+            .unwrap();
+
+        // Should still be 1 chunk (updated, not duplicated)
+        assert_eq!(store.chunk_count().unwrap(), 1);
+
+        // Embedding should be the updated one
+        let found = store.get_by_content_hash(&c1.content_hash);
+        assert!(found.is_some());
+    }
+
+    #[test]
+    fn test_upsert_chunks_batch_empty() {
+        let (store, _dir) = setup_store();
+        let count = store.upsert_chunks_batch(&[], Some(100)).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    // ===== replace_file_chunks tests =====
+
+    #[test]
+    fn test_replace_file_chunks_removes_old() {
+        let (store, _dir) = setup_store();
+
+        // Insert two chunks from same file
+        let c1 = make_chunk("old_fn1", "src/lib.rs");
+        let c2 = make_chunk("old_fn2", "src/lib.rs");
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb.clone())], Some(100))
+            .unwrap();
+        assert_eq!(store.chunk_count().unwrap(), 2);
+
+        // Replace with one new chunk
+        let c3 = make_chunk("new_fn", "src/lib.rs");
+        let replaced = store
+            .replace_file_chunks(
+                &PathBuf::from("src/lib.rs"),
+                &[(c3.clone(), emb.clone())],
+                Some(200),
+            )
+            .unwrap();
+        assert_eq!(replaced, 1);
+
+        // Only the new chunk should remain
+        assert_eq!(store.chunk_count().unwrap(), 1);
+        let chunks = store.get_chunks_by_origin("src/lib.rs").unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].name, "new_fn");
+    }
+
+    #[test]
+    fn test_replace_file_chunks_doesnt_affect_other_files() {
+        let (store, _dir) = setup_store();
+
+        let c_a = make_chunk("fn_a", "src/a.rs");
+        let c_b = make_chunk("fn_b", "src/b.rs");
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c_a, emb.clone()), (c_b, emb.clone())], Some(100))
+            .unwrap();
+
+        // Replace only a.rs
+        let c_new = make_chunk("fn_a_new", "src/a.rs");
+        store
+            .replace_file_chunks(
+                &PathBuf::from("src/a.rs"),
+                &[(c_new, emb.clone())],
+                Some(200),
+            )
+            .unwrap();
+
+        // b.rs should be untouched
+        assert_eq!(store.chunk_count().unwrap(), 2);
+        let b_chunks = store.get_chunks_by_origin("src/b.rs").unwrap();
+        assert_eq!(b_chunks.len(), 1);
+        assert_eq!(b_chunks[0].name, "fn_b");
+    }
+
+    #[test]
+    fn test_replace_file_chunks_with_empty_clears_file() {
+        let (store, _dir) = setup_store();
+
+        let c1 = make_chunk("fn1", "src/lib.rs");
+        let emb = mock_embedding(1.0);
+        store.upsert_chunks_batch(&[(c1, emb)], Some(100)).unwrap();
+        assert_eq!(store.chunk_count().unwrap(), 1);
+
+        // Replace with empty list
+        let replaced = store
+            .replace_file_chunks(&PathBuf::from("src/lib.rs"), &[], Some(200))
+            .unwrap();
+        assert_eq!(replaced, 0);
+        assert_eq!(store.chunk_count().unwrap(), 0);
+    }
+
+    // ===== embedding_batches tests =====
+
+    #[test]
+    fn test_embedding_batches_pagination() {
+        let (store, _dir) = setup_store();
+
+        // Insert 15 chunks
+        let pairs: Vec<_> = (0..15)
+            .map(|i| {
+                let c = make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i));
+                (c, mock_embedding(i as f32))
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        // Batch size 10: should get 2 batches (10 + 5)
+        let batches: Vec<_> = store.embedding_batches(10).collect();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].as_ref().unwrap().len(), 10);
+        assert_eq!(batches[1].as_ref().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_embedding_batches_returns_all() {
+        let (store, _dir) = setup_store();
+
+        let pairs: Vec<_> = (0..7)
+            .map(|i| {
+                let c = make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i));
+                (c, mock_embedding(i as f32))
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        let total: usize = store
+            .embedding_batches(3)
+            .filter_map(|b| b.ok())
+            .map(|b| b.len())
+            .sum();
+        assert_eq!(total, 7);
+    }
+
+    #[test]
+    fn test_embedding_batches_empty_store() {
+        let (store, _dir) = setup_store();
+        let batches: Vec<_> = store.embedding_batches(10).collect();
+        assert!(batches.is_empty());
+    }
+
+    // ===== all_chunk_identities_filtered tests =====
+
+    #[test]
+    fn test_all_chunk_identities_filtered_by_language() {
+        let (store, _dir) = setup_store();
+
+        let mut rust_chunk = make_chunk("rs_fn", "src/lib.rs");
+        rust_chunk.language = Language::Rust;
+
+        let mut py_chunk = make_chunk("py_fn", "src/main.py");
+        py_chunk.language = Language::Python;
+        py_chunk.id = format!("src/main.py:1:{}", &py_chunk.content_hash[..8]);
+
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(
+                &[(rust_chunk, emb.clone()), (py_chunk, emb.clone())],
+                Some(100),
+            )
+            .unwrap();
+
+        // Filter to Rust only
+        let identities = store.all_chunk_identities_filtered(Some("rust")).unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].language, "rust");
+
+        // Filter to Python only
+        let identities = store.all_chunk_identities_filtered(Some("python")).unwrap();
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].language, "python");
+
+        // No filter returns all
+        let identities = store.all_chunk_identities_filtered(None).unwrap();
+        assert_eq!(identities.len(), 2);
+    }
+
+    // ===== get_chunks_by_origin tests =====
+
+    #[test]
+    fn test_get_chunks_by_origin_sorted_by_line() {
+        let (store, _dir) = setup_store();
+
+        let mut c1 = make_chunk("fn_late", "src/lib.rs");
+        c1.line_start = 50;
+        c1.line_end = 60;
+
+        let mut c2 = make_chunk("fn_early", "src/lib.rs");
+        c2.line_start = 1;
+        c2.line_end = 10;
+        c2.id = format!("src/lib.rs:1:{}", &c2.content_hash[..8]);
+
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb.clone())], Some(100))
+            .unwrap();
+
+        let chunks = store.get_chunks_by_origin("src/lib.rs").unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert!(
+            chunks[0].line_start <= chunks[1].line_start,
+            "Chunks should be sorted by line_start"
+        );
+    }
+
+    #[test]
+    fn test_get_chunks_by_origin_empty() {
+        let (store, _dir) = setup_store();
+        let chunks = store.get_chunks_by_origin("nonexistent.rs").unwrap();
+        assert!(chunks.is_empty());
+    }
+}
