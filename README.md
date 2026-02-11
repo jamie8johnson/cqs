@@ -286,6 +286,7 @@ Key commands (all support `--json`):
 - `cqs diff --source <ref>` - semantic diff between indexed snapshots
 - `cqs trace <source> <target>` - follow call chain (BFS shortest path)
 - `cqs impact <function>` - what breaks if you change X? Callers + affected tests
+- `cqs impact-diff [--base REF]` - diff-aware impact: changed functions, callers, tests to re-run
 - `cqs test-map <function>` - map functions to tests that exercise them
 - `cqs context <file>` - module-level: chunks, callers, callees, notes
 - `cqs gather "query"` - smart context assembly: seed search + call graph BFS
