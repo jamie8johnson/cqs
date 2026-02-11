@@ -66,6 +66,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs dead` — find dead code: functions/methods with no callers in the index.
 - `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
+- `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
 - `cqs test-map <function>` — map function to tests that exercise it.
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.

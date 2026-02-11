@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-02-11
+
+### Added
+- **Proactive hints** (#362): `cqs explain` and `cqs read --focus` now show caller count and test count for function/method chunks. JSON output includes `hints` object with `caller_count`, `test_count`, `no_callers`, `no_tests`.
+- **`cqs impact-diff`** (#362): New command maps git diff hunks to indexed functions and runs aggregated impact analysis. Shows changed functions, affected callers, and tests to re-run. Supports `--base`, `--stdin`, `--json`.
+- **Table-aware Markdown chunking** (#361): Markdown tables are chunked row-wise when exceeding 1500 characters. Parent retrieval via `--expand` flag.
+- **Markdown RAG improvements** (#360): Richer embeddings with cross-document reference linking and heading hierarchy preservation.
+- **`cqs-impact-diff` skill**: Agent skill for diff-aware impact analysis.
+
+### Fixed
+- **Suppress ort warning** (#363): Filter benign "nodes not assigned to preferred execution providers" warning from ONNX Runtime.
+- **Double compute_hints in read.rs**: JSON mode was calling `compute_hints()` twice; now stores result and reuses.
+
 ## [0.10.2] - 2026-02-10
 
 ### Fixed
