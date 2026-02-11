@@ -1,4 +1,4 @@
-//! Impact analysis core — shared between CLI and MCP
+//! Impact analysis core
 //!
 //! Provides BFS caller traversal, test discovery, snippet extraction,
 //! transitive caller analysis, and mermaid diagram generation.

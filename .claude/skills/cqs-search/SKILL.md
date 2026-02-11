@@ -15,7 +15,7 @@ Parse arguments from the invocation:
 - `--threshold <n>` → `-t` (default 0.3)
 - `--name-only` → definition search, skips embedding. Use for "where is X defined?"
 - `--semantic-only` → pure vector similarity, no hybrid RRF
-- `--path <glob>` → `-p` path pattern filter (e.g., `src/mcp/**`)
+- `--path <glob>` → `-p` path pattern filter (e.g., `src/cli/**`)
 - `--chunk-type <T>` → `--chunk-type` (function, method, class, struct, enum, trait, interface, constant, section)
 - `--pattern <P>` → `--pattern` (builder, error_swallow, async, mutex, unsafe, recursion)
 - `--note-only` → return only notes, skip code search
@@ -29,4 +29,4 @@ Present the results to the user.
 
 - `/cqs-search retry with exponential backoff` — find retry logic by concept
 - `/cqs-search Store::open --name-only` — find where Store::open is defined
-- `/cqs-search error handling --lang rust --path src/mcp/**` — scoped search
+- `/cqs-search error handling --lang rust --path src/cli/**` — scoped search

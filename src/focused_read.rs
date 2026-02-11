@@ -1,7 +1,7 @@
 //! Focused-read shared logic
 //!
 //! Extracts type names from function signatures for dependency resolution
-//! in focused-read mode. Used by both CLI and MCP read commands.
+//! in focused-read mode. Used by the CLI read command.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;

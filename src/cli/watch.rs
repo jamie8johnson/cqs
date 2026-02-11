@@ -163,7 +163,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                                 if !cli.quiet {
                                     println!("Indexed {} chunk(s)", count);
                                 }
-                                // Rebuild HNSW so MCP server can detect the fresh index
+                                // Rebuild HNSW so index is fresh
                                 match super::commands::build_hnsw_index(&store, &cqs_dir) {
                                     Ok(Some(n)) => {
                                         info!(vectors = n, "HNSW index rebuilt");

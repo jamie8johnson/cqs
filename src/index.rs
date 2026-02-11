@@ -17,7 +17,7 @@ pub struct IndexResult {
 /// Trait for vector similarity search indexes
 ///
 /// Implementations must be thread-safe (`Send + Sync`) for use in
-/// async contexts like the MCP server.
+/// async contexts like the sqlx store.
 pub trait VectorIndex: Send + Sync {
     /// Search for nearest neighbors
     ///

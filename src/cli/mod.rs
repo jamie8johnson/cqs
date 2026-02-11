@@ -17,12 +17,10 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_project,
-    cmd_query, cmd_read, cmd_ref, cmd_serve, cmd_similar, cmd_stats, cmd_test_map, cmd_trace,
-    NotesCommand, ProjectCommand, RefCommand, ServeConfig,
+    cmd_query, cmd_read, cmd_ref, cmd_similar, cmd_stats, cmd_test_map, cmd_trace, NotesCommand,
+    ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
-
-use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -131,33 +129,6 @@ enum Commands {
         /// Index files ignored by .gitignore
         #[arg(long)]
         no_ignore: bool,
-    },
-    /// Start MCP server
-    Serve {
-        /// Transport type: stdio, http
-        #[arg(long, default_value = "stdio")]
-        transport: String,
-        /// Bind address for HTTP transport
-        #[arg(long, default_value = "127.0.0.1")]
-        bind: String,
-        /// Port for HTTP transport
-        #[arg(long, default_value = "3000")]
-        port: u16,
-        /// Project root
-        #[arg(long)]
-        project: Option<PathBuf>,
-        /// Use GPU for query embedding (faster after warmup)
-        #[arg(long)]
-        gpu: bool,
-        /// API key for HTTP authentication (required for non-localhost bind)
-        #[arg(long, env = "CQS_API_KEY")]
-        api_key: Option<String>,
-        /// Path to file containing API key (alternative to --api-key)
-        #[arg(long)]
-        api_key_file: Option<PathBuf>,
-        /// Required when binding to non-localhost (exposes codebase to network)
-        #[arg(long, hide = true)]
-        dangerously_allow_network_bind: bool,
     },
     /// Generate shell completions
     Completions {
@@ -365,25 +336,6 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             debounce,
             no_ignore,
         }) => watch::cmd_watch(&cli, debounce, no_ignore),
-        Some(Commands::Serve {
-            ref transport,
-            ref bind,
-            port,
-            ref project,
-            gpu,
-            ref api_key,
-            ref api_key_file,
-            dangerously_allow_network_bind,
-        }) => cmd_serve(ServeConfig {
-            transport: transport.clone(),
-            bind: bind.clone(),
-            port,
-            project: project.clone(),
-            gpu,
-            api_key: api_key.clone(),
-            api_key_file: api_key_file.clone(),
-            dangerously_allow_network_bind,
-        }),
         Some(Commands::Completions { shell }) => {
             cmd_completions(shell);
             Ok(())
@@ -621,55 +573,6 @@ mod tests {
                 assert_eq!(debounce, 1000);
             }
             _ => panic!("Expected Watch command"),
-        }
-    }
-
-    #[test]
-    fn test_cmd_serve_defaults() {
-        let cli = Cli::try_parse_from(["cqs", "serve"]).unwrap();
-        match cli.command {
-            Some(Commands::Serve {
-                transport,
-                bind,
-                port,
-                gpu,
-                api_key,
-                ..
-            }) => {
-                assert_eq!(transport, "stdio");
-                assert_eq!(bind, "127.0.0.1");
-                assert_eq!(port, 3000);
-                assert!(!gpu);
-                assert!(api_key.is_none());
-            }
-            _ => panic!("Expected Serve command"),
-        }
-    }
-
-    #[test]
-    fn test_cmd_serve_http() {
-        let cli = Cli::try_parse_from([
-            "cqs",
-            "serve",
-            "--transport",
-            "http",
-            "--port",
-            "8080",
-            "--gpu",
-        ])
-        .unwrap();
-        match cli.command {
-            Some(Commands::Serve {
-                transport,
-                port,
-                gpu,
-                ..
-            }) => {
-                assert_eq!(transport, "http");
-                assert_eq!(port, 8080);
-                assert!(gpu);
-            }
-            _ => panic!("Expected Serve command"),
         }
     }
 

@@ -154,9 +154,9 @@ mod tests {
 
     #[test]
     fn test_parse_target_nested_path() {
-        let (file, name) = parse_target("src/mcp/tools/search.rs:tool_search");
-        assert_eq!(file, Some("src/mcp/tools/search.rs"));
-        assert_eq!(name, "tool_search");
+        let (file, name) = parse_target("src/cli/commands/query.rs:cmd_query");
+        assert_eq!(file, Some("src/cli/commands/query.rs"));
+        assert_eq!(name, "cmd_query");
     }
 
     #[test]

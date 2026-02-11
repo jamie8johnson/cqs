@@ -42,7 +42,7 @@ pub fn check_interrupted() -> bool {
 /// Reset the interrupted flag.
 ///
 /// Call at the start of each top-level operation so a prior Ctrl+C
-/// (e.g. during `cqs watch` or MCP server) doesn't poison subsequent work.
+/// (e.g. during `cqs watch`) doesn't poison subsequent work.
 pub fn reset_interrupted() {
     INTERRUPTED.store(false, Ordering::Release);
 }

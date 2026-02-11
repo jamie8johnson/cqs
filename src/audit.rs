@@ -3,8 +3,8 @@
 //! During code audits or fresh-eyes reviews, audit mode prevents prior
 //! observations from influencing analysis by excluding notes from results.
 //!
-//! State is persisted to `.cqs/audit-mode.json` so both CLI and MCP can
-//! share audit mode state across invocations.
+//! State is persisted to `.cqs/audit-mode.json` so audit mode state
+//! survives across CLI invocations.
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -118,6 +118,88 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     Ok(())
 }
 
+/// Parse duration string like "30m", "1h", "2h30m" into chrono::Duration
+pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
+    let s = s.trim().to_lowercase();
+    let mut total_minutes: i64 = 0;
+    let mut current_num = String::new();
+
+    for c in s.chars() {
+        if c.is_ascii_digit() {
+            current_num.push(c);
+        } else if c == 'h' {
+            if current_num.is_empty() {
+                anyhow::bail!("Invalid duration '{}': missing number before 'h'", s);
+            }
+            let hours: i64 = current_num.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid duration '{}': '{}' is not a valid number",
+                    s,
+                    current_num
+                )
+            })?;
+            total_minutes = hours
+                .checked_mul(60)
+                .and_then(|m| total_minutes.checked_add(m))
+                .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
+            current_num.clear();
+        } else if c == 'm' {
+            if current_num.is_empty() {
+                anyhow::bail!("Invalid duration '{}': missing number before 'm'", s);
+            }
+            let mins: i64 = current_num.parse().map_err(|_| {
+                anyhow::anyhow!(
+                    "Invalid duration '{}': '{}' is not a valid number",
+                    s,
+                    current_num
+                )
+            })?;
+            total_minutes = total_minutes
+                .checked_add(mins)
+                .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
+            current_num.clear();
+        } else if !c.is_whitespace() {
+            anyhow::bail!(
+                "Invalid duration '{}': unexpected character '{}'. Use format like '30m', '1h', '2h30m'",
+                s, c
+            );
+        }
+    }
+
+    // Handle bare number (assume minutes)
+    if !current_num.is_empty() {
+        let mins: i64 = current_num.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "Invalid duration '{}': '{}' is not a valid number",
+                s,
+                current_num
+            )
+        })?;
+        total_minutes = total_minutes
+            .checked_add(mins)
+            .ok_or_else(|| anyhow::anyhow!("Duration overflow in '{}'", s))?;
+    }
+
+    if total_minutes <= 0 {
+        anyhow::bail!(
+            "Invalid duration: '{}'. Use format like '30m', '1h', '2h30m'",
+            s
+        );
+    }
+
+    // Cap at 24 hours to prevent overflow and unreasonable values
+    const MAX_MINUTES: i64 = 24 * 60;
+    if total_minutes > MAX_MINUTES {
+        anyhow::bail!(
+            "Duration too long: {} minutes (max {} minutes / 24 hours)",
+            total_minutes,
+            MAX_MINUTES
+        );
+    }
+
+    Ok(chrono::Duration::minutes(total_minutes))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +279,97 @@ mod tests {
         save_audit_state(dir.path(), &mode).unwrap();
         let loaded = load_audit_state(dir.path());
         assert!(!loaded.is_active());
+    }
+
+    // ===== parse_duration tests =====
+
+    #[test]
+    fn test_parse_duration_minutes() {
+        assert_eq!(
+            parse_duration("30m").unwrap(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(parse_duration("1m").unwrap(), chrono::Duration::minutes(1));
+        assert_eq!(
+            parse_duration("120m").unwrap(),
+            chrono::Duration::minutes(120)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_hours() {
+        assert_eq!(parse_duration("1h").unwrap(), chrono::Duration::minutes(60));
+        assert_eq!(
+            parse_duration("2h").unwrap(),
+            chrono::Duration::minutes(120)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_combined() {
+        assert_eq!(
+            parse_duration("1h30m").unwrap(),
+            chrono::Duration::minutes(90)
+        );
+        assert_eq!(
+            parse_duration("2h15m").unwrap(),
+            chrono::Duration::minutes(135)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_bare_number() {
+        assert_eq!(parse_duration("30").unwrap(), chrono::Duration::minutes(30));
+    }
+
+    #[test]
+    fn test_parse_duration_whitespace() {
+        assert_eq!(
+            parse_duration("  30m  ").unwrap(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(
+            parse_duration("1h 30m").unwrap(),
+            chrono::Duration::minutes(90)
+        );
+    }
+
+    #[test]
+    fn test_parse_duration_case_insensitive() {
+        assert_eq!(
+            parse_duration("30M").unwrap(),
+            chrono::Duration::minutes(30)
+        );
+        assert_eq!(parse_duration("1H").unwrap(), chrono::Duration::minutes(60));
+    }
+
+    #[test]
+    fn test_parse_duration_invalid_character() {
+        assert!(parse_duration("30x").is_err());
+        assert!(parse_duration("abc").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_zero() {
+        assert!(parse_duration("0m").is_err());
+        assert!(parse_duration("0").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_empty() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("   ").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_missing_number() {
+        assert!(parse_duration("m").is_err());
+        assert!(parse_duration("h").is_err());
+        assert!(parse_duration("hm").is_err());
+    }
+
+    #[test]
+    fn test_parse_duration_overflow() {
+        assert!(parse_duration(&format!("{}h", i64::MAX)).is_err());
     }
 }

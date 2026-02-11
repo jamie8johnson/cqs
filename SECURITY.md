@@ -4,7 +4,7 @@
 
 ### What cqs Is
 
-cqs is a **local code search tool** for developers. It runs on your machine, indexes your code, and answers semantic queries. It's designed to be used with Claude Code as an MCP server.
+cqs is a **local code search tool** for developers. It runs on your machine, indexes your code, and answers semantic queries.
 
 ### Trust Boundaries
 
@@ -12,19 +12,13 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 |----------|-------------|-------|
 | **Local user** | Trusted | You run cqs, you control it |
 | **Project files** | Trusted | Your code, indexed by your choice |
-| **MCP client** | Semi-trusted | Claude Code or other MCP clients |
-| **Network** | Untrusted | Only relevant with `--transport http` |
 
 ### What We Protect Against
 
-1. **Path traversal**: Queries cannot read files outside project root
-2. **Network exposure**: Localhost-only by default, requires explicit flag for network binding
-3. **DNS rebinding**: Origin validation rejects `localhost.evil.com` style attacks
-4. **Timing attacks**: API key validation uses constant-time comparison
-5. **Resource exhaustion**: Query length limits, request body limits
-6. **FTS injection**: Search queries sanitized before SQLite FTS5 MATCH operations
-7. **Database corruption**: `PRAGMA quick_check` on every database open
-8. **Reference config trust**: Warnings logged when reference configs override project settings
+1. **Path traversal**: Commands cannot read files outside project root
+2. **FTS injection**: Search queries sanitized before SQLite FTS5 MATCH operations
+3. **Database corruption**: `PRAGMA quick_check` on every database open
+4. **Reference config trust**: Warnings logged when reference configs override project settings
 
 ### What We Don't Protect Against
 
@@ -45,36 +39,6 @@ The only network activity is:
   - One-time download, cached in `~/.cache/huggingface/`
 
 No other network requests are made. Search, indexing, and all other operations are offline.
-
-## HTTP Transport Security
-
-When using `cqs serve --transport http`:
-
-| Control | Default | Override |
-|---------|---------|----------|
-| **Bind address** | `127.0.0.1` (localhost) | `--bind` + `--dangerously-allow-network-bind` |
-| **API key** | None required | `--api-key`, `--api-key-file`, or `CQS_API_KEY` env var |
-| **Origin validation** | Localhost only | Rejects external origins |
-| **Body limit** | 1MB | Prevents oversized payloads |
-| **Protocol version** | 2025-11-25 | MCP Streamable HTTP spec |
-
-**API key options:**
-- `--api-key SECRET` - Direct value (visible in process list)
-- `--api-key-file /path/to/file` - Read from file (recommended, keeps secret out of `ps aux`)
-- `CQS_API_KEY=SECRET` - Environment variable (visible in `/proc/*/environ`)
-
-The `--api-key-file` option uses `zeroize` to clear the key from memory when dropped.
-
-**When binding to network (`0.0.0.0`):**
-- API key becomes **required**
-- Use HTTPS via reverse proxy for production
-- Consider firewall rules to limit access
-
-**Origin validation accepts:**
-- `http://localhost`, `http://localhost:*`
-- `http://127.0.0.1`, `http://127.0.0.1:*`
-- `http://[::1]`, `http://[::1]:*` (IPv6 localhost)
-- HTTPS variants of above
 
 ## Filesystem Access
 
@@ -122,8 +86,6 @@ This blocks:
 - `../../../etc/passwd` - resolved and rejected
 - Absolute paths outside project - rejected
 - Symlinks pointing outside - resolved then rejected
-
-Reference names are validated to prevent path traversal: no `/`, `\`, or `..` allowed.
 
 ## Symlink Behavior
 

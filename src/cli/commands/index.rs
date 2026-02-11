@@ -237,7 +237,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 /// Creates an HNSW index containing chunk embeddings only.
 ///
 /// Notes are excluded from HNSW — they use brute-force search from SQLite
-/// so that notes added via MCP are immediately searchable without rebuild.
+/// so that notes are immediately searchable without rebuild.
 pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
     let chunk_count = store.chunk_count()? as usize;
     let _span = tracing::info_span!("build_hnsw_index", chunk_count).entered();

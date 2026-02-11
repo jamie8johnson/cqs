@@ -422,7 +422,7 @@ impl CagraIndex {
     /// SQLite to avoid double-buffering in memory.
     ///
     /// Notes are excluded — they use brute-force search from SQLite so that
-    /// notes added via MCP are immediately searchable without rebuild.
+    /// notes are immediately searchable without rebuild.
     pub fn build_from_store(store: &crate::Store) -> Result<Self, CagraError> {
         let chunk_count = store
             .chunk_count()

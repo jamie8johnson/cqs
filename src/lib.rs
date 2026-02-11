@@ -9,7 +9,7 @@
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
 //! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
-//! - **MCP integration**: Works with Claude Code and other AI assistants
+//! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
 //!
 //! ## Quick Start
 //!
@@ -35,24 +35,6 @@
 //! # }
 //! ```
 //!
-//! ## MCP Server
-//!
-//! Start the MCP server for AI assistant integration:
-//!
-//! ```no_run
-//! # fn example() -> anyhow::Result<()> {
-//! use std::path::PathBuf;
-//!
-//! // Stdio transport (for Claude Code)
-//! cqs::serve_stdio(PathBuf::from("."), false)?;  // false = CPU, true = GPU
-//!
-//! // HTTP transport with GPU embedding (None = no auth)
-//! // Note: serve_http blocks the current thread
-//! cqs::serve_http(".", "127.0.0.1", 3000, None, true)?;
-//! # Ok(())
-//! # }
-//! ```
-
 // Public library API modules
 pub mod audit;
 pub mod config;
@@ -60,7 +42,6 @@ pub mod embedder;
 pub mod hnsw;
 pub mod index;
 pub mod language;
-pub mod mcp;
 pub mod note;
 pub mod parser;
 pub mod reference;
@@ -83,11 +64,10 @@ pub(crate) mod structural;
 #[cfg(feature = "gpu-search")]
 pub mod cagra;
 
+pub use audit::parse_duration;
 pub use embedder::{Embedder, Embedding};
 pub use hnsw::HnswIndex;
 pub use index::{IndexResult, VectorIndex};
-pub use mcp::parse_duration;
-pub use mcp::{serve_http, serve_stdio};
 pub use note::{
     parse_notes, path_matches_mention, rewrite_notes_file, NoteEntry, NoteError, NoteFile,
     NOTES_HEADER,
@@ -168,7 +148,7 @@ use std::path::Path;
 
 /// Index notes into the database (embed and store)
 ///
-/// Shared logic used by both MCP server and CLI watch command.
+/// Shared logic used by CLI commands.
 /// Embeds notes using the provided embedder and stores them with sentiment.
 ///
 /// # Arguments
@@ -243,7 +223,7 @@ const MAX_FILE_SIZE: u64 = 1_048_576;
 /// Respects .gitignore, skips hidden files and large files (>1MB).
 /// Returns relative paths from the project root.
 ///
-/// Shared between CLI and MCP server for consistent file enumeration.
+/// Shared file enumeration for consistent indexing.
 pub fn enumerate_files(
     root: &Path,
     parser: &Parser,

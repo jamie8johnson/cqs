@@ -8,7 +8,7 @@ fn main() -> Result<()> {
     // Parse CLI first to check verbose flag
     let cli = cli::Cli::parse();
 
-    // Log to stderr to keep stdout clean for MCP JSON-RPC
+    // Log to stderr to keep stdout clean for structured output
     // --verbose flag sets debug level, otherwise use RUST_LOG or default to warn
     let filter = if cli.verbose {
         EnvFilter::new("debug")

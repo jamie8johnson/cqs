@@ -106,7 +106,7 @@ impl Note {
     /// Get the human-readable sentiment label for this note.
     ///
     /// Returns "WARNING" for negative, "PATTERN" for positive, "NOTE" for neutral.
-    /// Used by both CLI and MCP read commands for note injection headers.
+    /// Used by read commands for note injection headers.
     pub fn sentiment_label(&self) -> &'static str {
         if self.sentiment < SENTIMENT_NEGATIVE_THRESHOLD {
             "WARNING"
