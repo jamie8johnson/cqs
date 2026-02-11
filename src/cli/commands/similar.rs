@@ -92,7 +92,7 @@ pub(crate) fn cmd_similar(
     let results = store.search_filtered_with_index(
         &embedding,
         &filter,
-        limit + 1,
+        limit.saturating_add(1),
         threshold,
         index.as_deref(),
     )?;

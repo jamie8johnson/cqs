@@ -220,9 +220,9 @@ enum Commands {
         source: String,
         /// Target function name or file:function
         target: String,
-        /// Max search depth
-        #[arg(long, default_value = "10")]
-        max_depth: usize,
+        /// Max search depth (1-50)
+        #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
+        max_depth: u16,
         /// Output format: text, json, mermaid
         #[arg(long, default_value = "text")]
         format: String,
@@ -375,7 +375,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
         }) => {
             let fmt = if json { "json" } else { format.as_str() };
-            cmd_trace(&cli, source, target, max_depth, fmt)
+            cmd_trace(&cli, source, target, max_depth as usize, fmt)
         }
         Some(Commands::TestMap {
             ref name,

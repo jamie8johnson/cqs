@@ -37,7 +37,7 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     let mut refs = Vec::with_capacity(configs.len());
 
     for cfg in configs {
-        // Warn if reference path is a symlink (trust boundary)
+        // Reject symlink reference paths (trust boundary — could redirect to arbitrary locations)
         if cfg
             .path
             .symlink_metadata()
@@ -47,8 +47,9 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
             tracing::warn!(
                 name = cfg.name,
                 path = %cfg.path.display(),
-                "Reference path is a symlink — verify it points to a trusted location"
+                "Skipping reference: path is a symlink (use the real path instead)"
             );
+            continue;
         }
 
         let db_path = cfg.path.join("index.db");

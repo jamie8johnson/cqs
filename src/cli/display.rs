@@ -19,6 +19,17 @@ pub fn read_context_lines(
     line_end: u32,
     context: usize,
 ) -> Result<(Vec<String>, Vec<String>)> {
+    // Size guard: don't read files larger than 10MB for context display
+    const MAX_DISPLAY_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    if let Ok(meta) = std::fs::metadata(file) {
+        if meta.len() > MAX_DISPLAY_FILE_SIZE {
+            anyhow::bail!(
+                "File too large for context display: {}MB (limit {}MB)",
+                meta.len() / (1024 * 1024),
+                MAX_DISPLAY_FILE_SIZE / (1024 * 1024)
+            );
+        }
+    }
     let content = std::fs::read_to_string(file)
         .with_context(|| format!("Failed to read {}", file.display()))?;
     // .lines() handles \r\n, but trim trailing \r for bare-CR edge cases
