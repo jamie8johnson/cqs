@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.8] - 2026-02-11
+
+### Added
+- **SQLite integrity check**: `PRAGMA quick_check` on every `Store::open()` catches B-tree corruption early with a clear `StoreError::Corruption` error.
+- **Embedder session management**: `clear_session()` method releases ~500MB ONNX session memory during idle periods in long-running processes.
+- **75 new tests** across search, store, reference, CLI, and MCP modules. Total: 339 lib + 243 integration tests.
+- **FTS5 query sanitization**: Special characters and reserved words stripped before MATCH queries, preventing query syntax errors on user input.
+- **Cursor-based embedding pagination**: `EmbeddingBatchIterator` uses `WHERE rowid > N` instead of `LIMIT/OFFSET` for stable iteration under concurrent writes.
+- **GatherOptions builder API**: Fluent builder methods for configuring gather operations programmatically.
+- **Store schema downgrade guard**: `migrate()` returns `StoreError::SchemaNewerThanCq` when index was created by a newer version.
+- **WSL path detection**: Permission checks skip chmod on WSL-mounted filesystems where it silently fails.
+
+### Fixed
+- **125 audit fixes** from comprehensive 14-category code audit (9 PRs, P1-P3 priorities).
+- **Byte truncation panics**: `normalize_for_fts` and notes list use `floor_char_boundary` for safe multi-byte string truncation.
+- **Dead code false positives**: Trait impl detection checks parent chunk type instead of method body content.
+- **Search fairness**: `BoundedScoreHeap` uses `>=` for equal-score entries, preventing iteration-order bias.
+- **Gather determinism**: Tiebreak by name when scores are equal for reproducible results.
+- **CLI limit validation**: `--limit` clamped to 1..100 range.
+- **Config/project file locking**: Read-modify-write operations use file locks to prevent concurrent corruption.
+- **Atomic watch mode updates**: Delete-then-reinsert wrapped in transactions for crash safety.
+- **Pipeline transaction safety**: Chunk and call graph inserts in single transaction.
+- **HNSW cross-device rename**: Fallback to copy+delete when temp file is on different filesystem.
+- **Reference config trust boundary**: Warnings when reference config overrides project settings.
+- **Path traversal protection**: `tool_context` validates paths before file access.
+- **Protocol version truncation**: HTTP transport truncates version header to prevent abuse.
+- **Embedding dimension validation**: `Embedding::new()` validates vector dimensions on construction.
+- **Language::def() returns Option**: No more panics on unknown language variants.
+
+### Changed
+- **Shared library modules**: Extracted `resolve_target`, focused-read, note injection, impact analysis, and JSON serialization from duplicated CLI/MCP implementations into shared library code.
+- **Observability**: 15+ tracing spans added across search, reference, embedder, and store operations. `eprintln` calls migrated to structured `tracing` logging.
+- **Error handling**: Silent `.ok()` calls replaced with proper error propagation or degradation warnings.
+- **Performance**: Watch mode batch upserts, embedding cache (hash-based skip), `search_by_names_batch` batched FTS, `bytemuck` for embedding serialization, lazy dead code content loading.
+- **Dependencies**: `rand` 0.10, `cuvs` 26.2, `colored` 3.1.
+
 ## [0.9.7] - 2026-02-08
 
 ### Added

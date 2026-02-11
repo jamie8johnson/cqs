@@ -473,7 +473,7 @@ export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_
 Same as Linux, plus:
 - Requires NVIDIA GPU driver on Windows host
 - Add `/usr/lib/wsl/lib` to `LD_LIBRARY_PATH`
-- Tested working with RTX A6000, CUDA 13.0 driver, cuDNN 9.18
+- Tested working with RTX A6000, CUDA 13.1 driver, cuDNN 9.19
 
 ### Verify
 
