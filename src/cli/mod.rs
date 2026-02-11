@@ -92,6 +92,10 @@ pub struct Cli {
     #[arg(short = 'C', long)]
     context: Option<usize>,
 
+    /// Expand results with parent context (small-to-big retrieval)
+    #[arg(long)]
+    expand: bool,
+
     /// Suppress progress output
     #[arg(short, long)]
     quiet: bool,

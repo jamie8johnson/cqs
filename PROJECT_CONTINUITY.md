@@ -2,11 +2,9 @@
 
 ## Right Now
 
-**v0.10.1 released.** 2026-02-10.
+**v0.10.2 + Markdown RAG improvements.** 2026-02-11.
 
-All clean. Pipeline plan complete — 5 phases done, 7 issues closed (#256, #257, #269, #300, #302, #303, #344). Security hardening (10 fixes) merged. Published to crates.io and GitHub. Binary updated, cqs-watch running.
-
-Notes groomed (57 notes, 3 stale fixed, 1 removed, 3 added).
+Markdown RAG merged (PR #360): richer NL descriptions (1800 chars, was 200), cross-document link graph (file stem + anchor callees, bridge edges). 18 new tests. Release binary updated, index rebuilt with `--force`, cqs-watch running.
 
 ### Pending
 - `docs/notes.toml` — modified, not committed (groom changes)
@@ -38,7 +36,7 @@ Notes groomed (57 notes, 3 stale fixed, 1 removed, 3 added).
 
 ## Architecture
 
-- Version: 0.10.1
+- Version: 0.10.2
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)

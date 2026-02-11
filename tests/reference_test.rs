@@ -26,6 +26,7 @@ fn make_code_result(name: &str, score: f32) -> SearchResult {
             doc: None,
             line_start: 1,
             line_end: 1,
+            parent_id: None,
         },
         score,
     }

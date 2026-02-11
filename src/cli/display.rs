@@ -1,12 +1,13 @@
 //! Output and display functions for CLI results
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 
 use cqs::reference::TaggedResult;
-use cqs::store::UnifiedResult;
+use cqs::store::{ParentContext, UnifiedResult};
 
 /// Read context lines before and after a range in a file
 ///
@@ -76,6 +77,7 @@ pub fn display_unified_results(
     root: &Path,
     no_content: bool,
     context: Option<usize>,
+    parents: Option<&HashMap<String, ParentContext>>,
 ) -> Result<()> {
     for result in results {
         match result {
@@ -83,14 +85,20 @@ pub fn display_unified_results(
                 // Paths are stored relative; strip_prefix handles legacy absolute paths
                 let rel_path = r.chunk.file.strip_prefix(root).unwrap_or(&r.chunk.file);
 
+                let parent_tag = if r.chunk.parent_id.is_some() {
+                    " [has parent]"
+                } else {
+                    ""
+                };
                 let header = format!(
-                    "{}:{} ({} {}) [{}] [{:.2}]",
+                    "{}:{} ({} {}) [{}] [{:.2}]{}",
                     rel_path.display(),
                     r.chunk.line_start,
                     r.chunk.chunk_type,
                     r.chunk.name,
                     r.chunk.language,
-                    r.score
+                    r.score,
+                    parent_tag
                 );
 
                 println!("{}", header.cyan());
@@ -142,6 +150,25 @@ pub fn display_unified_results(
                         }
                     }
 
+                    // Show parent context if --expand
+                    if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
+                        let parent_header = format!(
+                            "  Parent context: {} ({}:{}-{})",
+                            parent.name,
+                            rel_path.display(),
+                            parent.line_start,
+                            parent.line_end,
+                        );
+                        println!("{}", parent_header.dimmed());
+                        println!("{}", "  ────────────────────────────────".dimmed());
+                        for line in parent.content.lines().take(20) {
+                            println!("{}", format!("  {}", line).dimmed());
+                        }
+                        if parent.content.lines().count() > 20 {
+                            println!("{}", "  ...".dimmed());
+                        }
+                    }
+
                     println!();
                 }
             }
@@ -182,23 +209,37 @@ pub fn display_unified_results(
 }
 
 /// Display unified results as JSON
-pub fn display_unified_results_json(results: &[UnifiedResult], query: &str) -> Result<()> {
+pub fn display_unified_results_json(
+    results: &[UnifiedResult],
+    query: &str,
+    parents: Option<&HashMap<String, ParentContext>>,
+) -> Result<()> {
     let json_results: Vec<_> = results
         .iter()
         .map(|r| match r {
-            UnifiedResult::Code(r) => serde_json::json!({
-                "type": "code",
-                // Normalize to forward slashes for consistent JSON output across platforms
-                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
-                "line_start": r.chunk.line_start,
-                "line_end": r.chunk.line_end,
-                "name": r.chunk.name,
-                "signature": r.chunk.signature,
-                "language": r.chunk.language.to_string(),
-                "chunk_type": r.chunk.chunk_type.to_string(),
-                "score": r.score,
-                "content": r.chunk.content,
-            }),
+            UnifiedResult::Code(r) => {
+                let mut obj = serde_json::json!({
+                    "type": "code",
+                    // Normalize to forward slashes for consistent JSON output across platforms
+                    "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                    "line_start": r.chunk.line_start,
+                    "line_end": r.chunk.line_end,
+                    "name": r.chunk.name,
+                    "signature": r.chunk.signature,
+                    "language": r.chunk.language.to_string(),
+                    "chunk_type": r.chunk.chunk_type.to_string(),
+                    "score": r.score,
+                    "content": r.chunk.content,
+                    "has_parent": r.chunk.parent_id.is_some(),
+                });
+                if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
+                    obj["parent_name"] = serde_json::json!(parent.name);
+                    obj["parent_content"] = serde_json::json!(parent.content);
+                    obj["parent_line_start"] = serde_json::json!(parent.line_start);
+                    obj["parent_line_end"] = serde_json::json!(parent.line_end);
+                }
+                obj
+            }
             UnifiedResult::Note(r) => serde_json::json!({
                 "type": "note",
                 "id": r.note.id,
@@ -226,6 +267,7 @@ pub fn display_tagged_results(
     root: &Path,
     no_content: bool,
     context: Option<usize>,
+    parents: Option<&HashMap<String, ParentContext>>,
 ) -> Result<()> {
     for tagged in results {
         match &tagged.result {
@@ -239,15 +281,21 @@ pub fn display_tagged_results(
                     .map(|s| format!("[{}] ", s))
                     .unwrap_or_default();
 
+                let parent_tag = if r.chunk.parent_id.is_some() {
+                    " [has parent]"
+                } else {
+                    ""
+                };
                 let header = format!(
-                    "{}{}:{} ({} {}) [{}] [{:.2}]",
+                    "{}{}:{} ({} {}) [{}] [{:.2}]{}",
                     source_prefix,
                     rel_path.display(),
                     r.chunk.line_start,
                     r.chunk.chunk_type,
                     r.chunk.name,
                     r.chunk.language,
-                    r.score
+                    r.score,
+                    parent_tag
                 );
 
                 println!("{}", header.cyan());
@@ -299,6 +347,25 @@ pub fn display_tagged_results(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    // Show parent context if --expand
+                    if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
+                        let parent_header = format!(
+                            "  Parent context: {} ({}:{}-{})",
+                            parent.name,
+                            rel_path.display(),
+                            parent.line_start,
+                            parent.line_end,
+                        );
+                        println!("{}", parent_header.dimmed());
+                        println!("{}", "  ────────────────────────────────".dimmed());
+                        for line in parent.content.lines().take(20) {
+                            println!("{}", format!("  {}", line).dimmed());
+                        }
+                        if parent.content.lines().count() > 20 {
+                            println!("{}", "  ...".dimmed());
                         }
                     }
 
@@ -371,23 +438,37 @@ pub fn display_similar_results_json(
 }
 
 /// Display tagged results as JSON (multi-index with source field)
-pub fn display_tagged_results_json(results: &[TaggedResult], query: &str) -> Result<()> {
+pub fn display_tagged_results_json(
+    results: &[TaggedResult],
+    query: &str,
+    parents: Option<&HashMap<String, ParentContext>>,
+) -> Result<()> {
     let json_results: Vec<_> = results
         .iter()
         .map(|t| {
             let mut json = match &t.result {
-                UnifiedResult::Code(r) => serde_json::json!({
-                    "type": "code",
-                    "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
-                    "line_start": r.chunk.line_start,
-                    "line_end": r.chunk.line_end,
-                    "name": r.chunk.name,
-                    "signature": r.chunk.signature,
-                    "language": r.chunk.language.to_string(),
-                    "chunk_type": r.chunk.chunk_type.to_string(),
-                    "score": r.score,
-                    "content": r.chunk.content,
-                }),
+                UnifiedResult::Code(r) => {
+                    let mut obj = serde_json::json!({
+                        "type": "code",
+                        "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                        "line_start": r.chunk.line_start,
+                        "line_end": r.chunk.line_end,
+                        "name": r.chunk.name,
+                        "signature": r.chunk.signature,
+                        "language": r.chunk.language.to_string(),
+                        "chunk_type": r.chunk.chunk_type.to_string(),
+                        "score": r.score,
+                        "content": r.chunk.content,
+                        "has_parent": r.chunk.parent_id.is_some(),
+                    });
+                    if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
+                        obj["parent_name"] = serde_json::json!(parent.name);
+                        obj["parent_content"] = serde_json::json!(parent.content);
+                        obj["parent_line_start"] = serde_json::json!(parent.line_start);
+                        obj["parent_line_end"] = serde_json::json!(parent.line_end);
+                    }
+                    obj
+                }
                 UnifiedResult::Note(r) => serde_json::json!({
                     "type": "note",
                     "id": r.note.id,

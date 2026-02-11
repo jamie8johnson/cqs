@@ -227,6 +227,7 @@ mod tests {
                 doc: None,
                 line_start: 1,
                 line_end: 1,
+                parent_id: None,
             },
             score,
         }
@@ -398,6 +399,7 @@ mod tests {
                 doc: None,
                 line_start: 1,
                 line_end: 1,
+                parent_id: None,
             },
             score: 0.9,
         })];
@@ -415,6 +417,7 @@ mod tests {
                     doc: None,
                     line_start: 1,
                     line_end: 1,
+                    parent_id: None,
                 },
                 score: 0.7,
             }],

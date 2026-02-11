@@ -277,14 +277,32 @@ pub(crate) fn run_index_pipeline(
                     match parser.parse_file(&abs_path) {
                         Ok(mut chunks) => {
                             // Rewrite paths to be relative for storage
+                            // Normalize path separators to forward slashes for cross-platform consistency
+                            let path_str = rel_path.to_string_lossy().replace('\\', "/");
+                            // Build a map of old IDs → new IDs for parent_id fixup
+                            let id_map: std::collections::HashMap<String, String> = chunks
+                                .iter()
+                                .map(|chunk| {
+                                    let hash_prefix =
+                                        chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
+                                    let new_id = format!(
+                                        "{}:{}:{}",
+                                        path_str, chunk.line_start, hash_prefix
+                                    );
+                                    (chunk.id.clone(), new_id)
+                                })
+                                .collect();
                             for chunk in &mut chunks {
                                 chunk.file = rel_path.clone();
-                                let hash_prefix =
-                                    chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
-                                // Normalize path separators to forward slashes for cross-platform consistency
-                                let path_str = rel_path.to_string_lossy().replace('\\', "/");
-                                chunk.id =
-                                    format!("{}:{}:{}", path_str, chunk.line_start, hash_prefix);
+                                if let Some(new_id) = id_map.get(&chunk.id) {
+                                    chunk.id = new_id.clone();
+                                }
+                                // Rewrite parent_id to match rewritten chunk IDs
+                                if let Some(ref pid) = chunk.parent_id {
+                                    if let Some(new_pid) = id_map.get(pid) {
+                                        chunk.parent_id = Some(new_pid.clone());
+                                    }
+                                }
                             }
                             chunks
                         }
