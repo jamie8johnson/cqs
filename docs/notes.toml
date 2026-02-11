@@ -199,7 +199,7 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Hybrid CAGRA startup: HNSW loads in 30ms (server ready), CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Eliminated blocking startup delay."
+text = "Hybrid CAGRA startup: HNSW loads in 30ms, CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Non-blocking startup pattern for GPU index builds."
 mentions = [
     "src/cagra.rs",
     "src/hnsw/mod.rs",
@@ -208,28 +208,10 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "HTTP server --bind flag with safety check. Non-localhost requires --dangerously-allow-network-bind + --api-key. API key uses constant-time comparison (subtle crate). --api-key-file for secure loading with zeroize."
-mentions = [
-    "src/cli/mod.rs",
-    "src/audit.rs",
-    "--bind",
-    "auth",
-]
-
-[[note]]
-sentiment = 0.5
 text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
 mentions = [
     "src/store/mod.rs",
     "Cargo.toml",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Inline validation code is hard to find via semantic search. Extract into named functions: validate_api_key, validate_origin_header, etc. 'validate bearer token' query now finds validate_api_key at 0.74 score."
-mentions = [
-    "src/audit.rs",
-    "discoverability",
 ]
 
 [[note]]
@@ -601,7 +583,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Embedder clear_session() releases ~500MB ONNX session memory for long-running processes. Session lazily re-initializes on next embed call. Use during idle periods in watch/serve."
+text = "Embedder clear_session() releases ~500MB ONNX session memory for long-running processes. Session lazily re-initializes on next embed call. Use during idle periods in watch mode."
 mentions = [
     "src/embedder.rs",
     "clear_session",
@@ -616,3 +598,11 @@ mentions = [
     "disk-space",
 ]
 
+[[note]]
+sentiment = 0.5
+text = "MCP removal was clean because all logic lived in library modules. The MCP layer was a pure JSON-RPC wrapper — deleting ~6200 lines required zero changes to core search/graph/impact code. Validates keeping business logic in src/*.rs with thin CLI wrappers."
+mentions = [
+    "src/lib.rs",
+    "src/audit.rs",
+    "PR #352",
+]
