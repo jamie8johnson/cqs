@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -133,6 +133,7 @@ src/
   audit.rs    - Audit mode persistence and duration parsing
   focused_read.rs - Focused read logic (extract type dependencies)
   impact.rs       - Impact analysis (callers + affected tests + diff-aware)
+  related.rs      - Co-occurrence analysis (shared callers, callees, types)
   diff_parse.rs   - Unified diff parser for impact-diff
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)

@@ -58,6 +58,7 @@ pub(crate) mod impact;
 pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod project;
+pub(crate) mod related;
 pub(crate) mod search;
 pub(crate) mod source;
 pub(crate) mod structural;
@@ -88,6 +89,7 @@ pub use impact::{
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use project::{search_across_projects, ProjectRegistry};
+pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use search::{parse_target, resolve_target};
 pub use structural::Pattern;
 

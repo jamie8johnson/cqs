@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Proactive staleness warnings**: Search, explain, gather, and context commands now warn on stderr when results come from stale files. Suppressed with `-q`.
 - **`cqs-stale` skill**: Agent skill for index freshness checks.
 - **`cqs context --compact`**: Signatures-only TOC with caller/callee counts per chunk. One command to see what's in a file and how connected each piece is. Uses batch SQL queries (no N+1).
+- **`cqs related <function>`**: Co-occurrence analysis — find functions that share callers, callees, or custom types with a target. Three dimensions for understanding what else needs review when touching code.
 
 ## [0.11.0] - 2026-02-11
 

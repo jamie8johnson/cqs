@@ -109,6 +109,7 @@ None.
    - `cqs-dead` — find dead code (functions with no callers)
    - `cqs-gc` — report index staleness
    - `cqs-stale` — check index freshness (files changed since last index)
+   - `cqs-related` — find functions related by shared callers, callees, or types
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 

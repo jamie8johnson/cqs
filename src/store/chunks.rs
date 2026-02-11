@@ -770,6 +770,59 @@ impl Store {
         })
     }
 
+    /// Get chunks by function name.
+    ///
+    /// Returns all chunks with the given name (may span multiple files).
+    /// Used by `cqs related` to resolve function names to file locations.
+    pub fn get_chunks_by_name(&self, name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                        line_start, line_end, parent_id
+                 FROM chunks WHERE name = ?1
+                 ORDER BY origin, line_start",
+            )
+            .bind(name)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .iter()
+                .map(|r| ChunkSummary::from(ChunkRow::from_row(r)))
+                .collect())
+        })
+    }
+
+    /// Find function/method chunks whose signature contains a type name.
+    ///
+    /// Uses `LIKE '%name%'` on the signature column. Used by `cqs related`
+    /// to find functions sharing custom types.
+    pub fn search_chunks_by_signature(
+        &self,
+        type_name: &str,
+    ) -> Result<Vec<ChunkSummary>, StoreError> {
+        self.rt.block_on(async {
+            let pattern = format!("%{}%", type_name);
+            let rows: Vec<_> = sqlx::query(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                        line_start, line_end, parent_id
+                 FROM chunks
+                 WHERE chunk_type IN ('function', 'method')
+                   AND signature LIKE ?1
+                 ORDER BY origin, line_start
+                 LIMIT 100",
+            )
+            .bind(&pattern)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .iter()
+                .map(|r| ChunkSummary::from(ChunkRow::from_row(r)))
+                .collect())
+        })
+    }
+
     /// Get a chunk with its embedding vector.
     ///
     /// Returns `Ok(None)` if the chunk doesn't exist or has a corrupt embedding.
