@@ -2,13 +2,22 @@
 
 ## Right Now
 
-**v0.10.2 + Markdown RAG improvements.** 2026-02-11.
+**v0.10.2 + Proactive hints & diff-aware impact.** 2026-02-11.
 
-Markdown RAG merged (PR #360): richer NL descriptions (1800 chars, was 200), cross-document link graph (file stem + anchor callees, bridge edges). 18 new tests. Release binary updated, index rebuilt with `--force`, cqs-watch running.
+Branch `feat/proactive-hints-diff-impact` — two features implemented, all tests passing, ready for PR:
+
+1. **Proactive hints** — `cqs explain` and `cqs read --focus` now show caller count + test count for functions. Skipped for non-function chunk types. JSON output includes `hints` object with `caller_count`, `test_count`, `no_callers`, `no_tests`.
+
+2. **`cqs impact-diff`** — new subcommand. Parses unified diff (from stdin or `git diff`), maps hunks to indexed functions, runs aggregated impact analysis. Shows changed functions, affected callers, and tests to re-run. Supports `--base`, `--stdin`, `--json`.
+
+New files: `src/diff_parse.rs`, `src/cli/commands/impact_diff.rs`, `tests/hints_test.rs`, `tests/impact_diff_test.rs`. Modified: `src/impact.rs`, `src/lib.rs`, `src/cli/mod.rs`, `src/cli/commands/mod.rs`, `src/cli/commands/explain.rs`, `src/cli/commands/read.rs`.
+
+Previous: PR #361 (table chunking + parent retrieval), PR #360 (Markdown RAG).
 
 ### Pending
 - `docs/notes.toml` — modified, not committed (groom changes)
 - `.cqs.toml` — untracked, has aveva-docs reference config
+- Need `cqs-impact-diff` skill file (optional)
 
 ### Known limitations
 - T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar

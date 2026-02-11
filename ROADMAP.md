@@ -356,17 +356,15 @@
 - [x] **`context --summary`** — `summary: true` returns chunk names/types + counts instead of full signatures/callers/callees.
 - [x] **Mermaid output for `cqs impact`** — `format: "mermaid"` renders caller graph as flowchart. Target highlighted, callers as boxes, tests as rhombuses.
 
+### Done (cont.)
+
+- [x] **Table-aware Markdown chunking** (PR #361) — tables extracted as separate chunks alongside sections. Row-wise splitting for large tables (>1500 chars) with headers preserved. Pipeline parent_id path normalization fix. 17 new tests.
+- [x] **Parent retrieval (small-to-big)** (PR #361) — `has_parent` field in search JSON/terminal output. `--expand` flag inlines parent section content for table and windowed chunks. Batch parent fetching via `get_chunks_by_ids()`.
+
 ### Planned
 
-- [ ] **Mermaid output for `cqs context`** — `format: "mermaid"` renders module dependency graph (external callers/callees, dependent files).
-- [ ] **Mermaid output for `cqs dead`** — `format: "mermaid"` renders orphan clusters. Visualize dead code relationships.
-- [ ] **Token cost estimates** — include approximate token count in tool responses so agents can budget context window usage
-- [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls
-- [ ] **Refactor assistant** — "move function X from A to B" → checklist of import changes, visibility fixes, re-exports needed
-- [ ] **Batch UX** — common batch patterns (e.g., "callers for these N functions") as named shortcuts instead of raw JSON construction
-- [ ] **Table-aware Markdown chunking** — keep tables as atomic chunks or split row-wise with headers preserved. Prevents incoherent embedding of partial table data.
-- [ ] **Parent retrieval (small-to-big)** — when a small chunk matches, also surface its parent section for context. Flag in search results indicating a parent is available.
-- [ ] **Hypothetical question embedding** — generate "what question does this chunk answer?" and embed alongside content. Aligns query embeddings (questions) with chunk embeddings (answers). One extra embedding per chunk at index time.
+- [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls. Saves 2 tool calls per function investigation.
+- [ ] **Diff-aware impact** — `cqs impact-diff` takes a git diff, returns affected callers + tests that need re-running. CI integration: run only relevant tests. Combines `git diff` parse → function extraction → call graph traversal.
 
 ## Parked
 
@@ -382,8 +380,6 @@
   - Protect code snippets and embeddings at rest
   - Password/key required on operations
   - Optional: integrate with system keyring
-- Request rate limiting (requests per second, not just body size)
-- Audit log for MCP operations
 
 ## 1.0 Release Criteria
 
@@ -391,17 +387,6 @@ Ship 1.0 when:
 
 - [ ] Schema stable for 1+ week of daily use (currently v10)
 - [ ] Used on 2+ different codebases without issues
-- [ ] MCP integration solid in daily Claude Code use
 - [ ] No known correctness bugs
 
 1.0 means: API stable, semver enforced, breaking changes = major bump.
-
-## Future: Agent Memory
-
-Ideas beyond code search — making cqs a knowledge layer across sessions.
-
-- [ ] **Diff-aware impact** — `cqs impact-diff` takes a git diff, returns affected callers + tests that need re-running. CI integration: run only relevant tests. Combines `git diff` parse → function extraction → call graph traversal.
-- [ ] **Navigational traces** — record what an agent searched for, read, and edited during a session. Future sessions can replay the trail instead of rediscovering it. "Last time someone asked about auth, they read these 5 files in this order."
-- [ ] **Cross-session search** — embed and index past conversation fragments (questions + answers). When an agent asks "how does X work?", surface the answer from last Tuesday's session, not just code.
-- [ ] **Session knowledge packages** — export "what the last agent learned" as a reference index. Not just notes — navigational knowledge, frequently-accessed files, decision context. Bootstrap cold starts on unfamiliar codebases.
-- [ ] **Auto-detected patterns** — track search→read→edit sequences across sessions. When a pattern repeats (e.g., "searching for error handling always leads to these 3 files"), pre-compute and suggest the path.

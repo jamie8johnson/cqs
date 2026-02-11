@@ -16,9 +16,9 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
-    cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_index, cmd_init, cmd_notes, cmd_project,
-    cmd_query, cmd_read, cmd_ref, cmd_similar, cmd_stats, cmd_test_map, cmd_trace, NotesCommand,
-    ProjectCommand, RefCommand,
+    cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
+    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_similar, cmd_stats, cmd_test_map, cmd_trace,
+    NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -218,6 +218,19 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Impact analysis from a git diff — what callers and tests are affected
+    #[command(name = "impact-diff")]
+    ImpactDiff {
+        /// Git ref to diff against (default: unstaged changes)
+        #[arg(long)]
+        base: Option<String>,
+        /// Read diff from stdin instead of running git
+        #[arg(long)]
+        stdin: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Trace call chain between two functions
     Trace {
         /// Source function name or file:function
@@ -371,6 +384,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             let fmt = if json { "json" } else { format.as_str() };
             cmd_impact(&cli, name, depth, fmt)
         }
+        Some(Commands::ImpactDiff {
+            ref base,
+            stdin,
+            json,
+        }) => cmd_impact_diff(&cli, base.as_deref(), stdin, json),
         Some(Commands::Trace {
             ref source,
             ref target,

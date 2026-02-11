@@ -68,6 +68,39 @@ pub fn analyze_impact(
     })
 }
 
+/// Lightweight caller + test coverage hints for a function.
+pub struct FunctionHints {
+    pub caller_count: usize,
+    pub test_count: usize,
+}
+
+/// Compute caller count and test count for a single function.
+///
+/// Pass `prefetched_caller_count` to avoid re-querying callers when the
+/// caller already has them (e.g., `explain` fetches callers before this).
+pub fn compute_hints(
+    store: &Store,
+    function_name: &str,
+    prefetched_caller_count: Option<usize>,
+) -> anyhow::Result<FunctionHints> {
+    let caller_count = match prefetched_caller_count {
+        Some(n) => n,
+        None => store.get_callers_full(function_name)?.len(),
+    };
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+    let ancestors = reverse_bfs(&graph, function_name, MAX_TEST_SEARCH_DEPTH);
+    let test_count = test_chunks
+        .iter()
+        .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
+        .count();
+
+    Ok(FunctionHints {
+        caller_count,
+        test_count,
+    })
+}
+
 /// Build caller info with call-site snippets
 fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<CallerInfo>> {
     let callers_ctx = store.get_callers_with_context(target_name)?;
@@ -185,7 +218,11 @@ fn find_transitive_callers(
 }
 
 /// Reverse BFS from a target node, returning all ancestors with their depths
-fn reverse_bfs(graph: &CallGraph, target: &str, max_depth: usize) -> HashMap<String, usize> {
+pub(crate) fn reverse_bfs(
+    graph: &CallGraph,
+    target: &str,
+    max_depth: usize,
+) -> HashMap<String, usize> {
     let mut ancestors: HashMap<String, usize> = HashMap::new();
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     ancestors.insert(target.to_string(), 0);
@@ -311,6 +348,216 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
     }
 
     lines.join("\n")
+}
+
+// ============ Diff-Aware Impact ============
+
+/// A function identified as changed by a diff
+pub struct ChangedFunction {
+    pub name: String,
+    pub file: String,
+    pub line_start: u32,
+}
+
+/// A test affected by diff changes, tracking which changed function leads to it
+pub struct DiffTestInfo {
+    pub name: String,
+    pub file: PathBuf,
+    pub line: u32,
+    pub via: String,
+    pub call_depth: usize,
+}
+
+/// Summary counts for diff impact
+pub struct DiffImpactSummary {
+    pub changed_count: usize,
+    pub caller_count: usize,
+    pub test_count: usize,
+}
+
+/// Aggregated impact result from a diff
+pub struct DiffImpactResult {
+    pub changed_functions: Vec<ChangedFunction>,
+    pub all_callers: Vec<CallerInfo>,
+    pub all_tests: Vec<DiffTestInfo>,
+    pub summary: DiffImpactSummary,
+}
+
+/// Map diff hunks to function names using the index.
+///
+/// For each hunk, finds chunks whose line range overlaps the hunk's range.
+/// Returns deduplicated function names.
+pub fn map_hunks_to_functions(
+    store: &Store,
+    hunks: &[crate::diff_parse::DiffHunk],
+) -> Vec<ChangedFunction> {
+    let mut seen = HashSet::new();
+    let mut functions = Vec::new();
+
+    // Group hunks by file
+    let mut by_file: HashMap<&str, Vec<&crate::diff_parse::DiffHunk>> = HashMap::new();
+    for hunk in hunks {
+        by_file.entry(&hunk.file).or_default().push(hunk);
+    }
+
+    for (file, file_hunks) in &by_file {
+        let chunks = match store.get_chunks_by_origin(file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        for hunk in file_hunks {
+            let hunk_end = hunk.start + hunk.count; // exclusive
+            for chunk in &chunks {
+                // Overlap: hunk [start, start+count) vs chunk [line_start, line_end]
+                if hunk.start <= chunk.line_end
+                    && hunk_end > chunk.line_start
+                    && seen.insert(chunk.name.clone())
+                {
+                    functions.push(ChangedFunction {
+                        name: chunk.name.clone(),
+                        file: file.to_string(),
+                        line_start: chunk.line_start,
+                    });
+                }
+            }
+        }
+    }
+
+    functions
+}
+
+/// Run impact analysis across all changed functions from a diff.
+///
+/// Fetches call graph and test chunks once, then analyzes each function.
+/// Results are deduplicated by name.
+pub fn analyze_diff_impact(
+    store: &Store,
+    changed: &[ChangedFunction],
+) -> anyhow::Result<DiffImpactResult> {
+    if changed.is_empty() {
+        return Ok(DiffImpactResult {
+            changed_functions: Vec::new(),
+            all_callers: Vec::new(),
+            all_tests: Vec::new(),
+            summary: DiffImpactSummary {
+                changed_count: 0,
+                caller_count: 0,
+                test_count: 0,
+            },
+        });
+    }
+
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+
+    let mut all_callers = Vec::new();
+    let mut all_tests = Vec::new();
+    let mut seen_callers = HashSet::new();
+    let mut seen_tests = HashSet::new();
+
+    for func in changed {
+        // Direct callers
+        if let Ok(callers_ctx) = store.get_callers_with_context(&func.name) {
+            for caller in &callers_ctx {
+                if seen_callers.insert(caller.name.clone()) {
+                    let snippet = extract_call_snippet(store, caller);
+                    all_callers.push(CallerInfo {
+                        name: caller.name.clone(),
+                        file: caller.file.clone(),
+                        line: caller.line,
+                        call_line: caller.call_line,
+                        snippet,
+                    });
+                }
+            }
+        }
+
+        // Affected tests via reverse BFS
+        let ancestors = reverse_bfs(&graph, &func.name, MAX_TEST_SEARCH_DEPTH);
+        for test in &test_chunks {
+            if let Some(&depth) = ancestors.get(&test.name) {
+                if depth > 0 && seen_tests.insert(test.name.clone()) {
+                    all_tests.push(DiffTestInfo {
+                        name: test.name.clone(),
+                        file: test.file.clone(),
+                        line: test.line_start,
+                        via: func.name.clone(),
+                        call_depth: depth,
+                    });
+                }
+            }
+        }
+    }
+
+    all_tests.sort_by_key(|t| t.call_depth);
+
+    let summary = DiffImpactSummary {
+        changed_count: changed.len(),
+        caller_count: all_callers.len(),
+        test_count: all_tests.len(),
+    };
+
+    Ok(DiffImpactResult {
+        changed_functions: Vec::new(), // filled by caller
+        all_callers,
+        all_tests,
+        summary,
+    })
+}
+
+/// Serialize diff impact result to JSON
+pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json::Value {
+    let changed_json: Vec<_> = result
+        .changed_functions
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "name": f.name,
+                "file": f.file,
+                "line_start": f.line_start,
+            })
+        })
+        .collect();
+
+    let callers_json: Vec<_> = result
+        .all_callers
+        .iter()
+        .map(|c| {
+            let rel = rel_path(&c.file, root);
+            serde_json::json!({
+                "name": c.name,
+                "file": rel,
+                "line": c.line,
+                "call_line": c.call_line,
+            })
+        })
+        .collect();
+
+    let tests_json: Vec<_> = result
+        .all_tests
+        .iter()
+        .map(|t| {
+            let rel = rel_path(&t.file, root);
+            serde_json::json!({
+                "name": t.name,
+                "file": rel,
+                "line": t.line,
+                "via": t.via,
+                "call_depth": t.call_depth,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "changed_functions": changed_json,
+        "callers": callers_json,
+        "tests": tests_json,
+        "summary": {
+            "changed_count": result.summary.changed_count,
+            "caller_count": result.summary.caller_count,
+            "test_count": result.summary.test_count,
+        }
+    })
 }
 
 // ============ Helpers ============
