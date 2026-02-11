@@ -312,7 +312,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Multi-index architecture: each reference gets its own Store + HNSW. Score-based merge with weight multiplier (default 0.8). Sequential search is fine for 2-3 refs. Parallel search tracked in #257 for when 5+ refs needed."
+text = "Multi-index architecture: each reference gets its own Store + HNSW. Score-based merge with weight multiplier (default 0.8). Parallel search via rayon (PR #354). Cross-store dedup via blake3 content hash."
 mentions = [
     "src/reference.rs",
     "merge_results",
@@ -423,7 +423,7 @@ mentions = [
 sentiment = 0.5
 text = "CLI trace/impact/gather tools combine search + call graph traversal to collapse 5-10 file reads into one semantic operation. Saves tokens via server-side context assembly. Design applies to any AI consumer that values efficiency."
 mentions = [
-    "src/trace.rs",
+    "src/cli/commands/trace.rs",
     "src/impact.rs",
     "src/gather.rs",
 ]
@@ -557,14 +557,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 1.0
-text = "v0.9.7 audit: 14 categories / 3 batches → 161 raw → 144 unique findings. 125 fixed across 9 PRs (#333-#343). 5 P4 deferred as issues. 11 P3 deferred (lower ROI). 339 lib tests, 0 warnings, clippy clean."
-mentions = [
-    "docs/audit-triage.md",
-    "docs/audit-findings.md",
-]
-
-[[note]]
 sentiment = 0.5
 text = "SQLite integrity check on every Store::open via PRAGMA quick_check. Catches B-tree corruption early with StoreError::Corruption. Added in PR #343 (DS12)."
 mentions = [
@@ -576,7 +568,7 @@ mentions = [
 sentiment = -0.5
 text = "FTS5 queries need sanitization — special chars (quotes, parens, +, -, ^, :) and reserved words (OR, AND, NOT, NEAR) cause MATCH failures. sanitize_fts_query() strips them before all FTS calls."
 mentions = [
-    "src/store/mod.rs",
+    "src/store/chunks.rs",
     "FTS5",
     "sanitize_fts_query",
 ]
@@ -605,4 +597,28 @@ mentions = [
     "src/lib.rs",
     "src/audit.rs",
     "PR #352",
+]
+
+[[note]]
+sentiment = -0.5
+text = "HNSW checksum file is now mandatory — missing checksum returns error, not warning. Bincode deserializes unverified bytes, so loading without checksum = trusting arbitrary data. Always regenerate with cqs index --force if checksum missing."
+mentions = [
+    "src/hnsw/persist.rs",
+    "blake3",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Brute-force search uses cursor batching (5000 rows, WHERE rowid > N) not fetch_all(). Peak memory O(batch) not O(total). Same pattern as EmbeddingBatchIterator in store/chunks.rs. futures crate was removed so can't use sqlx streaming."
+mentions = [
+    "src/search.rs",
+    "brute-force",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Pre-audit security sweep found 10 issues in code that passed 3 prior audits. Different lens (attacker mindset vs code quality) catches different bugs. Run security-focused review separately from quality audits."
+mentions = [
+    "audit",
+    "security",
 ]
