@@ -43,6 +43,8 @@ pub struct McpServer {
     /// Lazily initialized embedder (thread-safe via OnceLock)
     pub(crate) embedder: OnceLock<Embedder>,
     pub(crate) project_root: PathBuf,
+    /// Resolved `.cqs` index directory
+    pub(crate) cqs_dir: PathBuf,
     /// Vector index for O(log n) search (CAGRA or HNSW)
     /// Wrapped in Arc<RwLock> to allow background CAGRA upgrade
     pub(crate) index: Arc<RwLock<Option<Box<dyn VectorIndex>>>>,
@@ -52,6 +54,8 @@ pub struct McpServer {
     pub(crate) audit_mode: Mutex<AuditMode>,
     /// Reference indexes for multi-index search (hot-reloaded on config change)
     pub(crate) references: RwLock<ReferenceState>,
+    /// mtime of `index.hnsw.checksum` at last HNSW load (for staleness detection)
+    hnsw_mtime: Mutex<Option<SystemTime>>,
 }
 
 impl McpServer {
@@ -73,6 +77,7 @@ impl McpServer {
 
         // Load HNSW first (fast) - wrap in Arc<RwLock> for background upgrade
         let hnsw = HnswIndex::try_load(&cqs_dir);
+        let hnsw_mtime = hnsw_checksum_mtime(&cqs_dir);
         let index = Arc::new(RwLock::new(hnsw));
 
         // Spawn background CAGRA build if GPU available.
@@ -97,6 +102,7 @@ impl McpServer {
             store,
             embedder: OnceLock::new(),
             project_root: project_root.to_path_buf(),
+            cqs_dir,
             index,
             use_gpu,
             audit_mode: Mutex::new(AuditMode::default()),
@@ -105,6 +111,7 @@ impl McpServer {
                 project_config_mtime,
                 user_config_mtime,
             }),
+            hnsw_mtime: Mutex::new(hnsw_mtime),
         })
     }
 
@@ -325,6 +332,58 @@ impl McpServer {
             e.into_inner()
         })
     }
+
+    /// Reload HNSW index from disk if the checksum file has been updated.
+    ///
+    /// Watch mode rebuilds HNSW after each batch of file changes. This method
+    /// detects the new files via mtime on `index.hnsw.checksum` (written last
+    /// during save) and swaps in the fresh index.
+    ///
+    /// Cost: one `fs::metadata()` stat call per invocation (~microseconds).
+    ///
+    /// Note: if GPU CAGRA was active, this replaces it with CPU HNSW. Freshness
+    /// takes priority over GPU acceleration (~12ms HNSW vs ~6ms CAGRA).
+    pub(crate) fn maybe_reload_hnsw(&self) {
+        let current_mtime = hnsw_checksum_mtime(&self.cqs_dir);
+
+        // Fast path: check if mtime changed
+        {
+            let stored = self.hnsw_mtime.lock().unwrap_or_else(|e| e.into_inner());
+            if *stored == current_mtime {
+                return;
+            }
+        }
+
+        // Slow path: mtime changed, reload
+        tracing::info!("HNSW index files changed on disk, reloading");
+        let new_index = HnswIndex::try_load(&self.cqs_dir);
+
+        if let Some(ref idx) = new_index {
+            tracing::info!("HNSW index reloaded ({} vectors)", idx.len());
+        }
+
+        // Swap index under write lock
+        {
+            let mut guard = self.index.write().unwrap_or_else(|e| e.into_inner());
+            *guard = new_index;
+        }
+
+        // Update stored mtime
+        {
+            let mut stored = self.hnsw_mtime.lock().unwrap_or_else(|e| e.into_inner());
+            *stored = current_mtime;
+        }
+    }
+}
+
+/// Get mtime of the HNSW checksum file (sentinel for index freshness).
+///
+/// The checksum file is written last during `HnswIndex::save()`, so its mtime
+/// indicates when the HNSW index was last fully written to disk.
+fn hnsw_checksum_mtime(cqs_dir: &Path) -> Option<SystemTime> {
+    std::fs::metadata(cqs_dir.join("index.hnsw.checksum"))
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 /// Get mtimes of both config files (project `.cqs.toml` and user config).

@@ -92,6 +92,9 @@ pub fn tool_similar(server: &McpServer, arguments: Value) -> Result<Value> {
         note_only: false,
     };
 
+    // Reload HNSW if watch mode has rebuilt it since last search
+    server.maybe_reload_hnsw();
+
     let index_guard = server.index.read().unwrap_or_else(|e| {
         tracing::debug!("Index RwLock poisoned, recovering");
         e.into_inner()

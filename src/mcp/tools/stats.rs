@@ -48,6 +48,9 @@ pub fn tool_stats(server: &McpServer) -> Result<Value> {
         "not built".to_string()
     };
 
+    // Reload HNSW if watch mode has rebuilt it
+    server.maybe_reload_hnsw();
+
     // Check active index type (HNSW or CAGRA)
     let active_index = {
         let guard = server.index.read().unwrap_or_else(|e| {
