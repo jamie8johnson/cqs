@@ -28,6 +28,9 @@ pub enum StoreError {
     #[error("System time error: file mtime before Unix epoch")]
     SystemTime,
     #[error("Runtime error: {0}")]
+    /// Catch-all for errors that don't fit other variants: tokio runtime init,
+    /// JSON serialization failures, and query resolution errors.
+    /// No caller currently matches on this variant specifically.
     Runtime(String),
     #[error("Schema version mismatch in {0}: index is v{1}, cqs expects v{2}. Run 'cqs index --force' to rebuild.")]
     SchemaMismatch(String, i32, i32),
@@ -352,10 +355,15 @@ impl UnifiedResult {
     }
 }
 
-/// Filter and scoring options for search
+/// Filter and scoring options for search.
+///
+/// Fields are public for direct construction via struct literals.
+/// Builder methods ([`SearchFilter::new()`], [`SearchFilter::with_query()`])
+/// are provided as convenience helpers for common patterns — both styles
+/// are supported and equivalent.
 ///
 /// All fields are optional. Unset filters match all chunks.
-/// Use `validate()` to check constraints before searching.
+/// Use [`SearchFilter::validate()`] to check constraints before searching.
 pub struct SearchFilter {
     /// Filter by programming language(s)
     pub languages: Option<Vec<Language>>,

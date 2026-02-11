@@ -76,6 +76,87 @@ fn test_note_stats_empty() {
     assert_eq!(ns.patterns, 0);
 }
 
+// ===== TC7: Note round-trip test =====
+
+#[test]
+fn test_note_round_trip() {
+    let store = TestStore::new();
+
+    // Create notes with specific text, sentiment, and mentions
+    let note1 = Note {
+        id: "rt1".to_string(),
+        text: "Watch out for race conditions in indexer".to_string(),
+        sentiment: -0.5,
+        mentions: vec![
+            "src/indexer.rs".to_string(),
+            "Store::upsert_chunk".to_string(),
+        ],
+    };
+    let note2 = Note {
+        id: "rt2".to_string(),
+        text: "BFS expansion pattern works well for gather".to_string(),
+        sentiment: 0.5,
+        mentions: vec!["src/gather.rs".to_string()],
+    };
+
+    let emb1 = mock_embedding(1.0);
+    let emb2 = mock_embedding(2.0);
+
+    let count = store
+        .upsert_notes_batch(
+            &[(note1, emb1.clone()), (note2, emb2.clone())],
+            &PathBuf::from("docs/notes.toml"),
+            99999,
+        )
+        .unwrap();
+    assert_eq!(count, 2, "Should have upserted 2 notes");
+
+    // Verify count
+    let note_count = store.note_count().unwrap();
+    assert_eq!(note_count, 2, "Store should contain 2 notes");
+
+    // Verify stats reflect sentiments correctly
+    let stats = store.note_stats().unwrap();
+    assert_eq!(stats.total, 2);
+    assert_eq!(stats.warnings, 1, "-0.5 should be a warning");
+    assert_eq!(stats.patterns, 1, "0.5 should be a pattern");
+
+    // Verify round-trip via search - search with emb1 should find note1 with high score
+    let results = store.search_notes(&emb1, 10, 0.0).unwrap();
+    assert_eq!(results.len(), 2, "Should find both notes");
+
+    // The top result should be the one matching emb1's direction
+    let top = &results[0];
+    assert_eq!(top.note.id, "rt1");
+    assert_eq!(top.note.text, "Watch out for race conditions in indexer");
+    assert!(
+        (top.note.sentiment - (-0.5)).abs() < f32::EPSILON,
+        "Sentiment should survive round-trip"
+    );
+    assert_eq!(
+        top.note.mentions,
+        vec!["src/indexer.rs", "Store::upsert_chunk"],
+        "Mentions should survive round-trip"
+    );
+
+    // Verify second note too
+    let second = &results[1];
+    assert_eq!(second.note.id, "rt2");
+    assert_eq!(
+        second.note.text,
+        "BFS expansion pattern works well for gather"
+    );
+    assert!(
+        (second.note.sentiment - 0.5).abs() < f32::EPSILON,
+        "Sentiment should survive round-trip"
+    );
+    assert_eq!(
+        second.note.mentions,
+        vec!["src/gather.rs"],
+        "Mentions should survive round-trip"
+    );
+}
+
 #[test]
 fn test_note_stats_sentiments() {
     let store = TestStore::new();

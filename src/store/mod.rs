@@ -95,6 +95,30 @@ use helpers::{clamp_line_number, ChunkRow};
 
 use crate::nl::normalize_for_fts;
 
+/// Defense-in-depth sanitization for FTS5 query strings.
+///
+/// Strips or escapes FTS5 special characters that could alter query semantics.
+/// Applied after `normalize_for_fts()` as an extra safety layer — if `normalize_for_fts`
+/// ever changes to allow characters through, this prevents FTS5 injection.
+///
+/// FTS5 special characters: `"`, `*`, `(`, `)`, `+`, `-`, `^`, `:`, `NEAR`
+/// FTS5 boolean operators: `OR`, `AND`, `NOT` (case-sensitive in FTS5)
+pub(crate) fn sanitize_fts_query(s: &str) -> String {
+    // Remove FTS5 special characters
+    let cleaned: String = s
+        .chars()
+        .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'))
+        .collect();
+
+    // Remove FTS5 boolean operators as standalone words.
+    // Split on whitespace, filter out operators, rejoin.
+    cleaned
+        .split_whitespace()
+        .filter(|word| !matches!(*word, "OR" | "AND" | "NOT" | "NEAR"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Thread-safe SQLite store for chunks and embeddings
 ///
 /// Uses sqlx connection pooling for concurrent reads and WAL mode
@@ -492,7 +516,7 @@ impl Store {
     ///   HNSW/CAGRA vector index for O(log n) candidate retrieval instead of brute force.
     ///   Best for: Large indexes (>5k chunks) where brute force is slow.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
-        let normalized_query = normalize_for_fts(query);
+        let normalized_query = sanitize_fts_query(&normalize_for_fts(query));
         if normalized_query.is_empty() {
             tracing::debug!(
                 original_query = %query,
@@ -523,7 +547,7 @@ impl Store {
         name: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>, StoreError> {
-        let normalized = normalize_for_fts(name);
+        let normalized = sanitize_fts_query(&normalize_for_fts(name));
         if normalized.is_empty() {
             return Ok(vec![]);
         }

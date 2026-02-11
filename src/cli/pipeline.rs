@@ -569,35 +569,40 @@ pub(crate) fn run_index_pipeline(
             })
             .collect();
 
+        let batch_count = batch.chunk_embeddings.len();
+
         // Atomically upsert chunks + calls in a single transaction per file group
         if batch.file_mtimes.len() <= 1 {
             // Fast path: single file or no mtimes
             let mtime = batch.file_mtimes.values().next().copied();
             store.upsert_chunks_and_calls(&batch.chunk_embeddings, mtime, &all_calls)?;
         } else {
-            // Multi-file batch: group by file and upsert with correct per-file mtime
-            let mut by_file: std::collections::HashMap<&std::path::Path, Vec<&(Chunk, Embedding)>> =
+            // Multi-file batch: group by file and upsert with correct per-file mtime.
+            // Consume chunk_embeddings to avoid cloning (Chunk + Embedding are large).
+            let mut by_file: std::collections::HashMap<PathBuf, Vec<(Chunk, Embedding)>> =
                 std::collections::HashMap::new();
-            for pair in &batch.chunk_embeddings {
-                by_file.entry(pair.0.file.as_path()).or_default().push(pair);
+            for (chunk, embedding) in batch.chunk_embeddings {
+                by_file
+                    .entry(chunk.file.clone())
+                    .or_default()
+                    .push((chunk, embedding));
             }
 
             // Build a set of chunk IDs per file for filtering calls
-            for (file, pairs) in by_file {
-                let mtime = batch.file_mtimes.get(file).copied();
-                let owned: Vec<_> = pairs.into_iter().cloned().collect();
+            for (file, pairs) in &by_file {
+                let mtime = batch.file_mtimes.get(file.as_path()).copied();
                 let chunk_ids: std::collections::HashSet<&str> =
-                    owned.iter().map(|(c, _)| c.id.as_str()).collect();
+                    pairs.iter().map(|(c, _)| c.id.as_str()).collect();
                 let file_calls: Vec<_> = all_calls
                     .iter()
                     .filter(|(id, _)| chunk_ids.contains(id.as_str()))
                     .cloned()
                     .collect();
-                store.upsert_chunks_and_calls(&owned, mtime, &file_calls)?;
+                store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
             }
         }
 
-        total_embedded += batch.chunk_embeddings.len();
+        total_embedded += batch_count;
         total_cached += batch.cached_count;
 
         let parsed = parsed_count.load(Ordering::Relaxed);

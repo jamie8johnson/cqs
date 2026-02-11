@@ -386,3 +386,204 @@ fn test_callees_json_output() {
     assert!(parsed.is_object(), "callees --json should return object");
     assert!(parsed["function"].is_string(), "Should have function field");
 }
+
+// =============================================================================
+// TC10: GC command tests
+// =============================================================================
+
+#[test]
+fn test_gc_requires_index() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["gc"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Index")));
+}
+
+#[test]
+#[serial]
+fn test_gc_json_on_clean_index() {
+    let dir = setup_project();
+
+    // Initialize and index
+    cqs()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    cqs()
+        .args(["index"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // GC on a fresh index should find nothing to prune
+    let output = cqs()
+        .args(["gc", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
+
+    assert_eq!(
+        parsed["pruned_chunks"], 0,
+        "Fresh index should have 0 pruned chunks"
+    );
+    assert_eq!(
+        parsed["pruned_calls"], 0,
+        "Fresh index should have 0 pruned calls"
+    );
+    assert_eq!(parsed["hnsw_rebuilt"], false, "HNSW should not be rebuilt");
+}
+
+#[test]
+#[serial]
+fn test_gc_prunes_missing_files() {
+    let dir = setup_project();
+
+    // Initialize and index
+    cqs()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    cqs()
+        .args(["index"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // Delete the source file to make chunks stale
+    fs::remove_file(dir.path().join("src/lib.rs")).expect("Failed to remove file");
+
+    // GC should prune the missing file's chunks
+    let output = cqs()
+        .args(["gc", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
+
+    assert!(
+        parsed["pruned_chunks"].as_u64().unwrap() > 0,
+        "Should prune chunks for missing file"
+    );
+    assert_eq!(
+        parsed["missing_files"].as_u64().unwrap(),
+        1,
+        "Should report 1 missing file"
+    );
+}
+
+// =============================================================================
+// TC11: Dead code command tests
+// =============================================================================
+
+#[test]
+fn test_dead_requires_index() {
+    let dir = TempDir::new().expect("Failed to create temp dir");
+
+    cqs()
+        .args(["dead"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found").or(predicate::str::contains("Index")));
+}
+
+#[test]
+#[serial]
+fn test_dead_json_output() {
+    let dir = setup_project();
+
+    // Initialize and index
+    cqs()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    cqs()
+        .args(["index"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // dead --json should return valid JSON
+    let output = cqs()
+        .args(["dead", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
+
+    // Should have dead and possibly_dead_pub arrays
+    assert!(
+        parsed["dead"].is_array(),
+        "dead --json should have 'dead' array, got: {}",
+        parsed
+    );
+    assert!(
+        parsed["possibly_dead_pub"].is_array(),
+        "dead --json should have 'possibly_dead_pub' array, got: {}",
+        parsed
+    );
+
+    // Our test project has two pub functions (add, subtract) with no callers
+    // They should appear in possibly_dead_pub (since they're public)
+    let possibly_dead = parsed["possibly_dead_pub"].as_array().unwrap();
+    assert!(
+        !possibly_dead.is_empty(),
+        "Public functions with no callers should be in possibly_dead_pub"
+    );
+}
+
+#[test]
+#[serial]
+fn test_dead_include_pub_flag() {
+    let dir = setup_project();
+
+    cqs()
+        .args(["init"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    cqs()
+        .args(["index"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    // dead --include-pub --json should also succeed
+    let output = cqs()
+        .args(["dead", "--include-pub", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON output: {} — raw: {}", e, stdout));
+    assert!(parsed["dead"].is_array(), "Should have 'dead' array");
+    // With --include-pub, public functions should move to the dead list
+    let dead = parsed["dead"].as_array().unwrap();
+    assert!(
+        !dead.is_empty(),
+        "With --include-pub, public functions should be in 'dead' list"
+    );
+}
