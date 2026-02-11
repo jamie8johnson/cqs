@@ -68,6 +68,8 @@ None.
 ```markdown
 # Roadmap
 
+<!-- When this grows past ~100 lines, archive completed phases to docs/roadmap-archive.md -->
+
 ## Current Phase
 
 ### Done
@@ -182,6 +184,9 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs notes add/update/remove` — manage project notes.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
+
+Use `--no-stale-check` to skip per-file staleness checks (useful on NFS/network mounts).
+Set `stale_check = false` in `.cqs.toml` to make it permanent.
 
 ## Audit Mode
 
