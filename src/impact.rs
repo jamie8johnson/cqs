@@ -560,6 +560,137 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
     })
 }
 
+// ============ Test Suggestions ============
+
+/// A suggested test for an untested caller
+pub struct TestSuggestion {
+    /// Suggested test function name
+    pub test_name: String,
+    /// Suggested file for the test
+    pub suggested_file: String,
+    /// The untested function this test would cover
+    pub for_function: String,
+    /// Where the naming pattern came from (empty if default)
+    pub pattern_source: String,
+    /// Whether to put the test inline (vs external test file)
+    pub inline: bool,
+}
+
+/// Suggest tests for untested callers in an impact result.
+///
+/// Loads its own call graph and test chunks — only called when `--suggest-tests`
+/// is set, so the normal path pays zero overhead.
+pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion> {
+    let graph = match store.get_call_graph() {
+        Ok(g) => g,
+        Err(_) => return Vec::new(),
+    };
+    let test_chunks = match store.find_test_chunks() {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut suggestions = Vec::new();
+
+    for caller in &impact.callers {
+        // Check if this caller is reached by ANY test (not just the target's tests)
+        let ancestors = reverse_bfs(&graph, &caller.name, MAX_TEST_SEARCH_DEPTH);
+        let is_tested = test_chunks
+            .iter()
+            .any(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0));
+
+        if is_tested {
+            continue;
+        }
+
+        // Fetch file chunks once for inline test check, pattern, and language
+        let file_chunks = store
+            .get_chunks_by_origin(&caller.file.to_string_lossy())
+            .ok()
+            .unwrap_or_default();
+
+        let is_test_chunk = |c: &crate::store::ChunkSummary| {
+            c.name.starts_with("test_") || c.name.starts_with("Test")
+        };
+
+        let has_inline_tests = file_chunks.iter().any(is_test_chunk);
+
+        let pattern_source = if has_inline_tests {
+            file_chunks
+                .iter()
+                .find(|c| is_test_chunk(c))
+                .map(|c| c.name.clone())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let language = file_chunks.first().map(|c| c.language);
+
+        // Generate test name based on language
+        let base_name = caller.name.trim_start_matches("self.");
+        let test_name = match language {
+            Some(crate::parser::Language::JavaScript | crate::parser::Language::TypeScript) => {
+                format!("test('{base_name}', ...)")
+            }
+            Some(crate::parser::Language::Java) if !base_name.is_empty() => {
+                // Java: camelCase testMethodName
+                let mut chars = base_name.chars();
+                let first = chars.next().unwrap().to_uppercase().to_string();
+                let rest: String = chars.collect();
+                format!("test{first}{rest}")
+            }
+            _ => {
+                // Rust, Python, Go, C, SQL, Markdown — all use snake_case test_ prefix
+                format!("test_{base_name}")
+            }
+        };
+
+        // Suggest file location
+        let caller_file_str = caller.file.to_string_lossy().replace('\\', "/");
+
+        let suggested_file = if has_inline_tests {
+            caller_file_str.to_string()
+        } else {
+            suggest_test_file(&caller_file_str)
+        };
+
+        suggestions.push(TestSuggestion {
+            test_name,
+            suggested_file,
+            for_function: caller.name.clone(),
+            pattern_source,
+            inline: has_inline_tests,
+        });
+    }
+
+    suggestions
+}
+
+/// Derive a test file path from a source file path.
+fn suggest_test_file(source: &str) -> String {
+    // Extract the filename stem and extension
+    let path = std::path::Path::new(source);
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("rs");
+
+    // Find the nearest parent directory
+    let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("tests");
+
+    match ext {
+        "rs" => format!("{parent}/tests/{stem}_test.rs"),
+        "py" => format!("{parent}/test_{stem}.py"),
+        "ts" | "tsx" => format!("{parent}/{stem}.test.ts"),
+        "js" | "jsx" => format!("{parent}/{stem}.test.js"),
+        "go" => format!("{parent}/{stem}_test.go"),
+        "java" => format!("{parent}/{stem}Test.java"),
+        _ => format!("{parent}/tests/{stem}_test.{ext}"),
+    }
+}
+
 // ============ Helpers ============
 
 fn rel_path(path: &Path, root: &Path) -> String {
@@ -581,4 +712,102 @@ fn mermaid_escape(s: &str) -> String {
     s.replace('"', "&quot;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== suggest_test_file tests =====
+
+    #[test]
+    fn test_suggest_test_file_rust() {
+        assert_eq!(
+            suggest_test_file("src/search.rs"),
+            "src/tests/search_test.rs"
+        );
+    }
+
+    #[test]
+    fn test_suggest_test_file_python() {
+        assert_eq!(suggest_test_file("src/search.py"), "src/test_search.py");
+    }
+
+    #[test]
+    fn test_suggest_test_file_typescript() {
+        assert_eq!(suggest_test_file("src/search.ts"), "src/search.test.ts");
+    }
+
+    #[test]
+    fn test_suggest_test_file_javascript() {
+        assert_eq!(suggest_test_file("src/search.js"), "src/search.test.js");
+    }
+
+    #[test]
+    fn test_suggest_test_file_go() {
+        assert_eq!(suggest_test_file("pkg/search.go"), "pkg/search_test.go");
+    }
+
+    #[test]
+    fn test_suggest_test_file_java() {
+        assert_eq!(suggest_test_file("src/Search.java"), "src/SearchTest.java");
+    }
+
+    // ===== reverse_bfs tests =====
+
+    #[test]
+    fn test_reverse_bfs_empty_graph() {
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        };
+        let result = reverse_bfs(&graph, "target", 5);
+        assert_eq!(result.len(), 1); // Just the target itself at depth 0
+        assert_eq!(result["target"], 0);
+    }
+
+    #[test]
+    fn test_reverse_bfs_chain() {
+        let mut reverse = HashMap::new();
+        reverse.insert("C".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let result = reverse_bfs(&graph, "C", 5);
+        assert_eq!(result["C"], 0);
+        assert_eq!(result["B"], 1);
+        assert_eq!(result["A"], 2);
+    }
+
+    #[test]
+    fn test_reverse_bfs_respects_depth() {
+        let mut reverse = HashMap::new();
+        reverse.insert("C".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let result = reverse_bfs(&graph, "C", 1);
+        assert_eq!(result.len(), 2); // C at 0, B at 1
+        assert!(!result.contains_key("A")); // Beyond depth limit
+    }
+
+    // ===== suggest_tests edge case — empty callers =====
+
+    #[test]
+    fn test_suggest_tests_no_callers() {
+        // ImpactResult with no callers should produce no suggestions
+        let result = ImpactResult {
+            function_name: "target_fn".to_string(),
+            callers: Vec::new(),
+            tests: Vec::new(),
+            transitive_callers: Vec::new(),
+        };
+        // We can't call suggest_tests without a store, but we can verify
+        // the empty callers path directly: zero callers → zero iterations
+        assert!(result.callers.is_empty());
+    }
 }

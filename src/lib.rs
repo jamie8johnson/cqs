@@ -84,8 +84,8 @@ pub use focused_read::extract_type_names;
 pub use gather::{gather, GatherDirection, GatherOptions};
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, diff_impact_to_json, impact_to_json,
-    impact_to_mermaid, map_hunks_to_functions, ChangedFunction, DiffImpactResult, FunctionHints,
-    ImpactResult,
+    impact_to_mermaid, map_hunks_to_functions, suggest_tests, ChangedFunction, DiffImpactResult,
+    FunctionHints, ImpactResult, TestSuggestion,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use project::{search_across_projects, ProjectRegistry};

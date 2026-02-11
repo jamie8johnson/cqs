@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, Store};
+use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, suggest_tests, Store};
 
 use crate::cli::find_project_root;
 
@@ -13,6 +13,7 @@ pub(crate) fn cmd_impact(
     name: &str,
     depth: usize,
     format: &str,
+    do_suggest_tests: bool,
 ) -> Result<()> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -31,13 +32,40 @@ pub(crate) fn cmd_impact(
     // Run shared impact analysis
     let result = analyze_impact(&store, &chunk.name, depth)?;
 
+    // Compute test suggestions if requested
+    let suggestions = if do_suggest_tests {
+        suggest_tests(&store, &result)
+    } else {
+        Vec::new()
+    };
+
     if format == "mermaid" {
         println!("{}", impact_to_mermaid(&result, &root));
         return Ok(());
     }
 
     if format == "json" {
-        let json = impact_to_json(&result, &root);
+        let mut json = impact_to_json(&result, &root);
+        if do_suggest_tests {
+            let suggestions_json: Vec<_> = suggestions
+                .iter()
+                .map(|s| {
+                    serde_json::json!({
+                        "test_name": s.test_name,
+                        "suggested_file": s.suggested_file,
+                        "for_function": s.for_function,
+                        "pattern_source": s.pattern_source,
+                        "inline": s.inline,
+                    })
+                })
+                .collect();
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert(
+                    "test_suggestions".into(),
+                    serde_json::json!(suggestions_json),
+                );
+            }
+        }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
         let rel_file = chunk
@@ -47,9 +75,47 @@ pub(crate) fn cmd_impact(
             .to_string_lossy()
             .replace('\\', "/");
         display_impact_text(&result, &root, &rel_file);
+
+        if do_suggest_tests && !suggestions.is_empty() {
+            display_test_suggestions(&suggestions);
+        }
     }
 
     Ok(())
+}
+
+/// Display test suggestions with colored output
+fn display_test_suggestions(suggestions: &[cqs::TestSuggestion]) {
+    use colored::Colorize;
+
+    println!();
+    println!(
+        "{} ({} untested {}):",
+        "Suggested Tests".yellow(),
+        suggestions.len(),
+        if suggestions.len() == 1 {
+            "caller"
+        } else {
+            "callers"
+        }
+    );
+    for s in suggestions {
+        let location = if s.inline { "inline" } else { "new file" };
+        println!(
+            "  {} {} {} ({})",
+            s.for_function.bold(),
+            "→".dimmed(),
+            s.test_name,
+            location.dimmed()
+        );
+        println!("    {}", format!("in {}", s.suggested_file).dimmed());
+        if !s.pattern_source.is_empty() {
+            println!(
+                "    {}",
+                format!("pattern from: {}", s.pattern_source).dimmed()
+            );
+        }
+    }
 }
 
 /// Terminal display with colored output (CLI-only)

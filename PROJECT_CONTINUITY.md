@@ -2,14 +2,19 @@
 
 ## Right Now
 
-**Releasing v0.11.0.** 2026-02-11.
+**7 agent experience features.** 2026-02-11.
 
-Features since v0.10.2:
-1. **Proactive hints** (PR #362) — `cqs explain` and `cqs read --focus` show caller/test counts.
-2. **`cqs impact-diff`** (PR #362) — diff-aware impact analysis in one call.
-3. **Table-aware Markdown chunking** (PR #361) — row-wise table splitting, `--expand` parent retrieval.
-4. **Markdown RAG improvements** (PR #360) — richer embeddings, cross-doc links.
-5. **Suppress ort warning** (PR #363) — filter benign ONNX Runtime log noise.
+Plan at `/home/user001/.claude/plans/linear-brewing-flame.md`. Build order: 2→6→5→3→4→1→7.
+
+### Done
+- PR #365: `cqs stale` + proactive staleness warnings (Features 2+6). Merged.
+- PR #366: `cqs context --compact` (Feature 5). Merged.
+- PR #367: `cqs related` (Feature 3). Merged.
+
+### Next
+- Feature 4: `cqs impact --suggest-tests` — test suggestions for untested callers
+- Feature 1: `cqs where` — placement suggestion for new code
+- Feature 7: `cqs scout` — pre-investigation dashboard (capstone)
 
 ### Known limitations
 - T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar
@@ -22,6 +27,7 @@ Features since v0.10.2:
 - **Post-index name matching** — follow-up PR for fuzzy cross-doc references
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred from Phase 6, tracked in #255
+- **Speculative R&D: `cqs plan`** — strong AI planning. Agent reasoning between sequential calls is load-bearing; collapsing it risks removing valuable intermediate decisions. Revisit when `scout` proves sufficient.
 
 ## Open Issues
 
