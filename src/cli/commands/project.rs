@@ -51,7 +51,7 @@ pub(crate) fn cmd_project(_cli: &Cli, subcmd: &ProjectCommand) -> Result<()> {
             } else {
                 std::env::current_dir()?.join(path)
             };
-            let abs_path = abs_path.canonicalize().unwrap_or_else(|_| abs_path.clone());
+            let abs_path = dunce::canonicalize(&abs_path).unwrap_or_else(|_| abs_path.clone());
 
             let mut registry = ProjectRegistry::load()?;
             registry.register(name.clone(), abs_path.clone())?;

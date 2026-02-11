@@ -101,9 +101,10 @@ fn find_type_overlap(
             if chunk.name == target_name {
                 continue;
             }
-            if chunk.chunk_type.to_string() != "function"
-                && chunk.chunk_type.to_string() != "method"
-            {
+            if !matches!(
+                chunk.chunk_type,
+                crate::language::ChunkType::Function | crate::language::ChunkType::Method
+            ) {
                 continue;
             }
             *type_counts.entry(chunk.name.clone()).or_insert(0) += 1;

@@ -47,7 +47,11 @@ impl GatherOptions {
         self
     }
     pub fn with_decay_factor(mut self, factor: f32) -> Self {
-        self.decay_factor = factor;
+        self.decay_factor = if factor.is_finite() {
+            factor.clamp(0.0, 1.0)
+        } else {
+            self.decay_factor
+        };
         self
     }
 }
@@ -74,13 +78,16 @@ pub enum GatherDirection {
 }
 
 impl std::str::FromStr for GatherDirection {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self> {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
             "both" => Ok(Self::Both),
             "callers" => Ok(Self::Callers),
             "callees" => Ok(Self::Callees),
-            _ => anyhow::bail!("Invalid direction '{}'. Valid: both, callers, callees", s),
+            _ => Err(format!(
+                "Invalid direction '{}'. Valid: both, callers, callees",
+                s
+            )),
         }
     }
 }

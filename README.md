@@ -80,7 +80,7 @@ cqs --lang rust --chunk-type function --pattern async "database query"
 
 # Hybrid search tuning
 cqs --name-boost 0.2 "retry logic"   # Semantic-heavy (default)
-cqs --name-boost 0.8 "serve_http"    # Name-heavy for known identifiers
+cqs --name-boost 0.8 "parse_config"  # Name-heavy for known identifiers
 
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result

@@ -29,7 +29,9 @@ pub(crate) fn cmd_gather(
     let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
 
-    let dir: GatherDirection = direction.parse()?;
+    let dir: GatherDirection = direction
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!("{e}"))?;
     let opts = GatherOptions {
         expand_depth: expand.clamp(0, 5),
         direction: dir,
@@ -49,7 +51,7 @@ pub(crate) fn cmd_gather(
             .into_iter()
             .collect();
         if !origins.is_empty() {
-            staleness::warn_stale_results(&store, &origins);
+            staleness::warn_stale_results(&store, &origins, &root);
         }
     }
 

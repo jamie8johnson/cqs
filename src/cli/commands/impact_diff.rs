@@ -87,8 +87,14 @@ pub(crate) fn cmd_impact_diff(
 }
 
 fn read_stdin() -> Result<String> {
+    const MAX_STDIN_SIZE: usize = 50 * 1024 * 1024; // 50 MB
     let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    std::io::stdin()
+        .take(MAX_STDIN_SIZE as u64 + 1)
+        .read_to_string(&mut buf)?;
+    if buf.len() > MAX_STDIN_SIZE {
+        anyhow::bail!("stdin input exceeds 50 MB limit");
+    }
     Ok(buf)
 }
 
@@ -96,6 +102,9 @@ fn run_git_diff(base: Option<&str>) -> Result<String> {
     let mut cmd = std::process::Command::new("git");
     cmd.arg("diff");
     if let Some(b) = base {
+        if b.starts_with('-') {
+            anyhow::bail!("Invalid base ref '{}': must not start with '-'", b);
+        }
         cmd.arg(b);
     }
 

@@ -522,8 +522,14 @@ impl Store {
     /// Lightweight per-query check: only examines the given origins, not the
     /// entire index. O(result_count), not O(index_size).
     ///
+    /// `root` is the project root — origins are relative paths joined against it.
+    ///
     /// Returns the set of stale origin paths.
-    pub fn check_origins_stale(&self, origins: &[&str]) -> Result<HashSet<String>, StoreError> {
+    pub fn check_origins_stale(
+        &self,
+        origins: &[&str],
+        root: &Path,
+    ) -> Result<HashSet<String>, StoreError> {
         if origins.is_empty() {
             return Ok(HashSet::new());
         }
@@ -555,7 +561,7 @@ impl Store {
                     }
                 };
 
-                let path = PathBuf::from(&origin);
+                let path = root.join(&origin);
                 let current_mtime = path
                     .metadata()
                     .and_then(|m| m.modified())
@@ -567,6 +573,9 @@ impl Store {
                     if current > stored {
                         stale.insert(origin);
                     }
+                } else {
+                    // File deleted or inaccessible — treat as stale
+                    stale.insert(origin);
                 }
             }
 
@@ -1701,7 +1710,9 @@ mod tests {
     #[test]
     fn test_check_origins_stale_empty_list() {
         let (store, _dir) = setup_store();
-        let stale = store.check_origins_stale(&[]).unwrap();
+        let stale = store
+            .check_origins_stale(&[], std::path::Path::new("/"))
+            .unwrap();
         assert!(stale.is_empty());
     }
 
@@ -1743,7 +1754,7 @@ mod tests {
             .upsert_chunks_batch(&[(c, mock_embedding(1.0))], Some(mtime))
             .unwrap();
 
-        let stale = store.check_origins_stale(&[&origin]).unwrap();
+        let stale = store.check_origins_stale(&[&origin], dir.path()).unwrap();
         assert!(stale.is_empty());
     }
 
@@ -1812,7 +1823,7 @@ mod tests {
             .unwrap();
 
         let stale = store
-            .check_origins_stale(&[&fresh_origin, &stale_origin])
+            .check_origins_stale(&[&fresh_origin, &stale_origin], dir.path())
             .unwrap();
         assert_eq!(stale.len(), 1);
         assert!(stale.contains(&stale_origin));
@@ -1822,7 +1833,9 @@ mod tests {
     #[test]
     fn test_check_origins_stale_unknown_origin() {
         let (store, _dir) = setup_store();
-        let stale = store.check_origins_stale(&["nonexistent/file.rs"]).unwrap();
+        let stale = store
+            .check_origins_stale(&["nonexistent/file.rs"], std::path::Path::new("/"))
+            .unwrap();
         assert!(
             stale.is_empty(),
             "Unknown origin should not appear in stale set"

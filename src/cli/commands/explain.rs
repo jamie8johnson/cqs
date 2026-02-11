@@ -45,7 +45,7 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
     // Proactive staleness warning
     if !cli.quiet && !cli.no_stale_check {
         if let Some(file_str) = chunk.file.to_str() {
-            staleness::warn_stale_results(&store, &[file_str]);
+            staleness::warn_stale_results(&store, &[file_str], &root);
         }
     }
 

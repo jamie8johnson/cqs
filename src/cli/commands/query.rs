@@ -189,7 +189,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             .into_iter()
             .collect();
         if !origins.is_empty() {
-            staleness::warn_stale_results(&store, &origins);
+            staleness::warn_stale_results(&store, &origins, &root);
         }
     }
 

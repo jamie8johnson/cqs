@@ -149,8 +149,21 @@ fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<Cal
 
 /// Extract a snippet around the call site from the caller's indexed content
 fn extract_call_snippet(store: &Store, caller: &CallerWithContext) -> Option<String> {
-    let result = match store.search_by_name(&caller.name, 1) {
-        Ok(results) => results.into_iter().next(),
+    // Fetch up to 5 results, prefer non-windowed chunk (correct line offsets)
+    let result = match store.search_by_name(&caller.name, 5) {
+        Ok(results) => {
+            let mut best = None;
+            for r in results {
+                if r.chunk.parent_id.is_none() {
+                    best = Some(r);
+                    break;
+                }
+                if best.is_none() {
+                    best = Some(r);
+                }
+            }
+            best
+        }
         Err(e) => {
             tracing::warn!(caller = %caller.name, error = %e, "Failed to fetch call snippet");
             return None;
@@ -430,10 +443,17 @@ pub fn map_hunks_to_functions(
     for (file, file_hunks) in &by_file {
         let chunks = match store.get_chunks_by_origin(file) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::warn!(file = %file, error = %e, "Failed to get chunks for file");
+                continue;
+            }
         };
         for hunk in file_hunks {
-            let hunk_end = hunk.start + hunk.count; // exclusive
+            // Skip zero-count hunks (insertion points with no changed lines)
+            if hunk.count == 0 {
+                continue;
+            }
+            let hunk_end = hunk.start.saturating_add(hunk.count); // exclusive
             for chunk in &chunks {
                 // Overlap: hunk [start, start+count) vs chunk [line_start, line_end]
                 if hunk.start <= chunk.line_end
@@ -478,39 +498,56 @@ pub fn analyze_diff_impact(
     let test_chunks = store.find_test_chunks()?;
 
     let mut all_callers = Vec::new();
-    let mut all_tests = Vec::new();
+    let mut all_tests: Vec<DiffTestInfo> = Vec::new();
     let mut seen_callers = HashSet::new();
-    let mut seen_tests = HashSet::new();
+    let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
     for func in changed {
         // Direct callers
-        if let Ok(callers_ctx) = store.get_callers_with_context(&func.name) {
-            for caller in &callers_ctx {
-                if seen_callers.insert(caller.name.clone()) {
-                    let snippet = extract_call_snippet(store, caller);
-                    all_callers.push(CallerInfo {
-                        name: caller.name.clone(),
-                        file: caller.file.clone(),
-                        line: caller.line,
-                        call_line: caller.call_line,
-                        snippet,
-                    });
+        match store.get_callers_with_context(&func.name) {
+            Ok(callers_ctx) => {
+                for caller in &callers_ctx {
+                    if seen_callers.insert(caller.name.clone()) {
+                        let snippet = extract_call_snippet(store, caller);
+                        all_callers.push(CallerInfo {
+                            name: caller.name.clone(),
+                            file: caller.file.clone(),
+                            line: caller.line,
+                            call_line: caller.call_line,
+                            snippet,
+                        });
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(function = %func.name, error = %e, "Failed to get callers");
             }
         }
 
-        // Affected tests via reverse BFS
+        // Affected tests via reverse BFS — prefer shortest depth per test
         let ancestors = reverse_bfs(&graph, &func.name, MAX_TEST_SEARCH_DEPTH);
         for test in &test_chunks {
             if let Some(&depth) = ancestors.get(&test.name) {
-                if depth > 0 && seen_tests.insert(test.name.clone()) {
-                    all_tests.push(DiffTestInfo {
-                        name: test.name.clone(),
-                        file: test.file.clone(),
-                        line: test.line_start,
-                        via: func.name.clone(),
-                        call_depth: depth,
-                    });
+                if depth > 0 {
+                    match seen_tests.entry(test.name.clone()) {
+                        std::collections::hash_map::Entry::Occupied(o) => {
+                            let idx = *o.get();
+                            if depth < all_tests[idx].call_depth {
+                                all_tests[idx].via = func.name.clone();
+                                all_tests[idx].call_depth = depth;
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(v) => {
+                            v.insert(all_tests.len());
+                            all_tests.push(DiffTestInfo {
+                                name: test.name.clone(),
+                                file: test.file.clone(),
+                                line: test.line_start,
+                                via: func.name.clone(),
+                                call_depth: depth,
+                            });
+                        }
+                    }
                 }
             }
         }

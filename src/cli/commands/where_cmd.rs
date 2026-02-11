@@ -24,7 +24,7 @@ pub(crate) fn cmd_where(
     let embedder = Embedder::new()?;
     let limit = limit.clamp(1, 10);
 
-    let result = suggest_placement(&store, &embedder, description, &root, limit)
+    let result = suggest_placement(&store, &embedder, description, limit)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if json {

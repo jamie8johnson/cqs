@@ -40,14 +40,14 @@ pub(crate) fn cmd_context(
 
     // Proactive staleness warning
     if !cli.quiet && !cli.no_stale_check {
-        staleness::warn_stale_results(&store, &[&origin]);
+        staleness::warn_stale_results(&store, &[&origin], &root);
     }
 
     // Compact mode: signatures-only TOC with caller/callee counts
     if compact {
         let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_default();
-        let callee_counts = store.get_callee_counts_batch(&names).unwrap_or_default();
+        let caller_counts = store.get_caller_counts_batch(&names)?;
+        let callee_counts = store.get_callee_counts_batch(&names)?;
 
         if json {
             let entries: Vec<_> = chunks

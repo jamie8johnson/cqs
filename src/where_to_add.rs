@@ -4,7 +4,7 @@
 //! insertion point based on semantic similarity + local pattern analysis.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::embedder::Embedder;
 use crate::parser::Language;
@@ -56,7 +56,6 @@ pub fn suggest_placement(
     store: &Store,
     embedder: &Embedder,
     description: &str,
-    _root: &Path,
     limit: usize,
 ) -> Result<PlacementResult, SuggestError> {
     // Embed the description
@@ -104,9 +103,13 @@ pub fn suggest_placement(
 
     for (file, score, chunks) in &file_scores {
         // Get all chunks from this file for pattern extraction
-        let all_file_chunks = store
-            .get_chunks_by_origin(&file.to_string_lossy())
-            .unwrap_or_default();
+        let all_file_chunks = match store.get_chunks_by_origin(&file.to_string_lossy()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(file = %file.display(), error = %e, "Failed to get file chunks");
+                Vec::new()
+            }
+        };
 
         // Find the most similar chunk in this file (highest individual score)
         let best_chunk = chunks

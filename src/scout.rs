@@ -76,7 +76,8 @@ const MODIFY_TARGET_THRESHOLD: f32 = 0.5;
 fn is_test_name(name: &str) -> bool {
     name.starts_with("test_")
         || name.starts_with("Test")
-        || name.contains("_test")
+        || name.ends_with("_test")
+        || name.contains("_test_")
         || name.contains(".test")
 }
 
@@ -131,13 +132,23 @@ pub fn scout(
 
     // 4. Batch caller/callee counts
     let all_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
-    let caller_counts = store
-        .get_caller_counts_batch(&all_names)
-        .unwrap_or_default();
+    let caller_counts = match store.get_caller_counts_batch(&all_names) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch caller counts");
+            HashMap::new()
+        }
+    };
 
     // 5. Check staleness
     let origins: Vec<&str> = file_map.keys().map(|p| p.to_str().unwrap_or("")).collect();
-    let stale_set = store.check_origins_stale(&origins).unwrap_or_default();
+    let stale_set = match store.check_origins_stale(&origins, root) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to check staleness");
+            HashSet::new()
+        }
+    };
 
     // 6. Build file groups
     let mut groups: Vec<FileGroup> = file_map
@@ -347,6 +358,15 @@ impl std::fmt::Display for ScoutError {
         match self {
             ScoutError::Store(e) => write!(f, "{e}"),
             ScoutError::Embedder(e) => write!(f, "Embedder error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ScoutError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ScoutError::Store(e) => Some(e),
+            ScoutError::Embedder(_) => None,
         }
     }
 }
