@@ -225,8 +225,8 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | Reference search no per-reference timing | O10 | medium | |
-| 2 | Embedding cache hit/miss not observable | O11 | medium | |
+| 1 | Reference search no per-reference timing | O10 | medium | PR #340 |
+| 2 | Embedding cache hit/miss not observable | O11 | medium | PR #340 |
 
 ### Test Coverage
 
@@ -238,11 +238,11 @@ After de-duplication: **~140 unique findings**
 | 6 | `search_across_projects` zero tests | TC5 | medium | |
 | 7 | `store/chunks.rs` 817 lines no inline tests | TC8 | medium | |
 | 8 | `reference.rs` load/search no direct tests | TC9 | medium | |
-| 9 | `cmd_gc` zero tests | TC10 | easy | |
-| 10 | `cmd_dead` no CLI integration test | TC11 | easy | |
-| 11 | MCP error assertions only check `is_some()` | TC15 | easy | |
-| 12 | Note round-trip test missing | TC7 | easy | |
-| 13 | `find_project_root` no tests | TC13 | easy | |
+| 9 | `cmd_gc` zero tests | TC10 | easy | PR #341 |
+| 10 | `cmd_dead` no CLI integration test | TC11 | easy | PR #341 |
+| 11 | MCP error assertions only check `is_some()` | TC15 | easy | PR #341 |
+| 12 | Note round-trip test missing | TC7 | easy | PR #341 |
+| 13 | `find_project_root` no tests | TC13 | easy | PR #341 |
 | 14 | 127 dead functions, most untested | TC14 | medium | |
 
 ### API Design
@@ -250,21 +250,21 @@ After de-duplication: **~140 unique findings**
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
 | 15 | Asymmetric callers/callees return types | A2 | medium | |
-| 16 | `SearchFilter` mixed encapsulation (pub fields + builder) | A6 | easy | |
-| 17 | `serve_stdio`/`serve_http` inconsistent path param types | A8 | easy | |
+| 16 | `SearchFilter` mixed encapsulation (pub fields + builder) | A6 | easy | PR #341 |
+| 17 | `serve_stdio`/`serve_http` inconsistent path param types | A8 | easy | PR #341 (already consistent) |
 | 18 | Note/NoteEntry/NoteSummary naming overload | A9 | medium | |
-| 19 | `GatherOptions` lacks builder methods | A10 | easy | |
+| 19 | `GatherOptions` lacks builder methods | A10 | easy | PR #340 |
 
 ### Performance
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 20 | `normalize_for_fts` called 4x per chunk | P6 | easy | |
-| 21 | Diff loads all identities even with language filter | P5 | medium | |
+| 20 | `normalize_for_fts` called 4x per chunk | P6 | easy | PR #341 |
+| 21 | Diff loads all identities even with language filter | P5 | medium | PR #340 (RM11) |
 | 22 | `search_across_projects` new Store per project per search | P8 | medium | |
 | 23 | Gather loads entire call graph every invocation | P11 | medium | |
-| 24 | Pipeline writer clones chunk+embedding pairs | P9 | easy | |
-| 25 | `get_call_graph` clones all strings into both maps | P12 | easy | |
+| 24 | Pipeline writer clones chunk+embedding pairs | P9 | easy | PR #341 |
+| 25 | `get_call_graph` clones all strings into both maps | P12 | easy | PR #340 |
 
 ### Resource Management
 
@@ -274,33 +274,33 @@ After de-duplication: **~140 unique findings**
 | 27 | Reference hot-reload blocks search during WAL checkpoint | RM3 | medium | |
 | 28 | Each Store creates own tokio Runtime (7+ with refs) | RM4 | medium | |
 | 29 | Embedder ~500MB persists forever via OnceLock | RM8 | easy | |
-| 30 | HNSW+CAGRA held simultaneously during upgrade | RM10 | easy | |
-| 31 | `all_chunk_identities` loads full table no SQL filter | RM11 | easy | |
+| 30 | HNSW+CAGRA held simultaneously during upgrade | RM10 | easy | PR #341 (not in HNSW files) |
+| 31 | `all_chunk_identities` loads full table no SQL filter | RM11 | easy | PR #340 |
 
 ### Data Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 32 | `embedding_batches` LIMIT/OFFSET unstable under writes | DS9 | medium | |
-| 33 | Store::init() DDL without transaction | DS1 | medium | |
-| 34 | WAL checkpoint failure silently returns Ok | DS13 | easy | |
+| 32 | `embedding_batches` LIMIT/OFFSET unstable under writes | DS9 | medium | PR #341 |
+| 33 | Store::init() DDL without transaction | DS1 | medium | PR #340 |
+| 34 | WAL checkpoint failure silently returns Ok | DS13 | easy | PR #340 |
 | 35 | No SQLite integrity check on open | DS12 | medium | |
-| 36 | Schema migration no downgrade guard | DS10 | medium | |
+| 36 | Schema migration no downgrade guard | DS10 | medium | PR #340 |
 
 ### Security
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 37 | FTS5 injection via double-quote escape | S1 | medium | |
-| 38 | HNSW ID map no size limit on deser | S8 | medium | |
-| 39 | Windows PID substring matching false positive | S7 | easy | |
+| 37 | FTS5 injection via double-quote escape | S1 | medium | PR #341 |
+| 38 | HNSW ID map no size limit on deser | S8 | medium | PR #341 (already guarded) |
+| 39 | Windows PID substring matching false positive | S7 | easy | PR #340 |
 
 ### Platform
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 40 | WSL detection heuristic only checks `/mnt/` | PB7 | easy | |
-| 41 | project.rs tests use Unix-only paths | PB8 | easy | |
+| 40 | WSL detection heuristic only checks `/mnt/` | PB7 | easy | PR #340 |
+| 41 | project.rs tests use Unix-only paths | PB8 | easy | PR #340 |
 
 ### Extensibility
 
@@ -312,9 +312,9 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 43 | `StoreError::Runtime` catch-all string variant | EH12 | medium | |
-| 44 | `note_stats` thresholds assume discrete sentiment, no DB constraint | AC6 | easy | |
-| 45 | `BoundedScoreHeap` drops equal-score newcomers (iteration-order bias) | AC8 | easy | |
+| 43 | `StoreError::Runtime` catch-all string variant | EH12 | medium | PR #341 |
+| 44 | `note_stats` thresholds assume discrete sentiment, no DB constraint | AC6 | easy | PR #340 |
+| 45 | `BoundedScoreHeap` drops equal-score newcomers (iteration-order bias) | AC8 | easy | PR #340 |
 
 **P3 Total: 45 findings**
 
