@@ -2,11 +2,14 @@
 
 ## Right Now
 
-**v0.10.0 released.** 2026-02-10.
+**v0.10.1 released.** 2026-02-10.
 
-MCP server removed (PR #352), v0.10.0 released (PR #353). Published to crates.io and GitHub.
+All clean. Pipeline plan complete — 5 phases done, 7 issues closed (#256, #257, #269, #300, #302, #303, #344). Security hardening (10 fixes) merged. Published to crates.io and GitHub. Binary updated, cqs-watch running.
+
+Notes groomed (57 notes, 3 stale fixed, 1 removed, 3 added).
 
 ### Pending
+- `docs/notes.toml` — modified, not committed (groom changes)
 - `.cqs.toml` — untracked, has aveva-docs reference config
 
 ### Known limitations
@@ -27,24 +30,20 @@ MCP server removed (PR #352), v0.10.0 released (PR #353). Published to crates.io
 - #106: ort stable (currently 2.0.0-rc.11)
 - #63: paste dep (via tokenizers)
 
-### Multi-index follow-ups
+### Feature
 - #255: Pre-built reference packages
-- #256: Cross-store dedup
-- #257: Parallel search + shared Runtime
 
-### Remaining audit items (P4 deferred)
-- #269: Brute-force search loads all embeddings
-- #302: CAGRA OOM guard
-- #344: embed_documents tests
+### Audit
+- #270: HNSW LoadedHnsw uses unsafe transmute (upstream hnsw_rs)
 
 ## Architecture
 
-- Version: 0.10.0
+- Version: 0.10.1
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
-- Multi-index: separate Store+HNSW per reference, score-based merge with weight
+- Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
