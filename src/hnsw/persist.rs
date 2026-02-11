@@ -278,6 +278,33 @@ impl HnswIndex {
             )));
         }
 
+        // Check graph and data file sizes to prevent OOM before deserialization
+        const MAX_HNSW_GRAPH_SIZE: u64 = 500 * 1024 * 1024; // 500MB
+        const MAX_HNSW_DATA_SIZE: u64 = 1024 * 1024 * 1024; // 1GB
+        for (path, limit, label) in [
+            (&graph_path, MAX_HNSW_GRAPH_SIZE, "graph"),
+            (&data_path, MAX_HNSW_DATA_SIZE, "data"),
+        ] {
+            let size = std::fs::metadata(path)
+                .map_err(|e| {
+                    HnswError::Internal(format!(
+                        "Failed to stat HNSW {} file {}: {}",
+                        label,
+                        path.display(),
+                        e
+                    ))
+                })?
+                .len();
+            if size > limit {
+                return Err(HnswError::Internal(format!(
+                    "HNSW {} file too large: {}MB > {}MB limit",
+                    label,
+                    size / (1024 * 1024),
+                    limit / (1024 * 1024)
+                )));
+            }
+        }
+
         // Load ID map via streaming parse to avoid holding raw JSON + parsed Vec simultaneously
         let id_map_file = std::fs::File::open(&id_map_path).map_err(|e| {
             HnswError::Internal(format!(
@@ -411,6 +438,65 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::hnsw::make_test_embedding as make_embedding;
+
+    #[test]
+    fn test_load_rejects_oversized_graph_file() {
+        let tmp = TempDir::new().unwrap();
+
+        // Create valid-looking HNSW files, but make graph oversized
+        let graph_path = tmp.path().join("test.hnsw.graph");
+        let data_path = tmp.path().join("test.hnsw.data");
+        let ids_path = tmp.path().join("test.hnsw.ids");
+
+        // Write oversized graph file (just over 500MB limit)
+        // We use set_len to create a sparse file — no actual disk I/O
+        let f = std::fs::File::create(&graph_path).unwrap();
+        f.set_len(501 * 1024 * 1024).unwrap();
+
+        std::fs::write(&data_path, b"dummy").unwrap();
+        std::fs::write(&ids_path, b"[]").unwrap();
+
+        match HnswIndex::load(tmp.path(), "test") {
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("graph") && msg.contains("too large"),
+                    "Expected graph size error, got: {}",
+                    msg
+                );
+            }
+            Ok(_) => panic!("Expected error for oversized graph file"),
+        }
+    }
+
+    #[test]
+    fn test_load_rejects_oversized_data_file() {
+        let tmp = TempDir::new().unwrap();
+
+        let graph_path = tmp.path().join("test.hnsw.graph");
+        let data_path = tmp.path().join("test.hnsw.data");
+        let ids_path = tmp.path().join("test.hnsw.ids");
+
+        std::fs::write(&graph_path, b"dummy").unwrap();
+
+        // Write oversized data file (just over 1GB limit)
+        let f = std::fs::File::create(&data_path).unwrap();
+        f.set_len(1025 * 1024 * 1024).unwrap();
+
+        std::fs::write(&ids_path, b"[]").unwrap();
+
+        match HnswIndex::load(tmp.path(), "test") {
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("data") && msg.contains("too large"),
+                    "Expected data size error, got: {}",
+                    msg
+                );
+            }
+            Ok(_) => panic!("Expected error for oversized data file"),
+        }
+    }
 
     #[test]
     fn test_save_and_load() {

@@ -435,6 +435,17 @@ impl CagraIndex {
 
         tracing::info!("Building CAGRA index from {} chunk embeddings", chunk_count,);
 
+        // Guard against OOM: estimate CPU memory needed for flat data + id map
+        const MAX_CAGRA_CPU_BYTES: usize = 2 * 1024 * 1024 * 1024; // 2GB
+        let estimated_bytes = chunk_count.saturating_mul(EMBEDDING_DIM).saturating_mul(4); // f32 = 4 bytes
+        if estimated_bytes > MAX_CAGRA_CPU_BYTES {
+            return Err(CagraError::Cuvs(format!(
+                "Dataset too large for GPU indexing: {}MB estimated (limit {}MB)",
+                estimated_bytes / (1024 * 1024),
+                MAX_CAGRA_CPU_BYTES / (1024 * 1024)
+            )));
+        }
+
         let mut id_map = Vec::with_capacity(chunk_count);
         let mut flat_data = Vec::with_capacity(chunk_count * EMBEDDING_DIM);
 
@@ -767,6 +778,27 @@ mod tests {
         // After returning early, next search should still work (index wasn't consumed)
         let results = index.search(&make_embedding(1), 3);
         assert!(!results.is_empty(), "Search after k=0 should work");
+    }
+
+    #[test]
+    fn test_oom_guard_arithmetic() {
+        // Verify the OOM guard threshold: 2GB limit / (769 dims * 4 bytes) ≈ 698K chunks
+        const MAX_CAGRA_CPU_BYTES: usize = 2 * 1024 * 1024 * 1024;
+        let max_chunks = MAX_CAGRA_CPU_BYTES / (EMBEDDING_DIM * 4);
+
+        // Just under the limit should pass
+        let under = max_chunks.saturating_mul(EMBEDDING_DIM).saturating_mul(4);
+        assert!(under <= MAX_CAGRA_CPU_BYTES);
+
+        // One more chunk should exceed
+        let over = (max_chunks + 1)
+            .saturating_mul(EMBEDDING_DIM)
+            .saturating_mul(4);
+        assert!(over > MAX_CAGRA_CPU_BYTES);
+
+        // Extreme value shouldn't overflow (saturating_mul)
+        let extreme = usize::MAX.saturating_mul(EMBEDDING_DIM).saturating_mul(4);
+        assert!(extreme > MAX_CAGRA_CPU_BYTES);
     }
 
     #[test]
