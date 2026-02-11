@@ -41,7 +41,6 @@ fn process_exists(pid: u32) -> bool {
 /// Acquire file lock to prevent concurrent indexing
 /// Writes PID to lock file for stale lock detection
 pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
-    use fs4::fs_std::FileExt;
     use std::io::Write;
 
     let lock_path = cqs_dir.join("index.lock");
@@ -72,7 +71,7 @@ pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
             .open(&lock_path)
             .context("Failed to create lock file")?;
 
-        match lock_file.try_lock_exclusive() {
+        match lock_file.try_lock() {
             Ok(()) => {
                 // Write our PID to the lock file
                 let mut file = lock_file;

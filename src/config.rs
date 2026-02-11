@@ -6,7 +6,6 @@
 //!
 //! CLI flags override all config file values.
 
-use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -275,7 +274,7 @@ pub fn add_reference_to_config(
         .create(true)
         .truncate(false)
         .open(config_path)?;
-    FileExt::lock_exclusive(&lock_file)?;
+    lock_file.lock()?;
 
     let content = match std::fs::read_to_string(config_path) {
         Ok(c) => c,
@@ -358,7 +357,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
     };
-    FileExt::lock_exclusive(&lock_file)?;
+    lock_file.lock()?;
 
     let content = std::fs::read_to_string(config_path)?;
 

@@ -2,7 +2,7 @@
 name = "cqs"
 version = "0.9.8"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.93"
 description = "Semantic code search and code intelligence for AI agents. Find functions by concept, trace call chains, assess impact — in single tool calls. Local ML, MCP server."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
@@ -83,7 +83,6 @@ zeroize = "1"
 bytemuck = { version = "1", features = ["derive"] }
 ignore = "0.4"
 notify = { version = "8", features = ["serde"] }
-fs4 = "0.12"
 ctrlc = "3"
 rayon = "1"
 crossbeam-channel = "0.5"

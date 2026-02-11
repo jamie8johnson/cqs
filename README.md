@@ -24,7 +24,7 @@ Code intelligence MCP server that saves AI agents tokens. Semantic search, call 
 
 ## Install
 
-**Requires Rust 1.88+** (due to `ort` ONNX runtime dependency)
+**Requires Rust 1.93+**
 
 ```bash
 cargo install cqs

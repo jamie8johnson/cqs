@@ -4,7 +4,7 @@ Thank you for your interest in contributing to cqs!
 
 ## Development Setup
 
-**Requires Rust 1.88+** (check with `rustc --version`)
+**Requires Rust 1.93+** (check with `rustc --version`)
 
 1. Clone the repository:
    ```bash

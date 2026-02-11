@@ -44,6 +44,14 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - name: Check MSRV
+        run: cargo check --verbose
+
   # Eval suite - only runs on tagged releases (slow, requires model download)
   eval:
     runs-on: ubuntu-latest

@@ -6,7 +6,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 
 /// Global registry of indexed cqs projects
@@ -50,7 +49,8 @@ impl ProjectRegistry {
             .truncate(false)
             .open(&path)
             .with_context(|| format!("Failed to open {} for locking", path.display()))?;
-        FileExt::lock_exclusive(&lock_file)
+        lock_file
+            .lock()
             .with_context(|| format!("Failed to lock {}", path.display()))?;
 
         let content = toml::to_string_pretty(self)?;

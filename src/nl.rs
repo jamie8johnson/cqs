@@ -97,19 +97,6 @@ fn is_cjk(c: char) -> bool {
 /// expands text (e.g., "ABCD" → "a b c d" doubles length).
 const MAX_FTS_OUTPUT_LEN: usize = 16384;
 
-/// Find the largest byte index ≤ `index` that is on a UTF-8 char boundary.
-/// Equivalent to `str::floor_char_boundary` (stable since 1.91) but works with MSRV 1.88.
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
 /// Normalize code text for FTS5 indexing.
 ///
 /// Splits identifiers on camelCase/snake_case boundaries and joins with spaces.
@@ -154,7 +141,7 @@ pub fn normalize_for_fts(text: &str) -> String {
 
             // Cap output to prevent memory issues - truncate at last space boundary
             if result.len() >= MAX_FTS_OUTPUT_LEN {
-                let boundary = floor_char_boundary(&result, MAX_FTS_OUTPUT_LEN);
+                let boundary = result.floor_char_boundary(MAX_FTS_OUTPUT_LEN);
                 let truncate_at = result[..boundary].rfind(' ').unwrap_or(boundary);
                 result.truncate(truncate_at);
                 return result;
@@ -175,7 +162,7 @@ pub fn normalize_for_fts(text: &str) -> String {
 
     // Final cap check - truncate at last space to avoid splitting words
     if result.len() > MAX_FTS_OUTPUT_LEN {
-        let boundary = floor_char_boundary(&result, MAX_FTS_OUTPUT_LEN);
+        let boundary = result.floor_char_boundary(MAX_FTS_OUTPUT_LEN);
         let truncate_at = result[..boundary].rfind(' ').unwrap_or(boundary);
         result.truncate(truncate_at);
     }
