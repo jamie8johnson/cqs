@@ -6,6 +6,7 @@ mod display;
 mod files;
 mod pipeline;
 mod signal;
+pub(crate) mod staleness;
 mod watch;
 
 // Re-export for watch.rs and commands
@@ -17,8 +18,8 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
-    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_similar, cmd_stats, cmd_test_map, cmd_trace,
-    NotesCommand, ProjectCommand, RefCommand,
+    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_similar, cmd_stale, cmd_stats, cmd_test_map,
+    cmd_trace, NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -318,6 +319,15 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Check index freshness — list stale and missing files
+    Stale {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Show counts only, skip file list
+        #[arg(long)]
+        count_only: bool,
+    },
     /// Read a file with notes injected as comments
     Read {
         /// File path relative to project root
@@ -424,6 +434,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref expires,
             json,
         }) => cmd_audit_mode(state.as_deref(), expires, json),
+        Some(Commands::Stale { json, count_only }) => cmd_stale(&cli, json, count_only),
         Some(Commands::Read {
             ref path,
             ref focus,

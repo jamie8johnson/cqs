@@ -69,6 +69,12 @@ pub use helpers::SearchFilter;
 /// A code chunk search result with similarity score.
 pub use helpers::SearchResult;
 
+/// A file in the index whose content has changed on disk.
+pub use helpers::StaleFile;
+
+/// Report of index freshness (stale + missing files).
+pub use helpers::StaleReport;
+
 /// Store operation errors.
 pub use helpers::StoreError;
 

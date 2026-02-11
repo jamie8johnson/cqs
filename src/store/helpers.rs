@@ -314,6 +314,28 @@ impl NoteSearchResult {
     }
 }
 
+/// A file in the index whose content has changed on disk
+#[derive(Debug, Clone)]
+pub struct StaleFile {
+    /// Source file path (as stored in the index)
+    pub origin: String,
+    /// Mtime stored in the index (Unix seconds)
+    pub stored_mtime: i64,
+    /// Current mtime on disk (Unix seconds)
+    pub current_mtime: i64,
+}
+
+/// Report of index freshness
+#[derive(Debug)]
+pub struct StaleReport {
+    /// Files whose disk mtime is newer than stored mtime
+    pub stale: Vec<StaleFile>,
+    /// Files in the index that no longer exist on disk
+    pub missing: Vec<String>,
+    /// Total number of unique files in the index
+    pub total_indexed: u64,
+}
+
 /// Parent context for expanded search results (small-to-big retrieval)
 #[derive(Debug, Clone)]
 pub struct ParentContext {

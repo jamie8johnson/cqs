@@ -196,6 +196,11 @@ cqs context src/search.rs --json
 ## Maintenance
 
 ```bash
+# Check index freshness
+cqs stale                   # List files changed since last index
+cqs stale --count-only      # Just counts, no file list
+cqs stale --json            # JSON output
+
 # Find dead code (functions never called by indexed code)
 cqs dead                    # Conservative: excludes main, tests, trait impls
 cqs dead --include-pub      # Include public API functions
@@ -291,6 +296,7 @@ Key commands (all support `--json`):
 - `cqs context <file>` - module-level: chunks, callers, callees, notes
 - `cqs gather "query"` - smart context assembly: seed search + call graph BFS
 - `cqs dead` - find functions/methods never called by indexed code
+- `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.

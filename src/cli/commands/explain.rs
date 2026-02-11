@@ -5,11 +5,11 @@ use anyhow::{bail, Result};
 use cqs::parser::ChunkType;
 use cqs::{compute_hints, HnswIndex, SearchFilter, Store};
 
-use crate::cli::find_project_root;
+use crate::cli::{find_project_root, staleness};
 
 use super::resolve::parse_target;
 
-pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -41,6 +41,13 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
 
     let source = matched.unwrap_or(&results[0]);
     let chunk = &source.chunk;
+
+    // Proactive staleness warning
+    if !cli.quiet {
+        if let Some(file_str) = chunk.file.to_str() {
+            staleness::warn_stale_results(&store, &[file_str]);
+        }
+    }
 
     // Get callers
     let callers = match store.get_callers_full(&chunk.name) {

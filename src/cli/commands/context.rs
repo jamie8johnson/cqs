@@ -5,10 +5,10 @@ use std::collections::HashSet;
 
 use cqs::Store;
 
-use crate::cli::find_project_root;
+use crate::cli::{find_project_root, staleness};
 
 pub(crate) fn cmd_context(
-    _cli: &crate::cli::Cli,
+    cli: &crate::cli::Cli,
     path: &str,
     json: bool,
     summary: bool,
@@ -35,6 +35,11 @@ pub(crate) fn cmd_context(
             "No indexed chunks found for '{}'. Is the file indexed?",
             path
         );
+    }
+
+    // Proactive staleness warning
+    if !cli.quiet {
+        staleness::warn_stale_results(&store, &[&origin]);
     }
 
     let chunk_names: HashSet<&str> = chunks.iter().map(|c| c.name.as_str()).collect();

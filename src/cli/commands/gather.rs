@@ -6,10 +6,10 @@ use colored::Colorize;
 use cqs::{gather, GatherDirection, GatherOptions};
 use cqs::{Embedder, Store};
 
-use crate::cli::find_project_root;
+use crate::cli::{find_project_root, staleness};
 
 pub(crate) fn cmd_gather(
-    _cli: &crate::cli::Cli,
+    cli: &crate::cli::Cli,
     query: &str,
     expand: usize,
     direction: &str,
@@ -38,6 +38,20 @@ pub(crate) fn cmd_gather(
     };
 
     let result = gather(&store, &query_embedding, query, &opts, &root)?;
+
+    // Proactive staleness warning
+    if !cli.quiet && !result.chunks.is_empty() {
+        let origins: Vec<&str> = result
+            .chunks
+            .iter()
+            .filter_map(|c| c.file.to_str())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !origins.is_empty() {
+            staleness::warn_stale_results(&store, &origins);
+        }
+    }
 
     if json {
         let json_chunks: Vec<_> = result
