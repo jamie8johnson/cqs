@@ -53,7 +53,7 @@ cqs "database connection pool"
 
 ## Filters
 
-```bash
+```
 # By language
 cqs --lang rust "error handling"
 cqs --lang python "parse json"
