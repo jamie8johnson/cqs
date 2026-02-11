@@ -48,7 +48,7 @@
 
 ## Architecture
 
-- Version: 0.9.8
+- Version: 0.9.9
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)

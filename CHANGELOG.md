@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.9] - 2026-02-10
+
+### Fixed
+- **HNSW staleness in watch mode** (#236): Watch mode now rebuilds the HNSW index after reindexing changed files, so searches immediately find newly indexed code.
+- **MCP server HNSW staleness** (#236): MCP server lazy-reloads the HNSW index when the on-disk checksum file changes, using mtime-based staleness detection.
+
+### Changed
+- **MSRV bumped to 1.93**: Minimum supported Rust version raised from 1.88 to 1.93.
+- **Removed `fs4` dependency**: File locking now uses `std::fs::File::lock()` / `lock_shared()` / `try_lock()` (stable since Rust 1.89).
+- **Removed custom `floor_char_boundary`**: Uses `str::floor_char_boundary()` from std (stable since Rust 1.91).
+- **MSRV CI job**: New CI check validates compilation on the minimum supported Rust version.
+
 ## [0.9.8] - 2026-02-11
 
 ### Added
