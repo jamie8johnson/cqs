@@ -19,7 +19,7 @@ use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
@@ -92,6 +92,10 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     // Store uses connection pooling internally, so this is efficient.
     let store = Store::open(&index_path)?;
 
+    // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
+    // On WSL, inotify over 9P delivers repeated events for the same file change.
+    let mut last_indexed_mtime: HashMap<PathBuf, SystemTime> = HashMap::new();
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
@@ -120,6 +124,15 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 
                     // Convert to relative path
                     if let Ok(rel) = path.strip_prefix(&root) {
+                        // Skip if mtime unchanged since last index (dedup WSL/NTFS events)
+                        if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+                            if last_indexed_mtime
+                                .get(rel)
+                                .is_some_and(|last| mtime <= *last)
+                            {
+                                continue;
+                            }
+                        }
                         if pending_files.len() < MAX_PENDING_FILES {
                             pending_files.insert(rel.to_path_buf());
                         }
@@ -160,6 +173,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                         };
                         match reindex_files(&root, &store, &files, &parser, emb, cli.quiet) {
                             Ok(count) => {
+                                // Record mtimes to skip duplicate events
+                                for file in &files {
+                                    if let Ok(m) = std::fs::metadata(root.join(file))
+                                        .and_then(|m| m.modified())
+                                    {
+                                        last_indexed_mtime.insert(file.clone(), m);
+                                    }
+                                }
                                 if !cli.quiet {
                                     println!("Indexed {} chunk(s)", count);
                                 }
