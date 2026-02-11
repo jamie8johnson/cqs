@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`cqs stale`**: New command to check index freshness. Lists files modified since last index and files in the index that no longer exist on disk. Supports `--json`, `--count-only`.
 - **Proactive staleness warnings**: Search, explain, gather, and context commands now warn on stderr when results come from stale files. Suppressed with `-q`.
 - **`cqs-stale` skill**: Agent skill for index freshness checks.
+- **`cqs context --compact`**: Signatures-only TOC with caller/callee counts per chunk. One command to see what's in a file and how connected each piece is. Uses batch SQL queries (no N+1).
 
 ## [0.11.0] - 2026-02-11
 
