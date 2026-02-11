@@ -128,7 +128,7 @@ pub(crate) fn cmd_similar(
             .into_iter()
             .map(cqs::store::UnifiedResult::Code)
             .collect();
-        display::display_unified_results(&unified, &root, cli.no_content, cli.context)?;
+        display::display_unified_results(&unified, &root, cli.no_content, cli.context, None)?;
     }
 
     Ok(())

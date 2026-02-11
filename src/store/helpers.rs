@@ -112,6 +112,8 @@ pub struct ChunkSummary {
     pub line_start: u32,
     /// Ending line number (1-indexed)
     pub line_end: u32,
+    /// Parent chunk ID if this is a child chunk (table, windowed)
+    pub parent_id: Option<String>,
 }
 
 impl From<ChunkRow> for ChunkSummary {
@@ -143,6 +145,7 @@ impl From<ChunkRow> for ChunkSummary {
             doc: row.doc,
             line_start: row.line_start,
             line_end: row.line_end,
+            parent_id: row.parent_id,
         }
     }
 }
@@ -172,6 +175,7 @@ impl SearchResult {
             "chunk_type": self.chunk.chunk_type.to_string(),
             "score": self.score,
             "content": self.chunk.content,
+            "has_parent": self.chunk.parent_id.is_some(),
         })
     }
 
@@ -192,6 +196,7 @@ impl SearchResult {
             "chunk_type": self.chunk.chunk_type.to_string(),
             "score": self.score,
             "content": self.chunk.content,
+            "has_parent": self.chunk.parent_id.is_some(),
         })
     }
 }
@@ -307,6 +312,18 @@ impl NoteSearchResult {
             "score": self.score,
         })
     }
+}
+
+/// Parent context for expanded search results (small-to-big retrieval)
+#[derive(Debug, Clone)]
+pub struct ParentContext {
+    /// Parent chunk name
+    pub name: String,
+    /// Parent content (full section text)
+    pub content: String,
+    /// Parent line range
+    pub line_start: u32,
+    pub line_end: u32,
 }
 
 /// Unified search result (code chunk or note)
@@ -747,5 +764,63 @@ mod tests {
     fn test_clamp_line_number_overflow() {
         assert_eq!(clamp_line_number(i64::MAX), u32::MAX);
         assert_eq!(clamp_line_number(u32::MAX as i64 + 1), u32::MAX);
+    }
+
+    // ===== parent_id exposure tests =====
+
+    fn make_chunk(name: &str, parent_id: Option<&str>) -> ChunkSummary {
+        ChunkSummary {
+            id: format!("id-{}", name),
+            file: PathBuf::from(format!("src/{}.rs", name)),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: format!("fn {}() {{}}", name),
+            doc: None,
+            line_start: 1,
+            line_end: 1,
+            parent_id: parent_id.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_chunk_summary_includes_parent_id() {
+        let chunk = make_chunk("child", Some("parent-id"));
+        assert_eq!(chunk.parent_id.as_deref(), Some("parent-id"));
+
+        let chunk_no_parent = make_chunk("standalone", None);
+        assert!(chunk_no_parent.parent_id.is_none());
+    }
+
+    #[test]
+    fn test_search_result_json_has_parent() {
+        let result = SearchResult {
+            chunk: make_chunk("child", Some("parent-id")),
+            score: 0.85,
+        };
+        let json = result.to_json();
+        assert_eq!(json["has_parent"], true);
+    }
+
+    #[test]
+    fn test_search_result_json_no_parent() {
+        let result = SearchResult {
+            chunk: make_chunk("standalone", None),
+            score: 0.85,
+        };
+        let json = result.to_json();
+        assert_eq!(json["has_parent"], false);
+    }
+
+    #[test]
+    fn test_search_result_json_relative_has_parent() {
+        let root = std::path::Path::new("src");
+        let result = SearchResult {
+            chunk: make_chunk("child", Some("parent-id")),
+            score: 0.85,
+        };
+        let json = result.to_json_relative(root);
+        assert_eq!(json["has_parent"], true);
     }
 }

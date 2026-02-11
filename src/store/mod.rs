@@ -45,6 +45,9 @@ pub use helpers::ChunkIdentity;
 /// Summary of an indexed code chunk (function, class, etc.).
 pub use helpers::ChunkSummary;
 
+/// Parent context for expanded search results (small-to-big retrieval).
+pub use helpers::ParentContext;
+
 /// Statistics about the index (chunk counts, languages, etc.).
 pub use helpers::IndexStats;
 

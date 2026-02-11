@@ -672,6 +672,23 @@ impl Store {
         })
     }
 
+    /// Batch-fetch chunks by IDs.
+    ///
+    /// Returns a map of chunk ID → ChunkSummary for all found IDs.
+    /// Used by `--expand` to fetch parent chunks for small-to-big retrieval.
+    pub fn get_chunks_by_ids(
+        &self,
+        ids: &[&str],
+    ) -> Result<HashMap<String, ChunkSummary>, StoreError> {
+        self.rt.block_on(async {
+            let rows = self.fetch_chunks_by_ids_async(ids).await?;
+            Ok(rows
+                .into_iter()
+                .map(|(id, row)| (id, ChunkSummary::from(row)))
+                .collect())
+        })
+    }
+
     /// Batch-fetch embeddings by chunk IDs.
     ///
     /// Returns a map of chunk ID → Embedding for all found IDs.

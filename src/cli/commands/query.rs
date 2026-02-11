@@ -2,10 +2,12 @@
 //!
 //! Executes semantic search queries.
 
+use std::collections::HashMap;
+
 use anyhow::{bail, Context, Result};
 
 use cqs::parser::ChunkType;
-use cqs::store::UnifiedResult;
+use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, HnswIndex, Pattern, SearchFilter, Store};
 
 use crate::cli::{display, find_project_root, signal, Cli};
@@ -167,6 +169,14 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         results
     };
 
+    // Resolve parent context if --expand requested
+    let parents = if cli.expand {
+        resolve_parent_context(&results, &store, &root)
+    } else {
+        HashMap::new()
+    };
+    let parents_ref = if cli.expand { Some(&parents) } else { None };
+
     // Fast path: no references configured
     if references.is_empty() {
         if results.is_empty() {
@@ -179,9 +189,15 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         }
 
         if cli.json {
-            display::display_unified_results_json(&results, query)?;
+            display::display_unified_results_json(&results, query, parents_ref)?;
         } else {
-            display::display_unified_results(&results, &root, cli.no_content, cli.context)?;
+            display::display_unified_results(
+                &results,
+                &root,
+                cli.no_content,
+                cli.context,
+                parents_ref,
+            )?;
         }
         return Ok(());
     }
@@ -220,9 +236,9 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     if cli.json {
-        display::display_tagged_results_json(&tagged, query)?;
+        display::display_tagged_results_json(&tagged, query, parents_ref)?;
     } else {
-        display::display_tagged_results(&tagged, &root, cli.no_content, cli.context)?;
+        display::display_tagged_results(&tagged, &root, cli.no_content, cli.context, parents_ref)?;
     }
 
     Ok(())
@@ -249,11 +265,102 @@ fn cmd_query_name_only(
     // Convert to UnifiedResult for display
     let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
 
-    if cli.json {
-        display::display_unified_results_json(&unified, query)?;
+    // Resolve parent context if --expand requested
+    let parents = if cli.expand {
+        resolve_parent_context(&unified, store, root)
     } else {
-        display::display_unified_results(&unified, root, cli.no_content, cli.context)?;
+        HashMap::new()
+    };
+    let parents_ref = if cli.expand { Some(&parents) } else { None };
+
+    if cli.json {
+        display::display_unified_results_json(&unified, query, parents_ref)?;
+    } else {
+        display::display_unified_results(&unified, root, cli.no_content, cli.context, parents_ref)?;
     }
 
     Ok(())
+}
+
+/// Resolve parent context for results with parent_id.
+///
+/// For table chunks: parent is a stored section chunk → fetch from DB.
+/// For windowed chunks: parent was never stored → read source file at line range.
+fn resolve_parent_context(
+    results: &[UnifiedResult],
+    store: &Store,
+    root: &std::path::Path,
+) -> HashMap<String, ParentContext> {
+    let mut parents = HashMap::new();
+
+    // Collect unique parent_ids from code results
+    let parent_ids: Vec<String> = results
+        .iter()
+        .filter_map(|r| match r {
+            UnifiedResult::Code(sr) => sr.chunk.parent_id.clone(),
+            UnifiedResult::Note(_) => None,
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if parent_ids.is_empty() {
+        return parents;
+    }
+
+    // Batch-fetch parent chunks from store
+    let id_refs: Vec<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
+    let stored_parents = store.get_chunks_by_ids(&id_refs).unwrap_or_default();
+
+    // For each result with parent_id, resolve the parent content
+    for result in results {
+        let sr = match result {
+            UnifiedResult::Code(sr) => sr,
+            UnifiedResult::Note(_) => continue,
+        };
+        let parent_id = match &sr.chunk.parent_id {
+            Some(id) => id,
+            None => continue,
+        };
+
+        // Skip if already resolved (multiple children share same parent)
+        if parents.contains_key(&sr.chunk.id) {
+            continue;
+        }
+
+        if let Some(parent) = stored_parents.get(parent_id) {
+            // Parent found in DB (table chunk → section parent)
+            parents.insert(
+                sr.chunk.id.clone(),
+                ParentContext {
+                    name: parent.name.clone(),
+                    content: parent.content.clone(),
+                    line_start: parent.line_start,
+                    line_end: parent.line_end,
+                },
+            );
+        } else {
+            // Parent not in DB (windowed chunk → read source file)
+            let abs_path = root.join(&sr.chunk.file);
+            if let Ok(content) = std::fs::read_to_string(&abs_path) {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = sr.chunk.line_start.saturating_sub(1) as usize;
+                let end = (sr.chunk.line_end as usize).min(lines.len());
+                if start < end {
+                    let parent_content = lines[start..end].join("\n");
+                    parents.insert(
+                        sr.chunk.id.clone(),
+                        ParentContext {
+                            name: sr.chunk.name.clone(),
+                            content: parent_content,
+                            line_start: sr.chunk.line_start,
+                            line_end: sr.chunk.line_end,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    parents
 }
