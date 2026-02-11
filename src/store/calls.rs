@@ -800,6 +800,68 @@ impl Store {
         })
     }
 
+    /// Functions that share callers with target (called by the same functions).
+    ///
+    /// For target X, finds functions Y where some function A calls both X and Y.
+    /// Returns (function_name, overlap_count) sorted by overlap descending.
+    pub fn find_shared_callers(
+        &self,
+        target: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, u32)>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT fc2.callee_name, COUNT(DISTINCT fc2.caller_name) AS overlap
+                 FROM function_calls fc1
+                 JOIN function_calls fc2 ON fc1.caller_name = fc2.caller_name
+                 WHERE fc1.callee_name = ?1 AND fc2.callee_name != ?1
+                 GROUP BY fc2.callee_name
+                 ORDER BY overlap DESC
+                 LIMIT ?2",
+            )
+            .bind(target)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .into_iter()
+                .map(|(name, count)| (name, count as u32))
+                .collect())
+        })
+    }
+
+    /// Functions that share callees with target (call the same functions).
+    ///
+    /// For target X, finds functions Y where X and Y both call some function C.
+    /// Returns (function_name, overlap_count) sorted by overlap descending.
+    pub fn find_shared_callees(
+        &self,
+        target: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, u32)>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT fc2.caller_name, COUNT(DISTINCT fc2.callee_name) AS overlap
+                 FROM function_calls fc1
+                 JOIN function_calls fc2 ON fc1.callee_name = fc2.callee_name
+                 WHERE fc1.caller_name = ?1 AND fc2.caller_name != ?1
+                 GROUP BY fc2.caller_name
+                 ORDER BY overlap DESC
+                 LIMIT ?2",
+            )
+            .bind(target)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .into_iter()
+                .map(|(name, count)| (name, count as u32))
+                .collect())
+        })
+    }
+
     /// Get full call graph statistics
     pub fn function_call_stats(&self) -> Result<FunctionCallStats, StoreError> {
         self.rt.block_on(async {
@@ -935,5 +997,75 @@ mod tests {
             .get_callee_counts_batch(&["nonexistent_func"])
             .unwrap();
         assert!(counts.is_empty());
+    }
+
+    // ===== find_shared_callers / find_shared_callees tests =====
+
+    #[test]
+    fn test_find_shared_callers() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        // func_b and func_c are both called by func_a
+        // So func_c shares caller func_a with func_b
+        let shared = store.find_shared_callers("func_b", 10).unwrap();
+        let names: Vec<&str> = shared.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"func_c"),
+            "func_c should share caller func_a with func_b"
+        );
+    }
+
+    #[test]
+    fn test_find_shared_callees() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        // func_a and func_b both call func_c
+        // So func_b shares callee func_c with func_a
+        let shared = store.find_shared_callees("func_a", 10).unwrap();
+        let names: Vec<&str> = shared.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(
+            names.contains(&"func_b"),
+            "func_b should share callee func_c with func_a"
+        );
+    }
+
+    #[test]
+    fn test_find_shared_callers_no_callers() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        // func_a has no callers, so nothing shares callers with it
+        let shared = store.find_shared_callers("func_a", 10).unwrap();
+        assert!(shared.is_empty());
+    }
+
+    #[test]
+    fn test_find_shared_callees_no_callees() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        // func_c has no callees, so nothing shares callees with it
+        let shared = store.find_shared_callees("func_c", 10).unwrap();
+        assert!(shared.is_empty());
+    }
+
+    #[test]
+    fn test_find_shared_callers_limit() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        let shared = store.find_shared_callers("func_b", 1).unwrap();
+        assert!(shared.len() <= 1);
+    }
+
+    #[test]
+    fn test_find_shared_callers_unknown() {
+        let (store, _dir) = setup_store();
+        seed_call_graph(&store);
+
+        let shared = store.find_shared_callers("nonexistent", 10).unwrap();
+        assert!(shared.is_empty());
     }
 }

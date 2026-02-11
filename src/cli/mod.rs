@@ -18,8 +18,8 @@ pub(crate) use signal::{check_interrupted, reset_interrupted};
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
-    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_similar, cmd_stale, cmd_stats, cmd_test_map,
-    cmd_trace, NotesCommand, ProjectCommand, RefCommand,
+    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_similar, cmd_stale, cmd_stats,
+    cmd_test_map, cmd_trace, NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -342,6 +342,17 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Find functions related by shared callers, callees, or types
+    Related {
+        /// Function name or file:function
+        name: String,
+        /// Max results per category
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -444,6 +455,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref focus,
             json,
         }) => cmd_read(path, focus.as_deref(), json),
+        Some(Commands::Related {
+            ref name,
+            limit,
+            json,
+        }) => cmd_related(&cli, name, limit, json),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
