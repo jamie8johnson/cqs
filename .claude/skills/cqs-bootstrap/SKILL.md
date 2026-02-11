@@ -110,6 +110,7 @@ None.
    - `cqs-gc` — report index staleness
    - `cqs-stale` — check index freshness (files changed since last index)
    - `cqs-related` — find functions related by shared callers, callees, or types
+   - `cqs-where` — suggest where to add new code based on semantic similarity
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 

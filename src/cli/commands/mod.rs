@@ -27,6 +27,7 @@ mod stale;
 mod stats;
 mod test_map;
 mod trace;
+mod where_cmd;
 
 pub(crate) use audit_mode::cmd_audit_mode;
 pub(crate) use context::cmd_context;
@@ -52,3 +53,4 @@ pub(crate) use stale::cmd_stale;
 pub(crate) use stats::cmd_stats;
 pub(crate) use test_map::cmd_test_map;
 pub(crate) use trace::cmd_trace;
+pub(crate) use where_cmd::cmd_where;
