@@ -361,10 +361,17 @@
 - [x] **Table-aware Markdown chunking** (PR #361) — tables extracted as separate chunks alongside sections. Row-wise splitting for large tables (>1500 chars) with headers preserved. Pipeline parent_id path normalization fix. 17 new tests.
 - [x] **Parent retrieval (small-to-big)** (PR #361) — `has_parent` field in search JSON/terminal output. `--expand` flag inlines parent section content for table and windowed chunks. Batch parent fetching via `get_chunks_by_ids()`.
 
-### Planned
+### Done (v0.11.0+)
 
-- [ ] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls. Saves 2 tool calls per function investigation.
-- [ ] **Diff-aware impact** — `cqs impact-diff` takes a git diff, returns affected callers + tests that need re-running. CI integration: run only relevant tests. Combines `git diff` parse → function extraction → call graph traversal.
+- [x] **Proactive hints in cqs_read/cqs_explain** — auto-surface "0 callers" (dead code) and "no tests" flags without requiring separate tool calls. Saves 2 tool calls per function investigation.
+- [x] **Diff-aware impact** — `cqs impact-diff` takes a git diff, returns affected callers + tests that need re-running. CI integration: run only relevant tests. Combines `git diff` parse → function extraction → call graph traversal.
+- [x] **`cqs stale`** — index freshness check, lists files modified since last index (PR #365)
+- [x] **Proactive staleness warnings** — query commands warn on stderr when results come from stale files (PR #365)
+- [x] **`cqs context --compact`** — signatures-only TOC with caller/callee counts (PR #366)
+- [x] **`cqs related`** — co-occurrence analysis: shared callers, callees, types (PR #367)
+- [x] **`cqs impact --suggest-tests`** — test suggestions for untested callers (PR #368)
+- [x] **`cqs where`** — placement suggestion for new code based on semantic similarity (PR #369)
+- [x] **`cqs scout`** — pre-investigation dashboard: search + file groups + caller/test counts + staleness + notes (PR #370)
 
 ## Parked
 

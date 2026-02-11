@@ -2,19 +2,18 @@
 
 ## Right Now
 
-**7 agent experience features.** 2026-02-11.
+**All 7 agent experience features shipped.** 2026-02-11.
 
-Plan at `/home/user001/.claude/plans/linear-brewing-flame.md`. Build order: 2→6→5→3→4→1→7.
+All PRs merged:
+- PR #365: `cqs stale` + proactive staleness warnings (Features 2+6)
+- PR #366: `cqs context --compact` (Feature 5)
+- PR #367: `cqs related` (Feature 3)
+- PR #368: `cqs impact --suggest-tests` (Feature 4)
+- PR #369: `cqs where` (Feature 1)
+- PR #370: `cqs scout` (Feature 7 — capstone)
+- PR #371: Bootstrap agent skills propagation fix
 
-### Done
-- PR #365: `cqs stale` + proactive staleness warnings (Features 2+6). Merged.
-- PR #366: `cqs context --compact` (Feature 5). Merged.
-- PR #367: `cqs related` (Feature 3). Merged.
-
-### Next
-- Feature 4: `cqs impact --suggest-tests` — test suggestions for untested callers
-- Feature 1: `cqs where` — placement suggestion for new code
-- Feature 7: `cqs scout` — pre-investigation dashboard (capstone)
+Ready for v0.11.1 or v0.12.0 release.
 
 ### Known limitations
 - T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar
@@ -43,7 +42,7 @@ Plan at `/home/user001/.claude/plans/linear-brewing-flame.md`. Build order: 2→
 
 ## Architecture
 
-- Version: 0.11.0
+- Version: 0.12.0
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
