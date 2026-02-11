@@ -65,6 +65,12 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
+                // Pre-compute FTS normalized values
+                let fts_name = normalize_for_fts(&chunk.name);
+                let fts_sig = normalize_for_fts(&chunk.signature);
+                let fts_content = normalize_for_fts(&chunk.content);
+                let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
+
                 // Delete from FTS before insert - error must fail transaction to prevent desync
                 sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
                     .bind(&chunk.id)
@@ -75,10 +81,10 @@ impl Store {
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .bind(&chunk.id)
-                .bind(normalize_for_fts(&chunk.name))
-                .bind(normalize_for_fts(&chunk.signature))
-                .bind(normalize_for_fts(&chunk.content))
-                .bind(chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default())
+                .bind(&fts_name)
+                .bind(&fts_sig)
+                .bind(&fts_content)
+                .bind(&fts_doc)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -206,6 +212,12 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
+                // Pre-compute FTS normalized values
+                let fts_name = normalize_for_fts(&chunk.name);
+                let fts_sig = normalize_for_fts(&chunk.signature);
+                let fts_content = normalize_for_fts(&chunk.content);
+                let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
+
                 sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
                     .bind(&chunk.id)
                     .execute(&mut *tx)
@@ -215,10 +227,10 @@ impl Store {
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .bind(&chunk.id)
-                .bind(normalize_for_fts(&chunk.name))
-                .bind(normalize_for_fts(&chunk.signature))
-                .bind(normalize_for_fts(&chunk.content))
-                .bind(chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default())
+                .bind(&fts_name)
+                .bind(&fts_sig)
+                .bind(&fts_content)
+                .bind(&fts_doc)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -269,6 +281,12 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
+                // Pre-compute FTS normalized values
+                let fts_name = normalize_for_fts(&chunk.name);
+                let fts_sig = normalize_for_fts(&chunk.signature);
+                let fts_content = normalize_for_fts(&chunk.content);
+                let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
+
                 sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
                     .bind(&chunk.id)
                     .execute(&mut *tx)
@@ -278,10 +296,10 @@ impl Store {
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
                 .bind(&chunk.id)
-                .bind(normalize_for_fts(&chunk.name))
-                .bind(normalize_for_fts(&chunk.signature))
-                .bind(normalize_for_fts(&chunk.content))
-                .bind(chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default())
+                .bind(&fts_name)
+                .bind(&fts_sig)
+                .bind(&fts_content)
+                .bind(&fts_doc)
                 .execute(&mut *tx)
                 .await?;
             }
@@ -722,10 +740,10 @@ impl Store {
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<super::SearchResult>> = HashMap::new();
 
-            // Normalize all names upfront, keeping originals for scoring
+            // Normalize and sanitize all names upfront, keeping originals for scoring
             let normalized_names: Vec<(&str, String)> = names
                 .iter()
-                .map(|n| (*n, normalize_for_fts(n)))
+                .map(|n| (*n, super::sanitize_fts_query(&normalize_for_fts(n))))
                 .filter(|(_, norm)| !norm.is_empty())
                 .collect();
 
@@ -923,8 +941,9 @@ impl Store {
 
     /// Stream embeddings in batches for memory-efficient HNSW building.
     ///
-    /// Uses LIMIT/OFFSET pagination to avoid loading all embeddings at once.
-    /// Each batch contains up to `batch_size` embeddings (~30MB for 10k).
+    /// Uses cursor-based pagination (WHERE rowid > last_seen) for stability
+    /// under concurrent writes. LIMIT/OFFSET can skip or duplicate rows if
+    /// the table is modified between batches.
     ///
     /// # Arguments
     /// * `batch_size` - Number of embeddings per batch (recommend 10_000)
@@ -943,17 +962,18 @@ impl Store {
         EmbeddingBatchIterator {
             store: self,
             batch_size,
-            offset: 0,
+            last_rowid: 0,
             done: false,
         }
     }
 }
 
-/// Iterator for streaming embeddings in batches
+/// Iterator for streaming embeddings in batches using cursor-based pagination
 struct EmbeddingBatchIterator<'a> {
     store: &'a Store,
     batch_size: usize,
-    offset: usize,
+    /// Last seen rowid for cursor-based pagination
+    last_rowid: i64,
     done: bool,
 }
 
@@ -966,37 +986,43 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
         }
 
         let result = self.store.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM chunks LIMIT ?1 OFFSET ?2")
-                .bind(self.batch_size as i64)
-                .bind(self.offset as i64)
-                .fetch_all(&self.store.pool)
-                .await?;
+            let rows: Vec<_> = sqlx::query(
+                "SELECT rowid, id, embedding FROM chunks WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
+            )
+            .bind(self.last_rowid)
+            .bind(self.batch_size as i64)
+            .fetch_all(&self.store.pool)
+            .await?;
 
-            // Track actual rows fetched (before filtering) to correctly advance SQL OFFSET.
-            // If we used batch.len() (after filter_map), we'd under-count when some rows
-            // have invalid embeddings, causing duplicate fetches or missed rows.
             let rows_fetched = rows.len();
+
+            // Track the max rowid seen in this batch for the next cursor position
+            let mut max_rowid = self.last_rowid;
 
             let batch: Vec<(String, Embedding)> = rows
                 .into_iter()
                 .filter_map(|row| {
-                    let id: String = row.get(0);
-                    let bytes: Vec<u8> = row.get(1);
+                    let rowid: i64 = row.get(0);
+                    let id: String = row.get(1);
+                    let bytes: Vec<u8> = row.get(2);
+                    if rowid > max_rowid {
+                        max_rowid = rowid;
+                    }
                     bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
                 })
                 .collect();
 
-            Ok((batch, rows_fetched))
+            Ok((batch, rows_fetched, max_rowid))
         });
 
         match result {
-            Ok((batch, rows_fetched)) if batch.is_empty() && rows_fetched == 0 => {
+            Ok((batch, rows_fetched, max_rowid)) if batch.is_empty() && rows_fetched == 0 => {
                 // No more rows in database
                 self.done = true;
                 None
             }
-            Ok((batch, rows_fetched)) => {
-                self.offset += rows_fetched;
+            Ok((batch, _, max_rowid)) => {
+                self.last_rowid = max_rowid;
                 if batch.is_empty() {
                     // Had rows but all filtered out - continue to next batch
                     self.next()

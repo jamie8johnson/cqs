@@ -127,3 +127,110 @@ pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config)
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    /// Mutex to serialize tests that change the process-wide cwd
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run a closure with cwd temporarily set to `dir`, restoring afterwards.
+    fn with_cwd<F: FnOnce()>(dir: &std::path::Path, f: F) {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        f();
+        std::env::set_current_dir(original).unwrap();
+    }
+
+    #[test]
+    fn test_find_project_root_with_git() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+
+        with_cwd(dir.path(), || {
+            let root = find_project_root();
+            let expected =
+                dunce::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+            assert_eq!(root, expected, "Should find .git as project root marker");
+        });
+    }
+
+    #[test]
+    fn test_find_project_root_with_cargo_toml() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"\n",
+        )
+        .unwrap();
+
+        with_cwd(dir.path(), || {
+            let root = find_project_root();
+            let expected =
+                dunce::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+            assert_eq!(root, expected, "Should find Cargo.toml as project root");
+        });
+    }
+
+    #[test]
+    fn test_find_project_root_from_subdirectory() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let subdir = dir.path().join("src").join("deep");
+        std::fs::create_dir_all(&subdir).unwrap();
+
+        with_cwd(&subdir, || {
+            let root = find_project_root();
+            let expected =
+                dunce::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+            assert_eq!(
+                root, expected,
+                "Should walk up to find .git from subdirectory"
+            );
+        });
+    }
+
+    #[test]
+    fn test_find_project_root_no_markers() {
+        let dir = TempDir::new().unwrap();
+        let isolated = dir.path().join("isolated");
+        std::fs::create_dir(&isolated).unwrap();
+
+        with_cwd(&isolated, || {
+            // Should fall back to CWD without panicking
+            let root = find_project_root();
+            assert!(root.exists(), "Returned root should exist");
+        });
+    }
+
+    #[test]
+    fn test_find_cargo_workspace_root() {
+        let dir = TempDir::new().unwrap();
+
+        // Create workspace root
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crate-a\"]\n",
+        )
+        .unwrap();
+
+        // Create member crate
+        let member = dir.path().join("crate-a");
+        std::fs::create_dir(&member).unwrap();
+        std::fs::write(member.join("Cargo.toml"), "[package]\nname = \"crate-a\"\n").unwrap();
+
+        with_cwd(&member, || {
+            let root = find_project_root();
+            let expected =
+                dunce::canonicalize(dir.path()).unwrap_or_else(|_| dir.path().to_path_buf());
+            assert_eq!(
+                root, expected,
+                "Should detect workspace root above member crate"
+            );
+        });
+    }
+}

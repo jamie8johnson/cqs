@@ -458,7 +458,13 @@ fn test_empty_method() {
     let request = make_request("", None);
     let response = server.handle_request(request);
 
-    assert!(response.error.is_some());
+    assert!(response.error.is_some(), "Empty method should return error");
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("Unknown method"),
+        "Error should mention unknown method: {}",
+        error.message
+    );
 }
 
 #[test]
@@ -898,6 +904,12 @@ fn test_cqs_search_missing_query() {
         response.error.is_some(),
         "Missing query should return error"
     );
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("query") || error.message.contains("missing field"),
+        "Error should mention missing query: {}",
+        error.message
+    );
 }
 
 #[test]
@@ -983,6 +995,12 @@ fn test_cqs_add_note_empty_text() {
     let response = server.handle_request(request);
 
     assert!(response.error.is_some(), "Empty text should return error");
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("empty") || error.message.contains("text"),
+        "Error should mention empty text: {}",
+        error.message
+    );
 }
 
 #[test]
@@ -1000,6 +1018,12 @@ fn test_cqs_add_note_missing_text() {
     let response = server.handle_request(request);
 
     assert!(response.error.is_some(), "Missing text should return error");
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("Missing") || error.message.contains("text"),
+        "Error should mention missing text: {}",
+        error.message
+    );
 }
 
 #[test]
@@ -1156,6 +1180,12 @@ fn test_cqs_callers_missing_name() {
     let response = server.handle_request(request);
 
     assert!(response.error.is_some(), "Missing name should return error");
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("Missing") || error.message.contains("name"),
+        "Error should mention missing name: {}",
+        error.message
+    );
 }
 
 #[test]
@@ -1202,6 +1232,12 @@ fn test_cqs_callees_missing_name() {
     let response = server.handle_request(request);
 
     assert!(response.error.is_some(), "Missing name should return error");
+    let error = response.error.unwrap();
+    assert!(
+        error.message.contains("Missing") || error.message.contains("name"),
+        "Error should mention missing name: {}",
+        error.message
+    );
 }
 
 #[test]
