@@ -29,15 +29,6 @@ The embedding model is downloaded once from HuggingFace:
 
 HuggingFace may log download requests per their privacy policy. After download, the model runs offline.
 
-## MCP Server
-
-When using `cqs serve` with Claude Code:
-
-- **stdio transport** (default): Communicates via local stdin/stdout
-- **HTTP transport**: Binds to localhost (127.0.0.1) only
-- Search queries and results pass through the MCP protocol
-- All communication is local - no external network traffic
-
 ## CI/CD
 
 If you fork or contribute to the cqs repository:

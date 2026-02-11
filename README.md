@@ -259,38 +259,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 ### Setup
 
-**Step 1:** Add cqs as an MCP server:
-
-```bash
-claude mcp add cqs -- cqs serve --project /path/to/project
-```
-
-Or manually in `~/.claude.json`:
-
-```json
-{
-  "projects": {
-    "/path/to/project": {
-      "mcpServers": {
-        "cqs": {
-          "command": "cqs",
-          "args": ["serve", "--project", "/path/to/project"]
-        }
-      }
-    }
-  }
-}
-```
-
-**Note:** The `--project` argument is required because MCP servers run from an unpredictable working directory.
-
-**GPU acceleration:** Add `--gpu` for faster query embedding after warmup:
-```bash
-cqs serve --gpu --project /path/to/project
-```
-GPU: ~12ms warm queries. CPU (default): ~22ms. Server starts instantly with HNSW, upgrades to GPU in background.
-
-**Step 2:** Add to your project's `CLAUDE.md` so Claude uses it automatically:
+Add to your project's `CLAUDE.md` so Claude Code uses cqs automatically:
 
 ```markdown
 ## Code Search
@@ -325,45 +294,6 @@ Key commands (all support `--json`):
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
-
-### HTTP Transport
-
-For web integrations, use the HTTP transport:
-
-```bash
-cqs serve --transport http --port 3000 --project /path/to/project
-```
-
-Endpoints:
-- `POST /mcp` - JSON-RPC requests (MCP protocol messages)
-- `GET /mcp` - SSE stream for server-to-client notifications
-- `GET /health` - Health check (returns 200 OK when server is ready)
-
-**Authentication:** For network-exposed servers, API key authentication is required:
-
-```bash
-# Via flag
-cqs serve --transport http --api-key SECRET --project /path/to/project
-
-# Via environment variable
-export CQS_API_KEY=SECRET
-cqs serve --transport http --project /path/to/project
-
-# Via file (recommended - keeps secret out of process list)
-echo "SECRET" > /path/to/keyfile
-cqs serve --transport http --api-key-file /path/to/keyfile --project /path/to/project
-```
-
-Clients must include `Authorization: Bearer SECRET` header.
-
-**Network binding:** By default, cqs binds to localhost only. To expose on a network:
-
-```bash
-# Requires both flags for safety
-cqs serve --transport http --bind 0.0.0.0 --dangerously-allow-network-bind --api-key SECRET
-```
-
-Implements MCP Streamable HTTP spec 2025-11-25 with Origin validation and protocol version headers.
 
 ## Supported Languages
 
