@@ -21,28 +21,11 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "ort 2.0.0-rc.11 is still RC - no stable 2.0 yet. API could change. Pin exact version, watch for breaking changes on upgrade."
-mentions = [
-    "ort",
-    "Cargo.toml",
-    "embedder.rs",
-]
-
-[[note]]
 sentiment = -0.5
 text = "WSL /mnt/c/ path causes random permission errors (libsqlite3-sys, git config). Workaround in .cargo/config.toml but might bite elsewhere."
 mentions = [
     ".cargo/config.toml",
     "libsqlite3-sys",
-]
-
-[[note]]
-sentiment = 0.0
-text = "store.search() and hnsw.search() both match callee name 'search'. No type info in call graph - can't distinguish which is called. Documented limitation."
-mentions = [
-    "src/store/mod.rs",
-    "src/parser/calls.rs",
 ]
 
 [[note]]
@@ -107,14 +90,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "WSL has RTX A6000 (49GB VRAM) available for GPU testing. Use conda cuvs environment."
-mentions = [
-    "src/cagra.rs",
-    "gpu-search",
-]
-
-[[note]]
 sentiment = 0.0
 text = "CI catches what local builds miss. Feature flags differ between dev (gpu-search enabled) and CI (default features). Clippy on CI found dead code invisible locally."
 mentions = [
@@ -129,14 +104,6 @@ text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback lo
 mentions = [
     ".githooks",
     "cargo fmt",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Dev environment: i9-11900K (8c/16t), 62GB RAM, RTX A6000 (49GB VRAM), CUDA 13.1, WSL2"
-mentions = [
-    "hardware",
-    "benchmarking",
 ]
 
 [[note]]
@@ -169,14 +136,6 @@ text = "Put token count in filename for large files (e.g., DESIGN_SPEC_27k_token
 mentions = [
     "docs/",
     "workflow",
-]
-
-[[note]]
-sentiment = 0.5
-text = 'cqs pronounced "seeks" - semantic search that seeks code by behavior, not text matching. grep for known strings, cqs for "how does X work?"'
-mentions = [
-    "README.md",
-    "cqs",
 ]
 
 [[note]]
@@ -352,14 +311,6 @@ mentions = [
     "src/diff.rs",
     "semantic_diff",
     "get_chunk_with_embedding",
-]
-
-[[note]]
-sentiment = 0.0
-text = 'Workspace detection uses string contains("[workspace]") on Cargo.toml content. Simple but could false-positive on comments. Low risk — real TOML parsing would need toml crate dependency just for this check.'
-mentions = [
-    "src/cli/config.rs",
-    "find_cargo_workspace_root",
 ]
 
 [[note]]
@@ -636,4 +587,20 @@ text = "compute_hints accepts prefetched_caller_count to avoid duplicate get_cal
 mentions = [
     "src/impact.rs",
     "compute_hints",
+]
+
+[[note]]
+sentiment = -0.5
+text = "57 stale remote branches accumulated before cleanup. Squash-merge doesn't mark branches as merged in git, so git branch -r --merged misses them. Prune after each release: git remote prune origin."
+mentions = [
+    "release",
+    "git",
+]
+
+[[note]]
+sentiment = 1.0
+text = "7-feature plan executed cleanly across multiple sessions. Plan file structure (build order, per-feature sections with SQL, structs, files, tests, fresh-eyes findings) was effective. The build-order dependency chain (2→6→5→3→4→1→7) prevented integration conflicts."
+mentions = [
+    "plans",
+    "agent-experience",
 ]

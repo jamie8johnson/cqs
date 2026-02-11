@@ -21,7 +21,6 @@ static DEFINITION: LanguageDef = LanguageDef {
     chunk_query: "",
     call_query: None,
     signature_style: SignatureStyle::Breadcrumb,
-    type_map: &[],
     doc_nodes: &[],
     method_node_kinds: &[],
     method_containers: &[],

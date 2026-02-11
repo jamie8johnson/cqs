@@ -2,18 +2,21 @@
 
 ## Right Now
 
-**All 7 agent experience features shipped.** 2026-02-11.
+**v0.12.0 released.** 2026-02-11.
 
-All PRs merged:
-- PR #365: `cqs stale` + proactive staleness warnings (Features 2+6)
-- PR #366: `cqs context --compact` (Feature 5)
-- PR #367: `cqs related` (Feature 3)
-- PR #368: `cqs impact --suggest-tests` (Feature 4)
-- PR #369: `cqs where` (Feature 1)
-- PR #370: `cqs scout` (Feature 7 — capstone)
-- PR #371: Bootstrap agent skills propagation fix
+7 agent experience features shipped (PRs #365-#370), bootstrap fix (#371), release PR #372.
+Published to crates.io, GitHub release created, release binary updated.
 
-Ready for v0.11.1 or v0.12.0 release.
+Cleaned up: 57 stale remote branches pruned, awesome-mcp-servers PR #1783 closed (MCP removed).
+Roadmap archived — completed phases moved to `docs/roadmap-archive.md`.
+Notes groomed: 76 → 70 (removed hardware specs, pronunciation, stale observations).
+
+### Planning next
+- Pre-built release binaries (GitHub Actions)
+- Skill grouping / organization
+- Delete `type_map` dead code
+- Scout note matching precision
+- `cqs plan` R&D
 
 ### Known limitations
 - T-SQL triggers (`CREATE TRIGGER ON table AFTER INSERT`) not supported by grammar
@@ -26,7 +29,7 @@ Ready for v0.11.1 or v0.12.0 release.
 - **Post-index name matching** — follow-up PR for fuzzy cross-doc references
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred from Phase 6, tracked in #255
-- **Speculative R&D: `cqs plan`** — strong AI planning. Agent reasoning between sequential calls is load-bearing; collapsing it risks removing valuable intermediate decisions. Revisit when `scout` proves sufficient.
+- **Speculative R&D: `cqs plan`** — strong AI planning. Revisit when `scout` usage data available.
 
 ## Open Issues
 
@@ -49,6 +52,7 @@ Ready for v0.11.1 or v0.12.0 release.
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
+- Tests: 408 lib + 213 integration + 11 doc (632 total)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)

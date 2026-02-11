@@ -237,7 +237,7 @@ fn classify_role(score: f32, name: &str) -> ChunkRole {
 /// Find notes whose mentions overlap with result file paths.
 ///
 /// Matches when a mention is a suffix of a result file path (e.g., mention "search.rs"
-/// matches result "src/search.rs") or the result file path ends with the mention.
+/// matches result "src/search.rs") at a path-component boundary.
 /// This avoids false matches from short concept words like "audit" or "security".
 fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<NoteSummary> {
     let all_notes = match store.list_notes_summaries() {
@@ -248,17 +248,24 @@ fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<Not
     all_notes
         .into_iter()
         .filter(|note| {
-            note.mentions.iter().any(|m| {
-                // Only match file-like mentions (contain '.' or '/')
-                if !m.contains('.') && !m.contains('/') {
-                    return false;
-                }
-                result_files
-                    .iter()
-                    .any(|f| f.ends_with(m) || m.ends_with(f))
-            })
+            note.mentions
+                .iter()
+                .any(|m| result_files.iter().any(|f| note_mention_matches_file(m, f)))
         })
         .collect()
+}
+
+/// Check if a note mention matches a result file path.
+///
+/// Only file-like mentions (containing '.' or '/') are considered.
+/// Match requires the file path to end with the mention at a path-component
+/// boundary (preceded by '/' or at start of string).
+fn note_mention_matches_file(mention: &str, file: &str) -> bool {
+    if !mention.contains('.') && !mention.contains('/') {
+        return false;
+    }
+    file.ends_with(mention)
+        && (file.len() == mention.len() || file.as_bytes()[file.len() - mention.len() - 1] == b'/')
 }
 
 /// Serialize scout result to JSON
@@ -381,12 +388,35 @@ mod tests {
     }
 
     #[test]
-    fn test_find_relevant_notes_empty() {
-        // Can't test with real store, but verify empty input produces empty output
-        let result_files: HashSet<String> = HashSet::new();
-        // find_relevant_notes with empty files should still work
-        // (can't call without store, but the function handles empty gracefully)
-        assert!(result_files.is_empty());
+    fn test_note_mention_matches_file() {
+        // Positive: suffix at path boundary
+        assert!(note_mention_matches_file("search.rs", "src/search.rs"));
+        assert!(note_mention_matches_file("src/search.rs", "src/search.rs"));
+        assert!(note_mention_matches_file("cli/mod.rs", "src/cli/mod.rs"));
+        assert!(note_mention_matches_file("mod.rs", "src/cli/mod.rs"));
+
+        // Negative: not at path boundary (partial filename)
+        assert!(!note_mention_matches_file("od.rs", "src/cli/mod.rs"));
+        assert!(!note_mention_matches_file("earch.rs", "src/search.rs"));
+
+        // Negative: not file-like (no '.' or '/')
+        assert!(!note_mention_matches_file("audit", "src/audit.rs"));
+        assert!(!note_mention_matches_file("search", "src/search.rs"));
+
+        // Negative: mention longer than file
+        assert!(!note_mention_matches_file(
+            "extra/src/search.rs",
+            "search.rs"
+        ));
+
+        // Edge: exact match
+        assert!(note_mention_matches_file("src/scout.rs", "src/scout.rs"));
+
+        // Edge: mention with '/' but no match
+        assert!(!note_mention_matches_file(
+            "other/search.rs",
+            "src/search.rs"
+        ));
     }
 
     #[test]

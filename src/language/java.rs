@@ -1,6 +1,6 @@
 //! Java language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Java code chunks
 const CHUNK_QUERY: &str = r#"
@@ -31,15 +31,6 @@ const CALL_QUERY: &str = r#"
 (object_creation_expression
   type: (type_identifier) @callee)
 "#;
-
-/// Mapping from capture names to chunk types
-const TYPE_MAP: &[(&str, ChunkType)] = &[
-    ("function", ChunkType::Function),
-    ("class", ChunkType::Class),
-    ("interface", ChunkType::Interface),
-    ("enum", ChunkType::Enum),
-    ("struct", ChunkType::Struct),
-];
 
 /// Doc comment node types (Javadoc /** ... */ and regular comments)
 const DOC_NODES: &[&str] = &["line_comment", "block_comment"];
@@ -87,7 +78,6 @@ static DEFINITION: LanguageDef = LanguageDef {
     chunk_query: CHUNK_QUERY,
     call_query: Some(CALL_QUERY),
     signature_style: SignatureStyle::UntilBrace,
-    type_map: TYPE_MAP,
     doc_nodes: DOC_NODES,
     method_node_kinds: &[],
     method_containers: &["class_body", "class_declaration"],
