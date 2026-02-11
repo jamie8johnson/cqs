@@ -201,7 +201,7 @@ sentiment = 0.5
 text = "Notes surface heavily in search results because they contain dense semantic content about architecture decisions. That's intentional - observations are indexed to be found when conceptually relevant."
 mentions = [
     "notes.toml",
-    "store.rs",
+    "src/store/mod.rs",
     "search",
 ]
 
@@ -517,14 +517,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "tree-sitter-sequel-tsql v0.4.2 not yet published to crates.io — bracket-quoted identifiers and ALTER PROCEDURE/FUNCTION only available via git dep. Any project using crates.io dep gets v0.4.0 without those fixes."
-mentions = [
-    "Cargo.toml",
-    "tree-sitter-sequel-tsql",
-]
-
-[[note]]
-sentiment = -0.5
 text = "extract_name_fallback() in chunk.rs searches for SQL keywords (PROCEDURE, FUNCTION, VIEW, TRIGGER) but lives in generic parser code. Harmless for non-SQL languages (returns None) but couples generic parsing to SQL-specific knowledge."
 mentions = [
     "src/parser/chunk.rs",
@@ -651,4 +643,30 @@ mentions = [
     "src/embedder.rs",
     "clear_session",
     "OnceCell",
+]
+
+[[note]]
+sentiment = -0.5
+text = '''WSL vhdx doesn't auto-shrink. Deleting files inside WSL frees space on ext4 but the vhdx on C: stays the same size. Must wsl --shutdown + diskpart compact vdisk to reclaim Windows disk space. Our vhdx is at C:\Users\user001\AppData\Local\wsl\{830cd9dc-...}\ext4.vhdx (180GB allocated, ~69GB used).'''
+mentions = [
+    "WSL",
+    "disk-space",
+]
+
+[[note]]
+sentiment = 0.5
+text = "MCP server lazy-reloads HNSW via index.hnsw.checksum mtime as sentinel. Checksum file written last by save(), so safe freshness indicator. maybe_reload_hnsw() called from search/similar/explain/stats — cheap fs::metadata stat per request."
+mentions = [
+    "src/mcp/server.rs",
+    "src/hnsw/persist.rs",
+    "maybe_reload_hnsw",
+]
+
+[[note]]
+sentiment = -0.5
+text = "maybe_reload_hnsw() replaces GPU CAGRA with CPU HNSW when disk index changes. Freshness trumps GPU speed (~12ms HNSW vs ~6ms CAGRA). CAGRA background build will re-promote on next server restart."
+mentions = [
+    "src/mcp/server.rs",
+    "src/cagra.rs",
+    "maybe_reload_hnsw",
 ]
