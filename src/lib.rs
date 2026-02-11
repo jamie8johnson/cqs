@@ -59,6 +59,7 @@ pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod project;
 pub(crate) mod related;
+pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod source;
 pub(crate) mod structural;
@@ -84,13 +85,16 @@ pub use diff::{semantic_diff, DiffResult};
 pub use focused_read::extract_type_names;
 pub use gather::{gather, GatherDirection, GatherOptions};
 pub use impact::{
-    analyze_diff_impact, analyze_impact, compute_hints, diff_impact_to_json, impact_to_json,
-    impact_to_mermaid, map_hunks_to_functions, suggest_tests, ChangedFunction, DiffImpactResult,
-    FunctionHints, ImpactResult, TestSuggestion,
+    analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
+    diff_impact_to_json, impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests,
+    ChangedFunction, DiffImpactResult, FunctionHints, ImpactResult, TestSuggestion,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
+pub use scout::{
+    scout, scout_to_json, ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary,
+};
 pub use search::{parse_target, resolve_target};
 pub use structural::Pattern;
 pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, PlacementResult};

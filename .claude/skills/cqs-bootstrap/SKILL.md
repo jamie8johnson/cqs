@@ -111,6 +111,7 @@ None.
    - `cqs-stale` — check index freshness (files changed since last index)
    - `cqs-related` — find functions related by shared callers, callees, or types
    - `cqs-where` — suggest where to add new code based on semantic similarity
+   - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 

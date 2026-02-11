@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`cqs related <function>`**: Co-occurrence analysis — find functions that share callers, callees, or custom types with a target. Three dimensions for understanding what else needs review when touching code.
 - **`cqs impact --suggest-tests`**: For each untested caller in impact analysis, suggests test name, file location (inline or new file), and naming pattern. Language-aware for Rust, Python, JS/TS, Java, Go.
 - **`cqs where "description"`**: Placement suggestion — find the best file and insertion point for new code. Extracts local patterns (imports, error handling, naming convention, visibility, inline tests) for each suggested file.
+- **`cqs scout "task"`**: Pre-investigation dashboard — single command replaces search → read → callers → tests → notes workflow. Groups results by file with signatures, caller/test counts, role classification, staleness, and relevant notes.
 
 ## [0.11.0] - 2026-02-11
 

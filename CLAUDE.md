@@ -67,6 +67,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs stale` — check index freshness: files modified since last index.
 - `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.
 - `cqs where "description"` — placement suggestion: where to add new code, with local patterns.
+- `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes in one call.
 - `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.

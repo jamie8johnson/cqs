@@ -287,6 +287,40 @@ impl Store {
         })
     }
 
+    /// List all notes with metadata (no embeddings).
+    ///
+    /// Returns `NoteSummary` for each note, useful for mention-based filtering
+    /// without the cost of loading embeddings.
+    pub fn list_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<_> =
+                sqlx::query("SELECT id, text, sentiment, mentions FROM notes ORDER BY created_at")
+                    .fetch_all(&self.pool)
+                    .await?;
+
+            Ok(rows
+                .into_iter()
+                .map(|row| {
+                    let id: String = row.get(0);
+                    let text: String = row.get(1);
+                    let sentiment: f64 = row.get(2);
+                    let mentions_json: String = row.get(3);
+                    let mentions: Vec<String> =
+                        serde_json::from_str(&mentions_json).unwrap_or_else(|e| {
+                            tracing::warn!(note_id = %id, error = %e, "Failed to deserialize note mentions");
+                            Vec::new()
+                        });
+                    NoteSummary {
+                        id,
+                        text,
+                        sentiment: sentiment as f32,
+                        mentions,
+                    }
+                })
+                .collect())
+        })
+    }
+
     /// Get all note embeddings for HNSW index building.
     ///
     /// Returns (id, embedding) pairs with `note:` prefix on IDs to distinguish from chunks.
