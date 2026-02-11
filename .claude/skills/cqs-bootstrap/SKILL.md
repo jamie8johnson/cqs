@@ -182,6 +182,10 @@ After: `cqs audit-mode off` or let it auto-expire (30 min default).
 **Use `cqs notes add` to add notes** — it indexes immediately. Direct file edits require `cqs index` to become searchable.
 
 **Sentiment is DISCRETE** — only 5 valid values: -1, -0.5, 0, 0.5, 1
+
+## Agent Teams
+
+When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, callers, callees, explain, similar, gather, impact, test-map, trace, context, dead, scout) in every agent prompt.
 ```
 
 ### Phase 6: Verify
