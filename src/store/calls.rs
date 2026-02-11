@@ -401,14 +401,17 @@ impl Store {
         })
     }
 
-    /// Load the entire call graph as forward + reverse adjacency lists.
+    /// Load the call graph as forward + reverse adjacency lists.
     ///
-    /// Single SQL scan of `function_calls`. Typically ~2000 edges, fits in memory trivially.
+    /// Single SQL scan of `function_calls`, capped at 500K edges to prevent OOM
+    /// on adversarial databases. Typical projects have ~2000 edges.
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
     pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
         self.rt.block_on(async {
+            const MAX_CALL_GRAPH_EDGES: i64 = 500_000;
             let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT caller_name, callee_name FROM function_calls")
+                sqlx::query_as("SELECT caller_name, callee_name FROM function_calls LIMIT ?1")
+                    .bind(MAX_CALL_GRAPH_EDGES)
                     .fetch_all(&self.pool)
                     .await?;
 

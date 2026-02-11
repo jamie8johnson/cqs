@@ -186,6 +186,17 @@ impl Config {
 
     /// Load configuration from a specific file
     fn load_file(path: &Path) -> Result<Option<Self>, String> {
+        // Size guard: config files should be well under 1MB
+        const MAX_CONFIG_SIZE: u64 = 1024 * 1024;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.len() > MAX_CONFIG_SIZE {
+                return Err(format!(
+                    "Config file too large: {}KB (limit {}KB)",
+                    meta.len() / 1024,
+                    MAX_CONFIG_SIZE / 1024
+                ));
+            }
+        }
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),

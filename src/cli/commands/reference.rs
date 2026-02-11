@@ -200,11 +200,6 @@ fn cmd_ref_list(cli: &Cli) -> Result<()> {
 
 fn cmd_ref_remove(name: &str) -> Result<()> {
     let root = find_project_root();
-    let config = cqs::config::Config::load(&root);
-
-    // Find the reference to get its path before removing from config
-    let ref_config = config.references.iter().find(|r| r.name == name);
-
     let config_path = root.join(".cqs.toml");
     let removed = remove_reference_from_config(&config_path, name)?;
 
@@ -212,21 +207,25 @@ fn cmd_ref_remove(name: &str) -> Result<()> {
         bail!("Reference '{}' not found in config.", name);
     }
 
-    // Delete reference directory — try config path first, fall back to ref_path()
-    let mut dir_deleted = false;
-    if let Some(cfg) = ref_config {
-        if cfg.path.exists() {
-            std::fs::remove_dir_all(&cfg.path)
-                .with_context(|| format!("Failed to remove {}", cfg.path.display()))?;
-            dir_deleted = true;
-        }
-    }
-    // Fallback: delete via canonical ref_path (handles config parse mismatches)
-    if !dir_deleted {
-        if let Some(ref_dir) = reference::ref_path(name) {
-            if ref_dir.exists() {
-                std::fs::remove_dir_all(&ref_dir)
-                    .with_context(|| format!("Failed to remove {}", ref_dir.display()))?;
+    // Delete reference directory — only via canonical ref_path() to prevent
+    // config-supplied paths from deleting arbitrary directories
+    if let Some(refs_root) = reference::refs_dir() {
+        let ref_dir = refs_root.join(name);
+        if ref_dir.exists() {
+            // Verify the path is actually inside the refs directory
+            if let (Ok(canonical_dir), Ok(canonical_root)) = (
+                dunce::canonicalize(&ref_dir),
+                dunce::canonicalize(&refs_root),
+            ) {
+                if canonical_dir.starts_with(&canonical_root) {
+                    std::fs::remove_dir_all(&canonical_dir)
+                        .with_context(|| format!("Failed to remove {}", ref_dir.display()))?;
+                } else {
+                    tracing::warn!(
+                        path = %canonical_dir.display(),
+                        "Refusing to delete reference directory outside refs root"
+                    );
+                }
             }
         }
     }

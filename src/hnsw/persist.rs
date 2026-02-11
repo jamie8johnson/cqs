@@ -30,10 +30,9 @@ fn verify_hnsw_checksums(dir: &Path, basename: &str) -> Result<(), HnswError> {
     let checksum_path = dir.join(format!("{}.hnsw.checksum", basename));
 
     if !checksum_path.exists() {
-        tracing::warn!(
-            "No checksum file for HNSW index - run 'cqs index --force' to add checksums"
-        );
-        return Ok(());
+        return Err(HnswError::Internal(
+            "No checksum file for HNSW index — run 'cqs index --force' to regenerate".to_string(),
+        ));
     }
 
     let checksum_content = std::fs::read_to_string(&checksum_path).map_err(|e| {
@@ -439,6 +438,26 @@ mod tests {
 
     use crate::hnsw::make_test_embedding as make_embedding;
 
+    /// Write a checksum file matching the given HNSW files
+    fn write_checksums(dir: &Path, basename: &str) {
+        let mut lines = Vec::new();
+        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids"] {
+            let path = dir.join(format!("{}.{}", basename, ext));
+            if path.exists() {
+                let mut hasher = blake3::Hasher::new();
+                let mut file = std::fs::File::open(&path).unwrap();
+                std::io::copy(&mut file, &mut hasher).unwrap();
+                let hash = hasher.finalize().to_hex().to_string();
+                lines.push(format!("{}:{}", ext, hash));
+            }
+        }
+        std::fs::write(
+            dir.join(format!("{}.hnsw.checksum", basename)),
+            lines.join("\n"),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn test_load_rejects_oversized_graph_file() {
         let tmp = TempDir::new().unwrap();
@@ -455,6 +474,7 @@ mod tests {
 
         std::fs::write(&data_path, b"dummy").unwrap();
         std::fs::write(&ids_path, b"[]").unwrap();
+        write_checksums(tmp.path(), "test");
 
         match HnswIndex::load(tmp.path(), "test") {
             Err(e) => {
@@ -484,6 +504,7 @@ mod tests {
         f.set_len(1025 * 1024 * 1024).unwrap();
 
         std::fs::write(&ids_path, b"[]").unwrap();
+        write_checksums(tmp.path(), "test");
 
         match HnswIndex::load(tmp.path(), "test") {
             Err(e) => {
@@ -495,6 +516,28 @@ mod tests {
                 );
             }
             Ok(_) => panic!("Expected error for oversized data file"),
+        }
+    }
+
+    #[test]
+    fn test_load_rejects_missing_checksum() {
+        let tmp = TempDir::new().unwrap();
+
+        std::fs::write(tmp.path().join("test.hnsw.graph"), b"data").unwrap();
+        std::fs::write(tmp.path().join("test.hnsw.data"), b"data").unwrap();
+        std::fs::write(tmp.path().join("test.hnsw.ids"), b"[]").unwrap();
+        // No checksum file
+
+        match HnswIndex::load(tmp.path(), "test") {
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("No checksum file"),
+                    "Expected checksum error, got: {}",
+                    msg
+                );
+            }
+            Ok(_) => panic!("Expected error for missing checksum file"),
         }
     }
 

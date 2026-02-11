@@ -29,6 +29,17 @@ impl ProjectRegistry {
         if !path.exists() {
             return Ok(Self::default());
         }
+        // Size guard: project registry should be well under 1MB
+        const MAX_REGISTRY_SIZE: u64 = 1024 * 1024;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > MAX_REGISTRY_SIZE {
+                anyhow::bail!(
+                    "Project registry too large: {}KB (limit {}KB)",
+                    meta.len() / 1024,
+                    MAX_REGISTRY_SIZE / 1024
+                );
+            }
+        }
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read {}", path.display()))?;
         toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))

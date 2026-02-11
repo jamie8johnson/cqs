@@ -14,6 +14,7 @@ use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
 use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult};
+use crate::store::sanitize_fts_query;
 use crate::store::{Store, StoreError, UnifiedResult};
 
 // ============ Target Resolution ============
@@ -453,9 +454,10 @@ impl Store {
 
             let mut scored = score_heap.into_sorted_vec();
 
-            // Normalize query text once for FTS (not twice - search_fts is a separate code path)
+            // Normalize + sanitize query text for FTS5 MATCH (defense-in-depth)
             let normalized_query = if use_rrf {
-                Some(normalize_for_fts(&filter.query_text))
+                let normalized = normalize_for_fts(&filter.query_text);
+                Some(sanitize_fts_query(&normalized))
             } else {
                 None
             };

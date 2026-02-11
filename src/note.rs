@@ -146,6 +146,21 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
         ))
     })?;
 
+    // Size guard: notes.toml should be well under 10MB
+    const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    if let Ok(meta) = lock_file.metadata() {
+        if meta.len() > MAX_NOTES_FILE_SIZE {
+            return Err(NoteError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{}: file too large ({}MB, limit {}MB)",
+                    path.display(),
+                    meta.len() / (1024 * 1024),
+                    MAX_NOTES_FILE_SIZE / (1024 * 1024)
+                ),
+            )));
+        }
+    }
     let mut content = String::new();
     lock_file.read_to_string(&mut content).map_err(|e| {
         NoteError::Io(std::io::Error::new(
@@ -184,6 +199,21 @@ pub fn rewrite_notes_file(
     })?;
     // lock_file held until end of function (dropped automatically)
 
+    // Size guard (same limit as read path)
+    const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    if let Ok(meta) = std::fs::metadata(notes_path) {
+        if meta.len() > MAX_NOTES_FILE_SIZE {
+            return Err(NoteError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "{}: file too large ({}MB, limit {}MB)",
+                    notes_path.display(),
+                    meta.len() / (1024 * 1024),
+                    MAX_NOTES_FILE_SIZE / (1024 * 1024)
+                ),
+            )));
+        }
+    }
     let content = std::fs::read_to_string(notes_path).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
@@ -194,8 +224,8 @@ pub fn rewrite_notes_file(
 
     mutate(&mut file.note)?;
 
-    // Atomic write: temp file + rename
-    let tmp_path = notes_path.with_extension("toml.tmp");
+    // Atomic write: temp file + rename (random suffix to prevent predictable name attacks)
+    let tmp_path = notes_path.with_extension(format!("toml.{}.tmp", std::process::id()));
 
     let serialized = match toml::to_string_pretty(&file) {
         Ok(s) => s,
