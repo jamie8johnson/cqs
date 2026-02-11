@@ -8,7 +8,8 @@ use anyhow::{bail, Context, Result};
 use cqs::audit::load_audit_state;
 use cqs::extract_type_names;
 use cqs::note::{parse_notes, path_matches_mention};
-use cqs::Store;
+use cqs::parser::ChunkType;
+use cqs::{compute_hints, Store};
 
 use crate::cli::find_project_root;
 
@@ -145,6 +146,26 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
         chunk.name, rel_file, chunk.line_start, chunk.line_end
     ));
 
+    // Hints (function/method only) — compute once, reuse for JSON
+    let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
+        compute_hints(&store, &chunk.name, None).ok()
+    } else {
+        None
+    };
+    if let Some(ref h) = hints {
+        let caller_label = if h.caller_count == 0 {
+            "! 0 callers".to_string()
+        } else {
+            format!("{} callers", h.caller_count)
+        };
+        let test_label = if h.test_count == 0 {
+            "! 0 tests".to_string()
+        } else {
+            format!("{} tests", h.test_count)
+        };
+        output.push_str(&format!("// [cqs] {} | {}\n", caller_label, test_label));
+    }
+
     // Note injection
     let audit_mode = load_audit_state(&cqs_dir);
     if let Some(status) = audit_mode.status_line() {
@@ -222,10 +243,18 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     }
 
     if json {
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "focus": focus,
             "content": output,
         });
+        if let Some(ref h) = hints {
+            result["hints"] = serde_json::json!({
+                "caller_count": h.caller_count,
+                "test_count": h.test_count,
+                "no_callers": h.caller_count == 0,
+                "no_tests": h.test_count == 0,
+            });
+        }
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         print!("{}", output);

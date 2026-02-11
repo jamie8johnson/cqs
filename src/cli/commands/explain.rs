@@ -2,7 +2,8 @@
 
 use anyhow::{bail, Result};
 
-use cqs::{HnswIndex, SearchFilter, Store};
+use cqs::parser::ChunkType;
+use cqs::{compute_hints, HnswIndex, SearchFilter, Store};
 
 use crate::cli::find_project_root;
 
@@ -90,6 +91,13 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
         None => vec![],
     };
 
+    // Compute hints (only for function/method chunk types)
+    let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
+        compute_hints(&store, &chunk.name, Some(callers.len())).ok()
+    } else {
+        None
+    };
+
     if json {
         let callers_json: Vec<_> = callers
             .iter()
@@ -130,7 +138,7 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
             .to_string_lossy()
             .replace('\\', "/");
 
-        let output = serde_json::json!({
+        let mut output = serde_json::json!({
             "name": chunk.name,
             "file": rel_file,
             "language": chunk.language.to_string(),
@@ -142,6 +150,15 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
             "callees": callees_json,
             "similar": similar_json,
         });
+
+        if let Some(ref h) = hints {
+            output["hints"] = serde_json::json!({
+                "caller_count": h.caller_count,
+                "test_count": h.test_count,
+                "no_callers": h.caller_count == 0,
+                "no_tests": h.test_count == 0,
+            });
+        }
 
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -161,6 +178,24 @@ pub(crate) fn cmd_explain(_cli: &crate::cli::Cli, target: &str, json: bool) -> R
             chunk.line_start,
             chunk.line_end
         );
+
+        if let Some(ref h) = hints {
+            if h.caller_count == 0 || h.test_count == 0 {
+                let caller_part = if h.caller_count == 0 {
+                    format!("{}", "0 callers".yellow())
+                } else {
+                    format!("{} callers", h.caller_count)
+                };
+                let test_part = if h.test_count == 0 {
+                    format!("{}", "0 tests".yellow())
+                } else {
+                    format!("{} tests", h.test_count)
+                };
+                println!("{} | {}", caller_part, test_part);
+            } else {
+                println!("{} callers | {} tests", h.caller_count, h.test_count);
+            }
+        }
 
         if !chunk.signature.is_empty() {
             println!();
