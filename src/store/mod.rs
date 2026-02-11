@@ -223,6 +223,17 @@ impl Store {
 
         tracing::info!(path = %path.display(), "Database connected");
 
+        // Quick integrity check — catches B-tree corruption early
+        store.rt.block_on(async {
+            let result: (String,) = sqlx::query_as("PRAGMA quick_check")
+                .fetch_one(&store.pool)
+                .await?;
+            if result.0 != "ok" {
+                return Err(StoreError::Corruption(result.0));
+            }
+            Ok::<_, StoreError>(())
+        })?;
+
         // Check schema version compatibility
         store.check_schema_version(path)?;
         // Check model version compatibility

@@ -147,6 +147,10 @@ pub fn gather(
     }
 
     // 2. Load call graph for expansion
+    // NOTE: This loads the entire function_calls table into memory each call.
+    // Current callers (CLI, MCP) invoke gather() once per request so this is fine.
+    // If gather() is ever called in a loop, accept a pre-loaded &CallGraph parameter
+    // to avoid redundant loads.
     let graph = store.get_call_graph()?;
 
     // Seed names with their scores

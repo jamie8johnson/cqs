@@ -205,7 +205,11 @@ impl std::fmt::Display for ExecutionProvider {
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Embedder {
-    /// Lazy-loaded ONNX session (expensive ~500ms init, needs Mutex for run())
+    /// Lazy-loaded ONNX session (expensive ~500ms init, needs Mutex for run()).
+    ///
+    /// Persists for the lifetime of the Embedder. In long-running processes,
+    /// this holds ~500MB of GPU/CPU memory. To release, call [`clear_session`]
+    /// or drop the Embedder instance and create a new one when needed.
     session: OnceCell<Mutex<Session>>,
     /// Lazy-loaded tokenizer
     tokenizer: OnceCell<tokenizers::Tokenizer>,
@@ -421,6 +425,14 @@ impl Embedder {
     /// Get the execution provider being used
     pub fn provider(&self) -> ExecutionProvider {
         self.provider
+    }
+
+    /// Release the ONNX session to free ~500MB of memory.
+    ///
+    /// The session will be lazily re-initialized on the next embedding request.
+    /// Use this in long-running processes during idle periods to reduce memory footprint.
+    pub fn clear_session(&mut self) {
+        self.session = OnceCell::new();
     }
 
     /// Warm up the model with a dummy inference

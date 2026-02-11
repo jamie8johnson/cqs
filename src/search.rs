@@ -865,4 +865,309 @@ mod tests {
         // c should replace one of the earlier entries (no iteration-order bias)
         assert!(results.iter().any(|(id, _)| id == "c"));
     }
+
+    // ===== BoundedScoreHeap additional tests =====
+
+    #[test]
+    fn test_bounded_heap_evicts_lowest() {
+        let mut heap = BoundedScoreHeap::new(2);
+        heap.push("low".to_string(), 0.1);
+        heap.push("mid".to_string(), 0.5);
+        heap.push("high".to_string(), 0.9);
+        let results = heap.into_sorted_vec();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "high");
+        assert_eq!(results[1].0, "mid");
+    }
+
+    #[test]
+    fn test_bounded_heap_ignores_non_finite() {
+        let mut heap = BoundedScoreHeap::new(5);
+        heap.push("nan".to_string(), f32::NAN);
+        heap.push("inf".to_string(), f32::INFINITY);
+        heap.push("neginf".to_string(), f32::NEG_INFINITY);
+        heap.push("ok".to_string(), 0.5);
+        let results = heap.into_sorted_vec();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "ok");
+    }
+
+    #[test]
+    fn test_bounded_heap_empty() {
+        let heap = BoundedScoreHeap::new(5);
+        let results = heap.into_sorted_vec();
+        assert!(results.is_empty());
+    }
+
+    // ===== search_filtered integration tests (TC4) =====
+
+    mod search_filtered_tests {
+        use crate::embedder::Embedding;
+        use crate::parser::{ChunkType, Language};
+        use crate::store::helpers::{ModelInfo, SearchFilter};
+        use crate::store::Store;
+        use std::path::PathBuf;
+
+        fn setup_store() -> (Store, tempfile::TempDir) {
+            let dir = tempfile::TempDir::new().unwrap();
+            let db_path = dir.path().join("index.db");
+            let store = Store::open(&db_path).unwrap();
+            store.init(&ModelInfo::default()).unwrap();
+            (store, dir)
+        }
+
+        fn mock_embedding(seed: f32) -> Embedding {
+            let mut v = vec![seed; 768];
+            let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm > 0.0 {
+                for x in &mut v {
+                    *x /= norm;
+                }
+            }
+            v.push(0.0);
+            Embedding::new(v)
+        }
+
+        fn make_chunk(
+            name: &str,
+            file: &str,
+            lang: Language,
+            chunk_type: ChunkType,
+        ) -> crate::parser::Chunk {
+            let content = format!("fn {}() {{ /* body */ }}", name);
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            crate::parser::Chunk {
+                id: format!("{}:1:{}", file, &hash[..8]),
+                file: PathBuf::from(file),
+                language: lang,
+                chunk_type,
+                name: name.to_string(),
+                signature: format!("fn {}()", name),
+                content,
+                doc: None,
+                line_start: 1,
+                line_end: 5,
+                content_hash: hash,
+                parent_id: None,
+                window_idx: None,
+            }
+        }
+
+        #[test]
+        fn test_search_filtered_language_filter() {
+            let (store, _dir) = setup_store();
+
+            let rust_chunk =
+                make_chunk("rust_fn", "src/lib.rs", Language::Rust, ChunkType::Function);
+            let py_chunk = make_chunk(
+                "py_fn",
+                "src/main.py",
+                Language::Python,
+                ChunkType::Function,
+            );
+            let emb = mock_embedding(1.0);
+
+            store
+                .upsert_chunks_batch(
+                    &[(rust_chunk, emb.clone()), (py_chunk, emb.clone())],
+                    Some(12345),
+                )
+                .unwrap();
+
+            let filter = SearchFilter {
+                languages: Some(vec![Language::Rust]),
+                ..Default::default()
+            };
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].chunk.language, Language::Rust);
+        }
+
+        #[test]
+        fn test_search_filtered_chunk_type_filter() {
+            let (store, _dir) = setup_store();
+
+            let fn_chunk = make_chunk("my_fn", "src/a.rs", Language::Rust, ChunkType::Function);
+            let struct_chunk =
+                make_chunk("MyStruct", "src/b.rs", Language::Rust, ChunkType::Struct);
+            let emb = mock_embedding(1.0);
+
+            store
+                .upsert_chunks_batch(
+                    &[(fn_chunk, emb.clone()), (struct_chunk, emb.clone())],
+                    Some(12345),
+                )
+                .unwrap();
+
+            let filter = SearchFilter {
+                chunk_types: Some(vec![ChunkType::Struct]),
+                ..Default::default()
+            };
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].chunk.chunk_type, ChunkType::Struct);
+        }
+
+        #[test]
+        fn test_search_filtered_path_pattern() {
+            let (store, _dir) = setup_store();
+
+            let src_chunk = make_chunk("src_fn", "src/lib.rs", Language::Rust, ChunkType::Function);
+            let test_chunk = make_chunk(
+                "test_fn",
+                "tests/test.rs",
+                Language::Rust,
+                ChunkType::Function,
+            );
+            let emb = mock_embedding(1.0);
+
+            store
+                .upsert_chunks_batch(
+                    &[(src_chunk, emb.clone()), (test_chunk, emb.clone())],
+                    Some(12345),
+                )
+                .unwrap();
+
+            let filter = SearchFilter {
+                path_pattern: Some("src/**".to_string()),
+                ..Default::default()
+            };
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].chunk.name, "src_fn");
+        }
+
+        #[test]
+        fn test_search_filtered_combined_filters() {
+            let (store, _dir) = setup_store();
+
+            let rust_src = make_chunk("rs_src", "src/a.rs", Language::Rust, ChunkType::Function);
+            let py_src = make_chunk("py_src", "src/b.py", Language::Python, ChunkType::Function);
+            let rust_test =
+                make_chunk("rs_test", "tests/t.rs", Language::Rust, ChunkType::Function);
+            let emb = mock_embedding(1.0);
+
+            store
+                .upsert_chunks_batch(
+                    &[
+                        (rust_src, emb.clone()),
+                        (py_src, emb.clone()),
+                        (rust_test, emb.clone()),
+                    ],
+                    Some(12345),
+                )
+                .unwrap();
+
+            let filter = SearchFilter {
+                languages: Some(vec![Language::Rust]),
+                path_pattern: Some("src/**".to_string()),
+                ..Default::default()
+            };
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].chunk.name, "rs_src");
+        }
+
+        #[test]
+        fn test_search_filtered_rrf_hybrid() {
+            let (store, _dir) = setup_store();
+
+            let chunk = make_chunk(
+                "handleError",
+                "src/err.rs",
+                Language::Rust,
+                ChunkType::Function,
+            );
+            let emb = mock_embedding(1.0);
+            store
+                .upsert_chunks_batch(&[(chunk, emb.clone())], Some(12345))
+                .unwrap();
+
+            let filter = SearchFilter {
+                enable_rrf: true,
+                query_text: "error handling".to_string(),
+                ..Default::default()
+            };
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert!(!results.is_empty(), "RRF hybrid should return results");
+        }
+
+        #[test]
+        fn test_search_filtered_name_boost() {
+            let (store, _dir) = setup_store();
+
+            let c1 = make_chunk(
+                "parseConfig",
+                "src/a.rs",
+                Language::Rust,
+                ChunkType::Function,
+            );
+            let c2 = make_chunk("renderUI", "src/b.rs", Language::Rust, ChunkType::Function);
+            let emb = mock_embedding(1.0);
+
+            store
+                .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb.clone())], Some(12345))
+                .unwrap();
+
+            // With name_boost, parseConfig should rank higher for query "parse"
+            let filter = SearchFilter {
+                name_boost: 0.3,
+                query_text: "parseConfig".to_string(),
+                ..Default::default()
+            };
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert!(!results.is_empty());
+            // The chunk whose name matches query text should rank first
+            assert_eq!(results[0].chunk.name, "parseConfig");
+        }
+
+        #[test]
+        fn test_search_filtered_empty_store() {
+            let (store, _dir) = setup_store();
+            let emb = mock_embedding(1.0);
+            let filter = SearchFilter::default();
+            let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
+            assert!(results.is_empty());
+        }
+
+        #[test]
+        fn test_search_filtered_respects_threshold() {
+            let (store, _dir) = setup_store();
+
+            let c1 = make_chunk("fn_a", "src/a.rs", Language::Rust, ChunkType::Function);
+            let emb_opposite = mock_embedding(-1.0);
+            store
+                .upsert_chunks_batch(&[(c1, emb_opposite)], Some(12345))
+                .unwrap();
+
+            let query = mock_embedding(1.0);
+            let filter = SearchFilter::default();
+            let results = store.search_filtered(&query, &filter, 10, 0.99).unwrap();
+            assert!(
+                results.is_empty(),
+                "Opposite embedding should not meet 0.99 threshold"
+            );
+        }
+
+        #[test]
+        fn test_search_filtered_respects_limit() {
+            let (store, _dir) = setup_store();
+
+            for i in 0..10 {
+                let c = make_chunk(
+                    &format!("fn_{}", i),
+                    &format!("src/{}.rs", i),
+                    Language::Rust,
+                    ChunkType::Function,
+                );
+                let emb = mock_embedding(1.0 + i as f32 * 0.001);
+                store.upsert_chunks_batch(&[(c, emb)], Some(12345)).unwrap();
+            }
+
+            let query = mock_embedding(1.0);
+            let filter = SearchFilter::default();
+            let results = store.search_filtered(&query, &filter, 3, 0.0).unwrap();
+            assert_eq!(results.len(), 3);
+        }
+    }
 }
