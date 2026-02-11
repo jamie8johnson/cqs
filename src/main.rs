@@ -13,7 +13,7 @@ fn main() -> Result<()> {
     let filter = if cli.verbose {
         EnvFilter::new("debug")
     } else {
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn,ort=error"))
     };
 
     tracing_subscriber::fmt()
