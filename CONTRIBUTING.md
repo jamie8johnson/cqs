@@ -129,7 +129,7 @@ src/
   gather.rs     - Smart context assembly (BFS call graph expansion)
   structural.rs - Structural pattern matching on code chunks
   project.rs    - Cross-project search registry
-  audit.rs    - Audit mode persistence (file-based, shared CLI/MCP)
+  audit.rs    - Audit mode persistence and duration parsing
   focused_read.rs - Focused read logic (extract type dependencies)
   impact.rs       - Impact analysis (callers + affected tests)
   config.rs     - Configuration file support
@@ -147,7 +147,7 @@ src/
     docs-review/  - Check project docs for staleness
     migrate/      - Schema version upgrades
     troubleshoot/ - Diagnose common cqs issues
-    cqs-*/        - MCP tool skill wrappers (search, read, callers, etc.)
+    cqs-*/        - CLI skill wrappers (search, read, callers, etc.)
 ```
 
 **Key design notes:**

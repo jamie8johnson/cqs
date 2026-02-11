@@ -2,22 +2,9 @@
 
 ## Right Now
 
-**MCP server removed.** 2026-02-10.
+**Post-MCP cleanup and release.** 2026-02-10.
 
-Steps 1-13 complete. Remaining: close issues #345/#301, rebuild release binary, reindex.
-
-### Completed This Session
-- Moved `parse_duration()` from `src/mcp/validation.rs` → `src/audit.rs`
-- Deleted `src/mcp/` (27 files, ~4649 lines), `tests/mcp_test.rs` (~1565 lines), `src/cli/commands/serve.rs`
-- Removed 7 deps (axum, tower, tower-http, futures, tokio-stream, subtle, zeroize)
-- Slimmed tokio from 6 features to 2 (`rt-multi-thread`, `time`)
-- Fixed all MCP references across source, docs, notes, skills
-- Build clean, all tests pass, clippy clean
-
-### Completed Prior Sessions
-- v0.9.9 released
-- PR #348: HNSW staleness fix (#236)
-- PR #349: MSRV bump 1.88→1.93, dropped fs4
+MCP server removed in PR #352 (merged). Now: groom notes, review docs, release v0.10.0.
 
 ### Pending
 - `.cqs.toml` — untracked, has aveva-docs reference config
@@ -52,14 +39,14 @@ Steps 1-13 complete. Remaining: close issues #345/#301, rebuild release binary, 
 
 ## Architecture
 
-- Version: 0.9.9
+- Version: 0.10.0
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, score-based merge with weight
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- CLI-only (MCP server removed)
+- CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
 - Build target: `~/.cargo-target/cq/` (Linux FS)
