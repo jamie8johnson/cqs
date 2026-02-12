@@ -44,6 +44,7 @@ pub(crate) enum ProjectCommand {
 }
 
 pub(crate) fn cmd_project(_cli: &Cli, subcmd: &ProjectCommand) -> Result<()> {
+    let _span = tracing::info_span!("cmd_project").entered();
     match subcmd {
         ProjectCommand::Register { name, path } => {
             let abs_path = if path.is_absolute() {

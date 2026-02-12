@@ -17,6 +17,7 @@ use super::resolve::resolve_target;
 
 /// Handle read command
 pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_read", path).entered();
     // Focused read mode
     if let Some(focus) = focus {
         return cmd_read_focused(focus, json);
@@ -148,7 +149,13 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
 
     // Hints (function/method only) — compute once, reuse for JSON
     let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
-        compute_hints(&store, &chunk.name, None).ok()
+        match compute_hints(&store, &chunk.name, None) {
+            Ok(hints) => Some(hints),
+            Err(e) => {
+                tracing::warn!(function = %chunk.name, error = %e, "Failed to compute hints");
+                None
+            }
+        }
     } else {
         None
     };

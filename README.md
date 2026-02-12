@@ -81,6 +81,7 @@ cqs --lang rust --chunk-type function --pattern async "database query"
 # Hybrid search tuning
 cqs --name-boost 0.2 "retry logic"   # Semantic-heavy (default)
 cqs --name-boost 0.8 "parse_config"  # Name-heavy for known identifiers
+cqs "query" --expand 2                # Expand results via call graph
 
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result
@@ -90,6 +91,7 @@ cqs --json "query"           # JSON output
 cqs --no-content "query"     # File:line only, no code
 cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
+cqs --no-stale-check "query" # Skip staleness checks (useful on NFS)
 ```
 
 ## Configuration
@@ -138,6 +140,7 @@ Find function call relationships:
 ```bash
 cqs callers <name>   # Functions that call <name>
 cqs callees <name>   # Functions called by <name>
+cqs callers <name> --format mermaid  # Mermaid graph output
 ```
 
 Use cases:
@@ -192,6 +195,7 @@ cqs test-map search_filtered --depth 3 --json
 # Module overview: chunks, callers, callees, notes for a file
 cqs context src/search.rs
 cqs context src/search.rs --compact       # signatures + caller/callee counts only
+cqs context src/search.rs --summary       # High-level summary only
 
 # Co-occurrence analysis: what else to review when touching a function
 cqs related search_filtered               # shared callers, callees, types

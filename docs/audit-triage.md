@@ -94,84 +94,84 @@ After de-duplication: **~120 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `suggest_tests` swallows graph/test errors → empty | EH-7/OB-9 | easy | |
-| 2 | `find_relevant_notes` swallows error → empty | EH-9 | easy | |
-| 3 | `compute_hints` silently discards errors via .ok() | OB-8 | easy | |
-| 4 | `resolve_to_related` silently drops store errors | EH-5 | easy | |
-| 5 | `get_chunks_by_ids` error swallowed in query | EH-13 | easy | |
-| 6 | `suggest_tests` file chunk lookup swallows error | EH-15 | easy | |
+| 1 | `suggest_tests` swallows graph/test errors → empty | EH-7/OB-9 | easy | ✅ fixed |
+| 2 | `find_relevant_notes` swallows error → empty | EH-9 | easy | ✅ fixed |
+| 3 | `compute_hints` silently discards errors via .ok() | OB-8 | easy | ✅ fixed |
+| 4 | `resolve_to_related` silently drops store errors | EH-5 | easy | ✅ fixed |
+| 5 | `get_chunks_by_ids` error swallowed in query | EH-13 | easy | ✅ fixed |
+| 6 | `suggest_tests` file chunk lookup swallows error | EH-15 | easy | ✅ fixed |
 
 ### Observability (tracing gaps)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 7 | `scout()` no tracing span (140-line orchestrator) | OB-1 | easy | |
-| 8 | `suggest_placement()` no tracing span | OB-2 | easy | |
-| 9 | `find_related()` no tracing span | OB-3 | easy | |
-| 10 | `analyze_impact()` no tracing span | OB-4 | easy | |
-| 11 | `analyze_diff_impact()` no tracing span | OB-5 | easy | |
-| 12 | `map_hunks_to_functions()` no tracing | OB-6 | easy | |
-| 13 | 11 CLI commands missing tracing spans | OB-7 | easy | |
-| 14 | `staleness.rs` uses eprintln instead of tracing | OB-11 | easy | |
+| 7 | `scout()` no tracing span (140-line orchestrator) | OB-1 | easy | ✅ fixed |
+| 8 | `suggest_placement()` no tracing span | OB-2 | easy | ✅ fixed |
+| 9 | `find_related()` no tracing span | OB-3 | easy | ✅ fixed |
+| 10 | `analyze_impact()` no tracing span | OB-4 | easy | ✅ fixed |
+| 11 | `analyze_diff_impact()` no tracing span | OB-5 | easy | ✅ fixed |
+| 12 | `map_hunks_to_functions()` no tracing | OB-6 | easy | ✅ fixed |
+| 13 | 11 CLI commands missing tracing spans | OB-7 | easy | ✅ fixed |
+| 14 | `staleness.rs` uses eprintln instead of tracing | OB-11 | easy | ✅ fixed |
 
 ### Code Quality
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 15 | CLI store-opening boilerplate 17+ times | CQ-1 | medium | |
-| 16 | Path relativization duplicated 30+ times | CQ-2 | medium | |
-| 17 | Config validation repeats clamp-and-warn 4x | CQ-4 | easy | |
-| 18 | Atomic config write duplicated in 2 functions | CQ-5 | easy | |
-| 19 | `impact_diff.rs` "no changes" JSON duplicated | CQ-6 | easy | |
-| 20 | `related.rs` JSON construction tripled | CQ-3 | easy | |
-| 21 | `ScoutError`/`SuggestError` near-identical types | CQ-8/AD-2 | easy | |
-| 22 | `analyze_diff_impact` returns empty changed_functions for caller to fill | AD-11 | easy | |
+| 15 | CLI store-opening boilerplate 17+ times | CQ-1 | medium | PR2 |
+| 16 | Path relativization duplicated 30+ times | CQ-2 | medium | PR2 |
+| 17 | Config validation repeats clamp-and-warn 4x | CQ-4 | easy | ✅ fixed |
+| 18 | Atomic config write duplicated in 2 functions | CQ-5 | easy | non-issue (already atomic) |
+| 19 | `impact_diff.rs` "no changes" JSON duplicated | CQ-6 | easy | ✅ fixed |
+| 20 | `related.rs` JSON construction tripled | CQ-3 | easy | ✅ fixed |
+| 21 | `ScoutError`/`SuggestError` near-identical types | CQ-8/AD-2 | easy | PR2 |
+| 22 | `analyze_diff_impact` returns empty changed_functions for caller to fill | AD-11 | easy | ✅ fixed |
 
 ### API Design
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 23 | `CallerInfo` name collision (store vs impact) | AD-1 | medium | |
-| 24 | `ScoutChunk.chunk_type` is String instead of enum | AD-5 | easy | |
-| 25 | `resolve_target` returns unnamed tuple | AD-7 | easy | |
-| 26 | Path relativization handled inconsistently across modules | AD-8 | easy | |
+| 23 | `CallerInfo` name collision (store vs impact) | AD-1 | medium | PR2 |
+| 24 | `ScoutChunk.chunk_type` is String instead of enum | AD-5 | easy | ✅ fixed |
+| 25 | `resolve_target` returns unnamed tuple | AD-7 | easy | PR2 |
+| 26 | Path relativization handled inconsistently across modules | AD-8 | easy | PR2 |
 
 ### Data Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 27 | Watch mode chunks + call graph not atomically consistent | DS-1 | medium | |
-| 28 | `function_calls` table missing path normalization (Windows) | DS-2 | easy | |
-| 29 | `save_audit_state()` non-atomic write | DS-3 | easy | |
-| 30 | Watch mode mtime recorded after indexing (race) | DS-6 | easy | |
+| 27 | Watch mode chunks + call graph not atomically consistent | DS-1 | medium | deferred (architectural) |
+| 28 | `function_calls` table missing path normalization (Windows) | DS-2 | easy | ✅ fixed |
+| 29 | `save_audit_state()` non-atomic write | DS-3 | easy | ✅ fixed |
+| 30 | Watch mode mtime recorded after indexing (race) | DS-6 | easy | ✅ fixed |
 
 ### Documentation
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 31 | CHANGELOG missing comparison URLs for 11 versions | DOC-4 | easy | |
-| 32 | `--no-stale-check` undocumented in README | DOC-6 | easy | |
-| 33 | `--summary` on context undocumented | DOC-7 | easy | |
-| 34 | `--format mermaid` undocumented | DOC-8 | easy | |
-| 35 | `--expand` search flag undocumented | DOC-9 | easy | |
-| 36 | SECURITY.md missing write paths | DOC-10 | easy | |
-| 37 | SECURITY.md confusing read/write note for refs | DOC-11 | easy | |
+| 31 | CHANGELOG missing comparison URLs for 11 versions | DOC-4 | easy | ✅ fixed |
+| 32 | `--no-stale-check` undocumented in README | DOC-6 | easy | ✅ fixed |
+| 33 | `--summary` on context undocumented | DOC-7 | easy | ✅ fixed |
+| 34 | `--format mermaid` undocumented | DOC-8 | easy | ✅ fixed |
+| 35 | `--expand` search flag undocumented | DOC-9 | easy | ✅ fixed |
+| 36 | SECURITY.md missing write paths | DOC-10 | easy | ✅ fixed |
+| 37 | SECURITY.md confusing read/write note for refs | DOC-11 | easy | ✅ fixed |
 
 ### Platform
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 38 | `map_hunks_to_functions` path mismatch diff vs index | PB-2 | medium | |
-| 39 | `note_mention_matches_file` doesn't handle backslashes | PB-8 | easy | |
-| 40 | `run_git_diff` missing `--no-pager` and `--no-color` | PB-9 | easy | |
-| 41 | `suggest_test_file` hardcodes forward slashes | PB-10 | easy | |
+| 38 | `map_hunks_to_functions` path mismatch diff vs index | PB-2 | medium | ✅ fixed |
+| 39 | `note_mention_matches_file` doesn't handle backslashes | PB-8 | easy | ✅ fixed |
+| 40 | `run_git_diff` missing `--no-pager` and `--no-color` | PB-9 | easy | ✅ fixed |
+| 41 | `suggest_test_file` hardcodes forward slashes | PB-10 | easy | ✅ fixed |
 
 ### Resource Management
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 42 | References use `Store::open` (read-write) instead of `open_readonly` | RM-2 | easy | |
-| 43 | `search_across_projects` opens read-write Store per project | RM-3 | medium | |
+| 42 | References use `Store::open` (read-write) instead of `open_readonly` | RM-2 | easy | ✅ fixed |
+| 43 | `search_across_projects` opens read-write Store per project | RM-3 | medium | ✅ fixed |
 
 **P2 Total: 43 findings**
 

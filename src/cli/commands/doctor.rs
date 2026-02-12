@@ -13,6 +13,7 @@ use crate::cli::{find_project_root, Cli};
 ///
 /// Reports runtime info, embedding provider, model status, and index statistics.
 pub(crate) fn cmd_doctor(_cli: &Cli) -> Result<()> {
+    let _span = tracing::info_span!("cmd_doctor").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");

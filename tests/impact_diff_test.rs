@@ -198,7 +198,7 @@ fn test_diff_impact_aggregation() {
 
     assert_eq!(changed.len(), 2, "Should find fn_a and fn_b");
 
-    let result = analyze_diff_impact(&store, &changed).unwrap();
+    let result = analyze_diff_impact(&store, changed).unwrap();
     // shared_caller appears once even though it calls both changed functions
     assert!(
         result.all_callers.len() <= 1,
@@ -211,7 +211,7 @@ fn test_diff_impact_aggregation() {
 fn test_diff_impact_empty_functions() {
     let store = TestStore::new();
 
-    let result = analyze_diff_impact(&store, &[]).unwrap();
+    let result = analyze_diff_impact(&store, vec![]).unwrap();
     assert!(result.changed_functions.is_empty());
     assert!(result.all_callers.is_empty());
     assert!(result.all_tests.is_empty());
@@ -254,8 +254,7 @@ diff --git a/src/search.rs b/src/search.rs
     assert_eq!(changed.len(), 1);
     assert_eq!(changed[0].name, "search_fn");
 
-    let mut result = analyze_diff_impact(&store, &changed).unwrap();
-    result.changed_functions = changed;
+    let result = analyze_diff_impact(&store, changed).unwrap();
 
     assert_eq!(result.summary.changed_count, 1);
     // cmd_query should be in callers

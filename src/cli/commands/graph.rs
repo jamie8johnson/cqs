@@ -11,6 +11,7 @@ use crate::cli::{find_project_root, Cli};
 
 /// Find functions that call the specified function
 pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_callers", name).entered();
     let root = find_project_root();
     let index_path = cqs::resolve_index_dir(&root).join("index.db");
 
@@ -63,6 +64,7 @@ pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
 
 /// Find functions called by the specified function
 pub(crate) fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_callees", name).entered();
     let root = find_project_root();
     let index_path = cqs::resolve_index_dir(&root).join("index.db");
 

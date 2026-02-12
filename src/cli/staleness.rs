@@ -20,6 +20,7 @@ pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashS
         Ok(stale) => {
             if !stale.is_empty() {
                 let count = stale.len();
+                tracing::info!(count, "Stale result files detected");
                 eprintln!(
                     "{} {} result file{} changed since last index. Run 'cqs index' to update.",
                     "warning:".yellow().bold(),

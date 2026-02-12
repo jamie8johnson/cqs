@@ -18,6 +18,7 @@ pub(crate) fn cmd_trace(
     max_depth: usize,
     format: &str,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_trace", source, target).entered();
     let root = find_project_root();
     let index_path = cqs::resolve_index_dir(&root).join("index.db");
 

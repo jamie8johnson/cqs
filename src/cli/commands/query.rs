@@ -326,7 +326,13 @@ fn resolve_parent_context(
 
     // Batch-fetch parent chunks from store
     let id_refs: Vec<&str> = parent_ids.iter().map(|s| s.as_str()).collect();
-    let stored_parents = store.get_chunks_by_ids(&id_refs).unwrap_or_default();
+    let stored_parents = match store.get_chunks_by_ids(&id_refs) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch parent chunks");
+            HashMap::new()
+        }
+    };
 
     // For each result with parent_id, resolve the parent content
     for result in results {

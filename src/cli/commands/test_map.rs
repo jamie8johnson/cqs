@@ -15,6 +15,7 @@ pub(crate) fn cmd_test_map(
     max_depth: usize,
     json: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_test_map", name).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");

@@ -9,12 +9,22 @@ use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions, Stor
 
 use crate::cli::find_project_root;
 
+fn empty_impact_json() -> serde_json::Value {
+    serde_json::json!({
+        "changed_functions": [],
+        "callers": [],
+        "tests": [],
+        "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
+    })
+}
+
 pub(crate) fn cmd_impact_diff(
     _cli: &crate::cli::Cli,
     base: Option<&str>,
     from_stdin: bool,
     json: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_impact_diff").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -34,15 +44,7 @@ pub(crate) fn cmd_impact_diff(
     let hunks = parse_unified_diff(&diff_text);
     if hunks.is_empty() {
         if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "changed_functions": [],
-                    "callers": [],
-                    "tests": [],
-                    "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-                }))?
-            );
+            println!("{}", serde_json::to_string_pretty(&empty_impact_json())?);
         } else {
             println!("No changes detected.");
         }
@@ -55,15 +57,7 @@ pub(crate) fn cmd_impact_diff(
 
     if changed.is_empty() {
         if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "changed_functions": [],
-                    "callers": [],
-                    "tests": [],
-                    "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-                }))?
-            );
+            println!("{}", serde_json::to_string_pretty(&empty_impact_json())?);
         } else {
             println!("No indexed functions affected by this diff.");
         }
@@ -71,9 +65,7 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 4. Analyze impact
-    let mut result = analyze_diff_impact(&store, &changed)?;
-    // Fill in changed_functions (analyze_diff_impact leaves it empty for the caller to set)
-    result.changed_functions = changed;
+    let result = analyze_diff_impact(&store, changed)?;
 
     // 5. Display
     if json {
@@ -100,7 +92,7 @@ fn read_stdin() -> Result<String> {
 
 fn run_git_diff(base: Option<&str>) -> Result<String> {
     let mut cmd = std::process::Command::new("git");
-    cmd.arg("diff");
+    cmd.args(["--no-pager", "diff", "--no-color"]);
     if let Some(b) = base {
         if b.starts_with('-') {
             anyhow::bail!("Invalid base ref '{}': must not start with '-'", b);

@@ -6,12 +6,36 @@ use cqs::Store;
 
 use crate::cli::find_project_root;
 
+fn related_to_json(
+    items: &[cqs::RelatedFunction],
+    root: &std::path::Path,
+) -> Vec<serde_json::Value> {
+    items
+        .iter()
+        .map(|r| {
+            let rel = r
+                .file
+                .strip_prefix(root)
+                .unwrap_or(&r.file)
+                .to_string_lossy()
+                .replace('\\', "/");
+            serde_json::json!({
+                "name": r.name,
+                "file": rel,
+                "line": r.line,
+                "overlap_count": r.overlap_count,
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn cmd_related(
     _cli: &crate::cli::Cli,
     name: &str,
     limit: usize,
     json: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_related", name).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -25,60 +49,9 @@ pub(crate) fn cmd_related(
     let result = cqs::find_related(&store, name, limit)?;
 
     if json {
-        let shared_callers: Vec<_> = result
-            .shared_callers
-            .iter()
-            .map(|r| {
-                let rel = r
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                serde_json::json!({
-                    "name": r.name,
-                    "file": rel,
-                    "line": r.line,
-                    "overlap_count": r.overlap_count,
-                })
-            })
-            .collect();
-        let shared_callees: Vec<_> = result
-            .shared_callees
-            .iter()
-            .map(|r| {
-                let rel = r
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                serde_json::json!({
-                    "name": r.name,
-                    "file": rel,
-                    "line": r.line,
-                    "overlap_count": r.overlap_count,
-                })
-            })
-            .collect();
-        let shared_types: Vec<_> = result
-            .shared_types
-            .iter()
-            .map(|r| {
-                let rel = r
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                serde_json::json!({
-                    "name": r.name,
-                    "file": rel,
-                    "line": r.line,
-                    "overlap_count": r.overlap_count,
-                })
-            })
-            .collect();
+        let shared_callers = related_to_json(&result.shared_callers, &root);
+        let shared_callees = related_to_json(&result.shared_callees, &root);
+        let shared_types = related_to_json(&result.shared_types, &root);
 
         let output = serde_json::json!({
             "target": result.target,

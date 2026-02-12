@@ -27,7 +27,7 @@ pub struct ScoutChunk {
     /// Function/class/etc. name
     pub name: String,
     /// Type of code element
-    pub chunk_type: String,
+    pub chunk_type: crate::language::ChunkType,
     /// Function signature
     pub signature: String,
     /// Starting line number
@@ -89,6 +89,7 @@ pub fn scout(
     root: &Path,
     limit: usize,
 ) -> Result<ScoutResult, ScoutError> {
+    let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
     // 1. Embed and search
     let query_embedding = embedder
         .embed_query(task)
@@ -171,7 +172,7 @@ pub fn scout(
 
                     ScoutChunk {
                         name: chunk.name.clone(),
-                        chunk_type: chunk.chunk_type.to_string(),
+                        chunk_type: chunk.chunk_type,
                         signature: chunk.signature.clone(),
                         line_start: chunk.line_start,
                         role,
@@ -253,7 +254,10 @@ fn classify_role(score: f32, name: &str) -> ChunkRole {
 fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<NoteSummary> {
     let all_notes = match store.list_notes_summaries() {
         Ok(n) => n,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to list notes");
+            return Vec::new();
+        }
     };
 
     all_notes
@@ -272,10 +276,12 @@ fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<Not
 /// Match requires the file path to end with the mention at a path-component
 /// boundary (preceded by '/' or at start of string).
 fn note_mention_matches_file(mention: &str, file: &str) -> bool {
+    let mention = mention.replace('\\', "/");
+    let file = file.replace('\\', "/");
     if !mention.contains('.') && !mention.contains('/') {
         return false;
     }
-    file.ends_with(mention)
+    file.ends_with(&mention)
         && (file.len() == mention.len() || file.as_bytes()[file.len() - mention.len() - 1] == b'/')
 }
 
@@ -298,7 +304,7 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
                 .map(|c| {
                     serde_json::json!({
                         "name": c.name,
-                        "chunk_type": c.chunk_type,
+                        "chunk_type": c.chunk_type.to_string(),
                         "signature": c.signature,
                         "line_start": c.line_start,
                         "role": match c.role {
@@ -437,6 +443,13 @@ mod tests {
             "other/search.rs",
             "src/search.rs"
         ));
+    }
+
+    #[test]
+    fn test_note_mention_matches_file_backslash() {
+        assert!(note_mention_matches_file("scout.rs", "src\\scout.rs"));
+        assert!(note_mention_matches_file("cli\\mod.rs", "src\\cli\\mod.rs"));
+        assert!(!note_mention_matches_file("od.rs", "src\\cli\\mod.rs"));
     }
 
     #[test]

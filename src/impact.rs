@@ -51,6 +51,7 @@ pub fn analyze_impact(
     target_name: &str,
     depth: usize,
 ) -> anyhow::Result<ImpactResult> {
+    let _span = tracing::info_span!("analyze_impact", target = target_name, depth).entered();
     let callers = build_caller_info(store, target_name)?;
     let graph = store.get_call_graph()?;
     let tests = find_affected_tests(store, &graph, target_name)?;
@@ -431,6 +432,7 @@ pub fn map_hunks_to_functions(
     store: &Store,
     hunks: &[crate::diff_parse::DiffHunk],
 ) -> Vec<ChangedFunction> {
+    let _span = tracing::info_span!("map_hunks_to_functions", hunk_count = hunks.len()).entered();
     let mut seen = HashSet::new();
     let mut functions = Vec::new();
 
@@ -441,7 +443,8 @@ pub fn map_hunks_to_functions(
     }
 
     for (file, file_hunks) in &by_file {
-        let chunks = match store.get_chunks_by_origin(file) {
+        let normalized = file.replace('\\', "/");
+        let chunks = match store.get_chunks_by_origin(&normalized) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(file = %file, error = %e, "Failed to get chunks for file");
@@ -479,8 +482,9 @@ pub fn map_hunks_to_functions(
 /// Results are deduplicated by name.
 pub fn analyze_diff_impact(
     store: &Store,
-    changed: &[ChangedFunction],
+    changed: Vec<ChangedFunction>,
 ) -> anyhow::Result<DiffImpactResult> {
+    let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
         return Ok(DiffImpactResult {
             changed_functions: Vec::new(),
@@ -502,7 +506,7 @@ pub fn analyze_diff_impact(
     let mut seen_callers = HashSet::new();
     let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
-    for func in changed {
+    for func in &changed {
         // Direct callers
         match store.get_callers_with_context(&func.name) {
             Ok(callers_ctx) => {
@@ -562,7 +566,7 @@ pub fn analyze_diff_impact(
     };
 
     Ok(DiffImpactResult {
-        changed_functions: Vec::new(), // filled by caller
+        changed_functions: changed,
         all_callers,
         all_tests,
         summary,
@@ -647,11 +651,17 @@ pub struct TestSuggestion {
 pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion> {
     let graph = match store.get_call_graph() {
         Ok(g) => g,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load call graph for test suggestions");
+            return Vec::new();
+        }
     };
     let test_chunks = match store.find_test_chunks() {
         Ok(t) => t,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load test chunks for test suggestions");
+            return Vec::new();
+        }
     };
 
     let mut suggestions = Vec::new();
@@ -668,10 +678,13 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
         }
 
         // Fetch file chunks once for inline test check, pattern, and language
-        let file_chunks = store
-            .get_chunks_by_origin(&caller.file.to_string_lossy())
-            .ok()
-            .unwrap_or_default();
+        let file_chunks = match store.get_chunks_by_origin(&caller.file.to_string_lossy()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(file = %caller.file.display(), error = %e, "Failed to get file chunks");
+                Vec::new()
+            }
+        };
 
         let is_test_chunk = |c: &crate::store::ChunkSummary| {
             c.name.starts_with("test_") || c.name.starts_with("Test")
@@ -742,7 +755,11 @@ fn suggest_test_file(source: &str) -> String {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("rs");
 
     // Find the nearest parent directory
-    let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("tests");
+    let parent = path
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("tests")
+        .replace('\\', "/");
 
     match ext {
         "rs" => format!("{parent}/tests/{stem}_test.rs"),

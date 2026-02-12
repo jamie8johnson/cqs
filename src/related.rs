@@ -35,6 +35,7 @@ pub fn find_related(
     target_name: &str,
     limit: usize,
 ) -> Result<RelatedResult, StoreError> {
+    let _span = tracing::info_span!("find_related", target = target_name, limit).entered();
     // Resolve target to get its chunk (for signature/type extraction)
     let resolved = crate::resolve_target(store, target_name)?;
     let target_chunk = resolved.0;
@@ -66,7 +67,13 @@ fn resolve_to_related(store: &Store, pairs: &[(String, u32)]) -> Vec<RelatedFunc
         .iter()
         .filter_map(|(name, count)| {
             // Try to find the chunk for this function name
-            let chunks = store.get_chunks_by_name(name).ok()?;
+            let chunks = match store.get_chunks_by_name(name) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(name = %name, error = %e, "Failed to resolve related function");
+                    return None;
+                }
+            };
             let chunk = chunks.first()?;
             Some(RelatedFunction {
                 name: name.clone(),

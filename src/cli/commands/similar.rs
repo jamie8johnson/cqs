@@ -41,6 +41,7 @@ pub(crate) fn cmd_similar(
     threshold: f32,
     json: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_similar", target).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");

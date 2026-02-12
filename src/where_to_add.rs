@@ -58,6 +58,8 @@ pub fn suggest_placement(
     description: &str,
     limit: usize,
 ) -> Result<PlacementResult, SuggestError> {
+    let _span =
+        tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
     // Embed the description
     let query_embedding = embedder
         .embed_query(description)

@@ -12,6 +12,7 @@ use crate::cli::{find_project_root, Cli};
 
 /// Display index statistics (chunk counts, languages, types)
 pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
+    let _span = tracing::info_span!("cmd_stats").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");

@@ -13,6 +13,7 @@ pub(crate) fn cmd_scout(
     limit: usize,
     json: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_scout", task).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");

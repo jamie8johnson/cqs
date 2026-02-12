@@ -14,6 +14,7 @@ pub(crate) fn cmd_context(
     summary: bool,
     compact: bool,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_context", path).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");

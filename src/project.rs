@@ -177,7 +177,7 @@ pub fn search_across_projects(
             continue;
         }
 
-        match crate::Store::open(&index_path) {
+        match crate::Store::open_readonly(&index_path) {
             Ok(store) => {
                 let cqs_dir = index_path.parent().unwrap_or(entry.path.as_path());
                 let index = crate::hnsw::HnswIndex::try_load(cqs_dir);

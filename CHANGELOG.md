@@ -819,6 +819,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/jamie8johnson/cqs/compare/v0.12.0...v0.12.1
+[0.12.0]: https://github.com/jamie8johnson/cqs/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/jamie8johnson/cqs/compare/v0.10.2...v0.11.0
+[0.10.2]: https://github.com/jamie8johnson/cqs/compare/v0.10.1...v0.10.2
+[0.10.1]: https://github.com/jamie8johnson/cqs/compare/v0.10.0...v0.10.1
+[0.10.0]: https://github.com/jamie8johnson/cqs/compare/v0.9.9...v0.10.0
+[0.9.9]: https://github.com/jamie8johnson/cqs/compare/v0.9.8...v0.9.9
+[0.9.8]: https://github.com/jamie8johnson/cqs/compare/v0.9.7...v0.9.8
+[0.9.7]: https://github.com/jamie8johnson/cqs/compare/v0.9.6...v0.9.7
+[0.9.6]: https://github.com/jamie8johnson/cqs/compare/v0.9.5...v0.9.6
+[0.9.5]: https://github.com/jamie8johnson/cqs/compare/v0.9.4...v0.9.5
+[0.9.4]: https://github.com/jamie8johnson/cqs/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/jamie8johnson/cqs/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/jamie8johnson/cqs/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/jamie8johnson/cqs/compare/v0.9.0...v0.9.1

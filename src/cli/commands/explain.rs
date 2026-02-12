@@ -10,6 +10,7 @@ use crate::cli::{find_project_root, staleness};
 use super::resolve::parse_target;
 
 pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_explain", target).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -100,7 +101,13 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
 
     // Compute hints (only for function/method chunk types)
     let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
-        compute_hints(&store, &chunk.name, Some(callers.len())).ok()
+        match compute_hints(&store, &chunk.name, Some(callers.len())) {
+            Ok(hints) => Some(hints),
+            Err(e) => {
+                tracing::warn!(function = %chunk.name, error = %e, "Failed to compute hints");
+                None
+            }
+        }
     } else {
         None
     };

@@ -44,6 +44,7 @@ pub(crate) enum RefCommand {
 
 /// Handle ref subcommands
 pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
+    let _span = tracing::info_span!("cmd_ref").entered();
     match subcmd {
         RefCommand::Add {
             name,
