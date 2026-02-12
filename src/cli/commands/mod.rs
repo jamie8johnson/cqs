@@ -60,3 +60,13 @@ pub(crate) use stats::cmd_stats;
 pub(crate) use test_map::cmd_test_map;
 pub(crate) use trace::cmd_trace;
 pub(crate) use where_cmd::cmd_where;
+
+/// Count tokens for text, with fallback estimation on error.
+///
+/// Used by `--tokens` token-budgeted output across multiple commands.
+pub(crate) fn count_tokens(embedder: &cqs::Embedder, text: &str, label: &str) -> usize {
+    embedder.token_count(text).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, chunk = label, "Token count failed, estimating");
+        text.len() / 4
+    })
+}

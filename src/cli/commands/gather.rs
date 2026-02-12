@@ -63,10 +63,7 @@ pub(crate) fn cmd_gather(
         let mut used: usize = 0;
         let mut packed = Vec::new();
         for chunk in result.chunks {
-            let tokens = embedder.token_count(&chunk.content).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, chunk = %chunk.name, "Token count failed, estimating");
-                chunk.content.len() / 4 // rough fallback
-            });
+            let tokens = super::count_tokens(&embedder, &chunk.content, &chunk.name);
             if used + tokens > budget && !packed.is_empty() {
                 break; // budget exhausted (always include at least 1 chunk)
             }

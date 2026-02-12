@@ -21,7 +21,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 ### Next — RAG Strengthening
 
 - [x] Web help ingestion — multi-page HTML sites (AuthorIT, MadCap Flare) auto-detected and merged (PR #397)
-- [ ] Token-budgeted gather — `cqs gather` with `--tokens N` budget. Pack most relevant chunks into a token limit instead of fixed count.
+- [x] Token-budgeted output — `--tokens N` on query, gather, context, explain, scout. Greedy knapsack packing by score.
 - [ ] Re-ranking — cross-encoder or second-pass scoring on top-N retrieval results. Biggest retrieval quality win.
 
 ### Next — Infrastructure

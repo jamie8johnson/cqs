@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`--ref` scoped search**: `cqs "query" --ref aveva` searches only the named reference index, skipping the project index. Returns raw scores (no weight attenuation). Works with `--name-only` and `--json`. Error on missing ref with `cqs ref list` hint.
-- **`--tokens` token-budgeted gather**: `cqs gather "query" --tokens 4000` packs highest-scoring chunks into a token budget instead of fixed count. Token count reported in both text and JSON output.
+- **`--tokens` token budgeting**: Greedy knapsack packing by score within a token budget, across 5 commands:
+  - `cqs "query" --tokens 4000` — pack highest-scoring search results into budget
+  - `cqs gather "query" --tokens 4000` — pack gathered chunks into budget
+  - `cqs context file.rs --tokens 4000` — include chunk content within budget (full mode only)
+  - `cqs explain func --tokens 3000` — include target + similar chunks' source code
+  - `cqs scout "task" --tokens 8000` — fetch and include chunk content in dashboard
+  - Token count and budget reported in both text and JSON output. JSON adds `token_count` and `token_budget` fields.
 - **`cqs convert` command**: Convert PDF, HTML, CHM, web help sites, and Markdown documents to cleaned Markdown with kebab-case filenames. PDF via Python `pymupdf4llm`, HTML/CHM/web help via Rust `fast_html2md`, Markdown passthrough for cleaning and renaming.
 - **Web help ingestion**: Auto-detects multi-page HTML help sites (AuthorIT, MadCap Flare) by `content/` subdirectory heuristic. Merges all pages into a single document.
 - **Extensible cleaning rules**: Tag-based system (`aveva`, `pdf`, `generic`) for removing conversion artifacts. 7 rules ported from `scripts/clean_md.py`.

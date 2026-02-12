@@ -9,7 +9,12 @@ use crate::cli::staleness;
 
 use super::resolve::parse_target;
 
-pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_explain(
+    cli: &crate::cli::Cli,
+    target: &str,
+    json: bool,
+    max_tokens: Option<usize>,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_explain", target).entered();
     let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 
@@ -104,6 +109,41 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
         None
     };
 
+    // Token budget: compute which content fits
+    let (include_target_content, similar_content_set, token_info) = if let Some(budget) = max_tokens
+    {
+        let embedder = cqs::Embedder::new()?;
+        let _pack_span = tracing::info_span!("token_pack_explain", budget).entered();
+        let mut used: usize = 0;
+
+        // Priority 1: target chunk content
+        let target_tokens = super::count_tokens(&embedder, &chunk.content, &chunk.name);
+        used += target_tokens;
+        let include_target = true; // always include at least the target
+
+        // Priority 2: similar chunks' content (if budget allows)
+        let mut sim_included = std::collections::HashSet::new();
+        for r in &similar {
+            let tokens = super::count_tokens(&embedder, &r.chunk.content, &r.chunk.name);
+            if used + tokens > budget {
+                break;
+            }
+            used += tokens;
+            sim_included.insert(r.chunk.id.clone());
+        }
+
+        tracing::info!(
+            tokens = used,
+            budget,
+            target = include_target,
+            similar_with_content = sim_included.len(),
+            "Token-budgeted explain"
+        );
+        (include_target, Some(sim_included), Some((used, budget)))
+    } else {
+        (false, None, None)
+    };
+
     if json {
         let callers_json: Vec<_> = callers
             .iter()
@@ -129,11 +169,17 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
         let similar_json: Vec<_> = similar
             .iter()
             .map(|r| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "name": r.chunk.name,
                     "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
                     "score": r.score,
-                })
+                });
+                if let Some(ref set) = similar_content_set {
+                    if set.contains(&r.chunk.id) {
+                        obj["content"] = serde_json::json!(r.chunk.content);
+                    }
+                }
+                obj
             })
             .collect();
 
@@ -152,6 +198,10 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             "similar": similar_json,
         });
 
+        if include_target_content {
+            output["content"] = serde_json::json!(chunk.content);
+        }
+
         if let Some(ref h) = hints {
             output["hints"] = serde_json::json!({
                 "caller_count": h.caller_count,
@@ -161,17 +211,27 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             });
         }
 
+        if let Some((used, budget)) = token_info {
+            output["token_count"] = serde_json::json!(used);
+            output["token_budget"] = serde_json::json!(budget);
+        }
+
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;
 
         let rel_file = cqs::rel_display(&chunk.file, &root);
 
+        let token_label = match token_info {
+            Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),
+            None => String::new(),
+        };
         println!(
-            "{} ({} {})",
+            "{} ({} {}){}",
             chunk.name.bold(),
             chunk.chunk_type,
-            chunk.language
+            chunk.language,
+            token_label,
         );
         println!("{}:{}-{}", rel_file, chunk.line_start, chunk.line_end);
 
@@ -203,6 +263,13 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             println!("{}", doc.green());
         }
 
+        // Print target content if --tokens is set
+        if include_target_content {
+            println!();
+            println!("{}", "─".repeat(50));
+            println!("{}", chunk.content);
+        }
+
         if !callers.is_empty() {
             println!();
             println!("{}", "Callers:".cyan());
@@ -229,6 +296,13 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
                     "  {} ({}:{}) [{:.2}]",
                     r.chunk.name, rel, r.chunk.line_start, r.score
                 );
+                // Print similar content if within token budget
+                if let Some(ref set) = similar_content_set {
+                    if set.contains(&r.chunk.id) {
+                        println!("{}", "─".repeat(40));
+                        println!("{}", r.chunk.content);
+                    }
+                }
             }
         }
     }

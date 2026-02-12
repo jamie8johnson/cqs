@@ -64,7 +64,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
 - `cqs explain <function>` — function card: signature, callers, callees, similar. Collapses 4+ lookups into 1.
 - `cqs diff --source <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
-- `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion. `--tokens 4000` for token-budgeted packing.
+- `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion.
 - `cqs dead` — find dead code: functions/methods with no callers in the index.
 - `cqs stale` — check index freshness: files modified since last index.
 - `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.
@@ -81,6 +81,8 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs notes add/update/remove` — manage project notes.
 - `cqs audit-mode on/off` — toggle audit mode.
 - `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
+
+**Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, and `scout` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. JSON output adds `token_count` and `token_budget` fields.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 

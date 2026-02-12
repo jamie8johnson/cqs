@@ -11,9 +11,15 @@ pub(crate) fn cmd_context(
     json: bool,
     summary: bool,
     compact: bool,
+    max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_context", path).entered();
+    let _span = tracing::info_span!("cmd_context", path, ?max_tokens).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
+
+    // --tokens is incompatible with --compact and --summary (those modes are deliberately minimal)
+    if max_tokens.is_some() && (compact || summary) {
+        bail!("--tokens cannot be used with --compact or --summary");
+    }
 
     let abs_path = root.join(path);
     let origin = abs_path.to_string_lossy().to_string();
@@ -177,10 +183,47 @@ pub(crate) fn cmd_context(
             }
         }
     } else if json {
+        // Token-budgeted content inclusion
+        let (content_map, token_info) = if let Some(budget) = max_tokens {
+            let embedder = cqs::Embedder::new()?;
+            let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
+            let mut used: usize = 0;
+            let mut included = HashSet::new();
+            for c in &chunks {
+                let tokens = super::count_tokens(&embedder, &c.content, &c.name);
+                if used + tokens > budget && !included.is_empty() {
+                    break;
+                }
+                used += tokens;
+                included.insert(c.name.clone());
+            }
+            tracing::info!(
+                chunks = included.len(),
+                tokens = used,
+                budget,
+                "Token-budgeted context"
+            );
+            (Some(included), Some((used, budget)))
+        } else {
+            (None, None)
+        };
+
         let chunks_json: Vec<_> = chunks
             .iter()
             .map(|c| {
-                serde_json::json!({"name": c.name, "chunk_type": c.chunk_type.to_string(), "signature": c.signature, "lines": [c.line_start, c.line_end], "doc": c.doc})
+                let mut obj = serde_json::json!({
+                    "name": c.name,
+                    "chunk_type": c.chunk_type.to_string(),
+                    "signature": c.signature,
+                    "lines": [c.line_start, c.line_end],
+                    "doc": c.doc,
+                });
+                if let Some(ref included) = content_map {
+                    if included.contains(&c.name) {
+                        obj["content"] = serde_json::json!(c.content);
+                    }
+                }
+                obj
             })
             .collect();
         let callers_json: Vec<_> = external_callers
@@ -196,11 +239,45 @@ pub(crate) fn cmd_context(
         let mut dep_files: Vec<String> = dependent_files.into_iter().collect();
         dep_files.sort();
 
-        let output = serde_json::json!({"file": path, "chunks": chunks_json, "external_callers": callers_json, "external_callees": callees_json, "dependent_files": dep_files});
+        let mut output = serde_json::json!({"file": path, "chunks": chunks_json, "external_callers": callers_json, "external_callees": callees_json, "dependent_files": dep_files});
+        if let Some((used, budget)) = token_info {
+            output["token_count"] = serde_json::json!(used);
+            output["token_budget"] = serde_json::json!(budget);
+        }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;
-        println!("{} {}", "Context for:".cyan(), path.bold());
+
+        // Token-budgeted content inclusion for text mode
+        let (content_set, token_info) = if let Some(budget) = max_tokens {
+            let embedder = cqs::Embedder::new()?;
+            let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
+            let mut used: usize = 0;
+            let mut included = HashSet::new();
+            for c in &chunks {
+                let tokens = super::count_tokens(&embedder, &c.content, &c.name);
+                if used + tokens > budget && !included.is_empty() {
+                    break;
+                }
+                used += tokens;
+                included.insert(c.name.clone());
+            }
+            tracing::info!(
+                chunks = included.len(),
+                tokens = used,
+                budget,
+                "Token-budgeted context"
+            );
+            (Some(included), Some((used, budget)))
+        } else {
+            (None, None)
+        };
+
+        let token_label = match token_info {
+            Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),
+            None => String::new(),
+        };
+        println!("{} {}{}", "Context for:".cyan(), path.bold(), token_label);
         println!();
 
         println!("{}", "Chunks:".cyan());
@@ -214,6 +291,14 @@ pub(crate) fn cmd_context(
             );
             if !c.signature.is_empty() {
                 println!("    {}", c.signature.dimmed());
+            }
+            // Print content if within token budget
+            if let Some(ref included) = content_set {
+                if included.contains(&c.name) {
+                    println!("{}", "─".repeat(50));
+                    println!("{}", c.content);
+                    println!();
+                }
             }
         }
 

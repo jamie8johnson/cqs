@@ -2,28 +2,36 @@
 
 ## Right Now
 
-**v0.12.2 released, all clean.** 2026-02-12. No active work.
+**Token budgeting (`--tokens`) shipped across 5 commands.** 2026-02-12.
 
-Session summary:
-- v0.12.2 released (PR #394) — 116 audit fixes across 4 PRs
-- Notes groomed (PR #395) — 80 notes (pruned 1, updated 2, added 4)
-- `cqs plan` skill shipped (PR #396) — 5 task-type templates
-- PR #379 (orphaned P1 audit) closed as redundant — all fixes already in codebase
-- Open-PR check added to release pre-flight
+Implemented `--tokens N` greedy knapsack packing on:
+- `cqs "query" --tokens N` — pack search results into budget
+- `cqs gather --tokens N` — pack gathered chunks into budget
+- `cqs context file --tokens N` — include chunk content within budget
+- `cqs explain func --tokens N` — include target + similar content
+- `cqs scout "task" --tokens N` — fetch and include chunk content
+
+Also shipped in same session (PR #398, already merged):
+- `--ref` scoped search — `cqs "query" --ref aveva` skips project index
+- `cqs convert` — document-to-Markdown conversion (PDF, HTML, CHM, web help)
+
+Changes uncommitted on `feat/rag-strengthen` branch, ready to commit + PR.
 
 ## Pending Changes
 
-`docs/notes.toml` — open-PR lesson note (not yet committed).
+- Token budgeting across 5 commands (uncommitted on `feat/rag-strengthen`)
+- `PROJECT_CONTINUITY.md` and `docs/notes.toml` — session state
 
 ## Parked
 
+- **Cross-encoder re-ranking** — `--rerank` flag, second-pass scoring. Next RAG improvement.
 - **Pre-built release binaries** (GitHub Actions) — deferred
-- **`cqs plan` templates** — add more task-type templates as patterns emerge from usage
-- **AVEVA docs reference testing** — 5662 chunks from 39 markdown files
+- **`cqs plan` templates** — add more task-type templates as patterns emerge
 - **VB.NET language support** — VS2005 project delayed
 - **Post-index name matching** — fuzzy cross-doc references
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
+- **Query-intent routing** — auto-boost ref weight when query mentions product names
 
 ## Open Issues
 
@@ -47,9 +55,10 @@ Session summary:
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 441 lib + 297 integration + 7 doc (747 total)
+- Tests: 757 total (465 lib + ~280 integration + 12 doc)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
-- SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
+- convert/ module (7 files) behind `convert` feature flag
 - Build target: `~/.cargo-target/cq/` (Linux FS)
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
+- Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
