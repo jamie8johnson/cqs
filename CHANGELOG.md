@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-02-12
+
+### Added
+- **`HnswIndex::insert_batch()`**: Incremental HNSW insertion on Owned variant for watch mode. Dimension validation, tracing, rejects Loaded variant with clear error.
+- **`--min-confidence` flag for `cqs dead`**: Filter dead code results by confidence level (low/medium/high). Reduces false positive noise.
+- **`DeadFunction` + `DeadConfidence`**: Confidence scoring for dead code detection — High (private, inactive file), Medium (private, active file), Low (method/dynamic dispatch).
+- **`ENTRY_POINT_NAMES` exclusions**: Dead code analysis now excludes runtime entry points (main, init, handler, middleware, setup/teardown, test lifecycle hooks).
+- **C, SQL, Markdown language arms** in `extract_patterns()` for `cqs where` placement suggestions.
+
+### Fixed
+- **Test detection unified**: `is_test_chunk()` replaces 3 divergent implementations (scout, impact, where_to_add) with a single function checking both name patterns and file paths.
+- **Embedder `clear_session(&self)`**: Changed from `&mut self` via `Mutex<Option<Session>>`, enabling watch mode to free ~500MB ONNX session after 5 minutes idle.
+- **Pipeline memory**: `file_batch_size` reduced from 100,000 to 5,000, bounding peak memory at ~25K chunks per batch.
+- **HNSW error messages**: Checksum failure and load errors now include actionable guidance ("Run 'cqs index' to rebuild").
+- **HNSW stale temp cleanup**: `load()` removes leftover `.tmp` directories from interrupted saves.
+- **HNSW file locking**: Exclusive lock on save, shared lock on load via Rust 1.93 std file locking API. Prevents concurrent corruption.
+- **Dead code false positives**: Expanded `TRAIT_METHOD_NAMES` with `new`, `build`, `builder`. Entry point exclusion list replaces hardcoded `main`-only check.
+
+### Changed
+- **`extract_patterns()` refactored**: `extract_imports()` and `detect_error_style()` helpers reduce per-language duplication.
+- **`find_dead_code()` return type**: Now returns `Vec<DeadFunction>` (wrapping `ChunkSummary` + `DeadConfidence`) instead of `Vec<ChunkSummary>`.
+
 ## [0.12.1] - 2026-02-11
 
 ### Added

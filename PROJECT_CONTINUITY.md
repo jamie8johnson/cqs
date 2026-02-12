@@ -2,25 +2,11 @@
 
 ## Right Now
 
-**Deferred audit findings complete.** 2026-02-12. Branch: `fix/audit-deferred`. Ready to commit + PR.
+**Releasing v0.12.2.** 2026-02-12. Deferred audit fixes merged (PR #393).
 
-All 9 groups implemented. 747 tests pass, clippy clean, fresh-eyes complete.
-
-- Group A: Unified `is_test_chunk()` in lib.rs, replaced 3 divergent call sites
-- Group B: `DeadFunction` + `DeadConfidence` scoring, `ENTRY_POINT_NAMES`, `--min-confidence` CLI
-- Group C: Embedder `clear_session(&self)` via `Mutex<Option<Session>>`, watch idle clearing (5min)
-- Group D: Pipeline `file_batch_size` 100K → 5K
-- Group E: Improved HNSW checksum error messages + stale temp cleanup
-- Group F: HNSW file locking (exclusive save, shared load)
-- Group G: `HnswIndex::insert_batch()` for incremental HNSW
-- Group I: `extract_imports()` helper + C/SQL/Markdown support in `where_to_add`
-- Group J: Doc comment on `LocalPatterns` explaining string-based design
-
-**Descoped:** Group H (#389) — CAGRA GPU memory, requires new disk persistence layer
-
-**Prior audit totals:**
-- P1: 26 fixes (PR #360), P2: 41 fixes (PR #380), P3: 40 fixes (PR #381)
-- Total: 107 fixes + this deferred PR = ~116 fixes across 4 PRs
+**v0.12.1 audit totals:**
+- P1: 26 fixes (PR #360), P2: 41 fixes (PR #380), P3: 40 fixes (PR #381), P4: 9 fixes (PR #393)
+- Total: 116 fixes across 4 PRs. #389 (CAGRA GPU memory) deferred.
 
 ## Parked
 
@@ -43,10 +29,11 @@ All 9 groups implemented. 747 tests pass, clippy clean, fresh-eyes complete.
 
 ### Audit
 - #270: HNSW LoadedHnsw uses unsafe transmute (upstream hnsw_rs)
+- #389: CAGRA GPU memory — needs disk persistence layer
 
 ## Architecture
 
-- Version: 0.12.1
+- Version: 0.12.2
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
