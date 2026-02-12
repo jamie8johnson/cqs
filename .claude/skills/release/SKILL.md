@@ -17,6 +17,7 @@ Release a new version of cqs.
 
 1. **Pre-flight checks**:
    - `git status` — must be clean (no uncommitted changes)
+   - `gh pr list --state open` — review any open PRs. Merge or close before releasing.
    - `cargo test` — all tests must pass
    - `cargo clippy` — no warnings
    - Confirm on `main` branch

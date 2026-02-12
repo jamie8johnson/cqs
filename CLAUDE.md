@@ -36,6 +36,7 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/audit` -- 14-category code audit with parallel agents
 - `/pr` -- WSL-safe PR creation (always `--body-file`)
 - `/cqs-bootstrap` -- set up tears infrastructure for new projects
+- `/cqs-plan` -- task planning with scout data + task-type templates
 - `/reindex` -- rebuild index with before/after stats
 
 ## Code Search
