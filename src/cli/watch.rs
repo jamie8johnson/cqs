@@ -96,6 +96,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     // On WSL, inotify over 9P delivers repeated events for the same file change.
     let mut last_indexed_mtime: HashMap<PathBuf, SystemTime> = HashMap::new();
 
+    let mut cycles_since_clear: u32 = 0;
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
@@ -149,6 +151,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                     && last_event.elapsed() >= debounce;
 
                 if should_process {
+                    cycles_since_clear = 0;
+
                     // Reindex code files if any changed
                     if !pending_files.is_empty() {
                         let files: Vec<PathBuf> = pending_files.drain().collect();
@@ -184,7 +188,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             .collect();
 
                         match reindex_files(&root, &store, &files, &parser, emb, cli.quiet) {
-                            Ok(count) => {
+                            Ok((count, _content_hashes)) => {
                                 // Record mtimes to skip duplicate events
                                 for (file, mtime) in pre_mtimes {
                                     last_indexed_mtime.insert(file, mtime);
@@ -241,6 +245,15 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             }
                         }
                     }
+                } else {
+                    cycles_since_clear += 1;
+                    // Clear embedder session after ~5 minutes idle (3000 cycles at 100ms)
+                    if cycles_since_clear >= 3000 {
+                        if let Some(emb) = embedder.get() {
+                            emb.clear_session();
+                        }
+                        cycles_since_clear = 0;
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -260,7 +273,11 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     Ok(())
 }
 
-/// Reindex specific files
+/// Reindex specific files.
+///
+/// Returns `(chunk_count, content_hashes)` — the content hashes can be used for
+/// incremental HNSW insertion (looking up embeddings by hash instead of
+/// rebuilding the full index).
 fn reindex_files(
     root: &Path,
     store: &Store,
@@ -268,7 +285,7 @@ fn reindex_files(
     parser: &CqParser,
     embedder: &Embedder,
     quiet: bool,
-) -> Result<usize> {
+) -> Result<(usize, Vec<String>)> {
     let _span = info_span!("reindex_files", file_count = files.len()).entered();
     info!(file_count = files.len(), "Reindexing files");
 
@@ -298,8 +315,11 @@ fn reindex_files(
         .collect();
 
     if chunks.is_empty() {
-        return Ok(0);
+        return Ok((0, Vec::new()));
     }
+
+    // Collect content hashes before chunks are consumed (for incremental HNSW)
+    let content_hashes: Vec<String> = chunks.iter().map(|c| c.content_hash.clone()).collect();
 
     // Check content hash cache to skip re-embedding unchanged chunks
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
@@ -391,7 +411,7 @@ fn reindex_files(
         println!("Updated {} file(s)", files.len());
     }
 
-    Ok(chunk_count)
+    Ok((chunk_count, content_hashes))
 }
 
 /// Reindex notes from docs/notes.toml

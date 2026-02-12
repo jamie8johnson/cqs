@@ -11,6 +11,49 @@ use super::helpers::{
 };
 use super::Store;
 
+/// A dead function with confidence scoring.
+///
+/// Wraps a `ChunkSummary` with a confidence level indicating how likely
+/// the function is truly dead (not just invisible to static analysis).
+#[derive(Debug, Clone)]
+pub struct DeadFunction {
+    /// The code chunk (function/method metadata + content)
+    pub chunk: ChunkSummary,
+    /// How confident we are that this function is dead
+    pub confidence: DeadConfidence,
+}
+
+/// Confidence level for dead code detection.
+///
+/// Ordered from least to most confident, enabling `>=` filtering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeadConfidence {
+    /// Likely a false positive (methods, functions in active files)
+    Low,
+    /// Possibly dead but uncertain (private functions in active files)
+    Medium,
+    /// Almost certainly dead (private, in files with no callers)
+    High,
+}
+
+/// Well-known entry point names excluded from dead code detection.
+///
+/// These functions are called by the runtime, framework, or build system
+/// rather than by other indexed code.
+const ENTRY_POINT_NAMES: &[&str] = &[
+    "main",
+    "init",
+    "__init__",
+    "setup",
+    "teardown",
+    "beforeEach",
+    "afterEach",
+    "beforeAll",
+    "afterAll",
+    "handler",
+    "middleware",
+];
+
 /// Statistics about call graph entries (chunk-level calls table)
 #[derive(Debug, Clone, Default)]
 pub struct CallStats {
@@ -120,6 +163,10 @@ const TRAIT_METHOD_NAMES: &[&str] = &[
     "source",
     // std::future
     "poll",
+    // Common constructor/builder patterns (often called via type, not name)
+    "new",
+    "build",
+    "builder",
 ];
 
 impl Store {
@@ -471,22 +518,27 @@ impl Store {
     /// Find functions/methods never called by indexed code (dead code detection).
     ///
     /// Returns two lists:
-    /// - `confident`: Functions with no callers that are likely dead
+    /// - `confident`: Functions with no callers that are likely dead (with confidence scores)
     /// - `possibly_dead_pub`: Public functions with no callers (may be used externally)
     ///
     /// Uses two-phase query: lightweight metadata first, then content only for
     /// candidates that pass name/test/path filters (avoids loading large function bodies).
     ///
     /// Exclusions applied:
-    /// - `main` entry point
+    /// - Entry point names (`main`, `init`, `handler`, etc.)
     /// - Test functions (via `find_test_chunks()` heuristics)
     /// - Functions in test files
     /// - Trait implementations (dynamic dispatch invisible to call graph)
     /// - `#[no_mangle]` functions (FFI)
+    ///
+    /// Confidence scoring:
+    /// - **High**: Private function in a file where no other function has callers
+    /// - **Medium**: Private function in an active file (other functions are called)
+    /// - **Low**: Method, or function with constructor-like name patterns
     pub fn find_dead_code(
         &self,
         include_pub: bool,
-    ) -> Result<(Vec<ChunkSummary>, Vec<ChunkSummary>), StoreError> {
+    ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
         self.rt.block_on(async {
             // Phase 1: Lightweight query without content/doc
             let rows: Vec<_> = sqlx::query(
@@ -537,11 +589,25 @@ impl Store {
                 .map(|c| c.name)
                 .collect();
 
+            // Build set of files that have at least one function with callers
+            // (used for confidence scoring: "active file" = has called functions)
+            let files_with_callers: std::collections::HashSet<String> = {
+                let rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT DISTINCT c.origin
+                     FROM chunks c
+                     WHERE c.name IN (SELECT DISTINCT callee_name FROM function_calls)",
+                )
+                .fetch_all(&self.pool)
+                .await?;
+                rows.into_iter().map(|(f,)| f).collect()
+            };
+
             // Phase 1 filtering: name/test/path checks (don't need content)
             let mut candidates: Vec<LightChunk> = Vec::new();
 
             for chunk in all_uncalled {
-                if chunk.name == "main" {
+                // Skip entry points (main, init, handler, etc.)
+                if ENTRY_POINT_NAMES.contains(&chunk.name.as_str()) {
                     continue;
                 }
                 if test_names.contains(&chunk.name) {
@@ -598,7 +664,7 @@ impl Store {
                 }
             }
 
-            // Phase 2 filtering with content
+            // Phase 2 filtering with content + confidence scoring
             let mut confident = Vec::new();
             let mut possibly_dead_pub = Vec::new();
 
@@ -623,6 +689,22 @@ impl Store {
                     || light.signature.starts_with("pub ")
                     || light.signature.starts_with("pub(");
 
+                // Confidence scoring
+                let is_method = light.chunk_type == "method";
+                let file_str = light.file.to_string_lossy();
+                let file_is_active = files_with_callers.contains(file_str.as_ref());
+
+                let confidence = if is_method {
+                    // Methods are more likely trait impls or interface implementations
+                    DeadConfidence::Low
+                } else if !file_is_active {
+                    // File has no functions with callers — likely entirely unused
+                    DeadConfidence::High
+                } else {
+                    // Function in an active file — could be a helper
+                    DeadConfidence::Medium
+                };
+
                 let chunk = ChunkSummary::from(ChunkRow {
                     id: light.id,
                     origin: light.file.to_string_lossy().into_owned(),
@@ -637,10 +719,12 @@ impl Store {
                     parent_id: None,
                 });
 
+                let dead_fn = DeadFunction { chunk, confidence };
+
                 if is_pub && !include_pub {
-                    possibly_dead_pub.push(chunk);
+                    possibly_dead_pub.push(dead_fn);
                 } else {
-                    confident.push(chunk);
+                    confident.push(dead_fn);
                 }
             }
 
@@ -1092,5 +1176,120 @@ mod tests {
 
         let shared = store.find_shared_callers("nonexistent", 10).unwrap();
         assert!(shared.is_empty());
+    }
+
+    // ===== Dead code: entry point exclusion tests =====
+
+    #[test]
+    fn test_entry_point_exclusion() {
+        let (store, _dir) = setup_store();
+
+        // Insert chunks for known entry points
+        let emb = crate::embedder::Embedding::new(vec![0.0; 769]);
+        for name in &["main", "init", "handler", "middleware"] {
+            let chunk = crate::parser::Chunk {
+                id: format!("src/app.rs:1:{name}"),
+                file: std::path::PathBuf::from("src/app.rs"),
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::parser::ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {name}()"),
+                content: format!("fn {name}() {{}}"),
+                doc: None,
+                line_start: 1,
+                line_end: 3,
+                content_hash: format!("{name}_hash"),
+                parent_id: None,
+                window_idx: None,
+            };
+            store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
+        }
+
+        let (confident, possibly_pub) = store.find_dead_code(true).unwrap();
+        let all_names: Vec<&str> = confident
+            .iter()
+            .chain(possibly_pub.iter())
+            .map(|d| d.chunk.name.as_str())
+            .collect();
+
+        for ep in &["main", "init", "handler", "middleware"] {
+            assert!(
+                !all_names.contains(ep),
+                "Entry point '{ep}' should be excluded from dead code"
+            );
+        }
+    }
+
+    // ===== Dead code: confidence scoring tests =====
+
+    #[test]
+    fn test_confidence_assignment() {
+        let (store, _dir) = setup_store();
+
+        // Insert a function and a method, both uncalled
+        let emb = crate::embedder::Embedding::new(vec![0.0; 769]);
+
+        let func_chunk = crate::parser::Chunk {
+            id: "src/orphan.rs:1:func_hash".to_string(),
+            file: std::path::PathBuf::from("src/orphan.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Function,
+            name: "orphan_func".to_string(),
+            signature: "fn orphan_func()".to_string(),
+            content: "fn orphan_func() {}".to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 3,
+            content_hash: "func_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+        store.upsert_chunk(&func_chunk, &emb, Some(12345)).unwrap();
+
+        let method_chunk = crate::parser::Chunk {
+            id: "src/orphan.rs:5:meth_hash".to_string(),
+            file: std::path::PathBuf::from("src/orphan.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::parser::ChunkType::Method,
+            name: "orphan_method".to_string(),
+            signature: "fn orphan_method(&self)".to_string(),
+            content: "fn orphan_method(&self) {}".to_string(),
+            doc: None,
+            line_start: 5,
+            line_end: 7,
+            content_hash: "meth_hash".to_string(),
+            parent_id: None,
+            window_idx: None,
+        };
+        store
+            .upsert_chunk(&method_chunk, &emb, Some(12345))
+            .unwrap();
+
+        let (confident, _) = store.find_dead_code(true).unwrap();
+
+        let func_dead = confident.iter().find(|d| d.chunk.name == "orphan_func");
+        let method_dead = confident.iter().find(|d| d.chunk.name == "orphan_method");
+
+        // Function in a file with no callers should be High confidence
+        assert!(
+            func_dead.is_some(),
+            "orphan_func should be in dead code list"
+        );
+        assert_eq!(
+            func_dead.unwrap().confidence,
+            DeadConfidence::High,
+            "Private function in inactive file should be High confidence"
+        );
+
+        // Method should be Low confidence
+        assert!(
+            method_dead.is_some(),
+            "orphan_method should be in dead code list"
+        );
+        assert_eq!(
+            method_dead.unwrap().confidence,
+            DeadConfidence::Low,
+            "Method should be Low confidence"
+        );
     }
 }

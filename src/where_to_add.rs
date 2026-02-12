@@ -11,7 +11,13 @@ use crate::parser::Language;
 use crate::store::{ChunkSummary, SearchFilter};
 use crate::{AnalysisError, Store};
 
-/// Local patterns observed in a file
+/// Local code patterns extracted from existing chunks in the target file/module.
+///
+/// Uses String fields intentionally rather than an enum — this keeps the design
+/// flexible for arbitrary language-specific patterns without requiring type changes
+/// when adding new conventions. Adding a new naming convention or error handling
+/// style is a single function change in `detect_naming_convention()` or
+/// `extract_patterns()`.
 pub struct LocalPatterns {
     /// Common imports/use statements
     pub imports: Vec<String>,
@@ -211,51 +217,62 @@ pub fn suggest_placement_with_options(
 /// Maximum number of imports to extract from a file's patterns.
 const MAX_IMPORT_COUNT: usize = 5;
 
+/// Extract import/include statements from chunks by matching line prefixes.
+///
+/// Deduplicates imports using a HashSet and caps at `max` entries. This is the
+/// shared extraction logic used by all language arms in `extract_patterns`.
+fn extract_imports(chunks: &[ChunkSummary], prefixes: &[&str], max: usize) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut imports = Vec::new();
+    for chunk in chunks {
+        for line in chunk.content.lines() {
+            let trimmed = line.trim();
+            for &prefix in prefixes {
+                if trimmed.starts_with(prefix)
+                    && imports.len() < max
+                    && seen.insert(trimmed.to_string())
+                {
+                    imports.push(trimmed.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    imports
+}
+
+/// Detect the first matching error handling style from chunk content.
+fn detect_error_style(chunks: &[ChunkSummary], patterns: &[(&str, &str)]) -> String {
+    for chunk in chunks {
+        for &(needle, label) in patterns {
+            if chunk.content.contains(needle) {
+                return label.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
 /// Extract local coding patterns from a file's chunks.
 ///
 /// Iterates chunks individually instead of concatenating all content into
 /// one string (avoids a large allocation for files with many chunks).
-/// Uses a HashSet for O(1) import dedup instead of Vec::contains.
 fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> LocalPatterns {
-    let mut import_set: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut imports = Vec::new();
     let mut error_style = String::new();
     let mut has_inline_tests = false;
 
-    /// Add an import if not already seen, up to the cap.
-    fn try_add_import(
-        line: &str,
-        import_set: &mut std::collections::HashSet<String>,
-        imports: &mut Vec<String>,
-    ) {
-        if imports.len() < MAX_IMPORT_COUNT && import_set.insert(line.to_string()) {
-            imports.push(line.to_string());
-        }
-    }
-
-    let visibility = match language {
+    let (imports, visibility) = match language {
         Some(Language::Rust) => {
-            // Rust patterns — scan each chunk individually
-            for chunk in chunks {
-                for line in chunk.content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("use ") {
-                        try_add_import(trimmed, &mut import_set, &mut imports);
-                    }
-                }
-                if !has_inline_tests && chunk.content.contains("#[cfg(test)]") {
-                    has_inline_tests = true;
-                }
-                if error_style.is_empty() {
-                    if chunk.content.contains("anyhow::") {
-                        error_style = "anyhow".to_string();
-                    } else if chunk.content.contains("thiserror") {
-                        error_style = "thiserror".to_string();
-                    } else if chunk.content.contains("Result<") {
-                        error_style = "Result<>".to_string();
-                    }
-                }
-            }
+            let imports = extract_imports(chunks, &["use "], MAX_IMPORT_COUNT);
+            has_inline_tests = chunks.iter().any(|c| c.content.contains("#[cfg(test)]"));
+            error_style = detect_error_style(
+                chunks,
+                &[
+                    ("anyhow::", "anyhow"),
+                    ("thiserror", "thiserror"),
+                    ("Result<", "Result<>"),
+                ],
+            );
             // Dominant visibility
             let pub_crate = chunks
                 .iter()
@@ -269,107 +286,108 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
                 .iter()
                 .filter(|c| !c.signature.contains("pub"))
                 .count();
-            if pub_crate >= pub_count && pub_crate >= private {
-                "pub(crate)".to_string()
+            let vis = if pub_crate >= pub_count && pub_crate >= private {
+                "pub(crate)"
             } else if pub_count >= private {
-                "pub".to_string()
+                "pub"
             } else {
-                "private".to_string()
-            }
+                "private"
+            };
+            (imports, vis.to_string())
         }
         Some(Language::Python) => {
-            for chunk in chunks {
-                for line in chunk.content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
-                        try_add_import(trimmed, &mut import_set, &mut imports);
-                    }
-                }
-                if error_style.is_empty() {
-                    if chunk.content.contains("raise ") {
-                        error_style = "raise".to_string();
-                    } else if chunk.content.contains("try:") {
-                        error_style = "try/except".to_string();
-                    }
-                }
-            }
-            "module-level".to_string()
+            let imports = extract_imports(chunks, &["import ", "from "], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("raise ", "raise"), ("try:", "try/except")]);
+            (imports, "module-level".to_string())
         }
         Some(Language::TypeScript | Language::JavaScript) => {
+            // TS/JS also matches `const x = require(...)` — use custom logic
+            let mut seen = std::collections::HashSet::new();
+            let mut imports = Vec::new();
             for chunk in chunks {
                 for line in chunk.content.lines() {
                     let trimmed = line.trim();
-                    if trimmed.starts_with("import ")
-                        || (trimmed.starts_with("const ") && trimmed.contains("require("))
+                    if (trimmed.starts_with("import ")
+                        || (trimmed.starts_with("const ") && trimmed.contains("require(")))
+                        && imports.len() < MAX_IMPORT_COUNT
+                        && seen.insert(trimmed.to_string())
                     {
-                        try_add_import(trimmed, &mut import_set, &mut imports);
-                    }
-                }
-                if error_style.is_empty() {
-                    if chunk.content.contains("throw ") {
-                        error_style = "throw".to_string();
-                    } else if chunk.content.contains(".catch(") || chunk.content.contains("try {") {
-                        error_style = "try/catch".to_string();
+                        imports.push(trimmed.to_string());
                     }
                 }
             }
+            error_style = detect_error_style(
+                chunks,
+                &[
+                    ("throw ", "throw"),
+                    (".catch(", "try/catch"),
+                    ("try {", "try/catch"),
+                ],
+            );
             let has_export = chunks.iter().any(|c| c.signature.contains("export"));
-            if has_export {
-                "export".to_string()
+            let vis = if has_export {
+                "export"
             } else {
-                "module-private".to_string()
-            }
+                "module-private"
+            };
+            (imports, vis.to_string())
         }
         Some(Language::Go) => {
-            for chunk in chunks {
-                for line in chunk.content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("import ") {
-                        try_add_import(trimmed, &mut import_set, &mut imports);
-                    }
-                }
-                if error_style.is_empty() && chunk.content.contains("error") {
-                    error_style = "error return".to_string();
-                }
-            }
-            // Go: capitalized = exported
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("error", "error return")]);
             let exported = chunks
                 .iter()
                 .filter(|c| c.name.starts_with(|ch: char| ch.is_uppercase()))
                 .count();
-            if exported > chunks.len() / 2 {
-                "exported".to_string()
+            let vis = if exported > chunks.len() / 2 {
+                "exported"
             } else {
-                "unexported".to_string()
-            }
+                "unexported"
+            };
+            (imports, vis.to_string())
+        }
+        Some(Language::C) => {
+            let imports = extract_imports(chunks, &["#include"], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("errno", "errno"), ("perror", "perror")]);
+            // C: "static" means file-local, otherwise externally visible
+            let statics = chunks
+                .iter()
+                .filter(|c| c.signature.starts_with("static "))
+                .count();
+            let vis = if statics > chunks.len() / 2 {
+                "static"
+            } else {
+                "extern"
+            };
+            (imports, vis.to_string())
         }
         Some(Language::Java) => {
-            for chunk in chunks {
-                for line in chunk.content.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("import ") {
-                        try_add_import(trimmed, &mut import_set, &mut imports);
-                    }
-                }
-                if error_style.is_empty() {
-                    if chunk.content.contains("throws ") {
-                        error_style = "checked exceptions".to_string();
-                    } else if chunk.content.contains("try {") {
-                        error_style = "try/catch".to_string();
-                    }
-                }
-            }
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(
+                chunks,
+                &[("throws ", "checked exceptions"), ("try {", "try/catch")],
+            );
             let public = chunks
                 .iter()
                 .filter(|c| c.signature.contains("public"))
                 .count();
-            if public > chunks.len() / 2 {
-                "public".to_string()
+            let vis = if public > chunks.len() / 2 {
+                "public"
             } else {
-                "package-private".to_string()
-            }
+                "package-private"
+            };
+            (imports, vis.to_string())
         }
-        _ => "default".to_string(),
+        Some(Language::Sql) => {
+            // SQL has no imports or visibility conventions
+            (Vec::new(), "default".to_string())
+        }
+        Some(Language::Markdown) => {
+            // Markdown has no code patterns
+            (Vec::new(), "default".to_string())
+        }
+        _ => (Vec::new(), "default".to_string()),
     };
 
     LocalPatterns {
@@ -388,7 +406,7 @@ fn detect_naming_convention(chunks: &[ChunkSummary]) -> String {
     let mut pascal = 0usize;
 
     for c in chunks {
-        if c.name.starts_with("test_") || c.name.starts_with("Test") {
+        if crate::is_test_chunk(&c.name, &c.file.to_string_lossy()) {
             continue; // Skip test functions
         }
         if c.name.contains('_') {
@@ -527,6 +545,108 @@ mod tests {
         assert!(patterns.imports.is_empty());
         assert_eq!(patterns.visibility, "default");
         assert!(!patterns.has_inline_tests);
+    }
+
+    #[test]
+    fn test_extract_patterns_c() {
+        let chunks = vec![
+            make_chunk(
+                "read_file",
+                "int read_file(const char *path)",
+                "#include <stdio.h>\n#include <stdlib.h>\nint read_file() { if (errno) {} }",
+                Language::C,
+            ),
+            make_chunk(
+                "write_file",
+                "int write_file(const char *path)",
+                "#include <stdio.h>\nint write_file() { perror(\"fail\"); }",
+                Language::C,
+            ),
+        ];
+        let patterns = extract_patterns(&chunks, Some(Language::C));
+        assert!(!patterns.imports.is_empty());
+        assert!(
+            patterns
+                .imports
+                .iter()
+                .any(|i| i.contains("#include <stdio.h>")),
+            "Expected stdio.h import, got: {:?}",
+            patterns.imports
+        );
+        // errno found first
+        assert_eq!(patterns.error_handling, "errno");
+        assert_eq!(patterns.naming_convention, "snake_case");
+    }
+
+    #[test]
+    fn test_extract_patterns_c_static_visibility() {
+        let chunks = vec![
+            make_chunk("helper", "static int helper()", "", Language::C),
+            make_chunk(
+                "other_helper",
+                "static void other_helper()",
+                "",
+                Language::C,
+            ),
+            make_chunk("public_fn", "int public_fn()", "", Language::C),
+        ];
+        let patterns = extract_patterns(&chunks, Some(Language::C));
+        assert_eq!(patterns.visibility, "static");
+    }
+
+    #[test]
+    fn test_extract_patterns_sql() {
+        let chunks = vec![make_chunk(
+            "get_users",
+            "CREATE FUNCTION get_users()",
+            "SELECT * FROM users WHERE active = 1",
+            Language::Sql,
+        )];
+        let patterns = extract_patterns(&chunks, Some(Language::Sql));
+        assert!(patterns.imports.is_empty());
+        assert_eq!(patterns.visibility, "default");
+        assert!(patterns.error_handling.is_empty());
+    }
+
+    #[test]
+    fn test_extract_patterns_markdown() {
+        let chunks = vec![make_chunk(
+            "heading",
+            "# Getting Started",
+            "# Hello World\n\nThis is a guide.",
+            Language::Markdown,
+        )];
+        let patterns = extract_patterns(&chunks, Some(Language::Markdown));
+        assert!(patterns.imports.is_empty());
+        assert_eq!(patterns.visibility, "default");
+        assert!(patterns.error_handling.is_empty());
+    }
+
+    #[test]
+    fn test_extract_imports_dedup() {
+        let chunks = vec![make_chunk(
+            "a",
+            "fn a()",
+            "use std::io;\nuse std::io;\nuse std::path;",
+            Language::Rust,
+        )];
+        let imports = extract_imports(&chunks, &["use "], 10);
+        // "use std::io;" should appear only once
+        let io_count = imports.iter().filter(|i| i.contains("std::io")).count();
+        assert_eq!(io_count, 1);
+        assert_eq!(imports.len(), 2); // std::io + std::path
+    }
+
+    #[test]
+    fn test_extract_imports_respects_max() {
+        let chunks = vec![make_chunk(
+            "a",
+            "fn a()",
+            "use a;\nuse b;\nuse c;\nuse d;\nuse e;\nuse f;\nuse g;",
+            Language::Rust,
+        )];
+        let imports = extract_imports(&chunks, &["use "], 3);
+        assert_eq!(imports.len(), 3);
     }
 
     #[test]

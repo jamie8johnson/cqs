@@ -99,15 +99,6 @@ impl Default for ScoutOptions {
     }
 }
 
-/// Test name patterns (subset of store/calls.rs patterns)
-fn is_test_name(name: &str) -> bool {
-    name.starts_with("test_")
-        || name.starts_with("Test")
-        || name.ends_with("_test")
-        || name.contains("_test_")
-        || name.contains(".test")
-}
-
 /// Run scout analysis for a task description.
 ///
 /// Uses default search parameters. For custom parameters, use [`scout_with_options`].
@@ -212,7 +203,12 @@ pub fn scout_with_options(
                         caller_counts.get(&chunk.name).map(|&c| c as usize),
                     );
 
-                    let role = classify_role(*score, &chunk.name, opts.modify_threshold);
+                    let role = classify_role(
+                        *score,
+                        &chunk.name,
+                        &chunk.file.to_string_lossy(),
+                        opts.modify_threshold,
+                    );
 
                     ScoutChunk {
                         name: chunk.name.clone(),
@@ -273,9 +269,9 @@ pub fn scout_with_options(
     })
 }
 
-/// Classify a chunk's role based on score, name, and configurable threshold
-fn classify_role(score: f32, name: &str, modify_threshold: f32) -> ChunkRole {
-    if is_test_name(name) {
+/// Classify a chunk's role based on score, name/file, and configurable threshold
+fn classify_role(score: f32, name: &str, file: &str, modify_threshold: f32) -> ChunkRole {
+    if crate::is_test_chunk(name, file) {
         ChunkRole::TestToUpdate
     } else if score >= modify_threshold {
         ChunkRole::ModifyTarget
@@ -392,11 +388,21 @@ mod tests {
     #[test]
     fn test_classify_role_modify_target() {
         assert_eq!(
-            classify_role(0.6, "search_filtered", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.6,
+                "search_filtered",
+                "src/search.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::ModifyTarget
         );
         assert_eq!(
-            classify_role(0.5, "do_something", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.5,
+                "do_something",
+                "src/lib.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::ModifyTarget
         );
     }
@@ -404,39 +410,65 @@ mod tests {
     #[test]
     fn test_classify_role_dependency() {
         assert_eq!(
-            classify_role(0.49, "helper_fn", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.49,
+                "helper_fn",
+                "src/lib.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::Dependency
         );
         assert_eq!(
-            classify_role(0.3, "utility", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.3,
+                "utility",
+                "src/lib.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::Dependency
         );
     }
 
     #[test]
     fn test_classify_role_test() {
+        // Name-based test detection
         assert_eq!(
-            classify_role(0.9, "test_search", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.9,
+                "test_search",
+                "src/lib.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::TestToUpdate
         );
         assert_eq!(
-            classify_role(0.3, "test_helper", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.3,
+                "test_helper",
+                "src/lib.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::TestToUpdate
         );
         assert_eq!(
-            classify_role(0.8, "TestSuite", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            classify_role(
+                0.8,
+                "TestSuite",
+                "src/lib.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
             ChunkRole::TestToUpdate
         );
-    }
-
-    #[test]
-    fn test_is_test_name() {
-        assert!(is_test_name("test_foo"));
-        assert!(is_test_name("TestSuite"));
-        assert!(is_test_name("foo_test"));
-        assert!(is_test_name("foo.test"));
-        assert!(!is_test_name("search_filtered"));
-        assert!(!is_test_name("testing_util")); // "testing" starts with test but not test_/Test
+        // File-based test detection
+        assert_eq!(
+            classify_role(
+                0.9,
+                "helper_fn",
+                "tests/integration.rs",
+                DEFAULT_MODIFY_TARGET_THRESHOLD
+            ),
+            ChunkRole::TestToUpdate
+        );
     }
 
     #[test]
