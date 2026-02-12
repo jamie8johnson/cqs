@@ -65,8 +65,15 @@ impl ProjectRegistry {
             .with_context(|| format!("Failed to lock {}", path.display()))?;
 
         let content = toml::to_string_pretty(self)?;
-        // Atomic write: temp file + rename
-        let tmp = path.with_extension("toml.tmp");
+        // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
+        let tmp = path.with_extension(format!(
+            "toml.{}.{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
         std::fs::write(&tmp, &content)
             .with_context(|| format!("Failed to write {}", tmp.display()))?;
         if let Err(rename_err) = std::fs::rename(&tmp, &path) {

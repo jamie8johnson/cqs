@@ -237,3 +237,85 @@ fn bfs_shortest_path(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== node_letter tests (P3-17) =====
+
+    #[test]
+    fn test_node_letter_a_to_z() {
+        assert_eq!(node_letter(0), "A");
+        assert_eq!(node_letter(1), "B");
+        assert_eq!(node_letter(25), "Z");
+    }
+
+    #[test]
+    fn test_node_letter_beyond_z() {
+        // After Z: A1, B1, ...
+        assert_eq!(node_letter(26), "A1");
+        assert_eq!(node_letter(27), "B1");
+        assert_eq!(node_letter(51), "Z1");
+        assert_eq!(node_letter(52), "A2");
+    }
+
+    // ===== mermaid_escape tests (P3-17) =====
+
+    #[test]
+    fn test_mermaid_escape_quotes() {
+        assert_eq!(mermaid_escape("hello \"world\""), "hello &quot;world&quot;");
+    }
+
+    #[test]
+    fn test_mermaid_escape_angle_brackets() {
+        assert_eq!(mermaid_escape("Vec<T>"), "Vec&lt;T&gt;");
+    }
+
+    #[test]
+    fn test_mermaid_escape_plain() {
+        assert_eq!(mermaid_escape("simple_name"), "simple_name");
+    }
+
+    // ===== bfs_shortest_path tests =====
+
+    #[test]
+    fn test_bfs_direct_path() {
+        let mut forward = HashMap::new();
+        forward.insert("A".to_string(), vec!["B".to_string()]);
+        let result = bfs_shortest_path(&forward, "A", "B", 10);
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert_eq!(path, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn test_bfs_no_path() {
+        let mut forward = HashMap::new();
+        forward.insert("A".to_string(), vec!["B".to_string()]);
+        let result = bfs_shortest_path(&forward, "A", "C", 10);
+        assert!(result.is_none(), "No path from A to C");
+    }
+
+    #[test]
+    fn test_bfs_respects_max_depth() {
+        let mut forward = HashMap::new();
+        forward.insert("A".to_string(), vec!["B".to_string()]);
+        forward.insert("B".to_string(), vec!["C".to_string()]);
+        forward.insert("C".to_string(), vec!["D".to_string()]);
+        // Path A->B->C->D exists but depth=2 should not reach D
+        let result = bfs_shortest_path(&forward, "A", "D", 2);
+        assert!(result.is_none(), "Should not find path beyond max_depth=2");
+    }
+
+    #[test]
+    fn test_bfs_multi_hop() {
+        let mut forward = HashMap::new();
+        forward.insert("A".to_string(), vec!["B".to_string()]);
+        forward.insert("B".to_string(), vec!["C".to_string()]);
+        let result = bfs_shortest_path(&forward, "A", "C", 10);
+        assert!(result.is_some());
+        let path = result.unwrap();
+        assert_eq!(path, vec!["A", "B", "C"]);
+    }
+}

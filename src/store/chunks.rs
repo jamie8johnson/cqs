@@ -779,6 +779,51 @@ impl Store {
         })
     }
 
+    /// Batch-fetch chunks by multiple origin paths.
+    ///
+    /// Returns a map of origin -> Vec<ChunkSummary> for all found origins.
+    /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
+    /// Used by `cqs where` to avoid N+1 `get_chunks_by_origin` calls.
+    pub fn get_chunks_by_origins_batch(
+        &self,
+        origins: &[&str],
+    ) -> Result<HashMap<String, Vec<ChunkSummary>>, StoreError> {
+        if origins.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result: HashMap<String, Vec<ChunkSummary>> = HashMap::new();
+
+            const BATCH_SIZE: usize = 500;
+            for batch in origins.chunks(BATCH_SIZE) {
+                let placeholders: Vec<String> =
+                    (1..=batch.len()).map(|i| format!("?{}", i)).collect();
+                let sql = format!(
+                    "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                            line_start, line_end, parent_id
+                     FROM chunks WHERE origin IN ({})
+                     ORDER BY origin, line_start",
+                    placeholders.join(", ")
+                );
+
+                let mut query = sqlx::query(&sql);
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
+
+                let rows: Vec<_> = query.fetch_all(&self.pool).await?;
+                for row in &rows {
+                    let chunk = ChunkSummary::from(ChunkRow::from_row(row));
+                    let origin_key: String = row.get(1);
+                    result.entry(origin_key).or_default().push(chunk);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
     /// Get chunks by function name.
     ///
     /// Returns all chunks with the given name (may span multiple files).
@@ -802,6 +847,54 @@ impl Store {
         })
     }
 
+    /// Batch-fetch chunks by multiple function names.
+    ///
+    /// Returns a map of name -> Vec<ChunkSummary> for all found names.
+    /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
+    /// Used by `cqs related` to avoid N+1 `get_chunks_by_name` calls.
+    pub fn get_chunks_by_names_batch(
+        &self,
+        names: &[&str],
+    ) -> Result<HashMap<String, Vec<ChunkSummary>>, StoreError> {
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result: HashMap<String, Vec<ChunkSummary>> = HashMap::new();
+
+            const BATCH_SIZE: usize = 500;
+            for batch in names.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                            line_start, line_end, parent_id
+                     FROM chunks WHERE name IN ({})
+                     ORDER BY origin, line_start",
+                    placeholders
+                );
+
+                let rows: Vec<_> = {
+                    let mut q = sqlx::query(&sql);
+                    for name in batch {
+                        q = q.bind(*name);
+                    }
+                    q.fetch_all(&self.pool).await?
+                };
+
+                for row in &rows {
+                    let chunk = ChunkSummary::from(ChunkRow::from_row(row));
+                    result.entry(chunk.name.clone()).or_default().push(chunk);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
     /// Find function/method chunks whose signature contains a type name.
     ///
     /// Uses `LIKE '%name%'` on the signature column. Used by `cqs related`
@@ -811,13 +904,18 @@ impl Store {
         type_name: &str,
     ) -> Result<Vec<ChunkSummary>, StoreError> {
         self.rt.block_on(async {
-            let pattern = format!("%{}%", type_name);
+            // Escape LIKE wildcards in user input to prevent unintended pattern matching
+            let escaped = type_name
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            let pattern = format!("%{}%", escaped);
             let rows: Vec<_> = sqlx::query(
                 "SELECT id, origin, language, chunk_type, name, signature, content, doc,
                         line_start, line_end, parent_id
                  FROM chunks
                  WHERE chunk_type IN ('function', 'method')
-                   AND signature LIKE ?1
+                   AND signature LIKE ?1 ESCAPE '\\'
                  ORDER BY origin, line_start
                  LIMIT 100",
             )
@@ -829,6 +927,68 @@ impl Store {
                 .iter()
                 .map(|r| ChunkSummary::from(ChunkRow::from_row(r)))
                 .collect())
+        })
+    }
+
+    /// Batch signature search: find function/method chunks matching any of the given type names.
+    ///
+    /// Combines multiple LIKE patterns into a single query with OR, reducing N queries to 1.
+    /// Each result is tagged with which type name(s) it matched. Used by `cqs related`
+    /// to avoid per-type LIKE scans.
+    pub fn search_chunks_by_signatures_batch(
+        &self,
+        type_names: &[String],
+    ) -> Result<Vec<(String, ChunkSummary)>, StoreError> {
+        if type_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        self.rt.block_on(async {
+            // Build OR clauses for all type names
+            let mut conditions = Vec::new();
+            let mut bind_values = Vec::new();
+            for (i, type_name) in type_names.iter().enumerate() {
+                let escaped = type_name
+                    .replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_");
+                let pattern = format!("%{}%", escaped);
+                conditions.push(format!("signature LIKE ?{} ESCAPE '\\'", i + 1));
+                bind_values.push(pattern);
+            }
+
+            let where_clause = conditions.join(" OR ");
+            let sql = format!(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+                        line_start, line_end, parent_id
+                 FROM chunks
+                 WHERE chunk_type IN ('function', 'method')
+                   AND ({})
+                 ORDER BY origin, line_start
+                 LIMIT 500",
+                where_clause
+            );
+
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for val in &bind_values {
+                    q = q.bind(val);
+                }
+                q.fetch_all(&self.pool).await?
+            };
+
+            // For each row, determine which type name(s) matched
+            let mut results = Vec::new();
+            for row in &rows {
+                let chunk = ChunkSummary::from(ChunkRow::from_row(row));
+                for type_name in type_names {
+                    if chunk.signature.contains(type_name.as_str()) {
+                        results.push((type_name.clone(), chunk.clone()));
+                    }
+                }
+            }
+
+            Ok(results)
         })
     }
 
@@ -1054,7 +1214,7 @@ impl Store {
                     parent_id: row.get("parent_id"),
                     window_idx: row
                         .get::<Option<i64>, _>("window_idx")
-                        .map(|i| i as u32),
+                        .map(|i| i.clamp(0, u32::MAX as i64) as u32),
                 })
                 .collect())
         })

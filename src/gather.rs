@@ -15,6 +15,9 @@ use anyhow::Result;
 use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::Store;
 
+/// Default maximum nodes in BFS expansion to prevent blowup on hub functions.
+pub const DEFAULT_MAX_EXPANDED_NODES: usize = 200;
+
 /// Options for gather operation
 pub struct GatherOptions {
     pub expand_depth: usize,
@@ -23,6 +26,9 @@ pub struct GatherOptions {
     pub seed_limit: usize,
     pub seed_threshold: f32,
     pub decay_factor: f32,
+    /// Maximum nodes in BFS expansion (default: 200).
+    /// Prevents blowup on hub functions with many callers/callees.
+    pub max_expanded_nodes: usize,
 }
 
 impl GatherOptions {
@@ -54,6 +60,10 @@ impl GatherOptions {
         };
         self
     }
+    pub fn with_max_expanded_nodes(mut self, max: usize) -> Self {
+        self.max_expanded_nodes = max;
+        self
+    }
 }
 
 impl Default for GatherOptions {
@@ -65,6 +75,7 @@ impl Default for GatherOptions {
             seed_limit: 5,
             seed_threshold: 0.3,
             decay_factor: 0.8,
+            max_expanded_nodes: DEFAULT_MAX_EXPANDED_NODES,
         }
     }
 }
@@ -113,8 +124,8 @@ pub struct GatherResult {
     pub search_degraded: bool,
 }
 
-/// Maximum nodes in BFS expansion to prevent blowup on hub functions
-const MAX_EXPANDED_NODES: usize = 200;
+// MAX_EXPANDED_NODES is now configurable via GatherOptions::max_expanded_nodes
+// (default: DEFAULT_MAX_EXPANDED_NODES = 200)
 
 /// Gather relevant code chunks for a query
 pub fn gather(
@@ -178,7 +189,7 @@ pub fn gather(
             if depth >= opts.expand_depth {
                 continue;
             }
-            if name_scores.len() >= MAX_EXPANDED_NODES {
+            if name_scores.len() >= opts.max_expanded_nodes {
                 expansion_capped = true;
                 break;
             }

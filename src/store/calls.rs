@@ -420,6 +420,11 @@ impl Store {
             let mut reverse: std::collections::HashMap<String, Vec<String>> =
                 std::collections::HashMap::new();
 
+            // Each string is cloned exactly once: callee is cloned for the reverse
+            // entry key (original moved into forward's Vec), caller is cloned for the
+            // reverse Vec (original moved into forward's entry key). This is optimal
+            // for HashMap<String, Vec<String>> — Arc<str> would add indirection cost
+            // that exceeds the clone savings for typical call graph sizes (~2K edges).
             for (caller, callee) in rows {
                 reverse
                     .entry(callee.clone())
@@ -651,6 +656,10 @@ impl Store {
     }
 
     /// Async helper for find_test_chunks (reused by find_dead_code)
+    ///
+    /// Loads only lightweight columns (no content/doc) since callers only need
+    /// name, file, and line_start. The SQL WHERE clause still filters on content
+    /// (for test markers like `#[test]`) but avoids returning it.
     async fn find_test_chunks_async(&self) -> Result<Vec<ChunkSummary>, StoreError> {
         // Build OR clauses from centralized test pattern constants
         let mut clauses: Vec<String> = Vec::new();
@@ -669,8 +678,10 @@ impl Store {
         }
         let filter = clauses.join("\n                 OR ");
 
+        // Select only lightweight columns; content/doc filtering happens in WHERE
+        // but we don't need them in the result set
         let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature, content, doc,
+            "SELECT id, origin, language, chunk_type, name, signature,
                     line_start, line_end, parent_id
              FROM chunks
              WHERE chunk_type IN ('function', 'method')
@@ -684,7 +695,21 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|row| ChunkSummary::from(ChunkRow::from_row(&row)))
+            .map(|row| {
+                ChunkSummary::from(ChunkRow {
+                    id: row.get(0),
+                    origin: row.get(1),
+                    language: row.get(2),
+                    chunk_type: row.get(3),
+                    name: row.get(4),
+                    signature: row.get(5),
+                    content: String::new(),
+                    doc: None,
+                    line_start: clamp_line_number(row.get::<i64, _>(6)),
+                    line_end: clamp_line_number(row.get::<i64, _>(7)),
+                    parent_id: row.get(8),
+                })
+            })
             .collect())
     }
 

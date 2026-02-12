@@ -6,7 +6,15 @@ use std::path::PathBuf;
 
 use super::Cli;
 
-// Default values for CLI options — must match the clap `default_value` attributes in `Cli` (cli/mod.rs)
+// Default values for CLI options.
+//
+// SYNC REQUIREMENT: These constants MUST match the clap `default_value` attributes
+// in `Cli` (cli/mod.rs). If you change a default here, update the corresponding
+// `#[arg(default_value = "...")]` attribute too, and vice versa.
+//
+// These exist because clap doesn't expose whether a user explicitly passed the
+// default value, so apply_config_defaults compares against these to detect
+// "user didn't set this, apply config file value".
 pub(crate) const DEFAULT_LIMIT: usize = 5;
 pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
 pub(crate) const DEFAULT_NAME_BOOST: f32 = 0.2;

@@ -224,8 +224,15 @@ pub fn rewrite_notes_file(
 
     mutate(&mut file.note)?;
 
-    // Atomic write: temp file + rename (random suffix to prevent predictable name attacks)
-    let tmp_path = notes_path.with_extension(format!("toml.{}.tmp", std::process::id()));
+    // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
+    let tmp_path = notes_path.with_extension(format!(
+        "toml.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
 
     let serialized = match toml::to_string_pretty(&file) {
         Ok(s) => s,

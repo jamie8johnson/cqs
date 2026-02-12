@@ -295,9 +295,12 @@ impl BoundedScoreHeap {
             return;
         }
 
-        // At capacity - only insert if better than current minimum
+        // At capacity - only insert if strictly better than current minimum.
+        // Using > (not >=) gives first-indexed stability: when scores are equal,
+        // earlier items are kept. This prevents last-wins bias where later-indexed
+        // chunks systematically replace earlier ones at equal scores.
         if let Some(Reverse((OrderedFloat(min_score), _))) = self.heap.peek() {
-            if score >= *min_score {
+            if score > *min_score {
                 self.heap.pop();
                 self.heap.push(Reverse((OrderedFloat(score), id)));
             }
@@ -901,8 +904,10 @@ mod tests {
         heap.push("c".to_string(), 0.5);
         let results = heap.into_sorted_vec();
         assert_eq!(results.len(), 2);
-        // c should replace one of the earlier entries (no iteration-order bias)
-        assert!(results.iter().any(|(id, _)| id == "c"));
+        // First-indexed stability: equal scores don't replace existing entries,
+        // so "a" and "b" are kept, "c" is rejected.
+        assert!(results.iter().any(|(id, _)| id == "a"));
+        assert!(results.iter().any(|(id, _)| id == "b"));
     }
 
     // ===== BoundedScoreHeap additional tests =====
