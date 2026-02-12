@@ -87,7 +87,9 @@ pub use store::{ModelInfo, SearchFilter, Store};
 // but need to be accessible to src/cli/* and tests/
 pub use diff::{semantic_diff, DiffResult};
 pub use focused_read::extract_type_names;
-pub use gather::{gather, GatherDirection, GatherOptions, DEFAULT_MAX_EXPANDED_NODES};
+pub use gather::{
+    gather, gather_cross_index, GatherDirection, GatherOptions, DEFAULT_MAX_EXPANDED_NODES,
+};
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
     compute_hints_with_graph_depth, diff_impact_to_json, impact_to_json, impact_to_mermaid,

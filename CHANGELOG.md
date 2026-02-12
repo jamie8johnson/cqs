@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`--ref` scoped search**: `cqs "query" --ref aveva` searches only the named reference index, skipping the project index. Returns raw scores (no weight attenuation). Works with `--name-only` and `--json`. Error on missing ref with `cqs ref list` hint.
+- **`cqs gather --ref`**: Cross-index gather — seeds from a reference index, bridges into project code via embedding similarity, then BFS-expands via the project call graph. Returns both reference context and related project code in a single call.
 - **`--tokens` token budgeting**: Greedy knapsack packing by score within a token budget, across 5 commands:
   - `cqs "query" --tokens 4000` — pack highest-scoring search results into budget
   - `cqs gather "query" --tokens 4000` — pack gathered chunks into budget

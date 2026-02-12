@@ -114,6 +114,8 @@ pub struct GatheredChunk {
     pub content: String,
     pub score: f32,
     pub depth: usize,
+    /// Source: None = project, Some(name) = reference
+    pub source: Option<String>,
 }
 
 /// Result of a gather operation
@@ -256,6 +258,7 @@ pub fn gather(
                     content: r.chunk.content.clone(),
                     score: *score,
                     depth: *depth,
+                    source: None,
                 });
             }
         }
@@ -281,6 +284,270 @@ pub fn gather(
 
     Ok(GatherResult {
         chunks,
+        expansion_capped,
+        search_degraded,
+    })
+}
+
+/// Cross-index gather: seed from a reference index, bridge into project code, BFS expand.
+///
+/// Flow:
+/// 1. Search reference index for seed chunks matching the query
+/// 2. Retrieve seed chunk embeddings from the reference store
+/// 3. For each seed embedding, search the project store for similar code (bridge)
+/// 4. BFS expand project-side bridges via the project call graph
+/// 5. Return both reference seeds (context) and expanded project chunks
+pub fn gather_cross_index(
+    project_store: &Store,
+    ref_idx: &crate::reference::ReferenceIndex,
+    query_embedding: &crate::Embedding,
+    query_text: &str,
+    opts: &GatherOptions,
+    project_root: &Path,
+) -> Result<GatherResult> {
+    let _span = tracing::info_span!(
+        "gather_cross_index",
+        ref_name = %ref_idx.name,
+        query_len = query_text.len(),
+        expand_depth = opts.expand_depth,
+        limit = opts.limit,
+    )
+    .entered();
+
+    // 1. Seed search against reference index (unweighted — user explicitly targets this ref)
+    let filter = crate::store::helpers::SearchFilter {
+        query_text: query_text.to_string(),
+        enable_rrf: true,
+        ..SearchFilter::default()
+    };
+    let ref_seeds = crate::reference::search_reference_unweighted(
+        ref_idx,
+        query_embedding,
+        &filter,
+        opts.seed_limit,
+        opts.seed_threshold,
+    )?;
+    tracing::debug!(
+        ref_seed_count = ref_seeds.len(),
+        "Reference seed search complete"
+    );
+
+    if ref_seeds.is_empty() {
+        return Ok(GatherResult {
+            chunks: Vec::new(),
+            expansion_capped: false,
+            search_degraded: false,
+        });
+    }
+
+    // Collect ref seed chunk IDs for embedding retrieval
+    let ref_seed_ids: Vec<&str> = ref_seeds.iter().map(|r| r.chunk.id.as_str()).collect();
+
+    // 2. Get embeddings for ref seed chunks
+    let ref_embeddings = match ref_idx.store.get_embeddings_by_ids(&ref_seed_ids) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to get ref seed embeddings, falling back to query embedding only");
+            HashMap::new()
+        }
+    };
+
+    // Build ref seed output chunks (these go into the result as reference context)
+    let ref_chunks: Vec<GatheredChunk> = ref_seeds
+        .iter()
+        .map(|r| GatheredChunk {
+            name: r.chunk.name.clone(),
+            file: r.chunk.file.clone(),
+            line_start: r.chunk.line_start,
+            line_end: r.chunk.line_end,
+            signature: r.chunk.signature.clone(),
+            content: r.chunk.content.clone(),
+            score: r.score,
+            depth: 0,
+            source: Some(ref_idx.name.clone()),
+        })
+        .collect();
+
+    // 3. Bridge: for each ref seed, search the project store with the seed's embedding
+    //    to find semantically similar project code.
+    //    If no embedding available for a seed, use the original query embedding.
+    let bridge_filter = SearchFilter {
+        query_text: query_text.to_string(),
+        enable_rrf: true,
+        ..SearchFilter::default()
+    };
+
+    let bridge_limit = 3; // Top 3 project matches per ref seed
+    let mut bridge_scores: HashMap<String, (f32, String)> = HashMap::new(); // name -> (score, chunk_id)
+
+    for seed in &ref_seeds {
+        let search_embedding = ref_embeddings
+            .get(&seed.chunk.id)
+            .unwrap_or(query_embedding);
+
+        let project_results = match project_store.search_filtered(
+            search_embedding,
+            &bridge_filter,
+            bridge_limit,
+            opts.seed_threshold,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    ref_seed = %seed.chunk.name,
+                    "Bridge search failed for ref seed"
+                );
+                continue;
+            }
+        };
+
+        for pr in &project_results {
+            let bridge_score = pr.score * seed.score; // weight by ref relevance
+            match bridge_scores.entry(pr.chunk.name.clone()) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert((bridge_score, pr.chunk.id.clone()));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if bridge_score > e.get().0 {
+                        e.insert((bridge_score, pr.chunk.id.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::debug!(bridge_count = bridge_scores.len(), "Bridge search complete");
+
+    if bridge_scores.is_empty() {
+        // No project code found — return ref seeds only
+        let mut result_chunks = ref_chunks;
+        result_chunks.truncate(opts.limit);
+        return Ok(GatherResult {
+            chunks: result_chunks,
+            expansion_capped: false,
+            search_degraded: false,
+        });
+    }
+
+    // 4. BFS expand project-side bridges via project call graph
+    let graph = project_store.get_call_graph()?;
+
+    let mut name_scores: HashMap<String, (f32, usize)> = HashMap::new();
+    for (name, (score, _)) in &bridge_scores {
+        name_scores.insert(name.clone(), (*score, 0));
+    }
+
+    let mut expansion_capped = false;
+    if opts.expand_depth > 0 {
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        for name in bridge_scores.keys() {
+            queue.push_back((name.clone(), 0));
+        }
+
+        while let Some((name, depth)) = queue.pop_front() {
+            if depth >= opts.expand_depth {
+                continue;
+            }
+            if name_scores.len() >= opts.max_expanded_nodes {
+                expansion_capped = true;
+                break;
+            }
+
+            let neighbors = get_neighbors(&graph, &name, opts.direction);
+            let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
+            let decay = opts.decay_factor.powi((depth + 1) as i32);
+            let new_score = base_score * decay;
+            for neighbor in neighbors {
+                match name_scores.entry(neighbor.clone()) {
+                    std::collections::hash_map::Entry::Vacant(e) => {
+                        e.insert((new_score, depth + 1));
+                        queue.push_back((neighbor, depth + 1));
+                    }
+                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                        if new_score > e.get().0 {
+                            e.insert((new_score, depth + 1));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tracing::debug!(
+        expanded_nodes = name_scores.len(),
+        expansion_capped,
+        "Project BFS expansion complete"
+    );
+
+    // 5. Batch-fetch project chunks
+    let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
+    let (batch_results, search_degraded) = match project_store.search_by_names_batch(&all_names, 1)
+    {
+        Ok(r) => (r, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "Batch name search failed, results may be incomplete");
+            (HashMap::new(), true)
+        }
+    };
+
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut project_chunks: Vec<GatheredChunk> = Vec::new();
+
+    for (name, (score, depth)) in &name_scores {
+        if let Some(results) = batch_results.get(name) {
+            if let Some(r) = results.first() {
+                if seen_ids.contains(&r.chunk.id) {
+                    continue;
+                }
+                seen_ids.insert(r.chunk.id.clone());
+
+                project_chunks.push(GatheredChunk {
+                    name: r.chunk.name.clone(),
+                    file: r
+                        .chunk
+                        .file
+                        .strip_prefix(project_root)
+                        .unwrap_or(&r.chunk.file)
+                        .to_path_buf(),
+                    line_start: r.chunk.line_start,
+                    line_end: r.chunk.line_end,
+                    signature: r.chunk.signature.clone(),
+                    content: r.chunk.content.clone(),
+                    score: *score,
+                    depth: *depth,
+                    source: None,
+                });
+            }
+        }
+    }
+
+    // 6. Combine ref seeds + project chunks, sort by score, truncate, re-sort to reading order
+    let mut all_chunks = ref_chunks;
+    all_chunks.extend(project_chunks);
+
+    all_chunks.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.name.cmp(&b.name))
+    });
+    all_chunks.truncate(opts.limit);
+    // Sort: ref chunks first (by source name), then project chunks, each group in file/line order
+    all_chunks.sort_by(|a, b| {
+        // Reference chunks come first, project chunks second
+        let source_ord = match (&a.source, &b.source) {
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        };
+        source_ord
+            .then(a.file.cmp(&b.file))
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
+
+    Ok(GatherResult {
+        chunks: all_chunks,
         expansion_capped,
         search_degraded,
     })
