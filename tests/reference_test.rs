@@ -217,6 +217,147 @@ fn test_validate_ref_name_edge_cases() {
     assert!(reference::validate_ref_name("foo..bar").is_err());
 }
 
+// ===== search_reference_unweighted tests =====
+
+#[test]
+fn test_search_reference_unweighted_returns_raw_scores() {
+    let store = TestStore::new();
+    let c1 = test_chunk("unweighted_fn", "fn unweighted_fn() { test }");
+    insert_chunks(&store, &[c1], 1.0);
+
+    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_idx = ReferenceIndex {
+        name: "test-ref".to_string(),
+        store: ref_store,
+        index: None,
+        weight: 0.5, // Low weight — should NOT be applied
+    };
+
+    let query = mock_embedding(1.0);
+    let filter = SearchFilter::default();
+
+    let unweighted =
+        reference::search_reference_unweighted(&ref_idx, &query, &filter, 10, 0.0).unwrap();
+    assert!(!unweighted.is_empty());
+
+    // Score should NOT be multiplied by weight — raw scores should be higher
+    for r in &unweighted {
+        assert!(
+            r.score > 0.51,
+            "Unweighted score {} should be above weight 0.5 (raw score)",
+            r.score
+        );
+    }
+}
+
+#[test]
+fn test_search_reference_unweighted_vs_weighted() {
+    let store = TestStore::new();
+    let c1 = test_chunk("compare_fn", "fn compare_fn() { compare }");
+    insert_chunks(&store, &[c1], 1.0);
+
+    let ref_store_w = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_store_u = cqs::Store::open(&store.db_path()).unwrap();
+
+    let weight = 0.6;
+    let ref_idx_w = ReferenceIndex {
+        name: "weighted".to_string(),
+        store: ref_store_w,
+        index: None,
+        weight,
+    };
+    let ref_idx_u = ReferenceIndex {
+        name: "unweighted".to_string(),
+        store: ref_store_u,
+        index: None,
+        weight,
+    };
+
+    let query = mock_embedding(1.0);
+    let filter = SearchFilter::default();
+
+    let weighted = reference::search_reference(&ref_idx_w, &query, &filter, 10, 0.0).unwrap();
+    let unweighted =
+        reference::search_reference_unweighted(&ref_idx_u, &query, &filter, 10, 0.0).unwrap();
+
+    assert!(!weighted.is_empty());
+    assert!(!unweighted.is_empty());
+
+    // Unweighted score should be higher than weighted score
+    let w_score = weighted[0].score;
+    let u_score = unweighted[0].score;
+    assert!(
+        u_score > w_score,
+        "Unweighted {} should be > weighted {} (weight={})",
+        u_score,
+        w_score,
+        weight
+    );
+
+    // Weighted should be approximately unweighted * weight
+    let expected = u_score * weight;
+    assert!(
+        (w_score - expected).abs() < 0.01,
+        "Weighted {} should ≈ unweighted {} * weight {} = {}",
+        w_score,
+        u_score,
+        weight,
+        expected
+    );
+}
+
+#[test]
+fn test_search_reference_by_name_unweighted() {
+    let store = TestStore::new();
+    let c1 = test_chunk("name_search_fn", "fn name_search_fn() { test }");
+    insert_chunks(&store, &[c1], 1.0);
+
+    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_idx = ReferenceIndex {
+        name: "test-ref".to_string(),
+        store: ref_store,
+        index: None,
+        weight: 0.5,
+    };
+
+    let results =
+        reference::search_reference_by_name_unweighted(&ref_idx, "name_search_fn", 10, 0.0)
+            .unwrap();
+    assert!(!results.is_empty());
+
+    // Scores should NOT be attenuated by weight
+    for r in &results {
+        assert!(
+            r.score > 0.51,
+            "Unweighted name search score {} should be > weight 0.5",
+            r.score
+        );
+    }
+}
+
+#[test]
+fn test_search_reference_by_name_unweighted_threshold() {
+    let store = TestStore::new();
+    let c1 = test_chunk("threshold_fn", "fn threshold_fn() { test }");
+    insert_chunks(&store, &[c1], 1.0);
+
+    let ref_store = cqs::Store::open(&store.db_path()).unwrap();
+    let ref_idx = ReferenceIndex {
+        name: "test-ref".to_string(),
+        store: ref_store,
+        index: None,
+        weight: 0.5,
+    };
+
+    // Very high threshold should filter everything
+    let results =
+        reference::search_reference_by_name_unweighted(&ref_idx, "threshold_fn", 10, 2.0).unwrap();
+    assert!(
+        results.is_empty(),
+        "Threshold above max score should return empty"
+    );
+}
+
 // ===== Integration: merge with weighted reference results =====
 
 #[test]

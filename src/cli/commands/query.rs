@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 
 use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
-use cqs::{reference, Embedder, HnswIndex, Pattern, SearchFilter, Store};
+use cqs::{reference, Embedder, Embedding, HnswIndex, Pattern, SearchFilter, Store};
 
 use crate::cli::{display, signal, staleness, Cli};
 
@@ -20,6 +20,9 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {
+        if let Some(ref ref_name) = cli.ref_name {
+            return cmd_query_ref_name_only(cli, ref_name, query, &root);
+        }
         return cmd_query_name_only(cli, &store, query, &root);
     }
 
@@ -55,6 +58,14 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         note_only: cli.note_only,
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
+
+    // --ref scoped search: skip project index, search only the named reference
+    if let Some(ref ref_name) = cli.ref_name {
+        if cli.note_only {
+            bail!("--note-only cannot be used with --ref (notes only exist in the project index)");
+        }
+        return cmd_query_ref_only(cli, ref_name, query, &query_embedding, &filter, &root);
+    }
 
     // Load vector index for O(log n) search
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {
@@ -285,6 +296,115 @@ fn cmd_query_name_only(
         display::display_unified_results_json(&unified, query, parents_ref)?;
     } else {
         display::display_unified_results(&unified, root, cli.no_content, cli.context, parents_ref)?;
+    }
+
+    Ok(())
+}
+
+/// Ref-scoped semantic search: search only the named reference, no project index
+fn cmd_query_ref_only(
+    cli: &Cli,
+    ref_name: &str,
+    query: &str,
+    query_embedding: &Embedding,
+    filter: &SearchFilter,
+    root: &std::path::Path,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query_ref_only", ref_name).entered();
+
+    let config = cqs::config::Config::load(root);
+    let references = reference::load_references(&config.references);
+
+    let ref_idx = references
+        .iter()
+        .find(|r| r.name == ref_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                ref_name
+            )
+        })?;
+
+    let results = reference::search_reference_unweighted(
+        ref_idx,
+        query_embedding,
+        filter,
+        cli.limit,
+        cli.threshold,
+    )?;
+
+    let tagged: Vec<reference::TaggedResult> = results
+        .into_iter()
+        .map(|r| reference::TaggedResult {
+            result: UnifiedResult::Code(r),
+            source: Some(ref_name.to_string()),
+        })
+        .collect();
+
+    if tagged.is_empty() {
+        if cli.json {
+            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        } else {
+            println!("No results found in reference '{}'.", ref_name);
+        }
+        std::process::exit(signal::ExitCode::NoResults as i32);
+    }
+
+    if cli.json {
+        display::display_tagged_results_json(&tagged, query, None)?;
+    } else {
+        display::display_tagged_results(&tagged, root, cli.no_content, cli.context, None)?;
+    }
+
+    Ok(())
+}
+
+/// Ref-scoped name-only search: search only the named reference by name
+fn cmd_query_ref_name_only(
+    cli: &Cli,
+    ref_name: &str,
+    query: &str,
+    root: &std::path::Path,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query_ref_name_only", ref_name).entered();
+
+    let config = cqs::config::Config::load(root);
+    let references = reference::load_references(&config.references);
+
+    let ref_idx = references
+        .iter()
+        .find(|r| r.name == ref_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                ref_name
+            )
+        })?;
+
+    let results =
+        reference::search_reference_by_name_unweighted(ref_idx, query, cli.limit, cli.threshold)?;
+
+    let tagged: Vec<reference::TaggedResult> = results
+        .into_iter()
+        .map(|r| reference::TaggedResult {
+            result: UnifiedResult::Code(r),
+            source: Some(ref_name.to_string()),
+        })
+        .collect();
+
+    if tagged.is_empty() {
+        if cli.json {
+            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        } else {
+            println!("No results found in reference '{}'.", ref_name);
+        }
+        std::process::exit(signal::ExitCode::NoResults as i32);
+    }
+
+    if cli.json {
+        display::display_tagged_results_json(&tagged, query, None)?;
+    } else {
+        display::display_tagged_results(&tagged, root, cli.no_content, cli.context, None)?;
     }
 
     Ok(())

@@ -116,6 +116,10 @@ pub struct Cli {
     #[arg(long)]
     expand: bool,
 
+    /// Search only this reference index (skip project index)
+    #[arg(long = "ref")]
+    ref_name: Option<String>,
+
     /// Suppress progress output
     #[arg(short, long)]
     quiet: bool,
@@ -324,6 +328,9 @@ enum Commands {
         /// Max chunks to return
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
+        /// Maximum token budget (overrides --limit with token-based packing)
+        #[arg(long)]
+        tokens: Option<usize>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -514,8 +521,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             expand,
             ref direction,
             limit,
+            tokens,
             json,
-        }) => cmd_gather(&cli, query, expand, direction, limit, json),
+        }) => cmd_gather(&cli, query, expand, direction, limit, tokens, json),
         Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
         Some(Commands::AuditMode {
@@ -939,6 +947,92 @@ mod tests {
                 _ => panic!("Expected Update subcommand"),
             },
             _ => panic!("Expected Ref command"),
+        }
+    }
+
+    // ===== --ref flag tests =====
+
+    #[test]
+    fn test_cli_ref_flag() {
+        let cli = Cli::try_parse_from(["cqs", "--ref", "aveva", "license activation"]).unwrap();
+        assert_eq!(cli.ref_name, Some("aveva".to_string()));
+        assert_eq!(cli.query, Some("license activation".to_string()));
+    }
+
+    #[test]
+    fn test_cli_ref_flag_not_set() {
+        let cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        assert!(cli.ref_name.is_none());
+    }
+
+    #[test]
+    fn test_cli_ref_with_other_flags() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "--ref",
+            "tokio",
+            "--json",
+            "-n",
+            "10",
+            "search query",
+        ])
+        .unwrap();
+        assert_eq!(cli.ref_name, Some("tokio".to_string()));
+        assert!(cli.json);
+        assert_eq!(cli.limit, 10);
+    }
+
+    #[test]
+    fn test_cli_ref_with_name_only() {
+        let cli =
+            Cli::try_parse_from(["cqs", "--ref", "aveva", "--name-only", "some_function"]).unwrap();
+        assert_eq!(cli.ref_name, Some("aveva".to_string()));
+        assert!(cli.name_only);
+    }
+
+    // ===== --tokens flag tests =====
+
+    #[test]
+    fn test_cmd_gather_tokens_flag() {
+        let cli =
+            Cli::try_parse_from(["cqs", "gather", "alarm config", "--tokens", "4000"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { tokens, .. }) => {
+                assert_eq!(tokens, Some(4000));
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_gather_no_tokens_flag() {
+        let cli = Cli::try_parse_from(["cqs", "gather", "alarm config"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { tokens, .. }) => {
+                assert!(tokens.is_none());
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_gather_tokens_with_limit() {
+        let cli = Cli::try_parse_from([
+            "cqs", "gather", "query", "--tokens", "8000", "-n", "20", "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Gather {
+                tokens,
+                limit,
+                json,
+                ..
+            }) => {
+                assert_eq!(tokens, Some(8000));
+                assert_eq!(limit, 20);
+                assert!(json);
+            }
+            _ => panic!("Expected Gather command"),
         }
     }
 

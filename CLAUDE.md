@@ -48,6 +48,7 @@ cqs "search query" --json              # semantic search (default: hybrid RRF)
 cqs "function_name" --name-only --json # definition lookup (fast, no embedding)
 cqs "query" --semantic-only --json     # pure vector similarity, no keyword RRF
 cqs "query" --lang rust --path "src/cli/**" --json  # scoped search
+cqs "query" --ref aveva --json         # search only a named reference (skip project)
 ```
 
 Use it for:
@@ -63,7 +64,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
 - `cqs explain <function>` — function card: signature, callers, callees, similar. Collapses 4+ lookups into 1.
 - `cqs diff --source <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
-- `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion.
+- `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion. `--tokens 4000` for token-budgeted packing.
 - `cqs dead` — find dead code: functions/methods with no callers in the index.
 - `cqs stale` — check index freshness: files modified since last index.
 - `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.

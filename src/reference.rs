@@ -110,6 +110,46 @@ pub fn search_reference(
     Ok(results)
 }
 
+/// Search a single reference index without weight attenuation.
+///
+/// Used by `--ref` scoped search where the user explicitly targets a reference.
+/// Returns raw scores so reference results aren't penalized.
+pub fn search_reference_unweighted(
+    ref_idx: &ReferenceIndex,
+    query_embedding: &Embedding,
+    filter: &SearchFilter,
+    limit: usize,
+    threshold: f32,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let _span = tracing::info_span!("search_reference_unweighted", name = %ref_idx.name).entered();
+    let results = ref_idx.store.search_filtered_with_index(
+        query_embedding,
+        filter,
+        limit,
+        threshold,
+        ref_idx.index.as_deref(),
+    )?;
+    Ok(results)
+}
+
+/// Search a reference by name without weight attenuation (for `--ref` + `--name-only`).
+pub fn search_reference_by_name_unweighted(
+    ref_idx: &ReferenceIndex,
+    name: &str,
+    limit: usize,
+    threshold: f32,
+) -> anyhow::Result<Vec<SearchResult>> {
+    let _span = tracing::info_span!(
+        "search_reference_by_name_unweighted",
+        ref_name = %ref_idx.name,
+        query = name
+    )
+    .entered();
+    let mut results = ref_idx.store.search_by_name(name, limit)?;
+    results.retain(|r| r.score >= threshold);
+    Ok(results)
+}
+
 /// Search a reference by name (for name_only mode), applying weight
 pub fn search_reference_by_name(
     ref_idx: &ReferenceIndex,
