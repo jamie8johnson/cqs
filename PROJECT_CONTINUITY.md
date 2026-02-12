@@ -2,11 +2,18 @@
 
 ## Right Now
 
-**Releasing v0.12.2.** 2026-02-12. Deferred audit fixes merged (PR #393).
+**v0.12.2 released.** 2026-02-12. All clean — no active work.
 
-**v0.12.1 audit totals:**
+**v0.12.1 audit totals (complete):**
 - P1: 26 fixes (PR #360), P2: 41 fixes (PR #380), P3: 40 fixes (PR #381), P4: 9 fixes (PR #393)
 - Total: 116 fixes across 4 PRs. #389 (CAGRA GPU memory) deferred.
+- Issues #383-#388, #390, #391 closed. GitHub release v0.12.2 published.
+
+**Notes groomed.** 79 notes (pruned 1, updated 2, added 3).
+
+## Pending Changes
+
+`docs/notes.toml` — groomed notes (not yet committed).
 
 ## Parked
 

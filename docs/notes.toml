@@ -418,11 +418,7 @@ mentions = [
 [[note]]
 sentiment = 0.5
 text = "PDF-to-markdown pipeline works: pymupdf4llm converts AVEVA Historian manuals cleanly. Heading hierarchy preserved (# through ######). Noise: copyright footers, page numbers, ToC dot leaders need stripping. 39 PDFs → 14MB markdown in samples/md/."
-mentions = [
-    "samples/md/",
-    "samples/pdf/",
-    "pymupdf4llm",
-]
+mentions = ["pymupdf4llm"]
 
 [[note]]
 sentiment = -0.5
@@ -502,7 +498,7 @@ text = "Embedder clear_session() releases ~500MB ONNX session memory for long-ru
 mentions = [
     "src/embedder.rs",
     "clear_session",
-    "OnceCell",
+    "Mutex",
 ]
 
 [[note]]
@@ -653,9 +649,25 @@ text = "HNSW save is already crash-safe: blake3 checksums catch all partial-writ
 mentions = ["hnsw/persist.rs"]
 
 [[note]]
-sentiment = -0.5
-text = "Embedder session clearing: 50 cycles at 100ms = 5 seconds is way too aggressive for clearing a 500MB ONNX session. Use 3000 cycles (5 minutes) to match SQLite idle timeout. Always check loop timing before setting cycle thresholds."
+sentiment = 0.5
+text = "is_test_chunk(name, file) unifies 4 divergent test-detection implementations (scout, impact, where_to_add, store/calls SQL). Name patterns + path patterns in one function. Content markers (#[test], @Test) stay SQL-only in store/calls.rs."
 mentions = [
-    "cli/watch.rs",
-    "embedder.rs",
+    "src/lib.rs",
+    "is_test_chunk",
+]
+
+[[note]]
+sentiment = 0.5
+text = "cqs dead --min-confidence with High/Medium/Low scoring cuts false positives. High = non-method with no callers in active file. Low = method (dynamic dispatch possible). Entry points (main, init, handler) and trait methods (new, build, default) excluded."
+mentions = [
+    "src/store/calls.rs",
+    "DeadConfidence",
+]
+
+[[note]]
+sentiment = 0.0
+text = "HnswIndex::insert_batch only works on HnswInner::Owned variant. Loaded (from disk via unsafe transmute) cannot safely mutate. Watch mode must build Owned at startup for incremental inserts. hnsw_rs has no remove API — orphan vectors stay until full rebuild."
+mentions = [
+    "src/hnsw/mod.rs",
+    "insert_batch",
 ]
