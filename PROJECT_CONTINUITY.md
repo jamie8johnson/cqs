@@ -2,18 +2,16 @@
 
 ## Right Now
 
-**Notes groomed, clean state.** 2026-02-12.
+**Releasing v0.12.3.** 2026-02-12.
 
-All recent features shipped and merged:
+- PR #400: `cqs review` with risk scoring — merged
 - PR #399: `cqs gather --ref` cross-index gather
 - PR #398: `--tokens` on 5 commands, `--ref` scoped search, `cqs convert`
 - PR #396: `cqs plan` skill with 5 task-type templates
 
-Notes groomed: 2 stale removed (sqlx migration log, MCP removal log), 2 mentions fixed (`impact_diff.rs` → `src/impact.rs`), 2 new added (cross-index bridge pattern, --ref scoped search pattern). 53 notes total.
-
 ## Pending Changes
 
-- `docs/notes.toml` — groomed notes, uncommitted on main
+None.
 
 ## Parked
 
@@ -41,7 +39,7 @@ Notes groomed: 2 stale removed (sqlx migration log, MCP removal log), 2 mentions
 
 ## Architecture
 
-- Version: 0.12.2
+- Version: 0.12.3
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)

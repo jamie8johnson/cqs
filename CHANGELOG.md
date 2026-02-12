@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-02-12
+
 ### Added
+- **`cqs review`**: Comprehensive diff review — composes impact-diff + note matching + risk scoring + staleness check into a single structured payload. Supports `--base <ref>`, `--stdin`, `--json`. Text output with colored risk indicators.
+- **Change risk scoring**: `compute_risk_batch()` and `find_hotspots()` in impact module. Formula: `score = caller_count * (1 - coverage)`. Three levels: High (>=5), Medium (>=2), Low (<2). Entry-point exception: 0 callers + 0 tests = Medium.
+- **`cqs plan` skill**: Task planning with scout data and 5 task-type templates (feature, bugfix, refactor, migration, investigation).
 - **`--ref` scoped search**: `cqs "query" --ref aveva` searches only the named reference index, skipping the project index. Returns raw scores (no weight attenuation). Works with `--name-only` and `--json`. Error on missing ref with `cqs ref list` hint.
 - **`cqs gather --ref`**: Cross-index gather — seeds from a reference index, bridges into project code via embedding similarity, then BFS-expands via the project call graph. Returns both reference context and related project code in a single call.
 - **`--tokens` token budgeting**: Greedy knapsack packing by score within a token budget, across 5 commands:

@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.2
+## Current: v0.12.3
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -27,7 +27,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
 Priority order based on competitive gap analysis (Feb 2026).
 
-- [ ] `cqs review` — structured review context from a diff. Combines impact-diff + gather + notes + risk score. JSON for agent consumption.
+- [x] `cqs review` — structured review context from a diff. Combines impact-diff + notes + risk score. JSON for agent consumption. (PR #400)
 - [ ] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
 - [ ] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
 - [ ] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
@@ -35,7 +35,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Next — Retrieval Quality
 
 - [ ] Re-ranking — cross-encoder or second-pass scoring on top-N retrieval results. Biggest retrieval quality win.
-- [ ] Change risk scoring — `risk = caller_count * (1 - test_coverage) * centrality`. Feeds into review/ci/health.
+- [x] Change risk scoring — `risk = caller_count * (1 - test_coverage)`. Feeds into review/ci/health. (PR #400)
 - [ ] Embedding model eval — benchmark current E5-base-v2 against CodeSage, UniXcoder, Nomic Code on existing eval harness. Quantify gap before committing to upgrade.
 
 ### Next — Expansion
