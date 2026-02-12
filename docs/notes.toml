@@ -600,8 +600,8 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "cqs plan R&D: data layer works (scout+callers+impact+test-map finds relevant code and blast radius). Missing: reasoning layer (task-type templates like 'add flag' = Cli+Config+wiring+gating). Abstract queries score poorly; name-based lookups work. Better as a skill than a command."
+sentiment = 0.5
+text = "cqs plan shipped as skill (.claude/skills/cqs-plan/SKILL.md) with 5 task-type templates: add flag, add command, fix bug, add language, refactor. Experiment confirmed: scout+template = 43% faster + more idiomatic than scout alone. Templates provide structural checklist; scout provides codebase-specific conventions. Not a CLI command — pure skill."
 mentions = [
     "src/scout.rs",
     "cqs plan",
@@ -670,4 +670,13 @@ text = "HnswIndex::insert_batch only works on HnswInner::Owned variant. Loaded (
 mentions = [
     "src/hnsw/mod.rs",
     "insert_batch",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Always check for open PRs before releasing. PR #379 (26 P1 audit fixes) sat open and unmerged for an entire release cycle — fixes landed via later PRs by coincidence. Add 'gh pr list --state open' to pre-release checklist."
+mentions = [
+    "release",
+    "gh",
+    "workflow",
 ]

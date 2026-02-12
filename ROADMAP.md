@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.1
+## Current: v0.12.2
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -22,7 +22,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
 - [ ] Pre-built release binaries (GitHub Actions)
 - [ ] Skill grouping / organization (30+ skills)
-- [ ] `cqs plan` — speculative R&D (revisit when scout usage data available)
+- [x] `cqs plan` — skill with 5 task-type templates (v0.12.2)
 
 ### Parked
 

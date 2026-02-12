@@ -2,23 +2,18 @@
 
 ## Right Now
 
-**v0.12.2 released.** 2026-02-12. All clean — no active work.
+**`cqs plan` skill created.** 2026-02-12. Skill-based task planning with 5 task-type templates (add flag, add command, fix bug, add language, refactor). Experiment validated: templates improve agent speed (43% faster) and idiomatic correctness (ValueEnum vs raw String).
 
-**v0.12.1 audit totals (complete):**
-- P1: 26 fixes (PR #360), P2: 41 fixes (PR #380), P3: 40 fixes (PR #381), P4: 9 fixes (PR #393)
-- Total: 116 fixes across 4 PRs. #389 (CAGRA GPU memory) deferred.
-- Issues #383-#388, #390, #391 closed. GitHub release v0.12.2 published.
-
-**Notes groomed.** 79 notes (pruned 1, updated 2, added 3).
+**v0.12.1 audit complete.** PR #379 (P1) was orphaned but fixes landed via P2-P4 PRs. Closed as redundant.
 
 ## Pending Changes
 
-`docs/notes.toml` — groomed notes (not yet committed).
+Uncommitted: `cqs-plan` skill, bootstrap update, CLAUDE.md update, notes, PROJECT_CONTINUITY.md.
 
 ## Parked
 
 - **Pre-built release binaries** (GitHub Actions) — deferred
-- **`cqs plan` skill** — template-based planning using scout/impact data
+- **`cqs plan` templates** — add more task-type templates as patterns emerge from usage
 - **AVEVA docs reference testing** — 5662 chunks from 39 markdown files
 - **VB.NET language support** — VS2005 project delayed
 - **Post-index name matching** — fuzzy cross-doc references
