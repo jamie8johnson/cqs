@@ -129,6 +129,7 @@ src/
     chm.rs      - CHM → 7z extract → HTML → Markdown
     naming.rs   - Title extraction, kebab-case filename generation
     cleaning.rs - Extensible tag-based cleaning rules (7 rules)
+    webhelp.rs  - Web help site detection and multi-page merge
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment, rewrite_notes_file()

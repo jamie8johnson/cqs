@@ -18,11 +18,18 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 - Delete `type_map` dead code from LanguageDef (v0.12.1)
 - Scout note matching precision — path-component boundary matching (v0.12.1)
 
-### Next
+### Next — RAG Strengthening
+
+- [x] Web help ingestion — multi-page HTML sites (AuthorIT, MadCap Flare) auto-detected and merged (PR #397)
+- [ ] Token-budgeted gather — `cqs gather` with `--tokens N` budget. Pack most relevant chunks into a token limit instead of fixed count.
+- [ ] Re-ranking — cross-encoder or second-pass scoring on top-N retrieval results. Biggest retrieval quality win.
+
+### Next — Infrastructure
 
 - [ ] Pre-built release binaries (GitHub Actions)
 - [ ] Skill grouping / organization (30+ skills)
 - [x] `cqs plan` — skill with 5 task-type templates (v0.12.2)
+- [x] `cqs convert` — document-to-Markdown conversion (PR #397)
 
 ### Parked
 

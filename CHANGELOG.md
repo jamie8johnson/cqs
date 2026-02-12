@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **`cqs convert` command**: Convert PDF, HTML, CHM, and Markdown documents to cleaned Markdown with kebab-case filenames. PDF via Python `pymupdf4llm`, HTML/CHM via Rust `fast_html2md`, Markdown passthrough for cleaning and renaming.
+- **`cqs convert` command**: Convert PDF, HTML, CHM, web help sites, and Markdown documents to cleaned Markdown with kebab-case filenames. PDF via Python `pymupdf4llm`, HTML/CHM/web help via Rust `fast_html2md`, Markdown passthrough for cleaning and renaming.
+- **Web help ingestion**: Auto-detects multi-page HTML help sites (AuthorIT, MadCap Flare) by `content/` subdirectory heuristic. Merges all pages into a single document.
 - **Extensible cleaning rules**: Tag-based system (`aveva`, `pdf`, `generic`) for removing conversion artifacts. 7 rules ported from `scripts/clean_md.py`.
 - **Collision-safe naming**: Title extraction (H1 → H2 → first line → filename), kebab-case conversion, source-stem and numeric disambiguation.
 - **`convert` feature flag**: Optional dependencies (`fast_html2md`, `walkdir`) gated behind `convert` feature (enabled by default).

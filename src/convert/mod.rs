@@ -10,6 +10,7 @@
 //! | PDF | Python `pymupdf4llm` | `python3`, `pip install pymupdf4llm` |
 //! | HTML/HTM | Rust `fast_html2md` | None |
 //! | CHM | `7z` + `fast_html2md` | `p7zip-full` |
+//! | Web Help | `fast_html2md` (multi-page) | None |
 //!
 //! ## Pipeline
 //!
@@ -28,6 +29,8 @@ pub mod html;
 pub mod naming;
 #[cfg(feature = "convert")]
 pub mod pdf;
+#[cfg(feature = "convert")]
+pub mod webhelp;
 
 #[cfg(feature = "convert")]
 use std::path::{Path, PathBuf};
@@ -41,6 +44,8 @@ pub enum DocFormat {
     Chm,
     /// Markdown passthrough — no conversion, just cleaning + renaming.
     Markdown,
+    /// Web help site — multi-page HTML directory merged into one document.
+    WebHelp,
 }
 
 #[cfg(feature = "convert")]
@@ -51,6 +56,7 @@ impl std::fmt::Display for DocFormat {
             DocFormat::Html => write!(f, "HTML"),
             DocFormat::Chm => write!(f, "CHM"),
             DocFormat::Markdown => write!(f, "Markdown"),
+            DocFormat::WebHelp => write!(f, "WebHelp"),
         }
     }
 }
@@ -122,6 +128,9 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
         DocFormat::Chm => chm::chm_to_markdown(path)?,
         DocFormat::Markdown => std::fs::read_to_string(path)
             .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?,
+        DocFormat::WebHelp => {
+            anyhow::bail!("Web help is a directory format — use convert_path() on the directory");
+        }
     };
 
     // Step 2: Clean conversion artifacts
@@ -185,16 +194,50 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
 }
 
 /// Convert all supported documents in a directory (recursive).
+///
+/// Detects web help sites (directories with `content/` + HTML) and converts
+/// them as single merged documents instead of individual HTML files.
 #[cfg(feature = "convert")]
 fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<ConvertResult>> {
     let _span = tracing::info_span!("convert_directory", dir = %dir.display()).entered();
 
+    // If this directory itself is a web help site, convert as one document
+    if webhelp::is_webhelp_dir(dir) {
+        return convert_webhelp(dir, opts).map(|r| vec![r]);
+    }
+
     let mut results = Vec::new();
+
+    // Find immediate subdirectories that are web help sites
+    let mut webhelp_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.is_dir() && webhelp::is_webhelp_dir(&path) {
+                webhelp_dirs.push(path);
+            }
+        }
+    }
+
+    // Convert web help directories as single documents
+    for wh_dir in &webhelp_dirs {
+        match convert_webhelp(wh_dir, opts) {
+            Ok(r) => results.push(r),
+            Err(e) => tracing::warn!(
+                path = %wh_dir.display(),
+                error = %e,
+                "Failed to convert web help directory"
+            ),
+        }
+    }
+
+    // Walk individual files, skipping those under web help directories
     for entry in walkdir::WalkDir::new(dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| detect_format(e.path()).is_some())
+        .filter(|e| !webhelp_dirs.iter().any(|wh| e.path().starts_with(wh)))
     {
         match convert_file(entry.path(), opts) {
             Ok(r) => results.push(r),
@@ -212,6 +255,54 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         "Directory conversion complete"
     );
     Ok(results)
+}
+
+/// Convert a web help directory to a single cleaned Markdown document.
+#[cfg(feature = "convert")]
+fn convert_webhelp(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertResult> {
+    let _span = tracing::info_span!("convert_webhelp", dir = %dir.display()).entered();
+
+    let raw_markdown = webhelp::webhelp_to_markdown(dir)?;
+
+    // Clean
+    let tag_refs: Vec<&str> = opts.clean_tags.iter().map(|s| s.as_str()).collect();
+    let cleaned = cleaning::clean_markdown(&raw_markdown, &tag_refs);
+
+    // Title + filename
+    let title = naming::extract_title(&cleaned, dir);
+    let filename = naming::title_to_filename(&title);
+    let filename = naming::resolve_conflict(&filename, dir, &opts.output_dir);
+
+    let sections = cleaned.lines().filter(|l| l.starts_with('#')).count();
+    let output_path = opts.output_dir.join(&filename);
+
+    if !opts.dry_run {
+        std::fs::create_dir_all(&opts.output_dir)?;
+
+        if output_path.exists() && !opts.overwrite {
+            anyhow::bail!(
+                "Output file already exists: {} (use --overwrite to replace)",
+                output_path.display()
+            );
+        }
+
+        std::fs::write(&output_path, &cleaned)?;
+        tracing::info!(
+            source = %dir.display(),
+            output = %output_path.display(),
+            title = %title,
+            sections = sections,
+            "Converted web help"
+        );
+    }
+
+    Ok(ConvertResult {
+        source: dir.to_path_buf(),
+        output: output_path,
+        format: DocFormat::WebHelp,
+        title,
+        sections,
+    })
 }
 
 #[cfg(test)]

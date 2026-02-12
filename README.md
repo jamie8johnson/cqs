@@ -237,7 +237,7 @@ cqs gather "config" --direction callers   # Only callers, not callees
 
 ## Document Conversion
 
-Convert PDF, HTML, CHM, and Markdown documents to cleaned, indexed Markdown:
+Convert PDF, HTML, CHM, web help sites, and Markdown documents to cleaned, indexed Markdown:
 
 ```bash
 # Convert a single file
@@ -264,6 +264,7 @@ cqs convert doc.pdf --clean-tags aveva,generic  # AVEVA + generic rules
 | PDF | Python pymupdf4llm | `pip install pymupdf4llm` |
 | HTML/HTM | Rust fast_html2md | None |
 | CHM | 7z + fast_html2md | `sudo apt install p7zip-full` |
+| Web Help | fast_html2md (multi-page) | None |
 | Markdown | Passthrough | None (cleaning + renaming only) |
 
 Output files get kebab-case names derived from document titles, with collision-safe disambiguation.

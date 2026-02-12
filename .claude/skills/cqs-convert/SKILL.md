@@ -1,6 +1,6 @@
 ---
 name: cqs-convert
-description: Convert documents (PDF, HTML, CHM, Markdown) to cleaned, renamed Markdown files for indexing.
+description: Convert documents (PDF, HTML, CHM, web help, Markdown) to cleaned, renamed Markdown files for indexing.
 disable-model-invocation: false
 argument-hint: "<path> [--output <dir>] [--overwrite] [--dry-run] [--clean-tags <tags>]"
 ---
@@ -16,6 +16,7 @@ Convert documents to cleaned Markdown with sensible kebab-case filenames.
 | PDF | Python pymupdf4llm | `python3`, `pip install pymupdf4llm` |
 | HTML/HTM | Rust fast_html2md | None |
 | CHM | 7z + fast_html2md | `sudo apt install p7zip-full` |
+| Web Help | fast_html2md (multi-page) | None (auto-detected by `content/` subdir) |
 | Markdown | Passthrough | None (cleaning + renaming only) |
 
 ## Arguments
@@ -40,3 +41,4 @@ Run via Bash: `cqs convert <path> [flags]`
 - `/cqs-convert doc.html --output converted/` — convert single HTML file
 - `/cqs-convert samples/pdf/ --output samples/converted/ --dry-run` — preview batch
 - `/cqs-convert raw.md --output cleaned/` — clean and rename a markdown file
+- `/cqs-convert samples/web/ --output converted/` — auto-detect and merge web help sites
