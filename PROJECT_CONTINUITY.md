@@ -2,13 +2,18 @@
 
 ## Right Now
 
-**`cqs plan` skill created.** 2026-02-12. Skill-based task planning with 5 task-type templates (add flag, add command, fix bug, add language, refactor). Experiment validated: templates improve agent speed (43% faster) and idiomatic correctness (ValueEnum vs raw String).
+**v0.12.2 released, all clean.** 2026-02-12. No active work.
 
-**v0.12.1 audit complete.** PR #379 (P1) was orphaned but fixes landed via P2-P4 PRs. Closed as redundant.
+Session summary:
+- v0.12.2 released (PR #394) — 116 audit fixes across 4 PRs
+- Notes groomed (PR #395) — 80 notes (pruned 1, updated 2, added 4)
+- `cqs plan` skill shipped (PR #396) — 5 task-type templates
+- PR #379 (orphaned P1 audit) closed as redundant — all fixes already in codebase
+- Open-PR check added to release pre-flight
 
 ## Pending Changes
 
-Uncommitted: `cqs-plan` skill, bootstrap update, CLAUDE.md update, notes, PROJECT_CONTINUITY.md.
+`docs/notes.toml` — open-PR lesson note (not yet committed).
 
 ## Parked
 

@@ -79,6 +79,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs gc` — report/clean stale index entries.
 - `cqs notes add/update/remove` — manage project notes.
 - `cqs audit-mode on/off` — toggle audit mode.
+- `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 

@@ -32,6 +32,8 @@ pub(crate) fn open_project_store(
     Ok((store, root, cqs_dir))
 }
 
+#[cfg(feature = "convert")]
+use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
@@ -402,6 +404,24 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Convert documents (PDF, HTML, CHM) to Markdown
+    #[cfg(feature = "convert")]
+    Convert {
+        /// File or directory to convert
+        path: String,
+        /// Output directory for .md files [default: same as input]
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Overwrite existing .md files
+        #[arg(long)]
+        overwrite: bool,
+        /// Preview conversions without writing files
+        #[arg(long)]
+        dry_run: bool,
+        /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
+        #[arg(long)]
+        clean_tags: Option<String>,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -524,6 +544,21 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit,
             json,
         }) => cmd_scout(&cli, task, limit, json),
+        #[cfg(feature = "convert")]
+        Some(Commands::Convert {
+            ref path,
+            ref output,
+            overwrite,
+            dry_run,
+            ref clean_tags,
+        }) => cmd_convert(
+            &cli,
+            path,
+            output.as_deref(),
+            overwrite,
+            dry_run,
+            clean_tags.as_deref(),
+        ),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

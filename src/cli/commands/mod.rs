@@ -4,6 +4,8 @@
 
 mod audit_mode;
 mod context;
+#[cfg(feature = "convert")]
+mod convert;
 mod dead;
 mod diff;
 mod doctor;
@@ -32,6 +34,8 @@ mod where_cmd;
 
 pub(crate) use audit_mode::cmd_audit_mode;
 pub(crate) use context::cmd_context;
+#[cfg(feature = "convert")]
+pub(crate) use convert::cmd_convert;
 pub(crate) use dead::cmd_dead;
 pub(crate) use diff::cmd_diff;
 pub(crate) use doctor::cmd_doctor;
