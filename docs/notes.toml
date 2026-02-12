@@ -166,14 +166,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "sqlx migration complete: replaced rusqlite/r2d2 with sqlx async SQLite. Key design choice: sync wrappers via internal Runtime::block_on() preserve existing API. Schema init needed fix: split SQL by semicolons AND skip leading comment-only lines (not just statements that start with --)."
-mentions = [
-    "src/store/mod.rs",
-    "Cargo.toml",
-]
-
-[[note]]
 sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via cursor pagination (WHERE rowid > N), HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
@@ -510,15 +502,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "MCP removal was clean because all logic lived in library modules. The MCP layer was a pure JSON-RPC wrapper — deleting ~6200 lines required zero changes to core search/graph/impact code. Validates keeping business logic in src/*.rs with thin CLI wrappers."
-mentions = [
-    "src/lib.rs",
-    "src/audit.rs",
-    "PR #352",
-]
-
-[[note]]
 sentiment = -0.5
 text = "HNSW checksum file is now mandatory — missing checksum returns error, not warning. Bincode deserializes unverified bytes, so loading without checksum = trusting arbitrary data. Always regenerate with cqs index --force if checksum missing."
 mentions = [
@@ -622,16 +605,14 @@ mentions = [
 sentiment = -0.5
 text = "Sonnet agents produce shoddy work on audit fixes — ownership bugs (moved Vec used after for loop), missed tracing spans on files they owned. Always use opus agents for code changes. Haiku acceptable only for doc-only edits."
 mentions = [
-    "impact.rs",
-    "impact_diff.rs",
+    "src/impact.rs",
 ]
 
 [[note]]
 sentiment = 0.5
 text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<ChangedFunction> — callers pass owned vec, return struct populates changed_functions directly instead of leaving empty for caller to fill."
 mentions = [
-    "impact.rs",
-    "impact_diff.rs",
+    "src/impact.rs",
 ]
 
 [[note]]
@@ -687,4 +668,20 @@ text = "Token budgeting greedy knapsack pattern ships cleanly across 5 commands.
 mentions = [
     "count_tokens",
     "token_pack",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Cross-index gather: seed from reference index, retrieve seed embeddings via get_embeddings_by_ids, search project store with each seed embedding (bridge), BFS-expand bridges via project call graph. Bridge score = project_score * ref_score weights matches by reference relevance."
+mentions = [
+    "src/gather.rs",
+    "gather_cross_index",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Reference-scoped search via --ref flag reuses multi-index infrastructure but calls search_reference_unweighted() to avoid double-attenuating. Pattern works across query, gather, and diff commands with per-command ref loading."
+mentions = [
+    "src/reference.rs",
+    "search_reference_unweighted",
 ]

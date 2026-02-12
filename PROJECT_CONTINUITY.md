@@ -2,19 +2,18 @@
 
 ## Right Now
 
-**`cqs gather --ref` cross-index gather shipped.** 2026-02-12.
+**Notes groomed, clean state.** 2026-02-12.
 
-Seeds from a reference index, retrieves seed embeddings, bridges into project code via embedding similarity, BFS-expands via project call graph. Returns both reference chunks (tagged with source) and expanded project chunks.
+All recent features shipped and merged:
+- PR #399: `cqs gather --ref` cross-index gather
+- PR #398: `--tokens` on 5 commands, `--ref` scoped search, `cqs convert`
+- PR #396: `cqs plan` skill with 5 task-type templates
 
-Files changed: `src/gather.rs` (new `gather_cross_index()`), `src/cli/commands/gather.rs` (--ref handling, cross-index text/JSON display), `src/cli/mod.rs` (--ref flag on Gather + 3 tests), `src/lib.rs` (re-export), `CHANGELOG.md`, `CLAUDE.md`.
-
-Also in this session: saved "always do things properly" memory.
-
-Previously shipped (PR #398, merged): `--tokens` on 5 commands, `--ref` scoped search, `cqs convert`.
+Notes groomed: 2 stale removed (sqlx migration log, MCP removal log), 2 mentions fixed (`impact_diff.rs` → `src/impact.rs`), 2 new added (cross-index bridge pattern, --ref scoped search pattern). 53 notes total.
 
 ## Pending Changes
 
-- `gather --ref` cross-index feature — 6 files, uncommitted on main, needs branch + PR
+- `docs/notes.toml` — groomed notes, uncommitted on main
 
 ## Parked
 
