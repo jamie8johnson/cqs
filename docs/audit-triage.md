@@ -218,7 +218,7 @@ After de-duplication: **~120 unique findings**
 | 23 | `MODIFY_TARGET_THRESHOLD` hardcoded at 0.5 | EXT-3 | easy | ✅ |
 | 24 | `MAX_TEST_SEARCH_DEPTH` = 5 not exposed | EXT-4 | easy | ✅ |
 | 25 | `MAX_EXPANDED_NODES` = 200 in gather not configurable | EXT-5 | easy | ✅ |
-| 26 | Test detection patterns not user-configurable | EXT-7 | medium | deferred |
+| 26 | Test detection patterns not user-configurable | EXT-7 | medium | deferred #390 |
 | 27 | `apply_config_defaults` desync risk (3 patterns) | EXT-11 | easy | ✅ |
 | 28 | Import cap hardcoded at 5 in where_to_add | EXT-12 | easy | ✅ |
 
@@ -237,7 +237,7 @@ After de-duplication: **~120 unique findings**
 | 32 | `last_indexed_mtime` grows without bound in watch | RM-1 | easy | ✅ |
 | 33 | `find_test_chunks()` loads full content unnecessarily | RM-5 | easy | ✅ |
 | 34 | `where_to_add` loads all chunks per file | RM-6 | easy | ✅ (P3-5) |
-| 35 | `Embedder::clear_session` unusable in watch (needs &mut) | RM-8 | easy | deferred |
+| 35 | `Embedder::clear_session` unusable in watch (needs &mut) | RM-8 | easy | deferred #391 |
 | 36 | `reindex_files` clones Chunk+Embedding during grouping | RM-9 | easy | ✅ |
 | 37 | `scout()` loads full call graph + test chunks per invocation | RM-4 | medium | ✅ (P3-1) |
 
@@ -273,16 +273,16 @@ After de-duplication: **~120 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | Watch mode full HNSW rebuild on every change | PERF-7 | hard | existing deferred DS6 |
-| 2 | HNSW multi-file save not atomically consistent | DS-4 | hard | |
-| 3 | HNSW load TOCTOU between checksum and deserialization | DS-5 | hard | |
-| 4 | `cqs dead` 86% false positive rate | CQ-7 | medium | |
-| 5 | Adding CLI command requires 5 locations / 3 files | EXT-6 | medium | inherent to Rust+clap |
-| 6 | `extract_patterns` 145-line closed switch per language | EXT-8 | medium | |
-| 7 | Pattern enum still requires 5 changes per variant | EXT-9 | medium | existing X2 |
-| 8 | Pipeline parses all files into one Vec (100K batch) | RM-10 | medium | |
-| 9 | CAGRA dataset ~146MB retained permanently | RM-7 | medium | existing RM2/P4-5 |
-| 10 | SEC-7: No regressions found (positive) | SEC-7 | n/a | |
+| 1 | Watch mode full HNSW rebuild on every change | PERF-7 | hard | #382 |
+| 2 | HNSW multi-file save not atomically consistent | DS-4 | hard | #383 |
+| 3 | HNSW load TOCTOU between checksum and deserialization | DS-5 | hard | #384 |
+| 4 | `cqs dead` 86% false positive rate | CQ-7 | medium | #385 |
+| 5 | Adding CLI command requires 5 locations / 3 files | EXT-6 | medium | inherent |
+| 6 | `extract_patterns` 145-line closed switch per language | EXT-8 | medium | #386 |
+| 7 | Pattern enum still requires 5 changes per variant | EXT-9 | medium | #387 |
+| 8 | Pipeline parses all files into one Vec (100K batch) | RM-10 | medium | #388 |
+| 9 | CAGRA dataset ~146MB retained permanently | RM-7 | medium | #389 |
+| 10 | SEC-7: No regressions found (positive) | SEC-7 | n/a | ✅ |
 
 **P4 Total: 10 findings (1 positive)**
 

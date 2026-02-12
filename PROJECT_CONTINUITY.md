@@ -2,14 +2,14 @@
 
 ## Right Now
 
-**v0.12.1 P1 audit fixes done.** 2026-02-11. Branch: `fix/audit-p1`.
+**v0.12.1 audit complete.** 2026-02-12.
 
-- All 26 P1 findings fixed (commit 4dccd9d), 21 files changed
-- Build/tests/clippy/fmt all pass
-- `docs/audit-triage.md` P1 status column updated with ✅
-- Next: push branch, create PR, then P2 fixes
-
-Uncommitted: audit-findings.md, docs/notes.toml, PROJECT_CONTINUITY.md, archived prior audit files.
+- P1: 26 fixes merged (PR #360)
+- P2: 41 fixes merged (PR #380)
+- P3: 40 fixes merged (PR #381), 3 deferred (#390, #391), 3 non-issues
+- P4: 10 findings → 8 issues created (#382-#391), 1 inherent, 1 positive
+- Total: 107 fixes across 3 PRs, 10 issues for deferred work
+- 727 tests pass (up from 632)
 
 ## Parked
 
@@ -42,7 +42,7 @@ Uncommitted: audit-findings.md, docs/notes.toml, PROJECT_CONTINUITY.md, archived
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 408 lib + 213 integration + 11 doc (632 total)
+- Tests: 423 lib + 297 integration + 7 doc (727 total)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)
