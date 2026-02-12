@@ -2,24 +2,15 @@
 //!
 //! Provides callers/callees analysis.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use colored::Colorize;
 
-use cqs::Store;
-
-use crate::cli::{find_project_root, Cli};
+use crate::cli::Cli;
 
 /// Find functions that call the specified function
 pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name).entered();
-    let root = find_project_root();
-    let index_path = cqs::resolve_index_dir(&root).join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, _, _) = crate::cli::open_project_store()?;
     // Use full call graph (includes large functions)
     let callers = store.get_callers_full(name)?;
 
@@ -65,14 +56,7 @@ pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
 /// Find functions called by the specified function
 pub(crate) fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callees", name).entered();
-    let root = find_project_root();
-    let index_path = cqs::resolve_index_dir(&root).join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, _, _) = crate::cli::open_project_store()?;
     // Use full call graph (includes large functions)
     // No file context available from CLI input — pass None
     let callees = store.get_callees_full(name, None)?;

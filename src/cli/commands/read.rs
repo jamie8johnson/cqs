@@ -6,10 +6,10 @@
 use anyhow::{bail, Context, Result};
 
 use cqs::audit::load_audit_state;
+use cqs::compute_hints;
 use cqs::extract_type_names;
 use cqs::note::{parse_notes, path_matches_mention};
 use cqs::parser::ChunkType;
-use cqs::{compute_hints, Store};
 
 use crate::cli::find_project_root;
 
@@ -121,23 +121,11 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
 }
 
 fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let resolved = resolve_target(&store, focus)?;
+    let chunk = resolved.chunk;
 
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
-    let (chunk, _) = resolve_target(&store, focus)?;
-
-    let rel_file = chunk
-        .file
-        .strip_prefix(&root)
-        .unwrap_or(&chunk.file)
-        .to_string_lossy()
-        .replace('\\', "/");
+    let rel_file = cqs::rel_display(&chunk.file, &root);
 
     let mut output = String::new();
 
@@ -232,13 +220,7 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
                     )
             });
             if let Some(r) = type_def {
-                let dep_rel = r
-                    .chunk
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.chunk.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let dep_rel = cqs::rel_display(&r.chunk.file, &root);
                 output.push_str(&format!(
                     "\n// --- Type: {} ({}:{}-{}) ---\n",
                     r.chunk.name, dep_rel, r.chunk.line_start, r.chunk.line_end

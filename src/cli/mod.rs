@@ -15,6 +15,23 @@ pub(crate) use files::{acquire_index_lock, enumerate_files};
 pub(crate) use pipeline::run_index_pipeline;
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
+/// Open the project store, returning the store, project root, and index directory.
+///
+/// Bails with a user-friendly message if no index exists.
+pub(crate) fn open_project_store(
+) -> anyhow::Result<(cqs::Store, std::path::PathBuf, std::path::PathBuf)> {
+    let root = find_project_root();
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
+
+    if !index_path.exists() {
+        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
+    }
+
+    let store = cqs::Store::open(&index_path)?;
+    Ok((store, root, cqs_dir))
+}
+
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,

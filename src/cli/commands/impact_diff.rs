@@ -5,9 +5,7 @@ use std::io::Read;
 use anyhow::Result;
 
 use cqs::diff_parse::parse_unified_diff;
-use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions, Store};
-
-use crate::cli::find_project_root;
+use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions};
 
 fn empty_impact_json() -> serde_json::Value {
     serde_json::json!({
@@ -25,13 +23,7 @@ pub(crate) fn cmd_impact_diff(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact_diff").entered();
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
+    let (store, root, _) = crate::cli::open_project_store()?;
 
     // 1. Get diff text
     let diff_text = if from_stdin {
@@ -52,7 +44,6 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 3. Map hunks to functions
-    let store = Store::open(&index_path)?;
     let changed = map_hunks_to_functions(&store, &hunks);
 
     if changed.is_empty() {
@@ -137,12 +128,7 @@ fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Pa
             result.all_callers.len()
         );
         for c in &result.all_callers {
-            let rel = c
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&c.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&c.file, root);
             println!(
                 "  {} ({}:{}, call at line {})",
                 c.name, rel, c.line, c.call_line
@@ -162,12 +148,7 @@ fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Pa
             result.all_tests.len()
         );
         for t in &result.all_tests {
-            let rel = t
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&t.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&t.file, root);
             println!(
                 "  {} ({}:{}) [via {}, depth {}]",
                 t.name, rel, t.line, t.via, t.call_depth

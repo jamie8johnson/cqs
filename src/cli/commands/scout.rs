@@ -3,9 +3,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use cqs::{scout, scout_to_json, Embedder, Store};
-
-use crate::cli::find_project_root;
+use cqs::{scout, scout_to_json, Embedder};
 
 pub(crate) fn cmd_scout(
     _cli: &crate::cli::Cli,
@@ -14,20 +12,11 @@ pub(crate) fn cmd_scout(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_scout", task).entered();
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, root, _) = crate::cli::open_project_store()?;
     let embedder = Embedder::new()?;
     let limit = limit.clamp(1, 10);
 
-    let result =
-        scout(&store, &embedder, task, &root, limit).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let result = scout(&store, &embedder, task, &root, limit)?;
 
     if json {
         let output = scout_to_json(&result, &root);
@@ -40,12 +29,7 @@ pub(crate) fn cmd_scout(
             println!("{}", "No relevant code found.".dimmed());
         } else {
             for group in &result.file_groups {
-                let rel = group
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&group.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&group.file, &root);
 
                 println!();
                 print!(

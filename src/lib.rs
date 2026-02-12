@@ -97,7 +97,7 @@ pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
     scout, scout_to_json, ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary,
 };
-pub use search::{parse_target, resolve_target};
+pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
 pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, PlacementResult};
 
@@ -105,6 +105,17 @@ pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, Placeme
 pub use cagra::CagraIndex;
 
 use std::path::PathBuf;
+
+/// Unified error type for analysis operations (scout, where-to-add, etc.)
+///
+/// Replaces the former `ScoutError` and `SuggestError` which were near-identical.
+#[derive(Debug, thiserror::Error)]
+pub enum AnalysisError {
+    #[error(transparent)]
+    Store(#[from] store::StoreError),
+    #[error("embedding failed: {0}")]
+    Embedder(String),
+}
 
 /// Name of the per-project index directory (created by `cqs init`).
 pub const INDEX_DIR: &str = ".cqs";
@@ -136,6 +147,16 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
 /// Embedding dimension: 768 from E5-base-v2 model + 1 sentiment dimension.
 /// Single source of truth — all modules import this constant.
 pub const EMBEDDING_DIM: usize = 769;
+
+/// Relativize a path against a root and normalize separators for display.
+///
+/// Strips `root` prefix if present, converts backslashes to forward slashes.
+pub fn rel_display(path: &std::path::Path, root: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
 
 // ============ Note Indexing Helper ============
 

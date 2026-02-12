@@ -2,23 +2,14 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
-use cqs::Store;
-
-use crate::cli::{find_project_root, Cli};
+use crate::cli::Cli;
 
 /// Find functions/methods with no callers in the indexed codebase
 pub(crate) fn cmd_dead(cli: &Cli, json: bool, include_pub: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
-    let root = find_project_root();
-    let index_path = cqs::resolve_index_dir(&root).join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, root, _) = crate::cli::open_project_store()?;
     let (confident, possibly_pub) = store.find_dead_code(include_pub)?;
 
     if json {
@@ -47,12 +38,7 @@ fn display_dead_text(
             println!();
         }
         for chunk in confident {
-            let rel = chunk
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&chunk.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&chunk.file, root);
             println!(
                 "  {} {}:{}  [{}]",
                 chunk.name, rel, chunk.line_start, chunk.chunk_type
@@ -76,12 +62,7 @@ fn display_dead_text(
         }
         println!();
         for chunk in possibly_pub {
-            let rel = chunk
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&chunk.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&chunk.file, root);
             println!(
                 "  {} {}:{}  [{}]",
                 chunk.name, rel, chunk.line_start, chunk.chunk_type
@@ -98,10 +79,7 @@ fn display_dead_json(
     let format_chunk = |chunk: &cqs::store::ChunkSummary| {
         serde_json::json!({
             "name": chunk.name,
-            "file": chunk.file.strip_prefix(root)
-                .unwrap_or(&chunk.file)
-                .to_string_lossy()
-                .replace('\\', "/"),
+            "file": cqs::rel_display(&chunk.file, root),
             "line_start": chunk.line_start,
             "line_end": chunk.line_end,
             "chunk_type": chunk.chunk_type.to_string(),

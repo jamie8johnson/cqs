@@ -10,21 +10,13 @@ use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
 use cqs::{reference, Embedder, HnswIndex, Pattern, SearchFilter, Store};
 
-use crate::cli::{display, find_project_root, signal, staleness, Cli};
+use crate::cli::{display, signal, staleness, Cli};
 
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
 
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {

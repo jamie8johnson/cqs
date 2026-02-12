@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use crate::embedder::Embedder;
 use crate::parser::Language;
-use crate::store::{ChunkSummary, SearchFilter, StoreError};
-use crate::Store;
+use crate::store::{ChunkSummary, SearchFilter};
+use crate::{AnalysisError, Store};
 
 /// Local patterns observed in a file
 pub struct LocalPatterns {
@@ -57,13 +57,13 @@ pub fn suggest_placement(
     embedder: &Embedder,
     description: &str,
     limit: usize,
-) -> Result<PlacementResult, SuggestError> {
+) -> Result<PlacementResult, AnalysisError> {
     let _span =
         tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
     // Embed the description
     let query_embedding = embedder
         .embed_query(description)
-        .map_err(|e| SuggestError::Embedding(e.to_string()))?;
+        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
 
     // Search with RRF hybrid
     let filter = SearchFilter {
@@ -322,30 +322,6 @@ fn detect_naming_convention(chunks: &[ChunkSummary]) -> String {
         "camelCase".to_string()
     } else {
         "PascalCase".to_string()
-    }
-}
-
-/// Error type for placement suggestions
-#[derive(Debug)]
-pub enum SuggestError {
-    Embedding(String),
-    Store(StoreError),
-}
-
-impl std::fmt::Display for SuggestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SuggestError::Embedding(e) => write!(f, "Embedding error: {e}"),
-            SuggestError::Store(e) => write!(f, "Store error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for SuggestError {}
-
-impl From<StoreError> for SuggestError {
-    fn from(e: StoreError) -> Self {
-        SuggestError::Store(e)
     }
 }
 

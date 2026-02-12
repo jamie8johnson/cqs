@@ -9,8 +9,12 @@ use std::path::{Path, PathBuf};
 use crate::store::{CallGraph, CallerWithContext};
 use crate::Store;
 
-/// Direct caller with display-ready fields
-pub struct CallerInfo {
+/// Direct caller with display-ready fields (call-site context + snippet).
+///
+/// Named `CallerDetail` to distinguish from `store::CallerInfo` which has
+/// only basic fields (name, file, line). This struct adds `call_line` and
+/// `snippet` for impact analysis display.
+pub struct CallerDetail {
     pub name: String,
     pub file: PathBuf,
     pub line: u32,
@@ -37,7 +41,7 @@ pub struct TransitiveCaller {
 /// Complete impact analysis result
 pub struct ImpactResult {
     pub function_name: String,
-    pub callers: Vec<CallerInfo>,
+    pub callers: Vec<CallerDetail>,
     pub tests: Vec<TestInfo>,
     pub transitive_callers: Vec<TransitiveCaller>,
 }
@@ -129,14 +133,14 @@ pub fn compute_hints(
     ))
 }
 
-/// Build caller info with call-site snippets
-fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<CallerInfo>> {
+/// Build caller detail with call-site snippets
+fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<CallerDetail>> {
     let callers_ctx = store.get_callers_with_context(target_name)?;
     let mut callers = Vec::with_capacity(callers_ctx.len());
 
     for caller in &callers_ctx {
         let snippet = extract_call_snippet(store, caller);
-        callers.push(CallerInfo {
+        callers.push(CallerDetail {
             name: caller.name.clone(),
             file: caller.file.clone(),
             line: caller.line,
@@ -294,7 +298,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         .callers
         .iter()
         .map(|c| {
-            let rel = rel_path(&c.file, root);
+            let rel = crate::rel_display(&c.file, root);
             serde_json::json!({
                 "name": c.name,
                 "file": rel,
@@ -309,7 +313,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         .tests
         .iter()
         .map(|t| {
-            let rel = rel_path(&t.file, root);
+            let rel = crate::rel_display(&t.file, root);
             serde_json::json!({
                 "name": t.name,
                 "file": rel,
@@ -332,7 +336,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
             .transitive_callers
             .iter()
             .map(|c| {
-                let rel = rel_path(&c.file, root);
+                let rel = crate::rel_display(&c.file, root);
                 serde_json::json!({
                     "name": c.name,
                     "file": rel,
@@ -361,7 +365,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
 
     let mut idx = 1;
     for c in &result.callers {
-        let rel = rel_path(&c.file, root);
+        let rel = crate::rel_display(&c.file, root);
         let letter = node_letter(idx);
         lines.push(format!(
             "    {}[\"{} ({}:{})\"]",
@@ -375,7 +379,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
     }
 
     for t in &result.tests {
-        let rel = rel_path(&t.file, root);
+        let rel = crate::rel_display(&t.file, root);
         let letter = node_letter(idx);
         lines.push(format!(
             "    {}{{\"{}\\n{}\\ndepth: {}\"}}",
@@ -419,7 +423,7 @@ pub struct DiffImpactSummary {
 /// Aggregated impact result from a diff
 pub struct DiffImpactResult {
     pub changed_functions: Vec<ChangedFunction>,
-    pub all_callers: Vec<CallerInfo>,
+    pub all_callers: Vec<CallerDetail>,
     pub all_tests: Vec<DiffTestInfo>,
     pub summary: DiffImpactSummary,
 }
@@ -513,7 +517,7 @@ pub fn analyze_diff_impact(
                 for caller in &callers_ctx {
                     if seen_callers.insert(caller.name.clone()) {
                         let snippet = extract_call_snippet(store, caller);
-                        all_callers.push(CallerInfo {
+                        all_callers.push(CallerDetail {
                             name: caller.name.clone(),
                             file: caller.file.clone(),
                             line: caller.line,
@@ -591,7 +595,7 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .all_callers
         .iter()
         .map(|c| {
-            let rel = rel_path(&c.file, root);
+            let rel = crate::rel_display(&c.file, root);
             serde_json::json!({
                 "name": c.name,
                 "file": rel,
@@ -605,7 +609,7 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .all_tests
         .iter()
         .map(|t| {
-            let rel = rel_path(&t.file, root);
+            let rel = crate::rel_display(&t.file, root);
             serde_json::json!({
                 "name": t.name,
                 "file": rel,
@@ -773,13 +777,6 @@ fn suggest_test_file(source: &str) -> String {
 }
 
 // ============ Helpers ============
-
-fn rel_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
 
 fn node_letter(i: usize) -> String {
     if i < 26 {

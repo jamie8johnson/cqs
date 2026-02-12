@@ -83,7 +83,7 @@ pub fn display_unified_results(
         match result {
             UnifiedResult::Code(r) => {
                 // Paths are stored relative; strip_prefix handles legacy absolute paths
-                let rel_path = r.chunk.file.strip_prefix(root).unwrap_or(&r.chunk.file);
+                let rel_path = cqs::rel_display(&r.chunk.file, root);
 
                 let parent_tag = if r.chunk.parent_id.is_some() {
                     " [has parent]"
@@ -92,7 +92,7 @@ pub fn display_unified_results(
                 };
                 let header = format!(
                     "{}:{} ({} {}) [{}] [{:.2}]{}",
-                    rel_path.display(),
+                    rel_path,
                     r.chunk.line_start,
                     r.chunk.chunk_type,
                     r.chunk.name,
@@ -154,10 +154,7 @@ pub fn display_unified_results(
                     if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
                         let parent_header = format!(
                             "  Parent context: {} ({}:{}-{})",
-                            parent.name,
-                            rel_path.display(),
-                            parent.line_start,
-                            parent.line_end,
+                            parent.name, rel_path, parent.line_start, parent.line_end,
                         );
                         println!("{}", parent_header.dimmed());
                         println!("{}", "  ────────────────────────────────".dimmed());
@@ -272,7 +269,7 @@ pub fn display_tagged_results(
     for tagged in results {
         match &tagged.result {
             UnifiedResult::Code(r) => {
-                let rel_path = r.chunk.file.strip_prefix(root).unwrap_or(&r.chunk.file);
+                let rel_path = cqs::rel_display(&r.chunk.file, root);
 
                 // Prepend source name for reference results
                 let source_prefix = tagged
@@ -289,7 +286,7 @@ pub fn display_tagged_results(
                 let header = format!(
                     "{}{}:{} ({} {}) [{}] [{:.2}]{}",
                     source_prefix,
-                    rel_path.display(),
+                    rel_path,
                     r.chunk.line_start,
                     r.chunk.chunk_type,
                     r.chunk.name,
@@ -354,10 +351,7 @@ pub fn display_tagged_results(
                     if let Some(parent) = parents.and_then(|p| p.get(&r.chunk.id)) {
                         let parent_header = format!(
                             "  Parent context: {} ({}:{}-{})",
-                            parent.name,
-                            rel_path.display(),
-                            parent.line_start,
-                            parent.line_end,
+                            parent.name, rel_path, parent.line_start, parent.line_end,
                         );
                         println!("{}", parent_header.dimmed());
                         println!("{}", "  ────────────────────────────────".dimmed());

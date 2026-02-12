@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::impact::compute_hints_with_graph;
-use crate::store::{ChunkSummary, NoteSummary, SearchFilter, StoreError};
-use crate::{Embedder, Store};
+use crate::store::{ChunkSummary, NoteSummary, SearchFilter};
+use crate::{AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,12 +88,12 @@ pub fn scout(
     task: &str,
     root: &Path,
     limit: usize,
-) -> Result<ScoutResult, ScoutError> {
+) -> Result<ScoutResult, AnalysisError> {
     let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
     // 1. Embed and search
     let query_embedding = embedder
         .embed_query(task)
-        .map_err(|e| ScoutError::Embedder(e.to_string()))?;
+        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
 
     let filter = SearchFilter {
         enable_rrf: true,
@@ -101,9 +101,7 @@ pub fn scout(
         ..SearchFilter::default()
     };
 
-    let results = store
-        .search_filtered(&query_embedding, &filter, 15, 0.2)
-        .map_err(ScoutError::Store)?;
+    let results = store.search_filtered(&query_embedding, &filter, 15, 0.2)?;
 
     if results.is_empty() {
         return Ok(ScoutResult {
@@ -128,8 +126,8 @@ pub fn scout(
     }
 
     // 3. Load call graph + test chunks ONCE
-    let graph = store.get_call_graph().map_err(ScoutError::Store)?;
-    let test_chunks = store.find_test_chunks().map_err(ScoutError::Store)?;
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
 
     // 4. Batch caller/callee counts
     let all_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
@@ -203,13 +201,7 @@ pub fn scout(
     // 7. Find relevant notes by mention overlap
     let result_files: HashSet<String> = groups
         .iter()
-        .map(|g| {
-            g.file
-                .strip_prefix(root)
-                .unwrap_or(&g.file)
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
+        .map(|g| crate::rel_display(&g.file, root))
         .collect();
 
     let relevant_notes = find_relevant_notes(store, &result_files);
@@ -291,12 +283,7 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
         .file_groups
         .iter()
         .map(|g| {
-            let rel = g
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&g.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = crate::rel_display(&g.file, root);
 
             let chunks_json: Vec<_> = g
                 .chunks
@@ -350,31 +337,6 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
             "stale_count": result.summary.stale_count,
         }
     })
-}
-
-/// Scout-specific error type
-#[derive(Debug)]
-pub enum ScoutError {
-    Store(StoreError),
-    Embedder(String),
-}
-
-impl std::fmt::Display for ScoutError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ScoutError::Store(e) => write!(f, "{e}"),
-            ScoutError::Embedder(e) => write!(f, "Embedder error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for ScoutError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            ScoutError::Store(e) => Some(e),
-            ScoutError::Embedder(_) => None,
-        }
-    }
 }
 
 #[cfg(test)]

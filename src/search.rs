@@ -17,6 +17,17 @@ use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilte
 use crate::store::sanitize_fts_query;
 use crate::store::{Store, StoreError, UnifiedResult};
 
+/// Result of resolving a target name to a concrete chunk.
+///
+/// Contains the best-matching chunk and any alternative matches
+/// found during resolution (useful for disambiguation UIs).
+pub struct ResolvedTarget {
+    /// The resolved chunk (best match for the target name)
+    pub chunk: ChunkSummary,
+    /// Other candidates found during resolution, ordered by match quality
+    pub alternatives: Vec<SearchResult>,
+}
+
 // ============ Target Resolution ============
 
 /// Parse a target string into (optional_file_filter, function_name).
@@ -35,14 +46,11 @@ pub fn parse_target(target: &str) -> (Option<&str>, &str) {
     (None, target.trim_end_matches(':'))
 }
 
-/// Resolve a target string to a ChunkSummary.
+/// Resolve a target string to a [`ResolvedTarget`].
 ///
 /// Uses search_by_name with optional file filtering.
-/// Returns the best-matching chunk or an error if none found.
-pub fn resolve_target(
-    store: &Store,
-    target: &str,
-) -> Result<(ChunkSummary, Vec<SearchResult>), StoreError> {
+/// Returns the best-matching chunk and alternatives, or an error if none found.
+pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, StoreError> {
     let (file_filter, name) = parse_target(target);
     let results = store.search_by_name(name, 20)?;
     if results.is_empty() {
@@ -77,7 +85,10 @@ pub fn resolve_target(
         0
     };
     let chunk = results[idx].chunk.clone();
-    Ok((chunk, results))
+    Ok(ResolvedTarget {
+        chunk,
+        alternatives: results,
+    })
 }
 
 // ============ Name Matching ============

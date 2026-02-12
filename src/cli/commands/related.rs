@@ -1,10 +1,6 @@
 //! Related command — co-occurrence analysis
 
-use anyhow::{bail, Result};
-
-use cqs::Store;
-
-use crate::cli::find_project_root;
+use anyhow::Result;
 
 fn related_to_json(
     items: &[cqs::RelatedFunction],
@@ -13,12 +9,7 @@ fn related_to_json(
     items
         .iter()
         .map(|r| {
-            let rel = r
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&r.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&r.file, root);
             serde_json::json!({
                 "name": r.name,
                 "file": rel,
@@ -36,15 +27,7 @@ pub(crate) fn cmd_related(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_related", name).entered();
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, root, _) = crate::cli::open_project_store()?;
 
     let result = cqs::find_related(&store, name, limit)?;
 
@@ -68,12 +51,7 @@ pub(crate) fn cmd_related(
             println!();
             println!("{}", "Shared callers (called by same functions):".cyan());
             for r in &result.shared_callers {
-                let rel = r
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&r.file, &root);
                 println!(
                     "  {} {} ({} shared)",
                     r.name.bold(),
@@ -87,12 +65,7 @@ pub(crate) fn cmd_related(
             println!();
             println!("{}", "Shared callees (call same functions):".cyan());
             for r in &result.shared_callees {
-                let rel = r
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&r.file, &root);
                 println!(
                     "  {} {} ({} shared)",
                     r.name.bold(),
@@ -106,12 +79,7 @@ pub(crate) fn cmd_related(
             println!();
             println!("{}", "Shared types (use same custom types):".cyan());
             for r in &result.shared_types {
-                let rel = r
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&r.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&r.file, &root);
                 println!(
                     "  {} {} ({} shared)",
                     r.name.bold(),

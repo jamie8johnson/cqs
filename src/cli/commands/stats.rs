@@ -4,24 +4,16 @@
 
 use std::collections::HashSet;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
-use cqs::{HnswIndex, Parser, Store};
+use cqs::{HnswIndex, Parser};
 
-use crate::cli::{find_project_root, Cli};
+use crate::cli::Cli;
 
 /// Display index statistics (chunk counts, languages, types)
 pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
     let _span = tracing::info_span!("cmd_stats").entered();
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
     let stats = store.stats()?;
 
     // Check staleness by scanning filesystem

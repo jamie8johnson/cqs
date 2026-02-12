@@ -1,12 +1,12 @@
 //! Gather command — smart context assembly for a question
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use colored::Colorize;
 
+use cqs::Embedder;
 use cqs::{gather, GatherDirection, GatherOptions};
-use cqs::{Embedder, Store};
 
-use crate::cli::{find_project_root, staleness};
+use crate::cli::staleness;
 
 pub(crate) fn cmd_gather(
     cli: &crate::cli::Cli,
@@ -18,14 +18,7 @@ pub(crate) fn cmd_gather(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_gather", query_len = query.len(), expand, limit).entered();
 
-    let root = find_project_root();
-    let index_path = cqs::resolve_index_dir(&root).join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let (store, root, _) = crate::cli::open_project_store()?;
     let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
 

@@ -118,23 +118,23 @@ After de-duplication: **~120 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 15 | CLI store-opening boilerplate 17+ times | CQ-1 | medium | PR2 |
-| 16 | Path relativization duplicated 30+ times | CQ-2 | medium | PR2 |
+| 15 | CLI store-opening boilerplate 17+ times | CQ-1 | medium | ✅ fixed |
+| 16 | Path relativization duplicated 30+ times | CQ-2 | medium | ✅ fixed |
 | 17 | Config validation repeats clamp-and-warn 4x | CQ-4 | easy | ✅ fixed |
 | 18 | Atomic config write duplicated in 2 functions | CQ-5 | easy | non-issue (already atomic) |
 | 19 | `impact_diff.rs` "no changes" JSON duplicated | CQ-6 | easy | ✅ fixed |
 | 20 | `related.rs` JSON construction tripled | CQ-3 | easy | ✅ fixed |
-| 21 | `ScoutError`/`SuggestError` near-identical types | CQ-8/AD-2 | easy | PR2 |
+| 21 | `ScoutError`/`SuggestError` near-identical types | CQ-8/AD-2 | easy | ✅ fixed |
 | 22 | `analyze_diff_impact` returns empty changed_functions for caller to fill | AD-11 | easy | ✅ fixed |
 
 ### API Design
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 23 | `CallerInfo` name collision (store vs impact) | AD-1 | medium | PR2 |
+| 23 | `CallerInfo` name collision (store vs impact) | AD-1 | medium | ✅ fixed |
 | 24 | `ScoutChunk.chunk_type` is String instead of enum | AD-5 | easy | ✅ fixed |
-| 25 | `resolve_target` returns unnamed tuple | AD-7 | easy | PR2 |
-| 26 | Path relativization handled inconsistently across modules | AD-8 | easy | PR2 |
+| 25 | `resolve_target` returns unnamed tuple | AD-7 | easy | ✅ fixed |
+| 26 | Path relativization handled inconsistently across modules | AD-8 | easy | ✅ fixed |
 
 ### Data Safety
 

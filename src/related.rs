@@ -38,7 +38,7 @@ pub fn find_related(
     let _span = tracing::info_span!("find_related", target = target_name, limit).entered();
     // Resolve target to get its chunk (for signature/type extraction)
     let resolved = crate::resolve_target(store, target_name)?;
-    let target_chunk = resolved.0;
+    let target_chunk = resolved.chunk;
     let target = target_chunk.name.clone();
 
     // 1. Shared callers
