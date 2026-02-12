@@ -914,6 +914,107 @@ fn mermaid_escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+// ============ Risk Scoring ============
+
+/// Risk level for a function based on caller count and test coverage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RiskLevel {
+    High,
+    Medium,
+    Low,
+}
+
+impl std::fmt::Display for RiskLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RiskLevel::High => write!(f, "high"),
+            RiskLevel::Medium => write!(f, "medium"),
+            RiskLevel::Low => write!(f, "low"),
+        }
+    }
+}
+
+/// Risk assessment for a single function.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RiskScore {
+    pub name: String,
+    pub caller_count: usize,
+    pub test_count: usize,
+    pub coverage: f32,
+    pub risk_level: RiskLevel,
+    pub score: f32,
+}
+
+/// Compute risk scores for a batch of function names.
+///
+/// Uses pre-loaded call graph and test chunks to avoid repeated queries.
+/// Formula: `score = caller_count * (1.0 - coverage)` where
+/// `coverage = min(test_count / max(caller_count, 1), 1.0)`.
+///
+/// Entry-point handling: functions with 0 callers and 0 tests get `Medium`
+/// risk (likely entry points that should have tests).
+pub fn compute_risk_batch(
+    names: &[&str],
+    graph: &CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> Vec<RiskScore> {
+    let _span = tracing::info_span!("compute_risk_batch", count = names.len()).entered();
+
+    names
+        .iter()
+        .map(|name| {
+            let hints = compute_hints_with_graph(graph, test_chunks, name, None);
+            let caller_count = hints.caller_count;
+            let test_count = hints.test_count;
+            let coverage = if caller_count == 0 {
+                if test_count > 0 {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else {
+                (test_count as f32 / caller_count as f32).min(1.0)
+            };
+            let score = caller_count as f32 * (1.0 - coverage);
+            let risk_level = if caller_count == 0 && test_count == 0 {
+                // Entry point with no tests — flag as medium
+                RiskLevel::Medium
+            } else if score >= 5.0 {
+                RiskLevel::High
+            } else if score >= 2.0 {
+                RiskLevel::Medium
+            } else {
+                RiskLevel::Low
+            };
+            RiskScore {
+                name: name.to_string(),
+                caller_count,
+                test_count,
+                coverage,
+                risk_level,
+                score,
+            }
+        })
+        .collect()
+}
+
+/// Find the most-called functions in the codebase (hotspots).
+///
+/// Returns `(function_name, caller_count)` sorted by caller count descending.
+pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<(String, usize)> {
+    let _span = tracing::info_span!("find_hotspots", top_n).entered();
+
+    let mut hotspots: Vec<(String, usize)> = graph
+        .reverse
+        .iter()
+        .map(|(name, callers)| (name.clone(), callers.len()))
+        .collect();
+    hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+    hotspots.truncate(top_n);
+    hotspots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1256,5 +1357,166 @@ mod tests {
         let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
         let hints = compute_hints_with_graph(&graph, &test_chunks, "target", Some(99));
         assert_eq!(hints.caller_count, 99, "Should use prefetched value");
+    }
+
+    // ============ Risk Scoring Tests ============
+
+    #[test]
+    fn test_risk_high_many_callers_no_tests() {
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "target".to_string(),
+            vec!["a", "b", "c", "d", "e", "f", "g"]
+                .into_iter()
+                .map(String::from)
+                .collect(),
+        );
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].risk_level, RiskLevel::High);
+        assert_eq!(scores[0].caller_count, 7);
+        assert_eq!(scores[0].test_count, 0);
+        assert!((scores[0].score - 7.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_risk_low_with_tests() {
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "target".to_string(),
+            vec!["a".to_string(), "test_target".to_string()],
+        );
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let test_chunks = vec![crate::store::ChunkSummary {
+            id: "test_id".to_string(),
+            file: PathBuf::from("tests/test.rs"),
+            language: crate::parser::Language::Rust,
+            chunk_type: crate::language::ChunkType::Function,
+            name: "test_target".to_string(),
+            signature: String::new(),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 10,
+            parent_id: None,
+        }];
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert_eq!(scores[0].risk_level, RiskLevel::Low);
+        // 2 callers, 1 test → coverage = 0.5 → score = 2 * 0.5 = 1.0
+        assert!((scores[0].score - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_risk_entry_point_no_callers_no_tests() {
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        };
+        let test_chunks: Vec<crate::store::ChunkSummary> = Vec::new();
+        let scores = compute_risk_batch(&["main"], &graph, &test_chunks);
+        assert_eq!(scores[0].risk_level, RiskLevel::Medium);
+        assert_eq!(scores[0].caller_count, 0);
+        assert_eq!(scores[0].test_count, 0);
+    }
+
+    #[test]
+    fn test_risk_coverage_capped_at_one() {
+        // More tests than callers — coverage shouldn't exceed 1.0
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "target".to_string(),
+            vec![
+                "a".to_string(),
+                "test_a".to_string(),
+                "test_b".to_string(),
+                "test_c".to_string(),
+            ],
+        );
+        // Build forward so tests can reach target
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["target".to_string()]);
+        forward.insert("test_b".to_string(), vec!["target".to_string()]);
+        forward.insert("test_c".to_string(), vec!["target".to_string()]);
+        let graph = CallGraph { forward, reverse };
+        let test_chunks = vec![
+            crate::store::ChunkSummary {
+                id: "t1".to_string(),
+                file: PathBuf::from("tests/t.rs"),
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::language::ChunkType::Function,
+                name: "test_a".to_string(),
+                signature: String::new(),
+                content: String::new(),
+                doc: None,
+                line_start: 1,
+                line_end: 5,
+                parent_id: None,
+            },
+            crate::store::ChunkSummary {
+                id: "t2".to_string(),
+                file: PathBuf::from("tests/t.rs"),
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::language::ChunkType::Function,
+                name: "test_b".to_string(),
+                signature: String::new(),
+                content: String::new(),
+                doc: None,
+                line_start: 6,
+                line_end: 10,
+                parent_id: None,
+            },
+            crate::store::ChunkSummary {
+                id: "t3".to_string(),
+                file: PathBuf::from("tests/t.rs"),
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::language::ChunkType::Function,
+                name: "test_c".to_string(),
+                signature: String::new(),
+                content: String::new(),
+                doc: None,
+                line_start: 11,
+                line_end: 15,
+                parent_id: None,
+            },
+        ];
+        let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
+        assert!(
+            scores[0].coverage <= 1.0,
+            "Coverage should be capped at 1.0, got {}",
+            scores[0].coverage
+        );
+        assert_eq!(scores[0].risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    fn test_find_hotspots() {
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "hot".to_string(),
+            vec!["a", "b", "c"].into_iter().map(String::from).collect(),
+        );
+        reverse.insert(
+            "warm".to_string(),
+            vec!["a", "b"].into_iter().map(String::from).collect(),
+        );
+        reverse.insert("cold".to_string(), vec!["a".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+        let hotspots = find_hotspots(&graph, 2);
+        assert_eq!(hotspots.len(), 2);
+        assert_eq!(hotspots[0].0, "hot");
+        assert_eq!(hotspots[0].1, 3);
+        assert_eq!(hotspots[1].0, "warm");
+        assert_eq!(hotspots[1].1, 2);
     }
 }

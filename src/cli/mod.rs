@@ -37,8 +37,9 @@ use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
-    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_scout, cmd_similar, cmd_stale,
-    cmd_stats, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
+    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
+    cmd_stale, cmd_stats, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand,
+    RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -259,6 +260,18 @@ enum Commands {
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
     ImpactDiff {
+        /// Git ref to diff against (default: unstaged changes)
+        #[arg(long)]
+        base: Option<String>,
+        /// Read diff from stdin instead of running git
+        #[arg(long)]
+        stdin: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Comprehensive diff review: impact + notes + risk scoring
+    Review {
         /// Git ref to diff against (default: unstaged changes)
         #[arg(long)]
         base: Option<String>,
@@ -510,6 +523,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             stdin,
             json,
         }) => cmd_impact_diff(&cli, base.as_deref(), stdin, json),
+        Some(Commands::Review {
+            ref base,
+            stdin,
+            json,
+        }) => cmd_review(&cli, base.as_deref(), stdin, json),
         Some(Commands::Trace {
             ref source,
             ref target,
@@ -1204,6 +1222,44 @@ mod tests {
         match cli.command {
             Some(Commands::Scout { tokens, .. }) => assert_eq!(tokens, Some(8000)),
             _ => panic!("Expected Scout command"),
+        }
+    }
+
+    // ===== Review command tests =====
+
+    #[test]
+    fn test_cmd_review_defaults() {
+        let cli = Cli::try_parse_from(["cqs", "review"]).unwrap();
+        match cli.command {
+            Some(Commands::Review { base, stdin, json }) => {
+                assert!(base.is_none());
+                assert!(!stdin);
+                assert!(!json);
+            }
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_review_base_flag() {
+        let cli = Cli::try_parse_from(["cqs", "review", "--base", "main"]).unwrap();
+        match cli.command {
+            Some(Commands::Review { base, .. }) => {
+                assert_eq!(base, Some("main".to_string()));
+            }
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_review_stdin_json() {
+        let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Review { stdin, json, .. }) => {
+                assert!(stdin);
+                assert!(json);
+            }
+            _ => panic!("Expected Review command"),
         }
     }
 
