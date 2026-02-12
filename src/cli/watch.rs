@@ -189,6 +189,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                                 for (file, mtime) in pre_mtimes {
                                     last_indexed_mtime.insert(file, mtime);
                                 }
+                                // Prune entries for deleted files to prevent unbounded growth
+                                last_indexed_mtime.retain(|f, _| root.join(f).exists());
                                 if !cli.quiet {
                                     println!("Indexed {} chunk(s)", count);
                                 }
@@ -330,7 +332,8 @@ fn reindex_files(
     };
 
     // Merge cached and new embeddings in original chunk order
-    let mut embeddings: Vec<Embedding> = vec![Embedding::new(vec![]); chunks.len()];
+    let chunk_count = chunks.len();
+    let mut embeddings: Vec<Embedding> = vec![Embedding::new(vec![]); chunk_count];
     for (i, emb) in cached {
         embeddings[i] = emb;
     }
@@ -339,16 +342,18 @@ fn reindex_files(
     }
 
     // Group chunks by file and atomically replace (delete + insert in single transaction)
-    let mut mtime_cache: HashMap<&std::path::Path, Option<i64>> = HashMap::new();
-    let mut by_file: HashMap<&std::path::Path, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
-    for (chunk, embedding) in chunks.iter().zip(embeddings.iter()) {
+    // Uses into_iter() to move ownership instead of cloning each chunk/embedding.
+    let mut mtime_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
+    let mut by_file: HashMap<PathBuf, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
+    for (chunk, embedding) in chunks.into_iter().zip(embeddings.into_iter()) {
+        let file_key = chunk.file.clone();
         by_file
-            .entry(chunk.file.as_path())
+            .entry(file_key)
             .or_default()
-            .push((chunk.clone(), embedding.clone()));
+            .push((chunk, embedding));
     }
     for (file, pairs) in &by_file {
-        let mtime = *mtime_cache.entry(file).or_insert_with(|| {
+        let mtime = *mtime_cache.entry(file.clone()).or_insert_with(|| {
             let abs_path = root.join(file);
             abs_path
                 .metadata()
@@ -386,7 +391,7 @@ fn reindex_files(
         println!("Updated {} file(s)", files.len());
     }
 
-    Ok(chunks.len())
+    Ok(chunk_count)
 }
 
 /// Reindex notes from docs/notes.toml

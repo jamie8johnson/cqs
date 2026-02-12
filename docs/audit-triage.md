@@ -183,87 +183,87 @@ After de-duplication: **~120 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | Per-function reverse BFS in impact/scout (multi-source BFS fix) | PERF-1/8/10 | medium | |
-| 2 | N+1 `search_by_name` queries in impact (batch exists) | PERF-2 | medium | |
-| 3 | N+1 `get_chunks_by_name` in related.rs | PERF-3 | easy | |
-| 4 | Per-type LIKE scan in related.rs | PERF-4/AC-12 | medium | |
-| 5 | Per-file `get_chunks_by_origin` in where_to_add | PERF-5 | easy | |
-| 6 | `extract_patterns` joins all content into one string | PERF-6 | easy | |
-| 7 | `imports.contains()` O(n^2) dedup | PERF-9 | easy | |
-| 8 | `get_call_graph()` double-clones strings | PERF-11 | easy | |
+| 1 | Per-function reverse BFS in impact/scout (multi-source BFS fix) | PERF-1/8/10 | medium | ✅ |
+| 2 | N+1 `search_by_name` queries in impact (batch exists) | PERF-2 | medium | ✅ |
+| 3 | N+1 `get_chunks_by_name` in related.rs | PERF-3 | easy | ✅ |
+| 4 | Per-type LIKE scan in related.rs | PERF-4/AC-12 | medium | ✅ |
+| 5 | Per-file `get_chunks_by_origin` in where_to_add | PERF-5 | easy | ✅ |
+| 6 | `extract_patterns` joins all content into one string | PERF-6 | easy | ✅ |
+| 7 | `imports.contains()` O(n^2) dedup | PERF-9 | easy | ✅ |
+| 8 | `get_call_graph()` double-clones strings | PERF-11 | easy | ✅ |
 
 ### Test Coverage
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 9 | `related.rs` zero tests (133 lines) | TC-1 | medium | |
-| 10 | 5 new CLI commands (scout/where/related/impact-diff/stale) no integration tests | TC-6 | medium | |
-| 11 | `suggest_tests()` zero coverage | TC-7 | medium | |
-| 12 | `analyze_impact()` no direct tests | TC-8 | medium | |
-| 13 | 4 tautological tests (TC-2/3/4/5) | TC-2/3/4/5 | easy | |
-| 14 | `read_context_lines()` zero tests (80 lines) | TC-9 | easy | |
-| 15 | `search_chunks_by_signature()` zero tests | TC-10 | easy | |
-| 16 | Impact/diff-impact JSON serialization zero tests | TC-11 | easy | |
-| 17 | `mermaid_escape` / `node_letter` untested | TC-12 | easy | |
-| 18 | `display.rs` (496 lines) only 1 test | TC-13 | medium | |
-| 19 | `warn_stale_results()` zero tests | TC-14 | easy | |
-| 20 | `compute_hints_with_graph` stale data edge case untested | TC-16 | easy | |
+| 9 | `related.rs` zero tests (133 lines) | TC-1 | medium | ✅ |
+| 10 | 5 new CLI commands (scout/where/related/impact-diff/stale) no integration tests | TC-6 | medium | ✅ |
+| 11 | `suggest_tests()` zero coverage | TC-7 | medium | ✅ |
+| 12 | `analyze_impact()` no direct tests | TC-8 | medium | ✅ |
+| 13 | 4 tautological tests (TC-2/3/4/5) | TC-2/3/4/5 | easy | ✅ |
+| 14 | `read_context_lines()` zero tests (80 lines) | TC-9 | easy | ✅ |
+| 15 | `search_chunks_by_signature()` zero tests | TC-10 | easy | ✅ |
+| 16 | Impact/diff-impact JSON serialization zero tests | TC-11 | easy | ✅ |
+| 17 | `mermaid_escape` / `node_letter` untested | TC-12 | easy | ✅ |
+| 18 | `display.rs` (496 lines) only 1 test | TC-13 | medium | ✅ |
+| 19 | `warn_stale_results()` zero tests | TC-14 | easy | ✅ |
+| 20 | `compute_hints_with_graph` stale data edge case untested | TC-16 | easy | ✅ |
 
 ### Extensibility
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 21 | `scout()` hardcodes search params (15/0.2) | EXT-1 | easy | |
-| 22 | `suggest_placement()` hardcodes search params (10/0.1) | EXT-2 | easy | |
-| 23 | `MODIFY_TARGET_THRESHOLD` hardcoded at 0.5 | EXT-3 | easy | |
-| 24 | `MAX_TEST_SEARCH_DEPTH` = 5 not exposed | EXT-4 | easy | |
-| 25 | `MAX_EXPANDED_NODES` = 200 in gather not configurable | EXT-5 | easy | |
-| 26 | Test detection patterns not user-configurable | EXT-7 | medium | |
-| 27 | `apply_config_defaults` desync risk (3 patterns) | EXT-11 | easy | |
-| 28 | Import cap hardcoded at 5 in where_to_add | EXT-12 | easy | |
+| 21 | `scout()` hardcodes search params (15/0.2) | EXT-1 | easy | ✅ |
+| 22 | `suggest_placement()` hardcodes search params (10/0.1) | EXT-2 | easy | ✅ |
+| 23 | `MODIFY_TARGET_THRESHOLD` hardcoded at 0.5 | EXT-3 | easy | ✅ |
+| 24 | `MAX_TEST_SEARCH_DEPTH` = 5 not exposed | EXT-4 | easy | ✅ |
+| 25 | `MAX_EXPANDED_NODES` = 200 in gather not configurable | EXT-5 | easy | ✅ |
+| 26 | Test detection patterns not user-configurable | EXT-7 | medium | deferred |
+| 27 | `apply_config_defaults` desync risk (3 patterns) | EXT-11 | easy | ✅ |
+| 28 | Import cap hardcoded at 5 in where_to_add | EXT-12 | easy | ✅ |
 
 ### API / Types
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 29 | Inconsistent JSON serialization patterns | AD-4 | medium | |
-| 30 | `SuggestError`/`ScoutError` wrap errors as String, losing chain | EH-3 | easy | |
-| 31 | `node_letter` ambiguous labels for indices 26+ | AC-7/EH-14 | easy | |
+| 29 | Inconsistent JSON serialization patterns | AD-4 | medium | non-issue |
+| 30 | `SuggestError`/`ScoutError` wrap errors as String, losing chain | EH-3 | easy | ✅ P2 |
+| 31 | `node_letter` ambiguous labels for indices 26+ | AC-7/EH-14 | easy | ✅ |
 
 ### Resource Management
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 32 | `last_indexed_mtime` grows without bound in watch | RM-1 | easy | |
-| 33 | `find_test_chunks()` loads full content unnecessarily | RM-5 | easy | |
-| 34 | `where_to_add` loads all chunks per file | RM-6 | easy | |
-| 35 | `Embedder::clear_session` unusable in watch (needs &mut) | RM-8 | easy | |
-| 36 | `reindex_files` clones Chunk+Embedding during grouping | RM-9 | easy | |
-| 37 | `scout()` loads full call graph + test chunks per invocation | RM-4 | medium | |
+| 32 | `last_indexed_mtime` grows without bound in watch | RM-1 | easy | ✅ |
+| 33 | `find_test_chunks()` loads full content unnecessarily | RM-5 | easy | ✅ |
+| 34 | `where_to_add` loads all chunks per file | RM-6 | easy | ✅ (P3-5) |
+| 35 | `Embedder::clear_session` unusable in watch (needs &mut) | RM-8 | easy | deferred |
+| 36 | `reindex_files` clones Chunk+Embedding during grouping | RM-9 | easy | ✅ |
+| 37 | `scout()` loads full call graph + test chunks per invocation | RM-4 | medium | ✅ (P3-1) |
 
 ### Robustness
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 38 | `diff_parse` silently defaults unparseable hunk lines to 1 | RB-3 | easy | |
-| 39 | `window_idx` i64→u32 cast truncates without clamping | RB-5 | easy | |
-| 40 | `display.rs` end_idx+context+1 overflow | RB-6 | easy | |
-| 41 | `Parser::new()` .expect() in library code | RB-4 | medium | |
-| 42 | `diff_parse` doesn't track `diff --git` boundaries | AC-9/RB-11 | easy | |
-| 43 | LIKE wildcard escaping in `search_chunks_by_signature` | AC-4/SEC-5 | easy | |
+| 38 | `diff_parse` silently defaults unparseable hunk lines to 1 | RB-3 | easy | ✅ |
+| 39 | `window_idx` i64→u32 cast truncates without clamping | RB-5 | easy | ✅ |
+| 40 | `display.rs` end_idx+context+1 overflow | RB-6 | easy | ✅ |
+| 41 | `Parser::new()` .expect() in library code | RB-4 | medium | non-issue |
+| 42 | `diff_parse` doesn't track `diff --git` boundaries | AC-9/RB-11 | easy | non-issue |
+| 43 | LIKE wildcard escaping in `search_chunks_by_signature` | AC-4/SEC-5 | easy | ✅ |
 
 ### Security (defense-in-depth)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 44 | Temp file predictable names (note.rs, config.rs, project.rs) | SEC-3/4/6 | easy | |
+| 44 | Temp file predictable names (note.rs, config.rs, project.rs) | SEC-3/4/6 | easy | ✅ |
 
 ### Other
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 45 | `compute_hints_with_graph` prefetched count can diverge from graph | AC-8 | easy | |
-| 46 | `BoundedScoreHeap` last-wins bias at equal scores | AC-6 | easy | |
+| 45 | `compute_hints_with_graph` prefetched count can diverge from graph | AC-8 | easy | ✅ |
+| 46 | `BoundedScoreHeap` last-wins bias at equal scores | AC-6 | easy | ✅ |
 
 **P3 Total: 46 findings**
 

@@ -85,21 +85,28 @@ pub use store::{ModelInfo, SearchFilter, Store};
 // but need to be accessible to src/cli/* and tests/
 pub use diff::{semantic_diff, DiffResult};
 pub use focused_read::extract_type_names;
-pub use gather::{gather, GatherDirection, GatherOptions};
+pub use gather::{gather, GatherDirection, GatherOptions, DEFAULT_MAX_EXPANDED_NODES};
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
-    diff_impact_to_json, impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests,
-    ChangedFunction, DiffImpactResult, FunctionHints, ImpactResult, TestSuggestion,
+    compute_hints_with_graph_depth, diff_impact_to_json, impact_to_json, impact_to_mermaid,
+    map_hunks_to_functions, suggest_tests, ChangedFunction, DiffImpactResult, FunctionHints,
+    ImpactResult, TestSuggestion, DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
-    scout, scout_to_json, ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary,
+    scout, scout_to_json, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
+    ScoutResult, ScoutSummary, DEFAULT_MODIFY_TARGET_THRESHOLD, DEFAULT_SCOUT_SEARCH_LIMIT,
+    DEFAULT_SCOUT_SEARCH_THRESHOLD,
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
-pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, PlacementResult};
+pub use where_to_add::{
+    suggest_placement, suggest_placement_with_options, FileSuggestion, LocalPatterns,
+    PlacementOptions, PlacementResult, DEFAULT_PLACEMENT_SEARCH_LIMIT,
+    DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
+};
 
 #[cfg(feature = "gpu-search")]
 pub use cagra::CagraIndex;

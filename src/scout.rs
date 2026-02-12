@@ -69,8 +69,35 @@ pub struct ScoutResult {
     pub summary: ScoutSummary,
 }
 
-/// Minimum search score to classify as ModifyTarget
-const MODIFY_TARGET_THRESHOLD: f32 = 0.5;
+/// Default minimum search score to classify as ModifyTarget.
+/// Configurable via `ScoutOptions::modify_threshold`.
+pub const DEFAULT_MODIFY_TARGET_THRESHOLD: f32 = 0.5;
+
+/// Default number of search results for scout.
+pub const DEFAULT_SCOUT_SEARCH_LIMIT: usize = 15;
+
+/// Default minimum search score threshold for scout.
+pub const DEFAULT_SCOUT_SEARCH_THRESHOLD: f32 = 0.2;
+
+/// Options for customizing scout behavior.
+pub struct ScoutOptions {
+    /// Number of search results to retrieve (default: 15)
+    pub search_limit: usize,
+    /// Minimum search score threshold (default: 0.2)
+    pub search_threshold: f32,
+    /// Minimum score to classify as ModifyTarget (default: 0.5)
+    pub modify_threshold: f32,
+}
+
+impl Default for ScoutOptions {
+    fn default() -> Self {
+        Self {
+            search_limit: DEFAULT_SCOUT_SEARCH_LIMIT,
+            search_threshold: DEFAULT_SCOUT_SEARCH_THRESHOLD,
+            modify_threshold: DEFAULT_MODIFY_TARGET_THRESHOLD,
+        }
+    }
+}
 
 /// Test name patterns (subset of store/calls.rs patterns)
 fn is_test_name(name: &str) -> bool {
@@ -82,12 +109,26 @@ fn is_test_name(name: &str) -> bool {
 }
 
 /// Run scout analysis for a task description.
+///
+/// Uses default search parameters. For custom parameters, use [`scout_with_options`].
 pub fn scout(
     store: &Store,
     embedder: &Embedder,
     task: &str,
     root: &Path,
     limit: usize,
+) -> Result<ScoutResult, AnalysisError> {
+    scout_with_options(store, embedder, task, root, limit, &ScoutOptions::default())
+}
+
+/// Run scout analysis with configurable search parameters.
+pub fn scout_with_options(
+    store: &Store,
+    embedder: &Embedder,
+    task: &str,
+    root: &Path,
+    limit: usize,
+    opts: &ScoutOptions,
 ) -> Result<ScoutResult, AnalysisError> {
     let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
     // 1. Embed and search
@@ -101,7 +142,12 @@ pub fn scout(
         ..SearchFilter::default()
     };
 
-    let results = store.search_filtered(&query_embedding, &filter, 15, 0.2)?;
+    let results = store.search_filtered(
+        &query_embedding,
+        &filter,
+        opts.search_limit,
+        opts.search_threshold,
+    )?;
 
     if results.is_empty() {
         return Ok(ScoutResult {
@@ -166,7 +212,7 @@ pub fn scout(
                         caller_counts.get(&chunk.name).map(|&c| c as usize),
                     );
 
-                    let role = classify_role(*score, &chunk.name);
+                    let role = classify_role(*score, &chunk.name, opts.modify_threshold);
 
                     ScoutChunk {
                         name: chunk.name.clone(),
@@ -227,11 +273,11 @@ pub fn scout(
     })
 }
 
-/// Classify a chunk's role based on score and name
-fn classify_role(score: f32, name: &str) -> ChunkRole {
+/// Classify a chunk's role based on score, name, and configurable threshold
+fn classify_role(score: f32, name: &str, modify_threshold: f32) -> ChunkRole {
     if is_test_name(name) {
         ChunkRole::TestToUpdate
-    } else if score >= MODIFY_TARGET_THRESHOLD {
+    } else if score >= modify_threshold {
         ChunkRole::ModifyTarget
     } else {
         ChunkRole::Dependency
@@ -346,23 +392,41 @@ mod tests {
     #[test]
     fn test_classify_role_modify_target() {
         assert_eq!(
-            classify_role(0.6, "search_filtered"),
+            classify_role(0.6, "search_filtered", DEFAULT_MODIFY_TARGET_THRESHOLD),
             ChunkRole::ModifyTarget
         );
-        assert_eq!(classify_role(0.5, "do_something"), ChunkRole::ModifyTarget);
+        assert_eq!(
+            classify_role(0.5, "do_something", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            ChunkRole::ModifyTarget
+        );
     }
 
     #[test]
     fn test_classify_role_dependency() {
-        assert_eq!(classify_role(0.49, "helper_fn"), ChunkRole::Dependency);
-        assert_eq!(classify_role(0.3, "utility"), ChunkRole::Dependency);
+        assert_eq!(
+            classify_role(0.49, "helper_fn", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            ChunkRole::Dependency
+        );
+        assert_eq!(
+            classify_role(0.3, "utility", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            ChunkRole::Dependency
+        );
     }
 
     #[test]
     fn test_classify_role_test() {
-        assert_eq!(classify_role(0.9, "test_search"), ChunkRole::TestToUpdate);
-        assert_eq!(classify_role(0.3, "test_helper"), ChunkRole::TestToUpdate);
-        assert_eq!(classify_role(0.8, "TestSuite"), ChunkRole::TestToUpdate);
+        assert_eq!(
+            classify_role(0.9, "test_search", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            ChunkRole::TestToUpdate
+        );
+        assert_eq!(
+            classify_role(0.3, "test_helper", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            ChunkRole::TestToUpdate
+        );
+        assert_eq!(
+            classify_role(0.8, "TestSuite", DEFAULT_MODIFY_TARGET_THRESHOLD),
+            ChunkRole::TestToUpdate
+        );
     }
 
     #[test]
@@ -415,15 +479,18 @@ mod tests {
     }
 
     #[test]
-    fn test_scout_summary_zero() {
+    fn test_scout_summary_nonzero() {
+        // Verify struct fields are stored and accessible (not tautologically zero)
         let summary = ScoutSummary {
-            total_files: 0,
-            total_functions: 0,
-            untested_count: 0,
-            stale_count: 0,
+            total_files: 3,
+            total_functions: 15,
+            untested_count: 4,
+            stale_count: 2,
         };
-        assert_eq!(summary.total_files, 0);
-        assert_eq!(summary.stale_count, 0);
+        assert_eq!(summary.total_files, 3);
+        assert_eq!(summary.total_functions, 15);
+        assert_eq!(summary.untested_count, 4);
+        assert_eq!(summary.stale_count, 2);
     }
 
     #[test]

@@ -69,10 +69,30 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
         // Hunk header
         if let Some(file) = &current_file {
             if let Some(caps) = HUNK_RE.captures(line) {
-                let start: u32 = caps[1].parse().unwrap_or(1);
+                let start: u32 = match caps[1].parse() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        tracing::warn!(
+                            line = line,
+                            file = file.as_str(),
+                            "Could not parse hunk start line number, defaulting to 1"
+                        );
+                        1
+                    }
+                };
                 let count: u32 = caps
                     .get(2)
-                    .map(|m| m.as_str().parse().unwrap_or(1))
+                    .map(|m| match m.as_str().parse() {
+                        Ok(v) => v,
+                        Err(_) => {
+                            tracing::warn!(
+                                line = line,
+                                file = file.as_str(),
+                                "Could not parse hunk count, defaulting to 1"
+                            );
+                            1
+                        }
+                    })
                     .unwrap_or(1);
                 hunks.push(DiffHunk {
                     file: file.clone(),

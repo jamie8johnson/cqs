@@ -57,8 +57,11 @@ pub fn read_context_lines(
         vec![]
     };
 
-    // Context after
-    let context_end = (end_idx + context + 1).min(lines.len());
+    // Context after (saturating_add prevents overflow near usize::MAX)
+    let context_end = end_idx
+        .saturating_add(context)
+        .saturating_add(1)
+        .min(lines.len());
     let after: Vec<String> = if end_idx + 1 < lines.len() {
         lines[(end_idx + 1)..context_end]
             .iter()
@@ -487,4 +490,110 @@ pub fn display_tagged_results_json(
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===== read_context_lines tests (P3-14, P3-18) =====
+
+    fn write_test_file(lines: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("test.rs");
+        let content = lines.join("\n");
+        std::fs::write(&path, &content).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn test_read_context_lines_basic() {
+        let lines = vec![
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6", "line 7",
+        ];
+        let (_dir, path) = write_test_file(&lines);
+
+        // Function at lines 3-5, context=1
+        let (before, after) = read_context_lines(&path, 3, 5, 1).unwrap();
+        assert_eq!(before.len(), 1, "Should have 1 line before");
+        assert_eq!(before[0], "line 2");
+        assert_eq!(after.len(), 1, "Should have 1 line after");
+        assert_eq!(after[0], "line 6");
+    }
+
+    #[test]
+    fn test_read_context_lines_at_start() {
+        let lines = vec!["first", "second", "third", "fourth"];
+        let (_dir, path) = write_test_file(&lines);
+
+        // Function at line 1, context=2 -- no before lines available
+        let (before, after) = read_context_lines(&path, 1, 1, 2).unwrap();
+        assert!(before.is_empty(), "No lines before line 1");
+        assert_eq!(after.len(), 2, "Should have 2 lines after");
+        assert_eq!(after[0], "second");
+        assert_eq!(after[1], "third");
+    }
+
+    #[test]
+    fn test_read_context_lines_at_end() {
+        let lines = vec!["first", "second", "third", "last"];
+        let (_dir, path) = write_test_file(&lines);
+
+        // Function at last line, context=2
+        let (before, after) = read_context_lines(&path, 4, 4, 2).unwrap();
+        assert_eq!(before.len(), 2, "Should have 2 lines before");
+        assert_eq!(before[0], "second");
+        assert_eq!(before[1], "third");
+        assert!(after.is_empty(), "No lines after last line");
+    }
+
+    #[test]
+    fn test_read_context_lines_zero_context() {
+        let lines = vec!["line 1", "line 2", "line 3"];
+        let (_dir, path) = write_test_file(&lines);
+
+        let (before, after) = read_context_lines(&path, 2, 2, 0).unwrap();
+        assert!(before.is_empty());
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn test_read_context_lines_single_line_file() {
+        let (_dir, path) = write_test_file(&["only line"]);
+
+        let (before, after) = read_context_lines(&path, 1, 1, 5).unwrap();
+        assert!(before.is_empty());
+        assert!(after.is_empty());
+    }
+
+    #[test]
+    fn test_read_context_lines_line_zero_normalized() {
+        let lines = vec!["first", "second"];
+        let (_dir, path) = write_test_file(&lines);
+
+        // line_start=0 should be normalized to 1
+        let (before, after) = read_context_lines(&path, 0, 1, 1).unwrap();
+        assert!(before.is_empty(), "Line 0 normalizes to 1, nothing before");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0], "second");
+    }
+
+    #[test]
+    fn test_read_context_lines_nonexistent_file() {
+        let result = read_context_lines(Path::new("/nonexistent/file.rs"), 1, 5, 2);
+        assert!(result.is_err(), "Should fail for nonexistent file");
+    }
+
+    #[test]
+    fn test_read_context_lines_multi_line_range() {
+        let lines = vec!["a", "b", "c", "d", "e", "f", "g", "h"];
+        let (_dir, path) = write_test_file(&lines);
+
+        // Function spans lines 3-6, context=1
+        let (before, after) = read_context_lines(&path, 3, 6, 1).unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0], "b");
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0], "g");
+    }
 }

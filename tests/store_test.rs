@@ -981,3 +981,105 @@ fn test_fts_very_long_query() {
         "FTS should handle very long queries without panic"
     );
 }
+
+// ===== search_chunks_by_signature tests (P3-15) =====
+
+#[test]
+fn test_search_chunks_by_signature_finds_matching() {
+    let store = TestStore::new();
+
+    // Insert chunks with different signatures
+    let mut chunk1 = test_chunk("parse_config", "fn parse_config(cfg: Config) -> Result {}");
+    chunk1.signature = "fn parse_config(cfg: Config) -> Result".to_string();
+    chunk1.chunk_type = ChunkType::Function;
+
+    let mut chunk2 = test_chunk(
+        "validate_config",
+        "fn validate_config(cfg: Config) -> bool {}",
+    );
+    chunk2.id = "test.rs:10:deadbeef".to_string();
+    chunk2.signature = "fn validate_config(cfg: Config) -> bool".to_string();
+    chunk2.chunk_type = ChunkType::Function;
+
+    let mut chunk3 = test_chunk("render_ui", "fn render_ui(state: AppState) {}");
+    chunk3.id = "test.rs:20:cafebabe".to_string();
+    chunk3.signature = "fn render_ui(state: AppState)".to_string();
+    chunk3.chunk_type = ChunkType::Function;
+
+    store
+        .upsert_chunk(&chunk1, &mock_embedding(0.1), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk2, &mock_embedding(0.2), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&chunk3, &mock_embedding(0.3), Some(12345))
+        .unwrap();
+
+    // Search for "Config" in signatures — should find chunk1 and chunk2
+    let results = store.search_chunks_by_signature("Config").unwrap();
+    let names: HashSet<String> = results.iter().map(|c| c.name.clone()).collect();
+    assert!(
+        names.contains("parse_config"),
+        "Should find parse_config (signature contains Config)"
+    );
+    assert!(
+        names.contains("validate_config"),
+        "Should find validate_config (signature contains Config)"
+    );
+    assert!(
+        !names.contains("render_ui"),
+        "Should NOT find render_ui (signature has AppState, not Config)"
+    );
+}
+
+#[test]
+fn test_search_chunks_by_signature_no_match() {
+    let store = TestStore::new();
+
+    let mut chunk = test_chunk("simple_fn", "fn simple_fn(x: i32) -> i32 {}");
+    chunk.signature = "fn simple_fn(x: i32) -> i32".to_string();
+    chunk.chunk_type = ChunkType::Function;
+
+    store
+        .upsert_chunk(&chunk, &mock_embedding(1.0), Some(12345))
+        .unwrap();
+
+    let results = store.search_chunks_by_signature("NonExistentType").unwrap();
+    assert!(
+        results.is_empty(),
+        "Should return empty for non-matching type name"
+    );
+}
+
+#[test]
+fn test_search_chunks_by_signature_only_functions_and_methods() {
+    let store = TestStore::new();
+
+    // Insert a struct chunk (not function/method)
+    let mut chunk = test_chunk("MyStruct", "struct MyStruct { field: Config }");
+    chunk.signature = "struct MyStruct".to_string();
+    chunk.chunk_type = ChunkType::Struct;
+
+    // Insert a function chunk
+    let mut fn_chunk = test_chunk("use_config", "fn use_config(c: Config) {}");
+    fn_chunk.id = "test.rs:10:abcd1234".to_string();
+    fn_chunk.signature = "fn use_config(c: Config)".to_string();
+    fn_chunk.chunk_type = ChunkType::Function;
+
+    store
+        .upsert_chunk(&chunk, &mock_embedding(0.1), Some(12345))
+        .unwrap();
+    store
+        .upsert_chunk(&fn_chunk, &mock_embedding(0.2), Some(12345))
+        .unwrap();
+
+    // search_chunks_by_signature only returns function/method chunks
+    let results = store.search_chunks_by_signature("Config").unwrap();
+    assert_eq!(
+        results.len(),
+        1,
+        "Should only find the function, not struct"
+    );
+    assert_eq!(results[0].name, "use_config");
+}

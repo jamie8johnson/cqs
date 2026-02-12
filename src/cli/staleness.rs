@@ -39,3 +39,38 @@ pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashS
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_warn_stale_results_empty_origins() {
+        // Create a temp store
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Empty origins should return empty set without error
+        let result = warn_stale_results(&store, &[], dir.path());
+        assert!(
+            result.is_empty(),
+            "Empty origins should produce empty stale set"
+        );
+    }
+
+    #[test]
+    fn test_warn_stale_results_nonexistent_origins() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        // Origins that don't exist in the index should not panic
+        let result = warn_stale_results(&store, &["nonexistent.rs", "ghost.py"], dir.path());
+        // Should return empty or the nonexistent files — depends on implementation.
+        // Key: it must not panic.
+        let _ = result;
+    }
+}

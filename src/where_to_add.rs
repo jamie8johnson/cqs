@@ -46,17 +46,62 @@ pub struct PlacementResult {
     pub suggestions: Vec<FileSuggestion>,
 }
 
+/// Default search result limit for placement suggestions.
+pub const DEFAULT_PLACEMENT_SEARCH_LIMIT: usize = 10;
+
+/// Default minimum search score threshold for placement suggestions.
+pub const DEFAULT_PLACEMENT_SEARCH_THRESHOLD: f32 = 0.1;
+
+/// Options for customizing placement suggestion behavior.
+pub struct PlacementOptions {
+    /// Number of search results to retrieve (default: 10)
+    pub search_limit: usize,
+    /// Minimum search score threshold (default: 0.1)
+    pub search_threshold: f32,
+    /// Maximum number of imports to extract per file (default: 5)
+    pub max_imports: usize,
+}
+
+impl Default for PlacementOptions {
+    fn default() -> Self {
+        Self {
+            search_limit: DEFAULT_PLACEMENT_SEARCH_LIMIT,
+            search_threshold: DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
+            max_imports: MAX_IMPORT_COUNT,
+        }
+    }
+}
+
 /// Suggest where to place new code matching a description.
 ///
-/// 1. Searches for semantically similar code
-/// 2. Groups results by file, ranks by aggregate score
-/// 3. Extracts local patterns from each file
-/// 4. Suggests insertion point after the most similar function
+/// Uses default search parameters. For custom parameters, use [`suggest_placement_with_options`].
 pub fn suggest_placement(
     store: &Store,
     embedder: &Embedder,
     description: &str,
     limit: usize,
+) -> Result<PlacementResult, AnalysisError> {
+    suggest_placement_with_options(
+        store,
+        embedder,
+        description,
+        limit,
+        &PlacementOptions::default(),
+    )
+}
+
+/// Suggest where to place new code matching a description with configurable search parameters.
+///
+/// 1. Searches for semantically similar code
+/// 2. Groups results by file, ranks by aggregate score
+/// 3. Extracts local patterns from each file
+/// 4. Suggests insertion point after the most similar function
+pub fn suggest_placement_with_options(
+    store: &Store,
+    embedder: &Embedder,
+    description: &str,
+    limit: usize,
+    opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
     let _span =
         tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
@@ -72,7 +117,12 @@ pub fn suggest_placement(
         ..SearchFilter::default()
     };
 
-    let results = store.search_filtered(&query_embedding, &filter, 10, 0.1)?;
+    let results = store.search_filtered(
+        &query_embedding,
+        &filter,
+        opts.search_limit,
+        opts.search_threshold,
+    )?;
 
     if results.is_empty() {
         return Ok(PlacementResult {
@@ -100,18 +150,28 @@ pub fn suggest_placement(
     file_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     file_scores.truncate(limit);
 
+    // Batch-fetch all file chunks upfront (single query instead of per-file N+1)
+    let origin_strings: Vec<String> = file_scores
+        .iter()
+        .map(|(f, _, _)| f.to_string_lossy().into_owned())
+        .collect();
+    let origin_refs: Vec<&str> = origin_strings.iter().map(|s| s.as_str()).collect();
+    let mut all_origins_chunks = match store.get_chunks_by_origins_batch(&origin_refs) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch file chunks for pattern extraction");
+            HashMap::new()
+        }
+    };
+
     // Build suggestions
     let mut suggestions = Vec::with_capacity(file_scores.len());
 
     for (file, score, chunks) in &file_scores {
-        // Get all chunks from this file for pattern extraction
-        let all_file_chunks = match store.get_chunks_by_origin(&file.to_string_lossy()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(file = %file.display(), error = %e, "Failed to get file chunks");
-                Vec::new()
-            }
-        };
+        let origin_key = file.to_string_lossy();
+        let all_file_chunks = all_origins_chunks
+            .remove(origin_key.as_ref())
+            .unwrap_or_default();
 
         // Find the most similar chunk in this file (highest individual score)
         let best_chunk = chunks
@@ -148,34 +208,53 @@ pub fn suggest_placement(
     Ok(PlacementResult { suggestions })
 }
 
-/// Extract local coding patterns from a file's chunks
+/// Maximum number of imports to extract from a file's patterns.
+const MAX_IMPORT_COUNT: usize = 5;
+
+/// Extract local coding patterns from a file's chunks.
+///
+/// Iterates chunks individually instead of concatenating all content into
+/// one string (avoids a large allocation for files with many chunks).
+/// Uses a HashSet for O(1) import dedup instead of Vec::contains.
 fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> LocalPatterns {
+    let mut import_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut imports = Vec::new();
     let mut error_style = String::new();
     let mut has_inline_tests = false;
 
-    // Collect all content for analysis
-    let all_content: String = chunks
-        .iter()
-        .map(|c| c.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    /// Add an import if not already seen, up to the cap.
+    fn try_add_import(
+        line: &str,
+        import_set: &mut std::collections::HashSet<String>,
+        imports: &mut Vec<String>,
+    ) {
+        if imports.len() < MAX_IMPORT_COUNT && import_set.insert(line.to_string()) {
+            imports.push(line.to_string());
+        }
+    }
 
     let visibility = match language {
         Some(Language::Rust) => {
-            // Rust patterns
-            for line in all_content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("use ") && !imports.contains(&trimmed.to_string()) {
-                    imports.push(trimmed.to_string());
+            // Rust patterns — scan each chunk individually
+            for chunk in chunks {
+                for line in chunk.content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("use ") {
+                        try_add_import(trimmed, &mut import_set, &mut imports);
+                    }
                 }
-            }
-            if all_content.contains("anyhow::") || all_content.contains("anyhow::Result") {
-                error_style = "anyhow".to_string();
-            } else if all_content.contains("thiserror") {
-                error_style = "thiserror".to_string();
-            } else if all_content.contains("Result<") {
-                error_style = "Result<>".to_string();
+                if !has_inline_tests && chunk.content.contains("#[cfg(test)]") {
+                    has_inline_tests = true;
+                }
+                if error_style.is_empty() {
+                    if chunk.content.contains("anyhow::") {
+                        error_style = "anyhow".to_string();
+                    } else if chunk.content.contains("thiserror") {
+                        error_style = "thiserror".to_string();
+                    } else if chunk.content.contains("Result<") {
+                        error_style = "Result<>".to_string();
+                    }
+                }
             }
             // Dominant visibility
             let pub_crate = chunks
@@ -190,7 +269,6 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
                 .iter()
                 .filter(|c| !c.signature.contains("pub"))
                 .count();
-            has_inline_tests = all_content.contains("#[cfg(test)]");
             if pub_crate >= pub_count && pub_crate >= private {
                 "pub(crate)".to_string()
             } else if pub_count >= private {
@@ -200,35 +278,40 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             }
         }
         Some(Language::Python) => {
-            for line in all_content.lines() {
-                let trimmed = line.trim();
-                if (trimmed.starts_with("import ") || trimmed.starts_with("from "))
-                    && !imports.contains(&trimmed.to_string())
-                {
-                    imports.push(trimmed.to_string());
+            for chunk in chunks {
+                for line in chunk.content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("import ") || trimmed.starts_with("from ") {
+                        try_add_import(trimmed, &mut import_set, &mut imports);
+                    }
                 }
-            }
-            if all_content.contains("raise ") {
-                error_style = "raise".to_string();
-            } else if all_content.contains("try:") {
-                error_style = "try/except".to_string();
+                if error_style.is_empty() {
+                    if chunk.content.contains("raise ") {
+                        error_style = "raise".to_string();
+                    } else if chunk.content.contains("try:") {
+                        error_style = "try/except".to_string();
+                    }
+                }
             }
             "module-level".to_string()
         }
         Some(Language::TypeScript | Language::JavaScript) => {
-            for line in all_content.lines() {
-                let trimmed = line.trim();
-                if (trimmed.starts_with("import ")
-                    || (trimmed.starts_with("const ") && trimmed.contains("require(")))
-                    && !imports.contains(&trimmed.to_string())
-                {
-                    imports.push(trimmed.to_string());
+            for chunk in chunks {
+                for line in chunk.content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("import ")
+                        || (trimmed.starts_with("const ") && trimmed.contains("require("))
+                    {
+                        try_add_import(trimmed, &mut import_set, &mut imports);
+                    }
                 }
-            }
-            if all_content.contains("throw ") {
-                error_style = "throw".to_string();
-            } else if all_content.contains(".catch(") || all_content.contains("try {") {
-                error_style = "try/catch".to_string();
+                if error_style.is_empty() {
+                    if chunk.content.contains("throw ") {
+                        error_style = "throw".to_string();
+                    } else if chunk.content.contains(".catch(") || chunk.content.contains("try {") {
+                        error_style = "try/catch".to_string();
+                    }
+                }
             }
             let has_export = chunks.iter().any(|c| c.signature.contains("export"));
             if has_export {
@@ -238,14 +321,16 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             }
         }
         Some(Language::Go) => {
-            for line in all_content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("import ") && !imports.contains(&trimmed.to_string()) {
-                    imports.push(trimmed.to_string());
+            for chunk in chunks {
+                for line in chunk.content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("import ") {
+                        try_add_import(trimmed, &mut import_set, &mut imports);
+                    }
                 }
-            }
-            if all_content.contains("error") {
-                error_style = "error return".to_string();
+                if error_style.is_empty() && chunk.content.contains("error") {
+                    error_style = "error return".to_string();
+                }
             }
             // Go: capitalized = exported
             let exported = chunks
@@ -259,16 +344,20 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             }
         }
         Some(Language::Java) => {
-            for line in all_content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("import ") && !imports.contains(&trimmed.to_string()) {
-                    imports.push(trimmed.to_string());
+            for chunk in chunks {
+                for line in chunk.content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("import ") {
+                        try_add_import(trimmed, &mut import_set, &mut imports);
+                    }
                 }
-            }
-            if all_content.contains("throws ") {
-                error_style = "checked exceptions".to_string();
-            } else if all_content.contains("try {") {
-                error_style = "try/catch".to_string();
+                if error_style.is_empty() {
+                    if chunk.content.contains("throws ") {
+                        error_style = "checked exceptions".to_string();
+                    } else if chunk.content.contains("try {") {
+                        error_style = "try/catch".to_string();
+                    }
+                }
             }
             let public = chunks
                 .iter()
@@ -282,9 +371,6 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
         }
         _ => "default".to_string(),
     };
-
-    // Cap imports to top 5
-    imports.truncate(5);
 
     LocalPatterns {
         imports,
