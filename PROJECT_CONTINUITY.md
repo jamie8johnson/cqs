@@ -2,25 +2,19 @@
 
 ## Right Now
 
-**Token budgeting (`--tokens`) shipped across 5 commands.** 2026-02-12.
+**`cqs gather --ref` cross-index gather shipped.** 2026-02-12.
 
-Implemented `--tokens N` greedy knapsack packing on:
-- `cqs "query" --tokens N` — pack search results into budget
-- `cqs gather --tokens N` — pack gathered chunks into budget
-- `cqs context file --tokens N` — include chunk content within budget
-- `cqs explain func --tokens N` — include target + similar content
-- `cqs scout "task" --tokens N` — fetch and include chunk content
+Seeds from a reference index, retrieves seed embeddings, bridges into project code via embedding similarity, BFS-expands via project call graph. Returns both reference chunks (tagged with source) and expanded project chunks.
 
-Also shipped in same session (PR #398, already merged):
-- `--ref` scoped search — `cqs "query" --ref aveva` skips project index
-- `cqs convert` — document-to-Markdown conversion (PDF, HTML, CHM, web help)
+Files changed: `src/gather.rs` (new `gather_cross_index()`), `src/cli/commands/gather.rs` (--ref handling, cross-index text/JSON display), `src/cli/mod.rs` (--ref flag on Gather + 3 tests), `src/lib.rs` (re-export), `CHANGELOG.md`, `CLAUDE.md`.
 
-Changes uncommitted on `feat/rag-strengthen` branch, ready to commit + PR.
+Also in this session: saved "always do things properly" memory.
+
+Previously shipped (PR #398, merged): `--tokens` on 5 commands, `--ref` scoped search, `cqs convert`.
 
 ## Pending Changes
 
-- Token budgeting across 5 commands (uncommitted on `feat/rag-strengthen`)
-- `PROJECT_CONTINUITY.md` and `docs/notes.toml` — session state
+- `gather --ref` cross-index feature — 6 files, uncommitted on main, needs branch + PR
 
 ## Parked
 
@@ -55,7 +49,7 @@ Changes uncommitted on `feat/rag-strengthen` branch, ready to commit + PR.
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 757 total (465 lib + ~280 integration + 12 doc)
+- Tests: 760 total (465 lib + ~283 integration + 12 doc)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - convert/ module (7 files) behind `convert` feature flag

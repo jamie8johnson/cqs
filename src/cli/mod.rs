@@ -341,6 +341,9 @@ enum Commands {
         /// Maximum token budget (overrides --limit with token-based packing)
         #[arg(long)]
         tokens: Option<usize>,
+        /// Cross-index gather: seed from reference, bridge into project code
+        #[arg(long = "ref")]
+        ref_name: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -540,8 +543,18 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref direction,
             limit,
             tokens,
+            ref ref_name,
             json,
-        }) => cmd_gather(&cli, query, expand, direction, limit, tokens, json),
+        }) => cmd_gather(
+            &cli,
+            query,
+            expand,
+            direction,
+            limit,
+            tokens,
+            ref_name.as_deref(),
+            json,
+        ),
         Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
         Some(Commands::AuditMode {
@@ -1049,6 +1062,58 @@ mod tests {
             }) => {
                 assert_eq!(tokens, Some(8000));
                 assert_eq!(limit, 20);
+                assert!(json);
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    // ===== --ref flag tests (gather) =====
+
+    #[test]
+    fn test_cmd_gather_ref_flag() {
+        let cli = Cli::try_parse_from(["cqs", "gather", "alarm config", "--ref", "aveva"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { ref_name, .. }) => {
+                assert_eq!(ref_name, Some("aveva".to_string()));
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_gather_ref_not_set() {
+        let cli = Cli::try_parse_from(["cqs", "gather", "alarm config"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { ref_name, .. }) => {
+                assert!(ref_name.is_none());
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_gather_ref_with_tokens() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "gather",
+            "alarm config",
+            "--ref",
+            "aveva",
+            "--tokens",
+            "4000",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Gather {
+                ref_name,
+                tokens,
+                json,
+                ..
+            }) => {
+                assert_eq!(ref_name, Some("aveva".to_string()));
+                assert_eq!(tokens, Some(4000));
                 assert!(json);
             }
             _ => panic!("Expected Gather command"),

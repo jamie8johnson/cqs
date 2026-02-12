@@ -4,10 +4,11 @@ use anyhow::Result;
 use colored::Colorize;
 
 use cqs::Embedder;
-use cqs::{gather, GatherDirection, GatherOptions};
+use cqs::{gather, gather_cross_index, reference, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_gather(
     cli: &crate::cli::Cli,
     query: &str,
@@ -15,6 +16,7 @@ pub(crate) fn cmd_gather(
     direction: &str,
     limit: usize,
     max_tokens: Option<usize>,
+    ref_name: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!(
@@ -22,7 +24,8 @@ pub(crate) fn cmd_gather(
         query_len = query.len(),
         expand,
         limit,
-        ?max_tokens
+        ?max_tokens,
+        ?ref_name
     )
     .entered();
 
@@ -48,7 +51,21 @@ pub(crate) fn cmd_gather(
         ..GatherOptions::default()
     };
 
-    let mut result = gather(&store, &query_embedding, query, &opts, &root)?;
+    // Cross-index gather: seed from reference, bridge into project code
+    let mut result = if let Some(rn) = ref_name {
+        let config = cqs::config::Config::load(&root);
+        let references = reference::load_references(&config.references);
+        let ref_idx = references.iter().find(|r| r.name == rn).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                rn
+            )
+        })?;
+
+        gather_cross_index(&store, ref_idx, &query_embedding, query, &opts, &root)?
+    } else {
+        gather(&store, &query_embedding, query, &opts, &root)?
+    };
 
     // Token-budgeted packing: keep highest-scoring chunks within token budget
     let token_count_used = if let Some(budget) = max_tokens {
@@ -77,10 +94,15 @@ pub(crate) fn cmd_gather(
             "Token-budgeted gather"
         );
 
-        // Re-sort to reading order
+        // Re-sort to reading order (ref first, then project, each in file/line order)
         packed.sort_by(|a, b| {
-            a.file
-                .cmp(&b.file)
+            let source_ord = match (&a.source, &b.source) {
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            };
+            source_ord
+                .then(a.file.cmp(&b.file))
                 .then(a.line_start.cmp(&b.line_start))
                 .then(a.name.cmp(&b.name))
         });
@@ -90,11 +112,12 @@ pub(crate) fn cmd_gather(
         None
     };
 
-    // Proactive staleness warning
+    // Proactive staleness warning (only for project chunks)
     if !cli.quiet && !cli.no_stale_check && !result.chunks.is_empty() {
         let origins: Vec<&str> = result
             .chunks
             .iter()
+            .filter(|c| c.source.is_none()) // only project chunks
             .filter_map(|c| c.file.to_str())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
@@ -109,7 +132,7 @@ pub(crate) fn cmd_gather(
             .chunks
             .iter()
             .map(|c| {
-                serde_json::json!({
+                let mut chunk_json = serde_json::json!({
                     "name": c.name,
                     "file": c.file.to_string_lossy().replace('\\', "/"),
                     "line_start": c.line_start,
@@ -118,7 +141,11 @@ pub(crate) fn cmd_gather(
                     "score": c.score,
                     "depth": c.depth,
                     "content": c.content,
-                })
+                });
+                if let Some(ref src) = c.source {
+                    chunk_json["source"] = serde_json::json!(src);
+                }
+                chunk_json
             })
             .collect();
         let mut output = serde_json::json!({
@@ -139,10 +166,14 @@ pub(crate) fn cmd_gather(
             (Some(used), Some(budget)) => format!(" ({} of {} tokens)", used, budget),
             _ => String::new(),
         };
+        let ref_label = ref_name
+            .map(|rn| format!(" (cross-index via '{}')", rn))
+            .unwrap_or_default();
         println!(
-            "Gathered {} chunk{}{} for: {}",
+            "Gathered {} chunk{}{}{} for: {}",
             result.chunks.len(),
             if result.chunks.len() == 1 { "" } else { "s" },
+            ref_label,
             token_info,
             query.cyan(),
         );
@@ -157,8 +188,27 @@ pub(crate) fn cmd_gather(
         }
         println!();
 
+        let is_cross_index = ref_name.is_some();
         let mut current_file = String::new();
+        let mut current_source: Option<String> = None;
         for chunk in &result.chunks {
+            // Show source headers only in cross-index mode
+            if is_cross_index {
+                let source_label = chunk.source.as_deref().unwrap_or("project").to_string();
+                if Some(&source_label) != current_source.as_ref() {
+                    if current_source.is_some() {
+                        println!();
+                    }
+                    if chunk.source.is_some() {
+                        println!("=== Reference: {} ===", source_label.yellow());
+                    } else {
+                        println!("=== Project ===");
+                    }
+                    current_source = Some(source_label);
+                    current_file.clear();
+                }
+            }
+
             let file_str = chunk.file.to_string_lossy().replace('\\', "/");
             if file_str != current_file {
                 if !current_file.is_empty() {
@@ -168,7 +218,15 @@ pub(crate) fn cmd_gather(
                 current_file = file_str;
             }
             let depth_label = if chunk.depth == 0 {
-                "seed".to_string()
+                if is_cross_index {
+                    if chunk.source.is_some() {
+                        "ref seed".to_string()
+                    } else {
+                        "bridge".to_string()
+                    }
+                } else {
+                    "seed".to_string()
+                }
             } else {
                 format!("depth {}", chunk.depth)
             };
