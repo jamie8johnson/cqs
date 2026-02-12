@@ -84,6 +84,34 @@ pub struct Config {
     pub references: Vec<ReferenceConfig>,
 }
 
+/// Clamp f32 config value to valid range and warn if out of bounds
+fn clamp_config_f32(value: &mut f32, name: &str, min: f32, max: f32) {
+    if *value < min || *value > max {
+        tracing::warn!(
+            field = name,
+            value = *value,
+            min,
+            max,
+            "Config value out of bounds, clamping"
+        );
+        *value = value.clamp(min, max);
+    }
+}
+
+/// Clamp usize config value to valid range and warn if out of bounds
+fn clamp_config_usize(value: &mut usize, name: &str, min: usize, max: usize) {
+    if *value < min || *value > max {
+        tracing::warn!(
+            field = name,
+            value = *value,
+            min,
+            max,
+            "Config value out of bounds, clamping"
+        );
+        *value = (*value).clamp(min, max);
+    }
+}
+
 impl Config {
     /// Load configuration from user and project config files
     pub fn load(project_root: &Path) -> Self {
@@ -122,55 +150,19 @@ impl Config {
 
         // Clamp reference weights to [0.0, 1.0]
         for r in &mut merged.references {
-            if r.weight < 0.0 || r.weight > 1.0 {
-                tracing::warn!(
-                    name = %r.name,
-                    weight = r.weight,
-                    "Reference weight out of bounds [0.0, 1.0], clamping"
-                );
-                r.weight = r.weight.clamp(0.0, 1.0);
-            }
+            clamp_config_f32(&mut r.weight, "reference.weight", 0.0, 1.0);
         }
-
-        // Clamp limit to [1, 100]
         if let Some(ref mut limit) = merged.limit {
-            if *limit == 0 || *limit > 100 {
-                tracing::warn!(
-                    limit = *limit,
-                    "Config limit out of bounds [1, 100], clamping"
-                );
-                *limit = (*limit).clamp(1, 100);
-            }
+            clamp_config_usize(limit, "limit", 1, 100);
         }
-        // Clamp threshold to [0.0, 1.0]
         if let Some(ref mut t) = merged.threshold {
-            if *t < 0.0 || *t > 1.0 {
-                tracing::warn!(
-                    threshold = *t,
-                    "Config threshold out of bounds [0.0, 1.0], clamping"
-                );
-                *t = t.clamp(0.0, 1.0);
-            }
+            clamp_config_f32(t, "threshold", 0.0, 1.0);
         }
-        // Clamp name_boost to [0.0, 1.0]
         if let Some(ref mut nb) = merged.name_boost {
-            if *nb < 0.0 || *nb > 1.0 {
-                tracing::warn!(
-                    name_boost = *nb,
-                    "Config name_boost out of bounds [0.0, 1.0], clamping"
-                );
-                *nb = nb.clamp(0.0, 1.0);
-            }
+            clamp_config_f32(nb, "name_boost", 0.0, 1.0);
         }
-        // Clamp note_weight to [0.0, 1.0]
         if let Some(ref mut nw) = merged.note_weight {
-            if *nw < 0.0 || *nw > 1.0 {
-                tracing::warn!(
-                    note_weight = *nw,
-                    "Config note_weight out of bounds [0.0, 1.0], clamping"
-                );
-                *nw = nw.clamp(0.0, 1.0);
-            }
+            clamp_config_f32(nw, "note_weight", 0.0, 1.0);
         }
 
         tracing::debug!(

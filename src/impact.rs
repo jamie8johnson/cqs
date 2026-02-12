@@ -9,8 +9,12 @@ use std::path::{Path, PathBuf};
 use crate::store::{CallGraph, CallerWithContext};
 use crate::Store;
 
-/// Direct caller with display-ready fields
-pub struct CallerInfo {
+/// Direct caller with display-ready fields (call-site context + snippet).
+///
+/// Named `CallerDetail` to distinguish from `store::CallerInfo` which has
+/// only basic fields (name, file, line). This struct adds `call_line` and
+/// `snippet` for impact analysis display.
+pub struct CallerDetail {
     pub name: String,
     pub file: PathBuf,
     pub line: u32,
@@ -37,7 +41,7 @@ pub struct TransitiveCaller {
 /// Complete impact analysis result
 pub struct ImpactResult {
     pub function_name: String,
-    pub callers: Vec<CallerInfo>,
+    pub callers: Vec<CallerDetail>,
     pub tests: Vec<TestInfo>,
     pub transitive_callers: Vec<TransitiveCaller>,
 }
@@ -51,6 +55,7 @@ pub fn analyze_impact(
     target_name: &str,
     depth: usize,
 ) -> anyhow::Result<ImpactResult> {
+    let _span = tracing::info_span!("analyze_impact", target = target_name, depth).entered();
     let callers = build_caller_info(store, target_name)?;
     let graph = store.get_call_graph()?;
     let tests = find_affected_tests(store, &graph, target_name)?;
@@ -128,14 +133,14 @@ pub fn compute_hints(
     ))
 }
 
-/// Build caller info with call-site snippets
-fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<CallerInfo>> {
+/// Build caller detail with call-site snippets
+fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<CallerDetail>> {
     let callers_ctx = store.get_callers_with_context(target_name)?;
     let mut callers = Vec::with_capacity(callers_ctx.len());
 
     for caller in &callers_ctx {
         let snippet = extract_call_snippet(store, caller);
-        callers.push(CallerInfo {
+        callers.push(CallerDetail {
             name: caller.name.clone(),
             file: caller.file.clone(),
             line: caller.line,
@@ -149,8 +154,21 @@ fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<Cal
 
 /// Extract a snippet around the call site from the caller's indexed content
 fn extract_call_snippet(store: &Store, caller: &CallerWithContext) -> Option<String> {
-    let result = match store.search_by_name(&caller.name, 1) {
-        Ok(results) => results.into_iter().next(),
+    // Fetch up to 5 results, prefer non-windowed chunk (correct line offsets)
+    let result = match store.search_by_name(&caller.name, 5) {
+        Ok(results) => {
+            let mut best = None;
+            for r in results {
+                if r.chunk.parent_id.is_none() {
+                    best = Some(r);
+                    break;
+                }
+                if best.is_none() {
+                    best = Some(r);
+                }
+            }
+            best
+        }
         Err(e) => {
             tracing::warn!(caller = %caller.name, error = %e, "Failed to fetch call snippet");
             return None;
@@ -280,7 +298,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         .callers
         .iter()
         .map(|c| {
-            let rel = rel_path(&c.file, root);
+            let rel = crate::rel_display(&c.file, root);
             serde_json::json!({
                 "name": c.name,
                 "file": rel,
@@ -295,7 +313,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         .tests
         .iter()
         .map(|t| {
-            let rel = rel_path(&t.file, root);
+            let rel = crate::rel_display(&t.file, root);
             serde_json::json!({
                 "name": t.name,
                 "file": rel,
@@ -318,7 +336,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
             .transitive_callers
             .iter()
             .map(|c| {
-                let rel = rel_path(&c.file, root);
+                let rel = crate::rel_display(&c.file, root);
                 serde_json::json!({
                     "name": c.name,
                     "file": rel,
@@ -347,7 +365,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
 
     let mut idx = 1;
     for c in &result.callers {
-        let rel = rel_path(&c.file, root);
+        let rel = crate::rel_display(&c.file, root);
         let letter = node_letter(idx);
         lines.push(format!(
             "    {}[\"{} ({}:{})\"]",
@@ -361,7 +379,7 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
     }
 
     for t in &result.tests {
-        let rel = rel_path(&t.file, root);
+        let rel = crate::rel_display(&t.file, root);
         let letter = node_letter(idx);
         lines.push(format!(
             "    {}{{\"{}\\n{}\\ndepth: {}\"}}",
@@ -405,7 +423,7 @@ pub struct DiffImpactSummary {
 /// Aggregated impact result from a diff
 pub struct DiffImpactResult {
     pub changed_functions: Vec<ChangedFunction>,
-    pub all_callers: Vec<CallerInfo>,
+    pub all_callers: Vec<CallerDetail>,
     pub all_tests: Vec<DiffTestInfo>,
     pub summary: DiffImpactSummary,
 }
@@ -418,6 +436,7 @@ pub fn map_hunks_to_functions(
     store: &Store,
     hunks: &[crate::diff_parse::DiffHunk],
 ) -> Vec<ChangedFunction> {
+    let _span = tracing::info_span!("map_hunks_to_functions", hunk_count = hunks.len()).entered();
     let mut seen = HashSet::new();
     let mut functions = Vec::new();
 
@@ -428,12 +447,20 @@ pub fn map_hunks_to_functions(
     }
 
     for (file, file_hunks) in &by_file {
-        let chunks = match store.get_chunks_by_origin(file) {
+        let normalized = file.replace('\\', "/");
+        let chunks = match store.get_chunks_by_origin(&normalized) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                tracing::warn!(file = %file, error = %e, "Failed to get chunks for file");
+                continue;
+            }
         };
         for hunk in file_hunks {
-            let hunk_end = hunk.start + hunk.count; // exclusive
+            // Skip zero-count hunks (insertion points with no changed lines)
+            if hunk.count == 0 {
+                continue;
+            }
+            let hunk_end = hunk.start.saturating_add(hunk.count); // exclusive
             for chunk in &chunks {
                 // Overlap: hunk [start, start+count) vs chunk [line_start, line_end]
                 if hunk.start <= chunk.line_end
@@ -459,8 +486,9 @@ pub fn map_hunks_to_functions(
 /// Results are deduplicated by name.
 pub fn analyze_diff_impact(
     store: &Store,
-    changed: &[ChangedFunction],
+    changed: Vec<ChangedFunction>,
 ) -> anyhow::Result<DiffImpactResult> {
+    let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
         return Ok(DiffImpactResult {
             changed_functions: Vec::new(),
@@ -478,39 +506,56 @@ pub fn analyze_diff_impact(
     let test_chunks = store.find_test_chunks()?;
 
     let mut all_callers = Vec::new();
-    let mut all_tests = Vec::new();
+    let mut all_tests: Vec<DiffTestInfo> = Vec::new();
     let mut seen_callers = HashSet::new();
-    let mut seen_tests = HashSet::new();
+    let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
-    for func in changed {
+    for func in &changed {
         // Direct callers
-        if let Ok(callers_ctx) = store.get_callers_with_context(&func.name) {
-            for caller in &callers_ctx {
-                if seen_callers.insert(caller.name.clone()) {
-                    let snippet = extract_call_snippet(store, caller);
-                    all_callers.push(CallerInfo {
-                        name: caller.name.clone(),
-                        file: caller.file.clone(),
-                        line: caller.line,
-                        call_line: caller.call_line,
-                        snippet,
-                    });
+        match store.get_callers_with_context(&func.name) {
+            Ok(callers_ctx) => {
+                for caller in &callers_ctx {
+                    if seen_callers.insert(caller.name.clone()) {
+                        let snippet = extract_call_snippet(store, caller);
+                        all_callers.push(CallerDetail {
+                            name: caller.name.clone(),
+                            file: caller.file.clone(),
+                            line: caller.line,
+                            call_line: caller.call_line,
+                            snippet,
+                        });
+                    }
                 }
+            }
+            Err(e) => {
+                tracing::warn!(function = %func.name, error = %e, "Failed to get callers");
             }
         }
 
-        // Affected tests via reverse BFS
+        // Affected tests via reverse BFS — prefer shortest depth per test
         let ancestors = reverse_bfs(&graph, &func.name, MAX_TEST_SEARCH_DEPTH);
         for test in &test_chunks {
             if let Some(&depth) = ancestors.get(&test.name) {
-                if depth > 0 && seen_tests.insert(test.name.clone()) {
-                    all_tests.push(DiffTestInfo {
-                        name: test.name.clone(),
-                        file: test.file.clone(),
-                        line: test.line_start,
-                        via: func.name.clone(),
-                        call_depth: depth,
-                    });
+                if depth > 0 {
+                    match seen_tests.entry(test.name.clone()) {
+                        std::collections::hash_map::Entry::Occupied(o) => {
+                            let idx = *o.get();
+                            if depth < all_tests[idx].call_depth {
+                                all_tests[idx].via = func.name.clone();
+                                all_tests[idx].call_depth = depth;
+                            }
+                        }
+                        std::collections::hash_map::Entry::Vacant(v) => {
+                            v.insert(all_tests.len());
+                            all_tests.push(DiffTestInfo {
+                                name: test.name.clone(),
+                                file: test.file.clone(),
+                                line: test.line_start,
+                                via: func.name.clone(),
+                                call_depth: depth,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -525,7 +570,7 @@ pub fn analyze_diff_impact(
     };
 
     Ok(DiffImpactResult {
-        changed_functions: Vec::new(), // filled by caller
+        changed_functions: changed,
         all_callers,
         all_tests,
         summary,
@@ -550,7 +595,7 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .all_callers
         .iter()
         .map(|c| {
-            let rel = rel_path(&c.file, root);
+            let rel = crate::rel_display(&c.file, root);
             serde_json::json!({
                 "name": c.name,
                 "file": rel,
@@ -564,7 +609,7 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .all_tests
         .iter()
         .map(|t| {
-            let rel = rel_path(&t.file, root);
+            let rel = crate::rel_display(&t.file, root);
             serde_json::json!({
                 "name": t.name,
                 "file": rel,
@@ -610,11 +655,17 @@ pub struct TestSuggestion {
 pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion> {
     let graph = match store.get_call_graph() {
         Ok(g) => g,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load call graph for test suggestions");
+            return Vec::new();
+        }
     };
     let test_chunks = match store.find_test_chunks() {
         Ok(t) => t,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load test chunks for test suggestions");
+            return Vec::new();
+        }
     };
 
     let mut suggestions = Vec::new();
@@ -631,10 +682,13 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
         }
 
         // Fetch file chunks once for inline test check, pattern, and language
-        let file_chunks = store
-            .get_chunks_by_origin(&caller.file.to_string_lossy())
-            .ok()
-            .unwrap_or_default();
+        let file_chunks = match store.get_chunks_by_origin(&caller.file.to_string_lossy()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(file = %caller.file.display(), error = %e, "Failed to get file chunks");
+                Vec::new()
+            }
+        };
 
         let is_test_chunk = |c: &crate::store::ChunkSummary| {
             c.name.starts_with("test_") || c.name.starts_with("Test")
@@ -705,7 +759,11 @@ fn suggest_test_file(source: &str) -> String {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("rs");
 
     // Find the nearest parent directory
-    let parent = path.parent().and_then(|p| p.to_str()).unwrap_or("tests");
+    let parent = path
+        .parent()
+        .and_then(|p| p.to_str())
+        .unwrap_or("tests")
+        .replace('\\', "/");
 
     match ext {
         "rs" => format!("{parent}/tests/{stem}_test.rs"),
@@ -719,13 +777,6 @@ fn suggest_test_file(source: &str) -> String {
 }
 
 // ============ Helpers ============
-
-fn rel_path(path: &Path, root: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
 
 fn node_letter(i: usize) -> String {
     if i < 26 {

@@ -5,11 +5,11 @@
 
 use std::collections::HashSet;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
-use cqs::{Parser, Store};
+use cqs::Parser;
 
-use crate::cli::{acquire_index_lock, find_project_root};
+use crate::cli::acquire_index_lock;
 
 use super::build_hnsw_index;
 
@@ -17,18 +17,10 @@ use super::build_hnsw_index;
 pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_gc").entered();
 
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 
     // Acquire lock to prevent race with watch/index
     let _lock = acquire_index_lock(&cqs_dir)?;
-
-    let store = Store::open(&index_path)?;
 
     // Enumerate current files
     let parser = Parser::new()?;

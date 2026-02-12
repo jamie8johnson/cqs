@@ -8,8 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::impact::compute_hints_with_graph;
-use crate::store::{ChunkSummary, NoteSummary, SearchFilter, StoreError};
-use crate::{Embedder, Store};
+use crate::store::{ChunkSummary, NoteSummary, SearchFilter};
+use crate::{AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,7 +27,7 @@ pub struct ScoutChunk {
     /// Function/class/etc. name
     pub name: String,
     /// Type of code element
-    pub chunk_type: String,
+    pub chunk_type: crate::language::ChunkType,
     /// Function signature
     pub signature: String,
     /// Starting line number
@@ -76,7 +76,8 @@ const MODIFY_TARGET_THRESHOLD: f32 = 0.5;
 fn is_test_name(name: &str) -> bool {
     name.starts_with("test_")
         || name.starts_with("Test")
-        || name.contains("_test")
+        || name.ends_with("_test")
+        || name.contains("_test_")
         || name.contains(".test")
 }
 
@@ -87,11 +88,12 @@ pub fn scout(
     task: &str,
     root: &Path,
     limit: usize,
-) -> Result<ScoutResult, ScoutError> {
+) -> Result<ScoutResult, AnalysisError> {
+    let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
     // 1. Embed and search
     let query_embedding = embedder
         .embed_query(task)
-        .map_err(|e| ScoutError::Embedder(e.to_string()))?;
+        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
 
     let filter = SearchFilter {
         enable_rrf: true,
@@ -99,9 +101,7 @@ pub fn scout(
         ..SearchFilter::default()
     };
 
-    let results = store
-        .search_filtered(&query_embedding, &filter, 15, 0.2)
-        .map_err(ScoutError::Store)?;
+    let results = store.search_filtered(&query_embedding, &filter, 15, 0.2)?;
 
     if results.is_empty() {
         return Ok(ScoutResult {
@@ -126,18 +126,28 @@ pub fn scout(
     }
 
     // 3. Load call graph + test chunks ONCE
-    let graph = store.get_call_graph().map_err(ScoutError::Store)?;
-    let test_chunks = store.find_test_chunks().map_err(ScoutError::Store)?;
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
 
     // 4. Batch caller/callee counts
     let all_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
-    let caller_counts = store
-        .get_caller_counts_batch(&all_names)
-        .unwrap_or_default();
+    let caller_counts = match store.get_caller_counts_batch(&all_names) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch caller counts");
+            HashMap::new()
+        }
+    };
 
     // 5. Check staleness
     let origins: Vec<&str> = file_map.keys().map(|p| p.to_str().unwrap_or("")).collect();
-    let stale_set = store.check_origins_stale(&origins).unwrap_or_default();
+    let stale_set = match store.check_origins_stale(&origins, root) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to check staleness");
+            HashSet::new()
+        }
+    };
 
     // 6. Build file groups
     let mut groups: Vec<FileGroup> = file_map
@@ -160,7 +170,7 @@ pub fn scout(
 
                     ScoutChunk {
                         name: chunk.name.clone(),
-                        chunk_type: chunk.chunk_type.to_string(),
+                        chunk_type: chunk.chunk_type,
                         signature: chunk.signature.clone(),
                         line_start: chunk.line_start,
                         role,
@@ -191,13 +201,7 @@ pub fn scout(
     // 7. Find relevant notes by mention overlap
     let result_files: HashSet<String> = groups
         .iter()
-        .map(|g| {
-            g.file
-                .strip_prefix(root)
-                .unwrap_or(&g.file)
-                .to_string_lossy()
-                .replace('\\', "/")
-        })
+        .map(|g| crate::rel_display(&g.file, root))
         .collect();
 
     let relevant_notes = find_relevant_notes(store, &result_files);
@@ -242,7 +246,10 @@ fn classify_role(score: f32, name: &str) -> ChunkRole {
 fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<NoteSummary> {
     let all_notes = match store.list_notes_summaries() {
         Ok(n) => n,
-        Err(_) => return Vec::new(),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to list notes");
+            return Vec::new();
+        }
     };
 
     all_notes
@@ -261,10 +268,12 @@ fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<Not
 /// Match requires the file path to end with the mention at a path-component
 /// boundary (preceded by '/' or at start of string).
 fn note_mention_matches_file(mention: &str, file: &str) -> bool {
+    let mention = mention.replace('\\', "/");
+    let file = file.replace('\\', "/");
     if !mention.contains('.') && !mention.contains('/') {
         return false;
     }
-    file.ends_with(mention)
+    file.ends_with(&mention)
         && (file.len() == mention.len() || file.as_bytes()[file.len() - mention.len() - 1] == b'/')
 }
 
@@ -274,12 +283,7 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
         .file_groups
         .iter()
         .map(|g| {
-            let rel = g
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&g.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = crate::rel_display(&g.file, root);
 
             let chunks_json: Vec<_> = g
                 .chunks
@@ -287,7 +291,7 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
                 .map(|c| {
                     serde_json::json!({
                         "name": c.name,
-                        "chunk_type": c.chunk_type,
+                        "chunk_type": c.chunk_type.to_string(),
                         "signature": c.signature,
                         "line_start": c.line_start,
                         "role": match c.role {
@@ -333,22 +337,6 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
             "stale_count": result.summary.stale_count,
         }
     })
-}
-
-/// Scout-specific error type
-#[derive(Debug)]
-pub enum ScoutError {
-    Store(StoreError),
-    Embedder(String),
-}
-
-impl std::fmt::Display for ScoutError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ScoutError::Store(e) => write!(f, "{e}"),
-            ScoutError::Embedder(e) => write!(f, "Embedder error: {e}"),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -417,6 +405,13 @@ mod tests {
             "other/search.rs",
             "src/search.rs"
         ));
+    }
+
+    #[test]
+    fn test_note_mention_matches_file_backslash() {
+        assert!(note_mention_matches_file("scout.rs", "src\\scout.rs"));
+        assert!(note_mention_matches_file("cli\\mod.rs", "src\\cli\\mod.rs"));
+        assert!(!note_mention_matches_file("od.rs", "src\\cli\\mod.rs"));
     }
 
     #[test]

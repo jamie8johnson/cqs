@@ -184,10 +184,7 @@ impl SearchResult {
     /// Strips the prefix and normalizes to forward slashes.
     pub fn to_json_relative(&self, root: &std::path::Path) -> serde_json::Value {
         serde_json::json!({
-            "file": self.chunk.file.strip_prefix(root)
-                .unwrap_or(&self.chunk.file)
-                .to_string_lossy()
-                .replace('\\', "/"),
+            "file": crate::rel_display(&self.chunk.file, root),
             "line_start": self.chunk.line_start,
             "line_end": self.chunk.line_end,
             "name": self.chunk.name,

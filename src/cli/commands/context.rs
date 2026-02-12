@@ -3,9 +3,7 @@
 use anyhow::{bail, Result};
 use std::collections::HashSet;
 
-use cqs::Store;
-
-use crate::cli::{find_project_root, staleness};
+use crate::cli::staleness;
 
 pub(crate) fn cmd_context(
     cli: &crate::cli::Cli,
@@ -14,15 +12,8 @@ pub(crate) fn cmd_context(
     summary: bool,
     compact: bool,
 ) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let _span = tracing::info_span!("cmd_context", path).entered();
+    let (store, root, _) = crate::cli::open_project_store()?;
 
     let abs_path = root.join(path);
     let origin = abs_path.to_string_lossy().to_string();
@@ -40,14 +31,14 @@ pub(crate) fn cmd_context(
 
     // Proactive staleness warning
     if !cli.quiet && !cli.no_stale_check {
-        staleness::warn_stale_results(&store, &[&origin]);
+        staleness::warn_stale_results(&store, &[&origin], &root);
     }
 
     // Compact mode: signatures-only TOC with caller/callee counts
     if compact {
         let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = store.get_caller_counts_batch(&names).unwrap_or_default();
-        let callee_counts = store.get_callee_counts_batch(&names).unwrap_or_default();
+        let caller_counts = store.get_caller_counts_batch(&names)?;
+        let callee_counts = store.get_callee_counts_batch(&names)?;
 
         if json {
             let entries: Vec<_> = chunks
@@ -113,12 +104,7 @@ pub(crate) fn cmd_context(
         for caller in callers {
             let caller_origin = caller.file.to_string_lossy().to_string();
             if caller_origin != origin && !caller_origin.ends_with(path) {
-                let rel = caller
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&caller.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&caller.file, &root);
                 external_callers.push((
                     caller.name.clone(),
                     rel.clone(),

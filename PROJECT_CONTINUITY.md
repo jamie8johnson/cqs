@@ -2,9 +2,14 @@
 
 ## Right Now
 
-**v0.12.1 released.** 2026-02-11. Clean tree, notes groomed (72→71).
+**v0.12.1 P1 audit fixes done.** 2026-02-11. Branch: `fix/audit-p1`.
 
-Uncommitted: `docs/notes.toml` — merged 2 note pairs, added 3 new notes (watcher WSL loop, scout matching bug, cqs plan R&D).
+- All 26 P1 findings fixed (commit 4dccd9d), 21 files changed
+- Build/tests/clippy/fmt all pass
+- `docs/audit-triage.md` P1 status column updated with ✅
+- Next: push branch, create PR, then P2 fixes
+
+Uncommitted: audit-findings.md, docs/notes.toml, PROJECT_CONTINUITY.md, archived prior audit files.
 
 ## Parked
 

@@ -291,7 +291,7 @@ impl Store {
         file: &Path,
         function_calls: &[crate::parser::FunctionCalls],
     ) -> Result<(), StoreError> {
-        let file_str = file.to_string_lossy().into_owned();
+        let file_str = file.to_string_lossy().replace('\\', "/");
         let total_calls: usize = function_calls.iter().map(|fc| fc.calls.len()).sum();
         tracing::trace!(
             file = %file_str,

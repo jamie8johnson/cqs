@@ -44,6 +44,7 @@ pub(crate) enum RefCommand {
 
 /// Handle ref subcommands
 pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
+    let _span = tracing::info_span!("cmd_ref").entered();
     match subcmd {
         RefCommand::Add {
             name,
@@ -75,8 +76,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     }
 
     // Validate source
-    let source = source
-        .canonicalize()
+    let source = dunce::canonicalize(source)
         .map_err(|e| anyhow::anyhow!("Source path '{}' not found: {}", source.display(), e))?;
 
     // Create reference directory with restrictive permissions

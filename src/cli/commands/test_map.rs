@@ -1,11 +1,7 @@
 //! Test map command — find tests that exercise a function
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use std::collections::{HashMap, HashSet, VecDeque};
-
-use cqs::Store;
-
-use crate::cli::find_project_root;
 
 use super::resolve::resolve_target;
 
@@ -15,17 +11,10 @@ pub(crate) fn cmd_test_map(
     max_depth: usize,
     json: bool,
 ) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
-    let (chunk, _) = resolve_target(&store, name)?;
-    let target_name = chunk.name.clone();
+    let _span = tracing::info_span!("cmd_test_map", name).entered();
+    let (store, root, _) = crate::cli::open_project_store()?;
+    let resolved = resolve_target(&store, name)?;
+    let target_name = resolved.chunk.name.clone();
 
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
@@ -76,12 +65,7 @@ pub(crate) fn cmd_test_map(
                         .map(|(_, p)| p.clone())
                         .unwrap_or_default();
                 }
-                let rel_file = test
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&test.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel_file = cqs::rel_display(&test.file, &root);
                 matches.push(TestMatch {
                     name: test.name.clone(),
                     file: rel_file,
@@ -102,11 +86,11 @@ pub(crate) fn cmd_test_map(
                 serde_json::json!({"name": m.name, "file": m.file, "line": m.line, "call_depth": m.depth, "call_chain": m.chain})
             })
             .collect();
-        let output = serde_json::json!({"function": chunk.name, "tests": tests_json, "test_count": matches.len()});
+        let output = serde_json::json!({"function": target_name, "tests": tests_json, "test_count": matches.len()});
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         use colored::Colorize;
-        println!("{} {}", "Tests for:".cyan(), chunk.name.bold());
+        println!("{} {}", "Tests for:".cyan(), target_name.bold());
         if matches.is_empty() {
             println!("  No tests found");
         } else {

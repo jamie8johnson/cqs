@@ -7,8 +7,6 @@ use colored::Colorize;
 
 use cqs::Store;
 
-use crate::cli::find_project_root;
-
 use super::resolve::resolve_target;
 
 pub(crate) fn cmd_trace(
@@ -18,22 +16,19 @@ pub(crate) fn cmd_trace(
     max_depth: usize,
     format: &str,
 ) -> Result<()> {
-    let root = find_project_root();
-    let index_path = cqs::resolve_index_dir(&root).join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
+    let _span = tracing::info_span!("cmd_trace", source, target).entered();
 
     if !matches!(format, "text" | "json" | "mermaid") {
         bail!("Invalid format '{}'. Valid: text, json, mermaid", format);
     }
 
-    let store = Store::open(&index_path)?;
+    let (store, root, _) = crate::cli::open_project_store()?;
 
     // Resolve source and target to chunk names
-    let (source_chunk, _) = resolve_target(&store, source)?;
-    let (target_chunk, _) = resolve_target(&store, target)?;
+    let source_resolved = resolve_target(&store, source)?;
+    let source_chunk = source_resolved.chunk;
+    let target_resolved = resolve_target(&store, target)?;
+    let target_chunk = target_resolved.chunk;
 
     let source_name = source_chunk.name.clone();
     let target_name = target_chunk.name.clone();
@@ -41,12 +36,7 @@ pub(crate) fn cmd_trace(
     // Trivial case: source == target
     if source_name == target_name {
         if format == "json" {
-            let rel_file = source_chunk
-                .file
-                .strip_prefix(&root)
-                .unwrap_or(&source_chunk.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel_file = cqs::rel_display(&source_chunk.file, &root);
             let result = serde_json::json!({
                 "source": source_name,
                 "target": target_name,
@@ -55,12 +45,7 @@ pub(crate) fn cmd_trace(
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         } else if format == "mermaid" {
-            let rel_file = source_chunk
-                .file
-                .strip_prefix(&root)
-                .unwrap_or(&source_chunk.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel_file = cqs::rel_display(&source_chunk.file, &root);
             println!("graph TD");
             println!(
                 "    A[\"{} ({}:{})\"]",
@@ -85,13 +70,7 @@ pub(crate) fn cmd_trace(
                 for name in &names {
                     let entry = match store.search_by_name(name, 1)?.into_iter().next() {
                         Some(r) => {
-                            let rel = r
-                                .chunk
-                                .file
-                                .strip_prefix(&root)
-                                .unwrap_or(&r.chunk.file)
-                                .to_string_lossy()
-                                .replace('\\', "/");
+                            let rel = cqs::rel_display(&r.chunk.file, &root);
                             serde_json::json!({
                                 "name": name,
                                 "file": rel,
@@ -130,14 +109,8 @@ pub(crate) fn cmd_trace(
                     };
                     match store.search_by_name(name, 1)?.into_iter().next() {
                         Some(r) => {
-                            let rel = r.chunk.file.strip_prefix(&root).unwrap_or(&r.chunk.file);
-                            println!(
-                                "{}{} ({}:{})",
-                                prefix,
-                                name.cyan(),
-                                rel.display(),
-                                r.chunk.line_start
-                            );
+                            let rel = cqs::rel_display(&r.chunk.file, &root);
+                            println!("{}{} ({}:{})", prefix, name.cyan(), rel, r.chunk.line_start);
                         }
                         None => {
                             println!("{}{}", prefix, name.cyan());
@@ -184,13 +157,7 @@ fn format_mermaid(store: &Store, root: &std::path::Path, names: &[String]) -> Re
     for (i, name) in names.iter().enumerate() {
         let label = match store.search_by_name(name, 1)?.into_iter().next() {
             Some(r) => {
-                let rel = r
-                    .chunk
-                    .file
-                    .strip_prefix(root)
-                    .unwrap_or(&r.chunk.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&r.chunk.file, root);
                 format!(
                     "{} ({}:{})",
                     mermaid_escape(name),

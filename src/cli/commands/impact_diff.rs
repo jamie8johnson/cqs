@@ -5,9 +5,16 @@ use std::io::Read;
 use anyhow::Result;
 
 use cqs::diff_parse::parse_unified_diff;
-use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions, Store};
+use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions};
 
-use crate::cli::find_project_root;
+fn empty_impact_json() -> serde_json::Value {
+    serde_json::json!({
+        "changed_functions": [],
+        "callers": [],
+        "tests": [],
+        "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
+    })
+}
 
 pub(crate) fn cmd_impact_diff(
     _cli: &crate::cli::Cli,
@@ -15,13 +22,8 @@ pub(crate) fn cmd_impact_diff(
     from_stdin: bool,
     json: bool,
 ) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
+    let _span = tracing::info_span!("cmd_impact_diff").entered();
+    let (store, root, _) = crate::cli::open_project_store()?;
 
     // 1. Get diff text
     let diff_text = if from_stdin {
@@ -34,15 +36,7 @@ pub(crate) fn cmd_impact_diff(
     let hunks = parse_unified_diff(&diff_text);
     if hunks.is_empty() {
         if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "changed_functions": [],
-                    "callers": [],
-                    "tests": [],
-                    "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-                }))?
-            );
+            println!("{}", serde_json::to_string_pretty(&empty_impact_json())?);
         } else {
             println!("No changes detected.");
         }
@@ -50,20 +44,11 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 3. Map hunks to functions
-    let store = Store::open(&index_path)?;
     let changed = map_hunks_to_functions(&store, &hunks);
 
     if changed.is_empty() {
         if json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "changed_functions": [],
-                    "callers": [],
-                    "tests": [],
-                    "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
-                }))?
-            );
+            println!("{}", serde_json::to_string_pretty(&empty_impact_json())?);
         } else {
             println!("No indexed functions affected by this diff.");
         }
@@ -71,9 +56,7 @@ pub(crate) fn cmd_impact_diff(
     }
 
     // 4. Analyze impact
-    let mut result = analyze_diff_impact(&store, &changed)?;
-    // Fill in changed_functions (analyze_diff_impact leaves it empty for the caller to set)
-    result.changed_functions = changed;
+    let result = analyze_diff_impact(&store, changed)?;
 
     // 5. Display
     if json {
@@ -87,15 +70,24 @@ pub(crate) fn cmd_impact_diff(
 }
 
 fn read_stdin() -> Result<String> {
+    const MAX_STDIN_SIZE: usize = 50 * 1024 * 1024; // 50 MB
     let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    std::io::stdin()
+        .take(MAX_STDIN_SIZE as u64 + 1)
+        .read_to_string(&mut buf)?;
+    if buf.len() > MAX_STDIN_SIZE {
+        anyhow::bail!("stdin input exceeds 50 MB limit");
+    }
     Ok(buf)
 }
 
 fn run_git_diff(base: Option<&str>) -> Result<String> {
     let mut cmd = std::process::Command::new("git");
-    cmd.arg("diff");
+    cmd.args(["--no-pager", "diff", "--no-color"]);
     if let Some(b) = base {
+        if b.starts_with('-') {
+            anyhow::bail!("Invalid base ref '{}': must not start with '-'", b);
+        }
         cmd.arg(b);
     }
 
@@ -136,12 +128,7 @@ fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Pa
             result.all_callers.len()
         );
         for c in &result.all_callers {
-            let rel = c
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&c.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&c.file, root);
             println!(
                 "  {} ({}:{}, call at line {})",
                 c.name, rel, c.line, c.call_line
@@ -161,12 +148,7 @@ fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Pa
             result.all_tests.len()
         );
         for t in &result.all_tests {
-            let rel = t
-                .file
-                .strip_prefix(root)
-                .unwrap_or(&t.file)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = cqs::rel_display(&t.file, root);
             println!(
                 "  {} ({}:{}) [via {}, depth {}]",
                 t.name, rel, t.line, t.via, t.call_depth

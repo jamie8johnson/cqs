@@ -4,35 +4,28 @@
 
 use std::collections::HashSet;
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 
-use cqs::{HnswIndex, Parser, Store};
+use cqs::{HnswIndex, Parser};
 
-use crate::cli::{find_project_root, Cli};
+use crate::cli::Cli;
 
 /// Display index statistics (chunk counts, languages, types)
 pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let _span = tracing::info_span!("cmd_stats").entered();
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
     let stats = store.stats()?;
 
     // Check staleness by scanning filesystem
     let parser = Parser::new()?;
     let files = crate::cli::enumerate_files(&root, &parser, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
-    let (stale_count, missing_count) = store.count_stale_files(&file_set).unwrap_or((0, 0));
+    let (stale_count, missing_count) = store.count_stale_files(&file_set)?;
 
     // Use count_vectors to avoid loading full HNSW index just for stats
     let hnsw_vectors = HnswIndex::count_vectors(&cqs_dir, "index");
-    let note_count = store.note_count().unwrap_or(0);
-    let fc_stats = store.function_call_stats().unwrap_or_default();
+    let note_count = store.note_count()?;
+    let fc_stats = store.function_call_stats()?;
     let (call_count, caller_count, callee_count) = (
         fc_stats.total_calls,
         fc_stats.unique_callers,

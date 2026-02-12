@@ -2,9 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::{suggest_placement, Embedder, Store};
-
-use crate::cli::find_project_root;
+use cqs::{suggest_placement, Embedder};
 
 pub(crate) fn cmd_where(
     _cli: &crate::cli::Cli,
@@ -12,32 +10,19 @@ pub(crate) fn cmd_where(
     limit: usize,
     json: bool,
 ) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let _span = tracing::info_span!("cmd_where", description).entered();
+    let (store, root, _) = crate::cli::open_project_store()?;
     let embedder = Embedder::new()?;
     let limit = limit.clamp(1, 10);
 
-    let result = suggest_placement(&store, &embedder, description, &root, limit)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let result = suggest_placement(&store, &embedder, description, limit)?;
 
     if json {
         let suggestions_json: Vec<_> = result
             .suggestions
             .iter()
             .map(|s| {
-                let rel = s
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&s.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&s.file, &root);
                 serde_json::json!({
                     "file": rel,
                     "score": s.score,
@@ -69,12 +54,7 @@ pub(crate) fn cmd_where(
             println!("{}", "No placement suggestions found.".dimmed());
         } else {
             for (i, s) in result.suggestions.iter().enumerate() {
-                let rel = s
-                    .file
-                    .strip_prefix(&root)
-                    .unwrap_or(&s.file)
-                    .to_string_lossy()
-                    .replace('\\', "/");
+                let rel = cqs::rel_display(&s.file, &root);
                 println!();
                 println!(
                     "{}. {} {}",

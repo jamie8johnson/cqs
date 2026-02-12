@@ -171,15 +171,23 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                                 }
                             },
                         };
+
+                        // Capture mtimes BEFORE reindexing to avoid race condition
+                        let pre_mtimes: HashMap<PathBuf, SystemTime> = files
+                            .iter()
+                            .filter_map(|f| {
+                                std::fs::metadata(root.join(f))
+                                    .and_then(|m| m.modified())
+                                    .ok()
+                                    .map(|t| (f.clone(), t))
+                            })
+                            .collect();
+
                         match reindex_files(&root, &store, &files, &parser, emb, cli.quiet) {
                             Ok(count) => {
                                 // Record mtimes to skip duplicate events
-                                for file in &files {
-                                    if let Ok(m) = std::fs::metadata(root.join(file))
-                                        .and_then(|m| m.modified())
-                                    {
-                                        last_indexed_mtime.insert(file.clone(), m);
-                                    }
+                                for (file, mtime) in pre_mtimes {
+                                    last_indexed_mtime.insert(file, mtime);
                                 }
                                 if !cli.quiet {
                                     println!("Indexed {} chunk(s)", count);

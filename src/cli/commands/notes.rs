@@ -64,6 +64,7 @@ pub(crate) enum NotesCommand {
 
 /// Handle notes subcommands
 pub(crate) fn cmd_notes(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
+    let _span = tracing::info_span!("cmd_notes").entered();
     match subcmd {
         NotesCommand::List { warnings, patterns } => cmd_notes_list(cli, *warnings, *patterns),
         NotesCommand::Add {

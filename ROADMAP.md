@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.0
+## Current: v0.12.1
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -15,13 +15,13 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 - Proactive hints in `cqs explain` / `cqs read --focus` (PR #362)
 - `cqs impact-diff` — diff-aware impact analysis (PR #362)
 - Table-aware Markdown chunking + parent retrieval (PR #361)
+- Delete `type_map` dead code from LanguageDef (v0.12.1)
+- Scout note matching precision — path-component boundary matching (v0.12.1)
 
 ### Next
 
 - [ ] Pre-built release binaries (GitHub Actions)
 - [ ] Skill grouping / organization (30+ skills)
-- [ ] Delete `type_map` dead code from LanguageDef
-- [ ] Scout note matching precision (suffix matching too loose)
 - [ ] `cqs plan` — speculative R&D (revisit when scout usage data available)
 
 ### Parked

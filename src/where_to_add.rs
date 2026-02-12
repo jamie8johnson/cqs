@@ -4,12 +4,12 @@
 //! insertion point based on semantic similarity + local pattern analysis.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::embedder::Embedder;
 use crate::parser::Language;
-use crate::store::{ChunkSummary, SearchFilter, StoreError};
-use crate::Store;
+use crate::store::{ChunkSummary, SearchFilter};
+use crate::{AnalysisError, Store};
 
 /// Local patterns observed in a file
 pub struct LocalPatterns {
@@ -56,13 +56,14 @@ pub fn suggest_placement(
     store: &Store,
     embedder: &Embedder,
     description: &str,
-    _root: &Path,
     limit: usize,
-) -> Result<PlacementResult, SuggestError> {
+) -> Result<PlacementResult, AnalysisError> {
+    let _span =
+        tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
     // Embed the description
     let query_embedding = embedder
         .embed_query(description)
-        .map_err(|e| SuggestError::Embedding(e.to_string()))?;
+        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
 
     // Search with RRF hybrid
     let filter = SearchFilter {
@@ -104,9 +105,13 @@ pub fn suggest_placement(
 
     for (file, score, chunks) in &file_scores {
         // Get all chunks from this file for pattern extraction
-        let all_file_chunks = store
-            .get_chunks_by_origin(&file.to_string_lossy())
-            .unwrap_or_default();
+        let all_file_chunks = match store.get_chunks_by_origin(&file.to_string_lossy()) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(file = %file.display(), error = %e, "Failed to get file chunks");
+                Vec::new()
+            }
+        };
 
         // Find the most similar chunk in this file (highest individual score)
         let best_chunk = chunks
@@ -317,30 +322,6 @@ fn detect_naming_convention(chunks: &[ChunkSummary]) -> String {
         "camelCase".to_string()
     } else {
         "PascalCase".to_string()
-    }
-}
-
-/// Error type for placement suggestions
-#[derive(Debug)]
-pub enum SuggestError {
-    Embedding(String),
-    Store(StoreError),
-}
-
-impl std::fmt::Display for SuggestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SuggestError::Embedding(e) => write!(f, "Embedding error: {e}"),
-            SuggestError::Store(e) => write!(f, "Store error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for SuggestError {}
-
-impl From<StoreError> for SuggestError {
-    fn from(e: StoreError) -> Self {
-        SuggestError::Store(e)
     }
 }
 

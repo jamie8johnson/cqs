@@ -3,22 +3,15 @@
 use anyhow::{bail, Result};
 
 use cqs::parser::ChunkType;
-use cqs::{compute_hints, HnswIndex, SearchFilter, Store};
+use cqs::{compute_hints, HnswIndex, SearchFilter};
 
-use crate::cli::{find_project_root, staleness};
+use crate::cli::staleness;
 
 use super::resolve::parse_target;
 
 pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let _span = tracing::info_span!("cmd_explain", target).entered();
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 
     // Resolve target to chunk
     let (file_filter, name) = parse_target(target);
@@ -45,7 +38,7 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
     // Proactive staleness warning
     if !cli.quiet && !cli.no_stale_check {
         if let Some(file_str) = chunk.file.to_str() {
-            staleness::warn_stale_results(&store, &[file_str]);
+            staleness::warn_stale_results(&store, &[file_str], &root);
         }
     }
 
@@ -100,7 +93,13 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
 
     // Compute hints (only for function/method chunk types)
     let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
-        compute_hints(&store, &chunk.name, Some(callers.len())).ok()
+        match compute_hints(&store, &chunk.name, Some(callers.len())) {
+            Ok(hints) => Some(hints),
+            Err(e) => {
+                tracing::warn!(function = %chunk.name, error = %e, "Failed to compute hints");
+                None
+            }
+        }
     } else {
         None
     };
@@ -138,12 +137,7 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             })
             .collect();
 
-        let rel_file = chunk
-            .file
-            .strip_prefix(&root)
-            .unwrap_or(&chunk.file)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel_file = cqs::rel_display(&chunk.file, &root);
 
         let mut output = serde_json::json!({
             "name": chunk.name,
@@ -171,7 +165,7 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
     } else {
         use colored::Colorize;
 
-        let rel_file = chunk.file.strip_prefix(&root).unwrap_or(&chunk.file);
+        let rel_file = cqs::rel_display(&chunk.file, &root);
 
         println!(
             "{} ({} {})",
@@ -179,12 +173,7 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             chunk.chunk_type,
             chunk.language
         );
-        println!(
-            "{}:{}-{}",
-            rel_file.display(),
-            chunk.line_start,
-            chunk.line_end
-        );
+        println!("{}:{}-{}", rel_file, chunk.line_start, chunk.line_end);
 
         if let Some(ref h) = hints {
             if h.caller_count == 0 || h.test_count == 0 {
@@ -218,8 +207,8 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             println!();
             println!("{}", "Callers:".cyan());
             for c in &callers {
-                let rel = c.file.strip_prefix(&root).unwrap_or(&c.file);
-                println!("  {} ({}:{})", c.name, rel.display(), c.line);
+                let rel = cqs::rel_display(&c.file, &root);
+                println!("  {} ({}:{})", c.name, rel, c.line);
             }
         }
 
@@ -235,13 +224,10 @@ pub(crate) fn cmd_explain(cli: &crate::cli::Cli, target: &str, json: bool) -> Re
             println!();
             println!("{}", "Similar:".cyan());
             for r in &similar {
-                let rel = r.chunk.file.strip_prefix(&root).unwrap_or(&r.chunk.file);
+                let rel = cqs::rel_display(&r.chunk.file, &root);
                 println!(
                     "  {} ({}:{}) [{:.2}]",
-                    r.chunk.name,
-                    rel.display(),
-                    r.chunk.line_start,
-                    r.score
+                    r.chunk.name, rel, r.chunk.line_start, r.score
                 );
             }
         }

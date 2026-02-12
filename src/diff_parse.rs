@@ -2,7 +2,13 @@
 //!
 //! Extracts changed file paths and line ranges from `git diff` output.
 
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+/// Compiled once, reused across all calls to `parse_unified_diff`
+static HUNK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@@ [^@]* \+(\d+)(?:,(\d+))? @@").expect("hardcoded hunk regex"));
 
 /// A single hunk from a unified diff — one changed region in one file
 #[derive(Debug, Clone)]
@@ -28,7 +34,13 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
         return Vec::new();
     }
 
-    let hunk_re = Regex::new(r"@@ [^@]* \+(\d+)(?:,(\d+))? @@").unwrap();
+    // Normalize CRLF for Windows git output (bare \r from classic Mac too)
+    let input = if input.contains('\r') {
+        std::borrow::Cow::Owned(input.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(input)
+    };
+
     let mut hunks = Vec::new();
     let mut current_file: Option<String> = None;
 
@@ -56,7 +68,7 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
 
         // Hunk header
         if let Some(file) = &current_file {
-            if let Some(caps) = hunk_re.captures(line) {
+            if let Some(caps) = HUNK_RE.captures(line) {
                 let start: u32 = caps[1].parse().unwrap_or(1);
                 let count: u32 = caps
                     .get(2)

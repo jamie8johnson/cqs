@@ -1,25 +1,33 @@
-# Audit Triage — v0.9.7
+# Audit Triage — v0.12.1
 
-Generated: 2026-02-10
+Generated: 2026-02-11
 
-Source: `docs/audit-findings.md` — 14-category audit, 3 batches, ~161 raw findings.
+Source: `docs/audit-findings.md` — 14-category audit, 3 batches, 151 raw findings.
 
 ## De-duplication Notes
 
 Cross-category duplicates (fix once):
 
-1. **eprintln → tracing** — O3/EH1 (config), O4/EH8 (lib.rs migration), O5/EH2 (notes), O15/EH17 (signal), O16/EH3 (reference). 5 pairs = 10 findings → 5 fixes.
-2. **cosine_similarity duplication** — A5/CQ-6/AC9/EH14. 4 findings → 1 fix (remove diff.rs copy, use math.rs).
-3. **name scoring duplication** — A4/CQ-7. 2 findings → 1 fix.
-4. **normalize_for_fts byte truncation panic** — R7/S10/EH13(partial). 3 findings → 1 fix.
-5. **notes text byte truncation** — R8/EH13. 2 findings → 1 fix.
-6. **resolve.rs duplication** — CQ-1/EH11. 2 findings → 1 fix.
-7. **config read-modify-write race** — DS4/S9. 2 findings → 1 fix.
-8. **HNSW temp cleanup** — PB9 (partial overlap with prior triage PB3).
-9. **watch mode path normalization** — PB1/PB2/DS11. 3 findings → 1 fix.
-10. **notes temp file leak** — EH16/DS8. 2 findings → 1 fix.
+1. **ScoutError/SuggestError** — AD-2/AD-9/EH-2/EH-3/CQ-8. 5 findings → 1 fix (unify to anyhow::Result or shared AnalysisError).
+2. **is_test_name false positives** — AC-11/RB-8/EXT-10. 3 findings → 1 fix (tighten pattern, reuse store/calls.rs logic).
+3. **Test detection hardcoded/divergent** — EXT-7/EXT-10/AC-11/RB-8. 4 findings → 1 fix (shared is_test_function + config).
+4. **related.rs ChunkType string comparison** — AD-6/AC-5. 2 findings → 1 fix.
+5. **suggest_placement error swallowing** — EH-4/RB-10/OB-8(partial). 3 findings → 1 fix.
+6. **suggest_tests error swallowing** — EH-7/OB-9. 2 findings → 1 fix.
+7. **scout error swallowing** — EH-8/EH-9/OB-10. 3 findings → 1 fix (add tracing::warn in scout).
+8. **LIKE wildcard escaping** — AC-4/SEC-5. 2 findings → 1 fix.
+9. **search_chunks_by_signature substring matching** — AC-12/PERF-4. 2 findings → 1 fix.
+10. **git diff argument injection** — SEC-1/RB-7. 2 findings → 1 fix (insert `--` separator).
+11. **impact-diff stdin unbounded** — SEC-2/RB-2. 2 findings → 1 fix.
+12. **diff_parse CRLF** — PB-1/TC-15. 2 findings → 1 fix + test.
+13. **std::canonicalize instead of dunce** — PB-3/PB-4/PB-5. 3 findings → 1 sweep.
+14. **Temp file predictable names** — SEC-3/SEC-4/SEC-6. 3 findings → 1 sweep.
+15. **Per-function reverse BFS** — PERF-1/PERF-8/PERF-10. 3 findings → 1 fix (multi-source BFS).
+16. **N+1 name queries** — PERF-2/PERF-3. 2 findings → batch API usage.
+17. **map_hunks overlap + zero-count** — AC-1/RB-1. 2 findings → 1 fix.
+18. **diff_parse boundary tracking** — AC-9/RB-11. 2 findings → 1 fix.
 
-After de-duplication: **~140 unique findings**
+After de-duplication: **~120 unique findings**
 
 ---
 
@@ -29,294 +37,235 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `normalize_for_fts` byte-slices CJK text → panic (MCP crashable) | R7/S10 | medium | PR #334 |
-| 2 | `notes list` byte-truncation `&note.text[..117]` → panic on CJK | R8/EH13 | easy | PR #334 |
-| 3 | Windowed chunk ID path extraction via `rfind(':')` breaks glob filter | AC10 | easy | PR #334 |
-| 4 | Dead code detection trait impl check matches method body, not impl block | AC5 | medium | PR #334 |
-| 5 | `resolve_target` silently returns wrong-file result on filter miss | EH11 | medium | PR #334 |
-| 6 | CLI `--limit` not clamped — `usize::MAX as i64` wraps to -1, returns all rows | R4 | easy | PR #334 |
-| 7 | `gather()` BFS non-deterministic output (HashMap iteration order) | AC2 | easy | PR #334 |
-| 8 | Tautological assertion in gather test (`!empty || empty`) | TC1 | easy | PR #334 |
-| 9 | Diff test never asserts on `modified` list | TC12 | easy | PR #334 |
+| 1 | `is_test_name` false positives — `contains("_test")` matches `contest`, `fastest` | AC-11/RB-8/EXT-10 | easy | ✅ |
+| 2 | `diff_parse` doesn't handle CRLF from Windows git | PB-1/TC-15 | easy | ✅ |
+| 3 | `check_origins_stale` resolves relative paths against CWD, not project root | PB-6 | medium | ✅ |
+| 4 | `DiffTestInfo.via` records first-iterated, not shortest-depth path | AC-3 | easy | ✅ |
+| 5 | `map_hunks_to_functions` zero-count hunk edge case + u32 overflow | AC-1/RB-1 | easy | ✅ |
+| 6 | `check_origins_stale` doesn't report deleted files as stale | PB-7 | easy | ✅ |
+| 7 | `extract_call_snippet` wrong offset for windowed chunks | AC-2 | medium | ✅ |
 
-### Duplication / Code Quality
+### Security / Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 10 | Duplicate `cosine_similarity` in diff.rs (different behavior from math.rs) | A5/CQ-6 | easy | PR #333 |
-| 11 | Duplicate name scoring logic in store | A4/CQ-7 | easy | PR #333 |
-| 12 | resolve.rs copied identically between CLI and MCP (52 lines x2) | CQ-1 | easy | PR #333 |
-| 13 | Per-call `Regex::new().unwrap()` in markdown parser (should be LazyLock) | CQ-8/R1 | easy | PR #333 |
-| 14 | Duplicate `make_embedding` test helper across HNSW modules | CQ-10 | easy | PR #333 |
-| 15 | Duplicate tokenization impl in nl.rs (function + iterator) | CQ-9 | easy | PR #333 |
+| 8 | `impact-diff --base` git argument injection via `--` prefixed values | SEC-1/RB-7 | easy | ✅ |
+| 9 | `impact-diff --stdin` no input size limit (OOM) | SEC-2/RB-2 | easy | ✅ |
+| 10 | `diff_parse.rs` Regex::new().unwrap() on every call | EH-1 | easy | ✅ |
 
-### eprintln → tracing (5 locations)
+### Error Swallowing (silent wrong results)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 16 | Config::load() eprintln | O3/EH1 | easy | |
-| 17 | resolve_index_dir migration eprintln | O4/EH8 | easy | |
-| 18 | CLI notes commands eprintln | O5/EH2 | easy | |
-| 19 | signal handler setup eprintln | O15/EH17 | easy | |
-| 20 | reference commands eprintln | O16/EH3 | easy | |
+| 11 | `suggest_placement` swallows store error → empty patterns | EH-4/RB-10 | easy | ✅ |
+| 12 | `scout` swallows caller count + staleness errors → zeros | EH-8/OB-10 | easy | ✅ |
+| 13 | `cmd_stats` swallows multiple store errors → misleading zeros | EH-11 | easy | ✅ |
+| 14 | `cmd_context` swallows caller/callee count errors → zeros | EH-12 | easy | ✅ |
+| 15 | `map_hunks_to_functions` silently skips files on store error | EH-6 | easy | ✅ |
+| 16 | `analyze_diff_impact` silently skips callers on error | EH-10 | easy | ✅ |
 
-### Documentation
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 21 | ROADMAP: Markdown listed as "Parked" but shipped in v0.9.6 | D1 | easy | |
-| 22 | CONTRIBUTING.md: missing audit_mode.rs, read.rs, audit.rs | D2/D3 | easy | |
-| 23 | README: `cqs notes list` in "Call Graph" section | D4 | easy | |
-| 24 | README: `--sources` documented as CLI flag, is MCP-only | D5 | easy | |
-| 25 | lib.rs Quick Start: unused `ModelInfo` import | D6 | easy | |
-| 26 | ROADMAP: "8 languages total" should be 9 | D7 | easy | |
-
-### Observability (easy tracing additions)
+### Documentation (factually wrong)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 27 | `gather()` no logging/tracing spans | O1 | easy | |
-| 28 | `semantic_diff()` no logging/timing | O2 | easy | |
-| 29 | `cmd_gather` no tracing span | O6 | easy | |
-| 30 | `cmd_gc` no tracing span | O7 | easy | |
-| 31 | `extract_call_graph` no timing | O8 | easy | |
-| 32 | `build_hnsw_index` no timing | O9 | easy | |
-| 33 | `find_dead_code` no logging | O12 | easy | |
-| 34 | `prune_stale_calls` no logging | O13 | easy | |
-| 35 | `replace_notes_for_file` no completion log | O14 | easy | |
+| 17 | lib.rs Quick Start calls non-existent `store.search()` | DOC-1 | easy | ✅ |
+| 18 | README search example uses deleted `serve_http` function | DOC-5 | easy | ✅ |
+| 19 | ROADMAP version says v0.12.0, actual is v0.12.1 | DOC-2 | easy | ✅ |
+| 20 | ROADMAP lists 2 completed items as "Next" | DOC-3 | easy | ✅ |
 
-### Error Handling (easy fixes)
+### Code Quality (high ROI)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 36 | `check_model_version` ignores dimension parse failure | EH7 | easy | |
-| 37 | MCP batch tool errors serialized but not logged | EH9 | easy | |
-| 38 | `set_permissions` errors silently discarded (7 locations) | EH10 | easy | |
-| 39 | `cosine_similarity` returns 0.0 on dim mismatch with no warning | EH14 | easy | |
-| 40 | Watch canonicalize silently falls back | EH15 | easy | |
-| 41 | Temp file not cleaned on notes serialization failure | EH16/DS8 | easy | |
+| 21 | `std::canonicalize` instead of `dunce` in 3 locations | PB-3/PB-4/PB-5 | easy | ✅ |
+| 22 | `related.rs` ChunkType string comparison instead of enum match | AD-6/AC-5 | easy | ✅ |
+| 23 | `ScoutError` missing `std::error::Error` impl | AD-9/EH-2 | easy | ✅ |
+| 24 | `suggest_placement` unused `_root` parameter | AD-3 | easy | ✅ |
+| 25 | `GatherDirection::FromStr` uses anyhow::Error | AD-10 | easy | ✅ |
+| 26 | `gather` decay_factor accepts NaN/negative/>1.0 | RB-9 | easy | ✅ |
 
-### Platform / Permissions (easy fixes)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 42 | `save_audit_state` no 0o600 permissions | PB5 | easy | |
-| 43 | `ProjectRegistry.save()` no 0o600 permissions | PB6 | easy | |
-| 44 | Inconsistent canonicalization (3 patterns, dunce already a dep) | PB4 | easy | PR #333 |
-| 45 | HNSW temp cleanup uses `remove_dir` not `remove_dir_all` | PB9 | easy | |
-
-### Extensibility (easy)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 46 | `cqs_batch` only supports 6/20 tools (gap grew from 8/14) | X1 | easy | |
-| 47 | `gather()` hardcodes seed params (5 results, 0.3 threshold) | X5 | easy | |
-| 48 | BFS decay 0.8 hardcoded in gather | X6 | easy | |
-| 49 | Config missing `note_weight` and `note_only` | X3 | easy | |
-
-**P1 Total: 49 findings**
+**P1 Total: 26 findings**
 
 ---
 
 ## P2: Fix Next (medium effort + high impact, or easy + moderate impact)
 
-### Bugs / Correctness
+### Error Handling / Observability
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `gather()` BFS assigns first-discovered score, not best | AC3 | medium | PR #338 |
-| 2 | Diff ChunkKey includes line_start → false add+remove on reorder | AC4 | medium | PR #338 |
-| 3 | `search_across_projects` never uses HNSW (always O(n)) | AC7 | medium | PR #338 |
-| 4 | Unified search note slots over-allocated when code sparse | AC1 | medium | PR #338 |
-| 5 | impact/test_map MCP tools swallow DB errors with `.ok()` | EH5 | medium | PR #334 |
-| 6 | impact/test_map CLI tools swallow DB errors with `.ok()` | EH6 | medium | PR #334 |
-| 7 | `gather()` silently falls back to empty on batch search failure | EH4 | medium | PR #334 |
+| 1 | `suggest_tests` swallows graph/test errors → empty | EH-7/OB-9 | easy | ✅ fixed |
+| 2 | `find_relevant_notes` swallows error → empty | EH-9 | easy | ✅ fixed |
+| 3 | `compute_hints` silently discards errors via .ok() | OB-8 | easy | ✅ fixed |
+| 4 | `resolve_to_related` silently drops store errors | EH-5 | easy | ✅ fixed |
+| 5 | `get_chunks_by_ids` error swallowed in query | EH-13 | easy | ✅ fixed |
+| 6 | `suggest_tests` file chunk lookup swallows error | EH-15 | easy | ✅ fixed |
 
-### Duplication (medium)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 8 | Focused-read logic (TYPE_NAME_RE, COMMON_TYPES) duplicated CLI/MCP | CQ-2 | medium | PR #333 |
-| 9 | Note injection logic duplicated in 4 places | CQ-3 | medium | PR #333 |
-| 10 | Impact command duplicated CLI/MCP (377+256 lines) | CQ-4 | medium | PR #333 |
-| 11 | JSON result formatting duplicated in 5+ locations | CQ-5 | medium | PR #333 |
-
-### Performance (high-impact easy/medium)
+### Observability (tracing gaps)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 12 | Watch mode per-chunk upsert (50 txns vs 1) | P2 | easy | PR #336 |
-| 13 | Watch mode re-embeds all chunks (no content-hash cache) | P3 | easy | PR #336 |
-| 14 | `embedding_to_bytes` per-float iterator instead of memcpy | P7 | easy | PR #336 |
-| 15 | `search_by_names_batch` N+1 FTS queries | P4 | medium | PR #336 |
-| 16 | `find_dead_code` loads full content for all candidates | P10 | easy | PR #336 |
+| 7 | `scout()` no tracing span (140-line orchestrator) | OB-1 | easy | ✅ fixed |
+| 8 | `suggest_placement()` no tracing span | OB-2 | easy | ✅ fixed |
+| 9 | `find_related()` no tracing span | OB-3 | easy | ✅ fixed |
+| 10 | `analyze_impact()` no tracing span | OB-4 | easy | ✅ fixed |
+| 11 | `analyze_diff_impact()` no tracing span | OB-5 | easy | ✅ fixed |
+| 12 | `map_hunks_to_functions()` no tracing | OB-6 | easy | ✅ fixed |
+| 13 | 11 CLI commands missing tracing spans | OB-7 | easy | ✅ fixed |
+| 14 | `staleness.rs` uses eprintln instead of tracing | OB-11 | easy | ✅ fixed |
 
-### Data Safety
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 17 | Config read-modify-write race (no file lock) | DS4/S9 | medium | PR #337 |
-| 18 | Watch mode delete + reinsert not atomic | DS3 | medium | PR #337 |
-| 19 | Pipeline chunks + call graph in separate transactions | DS2 | medium | PR #337 |
-| 20 | `ProjectRegistry.save()` no locking or atomic write | DS5 | easy | PR #337 |
-| 21 | `parse_notes` reads via separate handle after lock | DS7 | easy | PR #337 |
-
-### Security
+### Code Quality
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 22 | `tool_context` no path traversal validation | S2 | medium | PR #337 |
-| 23 | Reference config `path` allows arbitrary filesystem access | S5 | medium | PR #337 |
-| 24 | Project .cqs.toml can override user config references | S6 | medium | PR #337 |
-| 25 | `sanitize_error_message` misses path prefixes | S3 | easy | PR #337 |
-| 26 | MCP protocol version header reflected unsanitized | S4 | easy | PR #337 |
-
-### Robustness (medium)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 27 | HNSW save `assert_eq!` panics in MCP context | R9 | medium | PR #337 |
-| 28 | `embedding_to_bytes` `assert_eq!` panics | R10 | medium | PR #337 |
-| 29 | `embed_batch` discards tensor shape, trusts hardcoded dim | R6 | medium | PR #337 |
-
-### Platform (medium)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 30 | Watch mode path separator mismatch (Windows chunk duplication) | PB1/PB2/DS11 | medium | PR #337 |
-| 31 | HNSW save no cross-device rename fallback | PB3 | medium | PR #337 |
-
-### Resource Management (easy)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 32 | Store page cache 16MB x 4 x N stores (up to 384MB) | RM6 | easy | PR #336 |
-| 33 | HNSW ID map load doubles memory during parse | RM7 | easy | PR #336 |
-| 34 | Pipeline creates 2 Embedders simultaneously (~1GB) | RM12 | easy | PR #336 |
-| 35 | Background CAGRA opens second Store with full pool | RM5 | easy | PR #336 |
-| 36 | Watch `pending_files` retains capacity after burst | RM9 | easy | PR #336 |
-
-### API Design / Types
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 37 | `ChunkIdentity`/`DiffEntry` use String where enums exist | A1 | easy | PR #338 |
-| 38 | `call_stats`/`function_call_stats` return unnamed tuples | A3 | easy | PR #338 |
-| 39 | `Embedding::new()` skips dim validation (unsafe-by-default) | A7 | easy | PR #338 (by design) |
-| 40 | `Language::def()` panics on registry desync | R2 | easy | PR #338 |
-| 41 | `as_object_mut().unwrap()` in impact JSON | R3 | easy | PR #338 |
-| 42 | `cap.get(0).unwrap()` in markdown extraction | R5 | easy | PR #338 |
-
-### Extensibility (medium)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 43 | `apply_config_defaults` magic numbers detect unset flags | X9 | medium | PR #338 |
-| 44 | Test-file patterns hardcoded in SQL, duplicated in Rust | X4 | medium | PR #338 |
-| 45 | Adding structural Pattern requires 5 changes + MCP schema | X2 | medium | PR #338 |
-
-**P2 Total: 45 findings**
-
----
-
-## P3: Fix If Time (moderate impact, can batch)
-
-### Observability
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 1 | Reference search no per-reference timing | O10 | medium | PR #340 |
-| 2 | Embedding cache hit/miss not observable | O11 | medium | PR #340 |
-
-### Test Coverage
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 3 | 11/20 MCP tools untested | TC2 | medium | |
-| 4 | 11 CLI commands untested | TC3 | medium | |
-| 5 | `search_filtered` no unit tests | TC4 | medium | Fixed PR #343 |
-| 6 | `search_across_projects` zero tests | TC5 | medium | |
-| 7 | `store/chunks.rs` 817 lines no inline tests | TC8 | medium | Fixed PR #343 |
-| 8 | `reference.rs` load/search no direct tests | TC9 | medium | Fixed PR #343 |
-| 9 | `cmd_gc` zero tests | TC10 | easy | PR #341 |
-| 10 | `cmd_dead` no CLI integration test | TC11 | easy | PR #341 |
-| 11 | MCP error assertions only check `is_some()` | TC15 | easy | PR #341 |
-| 12 | Note round-trip test missing | TC7 | easy | PR #341 |
-| 13 | `find_project_root` no tests | TC13 | easy | PR #341 |
-| 14 | 127 dead functions, most untested | TC14 | medium | |
+| 15 | CLI store-opening boilerplate 17+ times | CQ-1 | medium | ✅ fixed |
+| 16 | Path relativization duplicated 30+ times | CQ-2 | medium | ✅ fixed |
+| 17 | Config validation repeats clamp-and-warn 4x | CQ-4 | easy | ✅ fixed |
+| 18 | Atomic config write duplicated in 2 functions | CQ-5 | easy | non-issue (already atomic) |
+| 19 | `impact_diff.rs` "no changes" JSON duplicated | CQ-6 | easy | ✅ fixed |
+| 20 | `related.rs` JSON construction tripled | CQ-3 | easy | ✅ fixed |
+| 21 | `ScoutError`/`SuggestError` near-identical types | CQ-8/AD-2 | easy | ✅ fixed |
+| 22 | `analyze_diff_impact` returns empty changed_functions for caller to fill | AD-11 | easy | ✅ fixed |
 
 ### API Design
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 15 | Asymmetric callers/callees return types | A2 | medium | Fixed PR #343 |
-| 16 | `SearchFilter` mixed encapsulation (pub fields + builder) | A6 | easy | PR #341 |
-| 17 | `serve_stdio`/`serve_http` inconsistent path param types | A8 | easy | PR #341 (already consistent) |
-| 18 | Note/NoteEntry/NoteSummary naming overload | A9 | medium | |
-| 19 | `GatherOptions` lacks builder methods | A10 | easy | PR #340 |
-
-### Performance
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 20 | `normalize_for_fts` called 4x per chunk | P6 | easy | PR #341 |
-| 21 | Diff loads all identities even with language filter | P5 | medium | PR #340 (RM11) |
-| 22 | `search_across_projects` new Store per project per search | P8 | medium | |
-| 23 | Gather loads entire call graph every invocation | P11 | medium | Fixed PR #343 |
-| 24 | Pipeline writer clones chunk+embedding pairs | P9 | easy | PR #341 |
-| 25 | `get_call_graph` clones all strings into both maps | P12 | easy | PR #340 |
-
-### Resource Management
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 26 | `semantic_diff` loads all matched-pair embeddings at once | RM1 | medium | |
-| 27 | Reference hot-reload blocks search during WAL checkpoint | RM3 | medium | |
-| 28 | Each Store creates own tokio Runtime (7+ with refs) | RM4 | medium | |
-| 29 | Embedder ~500MB persists forever via OnceLock | RM8 | easy | Fixed PR #343 |
-| 30 | HNSW+CAGRA held simultaneously during upgrade | RM10 | easy | PR #341 (not in HNSW files) |
-| 31 | `all_chunk_identities` loads full table no SQL filter | RM11 | easy | PR #340 |
+| 23 | `CallerInfo` name collision (store vs impact) | AD-1 | medium | ✅ fixed |
+| 24 | `ScoutChunk.chunk_type` is String instead of enum | AD-5 | easy | ✅ fixed |
+| 25 | `resolve_target` returns unnamed tuple | AD-7 | easy | ✅ fixed |
+| 26 | Path relativization handled inconsistently across modules | AD-8 | easy | ✅ fixed |
 
 ### Data Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 32 | `embedding_batches` LIMIT/OFFSET unstable under writes | DS9 | medium | PR #341 |
-| 33 | Store::init() DDL without transaction | DS1 | medium | PR #340 |
-| 34 | WAL checkpoint failure silently returns Ok | DS13 | easy | PR #340 |
-| 35 | No SQLite integrity check on open | DS12 | medium | Fixed PR #343 |
-| 36 | Schema migration no downgrade guard | DS10 | medium | PR #340 |
+| 27 | Watch mode chunks + call graph not atomically consistent | DS-1 | medium | deferred (architectural) |
+| 28 | `function_calls` table missing path normalization (Windows) | DS-2 | easy | ✅ fixed |
+| 29 | `save_audit_state()` non-atomic write | DS-3 | easy | ✅ fixed |
+| 30 | Watch mode mtime recorded after indexing (race) | DS-6 | easy | ✅ fixed |
 
-### Security
+### Documentation
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 37 | FTS5 injection via double-quote escape | S1 | medium | PR #341 |
-| 38 | HNSW ID map no size limit on deser | S8 | medium | PR #341 (already guarded) |
-| 39 | Windows PID substring matching false positive | S7 | easy | PR #340 |
+| 31 | CHANGELOG missing comparison URLs for 11 versions | DOC-4 | easy | ✅ fixed |
+| 32 | `--no-stale-check` undocumented in README | DOC-6 | easy | ✅ fixed |
+| 33 | `--summary` on context undocumented | DOC-7 | easy | ✅ fixed |
+| 34 | `--format mermaid` undocumented | DOC-8 | easy | ✅ fixed |
+| 35 | `--expand` search flag undocumented | DOC-9 | easy | ✅ fixed |
+| 36 | SECURITY.md missing write paths | DOC-10 | easy | ✅ fixed |
+| 37 | SECURITY.md confusing read/write note for refs | DOC-11 | easy | ✅ fixed |
 
 ### Platform
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 40 | WSL detection heuristic only checks `/mnt/` | PB7 | easy | PR #340 |
-| 41 | project.rs tests use Unix-only paths | PB8 | easy | PR #340 |
+| 38 | `map_hunks_to_functions` path mismatch diff vs index | PB-2 | medium | ✅ fixed |
+| 39 | `note_mention_matches_file` doesn't handle backslashes | PB-8 | easy | ✅ fixed |
+| 40 | `run_git_diff` missing `--no-pager` and `--no-color` | PB-9 | easy | ✅ fixed |
+| 41 | `suggest_test_file` hardcodes forward slashes | PB-10 | easy | ✅ fixed |
+
+### Resource Management
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 42 | References use `Store::open` (read-write) instead of `open_readonly` | RM-2 | easy | ✅ fixed |
+| 43 | `search_across_projects` opens read-write Store per project | RM-3 | medium | ✅ fixed |
+
+**P2 Total: 43 findings**
+
+---
+
+## P3: Fix If Time (moderate impact, can batch)
+
+### Performance
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 1 | Per-function reverse BFS in impact/scout (multi-source BFS fix) | PERF-1/8/10 | medium | |
+| 2 | N+1 `search_by_name` queries in impact (batch exists) | PERF-2 | medium | |
+| 3 | N+1 `get_chunks_by_name` in related.rs | PERF-3 | easy | |
+| 4 | Per-type LIKE scan in related.rs | PERF-4/AC-12 | medium | |
+| 5 | Per-file `get_chunks_by_origin` in where_to_add | PERF-5 | easy | |
+| 6 | `extract_patterns` joins all content into one string | PERF-6 | easy | |
+| 7 | `imports.contains()` O(n^2) dedup | PERF-9 | easy | |
+| 8 | `get_call_graph()` double-clones strings | PERF-11 | easy | |
+
+### Test Coverage
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 9 | `related.rs` zero tests (133 lines) | TC-1 | medium | |
+| 10 | 5 new CLI commands (scout/where/related/impact-diff/stale) no integration tests | TC-6 | medium | |
+| 11 | `suggest_tests()` zero coverage | TC-7 | medium | |
+| 12 | `analyze_impact()` no direct tests | TC-8 | medium | |
+| 13 | 4 tautological tests (TC-2/3/4/5) | TC-2/3/4/5 | easy | |
+| 14 | `read_context_lines()` zero tests (80 lines) | TC-9 | easy | |
+| 15 | `search_chunks_by_signature()` zero tests | TC-10 | easy | |
+| 16 | Impact/diff-impact JSON serialization zero tests | TC-11 | easy | |
+| 17 | `mermaid_escape` / `node_letter` untested | TC-12 | easy | |
+| 18 | `display.rs` (496 lines) only 1 test | TC-13 | medium | |
+| 19 | `warn_stale_results()` zero tests | TC-14 | easy | |
+| 20 | `compute_hints_with_graph` stale data edge case untested | TC-16 | easy | |
 
 ### Extensibility
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 42 | `cmd_doctor` no extension points | X7 | medium | |
+| 21 | `scout()` hardcodes search params (15/0.2) | EXT-1 | easy | |
+| 22 | `suggest_placement()` hardcodes search params (10/0.1) | EXT-2 | easy | |
+| 23 | `MODIFY_TARGET_THRESHOLD` hardcoded at 0.5 | EXT-3 | easy | |
+| 24 | `MAX_TEST_SEARCH_DEPTH` = 5 not exposed | EXT-4 | easy | |
+| 25 | `MAX_EXPANDED_NODES` = 200 in gather not configurable | EXT-5 | easy | |
+| 26 | Test detection patterns not user-configurable | EXT-7 | medium | |
+| 27 | `apply_config_defaults` desync risk (3 patterns) | EXT-11 | easy | |
+| 28 | Import cap hardcoded at 5 in where_to_add | EXT-12 | easy | |
+
+### API / Types
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 29 | Inconsistent JSON serialization patterns | AD-4 | medium | |
+| 30 | `SuggestError`/`ScoutError` wrap errors as String, losing chain | EH-3 | easy | |
+| 31 | `node_letter` ambiguous labels for indices 26+ | AC-7/EH-14 | easy | |
+
+### Resource Management
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 32 | `last_indexed_mtime` grows without bound in watch | RM-1 | easy | |
+| 33 | `find_test_chunks()` loads full content unnecessarily | RM-5 | easy | |
+| 34 | `where_to_add` loads all chunks per file | RM-6 | easy | |
+| 35 | `Embedder::clear_session` unusable in watch (needs &mut) | RM-8 | easy | |
+| 36 | `reindex_files` clones Chunk+Embedding during grouping | RM-9 | easy | |
+| 37 | `scout()` loads full call graph + test chunks per invocation | RM-4 | medium | |
+
+### Robustness
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 38 | `diff_parse` silently defaults unparseable hunk lines to 1 | RB-3 | easy | |
+| 39 | `window_idx` i64→u32 cast truncates without clamping | RB-5 | easy | |
+| 40 | `display.rs` end_idx+context+1 overflow | RB-6 | easy | |
+| 41 | `Parser::new()` .expect() in library code | RB-4 | medium | |
+| 42 | `diff_parse` doesn't track `diff --git` boundaries | AC-9/RB-11 | easy | |
+| 43 | LIKE wildcard escaping in `search_chunks_by_signature` | AC-4/SEC-5 | easy | |
+
+### Security (defense-in-depth)
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 44 | Temp file predictable names (note.rs, config.rs, project.rs) | SEC-3/4/6 | easy | |
 
 ### Other
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 43 | `StoreError::Runtime` catch-all string variant | EH12 | medium | PR #341 |
-| 44 | `note_stats` thresholds assume discrete sentiment, no DB constraint | AC6 | easy | PR #340 |
-| 45 | `BoundedScoreHeap` drops equal-score newcomers (iteration-order bias) | AC8 | easy | PR #340 |
+| 45 | `compute_hints_with_graph` prefetched count can diverge from graph | AC-8 | easy | |
+| 46 | `BoundedScoreHeap` last-wins bias at equal scores | AC-6 | easy | |
 
-**P3 Total: 45 findings**
+**P3 Total: 46 findings**
 
 ---
 
@@ -324,13 +273,18 @@ After de-duplication: **~140 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `search_filtered` brute-force loads all embeddings | P1 | hard | existing #269 |
-| 2 | HNSW not rebuilt after watch updates | DS6 | hard | existing #236 |
-| 3 | `embed_documents` no tests (requires model) | TC6 | hard | Issue #344 |
-| 4 | MCP tool schemas handwritten JSON, not generated | X8 | hard | Issue #345 |
-| 5 | CAGRA `build_from_store` no OOM guard on pre-alloc | RM2 | medium | existing #302 |
+| 1 | Watch mode full HNSW rebuild on every change | PERF-7 | hard | existing deferred DS6 |
+| 2 | HNSW multi-file save not atomically consistent | DS-4 | hard | |
+| 3 | HNSW load TOCTOU between checksum and deserialization | DS-5 | hard | |
+| 4 | `cqs dead` 86% false positive rate | CQ-7 | medium | |
+| 5 | Adding CLI command requires 5 locations / 3 files | EXT-6 | medium | inherent to Rust+clap |
+| 6 | `extract_patterns` 145-line closed switch per language | EXT-8 | medium | |
+| 7 | Pattern enum still requires 5 changes per variant | EXT-9 | medium | existing X2 |
+| 8 | Pipeline parses all files into one Vec (100K batch) | RM-10 | medium | |
+| 9 | CAGRA dataset ~146MB retained permanently | RM-7 | medium | existing RM2/P4-5 |
+| 10 | SEC-7: No regressions found (positive) | SEC-7 | n/a | |
 
-**P4 Total: 5 findings**
+**P4 Total: 10 findings (1 positive)**
 
 ---
 
@@ -338,28 +292,29 @@ After de-duplication: **~140 unique findings**
 
 | Priority | Findings | Easy | Medium | Hard | Action |
 |----------|----------|------|--------|------|--------|
-| P1 | 49 | 43 | 6 | 0 | Fix immediately |
-| P2 | 45 | 19 | 26 | 0 | Fix next |
-| P3 | 45 | 17 | 28 | 0 | When convenient |
-| P4 | 5 | 0 | 1 | 4 | Defer / issues |
-| **Total** | **~144** (deduped from ~161 raw) | **79** | **61** | **4** |
+| P1 | 26 | 23 | 3 | 0 | Fix immediately |
+| P2 | 43 | 34 | 9 | 0 | Fix next |
+| P3 | 46 | 33 | 13 | 0 | When convenient |
+| P4 | 10 | 0 | 5 | 3 | Defer / issues |
+| **Total** | **~125** (deduped from 151 raw) | **90** | **30** | **3** |
 
-## Open GitHub Issues Cross-Reference
+## Cross-Category Themes
 
-| Issue | Overlaps With |
-|-------|---------------|
-| #236 | DS6 (HNSW stale after watch) |
-| #269 | P1 (brute-force all embeddings) |
-| #302 | RM2 (CAGRA OOM) |
-| #300 | R10 (embedding_to_bytes assert) |
+1. **New modules lack observability + error handling**: scout, where_to_add, related, diff_parse all added post-v0.9.7 with zero tracing and pervasive `.unwrap_or_default()`. ~25 findings from this pattern alone.
+2. **Test detection divergence**: 4 separate hardcoded pattern sets across SQL and Rust. Affects scout, impact, test-map, dead.
+3. **Per-item BFS**: impact, diff-impact, and scout all run individual reverse BFS per function. Multi-source BFS would fix 3 findings.
+4. **Path handling inconsistency**: 3 remaining `std::canonicalize` (should be dunce), backslash normalization gaps, CWD-relative staleness check.
 
 ## Recommended Fix Order
 
-1. **P1 Bugs (#1-9)** — Highest priority. #1 and #2 are panics reachable via user input.
-2. **P1 Duplication (#10-15)** — High ROI, reduces maintenance burden.
-3. **P1 eprintln (#16-20)** — Mechanical, 5 locations.
-4. **P1 Docs (#21-26)** — Lowest risk, highest confidence.
-5. **P1 Observability (#27-35)** — Mechanical tracing additions.
-6. **P1 Error/Platform/Ext (#36-49)** — Easy fixes, batch together.
-7. **P2 by sub-category** — Start with bugs, then perf, then data safety.
-8. **Re-assess at P2/P3 boundary.**
+1. **P1 Bugs (#1-7)** — Wrong results reachable from normal usage.
+2. **P1 Security (#8-10)** — Argument injection, OOM, unwrap.
+3. **P1 Error swallowing (#11-16)** — Silent failures masking real errors.
+4. **P1 Docs (#17-20)** — Factually wrong, confuses users.
+5. **P1 Code quality (#21-26)** — Quick easy fixes.
+6. **P2 Error/Observability (#1-14)** — Mechanical tracing additions.
+7. **P2 Code quality (#15-22)** — Deduplication, boilerplate extraction.
+8. **P2 Data safety + platform (#27-41)** — Correctness on edge platforms.
+9. **P2 Resource management (#42-43)** — Easy wins (open_readonly).
+10. **P2 Docs (#31-37)** — Fill documentation gaps.
+11. **Re-assess at P2/P3 boundary.**

@@ -15,6 +15,7 @@
 //!
 //! ```no_run
 //! use cqs::{Embedder, Parser, Store};
+//! use cqs::store::SearchFilter;
 //!
 //! # fn main() -> anyhow::Result<()> {
 //! // Initialize components
@@ -28,9 +29,10 @@
 //!     &chunks.iter().map(|c| c.content.as_str()).collect::<Vec<_>>()
 //! )?;
 //!
-//! // Search for similar code
+//! // Search for similar code (hybrid RRF search)
 //! let query_embedding = embedder.embed_query("parse configuration file")?;
-//! let results = store.search(&query_embedding, 5, 0.3)?;
+//! let filter = SearchFilter { enable_rrf: true, ..Default::default() };
+//! let results = store.search_filtered(&query_embedding, &filter, 5, 0.3)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -95,7 +97,7 @@ pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
     scout, scout_to_json, ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary,
 };
-pub use search::{parse_target, resolve_target};
+pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
 pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, PlacementResult};
 
@@ -103,6 +105,17 @@ pub use where_to_add::{suggest_placement, FileSuggestion, LocalPatterns, Placeme
 pub use cagra::CagraIndex;
 
 use std::path::PathBuf;
+
+/// Unified error type for analysis operations (scout, where-to-add, etc.)
+///
+/// Replaces the former `ScoutError` and `SuggestError` which were near-identical.
+#[derive(Debug, thiserror::Error)]
+pub enum AnalysisError {
+    #[error(transparent)]
+    Store(#[from] store::StoreError),
+    #[error("embedding failed: {0}")]
+    Embedder(String),
+}
 
 /// Name of the per-project index directory (created by `cqs init`).
 pub const INDEX_DIR: &str = ".cqs";
@@ -135,24 +148,14 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
 /// Single source of truth — all modules import this constant.
 pub const EMBEDDING_DIM: usize = 769;
 
-/// Strip Windows UNC path prefix (\\?\) if present.
+/// Relativize a path against a root and normalize separators for display.
 ///
-/// Windows `canonicalize()` returns UNC paths that can cause issues with
-/// path comparison and display. This strips the prefix for consistency.
-#[cfg(windows)]
-pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(stripped) = s.strip_prefix(r"\\?\") {
-        PathBuf::from(stripped)
-    } else {
-        path
-    }
-}
-
-/// No-op on non-Windows platforms
-#[cfg(not(windows))]
-pub fn strip_unc_prefix(path: PathBuf) -> PathBuf {
-    path
+/// Strips `root` prefix if present, converts backslashes to forward slashes.
+pub fn rel_display(path: &std::path::Path, root: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 // ============ Note Indexing Helper ============
@@ -245,7 +248,7 @@ pub fn enumerate_files(
     use anyhow::Context;
     use ignore::WalkBuilder;
 
-    let root = strip_unc_prefix(root.canonicalize().context("Failed to canonicalize root")?);
+    let root = dunce::canonicalize(root).context("Failed to canonicalize root")?;
 
     let walker = WalkBuilder::new(&root)
         .git_ignore(!no_ignore)
@@ -279,7 +282,7 @@ pub fn enumerate_files(
         .filter_map({
             let failure_count = std::sync::atomic::AtomicUsize::new(0);
             move |e| {
-                let path = match e.path().canonicalize() {
+                let path = match dunce::canonicalize(e.path()) {
                     Ok(p) => p,
                     Err(err) => {
                         let count =

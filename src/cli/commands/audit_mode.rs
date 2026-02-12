@@ -13,6 +13,7 @@ use crate::cli::find_project_root;
 
 /// Handle audit-mode command
 pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_audit_mode").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
 

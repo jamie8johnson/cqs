@@ -109,7 +109,22 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
         expires_at: mode.expires_at.map(|t| t.to_rfc3339()),
     };
     let content = serde_json::to_string_pretty(&file).context("Failed to serialize audit mode")?;
-    std::fs::write(&path, content).context("Failed to write audit-mode.json")?;
+
+    // Atomic write: temp file + rename
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &content).context("Failed to write temp audit-mode file")?;
+    if let Err(rename_err) = std::fs::rename(&tmp_path, &path) {
+        if let Err(copy_err) = std::fs::copy(&tmp_path, &path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            anyhow::bail!(
+                "rename failed ({}), copy fallback failed: {}",
+                rename_err,
+                copy_err
+            );
+        }
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

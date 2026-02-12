@@ -610,3 +610,30 @@ mentions = [
     "src/scout.rs",
     "cqs plan",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "v0.12.1 audit pattern: all 7 post-v0.9.7 modules (scout, where_to_add, related, diff_parse, impact_diff, where_cmd, related cmd) shipped with zero tracing spans and pervasive .unwrap_or_default() error swallowing. ~25 of 125 findings from this single anti-pattern. Lesson: new module checklist should include tracing span + error propagation review."
+mentions = [
+    "src/scout.rs",
+    "src/where_to_add.rs",
+    "src/related.rs",
+    "src/diff_parse.rs",
+    "audit",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Sonnet agents produce shoddy work on audit fixes — ownership bugs (moved Vec used after for loop), missed tracing spans on files they owned. Always use opus agents for code changes. Haiku acceptable only for doc-only edits."
+mentions = [
+    "impact.rs",
+    "impact_diff.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<ChangedFunction> — callers pass owned vec, return struct populates changed_functions directly instead of leaving empty for caller to fill."
+mentions = [
+    "impact.rs",
+    "impact_diff.rs",
+]

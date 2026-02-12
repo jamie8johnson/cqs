@@ -52,7 +52,7 @@ No other network requests are made. Search, indexing, and all other operations a
 | `docs/notes.toml` | Developer notes | Search, `cqs read` |
 | `~/.cache/huggingface/` | ML model cache | Embedding operations |
 | `~/.config/cqs/` | Config file (user-level defaults) | All operations |
-| `~/.local/share/cqs/refs/*/` | Reference indexes (read-only during search) | Search operations |
+| `~/.local/share/cqs/refs/*/` | Reference indexes (read-only copies) | Search operations |
 
 ### Write Access
 
@@ -63,7 +63,7 @@ No other network requests are made. Search, indexing, and all other operations a
 | `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
 | `.cqs/cqs.pid` | Process lock file | `cqs watch` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
-| `~/.local/share/cqs/refs/*/` | Reference index storage | `cqs ref add`, `cqs ref update` |
+| `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 
 ### Process Operations
 

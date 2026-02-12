@@ -2,9 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, suggest_tests, Store};
-
-use crate::cli::find_project_root;
+use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, suggest_tests};
 
 use super::resolve::resolve_target;
 
@@ -15,19 +13,13 @@ pub(crate) fn cmd_impact(
     format: &str,
     do_suggest_tests: bool,
 ) -> Result<()> {
-    let root = find_project_root();
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let index_path = cqs_dir.join("index.db");
-
-    if !index_path.exists() {
-        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
-    }
-
-    let store = Store::open(&index_path)?;
+    let _span = tracing::info_span!("cmd_impact", name).entered();
+    let (store, root, _) = crate::cli::open_project_store()?;
     let depth = depth.clamp(1, 10);
 
     // Resolve target
-    let (chunk, _) = resolve_target(&store, name)?;
+    let resolved = resolve_target(&store, name)?;
+    let chunk = resolved.chunk;
 
     // Run shared impact analysis
     let result = analyze_impact(&store, &chunk.name, depth)?;
@@ -68,12 +60,7 @@ pub(crate) fn cmd_impact(
         }
         println!("{}", serde_json::to_string_pretty(&json)?);
     } else {
-        let rel_file = chunk
-            .file
-            .strip_prefix(&root)
-            .unwrap_or(&chunk.file)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let rel_file = cqs::rel_display(&chunk.file, &root);
         display_impact_text(&result, &root, &rel_file);
 
         if do_suggest_tests && !suggestions.is_empty() {
@@ -132,13 +119,10 @@ fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, targe
         println!();
         println!("{} ({}):", "Callers".cyan(), result.callers.len());
         for c in &result.callers {
-            let rel = c.file.strip_prefix(root).unwrap_or(&c.file);
+            let rel = cqs::rel_display(&c.file, root);
             println!(
                 "  {} ({}:{}, call at line {})",
-                c.name,
-                rel.display(),
-                c.line,
-                c.call_line
+                c.name, rel, c.line, c.call_line
             );
             if let Some(ref snippet) = c.snippet {
                 for line in snippet.lines() {
@@ -157,14 +141,8 @@ fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, targe
             result.transitive_callers.len()
         );
         for c in &result.transitive_callers {
-            let rel = c.file.strip_prefix(root).unwrap_or(&c.file);
-            println!(
-                "  {} ({}:{}) [depth {}]",
-                c.name,
-                rel.display(),
-                c.line,
-                c.depth
-            );
+            let rel = cqs::rel_display(&c.file, root);
+            println!("  {} ({}:{}) [depth {}]", c.name, rel, c.line, c.depth);
         }
     }
 
@@ -176,14 +154,8 @@ fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, targe
         println!();
         println!("{} ({}):", "Affected Tests".yellow(), result.tests.len());
         for t in &result.tests {
-            let rel = t.file.strip_prefix(root).unwrap_or(&t.file);
-            println!(
-                "  {} ({}:{}) [depth {}]",
-                t.name,
-                rel.display(),
-                t.line,
-                t.call_depth
-            );
+            let rel = cqs::rel_display(&t.file, root);
+            println!("  {} ({}:{}) [depth {}]", t.name, rel, t.line, t.call_depth);
         }
     }
 }

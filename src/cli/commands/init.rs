@@ -12,6 +12,7 @@ use crate::cli::{find_project_root, Cli};
 ///
 /// Creates `.cqs/` directory, downloads the embedding model, and warms up the embedder.
 pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
+    let _span = tracing::info_span!("cmd_init").entered();
     let root = find_project_root();
     let cqs_dir = root.join(cqs::INDEX_DIR);
 

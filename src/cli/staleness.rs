@@ -5,6 +5,7 @@
 //! is not polluted.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use colored::Colorize;
 
@@ -14,11 +15,12 @@ use cqs::Store;
 ///
 /// Returns the set of stale origins for callers that want to annotate results.
 /// Errors are logged and swallowed — staleness check should never break a query.
-pub fn warn_stale_results(store: &Store, origins: &[&str]) -> HashSet<String> {
-    match store.check_origins_stale(origins) {
+pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashSet<String> {
+    match store.check_origins_stale(origins, root) {
         Ok(stale) => {
             if !stale.is_empty() {
                 let count = stale.len();
+                tracing::info!(count, "Stale result files detected");
                 eprintln!(
                     "{} {} result file{} changed since last index. Run 'cqs index' to update.",
                     "warning:".yellow().bold(),
