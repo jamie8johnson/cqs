@@ -63,6 +63,7 @@ pub(crate) mod math;
 pub(crate) mod nl;
 pub(crate) mod project;
 pub(crate) mod related;
+pub mod review;
 pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod source;
@@ -92,9 +93,10 @@ pub use gather::{
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
-    compute_hints_with_graph_depth, diff_impact_to_json, impact_to_json, impact_to_mermaid,
-    map_hunks_to_functions, suggest_tests, ChangedFunction, DiffImpactResult, FunctionHints,
-    ImpactResult, TestSuggestion, DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    compute_hints_with_graph_depth, compute_risk_batch, diff_impact_to_json, find_hotspots,
+    impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests, ChangedFunction,
+    DiffImpactResult, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestSuggestion,
+    DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use project::{search_across_projects, ProjectRegistry};
