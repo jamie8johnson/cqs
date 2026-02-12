@@ -2,14 +2,25 @@
 
 ## Right Now
 
-**v0.12.1 audit complete.** 2026-02-12.
+**Deferred audit findings complete.** 2026-02-12. Branch: `fix/audit-deferred`. Ready to commit + PR.
 
-- P1: 26 fixes merged (PR #360)
-- P2: 41 fixes merged (PR #380)
-- P3: 40 fixes merged (PR #381), 3 deferred (#390, #391), 3 non-issues
-- P4: 10 findings → 8 issues created (#382-#391), 1 inherent, 1 positive
-- Total: 107 fixes across 3 PRs, 10 issues for deferred work
-- 727 tests pass (up from 632)
+All 9 groups implemented. 747 tests pass, clippy clean, fresh-eyes complete.
+
+- Group A: Unified `is_test_chunk()` in lib.rs, replaced 3 divergent call sites
+- Group B: `DeadFunction` + `DeadConfidence` scoring, `ENTRY_POINT_NAMES`, `--min-confidence` CLI
+- Group C: Embedder `clear_session(&self)` via `Mutex<Option<Session>>`, watch idle clearing (5min)
+- Group D: Pipeline `file_batch_size` 100K → 5K
+- Group E: Improved HNSW checksum error messages + stale temp cleanup
+- Group F: HNSW file locking (exclusive save, shared load)
+- Group G: `HnswIndex::insert_batch()` for incremental HNSW
+- Group I: `extract_imports()` helper + C/SQL/Markdown support in `where_to_add`
+- Group J: Doc comment on `LocalPatterns` explaining string-based design
+
+**Descoped:** Group H (#389) — CAGRA GPU memory, requires new disk persistence layer
+
+**Prior audit totals:**
+- P1: 26 fixes (PR #360), P2: 41 fixes (PR #380), P3: 40 fixes (PR #381)
+- Total: 107 fixes + this deferred PR = ~116 fixes across 4 PRs
 
 ## Parked
 
@@ -42,7 +53,7 @@
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 423 lib + 297 integration + 7 doc (727 total)
+- Tests: 441 lib + 297 integration + 7 doc (747 total)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
 - SQL grammar: tree-sitter-sequel-tsql v0.4.2 (crates.io)

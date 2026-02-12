@@ -199,7 +199,7 @@ impl std::fmt::Display for ExecutionProvider {
 /// ```no_run
 /// use cqs::Embedder;
 ///
-/// let mut embedder = Embedder::new()?;
+/// let embedder = Embedder::new()?;
 /// let embedding = embedder.embed_query("parse configuration file")?;
 /// println!("Embedding dimension: {}", embedding.len()); // 769
 /// # Ok::<(), anyhow::Error>(())
@@ -210,7 +210,7 @@ pub struct Embedder {
     /// Persists for the lifetime of the Embedder. In long-running processes,
     /// this holds ~500MB of GPU/CPU memory. To release, call [`clear_session`]
     /// or drop the Embedder instance and create a new one when needed.
-    session: OnceCell<Mutex<Session>>,
+    session: Mutex<Option<Session>>,
     /// Lazy-loaded tokenizer
     tokenizer: OnceCell<tokenizers::Tokenizer>,
     /// Lazy-loaded model paths (avoids HuggingFace API calls until actually embedding)
@@ -242,7 +242,7 @@ impl Embedder {
         ));
 
         Ok(Self {
-            session: OnceCell::new(),
+            session: Mutex::new(None),
             tokenizer: OnceCell::new(),
             model_paths: OnceCell::new(),
             provider,
@@ -262,7 +262,7 @@ impl Embedder {
         ));
 
         Ok(Self {
-            session: OnceCell::new(),
+            session: Mutex::new(None),
             tokenizer: OnceCell::new(),
             model_paths: OnceCell::new(),
             provider: ExecutionProvider::CPU,
@@ -277,12 +277,15 @@ impl Embedder {
     }
 
     /// Get or initialize the ONNX session
-    fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, EmbedderError> {
-        let (model_path, _) = self.model_paths()?;
-        let session = self
-            .session
-            .get_or_try_init(|| create_session(model_path, self.provider).map(Mutex::new))?;
-        Ok(session.lock().unwrap_or_else(|p| p.into_inner()))
+    fn session(&self) -> Result<std::sync::MutexGuard<'_, Option<Session>>, EmbedderError> {
+        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_none() {
+            let _span = tracing::info_span!("embedder_session_init").entered();
+            let (model_path, _) = self.model_paths()?;
+            *guard = Some(create_session(model_path, self.provider)?);
+            tracing::info!("Embedder session initialized");
+        }
+        Ok(guard)
     }
 
     /// Get or initialize the tokenizer
@@ -427,12 +430,18 @@ impl Embedder {
         self.provider
     }
 
-    /// Release the ONNX session to free ~500MB of memory.
+    /// Clear the ONNX session to free memory (~500MB).
     ///
     /// The session will be lazily re-initialized on the next embedding request.
     /// Use this in long-running processes during idle periods to reduce memory footprint.
-    pub fn clear_session(&mut self) {
-        self.session = OnceCell::new();
+    ///
+    /// # Safety constraint
+    /// Must only be called during idle periods — not while embedding is in progress.
+    /// Watch mode guarantees single-threaded access.
+    pub fn clear_session(&self) {
+        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = None;
+        tracing::info!("Embedder session cleared");
     }
 
     /// Warm up the model with a dummy inference
@@ -488,7 +497,8 @@ impl Embedder {
         let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr)?;
 
         // Run inference (lazy init session)
-        let mut session = self.session()?;
+        let mut guard = self.session()?;
+        let session = guard.as_mut().unwrap(); // Safe: session() guarantees Some after init
         let _inference = tracing::debug_span!("inference", max_len).entered();
         let outputs = session.run(ort::inputs![
             "input_ids" => input_ids_tensor,
@@ -1047,6 +1057,27 @@ mod tests {
                 prop_assert_eq!(emb.as_vec().len(), len);
             }
         }
+    }
+
+    // ===== clear_session tests =====
+
+    #[test]
+    #[ignore] // Requires model
+    fn test_clear_session_and_reinit() {
+        let embedder = Embedder::new().unwrap();
+        // Force session init by embedding something
+        let _ = embedder.embed_query("test");
+        // Clear and re-embed
+        embedder.clear_session();
+        let result = embedder.embed_query("test again");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clear_session_idempotent() {
+        let embedder = Embedder::new_cpu().unwrap();
+        embedder.clear_session(); // clear before init — should not panic
+        embedder.clear_session(); // clear again — should not panic
     }
 
     // ===== Integration tests (require model) =====

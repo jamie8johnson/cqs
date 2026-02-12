@@ -305,6 +305,9 @@ enum Commands {
         /// Include public API functions in the main list
         #[arg(long)]
         include_pub: bool,
+        /// Minimum confidence level to report (low, medium, high)
+        #[arg(long, default_value = "low")]
+        min_confidence: String,
     },
     /// Gather minimal code context to answer a question
     Gather {
@@ -481,7 +484,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             summary,
             compact,
         }) => cmd_context(&cli, path, json, summary, compact),
-        Some(Commands::Dead { json, include_pub }) => cmd_dead(&cli, json, include_pub),
+        Some(Commands::Dead {
+            json,
+            include_pub,
+            ref min_confidence,
+        }) => cmd_dead(&cli, json, include_pub, min_confidence),
         Some(Commands::Gather {
             ref query,
             expand,

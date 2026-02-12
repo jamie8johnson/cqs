@@ -637,3 +637,25 @@ mentions = [
     "impact.rs",
     "impact_diff.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Fresh-eyes review of audit plan caught 3 blockers: File::unlock() doesn't exist (drop releases locks), hnsw_mut() on LoadedHnsw is unsound (unsafe transmute), CAGRA disk persistence is a new feature not a fix. Plans need scrutiny before execution."
+mentions = [
+    "hnsw/persist.rs",
+    "hnsw/mod.rs",
+    "cagra.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "HNSW save is already crash-safe: blake3 checksums catch all partial-write states, try_load falls back to brute-force. Backup-dir approach would WIDEN crash window (8 renames vs 4). Don't over-engineer crash recovery when detection+rebuild is sufficient."
+mentions = ["hnsw/persist.rs"]
+
+[[note]]
+sentiment = -0.5
+text = "Embedder session clearing: 50 cycles at 100ms = 5 seconds is way too aggressive for clearing a 500MB ONNX session. Use 3000 cycles (5 minutes) to match SQLite idle timeout. Always check loop timing before setting cycle thresholds."
+mentions = [
+    "cli/watch.rs",
+    "embedder.rs",
+]

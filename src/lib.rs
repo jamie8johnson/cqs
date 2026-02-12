@@ -155,6 +155,34 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
 /// Single source of truth — all modules import this constant.
 pub const EMBEDDING_DIM: usize = 769;
 
+/// Unified test-chunk detection heuristic.
+///
+/// Returns `true` if a chunk looks like a test based on its name or file path.
+/// Used by scout, impact, and where_to_add to filter out tests from analysis.
+///
+/// **Not** used by `store::calls::find_dead_code`, which has its own SQL-based
+/// detection (`TEST_NAME_PATTERNS`, `TEST_CONTENT_MARKERS`, `TEST_PATH_PATTERNS`)
+/// that also checks content markers like `#[test]` and `@Test`.
+pub fn is_test_chunk(name: &str, file: &str) -> bool {
+    // Name-based patterns (language-agnostic)
+    let name_match = name.starts_with("test_")
+        || name.starts_with("Test")
+        || name.ends_with("_test")
+        || name.contains("_test_")
+        || name.contains(".test");
+    if name_match {
+        return true;
+    }
+    // Path-based patterns (mirrors TEST_PATH_PATTERNS in store/calls.rs)
+    file.contains("/tests/")
+        || file.starts_with("tests/")
+        || file.contains("_test.")
+        || file.contains(".test.")
+        || file.contains(".spec.")
+        || file.ends_with("_test.go")
+        || file.ends_with("_test.py")
+}
+
 /// Relativize a path against a root and normalize separators for display.
 ///
 /// Strips `root` prefix if present, converts backslashes to forward slashes.
@@ -323,4 +351,47 @@ pub fn enumerate_files(
     tracing::info!(file_count = files.len(), "File enumeration complete");
 
     Ok(files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_test_chunk_name_patterns() {
+        // Positive: name-based
+        assert!(is_test_chunk("test_foo", "src/lib.rs"));
+        assert!(is_test_chunk("TestSuite", "src/lib.rs"));
+        assert!(is_test_chunk("foo_test", "src/lib.rs"));
+        assert!(is_test_chunk("foo_test_bar", "src/lib.rs"));
+        assert!(is_test_chunk("foo.test", "src/lib.rs"));
+        // Negative: name-based
+        assert!(!is_test_chunk("search_filtered", "src/lib.rs"));
+        assert!(!is_test_chunk("testing_util", "src/lib.rs"));
+    }
+
+    #[test]
+    fn test_is_test_chunk_path_patterns() {
+        // Positive: path-based
+        assert!(is_test_chunk("helper", "tests/helper.rs"));
+        assert!(is_test_chunk("helper", "src/tests/helper.rs"));
+        assert!(is_test_chunk("helper", "search_test.rs"));
+        assert!(is_test_chunk("helper", "search.test.ts"));
+        assert!(is_test_chunk("helper", "search.spec.js"));
+        assert!(is_test_chunk("helper", "search_test.go"));
+        assert!(is_test_chunk("helper", "search_test.py"));
+        // Negative: path-based
+        assert!(!is_test_chunk("helper", "src/lib.rs"));
+        assert!(!is_test_chunk("helper", "src/search.rs"));
+    }
+
+    #[test]
+    fn test_is_test_chunk_combined() {
+        // Both name and path match
+        assert!(is_test_chunk("test_helper", "tests/helper.rs"));
+        // Name matches, path doesn't
+        assert!(is_test_chunk("test_search", "src/search.rs"));
+        // Path matches, name doesn't
+        assert!(is_test_chunk("setup_fixtures", "tests/fixtures.rs"));
+    }
 }

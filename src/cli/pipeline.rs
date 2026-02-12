@@ -226,7 +226,7 @@ pub(crate) fn run_index_pipeline(
     quiet: bool,
 ) -> Result<PipelineStats> {
     let batch_size = 32; // Embedding batch size (backed off from 64 - crashed at 2%)
-    let file_batch_size = 100_000; // Files to parse per batch (all at once)
+    let file_batch_size = 5_000; // Files to parse per batch (bounded memory)
     let channel_depth = 256; // Pipeline buffer depth (larger = smoother utilization)
 
     // Channels
@@ -264,10 +264,16 @@ pub(crate) fn run_index_pipeline(
         let store = store_for_parser;
         let root = root_clone;
 
-        for file_batch in files.chunks(file_batch_size) {
+        for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
             if check_interrupted() {
                 break;
             }
+
+            tracing::info!(
+                batch = batch_idx + 1,
+                files = file_batch.len(),
+                "Processing file batch"
+            );
 
             // Parse files in parallel
             let chunks: Vec<Chunk> = file_batch

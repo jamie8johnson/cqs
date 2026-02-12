@@ -3,14 +3,32 @@
 use std::path::Path;
 
 use anyhow::Result;
+use cqs::store::{DeadConfidence, DeadFunction};
 
 use crate::cli::Cli;
 
 /// Find functions/methods with no callers in the indexed codebase
-pub(crate) fn cmd_dead(cli: &Cli, json: bool, include_pub: bool) -> Result<()> {
+pub(crate) fn cmd_dead(
+    cli: &Cli,
+    json: bool,
+    include_pub: bool,
+    min_confidence: &str,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
     let (store, root, _) = crate::cli::open_project_store()?;
     let (confident, possibly_pub) = store.find_dead_code(include_pub)?;
+
+    let min_level = parse_confidence(min_confidence);
+
+    // Filter by minimum confidence
+    let confident: Vec<_> = confident
+        .into_iter()
+        .filter(|d| d.confidence >= min_level)
+        .collect();
+    let possibly_pub: Vec<_> = possibly_pub
+        .into_iter()
+        .filter(|d| d.confidence >= min_level)
+        .collect();
 
     if json {
         display_dead_json(&confident, &possibly_pub, &root)?;
@@ -21,9 +39,27 @@ pub(crate) fn cmd_dead(cli: &Cli, json: bool, include_pub: bool) -> Result<()> {
     Ok(())
 }
 
+/// Parse a confidence level string, defaulting to Low on invalid input.
+fn parse_confidence(s: &str) -> DeadConfidence {
+    match s.to_lowercase().as_str() {
+        "high" => DeadConfidence::High,
+        "medium" | "med" => DeadConfidence::Medium,
+        _ => DeadConfidence::Low,
+    }
+}
+
+/// Human-readable confidence label
+fn confidence_label(c: DeadConfidence) -> &'static str {
+    match c {
+        DeadConfidence::High => "high",
+        DeadConfidence::Medium => "medium",
+        DeadConfidence::Low => "low",
+    }
+}
+
 fn display_dead_text(
-    confident: &[cqs::store::ChunkSummary],
-    possibly_pub: &[cqs::store::ChunkSummary],
+    confident: &[DeadFunction],
+    possibly_pub: &[DeadFunction],
     root: &Path,
     quiet: bool,
 ) {
@@ -37,14 +73,18 @@ fn display_dead_text(
             println!("Dead code ({} functions):", confident.len());
             println!();
         }
-        for chunk in confident {
-            let rel = cqs::rel_display(&chunk.file, root);
+        for dead in confident {
+            let rel = cqs::rel_display(&dead.chunk.file, root);
             println!(
-                "  {} {}:{}  [{}]",
-                chunk.name, rel, chunk.line_start, chunk.chunk_type
+                "  {} {}:{}  [{}] ({})",
+                dead.chunk.name,
+                rel,
+                dead.chunk.line_start,
+                dead.chunk.chunk_type,
+                confidence_label(dead.confidence),
             );
             if !quiet {
-                println!("    {}", chunk.signature.lines().next().unwrap_or(""));
+                println!("    {}", dead.chunk.signature.lines().next().unwrap_or(""));
             }
         }
     }
@@ -61,36 +101,41 @@ fn display_dead_text(
             println!("  (Use --include-pub to include these in the main list)");
         }
         println!();
-        for chunk in possibly_pub {
-            let rel = cqs::rel_display(&chunk.file, root);
+        for dead in possibly_pub {
+            let rel = cqs::rel_display(&dead.chunk.file, root);
             println!(
-                "  {} {}:{}  [{}]",
-                chunk.name, rel, chunk.line_start, chunk.chunk_type
+                "  {} {}:{}  [{}] ({})",
+                dead.chunk.name,
+                rel,
+                dead.chunk.line_start,
+                dead.chunk.chunk_type,
+                confidence_label(dead.confidence),
             );
         }
     }
 }
 
 fn display_dead_json(
-    confident: &[cqs::store::ChunkSummary],
-    possibly_pub: &[cqs::store::ChunkSummary],
+    confident: &[DeadFunction],
+    possibly_pub: &[DeadFunction],
     root: &Path,
 ) -> Result<()> {
-    let format_chunk = |chunk: &cqs::store::ChunkSummary| {
+    let format_dead = |dead: &DeadFunction| {
         serde_json::json!({
-            "name": chunk.name,
-            "file": cqs::rel_display(&chunk.file, root),
-            "line_start": chunk.line_start,
-            "line_end": chunk.line_end,
-            "chunk_type": chunk.chunk_type.to_string(),
-            "signature": chunk.signature,
-            "language": chunk.language.to_string(),
+            "name": dead.chunk.name,
+            "file": cqs::rel_display(&dead.chunk.file, root),
+            "line_start": dead.chunk.line_start,
+            "line_end": dead.chunk.line_end,
+            "chunk_type": dead.chunk.chunk_type.to_string(),
+            "signature": dead.chunk.signature,
+            "language": dead.chunk.language.to_string(),
+            "confidence": confidence_label(dead.confidence),
         })
     };
 
     let result = serde_json::json!({
-        "dead": confident.iter().map(&format_chunk).collect::<Vec<_>>(),
-        "possibly_dead_pub": possibly_pub.iter().map(&format_chunk).collect::<Vec<_>>(),
+        "dead": confident.iter().map(&format_dead).collect::<Vec<_>>(),
+        "possibly_dead_pub": possibly_pub.iter().map(&format_dead).collect::<Vec<_>>(),
         "total_dead": confident.len(),
         "total_possibly_dead_pub": possibly_pub.len(),
     });

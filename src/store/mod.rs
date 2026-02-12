@@ -96,6 +96,12 @@ pub use helpers::score_name_match;
 /// Statistics about call graph entries (chunk-level calls table).
 pub use calls::CallStats;
 
+/// A dead function with confidence scoring.
+pub use calls::DeadFunction;
+
+/// Confidence level for dead code detection.
+pub use calls::DeadConfidence;
+
 /// Detailed function call statistics (function_calls table).
 pub use calls::FunctionCallStats;
 

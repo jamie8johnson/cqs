@@ -117,6 +117,15 @@ impl HnswIndex {
             ))
         })?;
 
+        // Acquire exclusive lock for save
+        // NOTE: File locking is advisory only on WSL over 9P.
+        // This prevents concurrent cqs processes from corrupting the index,
+        // but cannot protect against external Windows process modifications.
+        let lock_path = dir.join(format!("{}.hnsw.lock", basename));
+        let lock_file = std::fs::File::create(&lock_path)?;
+        lock_file.lock().map_err(HnswError::Io)?;
+        tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");
+
         // Use a temporary directory for atomic writes
         // This ensures that if we crash mid-save, the old index remains intact
         let temp_dir = dir.join(format!(".{}.tmp", basename));
@@ -247,6 +256,13 @@ impl HnswIndex {
     /// Verifies blake3 checksums before loading to mitigate bincode deserialization risks.
     /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
+        // Clean up stale temp dir from interrupted save (before anything else)
+        let temp_dir = dir.join(format!(".{}.tmp", basename));
+        if temp_dir.exists() {
+            tracing::info!("Cleaning up interrupted HNSW save");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        }
+
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
         let data_path = dir.join(format!("{}.hnsw.data", basename));
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
@@ -254,6 +270,20 @@ impl HnswIndex {
         if !graph_path.exists() || !data_path.exists() || !id_map_path.exists() {
             return Err(HnswError::NotFound(dir.display().to_string()));
         }
+
+        // Acquire shared lock for load (allows concurrent reads)
+        // NOTE: File locking is advisory only on WSL over 9P.
+        // This prevents concurrent cqs processes from corrupting the index,
+        // but cannot protect against external Windows process modifications.
+        let lock_path = dir.join(format!("{}.hnsw.lock", basename));
+        let lock_file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        lock_file.lock_shared().map_err(HnswError::Io)?;
+        tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared)");
 
         tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);
         verify_hnsw_checksums(dir, basename)?;
@@ -420,7 +450,11 @@ impl HnswIndex {
                     Some(Box::new(index))
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to load HNSW index, using brute-force: {}", e);
+                    tracing::warn!(
+                        error = %e,
+                        "HNSW index corrupted or incomplete — falling back to brute-force search. \
+                         Run 'cqs index' to rebuild."
+                    );
                     None
                 }
             }
@@ -539,6 +573,56 @@ mod tests {
             }
             Ok(_) => panic!("Expected error for missing checksum file"),
         }
+    }
+
+    #[test]
+    fn test_save_creates_lock_file() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_lock";
+
+        let embeddings = vec![
+            ("chunk1".to_string(), make_embedding(1)),
+            ("chunk2".to_string(), make_embedding(2)),
+        ];
+
+        let index = HnswIndex::build(embeddings).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        let lock_path = tmp.path().join(format!("{}.hnsw.lock", basename));
+        assert!(lock_path.exists(), "Lock file should exist after save");
+    }
+
+    #[test]
+    fn test_concurrent_load_shared() {
+        let tmp = TempDir::new().unwrap();
+        let basename = "test_shared";
+
+        let embeddings = vec![
+            ("chunk1".to_string(), make_embedding(1)),
+            ("chunk2".to_string(), make_embedding(2)),
+        ];
+
+        let index = HnswIndex::build(embeddings).unwrap();
+        index.save(tmp.path(), basename).unwrap();
+
+        // Load twice — shared locks should not block each other
+        let loaded1 = HnswIndex::load(tmp.path(), basename).unwrap();
+        let loaded2 = HnswIndex::load(tmp.path(), basename).unwrap();
+        assert_eq!(loaded1.len(), 2);
+        assert_eq!(loaded2.len(), 2);
+    }
+
+    #[test]
+    fn test_load_cleans_stale_temp_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let basename = "test_index";
+        let temp_dir = dir.path().join(format!(".{}.tmp", basename));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // Load should clean up the temp dir even though no index exists
+        let result = HnswIndex::load(dir.path(), basename);
+        assert!(result.is_err()); // no index to load
+        assert!(!temp_dir.exists()); // but temp dir should be cleaned
     }
 
     #[test]

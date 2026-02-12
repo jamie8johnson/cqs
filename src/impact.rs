@@ -804,16 +804,16 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
             }
         };
 
-        let is_test_chunk = |c: &crate::store::ChunkSummary| {
-            c.name.starts_with("test_") || c.name.starts_with("Test")
+        let chunk_is_test = |c: &crate::store::ChunkSummary| {
+            crate::is_test_chunk(&c.name, &c.file.to_string_lossy())
         };
 
-        let has_inline_tests = file_chunks.iter().any(is_test_chunk);
+        let has_inline_tests = file_chunks.iter().any(chunk_is_test);
 
         let pattern_source = if has_inline_tests {
             file_chunks
                 .iter()
-                .find(|c| is_test_chunk(c))
+                .find(|c| chunk_is_test(c))
                 .map(|c| c.name.clone())
                 .unwrap_or_default()
         } else {

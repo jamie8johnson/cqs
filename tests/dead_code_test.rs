@@ -37,7 +37,7 @@ fn test_find_dead_code_basic() {
 
     // A and C should be in the list (no one calls them)
     // B should NOT be in the list (A calls it)
-    let dead_names: Vec<&str> = confident.iter().map(|c| c.name.as_str()).collect();
+    let dead_names: Vec<&str> = confident.iter().map(|d| d.chunk.name.as_str()).collect();
 
     assert!(
         dead_names.contains(&"func_a"),
@@ -66,7 +66,7 @@ fn test_find_dead_code_excludes_main() {
     let (confident, _) = store.find_dead_code(false).unwrap();
 
     // main should not be in the dead code list
-    let dead_names: Vec<&str> = confident.iter().map(|c| c.name.as_str()).collect();
+    let dead_names: Vec<&str> = confident.iter().map(|d| d.chunk.name.as_str()).collect();
     assert!(
         !dead_names.contains(&"main"),
         "main entry point should not be flagged as dead"
@@ -88,8 +88,11 @@ fn test_find_dead_code_pub_functions() {
     // include_pub=false: public functions go to possibly_dead_pub
     let (confident, possibly_dead_pub) = store.find_dead_code(false).unwrap();
 
-    let confident_names: Vec<&str> = confident.iter().map(|c| c.name.as_str()).collect();
-    let pub_names: Vec<&str> = possibly_dead_pub.iter().map(|c| c.name.as_str()).collect();
+    let confident_names: Vec<&str> = confident.iter().map(|d| d.chunk.name.as_str()).collect();
+    let pub_names: Vec<&str> = possibly_dead_pub
+        .iter()
+        .map(|d| d.chunk.name.as_str())
+        .collect();
 
     assert!(
         confident_names.contains(&"priv_fn"),
@@ -103,7 +106,7 @@ fn test_find_dead_code_pub_functions() {
     // include_pub=true: both should be in confident
     let (confident, possibly_dead_pub) = store.find_dead_code(true).unwrap();
 
-    let confident_names: Vec<&str> = confident.iter().map(|c| c.name.as_str()).collect();
+    let confident_names: Vec<&str> = confident.iter().map(|d| d.chunk.name.as_str()).collect();
 
     assert!(
         confident_names.contains(&"priv_fn"),
@@ -135,7 +138,7 @@ fn test_find_dead_code_excludes_test_files() {
     let (confident, _) = store.find_dead_code(false).unwrap();
 
     // Functions in test files should not be flagged as dead
-    let dead_names: Vec<&str> = confident.iter().map(|c| c.name.as_str()).collect();
+    let dead_names: Vec<&str> = confident.iter().map(|d| d.chunk.name.as_str()).collect();
     assert!(
         !dead_names.contains(&"test_helper"),
         "Functions in test files should be excluded from dead code detection"
