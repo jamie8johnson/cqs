@@ -10,19 +10,105 @@ pub(crate) fn cmd_scout(
     task: &str,
     limit: usize,
     json: bool,
+    max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_scout", task).entered();
+    let _span = tracing::info_span!("cmd_scout", task, ?max_tokens).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
     let embedder = Embedder::new()?;
     let limit = limit.clamp(1, 10);
 
     let result = scout(&store, &embedder, task, &root, limit)?;
 
+    // Token-budgeted content: fetch chunk content and pack into budget
+    let (content_map, token_info) = if let Some(budget) = max_tokens {
+        let _pack_span = tracing::info_span!("token_pack_scout", budget).entered();
+
+        // Collect all chunk names from all groups
+        let all_names: Vec<&str> = result
+            .file_groups
+            .iter()
+            .flat_map(|g| g.chunks.iter().map(|c| c.name.as_str()))
+            .collect();
+
+        // Batch-fetch content from store
+        let chunks_by_name = match store.get_chunks_by_names_batch(&all_names) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to batch-fetch chunk content for token packing");
+                std::collections::HashMap::new()
+            }
+        };
+
+        // Walk groups by relevance, chunks by search_score, pack content
+        let mut used: usize = 0;
+        let mut included: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        // Flatten to (name, search_score) sorted by relevance_score * search_score
+        let mut scored: Vec<(&str, f32)> = result
+            .file_groups
+            .iter()
+            .flat_map(|g| {
+                g.chunks
+                    .iter()
+                    .map(move |c| (c.name.as_str(), g.relevance_score * c.search_score))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        for (name, _score) in &scored {
+            if let Some(summaries) = chunks_by_name.get(*name) {
+                if let Some(summary) = summaries.first() {
+                    let tokens = super::count_tokens(&embedder, &summary.content, name);
+                    if used + tokens > budget && !included.is_empty() {
+                        break;
+                    }
+                    used += tokens;
+                    included.insert(name.to_string(), summary.content.clone());
+                }
+            }
+        }
+
+        tracing::info!(
+            chunks_with_content = included.len(),
+            tokens = used,
+            budget,
+            "Token-budgeted scout"
+        );
+        (Some(included), Some((used, budget)))
+    } else {
+        (None, None)
+    };
+
     if json {
-        let output = scout_to_json(&result, &root);
+        let mut output = scout_to_json(&result, &root);
+        // Inject content into chunks that fit in the token budget
+        if let Some(ref cmap) = content_map {
+            if let Some(groups) = output.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
+                for group in groups.iter_mut() {
+                    if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
+                        for chunk in chunks.iter_mut() {
+                            if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
+                                if let Some(content) = cmap.get(name) {
+                                    chunk["content"] = serde_json::json!(content);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((used, budget)) = token_info {
+            output["token_count"] = serde_json::json!(used);
+            output["token_budget"] = serde_json::json!(budget);
+        }
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
-        println!("{} {}", "Scout:".cyan(), task.bold());
+        let token_label = match token_info {
+            Some((used, budget)) => format!(" ({} of {} tokens)", used, budget),
+            None => String::new(),
+        };
+        println!("{} {}{}", "Scout:".cyan(), task.bold(), token_label);
 
         if result.file_groups.is_empty() {
             println!();
@@ -70,6 +156,15 @@ pub(crate) fn cmd_scout(
                         )
                         .dimmed()
                     );
+
+                    // Print content if within token budget
+                    if let Some(ref cmap) = content_map {
+                        if let Some(content) = cmap.get(&chunk.name) {
+                            println!("{}", "─".repeat(50));
+                            println!("{}", content);
+                            println!();
+                        }
+                    }
                 }
             }
 

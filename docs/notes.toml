@@ -680,3 +680,11 @@ mentions = [
     "gh",
     "workflow",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Token budgeting greedy knapsack pattern ships cleanly across 5 commands. Shared count_tokens helper. Lazy Embedder for commands that dont normally need it. Pattern: sort by score, walk items, accumulate token count, stop at budget."
+mentions = [
+    "count_tokens",
+    "token_pack",
+]

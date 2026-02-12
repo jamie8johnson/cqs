@@ -48,6 +48,7 @@ cqs "search query" --json              # semantic search (default: hybrid RRF)
 cqs "function_name" --name-only --json # definition lookup (fast, no embedding)
 cqs "query" --semantic-only --json     # pure vector similarity, no keyword RRF
 cqs "query" --lang rust --path "src/cli/**" --json  # scoped search
+cqs "query" --ref aveva --json         # search only a named reference (skip project)
 ```
 
 Use it for:
@@ -79,6 +80,9 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs gc` — report/clean stale index entries.
 - `cqs notes add/update/remove` — manage project notes.
 - `cqs audit-mode on/off` — toggle audit mode.
+- `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
+
+**Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, and `scout` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. JSON output adds `token_count` and `token_budget` fields.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 

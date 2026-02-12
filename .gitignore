@@ -33,3 +33,4 @@ credentials.toml
 .cqs.toml
 .cargo/
 samples/
+tools/

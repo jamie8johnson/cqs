@@ -10,6 +10,7 @@
 //! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
+//! - **Document conversion**: PDF, HTML, CHM → cleaned Markdown (optional `convert` feature)
 //!
 //! ## Quick Start
 //!
@@ -40,6 +41,7 @@
 // Public library API modules
 pub mod audit;
 pub mod config;
+pub mod convert;
 pub mod embedder;
 pub mod hnsw;
 pub mod index;

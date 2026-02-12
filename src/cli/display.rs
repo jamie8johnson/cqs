@@ -213,6 +213,7 @@ pub fn display_unified_results_json(
     results: &[UnifiedResult],
     query: &str,
     parents: Option<&HashMap<String, ParentContext>>,
+    token_info: Option<(usize, usize)>,
 ) -> Result<()> {
     let json_results: Vec<_> = results
         .iter()
@@ -251,11 +252,15 @@ pub fn display_unified_results_json(
         })
         .collect();
 
-    let output = serde_json::json!({
+    let mut output = serde_json::json!({
         "results": json_results,
         "query": query,
         "total": results.len(),
     });
+    if let Some((used, budget)) = token_info {
+        output["token_count"] = serde_json::json!(used);
+        output["token_budget"] = serde_json::json!(budget);
+    }
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
@@ -439,6 +444,7 @@ pub fn display_tagged_results_json(
     results: &[TaggedResult],
     query: &str,
     parents: Option<&HashMap<String, ParentContext>>,
+    token_info: Option<(usize, usize)>,
 ) -> Result<()> {
     let json_results: Vec<_> = results
         .iter()
@@ -482,11 +488,15 @@ pub fn display_tagged_results_json(
         })
         .collect();
 
-    let output = serde_json::json!({
+    let mut output = serde_json::json!({
         "results": json_results,
         "query": query,
         "total": results.len(),
     });
+    if let Some((used, budget)) = token_info {
+        output["token_count"] = serde_json::json!(used);
+        output["token_budget"] = serde_json::json!(budget);
+    }
 
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())

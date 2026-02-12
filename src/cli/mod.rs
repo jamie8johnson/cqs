@@ -32,6 +32,8 @@ pub(crate) fn open_project_store(
     Ok((store, root, cqs_dir))
 }
 
+#[cfg(feature = "convert")]
+use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
@@ -113,6 +115,14 @@ pub struct Cli {
     /// Expand results with parent context (small-to-big retrieval)
     #[arg(long)]
     expand: bool,
+
+    /// Search only this reference index (skip project index)
+    #[arg(long = "ref")]
+    ref_name: Option<String>,
+
+    /// Maximum token budget for results (packs highest-scoring into budget)
+    #[arg(long)]
+    tokens: Option<usize>,
 
     /// Suppress progress output
     #[arg(short, long)]
@@ -211,6 +221,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Maximum token budget (includes source content within budget)
+        #[arg(long)]
+        tokens: Option<usize>,
     },
     /// Find code similar to a given function
     Similar {
@@ -296,6 +309,9 @@ enum Commands {
         /// Signatures-only TOC with caller/callee counts (no code bodies)
         #[arg(long)]
         compact: bool,
+        /// Maximum token budget (includes chunk content within budget)
+        #[arg(long)]
+        tokens: Option<usize>,
     },
     /// Find functions with no callers (dead code detection)
     Dead {
@@ -322,6 +338,9 @@ enum Commands {
         /// Max chunks to return
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
+        /// Maximum token budget (overrides --limit with token-based packing)
+        #[arg(long)]
+        tokens: Option<usize>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -401,6 +420,27 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Maximum token budget (includes chunk content within budget)
+        #[arg(long)]
+        tokens: Option<usize>,
+    },
+    /// Convert documents (PDF, HTML, CHM) to Markdown
+    #[cfg(feature = "convert")]
+    Convert {
+        /// File or directory to convert
+        path: String,
+        /// Output directory for .md files [default: same as input]
+        #[arg(short = 'o', long)]
+        output: Option<String>,
+        /// Overwrite existing .md files
+        #[arg(long)]
+        overwrite: bool,
+        /// Preview conversions without writing files
+        #[arg(long)]
+        dry_run: bool,
+        /// Cleaning rule tags (comma-separated, e.g. "aveva,generic") [default: all]
+        #[arg(long)]
+        clean_tags: Option<String>,
     },
 }
 
@@ -441,7 +481,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref lang,
             json,
         }) => cmd_diff(source, target.as_deref(), threshold, lang.as_deref(), json),
-        Some(Commands::Explain { ref name, json }) => cmd_explain(&cli, name, json),
+        Some(Commands::Explain {
+            ref name,
+            json,
+            tokens,
+        }) => cmd_explain(&cli, name, json, tokens),
         Some(Commands::Similar {
             ref target,
             limit,
@@ -483,7 +527,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             summary,
             compact,
-        }) => cmd_context(&cli, path, json, summary, compact),
+            tokens,
+        }) => cmd_context(&cli, path, json, summary, compact, tokens),
         Some(Commands::Dead {
             json,
             include_pub,
@@ -494,8 +539,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             expand,
             ref direction,
             limit,
+            tokens,
             json,
-        }) => cmd_gather(&cli, query, expand, direction, limit, json),
+        }) => cmd_gather(&cli, query, expand, direction, limit, tokens, json),
         Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
         Some(Commands::AuditMode {
@@ -523,7 +569,23 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref task,
             limit,
             json,
-        }) => cmd_scout(&cli, task, limit, json),
+            tokens,
+        }) => cmd_scout(&cli, task, limit, json, tokens),
+        #[cfg(feature = "convert")]
+        Some(Commands::Convert {
+            ref path,
+            ref output,
+            overwrite,
+            dry_run,
+            ref clean_tags,
+        }) => cmd_convert(
+            &cli,
+            path,
+            output.as_deref(),
+            overwrite,
+            dry_run,
+            clean_tags.as_deref(),
+        ),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {
@@ -904,6 +966,179 @@ mod tests {
                 _ => panic!("Expected Update subcommand"),
             },
             _ => panic!("Expected Ref command"),
+        }
+    }
+
+    // ===== --ref flag tests =====
+
+    #[test]
+    fn test_cli_ref_flag() {
+        let cli = Cli::try_parse_from(["cqs", "--ref", "aveva", "license activation"]).unwrap();
+        assert_eq!(cli.ref_name, Some("aveva".to_string()));
+        assert_eq!(cli.query, Some("license activation".to_string()));
+    }
+
+    #[test]
+    fn test_cli_ref_flag_not_set() {
+        let cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        assert!(cli.ref_name.is_none());
+    }
+
+    #[test]
+    fn test_cli_ref_with_other_flags() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "--ref",
+            "tokio",
+            "--json",
+            "-n",
+            "10",
+            "search query",
+        ])
+        .unwrap();
+        assert_eq!(cli.ref_name, Some("tokio".to_string()));
+        assert!(cli.json);
+        assert_eq!(cli.limit, 10);
+    }
+
+    #[test]
+    fn test_cli_ref_with_name_only() {
+        let cli =
+            Cli::try_parse_from(["cqs", "--ref", "aveva", "--name-only", "some_function"]).unwrap();
+        assert_eq!(cli.ref_name, Some("aveva".to_string()));
+        assert!(cli.name_only);
+    }
+
+    // ===== --tokens flag tests =====
+
+    #[test]
+    fn test_cmd_gather_tokens_flag() {
+        let cli =
+            Cli::try_parse_from(["cqs", "gather", "alarm config", "--tokens", "4000"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { tokens, .. }) => {
+                assert_eq!(tokens, Some(4000));
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_gather_no_tokens_flag() {
+        let cli = Cli::try_parse_from(["cqs", "gather", "alarm config"]).unwrap();
+        match cli.command {
+            Some(Commands::Gather { tokens, .. }) => {
+                assert!(tokens.is_none());
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_gather_tokens_with_limit() {
+        let cli = Cli::try_parse_from([
+            "cqs", "gather", "query", "--tokens", "8000", "-n", "20", "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Gather {
+                tokens,
+                limit,
+                json,
+                ..
+            }) => {
+                assert_eq!(tokens, Some(8000));
+                assert_eq!(limit, 20);
+                assert!(json);
+            }
+            _ => panic!("Expected Gather command"),
+        }
+    }
+
+    // ===== --tokens flag tests (query) =====
+
+    #[test]
+    fn test_cli_query_tokens_flag() {
+        let cli = Cli::try_parse_from(["cqs", "--tokens", "4000", "search query"]).unwrap();
+        assert_eq!(cli.tokens, Some(4000));
+        assert_eq!(cli.query, Some("search query".to_string()));
+    }
+
+    #[test]
+    fn test_cli_query_tokens_not_set() {
+        let cli = Cli::try_parse_from(["cqs", "query"]).unwrap();
+        assert!(cli.tokens.is_none());
+    }
+
+    #[test]
+    fn test_cli_query_tokens_with_json_and_limit() {
+        let cli = Cli::try_parse_from([
+            "cqs",
+            "--tokens",
+            "8000",
+            "--json",
+            "-n",
+            "20",
+            "search query",
+        ])
+        .unwrap();
+        assert_eq!(cli.tokens, Some(8000));
+        assert!(cli.json);
+        assert_eq!(cli.limit, 20);
+    }
+
+    #[test]
+    fn test_cli_query_tokens_with_ref() {
+        let cli =
+            Cli::try_parse_from(["cqs", "--tokens", "2000", "--ref", "aveva", "license"]).unwrap();
+        assert_eq!(cli.tokens, Some(2000));
+        assert_eq!(cli.ref_name, Some("aveva".to_string()));
+    }
+
+    #[test]
+    fn test_cli_query_tokens_with_name_only() {
+        let cli =
+            Cli::try_parse_from(["cqs", "--tokens", "1000", "--name-only", "my_func"]).unwrap();
+        assert_eq!(cli.tokens, Some(1000));
+        assert!(cli.name_only);
+    }
+
+    #[test]
+    fn test_cli_context_tokens_flag() {
+        let cli =
+            Cli::try_parse_from(["cqs", "context", "src/lib.rs", "--tokens", "4000"]).unwrap();
+        match cli.command {
+            Some(Commands::Context { tokens, .. }) => assert_eq!(tokens, Some(4000)),
+            _ => panic!("Expected Context command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_context_tokens_not_set() {
+        let cli = Cli::try_parse_from(["cqs", "context", "src/lib.rs"]).unwrap();
+        match cli.command {
+            Some(Commands::Context { tokens, .. }) => assert!(tokens.is_none()),
+            _ => panic!("Expected Context command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_explain_tokens_flag() {
+        let cli =
+            Cli::try_parse_from(["cqs", "explain", "search_filtered", "--tokens", "3000"]).unwrap();
+        match cli.command {
+            Some(Commands::Explain { tokens, .. }) => assert_eq!(tokens, Some(3000)),
+            _ => panic!("Expected Explain command"),
+        }
+    }
+
+    #[test]
+    fn test_cli_scout_tokens_flag() {
+        let cli = Cli::try_parse_from(["cqs", "scout", "add token budgeting", "--tokens", "8000"])
+            .unwrap();
+        match cli.command {
+            Some(Commands::Scout { tokens, .. }) => assert_eq!(tokens, Some(8000)),
+            _ => panic!("Expected Scout command"),
         }
     }
 

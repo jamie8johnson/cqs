@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 
 use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
-use cqs::{reference, Embedder, HnswIndex, Pattern, SearchFilter, Store};
+use cqs::{reference, Embedder, Embedding, HnswIndex, Pattern, SearchFilter, Store};
 
 use crate::cli::{display, signal, staleness, Cli};
 
@@ -20,6 +20,9 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {
+        if let Some(ref ref_name) = cli.ref_name {
+            return cmd_query_ref_name_only(cli, ref_name, query, &root);
+        }
         return cmd_query_name_only(cli, &store, query, &root);
     }
 
@@ -55,6 +58,22 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         note_only: cli.note_only,
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
+
+    // --ref scoped search: skip project index, search only the named reference
+    if let Some(ref ref_name) = cli.ref_name {
+        if cli.note_only {
+            bail!("--note-only cannot be used with --ref (notes only exist in the project index)");
+        }
+        return cmd_query_ref_only(
+            cli,
+            ref_name,
+            query,
+            &query_embedding,
+            &filter,
+            &root,
+            &embedder,
+        );
+    }
 
     // Load vector index for O(log n) search
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {
@@ -161,6 +180,13 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         results
     };
 
+    // Token-budget packing for unified results (no-ref path)
+    let (results, token_info) = if let Some(budget) = cli.tokens {
+        token_pack_unified(results, budget, &embedder)
+    } else {
+        (results, None)
+    };
+
     // Resolve parent context if --expand requested
     let parents = if cli.expand {
         resolve_parent_context(&results, &store, &root)
@@ -197,7 +223,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         }
 
         if cli.json {
-            display::display_unified_results_json(&results, query, parents_ref)?;
+            display::display_unified_results_json(&results, query, parents_ref, token_info)?;
         } else {
             display::display_unified_results(
                 &results,
@@ -234,6 +260,13 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     let tagged = reference::merge_results(results, ref_results, cli.limit);
 
+    // Token-budget packing for tagged results (multi-ref path)
+    let (tagged, token_info) = if let Some(budget) = cli.tokens {
+        token_pack_tagged(tagged, budget, &embedder)
+    } else {
+        (tagged, token_info)
+    };
+
     if tagged.is_empty() {
         if cli.json {
             println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
@@ -244,12 +277,87 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     if cli.json {
-        display::display_tagged_results_json(&tagged, query, parents_ref)?;
+        display::display_tagged_results_json(&tagged, query, parents_ref, token_info)?;
     } else {
         display::display_tagged_results(&tagged, &root, cli.no_content, cli.context, parents_ref)?;
     }
 
     Ok(())
+}
+
+/// Token info for display: (used, budget)
+type TokenInfo = Option<(usize, usize)>;
+
+/// Pack unified results into a token budget, keeping highest-scoring results
+fn token_pack_unified(
+    mut results: Vec<UnifiedResult>,
+    budget: usize,
+    embedder: &Embedder,
+) -> (Vec<UnifiedResult>, TokenInfo) {
+    let _span = tracing::info_span!("token_pack_unified", budget).entered();
+
+    // Already sorted by score from search engine
+    let mut used: usize = 0;
+    let mut packed = Vec::new();
+    for r in results.drain(..) {
+        let text = match &r {
+            UnifiedResult::Code(sr) => &sr.chunk.content,
+            UnifiedResult::Note(nr) => &nr.note.text,
+        };
+        let label = match &r {
+            UnifiedResult::Code(sr) => sr.chunk.name.as_str(),
+            UnifiedResult::Note(_) => "note",
+        };
+        let tokens = super::count_tokens(embedder, text, label);
+        if used + tokens > budget && !packed.is_empty() {
+            break;
+        }
+        used += tokens;
+        packed.push(r);
+    }
+    tracing::info!(
+        chunks = packed.len(),
+        tokens = used,
+        budget,
+        "Token-budgeted query"
+    );
+    (packed, Some((used, budget)))
+}
+
+/// Pack tagged results into a token budget
+fn token_pack_tagged(
+    mut results: Vec<reference::TaggedResult>,
+    budget: usize,
+    embedder: &Embedder,
+) -> (Vec<reference::TaggedResult>, TokenInfo) {
+    let _span = tracing::info_span!("token_pack_tagged", budget).entered();
+
+    // Already sorted by score from merge_results
+    let mut used: usize = 0;
+    let mut packed = Vec::new();
+    for r in results.drain(..) {
+        let text = match &r.result {
+            UnifiedResult::Code(sr) => &sr.chunk.content,
+            UnifiedResult::Note(nr) => &nr.note.text,
+        };
+        let label = match &r.result {
+            UnifiedResult::Code(sr) => sr.chunk.name.as_str(),
+            UnifiedResult::Note(_) => "note",
+        };
+        let tokens = super::count_tokens(embedder, text, label);
+        if used + tokens > budget && !packed.is_empty() {
+            break;
+        }
+        used += tokens;
+        packed.push(r);
+    }
+    tracing::info!(
+        chunks = packed.len(),
+        tokens = used,
+        budget,
+        "Token-budgeted query (tagged)"
+    );
+    (packed, Some((used, budget)))
 }
 
 /// Name-only search: find by function/struct name, no embedding needed
@@ -273,6 +381,14 @@ fn cmd_query_name_only(
     // Convert to UnifiedResult for display
     let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
 
+    // Token-budget packing (lazy embedder — only created when --tokens is set)
+    let (unified, token_info) = if let Some(budget) = cli.tokens {
+        let embedder = Embedder::new()?;
+        token_pack_unified(unified, budget, &embedder)
+    } else {
+        (unified, None)
+    };
+
     // Resolve parent context if --expand requested
     let parents = if cli.expand {
         resolve_parent_context(&unified, store, root)
@@ -282,9 +398,134 @@ fn cmd_query_name_only(
     let parents_ref = if cli.expand { Some(&parents) } else { None };
 
     if cli.json {
-        display::display_unified_results_json(&unified, query, parents_ref)?;
+        display::display_unified_results_json(&unified, query, parents_ref, token_info)?;
     } else {
         display::display_unified_results(&unified, root, cli.no_content, cli.context, parents_ref)?;
+    }
+
+    Ok(())
+}
+
+/// Ref-scoped semantic search: search only the named reference, no project index
+fn cmd_query_ref_only(
+    cli: &Cli,
+    ref_name: &str,
+    query: &str,
+    query_embedding: &Embedding,
+    filter: &SearchFilter,
+    root: &std::path::Path,
+    embedder: &Embedder,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query_ref_only", ref_name).entered();
+
+    let config = cqs::config::Config::load(root);
+    let references = reference::load_references(&config.references);
+
+    let ref_idx = references
+        .iter()
+        .find(|r| r.name == ref_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                ref_name
+            )
+        })?;
+
+    let results = reference::search_reference_unweighted(
+        ref_idx,
+        query_embedding,
+        filter,
+        cli.limit,
+        cli.threshold,
+    )?;
+
+    let tagged: Vec<reference::TaggedResult> = results
+        .into_iter()
+        .map(|r| reference::TaggedResult {
+            result: UnifiedResult::Code(r),
+            source: Some(ref_name.to_string()),
+        })
+        .collect();
+
+    // Token-budget packing
+    let (tagged, token_info) = if let Some(budget) = cli.tokens {
+        token_pack_tagged(tagged, budget, embedder)
+    } else {
+        (tagged, None)
+    };
+
+    if tagged.is_empty() {
+        if cli.json {
+            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        } else {
+            println!("No results found in reference '{}'.", ref_name);
+        }
+        std::process::exit(signal::ExitCode::NoResults as i32);
+    }
+
+    if cli.json {
+        display::display_tagged_results_json(&tagged, query, None, token_info)?;
+    } else {
+        display::display_tagged_results(&tagged, root, cli.no_content, cli.context, None)?;
+    }
+
+    Ok(())
+}
+
+/// Ref-scoped name-only search: search only the named reference by name
+fn cmd_query_ref_name_only(
+    cli: &Cli,
+    ref_name: &str,
+    query: &str,
+    root: &std::path::Path,
+) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query_ref_name_only", ref_name).entered();
+
+    let config = cqs::config::Config::load(root);
+    let references = reference::load_references(&config.references);
+
+    let ref_idx = references
+        .iter()
+        .find(|r| r.name == ref_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                ref_name
+            )
+        })?;
+
+    let results =
+        reference::search_reference_by_name_unweighted(ref_idx, query, cli.limit, cli.threshold)?;
+
+    let tagged: Vec<reference::TaggedResult> = results
+        .into_iter()
+        .map(|r| reference::TaggedResult {
+            result: UnifiedResult::Code(r),
+            source: Some(ref_name.to_string()),
+        })
+        .collect();
+
+    // Token-budget packing (lazy embedder — only created when --tokens is set)
+    let (tagged, token_info) = if let Some(budget) = cli.tokens {
+        let embedder = Embedder::new()?;
+        token_pack_tagged(tagged, budget, &embedder)
+    } else {
+        (tagged, None)
+    };
+
+    if tagged.is_empty() {
+        if cli.json {
+            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        } else {
+            println!("No results found in reference '{}'.", ref_name);
+        }
+        std::process::exit(signal::ExitCode::NoResults as i32);
+    }
+
+    if cli.json {
+        display::display_tagged_results_json(&tagged, query, None, token_info)?;
+    } else {
+        display::display_tagged_results(&tagged, root, cli.no_content, cli.context, None)?;
     }
 
     Ok(())

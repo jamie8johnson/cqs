@@ -235,6 +235,40 @@ cqs gather "auth flow" --expand 2         # Deeper expansion
 cqs gather "config" --direction callers   # Only callers, not callees
 ```
 
+## Document Conversion
+
+Convert PDF, HTML, CHM, web help sites, and Markdown documents to cleaned, indexed Markdown:
+
+```bash
+# Convert a single file
+cqs convert doc.pdf --output converted/
+
+# Batch-convert a directory
+cqs convert samples/pdf/ --output samples/converted/
+
+# Preview without writing (dry run)
+cqs convert samples/ --dry-run
+
+# Clean and rename an existing markdown file
+cqs convert raw-notes.md --output cleaned/
+
+# Control which cleaning rules run
+cqs convert doc.pdf --clean-tags generic       # skip vendor-specific rules
+cqs convert doc.pdf --clean-tags aveva,generic  # AVEVA + generic rules
+```
+
+**Supported formats:**
+
+| Format | Engine | Requirements |
+|--------|--------|-------------|
+| PDF | Python pymupdf4llm | `pip install pymupdf4llm` |
+| HTML/HTM | Rust fast_html2md | None |
+| CHM | 7z + fast_html2md | `sudo apt install p7zip-full` |
+| Web Help | fast_html2md (multi-page) | None |
+| Markdown | Passthrough | None (cleaning + renaming only) |
+
+Output files get kebab-case names derived from document titles, with collision-safe disambiguation.
+
 ## Reference Indexes (Multi-Index Search)
 
 Search across your project and external codebases simultaneously:

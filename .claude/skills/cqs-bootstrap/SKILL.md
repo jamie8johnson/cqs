@@ -115,6 +115,7 @@ None.
    - `cqs-where` — suggest where to add new code based on semantic similarity
    - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
    - `cqs-plan` — task planning with scout data + task-type templates
+   - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 

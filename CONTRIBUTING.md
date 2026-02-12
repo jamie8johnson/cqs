@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, convert.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -122,6 +122,14 @@ src/
     search.rs   - Nearest-neighbor search
     persist.rs  - save(), load(), checksum verification
     safety.rs   - Send/Sync and loaded-index safety tests
+  convert/      - Document-to-Markdown conversion (optional, "convert" feature)
+    mod.rs      - ConvertOptions, convert_path(), format detection
+    html.rs     - HTML → Markdown via fast_html2md
+    pdf.rs      - PDF → Markdown via Python pymupdf4llm (shell out)
+    chm.rs      - CHM → 7z extract → HTML → Markdown
+    naming.rs   - Title extraction, kebab-case filename generation
+    cleaning.rs - Extensible tag-based cleaning rules (7 rules)
+    webhelp.rs  - Web help site detection and multi-page merge
   cagra.rs      - GPU-accelerated CAGRA index (optional)
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment, rewrite_notes_file()
