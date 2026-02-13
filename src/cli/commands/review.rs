@@ -161,7 +161,10 @@ fn display_review_text(review: &ReviewResult, _root: &std::path::Path) {
         for c in &review.affected_callers {
             println!(
                 "  {} ({}:{}, call at line {})",
-                c.name, c.file, c.line, c.call_line
+                c.name,
+                c.file.display(),
+                c.line,
+                c.call_line
             );
         }
     }
@@ -180,8 +183,20 @@ fn display_review_text(review: &ReviewResult, _root: &std::path::Path) {
         for t in &review.affected_tests {
             println!(
                 "  {} ({}:{}) [via {}, depth {}]",
-                t.name, t.file, t.line, t.via, t.call_depth
+                t.name,
+                t.file.display(),
+                t.line,
+                t.via,
+                t.call_depth
             );
+        }
+    }
+
+    // Warnings
+    if !review.warnings.is_empty() {
+        println!();
+        for w in &review.warnings {
+            println!("{} {}", "Warning:".yellow().bold(), w);
         }
     }
 

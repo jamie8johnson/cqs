@@ -72,6 +72,21 @@ pub fn analyze_diff_impact(
     store: &Store,
     changed: Vec<ChangedFunction>,
 ) -> anyhow::Result<DiffImpactResult> {
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+    analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)
+}
+
+/// Like [`analyze_diff_impact`] but accepts pre-loaded graph and test chunks.
+///
+/// Use when the caller already has the graph/test_chunks (e.g., `review_diff`
+/// which also needs them for risk scoring).
+pub fn analyze_diff_impact_with_graph(
+    store: &Store,
+    changed: Vec<ChangedFunction>,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> anyhow::Result<DiffImpactResult> {
     let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
         return Ok(DiffImpactResult {
@@ -85,9 +100,6 @@ pub fn analyze_diff_impact(
             },
         });
     }
-
-    let graph = store.get_call_graph()?;
-    let test_chunks = store.find_test_chunks()?;
 
     let mut all_tests: Vec<DiffTestInfo> = Vec::new();
     let mut seen_callers = HashSet::new();
@@ -136,17 +148,17 @@ pub fn analyze_diff_impact(
 
     // Affected tests via multi-source reverse BFS — single traversal for discovery
     let start_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
-    let ancestors = reverse_bfs_multi(&graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+    let ancestors = reverse_bfs_multi(graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
 
     // Pre-compute per-function BFS for via attribution.
     // reverse_bfs_multi merges all sources, losing which changed function reaches which test.
     // Individual BFS per changed function lets us attribute each test to its closest source.
     let per_function_ancestors: Vec<HashMap<String, usize>> = changed
         .iter()
-        .map(|f| reverse_bfs(&graph, &f.name, DEFAULT_MAX_TEST_SEARCH_DEPTH))
+        .map(|f| reverse_bfs(graph, &f.name, DEFAULT_MAX_TEST_SEARCH_DEPTH))
         .collect();
 
-    for test in &test_chunks {
+    for test in test_chunks {
         if let Some(&depth) = ancestors.get(&test.name) {
             if depth > 0 {
                 // Attribute test to the changed function that reaches it at minimum depth
