@@ -5,12 +5,13 @@ use anyhow::Result;
 use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, suggest_tests};
 
 use super::resolve::resolve_target;
+use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_impact(
     _cli: &crate::cli::Cli,
     name: &str,
     depth: usize,
-    format: &str,
+    format: &OutputFormat,
     do_suggest_tests: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact", name).entered();
@@ -31,12 +32,12 @@ pub(crate) fn cmd_impact(
         Vec::new()
     };
 
-    if format == "mermaid" {
+    if matches!(format, OutputFormat::Mermaid) {
         println!("{}", impact_to_mermaid(&result, &root));
         return Ok(());
     }
 
-    if format == "json" {
+    if matches!(format, OutputFormat::Json) {
         let mut json = impact_to_json(&result, &root);
         if do_suggest_tests {
             let suggestions_json: Vec<_> = suggestions

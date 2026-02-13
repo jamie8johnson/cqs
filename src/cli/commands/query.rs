@@ -368,6 +368,7 @@ fn cmd_query_name_only(
     query: &str,
     root: &std::path::Path,
 ) -> Result<()> {
+    let _span = tracing::info_span!("cmd_query_name_only", query).entered();
     let results = store.search_by_name(query, cli.limit)?;
 
     if results.is_empty() {
@@ -599,20 +600,29 @@ fn resolve_parent_context(
         } else {
             // Parent not in DB (windowed chunk → read source file)
             let abs_path = root.join(&sr.chunk.file);
-            if let Ok(content) = std::fs::read_to_string(&abs_path) {
-                let lines: Vec<&str> = content.lines().collect();
-                let start = sr.chunk.line_start.saturating_sub(1) as usize;
-                let end = (sr.chunk.line_end as usize).min(lines.len());
-                if start < end {
-                    let parent_content = lines[start..end].join("\n");
-                    parents.insert(
-                        sr.chunk.id.clone(),
-                        ParentContext {
-                            name: sr.chunk.name.clone(),
-                            content: parent_content,
-                            line_start: sr.chunk.line_start,
-                            line_end: sr.chunk.line_end,
-                        },
+            match std::fs::read_to_string(&abs_path) {
+                Ok(content) => {
+                    let lines: Vec<&str> = content.lines().collect();
+                    let start = sr.chunk.line_start.saturating_sub(1) as usize;
+                    let end = (sr.chunk.line_end as usize).min(lines.len());
+                    if start < end {
+                        let parent_content = lines[start..end].join("\n");
+                        parents.insert(
+                            sr.chunk.id.clone(),
+                            ParentContext {
+                                name: sr.chunk.name.clone(),
+                                content: parent_content,
+                                line_start: sr.chunk.line_start,
+                                line_end: sr.chunk.line_end,
+                            },
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        path = %abs_path.display(),
+                        error = %e,
+                        "Failed to read source for parent context"
                     );
                 }
             }

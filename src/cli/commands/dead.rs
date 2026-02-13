@@ -12,13 +12,11 @@ pub(crate) fn cmd_dead(
     cli: &Cli,
     json: bool,
     include_pub: bool,
-    min_confidence: &str,
+    min_level: DeadConfidence,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
     let (store, root, _) = crate::cli::open_project_store()?;
     let (confident, possibly_pub) = store.find_dead_code(include_pub)?;
-
-    let min_level = parse_confidence(min_confidence);
 
     // Filter by minimum confidence
     let confident: Vec<_> = confident
@@ -37,15 +35,6 @@ pub(crate) fn cmd_dead(
     }
 
     Ok(())
-}
-
-/// Parse a confidence level string, defaulting to Low on invalid input.
-fn parse_confidence(s: &str) -> DeadConfidence {
-    match s.to_lowercase().as_str() {
-        "high" => DeadConfidence::High,
-        "medium" | "med" => DeadConfidence::Medium,
-        _ => DeadConfidence::Low,
-    }
 }
 
 /// Human-readable confidence label

@@ -46,6 +46,51 @@ use config::apply_config_defaults;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
+/// Output format for commands that support text/json/mermaid
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum OutputFormat {
+    Text,
+    Json,
+    Mermaid,
+}
+
+impl std::fmt::Display for OutputFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Text => write!(f, "text"),
+            Self::Json => write!(f, "json"),
+            Self::Mermaid => write!(f, "mermaid"),
+        }
+    }
+}
+
+/// Confidence level for dead code detection
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum DeadConfidenceLevel {
+    Low,
+    Medium,
+    High,
+}
+
+impl From<&DeadConfidenceLevel> for cqs::store::DeadConfidence {
+    fn from(level: &DeadConfidenceLevel) -> Self {
+        match level {
+            DeadConfidenceLevel::Low => Self::Low,
+            DeadConfidenceLevel::Medium => Self::Medium,
+            DeadConfidenceLevel::High => Self::High,
+        }
+    }
+}
+
+/// Parse a non-zero usize for --tokens validation
+fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String> {
+    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
+    if val == 0 {
+        return Err("value must be at least 1".to_string());
+    }
+    Ok(val)
+}
+
 #[derive(Parser)]
 #[command(name = "cqs")]
 #[command(about = "Semantic code search with local embeddings")]
@@ -122,7 +167,7 @@ pub struct Cli {
     ref_name: Option<String>,
 
     /// Maximum token budget for results (packs highest-scoring into budget)
-    #[arg(long)]
+    #[arg(long, value_parser = parse_nonzero_usize)]
     tokens: Option<usize>,
 
     /// Suppress progress output
@@ -223,7 +268,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
         /// Maximum token budget (includes source content within budget)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
     /// Find code similar to a given function
@@ -249,7 +294,7 @@ enum Commands {
         depth: usize,
         /// Output format: text, json, mermaid
         #[arg(long, default_value = "text")]
-        format: String,
+        format: OutputFormat,
         /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
@@ -293,7 +338,7 @@ enum Commands {
         max_depth: u16,
         /// Output format: text, json, mermaid
         #[arg(long, default_value = "text")]
-        format: String,
+        format: OutputFormat,
         /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
@@ -323,7 +368,7 @@ enum Commands {
         #[arg(long)]
         compact: bool,
         /// Maximum token budget (includes chunk content within budget)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
     /// Find functions with no callers (dead code detection)
@@ -334,9 +379,9 @@ enum Commands {
         /// Include public API functions in the main list
         #[arg(long)]
         include_pub: bool,
-        /// Minimum confidence level to report (low, medium, high)
+        /// Minimum confidence level to report
         #[arg(long, default_value = "low")]
-        min_confidence: String,
+        min_confidence: DeadConfidenceLevel,
     },
     /// Gather minimal code context to answer a question
     Gather {
@@ -352,7 +397,7 @@ enum Commands {
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
         /// Maximum token budget (overrides --limit with token-based packing)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
         /// Cross-index gather: seed from reference, bridge into project code
         #[arg(long = "ref")]
@@ -437,7 +482,7 @@ enum Commands {
         #[arg(long)]
         json: bool,
         /// Maximum token budget (includes chunk content within budget)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
     /// Convert documents (PDF, HTML, CHM) to Markdown
@@ -515,7 +560,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             suggest_tests,
         }) => {
-            let fmt = if json { "json" } else { format.as_str() };
+            let fmt = if json { &OutputFormat::Json } else { format };
             cmd_impact(&cli, name, depth, fmt, suggest_tests)
         }
         Some(Commands::ImpactDiff {
@@ -535,7 +580,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref format,
             json,
         }) => {
-            let fmt = if json { "json" } else { format.as_str() };
+            let fmt = if json { &OutputFormat::Json } else { format };
             cmd_trace(&cli, source, target, max_depth as usize, fmt)
         }
         Some(Commands::TestMap {
@@ -554,7 +599,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             include_pub,
             ref min_confidence,
-        }) => cmd_dead(&cli, json, include_pub, min_confidence),
+        }) => cmd_dead(&cli, json, include_pub, min_confidence.into()),
         Some(Commands::Gather {
             ref query,
             expand,
@@ -1276,6 +1321,20 @@ mod tests {
         // callers requires a name argument
         let result = Cli::try_parse_from(["cqs", "callers"]);
         assert!(result.is_err());
+    }
+
+    // ===== --tokens 0 rejection =====
+
+    #[test]
+    fn test_tokens_zero_rejected() {
+        let result = Cli::try_parse_from(["cqs", "--tokens", "0", "query"]);
+        assert!(result.is_err(), "--tokens 0 should be rejected");
+    }
+
+    #[test]
+    fn test_tokens_zero_rejected_in_subcommand() {
+        let result = Cli::try_parse_from(["cqs", "gather", "query", "--tokens", "0"]);
+        assert!(result.is_err(), "--tokens 0 in gather should be rejected");
     }
 
     // ===== apply_config_defaults tests =====

@@ -54,6 +54,7 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 fn find_pdf_script() -> Result<String> {
     // Check env var first
     if let Ok(script) = std::env::var("CQS_PDF_SCRIPT") {
+        tracing::warn!(script = %script, "Using custom PDF script from CQS_PDF_SCRIPT env var");
         let p = PathBuf::from(&script);
         if p.exists() {
             return Ok(script);
