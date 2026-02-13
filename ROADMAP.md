@@ -38,6 +38,13 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [x] Change risk scoring — `risk = caller_count * (1 - test_coverage)`. Feeds into review/ci/health. (PR #400)
 - [ ] Embedding model eval — benchmark current E5-base-v2 against CodeSage, UniXcoder, Nomic Code on existing eval harness. Quantify gap before committing to upgrade.
 
+### Next — Code Quality
+
+- [x] Split `impact.rs` monolith → `src/impact/` directory (types, bfs, hints, analysis, diff, format)
+- [ ] Extract `read_stdin()` / `run_git_diff()` to shared CLI helper — duplicated in impact_diff.rs, review.rs, will multiply with ci
+- [ ] `store.search()` safety — rename or deprecate to prevent direct use. All user-facing paths should use `search_filtered()`.
+- [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.
+
 ### Next — Expansion
 
 - [ ] C# language support — biggest missing language by market size
