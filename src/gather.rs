@@ -19,6 +19,7 @@ use crate::Store;
 pub const DEFAULT_MAX_EXPANDED_NODES: usize = 200;
 
 /// Options for gather operation
+#[derive(Debug)]
 pub struct GatherOptions {
     pub expand_depth: usize,
     pub direction: GatherDirection,
@@ -314,18 +315,33 @@ pub fn gather_cross_index(
     )
     .entered();
 
+    // Model compatibility check: warn if project and reference use different embedding models
+    if let (Ok(proj_model), Ok(ref_model)) = (
+        project_store.get_metadata("model_name"),
+        ref_idx.store.get_metadata("model_name"),
+    ) {
+        if proj_model != ref_model {
+            tracing::warn!(
+                project = %proj_model,
+                reference = %ref_model,
+                "Model mismatch between project and reference — results may be inaccurate"
+            );
+        }
+    }
+
     // 1. Seed search against reference index (unweighted — user explicitly targets this ref)
     let filter = crate::store::helpers::SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: true,
         ..SearchFilter::default()
     };
-    let ref_seeds = crate::reference::search_reference_unweighted(
+    let ref_seeds = crate::reference::search_reference(
         ref_idx,
         query_embedding,
         &filter,
         opts.seed_limit,
         opts.seed_threshold,
+        false, // no weight for cross-index gather (user explicitly targets this ref)
     )?;
     tracing::debug!(
         ref_seed_count = ref_seeds.len(),

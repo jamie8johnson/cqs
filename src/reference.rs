@@ -53,7 +53,7 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
         }
 
         let db_path = cfg.path.join("index.db");
-        let store = match Store::open(&db_path) {
+        let store = match Store::open_readonly(&db_path) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
@@ -83,16 +83,21 @@ pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
     refs
 }
 
-/// Search a single reference index, applying weight multiplier to scores
+/// Search a single reference index by embedding.
+///
+/// When `apply_weight` is true, multiplies scores by the reference weight and
+/// re-filters against the threshold (used for multi-index merged search).
+/// When false, returns raw scores (used for `--ref` scoped search).
 pub fn search_reference(
     ref_idx: &ReferenceIndex,
     query_embedding: &Embedding,
     filter: &SearchFilter,
     limit: usize,
     threshold: f32,
+    apply_weight: bool,
 ) -> anyhow::Result<Vec<SearchResult>> {
     let _span =
-        tracing::info_span!("search_reference", name = %ref_idx.name, weight = ref_idx.weight)
+        tracing::info_span!("search_reference", name = %ref_idx.name, weight = ref_idx.weight, apply_weight)
             .entered();
     let mut results = ref_idx.store.search_filtered_with_index(
         query_embedding,
@@ -101,69 +106,40 @@ pub fn search_reference(
         threshold,
         ref_idx.index.as_deref(),
     )?;
-    for r in &mut results {
-        r.score *= ref_idx.weight;
+    if apply_weight {
+        for r in &mut results {
+            r.score *= ref_idx.weight;
+        }
+        // Re-filter after weight: results that passed raw threshold may fall
+        // below after weighting (consistent with name_only path)
+        results.retain(|r| r.score >= threshold);
     }
-    // Re-filter after weight: results that passed raw threshold may fall
-    // below after weighting (consistent with name_only path)
-    results.retain(|r| r.score >= threshold);
     Ok(results)
 }
 
-/// Search a single reference index without weight attenuation.
+/// Search a reference by name.
 ///
-/// Used by `--ref` scoped search where the user explicitly targets a reference.
-/// Returns raw scores so reference results aren't penalized.
-pub fn search_reference_unweighted(
-    ref_idx: &ReferenceIndex,
-    query_embedding: &Embedding,
-    filter: &SearchFilter,
-    limit: usize,
-    threshold: f32,
-) -> anyhow::Result<Vec<SearchResult>> {
-    let _span = tracing::info_span!("search_reference_unweighted", name = %ref_idx.name).entered();
-    let results = ref_idx.store.search_filtered_with_index(
-        query_embedding,
-        filter,
-        limit,
-        threshold,
-        ref_idx.index.as_deref(),
-    )?;
-    Ok(results)
-}
-
-/// Search a reference by name without weight attenuation (for `--ref` + `--name-only`).
-pub fn search_reference_by_name_unweighted(
-    ref_idx: &ReferenceIndex,
-    name: &str,
-    limit: usize,
-    threshold: f32,
-) -> anyhow::Result<Vec<SearchResult>> {
-    let _span = tracing::info_span!(
-        "search_reference_by_name_unweighted",
-        ref_name = %ref_idx.name,
-        query = name
-    )
-    .entered();
-    let mut results = ref_idx.store.search_by_name(name, limit)?;
-    results.retain(|r| r.score >= threshold);
-    Ok(results)
-}
-
-/// Search a reference by name (for name_only mode), applying weight
+/// When `apply_weight` is true, multiplies scores by the reference weight and
+/// re-filters against the threshold (used for multi-index merged search).
+/// When false, returns raw scores (used for `--ref` scoped search).
 pub fn search_reference_by_name(
     ref_idx: &ReferenceIndex,
     name: &str,
     limit: usize,
     threshold: f32,
+    apply_weight: bool,
 ) -> anyhow::Result<Vec<SearchResult>> {
     let _span =
-        tracing::info_span!("search_reference_by_name", ref_name = %ref_idx.name, query = name)
+        tracing::info_span!("search_reference_by_name", ref_name = %ref_idx.name, query = name, apply_weight)
             .entered();
     let mut results = ref_idx.store.search_by_name(name, limit)?;
-    results.retain(|r| r.score * ref_idx.weight >= threshold);
-    for r in &mut results {
-        r.score *= ref_idx.weight;
+    if apply_weight {
+        results.retain(|r| r.score * ref_idx.weight >= threshold);
+        for r in &mut results {
+            r.score *= ref_idx.weight;
+        }
+    } else {
+        results.retain(|r| r.score >= threshold);
     }
     Ok(results)
 }

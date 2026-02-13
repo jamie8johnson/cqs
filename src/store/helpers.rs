@@ -582,7 +582,7 @@ pub struct IndexStats {
 /// - 1.0: exact match (case-insensitive)
 /// - 0.9: prefix match
 /// - 0.7: substring match
-/// - 0.5: FTS matched but no obvious name relationship
+/// - 0.0: no name relationship
 pub fn score_name_match(name: &str, query: &str) -> f32 {
     let name_lower = name.to_lowercase();
     let query_lower = query.to_lowercase();
@@ -593,7 +593,7 @@ pub fn score_name_match(name: &str, query: &str) -> f32 {
     } else if name_lower.contains(&query_lower) {
         0.7
     } else {
-        0.5
+        0.0
     }
 }
 
@@ -830,6 +830,30 @@ mod tests {
         };
         let json = result.to_json();
         assert_eq!(json["has_parent"], false);
+    }
+
+    // ===== score_name_match tests =====
+
+    #[test]
+    fn test_score_name_match_exact() {
+        assert_eq!(score_name_match("parse_diff", "parse_diff"), 1.0);
+        assert_eq!(score_name_match("Parse_Diff", "parse_diff"), 1.0);
+    }
+
+    #[test]
+    fn test_score_name_match_prefix() {
+        assert_eq!(score_name_match("parse_diff_hunks", "parse_diff"), 0.9);
+    }
+
+    #[test]
+    fn test_score_name_match_substring() {
+        assert_eq!(score_name_match("do_parse_diff", "parse_diff"), 0.7);
+    }
+
+    #[test]
+    fn test_score_name_match_no_match_returns_zero() {
+        assert_eq!(score_name_match("parse_diff", "reverse_bfs"), 0.0);
+        assert_eq!(score_name_match("foo", "bar"), 0.0);
     }
 
     #[test]

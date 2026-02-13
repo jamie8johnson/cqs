@@ -132,7 +132,7 @@ fn test_search_reference_applies_weight() {
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
 
-    let results = reference::search_reference(&ref_idx, &query, &filter, 10, 0.0).unwrap();
+    let results = reference::search_reference(&ref_idx, &query, &filter, 10, 0.0, true).unwrap();
     assert!(!results.is_empty());
 
     // All scores should be multiplied by weight
@@ -163,7 +163,7 @@ fn test_search_reference_weight_filters_below_threshold() {
     let filter = SearchFilter::default();
 
     // With weight=0.5, max score is ~0.5. Threshold 0.8 should filter everything.
-    let results = reference::search_reference(&ref_idx, &query, &filter, 10, 0.8).unwrap();
+    let results = reference::search_reference(&ref_idx, &query, &filter, 10, 0.8, true).unwrap();
     assert!(
         results.is_empty(),
         "Weighted scores below threshold should be filtered"
@@ -184,7 +184,8 @@ fn test_search_reference_by_name_weight() {
         weight: 0.6,
     };
 
-    let results = reference::search_reference_by_name(&ref_idx, "lookup_fn", 10, 0.0).unwrap();
+    let results =
+        reference::search_reference_by_name(&ref_idx, "lookup_fn", 10, 0.0, true).unwrap();
     assert!(!results.is_empty());
 
     // Score should be scaled by weight
@@ -237,7 +238,7 @@ fn test_search_reference_unweighted_returns_raw_scores() {
     let filter = SearchFilter::default();
 
     let unweighted =
-        reference::search_reference_unweighted(&ref_idx, &query, &filter, 10, 0.0).unwrap();
+        reference::search_reference(&ref_idx, &query, &filter, 10, 0.0, false).unwrap();
     assert!(!unweighted.is_empty());
 
     // Score should NOT be multiplied by weight — raw scores should be higher
@@ -276,9 +277,9 @@ fn test_search_reference_unweighted_vs_weighted() {
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
 
-    let weighted = reference::search_reference(&ref_idx_w, &query, &filter, 10, 0.0).unwrap();
+    let weighted = reference::search_reference(&ref_idx_w, &query, &filter, 10, 0.0, true).unwrap();
     let unweighted =
-        reference::search_reference_unweighted(&ref_idx_u, &query, &filter, 10, 0.0).unwrap();
+        reference::search_reference(&ref_idx_u, &query, &filter, 10, 0.0, false).unwrap();
 
     assert!(!weighted.is_empty());
     assert!(!unweighted.is_empty());
@@ -321,8 +322,7 @@ fn test_search_reference_by_name_unweighted() {
     };
 
     let results =
-        reference::search_reference_by_name_unweighted(&ref_idx, "name_search_fn", 10, 0.0)
-            .unwrap();
+        reference::search_reference_by_name(&ref_idx, "name_search_fn", 10, 0.0, false).unwrap();
     assert!(!results.is_empty());
 
     // Scores should NOT be attenuated by weight
@@ -351,7 +351,7 @@ fn test_search_reference_by_name_unweighted_threshold() {
 
     // Very high threshold should filter everything
     let results =
-        reference::search_reference_by_name_unweighted(&ref_idx, "threshold_fn", 10, 2.0).unwrap();
+        reference::search_reference_by_name(&ref_idx, "threshold_fn", 10, 2.0, false).unwrap();
     assert!(
         results.is_empty(),
         "Threshold above max score should return empty"

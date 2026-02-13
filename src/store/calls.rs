@@ -186,17 +186,21 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-            // Batch insert all calls at once (instead of N individual inserts)
+            // Batch insert calls (300 rows * 3 binds = 900 < SQLite's 999 limit)
             if !calls.is_empty() {
-                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT INTO calls (caller_id, callee_name, line_number) ",
-                );
-                query_builder.push_values(calls.iter(), |mut b, call| {
-                    b.push_bind(chunk_id)
-                        .push_bind(&call.callee_name)
-                        .push_bind(call.line_number as i64);
-                });
-                query_builder.build().execute(&mut *tx).await?;
+                const INSERT_BATCH: usize = 300;
+                for batch in calls.chunks(INSERT_BATCH) {
+                    let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
+                        sqlx::QueryBuilder::new(
+                            "INSERT INTO calls (caller_id, callee_name, line_number) ",
+                        );
+                    query_builder.push_values(batch.iter(), |mut b, call| {
+                        b.push_bind(chunk_id)
+                            .push_bind(&call.callee_name)
+                            .push_bind(call.line_number as i64);
+                    });
+                    query_builder.build().execute(&mut *tx).await?;
+                }
                 tracing::debug!(chunk_id, call_count = calls.len(), "Inserted chunk calls");
             }
 
@@ -232,15 +236,19 @@ impl Store {
                 }
             }
 
-            // Batch insert all calls
-            let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
-                sqlx::QueryBuilder::new("INSERT INTO calls (caller_id, callee_name, line_number) ");
-            query_builder.push_values(calls.iter(), |mut b, (chunk_id, call)| {
-                b.push_bind(chunk_id)
-                    .push_bind(&call.callee_name)
-                    .push_bind(call.line_number as i64);
-            });
-            query_builder.build().execute(&mut *tx).await?;
+            // Batch insert all calls (300 rows * 3 binds = 900 < SQLite's 999 limit)
+            const INSERT_BATCH: usize = 300;
+            for batch in calls.chunks(INSERT_BATCH) {
+                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT INTO calls (caller_id, callee_name, line_number) ",
+                );
+                query_builder.push_values(batch.iter(), |mut b, (chunk_id, call)| {
+                    b.push_bind(chunk_id)
+                        .push_bind(&call.callee_name)
+                        .push_bind(call.line_number as i64);
+                });
+                query_builder.build().execute(&mut *tx).await?;
+            }
 
             tx.commit().await?;
             Ok(())
@@ -366,18 +374,22 @@ impl Store {
                 .collect();
 
             if !all_calls.is_empty() {
-                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
-                    sqlx::QueryBuilder::new(
-                        "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
-                    );
-                query_builder.push_values(all_calls.iter(), |mut b, (caller_name, caller_line, callee_name, call_line)| {
-                    b.push_bind(&file_str)
-                        .push_bind(*caller_name)
-                        .push_bind(*caller_line as i64)
-                        .push_bind(*callee_name)
-                        .push_bind(*call_line as i64);
-                });
-                query_builder.build().execute(&mut *tx).await?;
+                // 190 rows * 5 binds = 950 < SQLite's 999 limit
+                const INSERT_BATCH: usize = 190;
+                for batch in all_calls.chunks(INSERT_BATCH) {
+                    let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
+                        sqlx::QueryBuilder::new(
+                            "INSERT INTO function_calls (file, caller_name, caller_line, callee_name, call_line) ",
+                        );
+                    query_builder.push_values(batch.iter(), |mut b, (caller_name, caller_line, callee_name, call_line)| {
+                        b.push_bind(&file_str)
+                            .push_bind(*caller_name)
+                            .push_bind(*caller_line as i64)
+                            .push_bind(*callee_name)
+                            .push_bind(*call_line as i64);
+                    });
+                    query_builder.build().execute(&mut *tx).await?;
+                }
                 tracing::info!(
                     file = %file_str,
                     functions = function_calls.len(),
@@ -827,6 +839,43 @@ impl Store {
         self.rt.block_on(self.find_test_chunks_async())
     }
 
+    /// Batch count query for call graph columns.
+    ///
+    /// Shared implementation for caller/callee count queries. Filters by `filter_column`
+    /// and groups by `group_column` to count edges.
+    async fn batch_count_query(
+        &self,
+        filter_column: &str,
+        group_column: &str,
+        count_expr: &str,
+        names: &[&str],
+    ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+        let mut result = std::collections::HashMap::new();
+
+        const BATCH_SIZE: usize = 500;
+        for batch in names.chunks(BATCH_SIZE) {
+            let placeholders: String = (1..=batch.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}) GROUP BY {group_column}",
+            );
+            let mut q = sqlx::query(&sql);
+            for name in batch {
+                q = q.bind(name);
+            }
+            let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+            for row in rows {
+                let name: String = row.get(0);
+                let count: i64 = row.get(1);
+                result.insert(name, count as u64);
+            }
+        }
+
+        Ok(result)
+    }
+
     /// Caller counts for multiple functions in one query.
     ///
     /// Returns how many callers each function has. Functions not in the call graph
@@ -839,33 +888,8 @@ impl Store {
             return Ok(std::collections::HashMap::new());
         }
 
-        self.rt.block_on(async {
-            let mut result = std::collections::HashMap::new();
-
-            const BATCH_SIZE: usize = 500;
-            for batch in names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT callee_name, COUNT(*) FROM function_calls WHERE callee_name IN ({}) GROUP BY callee_name",
-                    placeholders
-                );
-                let mut q = sqlx::query(&sql);
-                for name in batch {
-                    q = q.bind(name);
-                }
-                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
-                for row in rows {
-                    let name: String = row.get(0);
-                    let count: i64 = row.get(1);
-                    result.insert(name, count as u64);
-                }
-            }
-
-            Ok(result)
-        })
+        self.rt
+            .block_on(self.batch_count_query("callee_name", "callee_name", "COUNT(*)", names))
     }
 
     /// Callee counts for multiple functions in one query.
@@ -880,33 +904,12 @@ impl Store {
             return Ok(std::collections::HashMap::new());
         }
 
-        self.rt.block_on(async {
-            let mut result = std::collections::HashMap::new();
-
-            const BATCH_SIZE: usize = 500;
-            for batch in names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT caller_name, COUNT(DISTINCT callee_name) FROM function_calls WHERE caller_name IN ({}) GROUP BY caller_name",
-                    placeholders
-                );
-                let mut q = sqlx::query(&sql);
-                for name in batch {
-                    q = q.bind(name);
-                }
-                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
-                for row in rows {
-                    let name: String = row.get(0);
-                    let count: i64 = row.get(1);
-                    result.insert(name, count as u64);
-                }
-            }
-
-            Ok(result)
-        })
+        self.rt.block_on(self.batch_count_query(
+            "caller_name",
+            "caller_name",
+            "COUNT(DISTINCT callee_name)",
+            names,
+        ))
     }
 
     /// Functions that share callers with target (called by the same functions).

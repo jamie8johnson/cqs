@@ -247,6 +247,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                 &filter,
                 cli.limit,
                 cli.threshold,
+                true, // apply weight for multi-index merged search
             ) {
                 Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
                 Err(e) => {
@@ -431,12 +432,13 @@ fn cmd_query_ref_only(
             )
         })?;
 
-    let results = reference::search_reference_unweighted(
+    let results = reference::search_reference(
         ref_idx,
         query_embedding,
         filter,
         cli.limit,
         cli.threshold,
+        false, // no weight for --ref scoped search
     )?;
 
     let tagged: Vec<reference::TaggedResult> = results
@@ -495,7 +497,7 @@ fn cmd_query_ref_name_only(
         })?;
 
     let results =
-        reference::search_reference_by_name_unweighted(ref_idx, query, cli.limit, cli.threshold)?;
+        reference::search_reference_by_name(ref_idx, query, cli.limit, cli.threshold, false)?;
 
     let tagged: Vec<reference::TaggedResult> = results
         .into_iter()
