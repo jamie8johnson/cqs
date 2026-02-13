@@ -71,6 +71,26 @@ No other network requests are made. Search, indexing, and all other operations a
 |-----------|---------|
 | `libc::kill(pid, 0)` | Check if watch process is running (signal 0 = existence check only) |
 
+### Document Conversion (`cqs convert`)
+
+The convert module spawns external processes for format conversion:
+
+| Subprocess | Purpose | When |
+|------------|---------|------|
+| `python3` / `python` | PDF-to-Markdown via pymupdf4llm | `cqs convert *.pdf` |
+| `7z` | CHM archive extraction | `cqs convert *.chm` |
+
+**Attack surface:**
+
+- **`CQS_PDF_SCRIPT` env var**: If set, the convert module executes the specified script instead of the default PDF conversion logic. This allows arbitrary script execution under the user's permissions.
+- **Output directory**: Generated Markdown files are written to the `--output` directory. The output path is not sandboxed beyond normal filesystem permissions.
+
+**Mitigations:**
+
+- Symlink filtering: Symlinks in extracted archives are skipped
+- Zip-slip containment: Extracted paths are validated to stay within the output directory
+- Page count limits: PDF conversion enforces a maximum page count to bound processing time
+
 ### Path Traversal Protection
 
 The `cqs read` command validates paths:

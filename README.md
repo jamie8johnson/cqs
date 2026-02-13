@@ -86,6 +86,11 @@ cqs "query" --expand 2                # Expand results via call graph
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result
 
+# Token budgeting (cross-command: query, gather, context, explain, scout)
+cqs "query" --tokens 2000     # Limit output to ~2000 tokens
+cqs gather "auth" --tokens 4000
+cqs explain func --tokens 3000
+
 # Output options
 cqs --json "query"           # JSON output
 cqs --no-content "query"     # File:line only, no code
@@ -179,6 +184,11 @@ cqs diff old-version --threshold 0.90          # stricter "modified" cutoff
 ## Code Intelligence
 
 ```bash
+# Diff review: structured risk analysis of changes
+cqs review                                # review uncommitted changes
+cqs review --base main                    # review changes since main
+cqs review --json                         # JSON output for CI integration
+
 # Follow a call chain between two functions (BFS shortest path)
 cqs trace cmd_query search_filtered
 cqs trace cmd_query search_filtered --max-depth 5
@@ -287,6 +297,13 @@ Once added, all searches automatically include reference results:
 cqs "spawn async task"    # Finds results in project AND tokio reference
 ```
 
+To search only a specific reference (skipping the project index):
+
+```bash
+cqs "query" --ref tokio          # Search only the tokio reference index
+cqs "spawn" --ref tokio --json   # JSON output, ref-only search
+```
+
 Reference results are ranked with a weight multiplier (default 0.8) so project results naturally appear first at equal similarity.
 
 References are configured in `.cqs.toml`:
@@ -347,6 +364,7 @@ Key commands (all support `--json`):
 - `cqs related <function>` - co-occurrence: shared callers, callees, types
 - `cqs where "description"` - suggest where to add new code
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
+- `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
 - `cqs dead` - find functions/methods never called by indexed code
 - `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries

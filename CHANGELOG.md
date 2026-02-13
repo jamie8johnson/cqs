@@ -862,7 +862,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/jamie8johnson/cqs/compare/v0.12.2...v0.12.3
+[0.12.2]: https://github.com/jamie8johnson/cqs/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/jamie8johnson/cqs/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/jamie8johnson/cqs/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/jamie8johnson/cqs/compare/v0.10.2...v0.11.0
