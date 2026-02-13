@@ -1,6 +1,6 @@
 //! Core impact analysis — caller discovery, test mapping, test suggestions
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::store::{CallerWithContext, SearchResult};
 use crate::Store;
@@ -137,43 +137,48 @@ fn find_affected_tests(
     Ok(tests)
 }
 
-/// Find transitive callers up to the given depth
+/// Find transitive callers up to the given depth.
+///
+/// Uses `reverse_bfs` to discover all ancestor names in a single graph traversal,
+/// then batch-fetches chunk locations with `search_by_names_batch` to avoid N+1 queries.
 fn find_transitive_callers(
     store: &Store,
     graph: &crate::store::CallGraph,
     target_name: &str,
     depth: usize,
 ) -> anyhow::Result<Vec<TransitiveCaller>> {
-    let mut result = Vec::new();
-    let mut visited: HashSet<String> = HashSet::new();
-    visited.insert(target_name.to_string());
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    queue.push_back((target_name.to_string(), 0));
+    // Single graph traversal to collect all ancestors + depths
+    let ancestors = reverse_bfs(graph, target_name, depth);
 
-    while let Some((current, d)) = queue.pop_front() {
-        if d >= depth {
-            continue;
-        }
-        if let Some(callers) = graph.reverse.get(&current) {
-            for caller_name in callers {
-                if visited.insert(caller_name.clone()) {
-                    match store.search_by_name(caller_name, 1) {
-                        Ok(results) => {
-                            if let Some(r) = results.into_iter().next() {
-                                result.push(TransitiveCaller {
-                                    name: caller_name.clone(),
-                                    file: r.chunk.file,
-                                    line: r.chunk.line_start,
-                                    depth: d + 1,
-                                });
-                            }
-                        }
-                        Err(e) => {
-                            tracing::warn!(caller = %caller_name, error = %e, "Failed to look up transitive caller");
-                        }
-                    }
-                    queue.push_back((caller_name.clone(), d + 1));
-                }
+    // Filter out the target itself and depth-0 entries
+    let caller_entries: Vec<(&str, usize)> = ancestors
+        .iter()
+        .filter(|(name, &d)| d > 0 && name.as_str() != target_name)
+        .map(|(name, &d)| (name.as_str(), d))
+        .collect();
+
+    if caller_entries.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Batch-fetch all chunk locations in one query (exact name match, not FTS)
+    let names: Vec<&str> = caller_entries.iter().map(|(n, _)| *n).collect();
+    let chunks_by_name = store.get_chunks_by_names_batch(&names).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Failed to batch-fetch transitive caller locations");
+        HashMap::new()
+    });
+
+    // Build results from batch data
+    let mut result = Vec::with_capacity(caller_entries.len());
+    for (name, d) in &caller_entries {
+        if let Some(chunks) = chunks_by_name.get(*name) {
+            if let Some(c) = chunks.first() {
+                result.push(TransitiveCaller {
+                    name: name.to_string(),
+                    file: c.file.clone(),
+                    line: c.line_start,
+                    depth: *d,
+                });
             }
         }
     }
@@ -202,6 +207,31 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
         }
     };
 
+    // Batch-fetch file chunks for all unique caller files upfront.
+    // This avoids N+1 `get_chunks_by_origin` calls when processing untested callers.
+    let unique_files: Vec<String> = {
+        let mut seen = HashSet::new();
+        impact
+            .callers
+            .iter()
+            .filter_map(|c| {
+                let f = c.file.to_string_lossy().to_string();
+                if seen.insert(f.clone()) {
+                    Some(f)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+    let file_refs: Vec<&str> = unique_files.iter().map(|s| s.as_str()).collect();
+    let chunks_by_file = store
+        .get_chunks_by_origins_batch(&file_refs)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch file chunks for test suggestions");
+            HashMap::new()
+        });
+
     let mut suggestions = Vec::new();
 
     for caller in &impact.callers {
@@ -218,14 +248,12 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
             continue;
         }
 
-        // Fetch file chunks once for inline test check, pattern, and language
-        let file_chunks = match store.get_chunks_by_origin(&caller.file.to_string_lossy()) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(file = %caller.file.display(), error = %e, "Failed to get file chunks");
-                Vec::new()
-            }
-        };
+        // Use pre-fetched file chunks for inline test check, pattern, and language
+        let caller_file_key = caller.file.to_string_lossy().to_string();
+        let file_chunks = chunks_by_file
+            .get(&caller_file_key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
 
         let chunk_is_test = |c: &crate::store::ChunkSummary| {
             crate::is_test_chunk(&c.name, &c.file.to_string_lossy())

@@ -527,6 +527,161 @@ impl Store {
         })
     }
 
+    /// Batch-fetch callers with context for multiple callee names.
+    ///
+    /// Returns `callee_name -> Vec<CallerWithContext>` using a single
+    /// `WHERE callee_name IN (...)` query per batch of 500 names.
+    /// Avoids N+1 `get_callers_with_context` calls in diff impact analysis.
+    pub fn get_callers_with_context_batch(
+        &self,
+        callee_names: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<CallerWithContext>>, StoreError> {
+        if callee_names.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result: std::collections::HashMap<String, Vec<CallerWithContext>> =
+                std::collections::HashMap::new();
+
+            const BATCH_SIZE: usize = 200; // 200 names * 5 cols = 1000 binds, but we only bind names
+            for batch in callee_names.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT callee_name, file, caller_name, caller_line, call_line
+                     FROM function_calls
+                     WHERE callee_name IN ({})
+                     ORDER BY callee_name, file, call_line",
+                    placeholders
+                );
+                let mut q = sqlx::query(&sql);
+                for name in batch {
+                    q = q.bind(name);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let callee: String = row.get(0);
+                    let caller = CallerWithContext {
+                        file: PathBuf::from(row.get::<String, _>(1)),
+                        name: row.get(2),
+                        line: clamp_line_number(row.get::<i64, _>(3)),
+                        call_line: clamp_line_number(row.get::<i64, _>(4)),
+                    };
+                    result.entry(callee).or_default().push(caller);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
+    /// Batch-fetch callers (full call graph) for multiple callee names.
+    ///
+    /// Returns `callee_name -> Vec<CallerInfo>` using a single
+    /// `WHERE callee_name IN (...)` query per batch of 500 names.
+    /// Avoids N+1 `get_callers_full` calls in the context command.
+    pub fn get_callers_full_batch(
+        &self,
+        callee_names: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<CallerInfo>>, StoreError> {
+        if callee_names.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result: std::collections::HashMap<String, Vec<CallerInfo>> =
+                std::collections::HashMap::new();
+
+            const BATCH_SIZE: usize = 250; // 250 * 4 cols = 1000, but only binding names
+            for batch in callee_names.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT DISTINCT callee_name, file, caller_name, caller_line
+                     FROM function_calls
+                     WHERE callee_name IN ({})
+                     ORDER BY callee_name, file, caller_line",
+                    placeholders
+                );
+                let mut q = sqlx::query(&sql);
+                for name in batch {
+                    q = q.bind(name);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let callee: String = row.get(0);
+                    let caller = CallerInfo {
+                        file: PathBuf::from(row.get::<String, _>(1)),
+                        name: row.get(2),
+                        line: clamp_line_number(row.get::<i64, _>(3)),
+                    };
+                    result.entry(callee).or_default().push(caller);
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
+    /// Batch-fetch callees (full call graph) for multiple caller names.
+    ///
+    /// Returns `caller_name -> Vec<(callee_name, call_line)>` using a single
+    /// `WHERE caller_name IN (...)` query per batch of 500 names.
+    /// Avoids N+1 `get_callees_full` calls in the context command.
+    ///
+    /// Unlike [`get_callees_full`], does not support file scoping — returns
+    /// callees across all files. This is acceptable for the context command
+    /// which later filters by origin.
+    pub fn get_callees_full_batch(
+        &self,
+        caller_names: &[&str],
+    ) -> Result<std::collections::HashMap<String, Vec<(String, u32)>>, StoreError> {
+        if caller_names.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        self.rt.block_on(async {
+            let mut result: std::collections::HashMap<String, Vec<(String, u32)>> =
+                std::collections::HashMap::new();
+
+            const BATCH_SIZE: usize = 250;
+            for batch in caller_names.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT DISTINCT caller_name, callee_name, call_line
+                     FROM function_calls
+                     WHERE caller_name IN ({})
+                     ORDER BY caller_name, call_line",
+                    placeholders
+                );
+                let mut q = sqlx::query(&sql);
+                for name in batch {
+                    q = q.bind(name);
+                }
+                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+                for row in rows {
+                    let caller: String = row.get(0);
+                    let callee_name: String = row.get(1);
+                    let call_line = clamp_line_number(row.get::<i64, _>(2));
+                    result
+                        .entry(caller)
+                        .or_default()
+                        .push((callee_name, call_line));
+                }
+            }
+
+            Ok(result)
+        })
+    }
+
     /// Find functions/methods never called by indexed code (dead code detection).
     ///
     /// Returns two lists:

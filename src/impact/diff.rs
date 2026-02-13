@@ -105,19 +105,23 @@ pub fn analyze_diff_impact_with_graph(
     let mut seen_callers = HashSet::new();
     let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
-    // Collect all unique callers across changed functions (first pass)
+    // Batch-fetch callers for all changed functions in a single query
+    let callee_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
+    let callers_by_callee = store
+        .get_callers_with_context_batch(&callee_names)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch callers for diff impact");
+            HashMap::new()
+        });
+
+    // Deduplicate callers across all changed functions
     let mut deduped_callers: Vec<CallerWithContext> = Vec::new();
     for func in &changed {
-        match store.get_callers_with_context(&func.name) {
-            Ok(callers_ctx) => {
-                for caller in callers_ctx {
-                    if seen_callers.insert(caller.name.clone()) {
-                        deduped_callers.push(caller);
-                    }
+        if let Some(callers_ctx) = callers_by_callee.get(&func.name) {
+            for caller in callers_ctx {
+                if seen_callers.insert(caller.name.clone()) {
+                    deduped_callers.push(caller.clone());
                 }
-            }
-            Err(e) => {
-                tracing::warn!(function = %func.name, error = %e, "Failed to get callers");
             }
         }
     }

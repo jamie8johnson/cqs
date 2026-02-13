@@ -95,18 +95,30 @@ pub(crate) fn cmd_context(
     }
 
     let chunk_names: HashSet<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+    let names_vec: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
 
-    // Collect external callers
+    // Batch-fetch callers and callees for all chunks in two queries
+    let callers_by_callee = store
+        .get_callers_full_batch(&names_vec)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch callers for context");
+            std::collections::HashMap::new()
+        });
+    let callees_by_caller = store
+        .get_callees_full_batch(&names_vec)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch callees for context");
+            std::collections::HashMap::new()
+        });
+
+    // Collect external callers from batch results
     let mut external_callers = Vec::new();
     let mut dependent_files: HashSet<String> = HashSet::new();
     for chunk in &chunks {
-        let callers = match store.get_callers_full(&chunk.name) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, name = %chunk.name, "Failed to get callers");
-                Vec::new()
-            }
-        };
+        let callers = callers_by_callee
+            .get(&chunk.name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         for caller in callers {
             let caller_origin = caller.file.to_string_lossy().to_string();
             if caller_origin != origin && !caller_origin.ends_with(path) {
@@ -122,23 +134,19 @@ pub(crate) fn cmd_context(
         }
     }
 
-    // Collect external callees
+    // Collect external callees from batch results
     let mut external_callees = Vec::new();
     let mut seen_callees: HashSet<String> = HashSet::new();
     for chunk in &chunks {
-        let chunk_file = chunk.file.to_string_lossy();
-        let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file)) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, name = %chunk.name, "Failed to get callees");
-                Vec::new()
-            }
-        };
+        let callees = callees_by_caller
+            .get(&chunk.name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str())
                 && seen_callees.insert(callee_name.clone())
             {
-                external_callees.push((callee_name, chunk.name.clone()));
+                external_callees.push((callee_name.clone(), chunk.name.clone()));
             }
         }
     }
