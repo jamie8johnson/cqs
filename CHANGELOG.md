@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.5] - 2026-02-13
+
+### Fixed
+- **Eliminated unsafe transmute in HNSW index loading** (#270): Replaced raw pointer + `transmute` + `ManuallyDrop` + manual `Drop` with `self_cell` crate for safe self-referential ownership. Zero transmute, zero ManuallyDrop, zero Box::from_raw remaining in `src/hnsw/`.
+
+### Added
+- 4 `--ref` CLI integration tests (TC-6): `query --ref`, `gather --ref`, ref-not-found error path, `ref list` verification.
+- `self_cell` dependency (v1) for safe self-referential HNSW index management.
+
 ## [0.12.4] - 2026-02-13
 
 ### Fixed

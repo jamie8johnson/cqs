@@ -117,7 +117,7 @@ src/
   search.rs     - Search algorithms, name matching, HNSW-guided search
   math.rs       - Vector math utilities (cosine similarity, SIMD)
   hnsw/         - HNSW index with batched build, atomic writes
-    mod.rs      - HnswIndex, HnswInner, HnswError, VectorIndex impl
+    mod.rs      - HnswIndex, LoadedHnsw (self_cell), HnswError, VectorIndex impl
     build.rs    - build(), build_batched() construction
     search.rs   - Nearest-neighbor search
     persist.rs  - save(), load(), checksum verification

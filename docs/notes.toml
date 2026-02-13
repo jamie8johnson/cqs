@@ -452,14 +452,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "cuvs Rust crate passes CI without GPU feature, but gpu-search build requires matching libcuvs conda package version"
-mentions = [
-    "cuvs",
-    "gpu-search",
-]
-
-[[note]]
 sentiment = 0.5
 text = "cuDNN via conda (conda-forge) keeps libcudnn.so.9 in miniforge3/lib which is already on LD_LIBRARY_PATH — no path changes needed"
 mentions = [
@@ -537,7 +529,7 @@ mentions = [
 sentiment = -0.5
 text = "Half-open vs inclusive interval overlap: hunk [start, start+count) vs chunk [line_start, line_end]. Correct: start <= end_inclusive && exclusive_end > start_inclusive. Using >= with exclusive end is the classic off-by-one."
 mentions = [
-    "src/impact.rs",
+    "src/impact/diff.rs",
     "map_hunks_to_functions",
 ]
 
@@ -545,7 +537,7 @@ mentions = [
 sentiment = 0.5
 text = "compute_hints accepts prefetched_caller_count to avoid duplicate get_callers_full() when caller already has the data. Pattern: pass Optional<precomputed> to helper functions that would otherwise re-query."
 mentions = [
-    "src/impact.rs",
+    "src/impact/hints.rs",
     "compute_hints",
 ]
 
@@ -604,12 +596,15 @@ mentions = [
 [[note]]
 sentiment = -0.5
 text = "Sonnet agents produce shoddy work on audit fixes — ownership bugs (moved Vec used after for loop), missed tracing spans on files they owned. Always use opus agents for code changes. Haiku acceptable only for doc-only edits."
-mentions = ["src/impact.rs"]
+mentions = [
+    "src/impact/",
+    "audit",
+]
 
 [[note]]
 sentiment = 0.5
 text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<ChangedFunction> — callers pass owned vec, return struct populates changed_functions directly instead of leaving empty for caller to fill."
-mentions = ["src/impact.rs"]
+mentions = ["src/impact/diff.rs"]
 
 [[note]]
 sentiment = -0.5
@@ -660,10 +655,11 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Token budgeting greedy knapsack pattern ships cleanly across 5 commands. Shared count_tokens helper. Lazy Embedder for commands that dont normally need it. Pattern: sort by score, walk items, accumulate token count, stop at budget."
+text = "Token budgeting greedy knapsack pattern ships cleanly across 5 commands. Generic token_pack<T>() in cli/commands/mod.rs replaces per-command loops. Batch tokenization via Embedder::token_counts_batch(). Pattern: sort by score, walk items, accumulate token count, stop at budget."
 mentions = [
-    "count_tokens",
+    "src/cli/commands/mod.rs",
     "token_pack",
+    "src/embedder.rs",
 ]
 
 [[note]]
@@ -676,10 +672,10 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Reference-scoped search via --ref flag reuses multi-index infrastructure but calls search_reference_unweighted() to avoid double-attenuating. Pattern works across query, gather, and diff commands with per-command ref loading."
+text = "Reference-scoped search via --ref flag reuses multi-index infrastructure. search_reference() with apply_weight=false avoids double-attenuating. Pattern works across query, gather, and diff commands with per-command ref loading."
 mentions = [
     "src/reference.rs",
-    "search_reference_unweighted",
+    "search_reference",
 ]
 
 [[note]]
@@ -687,14 +683,14 @@ sentiment = 0.5
 text = "review_diff() composes 5 primitives (parse_unified_diff, map_hunks_to_functions, analyze_diff_impact, compute_risk_batch, match_notes + staleness) into a single structured payload. Pattern for composition commands: load shared data once (call graph, test chunks), pass to multiple analyses, merge results. Avoids N separate CLI calls."
 mentions = [
     "src/review.rs",
-    "src/impact.rs",
+    "src/impact/",
 ]
 
 [[note]]
 sentiment = 0.5
 text = "Risk scoring entry-point exception: functions with 0 callers AND 0 tests get Medium risk, not Low. Score formula (caller_count * (1 - coverage)) gives 0 for these, which would be Low, but they're likely entry points that need tests. Special-case prevents silent coverage gaps."
 mentions = [
-    "src/impact.rs",
+    "src/impact/hints.rs",
     "compute_risk_batch",
 ]
 
@@ -704,4 +700,29 @@ text = "impact.rs monolith split into src/impact/ directory — types, bfs, hint
 mentions = [
     "src/impact/mod.rs",
     "src/impact/analysis.rs",
+]
+
+[[note]]
+sentiment = 1.0
+text = "v0.12.4 audit release: 61 fixes across 14 categories. Subagent-driven development with opus agents worked well — 11 tasks, each with spec + quality review. Key lesson: design tasks with exclusive file ownership to avoid parallel agent conflicts."
+mentions = [
+    "audit-triage.md",
+    "review.rs",
+    "impact",
+]
+
+[[note]]
+sentiment = -0.5
+text = "SQLite 999 variable limit hit in batch inserts — use INSERT_BATCH constants (999/bind_count) and chunk iterations. Applies to calls.rs and chunks.rs batch methods."
+mentions = [
+    "calls.rs",
+    "chunks.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "self_cell with #[not_covariant] is the right pattern for hnsw_rs Hnsw<'a> — it's invariant over the lifetime, so covariant access won't compile. Use with_dependent() closure API, not borrow_dependent()."
+mentions = [
+    "src/hnsw/mod.rs",
+    "self_cell",
 ]
