@@ -120,4 +120,149 @@ mod tests {
         assert_eq!(result.len(), 2); // C at 0, B at 1
         assert!(!result.contains_key("A")); // Beyond depth limit
     }
+
+    // ===== reverse_bfs_multi tests =====
+
+    #[test]
+    fn test_reverse_bfs_multi_empty_targets() {
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        };
+        let result = reverse_bfs_multi(&graph, &[], 5);
+        assert!(
+            result.is_empty(),
+            "Empty targets should produce empty result"
+        );
+    }
+
+    #[test]
+    fn test_reverse_bfs_multi_non_overlapping_ancestors() {
+        // Two separate call chains with no shared ancestors:
+        //   A -> B -> target1
+        //   C -> D -> target2
+        let mut reverse = HashMap::new();
+        reverse.insert("target1".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        reverse.insert("target2".to_string(), vec!["D".to_string()]);
+        reverse.insert("D".to_string(), vec!["C".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi(&graph, &["target1", "target2"], 5);
+
+        // Both targets at depth 0
+        assert_eq!(result["target1"], 0);
+        assert_eq!(result["target2"], 0);
+        // All ancestors found
+        assert_eq!(result["B"], 1);
+        assert_eq!(result["A"], 2);
+        assert_eq!(result["D"], 1);
+        assert_eq!(result["C"], 2);
+        assert_eq!(result.len(), 6); // 2 targets + 4 ancestors
+    }
+
+    #[test]
+    fn test_reverse_bfs_multi_shared_ancestor() {
+        // Shared caller reaches both targets at different depths:
+        //   shared -> mid -> target1
+        //   shared -> target2
+        let mut reverse = HashMap::new();
+        reverse.insert("target1".to_string(), vec!["mid".to_string()]);
+        reverse.insert("mid".to_string(), vec!["shared".to_string()]);
+        reverse.insert("target2".to_string(), vec!["shared".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi(&graph, &["target1", "target2"], 5);
+
+        assert_eq!(result["target1"], 0);
+        assert_eq!(result["target2"], 0);
+        assert_eq!(result["mid"], 1);
+        // shared is at depth 1 from target2 and depth 2 from target1
+        // Multi-source BFS should record minimum depth = 1
+        assert_eq!(
+            result["shared"], 1,
+            "Shared ancestor should get minimum depth across all sources"
+        );
+    }
+
+    #[test]
+    fn test_reverse_bfs_multi_depth_limit() {
+        // Chain: A -> B -> C -> target1, D -> target2
+        // With depth limit 1, should only find immediate callers
+        let mut reverse = HashMap::new();
+        reverse.insert("target1".to_string(), vec!["C".to_string()]);
+        reverse.insert("C".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        reverse.insert("target2".to_string(), vec!["D".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi(&graph, &["target1", "target2"], 1);
+
+        assert_eq!(result["target1"], 0);
+        assert_eq!(result["target2"], 0);
+        assert_eq!(result["C"], 1, "Direct caller of target1 should be found");
+        assert_eq!(result["D"], 1, "Direct caller of target2 should be found");
+        assert!(
+            !result.contains_key("B"),
+            "B is at depth 2 from target1, beyond limit"
+        );
+        assert!(
+            !result.contains_key("A"),
+            "A is at depth 3 from target1, beyond limit"
+        );
+    }
+
+    #[test]
+    fn test_reverse_bfs_multi_single_target_matches_reverse_bfs() {
+        // With a single target, multi should produce the same result as single
+        let mut reverse = HashMap::new();
+        reverse.insert("C".to_string(), vec!["B".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let single = reverse_bfs(&graph, "C", 5);
+        let multi = reverse_bfs_multi(&graph, &["C"], 5);
+
+        assert_eq!(
+            single, multi,
+            "Single-target multi should match reverse_bfs"
+        );
+    }
+
+    #[test]
+    fn test_reverse_bfs_multi_diamond_graph() {
+        // Diamond: A -> B, A -> C, B -> D, C -> D
+        // Starting from D: should find B(1), C(1), A(2)
+        // Starting from both D and B: D(0), B(0), C(1), A(1)
+        let mut reverse = HashMap::new();
+        reverse.insert("D".to_string(), vec!["B".to_string(), "C".to_string()]);
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        reverse.insert("C".to_string(), vec!["A".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi(&graph, &["D", "B"], 5);
+
+        assert_eq!(result["D"], 0);
+        assert_eq!(result["B"], 0); // Target, so depth 0
+        assert_eq!(result["C"], 1); // Caller of D
+        assert_eq!(
+            result["A"], 1,
+            "A is at depth 1 from B (target), not depth 2 from D"
+        );
+    }
 }
