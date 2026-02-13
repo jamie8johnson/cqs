@@ -306,6 +306,21 @@ impl Embedder {
         Ok(encoding.get_ids().len())
     }
 
+    /// Count tokens for multiple texts in a single batch.
+    ///
+    /// Uses `encode_batch` for potentially better throughput than individual
+    /// `token_count` calls when processing many texts.
+    pub fn token_counts_batch(&self, texts: &[&str]) -> Result<Vec<usize>, EmbedderError> {
+        if texts.is_empty() {
+            return Ok(vec![]);
+        }
+        let encodings = self
+            .tokenizer()?
+            .encode_batch(texts.to_vec(), false)
+            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+        Ok(encodings.iter().map(|e| e.get_ids().len()).collect())
+    }
+
     /// Split text into overlapping windows of max_tokens with overlap tokens of context.
     /// Returns Vec of (window_content, window_index).
     /// If text fits in max_tokens, returns single window with index 0.

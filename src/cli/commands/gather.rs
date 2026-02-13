@@ -77,10 +77,13 @@ pub(crate) fn cmd_gather(
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        // Batch-compute token counts for all chunks at once
+        let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
+        let token_counts = super::count_tokens_batch(&embedder, &texts);
+
         let mut used: usize = 0;
         let mut packed = Vec::new();
-        for chunk in result.chunks {
-            let tokens = super::count_tokens(&embedder, &chunk.content, &chunk.name);
+        for (chunk, tokens) in result.chunks.into_iter().zip(token_counts) {
             if used + tokens > budget && !packed.is_empty() {
                 break; // budget exhausted (always include at least 1 chunk)
             }

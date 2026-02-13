@@ -287,10 +287,14 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
             }
             Some(crate::parser::Language::Java) if !base_name.is_empty() => {
                 // Java: camelCase testMethodName
-                let mut chars = base_name.chars();
-                let first = chars.next().unwrap().to_uppercase().to_string();
-                let rest: String = chars.collect();
-                format!("test{first}{rest}")
+                match base_name.chars().next() {
+                    Some(c) => {
+                        let first = c.to_uppercase().to_string();
+                        let rest = &base_name[c.len_utf8()..];
+                        format!("test{first}{rest}")
+                    }
+                    None => format!("test_{base_name}"),
+                }
             }
             _ => {
                 // Rust, Python, Go, C, SQL, Markdown — all use snake_case test_ prefix
@@ -320,6 +324,10 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
 }
 
 /// Derive a test file path from a source file path.
+///
+/// EXT-16: These per-language conventions are hardcoded. A future improvement
+/// would make them data-driven (e.g., `test_file_pattern` on language definitions),
+/// but that requires restructuring across parser/store/impact modules.
 fn suggest_test_file(source: &str) -> String {
     // Extract the filename stem and extension
     let path = std::path::Path::new(source);

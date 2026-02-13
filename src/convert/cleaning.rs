@@ -143,8 +143,10 @@ pub fn clean_markdown(input: &str, tags: &[&str]) -> String {
 fn extract_doc_title(lines: &[String]) -> String {
     for line in lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") && !trimmed.starts_with("## ") {
-            return trimmed[2..].trim().to_string();
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            if !heading.starts_with('#') {
+                return heading.trim().to_string();
+            }
         }
     }
     String::new()

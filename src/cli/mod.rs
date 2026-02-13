@@ -326,6 +326,9 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Maximum token budget for output (truncates callers/tests lists)
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
     },
     /// Trace call chain between two functions
     Trace {
@@ -572,7 +575,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref base,
             stdin,
             json,
-        }) => cmd_review(&cli, base.as_deref(), stdin, json),
+            tokens,
+        }) => cmd_review(&cli, base.as_deref(), stdin, json, tokens),
         Some(Commands::Trace {
             ref source,
             ref target,
@@ -1276,10 +1280,16 @@ mod tests {
     fn test_cmd_review_defaults() {
         let cli = Cli::try_parse_from(["cqs", "review"]).unwrap();
         match cli.command {
-            Some(Commands::Review { base, stdin, json }) => {
+            Some(Commands::Review {
+                base,
+                stdin,
+                json,
+                tokens,
+            }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
                 assert!(!json);
+                assert!(tokens.is_none());
             }
             _ => panic!("Expected Review command"),
         }
@@ -1306,6 +1316,23 @@ mod tests {
             }
             _ => panic!("Expected Review command"),
         }
+    }
+
+    #[test]
+    fn test_cmd_review_tokens_flag() {
+        let cli = Cli::try_parse_from(["cqs", "review", "--tokens", "4000"]).unwrap();
+        match cli.command {
+            Some(Commands::Review { tokens, .. }) => {
+                assert_eq!(tokens, Some(4000));
+            }
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_review_tokens_zero_rejected() {
+        let result = Cli::try_parse_from(["cqs", "review", "--tokens", "0"]);
+        assert!(result.is_err(), "--tokens 0 in review should be rejected");
     }
 
     // ===== Error cases =====

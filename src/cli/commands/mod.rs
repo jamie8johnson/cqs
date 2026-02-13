@@ -72,3 +72,14 @@ pub(crate) fn count_tokens(embedder: &cqs::Embedder, text: &str, label: &str) ->
         text.len() / 4
     })
 }
+
+/// Batch-count tokens for multiple texts.
+///
+/// Uses `encode_batch` for better throughput than individual `count_tokens` calls.
+/// Falls back to per-text estimation on error.
+pub(crate) fn count_tokens_batch(embedder: &cqs::Embedder, texts: &[&str]) -> Vec<usize> {
+    embedder.token_counts_batch(texts).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "Batch token count failed, estimating per-text");
+        texts.iter().map(|t| t.len() / 4).collect()
+    })
+}
