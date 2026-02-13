@@ -95,6 +95,12 @@ pub(super) fn extract_call_snippet_from_cache(
         best
     }?;
 
+    // Bounds check: call_line must fall within chunk's line range (windowed chunks
+    // may not cover the call site)
+    if caller.call_line < best.chunk.line_start || caller.call_line > best.chunk.line_end {
+        return None;
+    }
+
     let lines: Vec<&str> = best.chunk.content.lines().collect();
     let offset = caller.call_line.saturating_sub(best.chunk.line_start) as usize;
     if offset < lines.len() {

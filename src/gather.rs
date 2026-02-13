@@ -199,9 +199,12 @@ pub fn gather(
 
             let neighbors = get_neighbors(&graph, &name, opts.direction);
             let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
-            let decay = opts.decay_factor.powi((depth + 1) as i32);
-            let new_score = base_score * decay;
+            let new_score = base_score * opts.decay_factor;
             for neighbor in neighbors {
+                if name_scores.len() >= opts.max_expanded_nodes {
+                    expansion_capped = true;
+                    break;
+                }
                 match name_scores.entry(neighbor.clone()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((new_score, depth + 1));
@@ -214,6 +217,9 @@ pub fn gather(
                         }
                     }
                 }
+            }
+            if expansion_capped {
+                break;
             }
         }
     }
@@ -472,9 +478,12 @@ pub fn gather_cross_index(
 
             let neighbors = get_neighbors(&graph, &name, opts.direction);
             let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
-            let decay = opts.decay_factor.powi((depth + 1) as i32);
-            let new_score = base_score * decay;
+            let new_score = base_score * opts.decay_factor;
             for neighbor in neighbors {
+                if name_scores.len() >= opts.max_expanded_nodes {
+                    expansion_capped = true;
+                    break;
+                }
                 match name_scores.entry(neighbor.clone()) {
                     std::collections::hash_map::Entry::Vacant(e) => {
                         e.insert((new_score, depth + 1));
@@ -486,6 +495,9 @@ pub fn gather_cross_index(
                         }
                     }
                 }
+            }
+            if expansion_capped {
+                break;
             }
         }
     }

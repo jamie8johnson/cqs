@@ -191,20 +191,16 @@ pub(crate) fn cmd_context(
             }
         }
     } else if json {
-        // Token-budgeted content inclusion
+        // Token-budgeted content inclusion (sorted by caller count for relevance)
         let (content_map, token_info) = if let Some(budget) = max_tokens {
             let embedder = cqs::Embedder::new()?;
-            let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
-            let mut used: usize = 0;
-            let mut included = HashSet::new();
-            for c in &chunks {
-                let tokens = super::count_tokens(&embedder, &c.content, &c.name);
-                if used + tokens > budget && !included.is_empty() {
-                    break;
-                }
-                used += tokens;
-                included.insert(c.name.clone());
-            }
+            let caller_counts = store
+                .get_caller_counts_batch(&names_vec)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");
+                    std::collections::HashMap::new()
+                });
+            let (included, used) = pack_by_relevance(&chunks, &caller_counts, budget, &embedder);
             tracing::info!(
                 chunks = included.len(),
                 tokens = used,
@@ -256,20 +252,16 @@ pub(crate) fn cmd_context(
     } else {
         use colored::Colorize;
 
-        // Token-budgeted content inclusion for text mode
+        // Token-budgeted content inclusion (sorted by caller count for relevance)
         let (content_set, token_info) = if let Some(budget) = max_tokens {
             let embedder = cqs::Embedder::new()?;
-            let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
-            let mut used: usize = 0;
-            let mut included = HashSet::new();
-            for c in &chunks {
-                let tokens = super::count_tokens(&embedder, &c.content, &c.name);
-                if used + tokens > budget && !included.is_empty() {
-                    break;
-                }
-                used += tokens;
-                included.insert(c.name.clone());
-            }
+            let caller_counts = store
+                .get_caller_counts_batch(&names_vec)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");
+                    std::collections::HashMap::new()
+                });
+            let (included, used) = pack_by_relevance(&chunks, &caller_counts, budget, &embedder);
             tracing::info!(
                 chunks = included.len(),
                 tokens = used,
@@ -338,4 +330,37 @@ pub(crate) fn cmd_context(
     }
 
     Ok(())
+}
+
+/// Pack chunks by relevance (caller count descending) within a token budget.
+///
+/// Returns the set of included chunk names and total tokens used.
+fn pack_by_relevance(
+    chunks: &[cqs::store::ChunkSummary],
+    caller_counts: &std::collections::HashMap<String, u64>,
+    budget: usize,
+    embedder: &cqs::Embedder,
+) -> (HashSet<String>, usize) {
+    let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
+
+    // Sort indices by caller count descending (high-relevance first for packing)
+    let mut indices: Vec<usize> = (0..chunks.len()).collect();
+    indices.sort_by(|&a, &b| {
+        let ca = caller_counts.get(&chunks[a].name).copied().unwrap_or(0);
+        let cb = caller_counts.get(&chunks[b].name).copied().unwrap_or(0);
+        cb.cmp(&ca)
+    });
+
+    let mut used: usize = 0;
+    let mut included = HashSet::new();
+    for idx in indices {
+        let c = &chunks[idx];
+        let tokens = super::count_tokens(embedder, &c.content, &c.name);
+        if used + tokens > budget && !included.is_empty() {
+            break;
+        }
+        used += tokens;
+        included.insert(c.name.clone());
+    }
+    (included, used)
 }
