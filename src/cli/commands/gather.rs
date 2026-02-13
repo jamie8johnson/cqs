@@ -70,26 +70,11 @@ pub(crate) fn cmd_gather(
     // Token-budgeted packing: keep highest-scoring chunks within token budget
     let token_count_used = if let Some(budget) = max_tokens {
         let _pack_span = tracing::info_span!("token_pack", budget).entered();
-        // Chunks are in file/line order after gather. Re-sort by score for greedy packing.
-        result.chunks.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
 
-        // Batch-compute token counts for all chunks at once
-        let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
+        let chunks = std::mem::take(&mut result.chunks);
+        let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
         let token_counts = super::count_tokens_batch(&embedder, &texts);
-
-        let mut used: usize = 0;
-        let mut packed = Vec::new();
-        for (chunk, tokens) in result.chunks.into_iter().zip(token_counts) {
-            if used + tokens > budget && !packed.is_empty() {
-                break; // budget exhausted (always include at least 1 chunk)
-            }
-            used += tokens;
-            packed.push(chunk);
-        }
+        let (mut packed, used) = super::token_pack(chunks, &token_counts, budget, |c| c.score);
         tracing::info!(
             chunks = packed.len(),
             tokens = used,

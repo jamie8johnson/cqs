@@ -343,24 +343,24 @@ fn pack_by_relevance(
 ) -> (HashSet<String>, usize) {
     let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
 
-    // Sort indices by caller count descending (high-relevance first for packing)
-    let mut indices: Vec<usize> = (0..chunks.len()).collect();
-    indices.sort_by(|&a, &b| {
-        let ca = caller_counts.get(&chunks[a].name).copied().unwrap_or(0);
-        let cb = caller_counts.get(&chunks[b].name).copied().unwrap_or(0);
-        cb.cmp(&ca)
-    });
+    // Build (index, caller_count) pairs for token_pack to sort by
+    let indexed: Vec<(usize, u64)> = (0..chunks.len())
+        .map(|i| {
+            let cc = caller_counts.get(&chunks[i].name).copied().unwrap_or(0);
+            (i, cc)
+        })
+        .collect();
+    let texts: Vec<&str> = indexed
+        .iter()
+        .map(|&(i, _)| chunks[i].content.as_str())
+        .collect();
+    let token_counts = super::count_tokens_batch(embedder, &texts);
 
-    let mut used: usize = 0;
-    let mut included = HashSet::new();
-    for idx in indices {
-        let c = &chunks[idx];
-        let tokens = super::count_tokens(embedder, &c.content, &c.name);
-        if used + tokens > budget && !included.is_empty() {
-            break;
-        }
-        used += tokens;
-        included.insert(c.name.clone());
-    }
+    let (packed, used) = super::token_pack(indexed, &token_counts, budget, |&(_, cc)| cc as f32);
+
+    let included: HashSet<String> = packed
+        .into_iter()
+        .map(|(i, _)| chunks[i].name.clone())
+        .collect();
     (included, used)
 }

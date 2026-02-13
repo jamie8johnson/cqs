@@ -39,35 +39,34 @@ pub(crate) fn cmd_scout(
             }
         };
 
-        // Walk groups by relevance, chunks by search_score, pack content
-        let mut used: usize = 0;
-        let mut included: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-
-        // Flatten to (name, search_score) sorted by relevance_score * search_score
-        let mut scored: Vec<(&str, f32)> = result
+        // Build (name, content, score) items for packing — only those with content
+        let items: Vec<(String, String, f32)> = result
             .file_groups
             .iter()
             .flat_map(|g| {
-                g.chunks
-                    .iter()
-                    .map(move |c| (c.name.as_str(), g.relevance_score * c.search_score))
+                g.chunks.iter().filter_map(|c| {
+                    let content = chunks_by_name
+                        .get(c.name.as_str())?
+                        .first()?
+                        .content
+                        .clone();
+                    Some((c.name.clone(), content, g.relevance_score * c.search_score))
+                })
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        for (name, _score) in &scored {
-            if let Some(summaries) = chunks_by_name.get(*name) {
-                if let Some(summary) = summaries.first() {
-                    let tokens = super::count_tokens(&embedder, &summary.content, name);
-                    if used + tokens > budget && !included.is_empty() {
-                        break;
-                    }
-                    used += tokens;
-                    included.insert(name.to_string(), summary.content.clone());
-                }
-            }
-        }
+        let texts: Vec<&str> = items
+            .iter()
+            .map(|(_, content, _)| content.as_str())
+            .collect();
+        let token_counts = super::count_tokens_batch(&embedder, &texts);
+        let (packed, used) =
+            super::token_pack(items, &token_counts, budget, |&(_, _, score)| score);
+
+        let included: std::collections::HashMap<String, String> = packed
+            .into_iter()
+            .map(|(name, content, _)| (name, content))
+            .collect();
 
         tracing::info!(
             chunks_with_content = included.len(),

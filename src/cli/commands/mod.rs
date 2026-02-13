@@ -83,3 +83,48 @@ pub(crate) fn count_tokens_batch(embedder: &cqs::Embedder, texts: &[&str]) -> Ve
         texts.iter().map(|t| t.len() / 4).collect()
     })
 }
+
+/// Greedy knapsack token packing: sort items by score descending, include items
+/// while the total token count stays within `budget`. Always includes at least one item.
+///
+/// Uses batch tokenization for throughput. Returns `(packed_items, tokens_used)`.
+///
+/// Callers build a `texts` slice parallel to `items`, call `count_tokens_batch` to get
+/// token counts, then pass those counts here. This two-step avoids borrow/move conflicts.
+pub(crate) fn token_pack<T>(
+    items: Vec<T>,
+    token_counts: &[usize],
+    budget: usize,
+    score_fn: impl Fn(&T) -> f32,
+) -> (Vec<T>, usize) {
+    debug_assert_eq!(items.len(), token_counts.len());
+
+    // Build index order sorted by score descending
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_by(|&a, &b| {
+        score_fn(&items[b])
+            .partial_cmp(&score_fn(&items[a]))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Greedy pack in score order, tracking which indices to keep
+    let mut used: usize = 0;
+    let mut keep: Vec<bool> = vec![false; items.len()];
+    for idx in order {
+        let tokens = token_counts[idx];
+        if used + tokens > budget && keep.iter().any(|&k| k) {
+            break;
+        }
+        used += tokens;
+        keep[idx] = true;
+    }
+
+    // Preserve original ordering among kept items (stable extraction)
+    let mut packed = Vec::new();
+    for (i, item) in items.into_iter().enumerate() {
+        if keep[i] {
+            packed.push(item);
+        }
+    }
+    (packed, used)
+}

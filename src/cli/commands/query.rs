@@ -289,33 +289,28 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 /// Token info for display: (used, budget)
 type TokenInfo = Option<(usize, usize)>;
 
-/// Pack unified results into a token budget, keeping highest-scoring results
+/// Pack unified results into a token budget, keeping highest-scoring results.
+///
+/// Results are already sorted by score from the search engine.
 fn token_pack_unified(
-    mut results: Vec<UnifiedResult>,
+    results: Vec<UnifiedResult>,
     budget: usize,
     embedder: &Embedder,
 ) -> (Vec<UnifiedResult>, TokenInfo) {
     let _span = tracing::info_span!("token_pack_unified", budget).entered();
 
-    // Already sorted by score from search engine
-    let mut used: usize = 0;
-    let mut packed = Vec::new();
-    for r in results.drain(..) {
-        let text = match &r {
-            UnifiedResult::Code(sr) => &sr.chunk.content,
-            UnifiedResult::Note(nr) => &nr.note.text,
-        };
-        let label = match &r {
-            UnifiedResult::Code(sr) => sr.chunk.name.as_str(),
-            UnifiedResult::Note(_) => "note",
-        };
-        let tokens = super::count_tokens(embedder, text, label);
-        if used + tokens > budget && !packed.is_empty() {
-            break;
-        }
-        used += tokens;
-        packed.push(r);
-    }
+    let texts: Vec<&str> = results
+        .iter()
+        .map(|r| match r {
+            UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
+            UnifiedResult::Note(nr) => nr.note.text.as_str(),
+        })
+        .collect();
+    let token_counts = super::count_tokens_batch(embedder, &texts);
+    let (packed, used) = super::token_pack(results, &token_counts, budget, |r| match r {
+        UnifiedResult::Code(sr) => sr.score,
+        UnifiedResult::Note(nr) => nr.score,
+    });
     tracing::info!(
         chunks = packed.len(),
         tokens = used,
@@ -327,31 +322,24 @@ fn token_pack_unified(
 
 /// Pack tagged results into a token budget
 fn token_pack_tagged(
-    mut results: Vec<reference::TaggedResult>,
+    results: Vec<reference::TaggedResult>,
     budget: usize,
     embedder: &Embedder,
 ) -> (Vec<reference::TaggedResult>, TokenInfo) {
     let _span = tracing::info_span!("token_pack_tagged", budget).entered();
 
-    // Already sorted by score from merge_results
-    let mut used: usize = 0;
-    let mut packed = Vec::new();
-    for r in results.drain(..) {
-        let text = match &r.result {
-            UnifiedResult::Code(sr) => &sr.chunk.content,
-            UnifiedResult::Note(nr) => &nr.note.text,
-        };
-        let label = match &r.result {
-            UnifiedResult::Code(sr) => sr.chunk.name.as_str(),
-            UnifiedResult::Note(_) => "note",
-        };
-        let tokens = super::count_tokens(embedder, text, label);
-        if used + tokens > budget && !packed.is_empty() {
-            break;
-        }
-        used += tokens;
-        packed.push(r);
-    }
+    let texts: Vec<&str> = results
+        .iter()
+        .map(|r| match &r.result {
+            UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
+            UnifiedResult::Note(nr) => nr.note.text.as_str(),
+        })
+        .collect();
+    let token_counts = super::count_tokens_batch(embedder, &texts);
+    let (packed, used) = super::token_pack(results, &token_counts, budget, |r| match &r.result {
+        UnifiedResult::Code(sr) => sr.score,
+        UnifiedResult::Note(nr) => nr.score,
+    });
     tracing::info!(
         chunks = packed.len(),
         tokens = used,

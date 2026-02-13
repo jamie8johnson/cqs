@@ -114,24 +114,31 @@ pub(crate) fn cmd_explain(
     {
         let embedder = cqs::Embedder::new()?;
         let _pack_span = tracing::info_span!("token_pack_explain", budget).entered();
-        let mut used: usize = 0;
 
-        // Priority 1: target chunk content
+        // Priority 1: target chunk content (always included)
         let target_tokens = super::count_tokens(&embedder, &chunk.content, &chunk.name);
-        used += target_tokens;
-        let include_target = true; // always include at least the target
+        let include_target = true;
 
-        // Priority 2: similar chunks' content (if budget allows)
-        let mut sim_included = std::collections::HashSet::new();
-        for r in &similar {
-            let tokens = super::count_tokens(&embedder, &r.chunk.content, &r.chunk.name);
-            if used + tokens > budget {
-                break;
-            }
-            used += tokens;
-            sim_included.insert(r.chunk.id.clone());
-        }
+        // Priority 2: similar chunks' content — pack remaining budget
+        let remaining = budget.saturating_sub(target_tokens);
+        let indexed: Vec<(usize, f32)> = similar
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i, r.score))
+            .collect();
+        let texts: Vec<&str> = indexed
+            .iter()
+            .map(|&(i, _)| similar[i].chunk.content.as_str())
+            .collect();
+        let token_counts = super::count_tokens_batch(&embedder, &texts);
+        let (packed, sim_used) =
+            super::token_pack(indexed, &token_counts, remaining, |&(_, score)| score);
+        let sim_included: std::collections::HashSet<String> = packed
+            .into_iter()
+            .map(|(i, _)| similar[i].chunk.id.clone())
+            .collect();
 
+        let used = target_tokens + sim_used;
         tracing::info!(
             tokens = used,
             budget,
