@@ -604,16 +604,12 @@ mentions = [
 [[note]]
 sentiment = -0.5
 text = "Sonnet agents produce shoddy work on audit fixes — ownership bugs (moved Vec used after for loop), missed tracing spans on files they owned. Always use opus agents for code changes. Haiku acceptable only for doc-only edits."
-mentions = [
-    "src/impact.rs",
-]
+mentions = ["src/impact.rs"]
 
 [[note]]
 sentiment = 0.5
 text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<ChangedFunction> — callers pass owned vec, return struct populates changed_functions directly instead of leaving empty for caller to fill."
-mentions = [
-    "src/impact.rs",
-]
+mentions = ["src/impact.rs"]
 
 [[note]]
 sentiment = -0.5
@@ -684,4 +680,28 @@ text = "Reference-scoped search via --ref flag reuses multi-index infrastructure
 mentions = [
     "src/reference.rs",
     "search_reference_unweighted",
+]
+
+[[note]]
+sentiment = 0.5
+text = "review_diff() composes 5 primitives (parse_unified_diff, map_hunks_to_functions, analyze_diff_impact, compute_risk_batch, match_notes + staleness) into a single structured payload. Pattern for composition commands: load shared data once (call graph, test chunks), pass to multiple analyses, merge results. Avoids N separate CLI calls."
+mentions = [
+    "src/review.rs",
+    "src/impact.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Risk scoring entry-point exception: functions with 0 callers AND 0 tests get Medium risk, not Low. Score formula (caller_count * (1 - coverage)) gives 0 for these, which would be Low, but they're likely entry points that need tests. Special-case prevents silent coverage gaps."
+mentions = [
+    "src/impact.rs",
+    "compute_risk_batch",
+]
+
+[[note]]
+sentiment = 0.5
+text = "impact.rs monolith split into src/impact/ directory — types, bfs, hints, analysis, diff, format. extract_call_snippet_from_cache needed pub(super) to cross analysis→diff boundary. Unused type re-exports from mod.rs caught by compiler — only re-export what lib.rs actually needs."
+mentions = [
+    "src/impact/mod.rs",
+    "src/impact/analysis.rs",
 ]
