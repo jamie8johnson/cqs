@@ -12,8 +12,8 @@ mod types;
 
 // Re-export types used by lib.rs and other crate modules
 pub use types::{
-    ChangedFunction, DiffImpactResult, FunctionHints, ImpactResult, RiskLevel, RiskScore,
-    TestSuggestion,
+    CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo,
+    FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion, TransitiveCaller,
 };
 
 // Re-export public functions

@@ -186,6 +186,7 @@ fn find_transitive_callers(
 /// Loads its own call graph and test chunks — only called when `--suggest-tests`
 /// is set, so the normal path pays zero overhead.
 pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion> {
+    let _span = tracing::info_span!("suggest_tests", function = %impact.function_name).entered();
     let graph = match store.get_call_graph() {
         Ok(g) => g,
         Err(e) => {
