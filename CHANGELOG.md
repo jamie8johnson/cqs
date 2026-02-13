@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.4] - 2026-02-13
+
+### Fixed
+- **v0.12.3 audit: 61 P1-P3 findings fixed** across 14 categories — security hardening, correctness bugs, N+1 query patterns, API types, algorithm fixes, test coverage, documentation.
+- **Security**: Symlink escape protection in CHM/WebHelp walkdir (SEC-9/11), zip-slip containment with `dunce::canonicalize` (SEC-10), `CQS_PDF_SCRIPT` env var warning (SEC-8).
+- **Correctness**: `score_name_match` 0.5 floor → 0.0 for non-matches (AC-13), reference stores opened read-only (DS-8/RM-11), `DiffTestInfo.via` per-function BFS attribution (AC-16), `dunce::canonicalize` in convert overwrite guard (PB-11).
+- **Performance**: 4 N+1 query patterns batched — transitive callers, suggest_tests, diff_impact, context (CQ-3/RM-14/PERF-13/PERF-12). `review_diff` single graph/test_chunks load (CQ-1/RM-10). SQLite batch inserts respect 999 variable limit (RB-15/16/DS-7). Batch tokenization (PERF-15).
+- **Algorithm**: Gather BFS decay per-hop instead of exponential compounding (AC-14), expansion cap enforced per-neighbor (AC-18), snippet bounds check for windowed chunks (AC-19), context token packing by relevance (AC-21).
+- **Conventions**: Safe `chars().next()` replacing `unwrap()` (EH-18/RB-12), `strip_prefix` replacing byte-index slicing (RB-14), `--tokens 0` rejected with error (RB-18), broadened copyright regex (EXT-19).
+
+### Changed
+- **Impact types**: Added `Debug`, `Clone`, `Serialize` derives and missing re-exports (AD-12/13).
+- **CLI args**: `OutputFormat` and `DeadConfidenceLevel` are now `clap::ValueEnum` enums instead of stringly-typed (AD-17).
+- **`RiskScore`**: Removed redundant `name` field (AD-18). Risk threshold constants `RISK_THRESHOLD_HIGH`/`MEDIUM` (EXT-13).
+- **Review types**: Simplified to use impact types directly — `CallerEntry`/`TestEntry` replaced with `CallerDetail`/`DiffTestInfo` (CQ-4/AD-14).
+- **Gather**: Shared BFS helpers (`bfs_expand`, `fetch_and_assemble`) deduplicate `gather`/`gather_cross_index` (CQ-2). Model compatibility check on cross-index gather (DS-10).
+- **Generic `token_pack<T>`**: Replaces 5 inline packing loops across commands (EXT-15).
+- **Reference search**: 4 functions → 2 with `apply_weight` param (CQ-5). `batch_count_query` deduplicates caller/callee counts (CQ-7). `finalize_output` deduplicates convert pipeline (CQ-6).
+- **Observability**: Tracing spans added to `suggest_tests`, `compute_hints`, `cmd_query_name_only`. `.context()` on 7z spawn and fs operations. `LazyLock` for 6 cleaning regexes. `warnings` field in `ReviewResult`.
+- **`cqs review --tokens`**: Token budgeting support added (EXT-18).
+
+### Refactored
+- **`impact.rs` split into `src/impact/` directory**: `mod.rs`, `types.rs`, `analysis.rs`, `diff.rs`, `bfs.rs`, `format.rs`, `hints.rs` (#402).
+
+### Added
+- 80 new tests: review_diff (5), reverse_bfs_multi (6), token budgeting (2), diff_impact e2e (3), score_name_match (4), plus integration tests.
+
 ## [0.12.3] - 2026-02-12
 
 ### Added
@@ -862,7 +889,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.4...HEAD
+[0.12.4]: https://github.com/jamie8johnson/cqs/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/jamie8johnson/cqs/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/jamie8johnson/cqs/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/jamie8johnson/cqs/compare/v0.12.0...v0.12.1
