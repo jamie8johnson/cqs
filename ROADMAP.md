@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.3
+## Current: v0.12.4
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -36,7 +36,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Next — Retrieval Quality
 
-- [ ] Re-ranking — cross-encoder or second-pass scoring on top-N retrieval results. Biggest retrieval quality win.
+- [ ] Re-ranking — cross-encoder `--rerank` flag. Second-pass scoring on top-N retrieval results. Biggest retrieval quality win remaining.
 - [ ] Embedding model eval — benchmark current E5-base-v2 against CodeSage, UniXcoder, Nomic Code on existing eval harness. Quantify gap before committing to upgrade.
 
 ### Next — Code Quality
@@ -44,6 +44,9 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [ ] Extract `read_stdin()` / `run_git_diff()` to shared CLI helper — duplicated in impact_diff.rs, review.rs, will multiply with ci
 - [ ] `store.search()` safety — rename or deprecate to prevent direct use. All user-facing paths should use `search_filtered()`.
 - [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.
+- [ ] `reverse_bfs_multi` depth accuracy (P4 AC-15) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
+- [ ] `--ref` CLI integration tests (P4 TC-6) — zero end-to-end tests for the --ref flag across query and gather. Lib-level tests exist but the CLI flow is untested.
+- [ ] Eliminate unsafe transmute in HNSW load (#270) — lifetime transmute in LoadedHnsw. Evaluate: rebuild-from-embeddings, `self_cell`, or switch to safe HNSW crate.
 
 ### Next — Expansion
 
