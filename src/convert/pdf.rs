@@ -16,10 +16,12 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
 
     let script = find_pdf_script()?;
 
-    let output = std::process::Command::new("python3")
+    let python = find_python()?;
+
+    let output = std::process::Command::new(&python)
         .args([&script, &path.to_string_lossy().to_string()])
         .output()
-        .context("Failed to run python3. Is Python installed?")?;
+        .with_context(|| format!("Failed to run `{}`. Is Python installed?", python))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -76,5 +78,25 @@ fn find_pdf_script() -> Result<String> {
     anyhow::bail!(
         "scripts/pdf_to_md.py not found. \
          Run cqs convert from the project root, or set CQS_PDF_SCRIPT env var."
+    )
+}
+
+/// Find a working Python interpreter.
+///
+/// Tries `python3` first, falls back to `python`.
+fn find_python() -> Result<String> {
+    for name in &["python3", "python"] {
+        if std::process::Command::new(name)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+        {
+            return Ok(name.to_string());
+        }
+    }
+    anyhow::bail!(
+        "Python not found. Install `python3` (Linux: `sudo apt install python3`, macOS: `brew install python`)"
     )
 }

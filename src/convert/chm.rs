@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 /// Convert a CHM file to Markdown.
 ///
@@ -14,7 +14,12 @@ use anyhow::Result;
 /// 3. Converts each page to Markdown
 /// 4. Merges all pages with `---` separators
 ///
-/// Requires `7z` (p7zip-full) to be installed.
+/// Requires `7z` (p7zip-full / brew install p7zip) to be installed.
+///
+/// ## Security
+///
+/// After extraction, all file paths are verified to be inside the temp directory
+/// (zip-slip containment). Symlinks in extracted content are skipped.
 pub fn chm_to_markdown(path: &Path) -> Result<String> {
     let _span = tracing::info_span!("chm_to_markdown", path = %path.display()).entered();
 
@@ -27,7 +32,14 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
         .args(["x", path_str.as_ref(), output_arg.as_str(), "-y"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .output()?;
+        .output()
+        .with_context(|| {
+            format!(
+                "Failed to run `{}` for CHM extraction. \
+                 Install: `sudo apt install p7zip-full` (Linux) or `brew install p7zip` (macOS)",
+                sevenzip
+            )
+        })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -39,9 +51,44 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
         );
     }
 
-    // Collect all HTML pages, sorted by name for consistent ordering
+    // Zip-slip containment: verify all extracted files are inside temp_dir
+    let canonical_temp = dunce::canonicalize(temp_dir.path()).with_context(|| {
+        format!(
+            "Failed to canonicalize temp dir: {}",
+            temp_dir.path().display()
+        )
+    })?;
+    for entry in walkdir::WalkDir::new(temp_dir.path())
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        match dunce::canonicalize(entry.path()) {
+            Ok(canonical) => {
+                if !canonical.starts_with(&canonical_temp) {
+                    anyhow::bail!(
+                        "CHM archive contains path traversal: {}",
+                        entry.path().display()
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    error = %e,
+                    "Cannot canonicalize extracted path, skipping"
+                );
+            }
+        }
+    }
+
+    // Maximum number of pages to process from a single CHM archive.
+    const MAX_PAGES: usize = 1000;
+
+    // Collect all HTML pages, sorted by name for consistent ordering.
+    // Skip symlinks (SEC-9) to prevent symlink escape attacks.
     let mut pages: Vec<_> = walkdir::WalkDir::new(temp_dir.path())
         .into_iter()
+        .filter_entry(|e| !e.path_is_symlink())
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
@@ -57,6 +104,16 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     if pages.is_empty() {
         tracing::warn!(path = %path.display(), "CHM contained no HTML files");
         anyhow::bail!("CHM archive contained no HTML files");
+    }
+
+    if pages.len() > MAX_PAGES {
+        tracing::warn!(
+            path = %path.display(),
+            total = pages.len(),
+            limit = MAX_PAGES,
+            "CHM page count exceeds limit, truncating"
+        );
+        pages.truncate(MAX_PAGES);
     }
 
     let mut all_markdown = Vec::new();
@@ -120,5 +177,7 @@ fn find_7z() -> Result<String> {
             return Ok(name.to_string());
         }
     }
-    anyhow::bail!("7z not found. Install: sudo apt install p7zip-full")
+    anyhow::bail!(
+        "7z not found. Install: `sudo apt install p7zip-full` (Linux) or `brew install p7zip` (macOS)"
+    )
 }

@@ -11,7 +11,37 @@
 //!
 //! Users control which rules run via `--clean-tags` (default: all).
 
+use std::sync::LazyLock;
+
 use regex::Regex;
+
+// ============ Compiled Regexes (LazyLock) ============
+
+/// Matches copyright lines like `© 2015-2024 by AVEVA Group Limited` with any year range.
+static COPYRIGHT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)©\s*\d{4}[-\u{2013}]\d{4}.*AVEVA Group Limited")
+        .expect("hardcoded copyright regex")
+});
+
+/// Matches `softwaresupport.aveva.com` in copyright boilerplate.
+static SUPPORT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"softwaresupport\.aveva\.com").expect("hardcoded support regex"));
+
+/// Matches `Page N` lines in PDF page boundaries.
+static PAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^Page\s+\d+\s*$").expect("hardcoded page regex"));
+
+/// Matches `©` at start of line in PDF page footers.
+static PAGE_COPYRIGHT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^©").expect("hardcoded page copyright regex"));
+
+/// Matches bare `Chapter N` headings.
+static CHAPTER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^#{1,6}\s+Chapter\s+\d+\s*$").expect("hardcoded chapter regex"));
+
+/// Matches `~~text~~` strikethrough markers.
+static STRIKE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"~~([^~]+)~~").expect("hardcoded strikethrough regex"));
 
 /// Context available to cleaning rules during the pipeline.
 pub struct CleaningContext {
@@ -124,21 +154,18 @@ fn extract_doc_title(lines: &[String]) -> String {
 
 /// Rule 1: Remove AVEVA copyright boilerplate from the start of the file.
 ///
-/// Detects `© 2015-2024 by AVEVA Group Limited` in the first 80 lines,
+/// Detects `© YYYY-YYYY ... AVEVA Group Limited` (any year range) in the first 80 lines,
 /// removes everything up to and including the `softwaresupport.aveva.com` line.
 fn rule_copyright_boilerplate(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
-    let copyright_re = Regex::new(r"(?i)© 2015-2024.*AVEVA Group Limited").unwrap();
-    let support_re = Regex::new(r"softwaresupport\.aveva\.com").unwrap();
-
     let scan_limit = lines.len().min(80);
     let mut copyright_found = false;
     let mut end_idx: Option<usize> = None;
 
     for (i, line) in lines[..scan_limit].iter().enumerate() {
-        if copyright_re.is_match(line) {
+        if COPYRIGHT_RE.is_match(line) {
             copyright_found = true;
         }
-        if copyright_found && support_re.is_match(line) {
+        if copyright_found && SUPPORT_RE.is_match(line) {
             end_idx = Some(i);
             break;
         }
@@ -157,14 +184,11 @@ fn rule_copyright_boilerplate(lines: &mut Vec<String>, _ctx: &CleaningContext) -
 ///
 /// Pattern: `©` footer → blank lines → `Page N` → blank lines → doc title echo → section echo
 fn rule_page_boundaries(lines: &mut Vec<String>, ctx: &CleaningContext) -> usize {
-    let page_re = Regex::new(r"^Page\s+\d+\s*$").unwrap();
-    let copyright_re = Regex::new(r"^©").unwrap();
-
     // Find all Page N line indices
     let page_indices: Vec<usize> = lines
         .iter()
         .enumerate()
-        .filter(|(_, line)| page_re.is_match(line.trim()))
+        .filter(|(_, line)| PAGE_RE.is_match(line.trim()))
         .map(|(i, _)| i)
         .collect();
 
@@ -179,7 +203,7 @@ fn rule_page_boundaries(lines: &mut Vec<String>, ctx: &CleaningContext) -> usize
         // Look backward up to 5 lines for copyright footer
         let mut start_idx = page_idx;
         for i in (page_idx.saturating_sub(5)..page_idx).rev() {
-            if copyright_re.is_match(lines[i].trim()) {
+            if PAGE_COPYRIGHT_RE.is_match(lines[i].trim()) {
                 start_idx = i;
                 break;
             }
@@ -293,10 +317,8 @@ fn rule_toc_section(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
 ///
 /// Removes lines matching `#{1,6} Chapter \d+` with nothing else.
 fn rule_chapter_headings(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
-    let chapter_re = Regex::new(r"^#{1,6}\s+Chapter\s+\d+\s*$").unwrap();
-
     let before = lines.len();
-    lines.retain(|line| !chapter_re.is_match(line.trim()));
+    lines.retain(|line| !CHAPTER_RE.is_match(line.trim()));
     before - lines.len()
 }
 
@@ -316,11 +338,9 @@ fn rule_bold_bullets(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
 /// Rule 6: Remove `~~text~~` strikethrough markers, keeping the text.
 #[allow(clippy::ptr_arg)] // Signature matches CleaningRule.apply fn pointer type
 fn rule_strikethrough(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
-    let strike_re = Regex::new(r"~~([^~]+)~~").unwrap();
-
     let mut replaced = 0;
     for line in lines.iter_mut() {
-        let new = strike_re.replace_all(line, "$1").to_string();
+        let new = STRIKE_RE.replace_all(line, "$1").to_string();
         if new != *line {
             *line = new;
             replaced += 1;

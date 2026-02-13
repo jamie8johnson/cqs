@@ -47,9 +47,14 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
         );
     }
 
-    // Collect all HTML pages under content/, sorted for consistent ordering
+    // Maximum number of pages to process from a single web help site.
+    const MAX_PAGES: usize = 1000;
+
+    // Collect all HTML pages under content/, sorted for consistent ordering.
+    // Skip symlinks (SEC-11) to prevent symlink traversal attacks.
     let mut pages: Vec<_> = walkdir::WalkDir::new(&content_dir)
         .into_iter()
+        .filter_entry(|e| !e.path_is_symlink())
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
@@ -64,6 +69,16 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
 
     if pages.is_empty() {
         anyhow::bail!("No HTML files found in {}", content_dir.display());
+    }
+
+    if pages.len() > MAX_PAGES {
+        tracing::warn!(
+            dir = %dir.display(),
+            total = pages.len(),
+            limit = MAX_PAGES,
+            "Web help page count exceeds limit, truncating"
+        );
+        pages.truncate(MAX_PAGES);
     }
 
     tracing::info!(
