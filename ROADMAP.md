@@ -22,12 +22,14 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 - Cross-index gather — `cqs gather --ref` (PR #399)
 - `cqs plan` — skill with 5 task-type templates (v0.12.2)
 - `cqs convert` — document-to-Markdown conversion (PR #397)
+- `cqs review` — structured diff review with risk scoring (PR #400)
+- Change risk scoring — `compute_risk_batch()` + `find_hotspots()` (PR #400)
+- Split `impact.rs` monolith → `src/impact/` directory (PR #402)
 
 ### Next — New Commands
 
 Priority order based on competitive gap analysis (Feb 2026).
 
-- [x] `cqs review` — structured review context from a diff. Combines impact-diff + notes + risk score. JSON for agent consumption. (PR #400)
 - [ ] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
 - [ ] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
 - [ ] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
@@ -35,12 +37,10 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Next — Retrieval Quality
 
 - [ ] Re-ranking — cross-encoder or second-pass scoring on top-N retrieval results. Biggest retrieval quality win.
-- [x] Change risk scoring — `risk = caller_count * (1 - test_coverage)`. Feeds into review/ci/health. (PR #400)
 - [ ] Embedding model eval — benchmark current E5-base-v2 against CodeSage, UniXcoder, Nomic Code on existing eval harness. Quantify gap before committing to upgrade.
 
 ### Next — Code Quality
 
-- [x] Split `impact.rs` monolith → `src/impact/` directory (types, bfs, hints, analysis, diff, format)
 - [ ] Extract `read_stdin()` / `run_git_diff()` to shared CLI helper — duplicated in impact_diff.rs, review.rs, will multiply with ci
 - [ ] `store.search()` safety — rename or deprecate to prevent direct use. All user-facing paths should use `search_filtered()`.
 - [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.

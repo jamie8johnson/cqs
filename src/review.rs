@@ -4,13 +4,14 @@
 //! into a single structured review payload.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::{
-    analyze_diff_impact, compute_risk_batch, map_hunks_to_functions, RiskLevel, RiskScore,
+    analyze_diff_impact_with_graph, compute_risk_batch, map_hunks_to_functions, CallerDetail,
+    DiffTestInfo, RiskLevel, RiskScore,
 };
 use crate::note::path_matches_mention;
 use crate::Store;
@@ -20,16 +21,19 @@ use crate::Store;
 pub struct ReviewResult {
     /// Functions changed by the diff
     pub changed_functions: Vec<ReviewedFunction>,
-    /// All callers affected by the changes
-    pub affected_callers: Vec<CallerEntry>,
-    /// Tests affected by or suggested for the changes
-    pub affected_tests: Vec<TestEntry>,
+    /// All callers affected by the changes (uses impact's CallerDetail directly)
+    pub affected_callers: Vec<CallerDetail>,
+    /// Tests affected by or suggested for the changes (uses impact's DiffTestInfo directly)
+    pub affected_tests: Vec<DiffTestInfo>,
     /// Notes relevant to changed files
     pub relevant_notes: Vec<NoteEntry>,
     /// Aggregated risk summary
     pub risk_summary: RiskSummary,
     /// Files that are stale in the index (if any)
     pub stale_warning: Option<Vec<String>>,
+    /// Non-fatal warnings encountered during review
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// A changed function with its risk assessment.
@@ -39,25 +43,6 @@ pub struct ReviewedFunction {
     pub file: String,
     pub line_start: u32,
     pub risk: RiskScore,
-}
-
-/// A caller affected by the changes.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CallerEntry {
-    pub name: String,
-    pub file: String,
-    pub line: u32,
-    pub call_line: u32,
-}
-
-/// A test affected by the changes.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct TestEntry {
-    pub name: String,
-    pub file: String,
-    pub line: u32,
-    pub via: String,
-    pub call_depth: usize,
 }
 
 /// A note relevant to the review.
@@ -80,13 +65,15 @@ pub struct RiskSummary {
 /// Analyze a unified diff and produce a comprehensive review.
 ///
 /// Steps:
-/// 1. Parse diff → changed functions
-/// 2. Impact analysis → callers + tests
-/// 3. Note matching → relevant notes for changed files
-/// 4. Risk scoring → per-function risk
-/// 5. Staleness check → warn if changed files are stale
+/// 1. Parse diff -> changed functions
+/// 2. Load call graph + test chunks (once, shared by impact + risk)
+/// 3. Impact analysis -> callers + tests
+/// 4. Risk scoring -> per-function risk
+/// 5. Note matching -> relevant notes for changed files (non-fatal)
+/// 6. Staleness check -> warn if changed files are stale (non-fatal)
 pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option<ReviewResult>> {
     let _span = tracing::info_span!("review_diff").entered();
+    let mut warnings: Vec<String> = Vec::new();
 
     // 1. Parse hunks
     let hunks = parse_unified_diff(diff_text);
@@ -100,20 +87,14 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
         return Ok(None);
     }
 
-    // 3. Impact analysis
-    let impact = analyze_diff_impact(store, changed)?;
+    // 3. Load call graph and test chunks once — used by both impact and risk
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
 
-    // 4. Load call graph and test chunks for risk scoring
-    let graph = store.get_call_graph().map_err(|e| {
-        tracing::warn!(error = %e, "Failed to load call graph for risk scoring");
-        e
-    })?;
-    let test_chunks = store.find_test_chunks().map_err(|e| {
-        tracing::warn!(error = %e, "Failed to load test chunks for risk scoring");
-        e
-    })?;
+    // 4. Impact analysis (reuses pre-loaded graph + test_chunks)
+    let impact = analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)?;
 
-    // 5. Compute risk scores for changed functions
+    // 5. Compute risk scores for changed functions (reuses same graph + test_chunks)
     let changed_names: Vec<&str> = impact
         .changed_functions
         .iter()
@@ -134,21 +115,31 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
         })
         .collect();
 
-    // 7. Match notes to changed files
+    // 7. Match notes to changed files (non-fatal: warning on failure)
     let changed_files: HashSet<&str> = impact
         .changed_functions
         .iter()
         .map(|f| f.file.as_str())
         .collect();
-    let relevant_notes = match_notes(store, &changed_files);
+    let relevant_notes = match match_notes(store, &changed_files) {
+        Ok(notes) => notes,
+        Err(e) => {
+            let msg = format!("Failed to load notes for review: {e}");
+            tracing::warn!("{}", msg);
+            warnings.push(msg);
+            Vec::new()
+        }
+    };
 
-    // 8. Staleness check
+    // 8. Staleness check (non-fatal: warning on failure)
     let origins: Vec<&str> = changed_files.iter().copied().collect();
     let stale_warning = match store.check_origins_stale(&origins, root) {
         Ok(stale) if stale.is_empty() => None,
         Ok(stale) => Some(stale.into_iter().collect()),
         Err(e) => {
-            tracing::warn!(error = %e, "Failed to check staleness");
+            let msg = format!("Failed to check staleness: {e}");
+            tracing::warn!("{}", msg);
+            warnings.push(msg);
             None
         }
     };
@@ -156,27 +147,22 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
     // 9. Build risk summary
     let risk_summary = build_risk_summary(&reviewed_functions);
 
-    // 10. Convert impact types to review types
-    let affected_callers: Vec<CallerEntry> = impact
+    // 10. Relativize paths in impact types for display
+    let affected_callers: Vec<CallerDetail> = impact
         .all_callers
-        .iter()
-        .map(|c| CallerEntry {
-            name: c.name.clone(),
-            file: crate::rel_display(&c.file, root),
-            line: c.line,
-            call_line: c.call_line,
+        .into_iter()
+        .map(|mut c| {
+            c.file = PathBuf::from(crate::rel_display(&c.file, root));
+            c
         })
         .collect();
 
-    let affected_tests: Vec<TestEntry> = impact
+    let affected_tests: Vec<DiffTestInfo> = impact
         .all_tests
-        .iter()
-        .map(|t| TestEntry {
-            name: t.name.clone(),
-            file: crate::rel_display(&t.file, root),
-            line: t.line,
-            via: t.via.clone(),
-            call_depth: t.call_depth,
+        .into_iter()
+        .map(|mut t| {
+            t.file = PathBuf::from(crate::rel_display(&t.file, root));
+            t
         })
         .collect();
 
@@ -187,22 +173,19 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
         relevant_notes,
         risk_summary,
         stale_warning,
+        warnings,
     }))
 }
 
 /// Match notes to a set of changed file paths.
-fn match_notes(store: &Store, changed_files: &HashSet<&str>) -> Vec<NoteEntry> {
+///
+/// Returns an error if notes cannot be loaded (caller decides how to handle).
+fn match_notes(store: &Store, changed_files: &HashSet<&str>) -> Result<Vec<NoteEntry>> {
     let _span = tracing::info_span!("match_notes").entered();
 
-    let notes = match store.list_notes_summaries() {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to load notes for review");
-            return Vec::new();
-        }
-    };
+    let notes = store.list_notes_summaries()?;
 
-    notes
+    Ok(notes
         .into_iter()
         .filter_map(|note| {
             let matching: Vec<String> = changed_files
@@ -225,7 +208,7 @@ fn match_notes(store: &Store, changed_files: &HashSet<&str>) -> Vec<NoteEntry> {
                 })
             }
         })
-        .collect()
+        .collect())
 }
 
 /// Build aggregated risk summary from reviewed functions.

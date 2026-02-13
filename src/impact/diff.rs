@@ -6,7 +6,7 @@ use crate::store::CallerWithContext;
 use crate::Store;
 
 use super::analysis::extract_call_snippet_from_cache;
-use super::bfs::reverse_bfs_multi;
+use super::bfs::{reverse_bfs, reverse_bfs_multi};
 use super::types::{
     CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo,
 };
@@ -72,6 +72,21 @@ pub fn analyze_diff_impact(
     store: &Store,
     changed: Vec<ChangedFunction>,
 ) -> anyhow::Result<DiffImpactResult> {
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+    analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)
+}
+
+/// Like [`analyze_diff_impact`] but accepts pre-loaded graph and test chunks.
+///
+/// Use when the caller already has the graph/test_chunks (e.g., `review_diff`
+/// which also needs them for risk scoring).
+pub fn analyze_diff_impact_with_graph(
+    store: &Store,
+    changed: Vec<ChangedFunction>,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> anyhow::Result<DiffImpactResult> {
     let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
         return Ok(DiffImpactResult {
@@ -86,26 +101,27 @@ pub fn analyze_diff_impact(
         });
     }
 
-    let graph = store.get_call_graph()?;
-    let test_chunks = store.find_test_chunks()?;
-
     let mut all_tests: Vec<DiffTestInfo> = Vec::new();
     let mut seen_callers = HashSet::new();
     let mut seen_tests: HashMap<String, usize> = HashMap::new();
 
-    // Collect all unique callers across changed functions (first pass)
+    // Batch-fetch callers for all changed functions in a single query
+    let callee_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
+    let callers_by_callee = store
+        .get_callers_with_context_batch(&callee_names)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch callers for diff impact");
+            HashMap::new()
+        });
+
+    // Deduplicate callers across all changed functions
     let mut deduped_callers: Vec<CallerWithContext> = Vec::new();
     for func in &changed {
-        match store.get_callers_with_context(&func.name) {
-            Ok(callers_ctx) => {
-                for caller in callers_ctx {
-                    if seen_callers.insert(caller.name.clone()) {
-                        deduped_callers.push(caller);
-                    }
+        if let Some(callers_ctx) = callers_by_callee.get(&func.name) {
+            for caller in callers_ctx {
+                if seen_callers.insert(caller.name.clone()) {
+                    deduped_callers.push(caller.clone());
                 }
-            }
-            Err(e) => {
-                tracing::warn!(function = %func.name, error = %e, "Failed to get callers");
             }
         }
     }
@@ -134,18 +150,36 @@ pub fn analyze_diff_impact(
         })
         .collect();
 
-    // Affected tests via multi-source reverse BFS — single traversal for all changed functions
+    // Affected tests via multi-source reverse BFS — single traversal for discovery
     let start_names: Vec<&str> = changed.iter().map(|f| f.name.as_str()).collect();
-    let ancestors = reverse_bfs_multi(&graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
-    for test in &test_chunks {
+    let ancestors = reverse_bfs_multi(graph, &start_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
+    // Pre-compute per-function BFS for via attribution.
+    // reverse_bfs_multi merges all sources, losing which changed function reaches which test.
+    // Individual BFS per changed function lets us attribute each test to its closest source.
+    let per_function_ancestors: Vec<HashMap<String, usize>> = changed
+        .iter()
+        .map(|f| reverse_bfs(graph, &f.name, DEFAULT_MAX_TEST_SEARCH_DEPTH))
+        .collect();
+
+    for test in test_chunks {
         if let Some(&depth) = ancestors.get(&test.name) {
             if depth > 0 {
-                // Find which changed function is closest to this test
-                let via = changed
-                    .iter()
-                    .find(|f| ancestors.get(&f.name).is_some_and(|&d| d == 0))
-                    .map(|f| f.name.clone())
-                    .unwrap_or_default();
+                // Attribute test to the changed function that reaches it at minimum depth
+                let mut best_via = None;
+                let mut best_depth = usize::MAX;
+                for (i, func_ancestors) in per_function_ancestors.iter().enumerate() {
+                    if let Some(&d) = func_ancestors.get(&test.name) {
+                        if d > 0 && d < best_depth {
+                            best_depth = d;
+                            best_via = Some(changed[i].name.clone());
+                        }
+                    }
+                }
+                let via = best_via.unwrap_or_else(|| {
+                    tracing::debug!(test = %test.name, "BFS anomaly: test found but no changed function path");
+                    "(unknown)".to_string()
+                });
 
                 match seen_tests.entry(test.name.clone()) {
                     std::collections::hash_map::Entry::Occupied(o) => {

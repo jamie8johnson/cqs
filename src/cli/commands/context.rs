@@ -95,18 +95,30 @@ pub(crate) fn cmd_context(
     }
 
     let chunk_names: HashSet<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+    let names_vec: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
 
-    // Collect external callers
+    // Batch-fetch callers and callees for all chunks in two queries
+    let callers_by_callee = store
+        .get_callers_full_batch(&names_vec)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch callers for context");
+            std::collections::HashMap::new()
+        });
+    let callees_by_caller = store
+        .get_callees_full_batch(&names_vec)
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-fetch callees for context");
+            std::collections::HashMap::new()
+        });
+
+    // Collect external callers from batch results
     let mut external_callers = Vec::new();
     let mut dependent_files: HashSet<String> = HashSet::new();
     for chunk in &chunks {
-        let callers = match store.get_callers_full(&chunk.name) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, name = %chunk.name, "Failed to get callers");
-                Vec::new()
-            }
-        };
+        let callers = callers_by_callee
+            .get(&chunk.name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         for caller in callers {
             let caller_origin = caller.file.to_string_lossy().to_string();
             if caller_origin != origin && !caller_origin.ends_with(path) {
@@ -122,23 +134,19 @@ pub(crate) fn cmd_context(
         }
     }
 
-    // Collect external callees
+    // Collect external callees from batch results
     let mut external_callees = Vec::new();
     let mut seen_callees: HashSet<String> = HashSet::new();
     for chunk in &chunks {
-        let chunk_file = chunk.file.to_string_lossy();
-        let callees = match store.get_callees_full(&chunk.name, Some(&chunk_file)) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(error = %e, name = %chunk.name, "Failed to get callees");
-                Vec::new()
-            }
-        };
+        let callees = callees_by_caller
+            .get(&chunk.name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         for (callee_name, _) in callees {
             if !chunk_names.contains(callee_name.as_str())
                 && seen_callees.insert(callee_name.clone())
             {
-                external_callees.push((callee_name, chunk.name.clone()));
+                external_callees.push((callee_name.clone(), chunk.name.clone()));
             }
         }
     }
@@ -183,20 +191,16 @@ pub(crate) fn cmd_context(
             }
         }
     } else if json {
-        // Token-budgeted content inclusion
+        // Token-budgeted content inclusion (sorted by caller count for relevance)
         let (content_map, token_info) = if let Some(budget) = max_tokens {
             let embedder = cqs::Embedder::new()?;
-            let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
-            let mut used: usize = 0;
-            let mut included = HashSet::new();
-            for c in &chunks {
-                let tokens = super::count_tokens(&embedder, &c.content, &c.name);
-                if used + tokens > budget && !included.is_empty() {
-                    break;
-                }
-                used += tokens;
-                included.insert(c.name.clone());
-            }
+            let caller_counts = store
+                .get_caller_counts_batch(&names_vec)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");
+                    std::collections::HashMap::new()
+                });
+            let (included, used) = pack_by_relevance(&chunks, &caller_counts, budget, &embedder);
             tracing::info!(
                 chunks = included.len(),
                 tokens = used,
@@ -248,20 +252,16 @@ pub(crate) fn cmd_context(
     } else {
         use colored::Colorize;
 
-        // Token-budgeted content inclusion for text mode
+        // Token-budgeted content inclusion (sorted by caller count for relevance)
         let (content_set, token_info) = if let Some(budget) = max_tokens {
             let embedder = cqs::Embedder::new()?;
-            let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
-            let mut used: usize = 0;
-            let mut included = HashSet::new();
-            for c in &chunks {
-                let tokens = super::count_tokens(&embedder, &c.content, &c.name);
-                if used + tokens > budget && !included.is_empty() {
-                    break;
-                }
-                used += tokens;
-                included.insert(c.name.clone());
-            }
+            let caller_counts = store
+                .get_caller_counts_batch(&names_vec)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to fetch caller counts for token packing");
+                    std::collections::HashMap::new()
+                });
+            let (included, used) = pack_by_relevance(&chunks, &caller_counts, budget, &embedder);
             tracing::info!(
                 chunks = included.len(),
                 tokens = used,
@@ -330,4 +330,37 @@ pub(crate) fn cmd_context(
     }
 
     Ok(())
+}
+
+/// Pack chunks by relevance (caller count descending) within a token budget.
+///
+/// Returns the set of included chunk names and total tokens used.
+fn pack_by_relevance(
+    chunks: &[cqs::store::ChunkSummary],
+    caller_counts: &std::collections::HashMap<String, u64>,
+    budget: usize,
+    embedder: &cqs::Embedder,
+) -> (HashSet<String>, usize) {
+    let _pack_span = tracing::info_span!("token_pack_context", budget).entered();
+
+    // Build (index, caller_count) pairs for token_pack to sort by
+    let indexed: Vec<(usize, u64)> = (0..chunks.len())
+        .map(|i| {
+            let cc = caller_counts.get(&chunks[i].name).copied().unwrap_or(0);
+            (i, cc)
+        })
+        .collect();
+    let texts: Vec<&str> = indexed
+        .iter()
+        .map(|&(i, _)| chunks[i].content.as_str())
+        .collect();
+    let token_counts = super::count_tokens_batch(embedder, &texts);
+
+    let (packed, used) = super::token_pack(indexed, &token_counts, budget, |&(_, cc)| cc as f32);
+
+    let included: HashSet<String> = packed
+        .into_iter()
+        .map(|(i, _)| chunks[i].name.clone())
+        .collect();
+    (included, used)
 }

@@ -12,8 +12,9 @@ pub(crate) fn cmd_review(
     base: Option<&str>,
     from_stdin: bool,
     json: bool,
+    max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_review").entered();
+    let _span = tracing::info_span!("cmd_review", ?max_tokens).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
 
     // 1. Get diff text
@@ -34,16 +35,86 @@ pub(crate) fn cmd_review(
                 println!("No indexed functions affected by this diff.");
             }
         }
-        Some(review) => {
+        Some(mut review) => {
+            // Apply token budget: truncate callers and tests lists to fit
+            let token_count_used = max_tokens.map(|budget| apply_token_budget(&mut review, budget));
+
             if json {
-                println!("{}", serde_json::to_string_pretty(&review)?);
+                let mut output: serde_json::Value = serde_json::to_value(&review)?;
+                if let Some(tokens) = token_count_used {
+                    output["token_count"] = serde_json::json!(tokens);
+                    output["token_budget"] = serde_json::json!(max_tokens.unwrap_or(0));
+                }
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
-                display_review_text(&review, &root);
+                display_review_text(&review, &root, token_count_used, max_tokens);
             }
         }
     }
 
     Ok(())
+}
+
+/// Apply token budget by truncating callers and tests lists.
+///
+/// Changed functions and risk summary are always included (small, essential).
+/// Callers and tests are the variable-size sections that get truncated.
+/// Returns total token count used.
+fn apply_token_budget(review: &mut ReviewResult, budget: usize) -> usize {
+    let _span = tracing::info_span!("review_token_budget", budget).entered();
+
+    // Estimate tokens per item (~15 tokens per caller/test line in text output)
+    const TOKENS_PER_CALLER: usize = 15;
+    const TOKENS_PER_TEST: usize = 18;
+    const TOKENS_PER_FUNCTION: usize = 12;
+    const TOKENS_PER_NOTE: usize = 20;
+    const BASE_OVERHEAD: usize = 30; // risk header, section headers, etc.
+
+    let mut used = BASE_OVERHEAD;
+
+    // Changed functions are always included (essential for review)
+    used += review.changed_functions.len() * TOKENS_PER_FUNCTION;
+
+    // Notes are always included (small, high value)
+    used += review.relevant_notes.len() * TOKENS_PER_NOTE;
+
+    // Fit callers within remaining budget (prioritize callers over tests)
+    let callers_budget = (budget.saturating_sub(used)) * 2 / 3; // 2/3 of remaining for callers
+    let max_callers = callers_budget / TOKENS_PER_CALLER;
+    let original_callers = review.affected_callers.len();
+    if review.affected_callers.len() > max_callers {
+        review.affected_callers.truncate(max_callers.max(1));
+    }
+    used += review.affected_callers.len() * TOKENS_PER_CALLER;
+
+    // Fit tests within remaining budget
+    let tests_budget = budget.saturating_sub(used);
+    let max_tests = tests_budget / TOKENS_PER_TEST;
+    let original_tests = review.affected_tests.len();
+    if review.affected_tests.len() > max_tests {
+        review.affected_tests.truncate(max_tests.max(1));
+    }
+    used += review.affected_tests.len() * TOKENS_PER_TEST;
+
+    if review.affected_callers.len() < original_callers
+        || review.affected_tests.len() < original_tests
+    {
+        let truncated_callers = original_callers - review.affected_callers.len();
+        let truncated_tests = original_tests - review.affected_tests.len();
+        tracing::info!(
+            budget,
+            used,
+            truncated_callers,
+            truncated_tests,
+            "Token-budgeted review"
+        );
+        review.warnings.push(format!(
+            "Output truncated to ~{} tokens (budget: {}). {} callers, {} tests omitted.",
+            used, budget, truncated_callers, truncated_tests
+        ));
+    }
+
+    used
 }
 
 fn empty_review_json() -> serde_json::Value {
@@ -91,7 +162,12 @@ fn run_git_diff(base: Option<&str>) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-fn display_review_text(review: &ReviewResult, _root: &std::path::Path) {
+fn display_review_text(
+    review: &ReviewResult,
+    _root: &std::path::Path,
+    token_count_used: Option<usize>,
+    max_tokens: Option<usize>,
+) {
     use colored::Colorize;
 
     // Risk summary header
@@ -106,13 +182,18 @@ fn display_review_text(review: &ReviewResult, _root: &std::path::Path) {
         "yellow" => overall_str.yellow().bold().to_string(),
         _ => overall_str.green().bold().to_string(),
     };
+    let token_info = match (token_count_used, max_tokens) {
+        (Some(used), Some(budget)) => format!(" [{}/{}T]", used, budget),
+        _ => String::new(),
+    };
     println!(
-        "{} {} (high: {}, medium: {}, low: {})",
+        "{} {} (high: {}, medium: {}, low: {}){}",
         "Risk:".bold(),
         colored_risk,
         review.risk_summary.high,
         review.risk_summary.medium,
         review.risk_summary.low,
+        token_info,
     );
 
     // Stale warning
@@ -161,7 +242,10 @@ fn display_review_text(review: &ReviewResult, _root: &std::path::Path) {
         for c in &review.affected_callers {
             println!(
                 "  {} ({}:{}, call at line {})",
-                c.name, c.file, c.line, c.call_line
+                c.name,
+                c.file.display(),
+                c.line,
+                c.call_line
             );
         }
     }
@@ -180,8 +264,20 @@ fn display_review_text(review: &ReviewResult, _root: &std::path::Path) {
         for t in &review.affected_tests {
             println!(
                 "  {} ({}:{}) [via {}, depth {}]",
-                t.name, t.file, t.line, t.via, t.call_depth
+                t.name,
+                t.file.display(),
+                t.line,
+                t.via,
+                t.call_depth
             );
+        }
+    }
+
+    // Warnings
+    if !review.warnings.is_empty() {
+        println!();
+        for w in &review.warnings {
+            println!("{} {}", "Warning:".yellow().bold(), w);
         }
     }
 

@@ -19,10 +19,12 @@ pub fn extract_title(markdown: &str, source_path: &Path) -> String {
     // Try H1 first
     for line in markdown.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("# ") && !trimmed.starts_with("## ") {
-            let title = trimmed[2..].trim().to_string();
-            if !title.is_empty() {
-                return title;
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            if !heading.starts_with('#') {
+                let title = heading.trim().to_string();
+                if !title.is_empty() {
+                    return title;
+                }
             }
         }
     }
@@ -30,10 +32,12 @@ pub fn extract_title(markdown: &str, source_path: &Path) -> String {
     // Try H2
     for line in markdown.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with("## ") && !trimmed.starts_with("### ") {
-            let title = trimmed[3..].trim().to_string();
-            if !title.is_empty() {
-                return title;
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            if !heading.starts_with('#') {
+                let title = heading.trim().to_string();
+                if !title.is_empty() {
+                    return title;
+                }
             }
         }
     }

@@ -2,16 +2,16 @@
 
 ## Right Now
 
-**Releasing v0.12.3.** 2026-02-12.
+**v0.12.3 released, clean state.** 2026-02-12.
 
-- PR #400: `cqs review` with risk scoring — merged
-- PR #399: `cqs gather --ref` cross-index gather
-- PR #398: `--tokens` on 5 commands, `--ref` scoped search, `cqs convert`
-- PR #396: `cqs plan` skill with 5 task-type templates
+v0.12.3 released to crates.io + GitHub. Post-release: split `impact.rs` monolith into `src/impact/` directory (PR #402). Added Code Quality section to roadmap.
+
+Next on roadmap: `cqs ci` (Phase 5 in plan), `cqs health` (Phase 3), re-ranking (Phase 4).
 
 ## Pending Changes
 
-None.
+- `PROJECT_CONTINUITY.md` — updated tears (this file)
+- `docs/notes.toml` — 2 new notes added (review composition, risk entry-point exception), uncommitted
 
 ## Parked
 
@@ -46,9 +46,9 @@ None.
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 760 total (465 lib + ~283 integration + 12 doc)
+- Tests: 808 total (470 lib + ~318 integration + 12 doc + 8 doc-tests)
 - CLI-only (MCP server removed in PR #352)
-- Source layout: parser/ and hnsw/ are directories (split from monoliths in v0.9.0)
+- Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag
 - Build target: `~/.cargo-target/cq/` (Linux FS)
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)

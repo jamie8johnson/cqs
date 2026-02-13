@@ -400,3 +400,92 @@ fn test_stale_no_index() {
         .failure()
         .stderr(predicate::str::contains("not found").or(predicate::str::contains("Index")));
 }
+
+// =============================================================================
+// Token budgeting (TC-5)
+// =============================================================================
+
+#[test]
+#[serial]
+fn test_query_tokens_limits_output() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["--json", "--tokens", "500", "process data"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
+
+    // When --tokens is specified, JSON output must have token_count and token_budget
+    assert!(
+        parsed["token_count"].is_number(),
+        "query --tokens --json should have token_count field, got: {}",
+        parsed
+    );
+    assert!(
+        parsed["token_budget"].is_number(),
+        "query --tokens --json should have token_budget field, got: {}",
+        parsed
+    );
+
+    let token_count = parsed["token_count"].as_u64().unwrap();
+    let token_budget = parsed["token_budget"].as_u64().unwrap();
+
+    assert_eq!(
+        token_budget, 500,
+        "token_budget should match --tokens value"
+    );
+    assert!(
+        token_count <= token_budget,
+        "token_count ({}) should not exceed token_budget ({})",
+        token_count,
+        token_budget
+    );
+}
+
+#[test]
+#[serial]
+fn test_gather_tokens_limits_output() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["gather", "process data", "--tokens", "500", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
+
+    assert!(
+        parsed["token_count"].is_number(),
+        "gather --tokens --json should have token_count field, got: {}",
+        parsed
+    );
+    assert!(
+        parsed["token_budget"].is_number(),
+        "gather --tokens --json should have token_budget field, got: {}",
+        parsed
+    );
+
+    let token_count = parsed["token_count"].as_u64().unwrap();
+    let token_budget = parsed["token_budget"].as_u64().unwrap();
+
+    assert_eq!(
+        token_budget, 500,
+        "token_budget should match --tokens value"
+    );
+    assert!(
+        token_count <= token_budget,
+        "token_count ({}) should not exceed token_budget ({})",
+        token_count,
+        token_budget
+    );
+}

@@ -94,8 +94,9 @@ pub use gather::{
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
     compute_hints_with_graph_depth, compute_risk_batch, diff_impact_to_json, find_hotspots,
-    impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests, ChangedFunction,
-    DiffImpactResult, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestSuggestion,
+    impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests, CallerDetail,
+    ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo, FunctionHints,
+    ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion, TransitiveCaller,
     DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};

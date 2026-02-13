@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, convert.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, convert.rs, review.rs
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
@@ -140,9 +140,17 @@ src/
   project.rs    - Cross-project search registry
   audit.rs    - Audit mode persistence and duration parsing
   focused_read.rs - Focused read logic (extract type dependencies)
-  impact.rs       - Impact analysis (callers + affected tests + diff-aware)
+  impact/         - Impact analysis (callers + affected tests + diff-aware)
+    mod.rs      - Public API, re-exports
+    types.rs    - Impact types (CallerDetail, RiskScore, etc.)
+    analysis.rs - suggest_tests, find_transitive_callers
+    diff.rs     - analyze_diff_impact
+    bfs.rs      - Reverse BFS traversal
+    format.rs   - JSON/Mermaid formatting
+    hints.rs    - compute_hints, risk scoring
   related.rs      - Co-occurrence analysis (shared callers, callees, types)
   scout.rs        - Pre-investigation dashboard (search + callers/tests + staleness + notes)
+  review.rs       - Diff review (impact-diff + notes + risk scoring)
   where_to_add.rs - Placement suggestion (semantic search + pattern extraction)
   diff_parse.rs   - Unified diff parser for impact-diff
   config.rs     - Configuration file support

@@ -35,6 +35,9 @@ pub mod webhelp;
 #[cfg(feature = "convert")]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "convert")]
+use anyhow::Context;
+
 /// Document format detected from file extension.
 #[cfg(feature = "convert")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,24 +148,46 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
     // Step 4: Count sections for reporting
     let sections = cleaned.lines().filter(|l| l.starts_with('#')).count();
 
-    let output_path = opts.output_dir.join(&filename);
+    finalize_output(path, &cleaned, &filename, &title, sections, format, opts)
+}
+
+/// Shared post-processing: write cleaned Markdown with overwrite guards and error context.
+///
+/// Used by both `convert_file()` and `convert_webhelp()` to avoid duplicating
+/// the output directory creation, overwrite guard, and fs::write logic.
+#[cfg(feature = "convert")]
+fn finalize_output(
+    source: &Path,
+    cleaned: &str,
+    filename: &str,
+    title: &str,
+    sections: usize,
+    format: DocFormat,
+    opts: &ConvertOptions,
+) -> anyhow::Result<ConvertResult> {
+    let output_path = opts.output_dir.join(filename);
 
     if !opts.dry_run {
-        std::fs::create_dir_all(&opts.output_dir)?;
+        std::fs::create_dir_all(&opts.output_dir).with_context(|| {
+            format!(
+                "Failed to create output directory: {}",
+                opts.output_dir.display()
+            )
+        })?;
 
         // Guard: don't overwrite the source file
         if let (Ok(src), Ok(dst)) = (
-            dunce::canonicalize(path),
+            dunce::canonicalize(source),
             dunce::canonicalize(&output_path).or_else(|_| {
                 // Output doesn't exist yet — canonicalize the parent + filename
-                opts.output_dir.canonicalize().map(|d| d.join(&filename))
+                dunce::canonicalize(&opts.output_dir).map(|d| d.join(filename))
             }),
         ) {
             if src == dst {
-                tracing::warn!(path = %path.display(), "Skipping: output would overwrite source");
+                tracing::warn!(path = %source.display(), "Skipping: output would overwrite source");
                 anyhow::bail!(
                     "Output would overwrite source file: {} (use a different --output directory)",
-                    path.display()
+                    source.display()
                 );
             }
         }
@@ -174,9 +199,10 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
             );
         }
 
-        std::fs::write(&output_path, &cleaned)?;
+        std::fs::write(&output_path, cleaned)
+            .with_context(|| format!("Failed to write output file: {}", output_path.display()))?;
         tracing::info!(
-            source = %path.display(),
+            source = %source.display(),
             output = %output_path.display(),
             title = %title,
             sections = sections,
@@ -185,10 +211,10 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
     }
 
     Ok(ConvertResult {
-        source: path.to_path_buf(),
+        source: source.to_path_buf(),
         output: output_path,
         format,
-        title,
+        title: title.to_string(),
         sections,
     })
 }
@@ -274,35 +300,16 @@ fn convert_webhelp(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertR
     let filename = naming::resolve_conflict(&filename, dir, &opts.output_dir);
 
     let sections = cleaned.lines().filter(|l| l.starts_with('#')).count();
-    let output_path = opts.output_dir.join(&filename);
 
-    if !opts.dry_run {
-        std::fs::create_dir_all(&opts.output_dir)?;
-
-        if output_path.exists() && !opts.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {} (use --overwrite to replace)",
-                output_path.display()
-            );
-        }
-
-        std::fs::write(&output_path, &cleaned)?;
-        tracing::info!(
-            source = %dir.display(),
-            output = %output_path.display(),
-            title = %title,
-            sections = sections,
-            "Converted web help"
-        );
-    }
-
-    Ok(ConvertResult {
-        source: dir.to_path_buf(),
-        output: output_path,
-        format: DocFormat::WebHelp,
-        title,
+    finalize_output(
+        dir,
+        &cleaned,
+        &filename,
+        &title,
         sections,
-    })
+        DocFormat::WebHelp,
+        opts,
+    )
 }
 
 #[cfg(test)]

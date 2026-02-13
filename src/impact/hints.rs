@@ -7,6 +7,11 @@ use super::bfs::reverse_bfs;
 use super::types::{FunctionHints, RiskLevel, RiskScore};
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
+/// Risk score threshold above which a function is classified as high risk.
+pub const RISK_THRESHOLD_HIGH: f32 = 5.0;
+/// Risk score threshold above which a function is classified as medium risk.
+pub const RISK_THRESHOLD_MEDIUM: f32 = 2.0;
+
 /// Core implementation — accepts pre-loaded graph and test chunks.
 ///
 /// Use this when processing multiple functions to avoid loading the graph
@@ -71,6 +76,7 @@ pub fn compute_hints(
     function_name: &str,
     prefetched_caller_count: Option<usize>,
 ) -> anyhow::Result<FunctionHints> {
+    let _span = tracing::info_span!("compute_hints", function = function_name).entered();
     let caller_count = match prefetched_caller_count {
         Some(n) => n,
         None => store.get_callers_full(function_name)?.len(),
@@ -119,15 +125,14 @@ pub fn compute_risk_batch(
             let risk_level = if caller_count == 0 && test_count == 0 {
                 // Entry point with no tests — flag as medium
                 RiskLevel::Medium
-            } else if score >= 5.0 {
+            } else if score >= RISK_THRESHOLD_HIGH {
                 RiskLevel::High
-            } else if score >= 2.0 {
+            } else if score >= RISK_THRESHOLD_MEDIUM {
                 RiskLevel::Medium
             } else {
                 RiskLevel::Low
             };
             RiskScore {
-                name: name.to_string(),
                 caller_count,
                 test_count,
                 coverage,

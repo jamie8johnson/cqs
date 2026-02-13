@@ -19,6 +19,7 @@ use crate::Store;
 pub const DEFAULT_MAX_EXPANDED_NODES: usize = 200;
 
 /// Options for gather operation
+#[derive(Debug)]
 pub struct GatherOptions {
     pub expand_depth: usize,
     pub direction: GatherDirection,
@@ -129,6 +130,132 @@ pub struct GatherResult {
 // MAX_EXPANDED_NODES is now configurable via GatherOptions::max_expanded_nodes
 // (default: DEFAULT_MAX_EXPANDED_NODES = 200)
 
+/// BFS-expand names via call graph, applying score decay and enforcing a node cap.
+///
+/// Returns `(name_scores, expansion_capped)` where `name_scores` maps
+/// function names to `(score, depth)`.
+fn bfs_expand(
+    name_scores: &mut HashMap<String, (f32, usize)>,
+    graph: &CallGraph,
+    opts: &GatherOptions,
+) -> bool {
+    let mut expansion_capped = false;
+    if opts.expand_depth == 0 {
+        return false;
+    }
+
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    for (name, &(_, depth)) in name_scores.iter() {
+        queue.push_back((name.clone(), depth));
+    }
+
+    while let Some((name, depth)) = queue.pop_front() {
+        if depth >= opts.expand_depth {
+            continue;
+        }
+        if name_scores.len() >= opts.max_expanded_nodes {
+            expansion_capped = true;
+            break;
+        }
+
+        let neighbors = get_neighbors(graph, &name, opts.direction);
+        let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
+        let new_score = base_score * opts.decay_factor;
+        for neighbor in neighbors {
+            if name_scores.len() >= opts.max_expanded_nodes {
+                expansion_capped = true;
+                break;
+            }
+            match name_scores.entry(neighbor.clone()) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert((new_score, depth + 1));
+                    queue.push_back((neighbor, depth + 1));
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    if new_score > e.get().0 {
+                        e.insert((new_score, depth + 1));
+                        // Don't re-add to queue — already explored or queued
+                    }
+                }
+            }
+        }
+        if expansion_capped {
+            break;
+        }
+    }
+    expansion_capped
+}
+
+/// Batch-fetch chunks for expanded names, deduplicate by id, assemble `GatheredChunk`s.
+///
+/// Returns `(chunks, search_degraded)`.
+fn fetch_and_assemble(
+    store: &Store,
+    name_scores: &HashMap<String, (f32, usize)>,
+    project_root: &Path,
+) -> (Vec<GatheredChunk>, bool) {
+    let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
+    let (batch_results, search_degraded) = match store.search_by_names_batch(&all_names, 1) {
+        Ok(r) => (r, false),
+        Err(e) => {
+            tracing::warn!(error = %e, "Batch name search failed, results may be incomplete");
+            (HashMap::new(), true)
+        }
+    };
+
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut chunks: Vec<GatheredChunk> = Vec::new();
+
+    for (name, (score, depth)) in name_scores {
+        if let Some(results) = batch_results.get(name) {
+            if let Some(r) = results.first() {
+                if seen_ids.contains(&r.chunk.id) {
+                    continue;
+                }
+                seen_ids.insert(r.chunk.id.clone());
+
+                chunks.push(GatheredChunk {
+                    name: r.chunk.name.clone(),
+                    file: r
+                        .chunk
+                        .file
+                        .strip_prefix(project_root)
+                        .unwrap_or(&r.chunk.file)
+                        .to_path_buf(),
+                    line_start: r.chunk.line_start,
+                    line_end: r.chunk.line_end,
+                    signature: r.chunk.signature.clone(),
+                    content: r.chunk.content.clone(),
+                    score: *score,
+                    depth: *depth,
+                    source: None,
+                });
+            }
+        }
+    }
+
+    tracing::debug!(chunk_count = chunks.len(), "Chunks assembled");
+    (chunks, search_degraded)
+}
+
+/// Sort chunks by score desc (name tiebreak), truncate to limit,
+/// then re-sort to file/line reading order.
+fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
+    chunks.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.name.cmp(&b.name))
+    });
+    chunks.truncate(limit);
+    chunks.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.line_start.cmp(&b.line_start))
+            .then(a.name.cmp(&b.name))
+    });
+}
+
 /// Gather relevant code chunks for a query
 pub fn gather(
     store: &Store,
@@ -174,113 +301,24 @@ pub fn gather(
     let graph = store.get_call_graph()?;
 
     // Seed names with their scores
-    let mut name_scores: HashMap<String, (f32, usize)> = HashMap::new(); // name -> (score, depth)
+    let mut name_scores: HashMap<String, (f32, usize)> = HashMap::new();
     for r in &seed_results {
         name_scores.insert(r.chunk.name.clone(), (r.score, 0));
     }
 
     // 3. BFS expand
-    let mut expansion_capped = false;
-    if opts.expand_depth > 0 {
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        for r in &seed_results {
-            queue.push_back((r.chunk.name.clone(), 0));
-        }
-
-        while let Some((name, depth)) = queue.pop_front() {
-            if depth >= opts.expand_depth {
-                continue;
-            }
-            if name_scores.len() >= opts.max_expanded_nodes {
-                expansion_capped = true;
-                break;
-            }
-
-            let neighbors = get_neighbors(&graph, &name, opts.direction);
-            let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
-            let decay = opts.decay_factor.powi((depth + 1) as i32);
-            let new_score = base_score * decay;
-            for neighbor in neighbors {
-                match name_scores.entry(neighbor.clone()) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert((new_score, depth + 1));
-                        queue.push_back((neighbor, depth + 1));
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut e) => {
-                        if new_score > e.get().0 {
-                            e.insert((new_score, depth + 1));
-                            // Don't re-add to queue — already explored or queued
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let expansion_capped = bfs_expand(&mut name_scores, &graph, opts);
     tracing::debug!(
         expanded_nodes = name_scores.len(),
         expansion_capped,
         "BFS expansion complete"
     );
 
-    // 4. Batch-fetch chunks for all expanded names, deduplicate by id
-    let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
-    let (batch_results, search_degraded) = match store.search_by_names_batch(&all_names, 1) {
-        Ok(r) => (r, false),
-        Err(e) => {
-            tracing::warn!(error = %e, "Batch name search failed, results may be incomplete");
-            (HashMap::new(), true)
-        }
-    };
+    // 4. Batch-fetch chunks, deduplicate
+    let (mut chunks, search_degraded) = fetch_and_assemble(store, &name_scores, project_root);
 
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut chunks: Vec<GatheredChunk> = Vec::new();
-
-    for (name, (score, depth)) in &name_scores {
-        if let Some(results) = batch_results.get(name) {
-            if let Some(r) = results.first() {
-                // Dedup by chunk id
-                if seen_ids.contains(&r.chunk.id) {
-                    continue;
-                }
-                seen_ids.insert(r.chunk.id.clone());
-
-                chunks.push(GatheredChunk {
-                    name: r.chunk.name.clone(),
-                    file: r
-                        .chunk
-                        .file
-                        .strip_prefix(project_root)
-                        .unwrap_or(&r.chunk.file)
-                        .to_path_buf(),
-                    line_start: r.chunk.line_start,
-                    line_end: r.chunk.line_end,
-                    signature: r.chunk.signature.clone(),
-                    content: r.chunk.content.clone(),
-                    score: *score,
-                    depth: *depth,
-                    source: None,
-                });
-            }
-        }
-    }
-
-    tracing::debug!(chunk_count = chunks.len(), "Chunks assembled");
-
-    // 5. Sort by score desc (with name tiebreak for determinism), truncate to limit,
-    //    then re-sort by file → line_start → name for stable reading order.
-    chunks.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.name.cmp(&b.name))
-    });
-    chunks.truncate(opts.limit);
-    chunks.sort_by(|a, b| {
-        a.file
-            .cmp(&b.file)
-            .then(a.line_start.cmp(&b.line_start))
-            .then(a.name.cmp(&b.name))
-    });
+    // 5. Sort by score desc, truncate to limit, re-sort to reading order
+    sort_and_truncate(&mut chunks, opts.limit);
 
     Ok(GatherResult {
         chunks,
@@ -314,18 +352,33 @@ pub fn gather_cross_index(
     )
     .entered();
 
+    // Model compatibility check: warn if project and reference use different embedding models
+    if let (Ok(proj_model), Ok(ref_model)) = (
+        project_store.get_metadata("model_name"),
+        ref_idx.store.get_metadata("model_name"),
+    ) {
+        if proj_model != ref_model {
+            tracing::warn!(
+                project = %proj_model,
+                reference = %ref_model,
+                "Model mismatch between project and reference — results may be inaccurate"
+            );
+        }
+    }
+
     // 1. Seed search against reference index (unweighted — user explicitly targets this ref)
     let filter = crate::store::helpers::SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: true,
         ..SearchFilter::default()
     };
-    let ref_seeds = crate::reference::search_reference_unweighted(
+    let ref_seeds = crate::reference::search_reference(
         ref_idx,
         query_embedding,
         &filter,
         opts.seed_limit,
         opts.seed_threshold,
+        false, // no weight for cross-index gather (user explicitly targets this ref)
     )?;
     tracing::debug!(
         ref_seed_count = ref_seeds.len(),
@@ -438,41 +491,7 @@ pub fn gather_cross_index(
         name_scores.insert(name.clone(), (*score, 0));
     }
 
-    let mut expansion_capped = false;
-    if opts.expand_depth > 0 {
-        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-        for name in bridge_scores.keys() {
-            queue.push_back((name.clone(), 0));
-        }
-
-        while let Some((name, depth)) = queue.pop_front() {
-            if depth >= opts.expand_depth {
-                continue;
-            }
-            if name_scores.len() >= opts.max_expanded_nodes {
-                expansion_capped = true;
-                break;
-            }
-
-            let neighbors = get_neighbors(&graph, &name, opts.direction);
-            let base_score = name_scores.get(&name).map(|(s, _)| *s).unwrap_or(0.5);
-            let decay = opts.decay_factor.powi((depth + 1) as i32);
-            let new_score = base_score * decay;
-            for neighbor in neighbors {
-                match name_scores.entry(neighbor.clone()) {
-                    std::collections::hash_map::Entry::Vacant(e) => {
-                        e.insert((new_score, depth + 1));
-                        queue.push_back((neighbor, depth + 1));
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut e) => {
-                        if new_score > e.get().0 {
-                            e.insert((new_score, depth + 1));
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let expansion_capped = bfs_expand(&mut name_scores, &graph, opts);
     tracing::debug!(
         expanded_nodes = name_scores.len(),
         expansion_capped,
@@ -480,46 +499,8 @@ pub fn gather_cross_index(
     );
 
     // 5. Batch-fetch project chunks
-    let all_names: Vec<&str> = name_scores.keys().map(|s| s.as_str()).collect();
-    let (batch_results, search_degraded) = match project_store.search_by_names_batch(&all_names, 1)
-    {
-        Ok(r) => (r, false),
-        Err(e) => {
-            tracing::warn!(error = %e, "Batch name search failed, results may be incomplete");
-            (HashMap::new(), true)
-        }
-    };
-
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut project_chunks: Vec<GatheredChunk> = Vec::new();
-
-    for (name, (score, depth)) in &name_scores {
-        if let Some(results) = batch_results.get(name) {
-            if let Some(r) = results.first() {
-                if seen_ids.contains(&r.chunk.id) {
-                    continue;
-                }
-                seen_ids.insert(r.chunk.id.clone());
-
-                project_chunks.push(GatheredChunk {
-                    name: r.chunk.name.clone(),
-                    file: r
-                        .chunk
-                        .file
-                        .strip_prefix(project_root)
-                        .unwrap_or(&r.chunk.file)
-                        .to_path_buf(),
-                    line_start: r.chunk.line_start,
-                    line_end: r.chunk.line_end,
-                    signature: r.chunk.signature.clone(),
-                    content: r.chunk.content.clone(),
-                    score: *score,
-                    depth: *depth,
-                    source: None,
-                });
-            }
-        }
-    }
+    let (project_chunks, search_degraded) =
+        fetch_and_assemble(project_store, &name_scores, project_root);
 
     // 6. Combine ref seeds + project chunks, sort by score, truncate, re-sort to reading order
     let mut all_chunks = ref_chunks;

@@ -23,6 +23,22 @@ fn normalize_origin(path: &Path) -> String {
 }
 
 impl Store {
+    /// Retrieve a single metadata value by key.
+    ///
+    /// Returns `Ok(value)` if the key exists, or `Err` if not found or on DB error.
+    /// Used for lightweight metadata checks (e.g., model compatibility between stores).
+    pub fn get_metadata(&self, key: &str) -> Result<String, StoreError> {
+        self.rt.block_on(async {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = ?1")
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            row.map(|(v,)| v)
+                .ok_or_else(|| StoreError::Runtime(format!("metadata key '{}' not found", key)))
+        })
+    }
+
     /// Insert or update chunks in batch (10x faster than individual inserts)
     ///
     /// FTS operations (DELETE then INSERT per chunk) are not batched because:
@@ -316,16 +332,20 @@ impl Store {
                     }
                 }
 
-                let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
-                    sqlx::QueryBuilder::new(
-                        "INSERT INTO calls (caller_id, callee_name, line_number) ",
-                    );
-                query_builder.push_values(calls.iter(), |mut b, (chunk_id, call)| {
-                    b.push_bind(chunk_id)
-                        .push_bind(&call.callee_name)
-                        .push_bind(call.line_number as i64);
-                });
-                query_builder.build().execute(&mut *tx).await?;
+                // 300 rows * 3 binds = 900 < SQLite's 999 limit
+                const INSERT_BATCH: usize = 300;
+                for batch in calls.chunks(INSERT_BATCH) {
+                    let mut query_builder: sqlx::QueryBuilder<sqlx::Sqlite> =
+                        sqlx::QueryBuilder::new(
+                            "INSERT INTO calls (caller_id, callee_name, line_number) ",
+                        );
+                    query_builder.push_values(batch.iter(), |mut b, (chunk_id, call)| {
+                        b.push_bind(chunk_id)
+                            .push_bind(&call.callee_name)
+                            .push_bind(call.line_number as i64);
+                    });
+                    query_builder.build().execute(&mut *tx).await?;
+                }
             }
 
             tx.commit().await?;

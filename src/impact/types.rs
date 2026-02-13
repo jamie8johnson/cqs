@@ -7,6 +7,7 @@ use std::path::PathBuf;
 /// Named `CallerDetail` to distinguish from `store::CallerInfo` which has
 /// only basic fields (name, file, line). This struct adds `call_line` and
 /// `snippet` for impact analysis display.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CallerDetail {
     pub name: String,
     pub file: PathBuf,
@@ -16,6 +17,7 @@ pub struct CallerDetail {
 }
 
 /// Affected test with call depth
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TestInfo {
     pub name: String,
     pub file: PathBuf,
@@ -24,6 +26,7 @@ pub struct TestInfo {
 }
 
 /// Transitive caller at a given depth
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TransitiveCaller {
     pub name: String,
     pub file: PathBuf,
@@ -32,6 +35,7 @@ pub struct TransitiveCaller {
 }
 
 /// Complete impact analysis result
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImpactResult {
     pub function_name: String,
     pub callers: Vec<CallerDetail>,
@@ -40,12 +44,14 @@ pub struct ImpactResult {
 }
 
 /// Lightweight caller + test coverage hints for a function.
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FunctionHints {
     pub caller_count: usize,
     pub test_count: usize,
 }
 
 /// A function identified as changed by a diff
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ChangedFunction {
     pub name: String,
     pub file: String,
@@ -53,6 +59,7 @@ pub struct ChangedFunction {
 }
 
 /// A test affected by diff changes, tracking which changed function leads to it
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffTestInfo {
     pub name: String,
     pub file: PathBuf,
@@ -62,6 +69,7 @@ pub struct DiffTestInfo {
 }
 
 /// Summary counts for diff impact
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffImpactSummary {
     pub changed_count: usize,
     pub caller_count: usize,
@@ -69,6 +77,7 @@ pub struct DiffImpactSummary {
 }
 
 /// Aggregated impact result from a diff
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffImpactResult {
     pub changed_functions: Vec<ChangedFunction>,
     pub all_callers: Vec<CallerDetail>,
@@ -77,6 +86,7 @@ pub struct DiffImpactResult {
 }
 
 /// A suggested test for an untested caller
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TestSuggestion {
     /// Suggested test function name
     pub test_name: String,
@@ -112,7 +122,6 @@ impl std::fmt::Display for RiskLevel {
 /// Risk assessment for a single function.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RiskScore {
-    pub name: String,
     pub caller_count: usize,
     pub test_count: usize,
     pub coverage: f32,

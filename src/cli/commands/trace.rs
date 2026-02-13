@@ -2,25 +2,22 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use colored::Colorize;
 
 use cqs::Store;
 
 use super::resolve::resolve_target;
+use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_trace(
     _cli: &crate::cli::Cli,
     source: &str,
     target: &str,
     max_depth: usize,
-    format: &str,
+    format: &OutputFormat,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_trace", source, target).entered();
-
-    if !matches!(format, "text" | "json" | "mermaid") {
-        bail!("Invalid format '{}'. Valid: text, json, mermaid", format);
-    }
 
     let (store, root, _) = crate::cli::open_project_store()?;
 
@@ -35,7 +32,7 @@ pub(crate) fn cmd_trace(
 
     // Trivial case: source == target
     if source_name == target_name {
-        if format == "json" {
+        if matches!(format, OutputFormat::Json) {
             let rel_file = cqs::rel_display(&source_chunk.file, &root);
             let result = serde_json::json!({
                 "source": source_name,
@@ -44,7 +41,7 @@ pub(crate) fn cmd_trace(
                 "depth": 0
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
-        } else if format == "mermaid" {
+        } else if matches!(format, OutputFormat::Mermaid) {
             let rel_file = cqs::rel_display(&source_chunk.file, &root);
             println!("graph TD");
             println!(
@@ -65,7 +62,7 @@ pub(crate) fn cmd_trace(
 
     match path {
         Some(names) => {
-            if format == "json" {
+            if matches!(format, OutputFormat::Json) {
                 let mut path_json = Vec::new();
                 for name in &names {
                     let entry = match store.search_by_name(name, 1)?.into_iter().next() {
@@ -90,7 +87,7 @@ pub(crate) fn cmd_trace(
                     "depth": names.len() - 1
                 });
                 println!("{}", serde_json::to_string_pretty(&result)?);
-            } else if format == "mermaid" {
+            } else if matches!(format, OutputFormat::Mermaid) {
                 format_mermaid(&store, &root, &names)?;
             } else {
                 println!(
@@ -120,7 +117,7 @@ pub(crate) fn cmd_trace(
             }
         }
         None => {
-            if format == "json" {
+            if matches!(format, OutputFormat::Json) {
                 let result = serde_json::json!({
                     "source": source_name,
                     "target": target_name,
@@ -128,7 +125,7 @@ pub(crate) fn cmd_trace(
                     "message": format!("No call path found within depth {}", max_depth)
                 });
                 println!("{}", serde_json::to_string_pretty(&result)?);
-            } else if format == "mermaid" {
+            } else if matches!(format, OutputFormat::Mermaid) {
                 // Empty graph with comment
                 println!("graph TD");
                 println!(
