@@ -1,16 +1,15 @@
 //! HNSW index persistence (save/load)
 
-use std::mem::ManuallyDrop;
+use std::cell::UnsafeCell;
 use std::path::Path;
 
 use hnsw_rs::anndists::dist::distances::DistCosine;
 use hnsw_rs::api::AnnT;
-use hnsw_rs::hnsw::Hnsw;
 use hnsw_rs::hnswio::HnswIo;
 
 use crate::index::VectorIndex;
 
-use super::{HnswError, HnswIndex, HnswInner, LoadedHnsw};
+use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 
 /// Valid HNSW file extensions (prevents path traversal via malicious checksum file)
 const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
@@ -99,7 +98,7 @@ impl HnswIndex {
         tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
 
         // Verify ID map matches HNSW vector count before saving
-        let hnsw_count = self.inner.hnsw().get_nb_point();
+        let hnsw_count = self.inner.with_hnsw(|h| h.get_nb_point());
         if hnsw_count != self.id_map.len() {
             return Err(HnswError::Internal(format!(
                 "HNSW/ID map count mismatch on save: HNSW has {} vectors but id_map has {}. This is a bug.",
@@ -148,8 +147,7 @@ impl HnswIndex {
 
         // Save the HNSW graph and data to temp directory
         self.inner
-            .hnsw()
-            .file_dump(&temp_dir, basename)
+            .with_hnsw(|h| h.file_dump(&temp_dir, basename))
             .map_err(|e| {
                 HnswError::Internal(format!(
                     "Failed to dump HNSW to {}/{}: {}",
@@ -346,48 +344,29 @@ impl HnswIndex {
         let id_map: Vec<String> = serde_json::from_reader(id_map_reader)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
 
-        // Load HNSW graph using LoadedHnsw for proper memory management
+        // Load HNSW graph using self_cell for safe self-referential ownership
         //
-        // hnsw_rs returns Hnsw<'a> borrowing from HnswIo. We use LoadedHnsw to:
-        // 1. Keep HnswIo alive as long as Hnsw needs it
-        // 2. Clean up HnswIo when HnswIndex is dropped
-        // 3. Ensure drop order (Hnsw first, then HnswIo)
-        let hnsw_io = Box::new(HnswIo::new(dir, basename));
-        let io_ptr = Box::into_raw(hnsw_io);
+        // hnsw_rs returns Hnsw<'a> borrowing from &'a mut HnswIo.
+        // self_cell ties these lifetimes together without transmute.
+        let hnsw_io_cell = Box::new(HnswIoCell(UnsafeCell::new(HnswIo::new(dir, basename))));
 
-        // SAFETY: io_ptr is valid, we just created it from Box::into_raw above
-        let hnsw: Hnsw<'_, f32, DistCosine> = unsafe { &mut *io_ptr }.load_hnsw().map_err(|e| {
-            // SAFETY: io_ptr was created from Box::into_raw, safe to reclaim on error path
-            unsafe {
-                drop(Box::from_raw(io_ptr));
-            }
-            HnswError::Internal(format!("Failed to load HNSW: {}", e))
+        let loaded = LoadedHnsw::try_new(hnsw_io_cell, |cell| {
+            // SAFETY: Exclusive access during construction — no other references exist.
+            // After this closure returns, the UnsafeCell is never accessed again directly.
+            let io = unsafe { &mut *cell.0.get() };
+            io.load_hnsw::<f32, DistCosine>()
+                .map_err(|e| HnswError::Internal(format!("Failed to load HNSW: {}", e)))
         })?;
 
-        // SAFETY: The transmute is sound because:
-        // - io_ptr will live as long as LoadedHnsw (cleaned up in Drop)
-        // - LoadedHnsw's Drop ensures hnsw is dropped before io_ptr is freed
-        // - Hnsw only reads from the data owned by HnswIo
-        let hnsw: Hnsw<'static, f32, DistCosine> = unsafe { std::mem::transmute(hnsw) };
-
         // Validate id_map size matches HNSW vector count
-        let hnsw_count = hnsw.get_nb_point();
+        let hnsw_count = loaded.with_dependent(|_, hnsw| hnsw.get_nb_point());
         if hnsw_count != id_map.len() {
-            // SAFETY: io_ptr was created from Box::into_raw, safe to reclaim
-            unsafe {
-                drop(Box::from_raw(io_ptr));
-            }
             return Err(HnswError::Internal(format!(
                 "ID map size mismatch: HNSW has {} vectors but id_map has {}",
                 hnsw_count,
                 id_map.len()
             )));
         }
-
-        let loaded = LoadedHnsw {
-            io_ptr,
-            hnsw: ManuallyDrop::new(hnsw),
-        };
 
         tracing::info!("HNSW index loaded: {} vectors", id_map.len());
 

@@ -37,8 +37,7 @@ impl HnswIndex {
 
         let neighbors = self
             .inner
-            .hnsw()
-            .search_neighbours(query.as_slice(), k, EF_SEARCH);
+            .with_hnsw(|h| h.search_neighbours(query.as_slice(), k, EF_SEARCH));
 
         neighbors
             .into_iter()

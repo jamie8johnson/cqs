@@ -489,3 +489,162 @@ fn test_gather_tokens_limits_output() {
         token_budget
     );
 }
+
+// =============================================================================
+// --ref flag integration tests (TC-6)
+// =============================================================================
+
+/// Create a reference source project with distinct content for --ref testing.
+/// Content is about "database" operations — intentionally different from the
+/// graph project's "process/validate/transform" theme so --ref results are
+/// distinguishable from project results.
+fn setup_ref_source() -> TempDir {
+    let dir = TempDir::new().expect("Failed to create ref source dir");
+    let src = dir.path().join("src");
+    fs::create_dir(&src).expect("Failed to create src dir");
+
+    fs::write(
+        src.join("lib.rs"),
+        r#"
+/// Connect to the database with retry logic
+pub fn connect_db(url: &str) -> Connection {
+    let conn = Connection::new(url);
+    conn.set_timeout(30);
+    conn
+}
+
+/// Run a database migration to the target version
+pub fn migrate(conn: &Connection, version: u32) {
+    conn.execute("CREATE TABLE IF NOT EXISTS migrations (version INT)");
+    conn.execute(&format!("INSERT INTO migrations VALUES ({})", version));
+}
+
+/// Query the database for user records
+pub fn find_users(conn: &Connection, name: &str) -> Vec<User> {
+    conn.query(&format!("SELECT * FROM users WHERE name = '{}'", name))
+}
+"#,
+    )
+    .expect("Failed to write ref source");
+
+    dir
+}
+
+#[test]
+#[serial]
+fn test_query_with_ref() {
+    let project = setup_graph_project();
+    let ref_source = setup_ref_source();
+    let xdg_home = TempDir::new().unwrap();
+
+    init_and_index(&project);
+
+    // Add reference with XDG_DATA_HOME redirected to temp dir
+    cqs()
+        .args(["ref", "add", "testref", ref_source.path().to_str().unwrap()])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // Query with --ref should succeed and return results
+    // Note: --ref is a top-level flag, QUERY is a top-level positional
+    let output = cqs()
+        .args(["database connection", "--ref", "testref", "--json"])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
+
+    assert!(
+        parsed["results"].is_array(),
+        "query --ref --json should have results array"
+    );
+    let results = parsed["results"].as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "query --ref should return at least one result from reference"
+    );
+}
+
+#[test]
+#[serial]
+fn test_gather_with_ref() {
+    let project = setup_graph_project();
+    let ref_source = setup_ref_source();
+    let xdg_home = TempDir::new().unwrap();
+
+    init_and_index(&project);
+
+    cqs()
+        .args(["ref", "add", "testref", ref_source.path().to_str().unwrap()])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // gather --ref seeds from the reference index
+    let output = cqs()
+        .args(["gather", "database migration", "--ref", "testref", "--json"])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8(output.get_output().stdout.clone()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
+
+    assert!(
+        parsed["chunks"].is_array(),
+        "gather --ref --json should have chunks array"
+    );
+}
+
+#[test]
+#[serial]
+fn test_query_ref_not_found() {
+    let project = setup_graph_project();
+    let xdg_home = TempDir::new().unwrap();
+    init_and_index(&project);
+
+    // Query with --ref pointing to nonexistent reference
+    // Note: --ref is a top-level flag, QUERY is a top-level positional
+    cqs()
+        .args(["anything", "--ref", "nonexistent", "--json"])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not found"));
+}
+
+#[test]
+#[serial]
+fn test_ref_list_shows_added_ref() {
+    let project = setup_graph_project();
+    let ref_source = setup_ref_source();
+    let xdg_home = TempDir::new().unwrap();
+
+    init_and_index(&project);
+
+    cqs()
+        .args(["ref", "add", "myref", ref_source.path().to_str().unwrap()])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .success();
+
+    // ref list should show the added reference
+    cqs()
+        .args(["ref", "list"])
+        .env("XDG_DATA_HOME", xdg_home.path())
+        .current_dir(project.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myref"));
+}

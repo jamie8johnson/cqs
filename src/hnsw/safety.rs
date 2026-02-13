@@ -1,27 +1,20 @@
 //! Safety tests for LoadedHnsw self-referential pattern
 //!
-//! The LoadedHnsw struct uses a raw pointer and lifetime transmute to handle
-//! hnsw_rs's borrowing API. These tests verify memory safety invariants.
+//! LoadedHnsw uses `self_cell` to manage the self-referential `HnswIo` → `Hnsw`
+//! relationship. These tests verify the pattern works correctly under various
+//! conditions: repeated searches, lifecycle, concurrent access, and layout.
 //!
-//! # CRITICAL: hnsw_rs version dependency
+//! # hnsw_rs version dependency
 //!
-//! The safety of LoadedHnsw depends on hnsw_rs internals:
-//! - `HnswIo::load_hnsw()` must return `Hnsw<'a>` borrowing from `&'a mut HnswIo`
-//! - The `Hnsw` must only read (not mutate) data owned by `HnswIo`
-//! - Memory layout of `Hnsw` must not change in incompatible ways
-//!
-//! If upgrading hnsw_rs, re-run these tests and verify no UB with miri if possible.
+//! The `HnswIoCell` wrapper uses one `UnsafeCell` access during construction.
+//! If upgrading hnsw_rs, re-run these tests and verify behavior.
 
 #[cfg(test)]
 mod tests {
-    use std::mem::{align_of, size_of};
+    use std::mem::size_of;
     use std::sync::Arc;
     use std::thread;
     use tempfile::TempDir;
-
-    use hnsw_rs::anndists::dist::distances::DistCosine;
-    use hnsw_rs::hnsw::Hnsw;
-    use hnsw_rs::hnswio::HnswIo;
 
     use crate::embedder::Embedding;
     use crate::hnsw::{HnswIndex, HnswInner, LoadedHnsw};
@@ -146,8 +139,7 @@ mod tests {
         }
     }
 
-    /// Verify the memory layout assumptions documented in LoadedHnsw.
-    /// These are compile-time checks via static assertions.
+    /// Verify the memory layout is reasonable.
     #[test]
     fn test_layout_invariants() {
         // LoadedHnsw must be a reasonable size (not accidentally huge)
@@ -158,22 +150,12 @@ mod tests {
             loaded_size
         );
 
-        // Pointer alignment check
-        assert_eq!(
-            align_of::<*mut HnswIo>(),
-            align_of::<usize>(),
-            "Pointer alignment unexpected"
-        );
-
-        // HnswInner should be efficient - no excessive padding
+        // HnswInner should be a reasonable size
         let inner_size = size_of::<HnswInner>();
-        let owned_size = size_of::<Hnsw<'static, f32, DistCosine>>();
-        // Inner should be at most slightly larger than the largest variant
         assert!(
-            inner_size <= owned_size + 32,
-            "HnswInner has excessive padding: {} vs {}",
-            inner_size,
-            owned_size
+            inner_size < 2048,
+            "HnswInner unexpectedly large: {} bytes",
+            inner_size
         );
     }
 

@@ -11,37 +11,29 @@
 //! ## Memory Management
 //!
 //! When loading an index from disk, hnsw_rs returns `Hnsw<'a>` borrowing from
-//! `HnswIo`. We use `LoadedHnsw` to manage this self-referential pattern:
-//! - HnswIo is heap-allocated, we hold a raw pointer
-//! - Hnsw lifetime is transmuted to 'static (safe because HnswIo outlives it)
-//! - Custom Drop ensures HnswIo is freed after Hnsw is dropped
+//! `HnswIo`. We use `self_cell` to safely manage this self-referential pattern:
+//! - HnswIo is wrapped in `HnswIoCell` (UnsafeCell for one-time &mut access)
+//! - self_cell ties the lifetimes together and ensures correct drop order
+//! - No transmute or raw pointers needed
 //!
-//! This avoids memory leaks while keeping the loaded index usable.
+//! ## hnsw_rs Version Dependency
 //!
-//! ## CRITICAL: hnsw_rs Version Dependency
-//!
-//! The `LoadedHnsw` struct uses `std::mem::transmute` to extend a borrowed
-//! lifetime. This is sound ONLY because:
-//!
-//! 1. `HnswIo::load_hnsw()` returns `Hnsw<'a>` borrowing from `&'a mut HnswIo`
-//! 2. The `Hnsw` only reads data owned by `HnswIo` (no interior mutation)
-//! 3. We control drop order via `ManuallyDrop` (Hnsw dropped before HnswIo)
-//!
-//! **If upgrading hnsw_rs**: Run `cargo test safety_tests` and verify behavior.
-//! Breaking changes to `HnswIo::load_hnsw()` or `Hnsw`'s borrowing could cause UB.
-//! Current tested version: hnsw_rs 0.3.x
+//! If upgrading hnsw_rs: Run `cargo test safety_tests` and verify behavior.
+//! The `HnswIo::load_hnsw()` API must still return `Hnsw<'a>` borrowing from
+//! `&'a mut HnswIo`. Current tested version: hnsw_rs 0.3.x
 
 mod build;
 mod persist;
 mod safety;
 mod search;
 
-use std::mem::ManuallyDrop;
+use std::cell::UnsafeCell;
 
 use hnsw_rs::anndists::dist::distances::DistCosine;
 use hnsw_rs::api::AnnT;
 use hnsw_rs::hnsw::Hnsw;
 use hnsw_rs::hnswio::HnswIo;
+use self_cell::self_cell;
 use thiserror::Error;
 
 use crate::embedder::Embedding;
@@ -90,35 +82,41 @@ pub enum HnswError {
 // Note: Uses crate::index::IndexResult instead of a separate HnswResult type
 // since they have identical structure (id: String, score: f32)
 
-/// Self-referential wrapper for loaded HNSW
-///
-/// HnswIo owns the data, Hnsw borrows from it. We manage lifetimes manually:
-/// - HnswIo is heap-allocated and we hold a raw pointer
-/// - Hnsw is in ManuallyDrop so we control drop order
-/// - Drop impl: drop Hnsw first, then free HnswIo
-pub(crate) struct LoadedHnsw {
-    /// Raw pointer to HnswIo - we own this memory
-    pub(crate) io_ptr: *mut HnswIo,
-    /// Hnsw borrowing from io_ptr (transmuted to 'static, manually dropped)
-    pub(crate) hnsw: ManuallyDrop<Hnsw<'static, f32, DistCosine>>,
-}
+/// Type alias for the HNSW graph — needed by the `self_cell!` macro.
+type HnswGraph<'a> = Hnsw<'a, f32, DistCosine>;
 
-impl Drop for LoadedHnsw {
-    fn drop(&mut self) {
-        // SAFETY: We control drop order - Hnsw first, then HnswIo
-        // 1. Drop Hnsw while HnswIo data is still valid
-        // 2. Then free HnswIo
-        unsafe {
-            ManuallyDrop::drop(&mut self.hnsw);
-            drop(Box::from_raw(self.io_ptr));
-        }
+/// Wrapper to allow `&mut HnswIo` access from self_cell's `&Owner` builder.
+///
+/// # Safety
+///
+/// `UnsafeCell` is accessed mutably only once, during `self_cell` construction.
+/// After construction, the HnswIo data is only accessed immutably through
+/// the dependent `Hnsw` (which holds shared references into it).
+pub(crate) struct HnswIoCell(pub(crate) UnsafeCell<HnswIo>);
+
+// SAFETY: HnswIoCell contains data buffers and file paths from HnswIo.
+// The UnsafeCell is only mutated during construction (single-threaded, exclusive).
+// After construction, only the Hnsw reads from it (immutably via shared refs).
+unsafe impl Send for HnswIoCell {}
+unsafe impl Sync for HnswIoCell {}
+
+self_cell!(
+    /// Self-referential wrapper for a loaded HNSW index.
+    ///
+    /// HnswIo owns the raw data buffers. Hnsw borrows from them.
+    /// `self_cell` guarantees correct drop order (Hnsw before HnswIo)
+    /// and sound lifetime management without transmute.
+    pub(crate) struct LoadedHnsw {
+        owner: Box<HnswIoCell>,
+        #[not_covariant]
+        dependent: HnswGraph,
     }
-}
+);
 
 // SAFETY: LoadedHnsw is Send+Sync because:
-// - io_ptr points to HnswIo which only contains file paths and data buffers
-// - Hnsw<f32, DistCosine> contains data structures that are inherently thread-safe
-// - All mutable access is protected by external synchronization (RwLock in HnswIndex)
+// - HnswIoCell wraps HnswIo (file paths + data buffers)
+// - Hnsw<f32, DistCosine> contains read-only graph data
+// - After construction, only immutable search access occurs
 unsafe impl Send for LoadedHnsw {}
 unsafe impl Sync for LoadedHnsw {}
 
@@ -140,16 +138,19 @@ pub struct HnswIndex {
 pub(crate) enum HnswInner {
     /// Built in memory - owns its data with 'static lifetime
     Owned(Hnsw<'static, f32, DistCosine>),
-    /// Loaded from disk - self-referential with manual lifetime management
+    /// Loaded from disk - self-referential via self_cell
     Loaded(LoadedHnsw),
 }
 
 impl HnswInner {
-    /// Get a reference to the underlying HNSW graph regardless of variant.
-    pub(crate) fn hnsw(&self) -> &Hnsw<'static, f32, DistCosine> {
+    /// Access the underlying HNSW graph regardless of variant.
+    ///
+    /// Uses a closure because `Hnsw` is invariant over its lifetime parameter,
+    /// so `self_cell` cannot provide a direct reference accessor.
+    pub(crate) fn with_hnsw<R>(&self, f: impl FnOnce(&Hnsw<'_, f32, DistCosine>) -> R) -> R {
         match self {
-            HnswInner::Owned(hnsw) => hnsw,
-            HnswInner::Loaded(loaded) => &loaded.hnsw,
+            HnswInner::Owned(hnsw) => f(hnsw),
+            HnswInner::Loaded(loaded) => loaded.with_dependent(|_, hnsw| f(hnsw)),
         }
     }
 }
@@ -178,7 +179,7 @@ impl HnswIndex {
             return Ok(0);
         }
 
-        // Only works on Owned variant — Loaded is immutable (unsafe transmute)
+        // Only works on Owned variant — Loaded is immutable (self_cell)
         let hnsw = match &mut self.inner {
             HnswInner::Owned(h) => h,
             HnswInner::Loaded(_) => {
