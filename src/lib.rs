@@ -52,7 +52,9 @@ pub mod reference;
 pub mod store;
 
 pub mod ci;
+pub mod health;
 pub mod reranker;
+pub mod suggest;
 
 // Internal modules - not part of public library API
 // These are pub(crate) to hide implementation details, but specific items are

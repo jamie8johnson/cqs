@@ -36,10 +36,10 @@ pub(crate) fn open_project_store(
 use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
-    cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
-    cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
-    cmd_stale, cmd_stats, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand,
-    RefCommand,
+    cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index, cmd_init,
+    cmd_notes, cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout,
+    cmd_similar, cmd_stale, cmd_stats, cmd_suggest, cmd_test_map, cmd_trace, cmd_where,
+    NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -463,6 +463,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Codebase quality snapshot — dead code, staleness, hotspots, coverage
+    Health {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Toggle audit mode (exclude notes from search/read)
     #[command(name = "audit-mode")]
     AuditMode {
@@ -483,6 +489,15 @@ enum Commands {
         /// Show counts only, skip file list
         #[arg(long)]
         count_only: bool,
+    },
+    /// Auto-suggest notes from codebase patterns (dead code, untested hotspots)
+    Suggest {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Apply suggestions (add notes to docs/notes.toml)
+        #[arg(long)]
+        apply: bool,
     },
     /// Read a file with notes injected as comments
     Read {
@@ -682,12 +697,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         ),
         Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
+        Some(Commands::Health { json }) => cmd_health(json),
         Some(Commands::AuditMode {
             ref state,
             ref expires,
             json,
         }) => cmd_audit_mode(state.as_deref(), expires, json),
         Some(Commands::Stale { json, count_only }) => cmd_stale(&cli, json, count_only),
+        Some(Commands::Suggest { json, apply }) => cmd_suggest(json, apply),
         Some(Commands::Read {
             ref path,
             ref focus,

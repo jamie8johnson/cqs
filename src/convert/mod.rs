@@ -192,15 +192,37 @@ fn finalize_output(
             }
         }
 
-        if output_path.exists() && !opts.overwrite {
-            anyhow::bail!(
-                "Output file already exists: {} (use --overwrite to replace)",
-                output_path.display()
-            );
+        if opts.overwrite {
+            std::fs::write(&output_path, cleaned).with_context(|| {
+                format!("Failed to write output file: {}", output_path.display())
+            })?;
+        } else {
+            // Atomic create — avoids TOCTOU race between exists() check and write
+            use std::io::Write;
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output_path)
+            {
+                Ok(mut f) => {
+                    f.write_all(cleaned.as_bytes()).with_context(|| {
+                        format!("Failed to write output file: {}", output_path.display())
+                    })?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    anyhow::bail!(
+                        "Output file already exists: {} (use --overwrite to replace)",
+                        output_path.display()
+                    );
+                }
+                Err(e) => {
+                    return Err(anyhow::Error::new(e).context(format!(
+                        "Failed to write output file: {}",
+                        output_path.display()
+                    )));
+                }
+            }
         }
-
-        std::fs::write(&output_path, cleaned)
-            .with_context(|| format!("Failed to write output file: {}", output_path.display()))?;
         tracing::info!(
             source = %source.display(),
             output = %output_path.display(),
