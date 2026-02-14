@@ -2,12 +2,14 @@
 
 ## Right Now
 
-**v0.12.8 released + DocFormat registry refactor.** 2026-02-14.
+**Releasing v0.12.9.** 2026-02-14.
 
 This session:
-- v0.12.8 released (PR #430, #431): `cqs health`, `cqs suggest`, search safety, TOCTOU fix, gather tests
-- DocFormat registry refactor (PR #432): static FORMAT_TABLE replaces 4 match blocks, 6→3 changes per variant
-- Issues closed: #410, #412, #414
+- `cqs batch` shipped (PR #436): persistent Store batch mode, 13 commands, JSONL output, lazy Embedder/HNSW via OnceLock, CAGRA amortization
+- Fresh-eyes review caught bare `.unwrap_or_default()` in `dispatch_explain` — fixed with tracing::warn
+- CI feature flag fix: `let _ = store;` for unused var without gpu-search
+
+Next in `cqs chat` build path: step 3 = REPL (readline wrapping `dispatch()`)
 
 ## Pending Changes
 
@@ -38,14 +40,14 @@ None.
 
 ## Architecture
 
-- Version: 0.12.8
+- Version: 0.12.9
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 875 total (499 lib + 115 bin + 253 integration + 8 doc)
+- Tests: 929 total
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.9] - 2026-02-14
+
+### Added
+- **`cqs batch` command** — persistent Store batch mode. Reads commands from stdin, outputs compact JSONL. Amortizes ~100ms Store open and ~500ms Embedder ONNX init across N commands. 13 commands supported: search, callers, callees, explain, similar, gather, impact, test-map, trace, dead, related, context, stats. Lazy Embedder and HNSW/CAGRA vector index via `OnceLock` — built on first use, cached for session. Reference indexes cached in `RefCell<HashMap>`. `dispatch()` function is the seam for step 3 (REPL).
+- `shell-words` dependency for batch command tokenization.
+- 10 unit tests (command parsing) + 9 integration tests (batch CLI pipeline).
+
+### Changed
+- **`ChunkSummary` type consistency** — `ChunkIdentity`, `LightChunk`, `GatheredChunk` now use `Language`/`ChunkType` enums instead of `String`. Parse boundary at SQL read layer.
+- **`DocFormat` registry table** — static `FORMAT_TABLE` replaces 4 match blocks; adding a new document format now requires 3 changes instead of 6.
+
 ## [0.12.8] - 2026-02-14
 
 ### Added
@@ -934,7 +945,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.4...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.9...HEAD
+[0.12.9]: https://github.com/jamie8johnson/cqs/compare/v0.12.8...v0.12.9
+[0.12.8]: https://github.com/jamie8johnson/cqs/compare/v0.12.7...v0.12.8
+[0.12.7]: https://github.com/jamie8johnson/cqs/compare/v0.12.6...v0.12.7
+[0.12.6]: https://github.com/jamie8johnson/cqs/compare/v0.12.5...v0.12.6
+[0.12.5]: https://github.com/jamie8johnson/cqs/compare/v0.12.4...v0.12.5
 [0.12.4]: https://github.com/jamie8johnson/cqs/compare/v0.12.3...v0.12.4
 [0.12.3]: https://github.com/jamie8johnson/cqs/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/jamie8johnson/cqs/compare/v0.12.1...v0.12.2

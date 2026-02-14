@@ -744,3 +744,20 @@ mentions = [
     ".claude/skills/cqs-gather/SKILL.md",
     ".claude/skills/cqs-scout/SKILL.md",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "OnceLock pattern for lazy-init in long-running sessions (batch/REPL): Embedder and HNSW/CAGRA index built on first use, cached for session lifetime. Avoids 500ms+ ONNX init per command. Pattern: OnceLock<T> + get_or_init(|| build()). Used in BatchContext."
+mentions = [
+    "src/cli/batch.rs",
+    "OnceLock",
+]
+
+[[note]]
+sentiment = -0.5
+text = 'CI runs without gpu-search feature — functions with params used only inside #[cfg(feature = "gpu-search")] need let _ = param; at top to avoid unused variable warnings in CI.'
+mentions = [
+    "src/cli/batch.rs",
+    "CI",
+    "gpu-search",
+]
