@@ -2,15 +2,19 @@
 
 ## Right Now
 
-**Post-v0.12.7 cleanup.** 2026-02-13.
+**v0.12.7 post-release cleanup complete.** 2026-02-13.
 
-Skills synced with v0.12.7 CLI flags (committed `61f6e22`, local only). Created `cqs-review` skill, updated 7 skills with missing flags, updated bootstrap.
-
-Next up: add `--json` to `notes list`, `ref list`, `stats`. Also fix stale warning going to stdout (breaks JSON parsers) and remove `-q` references from gather/scout skills.
+All shipped in PR #428:
+- Skills synced with v0.12.7 CLI flags (created `cqs-review`, updated 8 skills, updated bootstrap)
+- Added `--json` to `stats`, `notes list`, `ref list` (code existed, clap routing was broken)
+- Stale warnings moved from stdout to stderr (stats, gc, ci, review)
+- Fixed `-q` references in gather/scout skills
+- Notes groomed (90→91: removed 2 MEMORY.md duplicates, added 3 from trial run)
+- Comprehensive 56-command CLI trial run verified all functionality
 
 ## Pending Changes
 
-- Commit `61f6e22` (skills sync) not pushed to remote yet.
+None.
 
 ## Parked
 
