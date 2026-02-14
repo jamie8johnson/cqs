@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.6
+## Current: v0.12.7
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
