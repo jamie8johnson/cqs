@@ -51,6 +51,8 @@ pub mod parser;
 pub mod reference;
 pub mod store;
 
+pub mod ci;
+
 // Internal modules - not part of public library API
 // These are pub(crate) to hide implementation details, but specific items are
 // re-exported below for use by the binary crate (CLI) and integration tests.

@@ -116,6 +116,7 @@ None.
    - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
    - `cqs-plan` — task planning with scout data + task-type templates
    - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
+   - `cqs-ci` — CI pipeline analysis (impact + risk + dead code + gate)
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
@@ -180,6 +181,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs test-map <function>` — map function to tests that exercise it.
+- `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate.
 - `cqs dead` — find functions/methods with no callers.
 - `cqs stale` — check index freshness.
 - `cqs stats` — index statistics.

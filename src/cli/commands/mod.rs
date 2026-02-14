@@ -3,6 +3,7 @@
 //! Each submodule handles one CLI subcommand.
 
 mod audit_mode;
+mod ci;
 mod context;
 #[cfg(feature = "convert")]
 mod convert;
@@ -34,6 +35,7 @@ mod trace;
 mod where_cmd;
 
 pub(crate) use audit_mode::cmd_audit_mode;
+pub(crate) use ci::cmd_ci;
 pub(crate) use context::cmd_context;
 #[cfg(feature = "convert")]
 pub(crate) use convert::cmd_convert;

@@ -189,6 +189,13 @@ cqs review                                # review uncommitted changes
 cqs review --base main                    # review changes since main
 cqs review --json                         # JSON output for CI integration
 
+# CI pipeline: review + dead code + gate (exit 3 on fail)
+cqs ci                                    # analyze uncommitted changes
+cqs ci --base main                        # analyze changes since main
+cqs ci --gate medium                      # fail on medium+ risk
+cqs ci --gate off --json                  # report only, JSON output
+echo "$diff" | cqs ci --stdin             # pipe diff from CI system
+
 # Follow a call chain between two functions (BFS shortest path)
 cqs trace cmd_query search_filtered
 cqs trace cmd_query search_filtered --max-depth 5
@@ -365,6 +372,7 @@ Key commands (all support `--json`):
 - `cqs where "description"` - suggest where to add new code
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
 - `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
+- `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--json`
 - `cqs dead` - find functions/methods never called by indexed code
 - `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries
