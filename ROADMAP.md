@@ -37,6 +37,11 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [x] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
 - [ ] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
 - [ ] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
+- [ ] `cqs blame` — semantic git blame. Given a function, show who last changed it, when, and the commit message. Combines call graph with git log.
+- [ ] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
+- [ ] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
+- [ ] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests. Deeper than caller-only analysis.
+- [ ] `cqs chat` — interactive REPL for chained queries. Keep store open across commands, pipeline syntax (`search | callers | test-map`).
 
 ### Next — Retrieval Quality
 
