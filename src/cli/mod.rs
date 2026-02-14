@@ -1,5 +1,6 @@
 //! CLI implementation for cq
 
+pub(crate) mod batch;
 mod commands;
 mod config;
 mod display;
@@ -231,6 +232,8 @@ enum Commands {
         #[arg(long)]
         no_ignore: bool,
     },
+    /// Batch mode: read commands from stdin, output JSONL
+    Batch,
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -576,6 +579,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     cli.limit = cli.limit.clamp(1, 100);
 
     match cli.command {
+        Some(Commands::Batch) => batch::cmd_batch(&cli),
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(&cli),
         Some(Commands::Index {
