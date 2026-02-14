@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`cqs ci` command** — CI pipeline analysis composing review_diff + dead code detection + gate evaluation. `--gate high|medium|off` controls failure threshold (exit code 3 on fail). `--base`, `--stdin`, `--json`, `--tokens` supported.
+- **`--rerank` flag** — Cross-encoder re-ranking for query results. Second-pass scoring with `cross-encoder/ms-marco-MiniLM-L-6-v2` reorders top results for higher accuracy. Over-retrieves 4x then re-scores. Works with no-ref and `--ref` scoped queries. Warns and skips for multi-index search (incompatible score scales).
 
 ## [0.12.6] - 2026-02-13
 

@@ -350,6 +350,7 @@ Key commands (all support `--json`):
 - `cqs "query"` - semantic search (hybrid RRF by default)
 - `cqs "name" --name-only` - definition lookup (fast, no embedding)
 - `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
+- `cqs "query" --rerank` - cross-encoder re-ranking (slower, more accurate)
 - `cqs "query" --note-only` - search only notes (skip code results)
 - `cqs read <path>` - file with context notes injected as comments
 - `cqs read --focus <function>` - function + type dependencies only

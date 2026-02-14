@@ -114,6 +114,7 @@ src/
     calls.rs    - Call graph extraction, callee filtering
     markdown.rs - Heading-based markdown parser, cross-reference extraction
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
+  reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)
   search.rs     - Search algorithms, name matching, HNSW-guided search
   math.rs       - Vector math utilities (cosine similarity, SIMD)
   hnsw/         - HNSW index with batched build, atomic writes
