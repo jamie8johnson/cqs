@@ -27,12 +27,13 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 - Split `impact.rs` monolith → `src/impact/` directory (PR #402)
 - Eliminate unsafe transmute in HNSW load + `--ref` integration tests (PR #405, v0.12.5)
 - v0.12.3 audit: 73/76 findings fixed (P1-P3 complete, 11/14 P4 fixed) (PR #421, v0.12.6)
+- `cqs ci` — CI pipeline mode with gate logic and exit codes
 
 ### Next — New Commands
 
 Priority order based on competitive gap analysis (Feb 2026).
 
-- [ ] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
+- [x] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
 - [ ] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
 - [ ] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
 

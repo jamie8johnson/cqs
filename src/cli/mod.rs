@@ -35,7 +35,7 @@ pub(crate) fn open_project_store(
 #[cfg(feature = "convert")]
 use commands::cmd_convert;
 use commands::{
-    cmd_audit_mode, cmd_callees, cmd_callers, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
+    cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
     cmd_explain, cmd_gather, cmd_gc, cmd_impact, cmd_impact_diff, cmd_index, cmd_init, cmd_notes,
     cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar,
     cmd_stale, cmd_stats, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand,
@@ -80,6 +80,17 @@ impl From<&DeadConfidenceLevel> for cqs::store::DeadConfidence {
             DeadConfidenceLevel::High => Self::High,
         }
     }
+}
+
+/// Gate threshold level for CI pipeline
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum GateLevel {
+    /// Fail if any High-risk function is detected
+    High,
+    /// Fail if any Medium or High risk function is detected
+    Medium,
+    /// Never fail — report only
+    Off,
 }
 
 /// Parse a non-zero usize for --tokens validation
@@ -333,6 +344,27 @@ enum Commands {
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
+    /// CI pipeline analysis: impact + risk + dead code + gate
+    Ci {
+        /// Git ref to diff against (default: unstaged changes)
+        #[arg(long)]
+        base: Option<String>,
+        /// Read diff from stdin instead of running git
+        #[arg(long)]
+        stdin: bool,
+        /// Output format: text, json
+        #[arg(long, default_value = "text")]
+        format: OutputFormat,
+        /// Output as JSON (alias for --format json)
+        #[arg(long)]
+        json: bool,
+        /// Gate threshold: high, medium, off (default: high)
+        #[arg(long, default_value = "high")]
+        gate: GateLevel,
+        /// Maximum token budget for output
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
     /// Trace call chain between two functions
     Trace {
         /// Source function name or file:function
@@ -583,6 +615,17 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => {
             let fmt = if json { &OutputFormat::Json } else { format };
             cmd_review(&cli, base.as_deref(), stdin, fmt, tokens)
+        }
+        Some(Commands::Ci {
+            ref base,
+            stdin,
+            ref format,
+            json,
+            ref gate,
+            tokens,
+        }) => {
+            let fmt = if json { &OutputFormat::Json } else { format };
+            cmd_ci(&cli, base.as_deref(), stdin, fmt, gate, tokens)
         }
         Some(Commands::Trace {
             ref source,
@@ -1463,7 +1506,91 @@ mod tests {
     #[test]
     fn test_exit_code_values() {
         assert_eq!(signal::ExitCode::NoResults as i32, 2);
+        assert_eq!(signal::ExitCode::GateFailed as i32, 3);
         assert_eq!(signal::ExitCode::Interrupted as i32, 130);
+    }
+
+    // ===== CI command tests =====
+
+    #[test]
+    fn test_cmd_ci_defaults() {
+        let cli = Cli::try_parse_from(["cqs", "ci"]).unwrap();
+        match cli.command {
+            Some(Commands::Ci {
+                base,
+                stdin,
+                format,
+                json,
+                gate,
+                tokens,
+            }) => {
+                assert!(base.is_none());
+                assert!(!stdin);
+                assert!(matches!(format, OutputFormat::Text));
+                assert!(!json);
+                assert!(matches!(gate, GateLevel::High));
+                assert!(tokens.is_none());
+            }
+            _ => panic!("Expected Ci command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ci_gate_medium() {
+        let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "medium"]).unwrap();
+        match cli.command {
+            Some(Commands::Ci { gate, .. }) => {
+                assert!(matches!(gate, GateLevel::Medium));
+            }
+            _ => panic!("Expected Ci command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ci_gate_off() {
+        let cli = Cli::try_parse_from(["cqs", "ci", "--gate", "off"]).unwrap();
+        match cli.command {
+            Some(Commands::Ci { gate, .. }) => {
+                assert!(matches!(gate, GateLevel::Off));
+            }
+            _ => panic!("Expected Ci command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ci_stdin_json_tokens() {
+        let cli =
+            Cli::try_parse_from(["cqs", "ci", "--stdin", "--json", "--tokens", "5000"]).unwrap();
+        match cli.command {
+            Some(Commands::Ci {
+                stdin,
+                json,
+                tokens,
+                ..
+            }) => {
+                assert!(stdin);
+                assert!(json);
+                assert_eq!(tokens, Some(5000));
+            }
+            _ => panic!("Expected Ci command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ci_base_flag() {
+        let cli = Cli::try_parse_from(["cqs", "ci", "--base", "HEAD~3"]).unwrap();
+        match cli.command {
+            Some(Commands::Ci { base, .. }) => {
+                assert_eq!(base, Some("HEAD~3".to_string()));
+            }
+            _ => panic!("Expected Ci command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_ci_tokens_zero_rejected() {
+        let result = Cli::try_parse_from(["cqs", "ci", "--tokens", "0"]);
+        assert!(result.is_err(), "--tokens 0 in ci should be rejected");
     }
 
     // ===== display module tests =====

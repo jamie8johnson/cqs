@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`cqs ci` command** — CI pipeline analysis composing review_diff + dead code detection + gate evaluation. `--gate high|medium|off` controls failure threshold (exit code 3 on fail). `--base`, `--stdin`, `--json`, `--tokens` supported.
+
 ## [0.12.6] - 2026-02-13
 
 ### Fixed

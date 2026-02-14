@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub enum ExitCode {
     /// Search returned no results
     NoResults = 2,
+    /// CI gate failed (risk threshold exceeded)
+    GateFailed = 3,
     /// User interrupted with Ctrl+C
     Interrupted = 130,
 }
