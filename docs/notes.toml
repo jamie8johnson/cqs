@@ -339,7 +339,7 @@ sentiment = 0.5
 text = "CLI trace/impact/gather tools combine search + call graph traversal to collapse 5-10 file reads into one semantic operation. Saves tokens via server-side context assembly. Design applies to any AI consumer that values efficiency."
 mentions = [
     "src/cli/commands/trace.rs",
-    "src/impact.rs",
+    "src/impact/mod.rs",
     "src/gather.rs",
 ]
 
@@ -607,15 +607,6 @@ text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<Cha
 mentions = ["src/impact/diff.rs"]
 
 [[note]]
-sentiment = -0.5
-text = "Fresh-eyes review of audit plan caught 3 blockers: File::unlock() doesn't exist (drop releases locks), hnsw_mut() on LoadedHnsw is unsound (unsafe transmute), CAGRA disk persistence is a new feature not a fix. Plans need scrutiny before execution."
-mentions = [
-    "hnsw/persist.rs",
-    "hnsw/mod.rs",
-    "cagra.rs",
-]
-
-[[note]]
 sentiment = 0.5
 text = "HNSW save is already crash-safe: blake3 checksums catch all partial-write states, try_load falls back to brute-force. Backup-dir approach would WIDEN crash window (8 renames vs 4). Don't over-engineer crash recovery when detection+rebuild is sufficient."
 mentions = ["hnsw/persist.rs"]
@@ -638,7 +629,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.0
-text = "HnswIndex::insert_batch only works on HnswInner::Owned variant. Loaded (from disk via unsafe transmute) cannot safely mutate. Watch mode must build Owned at startup for incremental inserts. hnsw_rs has no remove API — orphan vectors stay until full rebuild."
+text = "HnswIndex::insert_batch only works on HnswInner::Owned variant. Loaded (from disk via self_cell) is immutable. Watch mode must build Owned at startup for incremental inserts. hnsw_rs has no remove API — orphan vectors stay until full rebuild."
 mentions = [
     "src/hnsw/mod.rs",
     "insert_batch",
@@ -655,7 +646,7 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Token budgeting greedy knapsack pattern ships cleanly across 5 commands. Generic token_pack<T>() in cli/commands/mod.rs replaces per-command loops. Batch tokenization via Embedder::token_counts_batch(). Pattern: sort by score, walk items, accumulate token count, stop at budget."
+text = "Token budgeting greedy knapsack pattern ships across 6 commands. Generic token_pack<T>() in cli/commands/mod.rs with json_overhead_per_item param accounts for JSON envelope tokens (~35/item). Batch tokenization via Embedder::token_counts_batch(). Pattern: sort by score, walk items, accumulate token count + overhead, stop at budget."
 mentions = [
     "src/cli/commands/mod.rs",
     "token_pack",
@@ -725,4 +716,20 @@ text = "self_cell with #[not_covariant] is the right pattern for hnsw_rs Hnsw<'a
 mentions = [
     "src/hnsw/mod.rs",
     "self_cell",
+]
+
+[[note]]
+sentiment = -0.5
+text = 'score_name_match("foo", "") returns 0.9 because "foo".starts_with("") is always true in Rust. Empty string is a valid prefix of everything. Always guard name-match functions against empty queries.'
+mentions = [
+    "src/store/helpers.rs",
+    "score_name_match",
+]
+
+[[note]]
+sentiment = -0.5
+text = "to_ascii_lowercase() silently passes through non-ASCII chars unchanged — Ü.to_ascii_lowercase() returns Ü, not ü. Use to_lowercase() (returns iterator) via flat_map when Unicode input is possible."
+mentions = [
+    "src/convert/naming.rs",
+    "to_lowercase",
 ]

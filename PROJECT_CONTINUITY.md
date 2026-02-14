@@ -2,13 +2,13 @@
 
 ## Right Now
 
-**Post-merge clean state.** 2026-02-13.
+**v0.12.6 released.** 2026-02-13.
 
-PR #405 merged — eliminated unsafe transmute in HNSW load (`self_cell`), added 4 `--ref` CLI integration tests. Closed #270.
+10 P4 audit findings fixed (PR #421), released as v0.12.6 (PR #422). Published to crates.io + GitHub. 3 P4 issues remain (#407, #410, #414).
 
 ## Pending Changes
 
-ROADMAP.md, docs/notes.toml, PROJECT_CONTINUITY.md — uncommitted tears updates.
+PROJECT_CONTINUITY.md, docs/audit-triage.md, docs/notes.toml — uncommitted tears.
 
 ## Parked
 
@@ -20,7 +20,7 @@ ROADMAP.md, docs/notes.toml, PROJECT_CONTINUITY.md — uncommitted tears updates
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
 - **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **P4 audit findings** — 14 deferred items in `docs/audit-triage.md` (reverse BFS depth, risk scoring edge cases, convert TOCTOU, cross-index bridge perf, test gaps)
+- **P4 audit findings** — 3 remaining in `docs/audit-triage.md` (#407 reverse BFS depth, #410 convert TOCTOU, #414 cross-index tests)
 
 ## Open Issues
 
@@ -32,19 +32,18 @@ ROADMAP.md, docs/notes.toml, PROJECT_CONTINUITY.md — uncommitted tears updates
 - #255: Pre-built reference packages
 
 ### Audit
-- #270: HNSW LoadedHnsw unsafe transmute — closed (PR #405)
 - #389: CAGRA GPU memory — needs disk persistence layer
 
 ## Architecture
 
-- Version: 0.12.5
+- Version: 0.12.6
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 732 total (480 lib + 244 integration + 8 doc)
+- Tests: 843 total (486 lib + 105 bin + 244 integration + 8 doc)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag
