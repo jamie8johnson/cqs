@@ -2,17 +2,16 @@
 
 ## Right Now
 
-**v0.12.6 released.** 2026-02-13.
+**Releasing v0.12.7.** 2026-02-13.
 
-10 P4 audit findings fixed (PR #421), released as v0.12.6 (PR #422). Published to crates.io + GitHub. 3 P4 issues remain (#407, #410, #414).
+Two features shipped: `cqs ci` (PR #425) and `--rerank` cross-encoder re-ranking (PR #426). 3 P4 issues remain (#407, #410, #414).
 
 ## Pending Changes
 
-PROJECT_CONTINUITY.md, docs/audit-triage.md, docs/notes.toml — uncommitted tears.
+None.
 
 ## Parked
 
-- **Cross-encoder re-ranking** — `--rerank` flag, second-pass scoring. Next RAG improvement.
 - **Pre-built release binaries** (GitHub Actions) — deferred
 - **`cqs plan` templates** — add more task-type templates as patterns emerge
 - **VB.NET language support** — VS2005 project delayed
@@ -36,14 +35,14 @@ PROJECT_CONTINUITY.md, docs/audit-triage.md, docs/notes.toml — uncommitted tea
 
 ## Architecture
 
-- Version: 0.12.6
+- Version: 0.12.7
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 843 total (486 lib + 105 bin + 244 integration + 8 doc)
+- Tests: 875 total (499 lib + 115 bin + 253 integration + 8 doc)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag
