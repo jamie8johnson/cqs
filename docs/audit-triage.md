@@ -167,7 +167,7 @@ Non-issues removed: RB-17 (node_letter cast safe), RB-20 (total_limit safe), RB-
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
 | 17 | Risk score thresholds magic numbers | EXT-13 | easy | ✅ fixed |
-| 18 | `suggest_test_file` hardcoded per-language conventions | EXT-16 | easy | deferred |
+| 18 | `suggest_test_file` hardcoded per-language conventions | EXT-16 | easy | ✅ PR #421 |
 | 19 | Review command missing `--tokens` support | EXT-18 | easy | ✅ fixed |
 | 20 | Copyright regex hardcoded year range + vendor | EXT-19 | easy | ✅ fixed |
 
@@ -181,7 +181,7 @@ Non-issues removed: RB-17 (node_letter cast safe), RB-20 (total_limit safe), RB-
 | 24 | `python3` not on stock Windows | PB-12 | easy | ✅ fixed |
 | 25 | `find_7z` error assumes Debian/Ubuntu | PB-13 | easy | ✅ fixed |
 
-**P3 Total: 24/25 fixed (1 deferred: EXT-16)**
+**P3 Total: 25/25 fixed**
 
 ---
 
@@ -189,22 +189,22 @@ Non-issues removed: RB-17 (node_letter cast safe), RB-20 (total_limit safe), RB-
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `reverse_bfs_multi` depth accuracy (BFS ordering) | AC-15 | hard | |
-| 2 | Risk scoring loses blast radius at full coverage | AC-20 | easy (design) | |
-| 3 | Token packing doesn't count JSON overhead | AC-17 | easy (design) | |
-| 4 | Convert filename TOCTOU race | DS-9 | medium | |
-| 5 | Cross-index bridge search sequential | PERF-14/RM-15 | medium | |
-| 6 | `DocFormat` N-changes-per-variant (same as #387) | EXT-14 | medium | |
-| 7 | `is_webhelp_dir` hardcodes content/ | EXT-17 | easy | |
-| 8 | `gather_cross_index` zero tests | TC-4 | hard | |
-| 9 | `--ref` CLI integration untested | TC-6 | medium | |
-| 10 | Various minor test gaps (TC-2/7/8/10) | TC-2/7/8/10 | easy-medium | |
-| 11 | Review missing `--format` option | AD-16 | easy (design) | |
-| 12 | PathBuf::from("") fallback cosmetic | RB-19 | easy | |
-| 13 | `to_ascii_lowercase` unicode naming | RB-22 | easy | |
-| 14 | read_stdin/run_git_diff duplication | AD-15 | easy (roadmap) | |
+| 1 | `reverse_bfs_multi` depth accuracy (BFS ordering) | AC-15 | hard | #407 |
+| 2 | Risk scoring loses blast radius at full coverage | AC-20 | easy (design) | ✅ PR #421 |
+| 3 | Token packing doesn't count JSON overhead | AC-17 | easy (design) | ✅ PR #421 |
+| 4 | Convert filename TOCTOU race | DS-9 | medium | #410 |
+| 5 | Cross-index bridge search sequential | PERF-14/RM-15 | medium | ✅ PR #421 |
+| 6 | `DocFormat` N-changes-per-variant (same as #387) | EXT-14 | medium | #412 |
+| 7 | `is_webhelp_dir` hardcodes content/ | EXT-17 | easy | ✅ PR #421 |
+| 8 | `gather_cross_index` zero tests | TC-4 | hard | #414 |
+| 9 | `--ref` CLI integration untested | TC-6 | medium | ✅ PR #405 |
+| 10 | Various minor test gaps (TC-2/7/8/10) | TC-2/7/8/10 | easy-medium | ✅ PR #421 |
+| 11 | Review missing `--format` option | AD-16 | easy (design) | ✅ PR #421 |
+| 12 | PathBuf::from("") fallback cosmetic | RB-19 | easy | ✅ PR #421 |
+| 13 | `to_ascii_lowercase` unicode naming | RB-22 | easy | ✅ PR #421 |
+| 14 | read_stdin/run_git_diff duplication | AD-15 | easy (roadmap) | ✅ PR #421 |
 
-**P4 Total: 14 findings (deferred)**
+**P4 Total: 11 fixed, 3 remaining (#407, #410, #414)**
 
 ---
 
@@ -214,9 +214,9 @@ Non-issues removed: RB-17 (node_letter cast safe), RB-20 (total_limit safe), RB-
 |----------|----------|-------|----------|--------|
 | P1 | 14 | 14 | 0 | All fixed |
 | P2 | 23 | 23 | 0 | All fixed |
-| P3 | 25 | 24 | 1 | EXT-16 deferred |
-| P4 | 14 | 0 | 14 | Deferred / issues |
-| **Total** | **~76** | **61** | **15** |
+| P3 | 25 | 25 | 0 | All fixed |
+| P4 | 14 | 11 | 3 | #407, #410, #414 remain |
+| **Total** | **~76** | **73** | **3** |
 
 ## Cross-Category Themes
 
