@@ -51,6 +51,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Next — Code Quality
 
 - [x] `store.search()` safety — renamed to `search_embedding_only()` to prevent direct use. All user-facing paths should use `search_filtered()`.
+- [x] `DocFormat` registry table (#412) — static FORMAT_TABLE replaces 4 match blocks, 6→3 changes per new variant.
 - [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.
 - [ ] `reverse_bfs_multi` depth accuracy (#407) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
 - [x] Convert filename TOCTOU race (#410) — atomic `create_new` instead of check-then-write.
@@ -75,7 +76,6 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Open Issues
 
 - #407: `reverse_bfs_multi` depth accuracy (BFS ordering)
-- #412: `DocFormat` requires N changes per variant
 - #389: CAGRA GPU memory — needs disk persistence layer
 - #255: Pre-built reference packages
 - #106: ort stable (currently 2.0.0-rc.11)
