@@ -95,6 +95,7 @@ fn build_vector_index(
     store: &Store,
     cqs_dir: &std::path::Path,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
+    let _ = store; // Used only with gpu-search feature
     #[cfg(feature = "gpu-search")]
     {
         const CAGRA_THRESHOLD: u64 = 5000;
