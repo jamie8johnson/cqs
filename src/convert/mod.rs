@@ -51,16 +51,78 @@ pub enum DocFormat {
     WebHelp,
 }
 
+/// Converter function signature: takes a file path, returns raw Markdown.
+#[cfg(feature = "convert")]
+type FileConverter = fn(&Path) -> anyhow::Result<String>;
+
+/// Static descriptor for a document format.
+#[cfg(feature = "convert")]
+struct FormatEntry {
+    variant: DocFormat,
+    display_name: &'static str,
+    extensions: &'static [&'static str],
+    /// Converter function for file-based formats. `None` for directory formats.
+    converter: Option<FileConverter>,
+}
+
+/// All supported document formats. One row per format.
+///
+/// To add a new file-based format:
+/// 1. Add a variant to [`DocFormat`]
+/// 2. Add a row here with extensions and converter function
+/// 3. Create the converter module (e.g., `epub.rs`) with `pub fn epub_to_markdown(path: &Path) -> Result<String>`
+/// 4. Add `pub mod epub;` next to the other module declarations above
+#[cfg(feature = "convert")]
+static FORMAT_TABLE: &[FormatEntry] = &[
+    FormatEntry {
+        variant: DocFormat::Pdf,
+        display_name: "PDF",
+        extensions: &["pdf"],
+        converter: Some(pdf::pdf_to_markdown),
+    },
+    FormatEntry {
+        variant: DocFormat::Html,
+        display_name: "HTML",
+        extensions: &["html", "htm"],
+        converter: Some(html::html_file_to_markdown),
+    },
+    FormatEntry {
+        variant: DocFormat::Chm,
+        display_name: "CHM",
+        extensions: &["chm"],
+        converter: Some(chm::chm_to_markdown),
+    },
+    FormatEntry {
+        variant: DocFormat::Markdown,
+        display_name: "Markdown",
+        extensions: &["md", "markdown"],
+        converter: Some(markdown_passthrough),
+    },
+    FormatEntry {
+        variant: DocFormat::WebHelp,
+        display_name: "WebHelp",
+        extensions: &[],
+        converter: None,
+    },
+];
+
+/// Passthrough converter for Markdown files — reads as-is, no transformation.
+#[cfg(feature = "convert")]
+fn markdown_passthrough(path: &Path) -> anyhow::Result<String> {
+    let _span = tracing::info_span!("markdown_passthrough", path = %path.display()).entered();
+    std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
+}
+
 #[cfg(feature = "convert")]
 impl std::fmt::Display for DocFormat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DocFormat::Pdf => write!(f, "PDF"),
-            DocFormat::Html => write!(f, "HTML"),
-            DocFormat::Chm => write!(f, "CHM"),
-            DocFormat::Markdown => write!(f, "Markdown"),
-            DocFormat::WebHelp => write!(f, "WebHelp"),
-        }
+        let name = FORMAT_TABLE
+            .iter()
+            .find(|e| e.variant == *self)
+            .map(|e| e.display_name)
+            .unwrap_or("Unknown");
+        write!(f, "{}", name)
     }
 }
 
@@ -85,16 +147,16 @@ pub struct ConvertResult {
 }
 
 /// Detect document format from file extension.
+///
+/// Looks up the extension in [`FORMAT_TABLE`]. Returns `None` for unsupported
+/// extensions and for directory-based formats (which have no file extension).
 #[cfg(feature = "convert")]
 pub fn detect_format(path: &Path) -> Option<DocFormat> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    match ext.as_str() {
-        "pdf" => Some(DocFormat::Pdf),
-        "html" | "htm" => Some(DocFormat::Html),
-        "chm" => Some(DocFormat::Chm),
-        "md" | "markdown" => Some(DocFormat::Markdown),
-        _ => None,
-    }
+    FORMAT_TABLE
+        .iter()
+        .find(|entry| entry.extensions.contains(&ext.as_str()))
+        .map(|entry| entry.variant)
 }
 
 /// Convert a file or directory to Markdown.
@@ -120,20 +182,20 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
     let format = detect_format(path)
         .ok_or_else(|| anyhow::anyhow!("Unsupported format: {}", path.display()))?;
 
-    // Step 1: Convert to raw markdown (passthrough for .md files)
-    let raw_markdown = match format {
-        DocFormat::Pdf => pdf::pdf_to_markdown(path)?,
-        DocFormat::Html => {
-            let source = std::fs::read_to_string(path)
-                .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
-            html::html_to_markdown(&source)?
-        }
-        DocFormat::Chm => chm::chm_to_markdown(path)?,
-        DocFormat::Markdown => std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?,
-        DocFormat::WebHelp => {
-            anyhow::bail!("Web help is a directory format — use convert_path() on the directory");
-        }
+    // Step 1: Convert to raw markdown via FORMAT_TABLE dispatch.
+    // Safety: `format` comes from `detect_format()` which looks up FORMAT_TABLE,
+    // so the variant is guaranteed present.
+    let entry = FORMAT_TABLE
+        .iter()
+        .find(|e| e.variant == format)
+        .expect("FORMAT_TABLE must cover all DocFormat variants");
+
+    let raw_markdown = match entry.converter {
+        Some(convert_fn) => convert_fn(path)?,
+        None => anyhow::bail!(
+            "{} is a directory format — use convert_path() on the directory",
+            entry.display_name
+        ),
     };
 
     // Step 2: Clean conversion artifacts
@@ -340,23 +402,68 @@ mod tests {
 
     #[test]
     #[cfg(feature = "convert")]
-    fn test_detect_format() {
-        use std::path::Path;
-        assert_eq!(detect_format(Path::new("doc.pdf")), Some(DocFormat::Pdf));
-        assert_eq!(detect_format(Path::new("doc.PDF")), Some(DocFormat::Pdf));
-        assert_eq!(detect_format(Path::new("doc.html")), Some(DocFormat::Html));
-        assert_eq!(detect_format(Path::new("doc.htm")), Some(DocFormat::Html));
-        assert_eq!(detect_format(Path::new("doc.HTM")), Some(DocFormat::Html));
-        assert_eq!(detect_format(Path::new("doc.chm")), Some(DocFormat::Chm));
+    fn test_format_table_complete() {
+        // Exhaustive list — adding a variant without updating this list causes
+        // a compile warning (unused variant) AND this test fails.
+        let all = [
+            DocFormat::Pdf,
+            DocFormat::Html,
+            DocFormat::Chm,
+            DocFormat::Markdown,
+            DocFormat::WebHelp,
+        ];
+        for v in &all {
+            let entry = FORMAT_TABLE.iter().find(|e| e.variant == *v);
+            assert!(entry.is_some(), "FORMAT_TABLE missing entry for {:?}", v);
+            let entry = entry.unwrap();
+            // Display name must be non-empty
+            assert!(
+                !entry.display_name.is_empty(),
+                "Empty display_name for {:?}",
+                v
+            );
+            // File-based formats must have extensions
+            if entry.converter.is_some() {
+                assert!(
+                    !entry.extensions.is_empty(),
+                    "File-based format {:?} must have at least one extension",
+                    v
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "convert")]
+    fn test_detect_format_roundtrips() {
+        // Every file-based format's extensions should round-trip through detect_format
+        for entry in FORMAT_TABLE.iter().filter(|e| e.converter.is_some()) {
+            for ext in entry.extensions {
+                let path = std::path::Path::new("test").with_extension(ext);
+                assert_eq!(
+                    detect_format(&path),
+                    Some(entry.variant),
+                    "detect_format failed for .{} (expected {:?})",
+                    ext,
+                    entry.variant
+                );
+            }
+        }
+        // Unsupported extensions return None
+        assert_eq!(detect_format(std::path::Path::new("doc.rs")), None);
+        assert_eq!(detect_format(std::path::Path::new("doc")), None);
+    }
+
+    #[test]
+    #[cfg(feature = "convert")]
+    fn test_detect_format_case_insensitive() {
         assert_eq!(
-            detect_format(Path::new("doc.md")),
-            Some(DocFormat::Markdown)
+            detect_format(std::path::Path::new("doc.PDF")),
+            Some(DocFormat::Pdf)
         );
         assert_eq!(
-            detect_format(Path::new("doc.markdown")),
-            Some(DocFormat::Markdown)
+            detect_format(std::path::Path::new("doc.HTM")),
+            Some(DocFormat::Html)
         );
-        assert_eq!(detect_format(Path::new("doc.rs")), None);
-        assert_eq!(detect_format(Path::new("doc")), None);
     }
 }
