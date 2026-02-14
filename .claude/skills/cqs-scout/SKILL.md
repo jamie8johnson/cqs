@@ -12,7 +12,7 @@ Parse arguments:
 - `-n/--limit <n>` → max file groups to return (default 5)
 - `--tokens <N>` → token budget (includes chunk content within budget)
 
-Run via Bash: `cqs scout "<task description>" [-n N] [--tokens N] --json -q`
+Run via Bash: `cqs scout "<task description>" [-n N] [--tokens N] --json 2>/dev/null`
 
 Returns a compact planning dashboard with:
 - **File groups**: files ranked by relevance, each with chunks showing:

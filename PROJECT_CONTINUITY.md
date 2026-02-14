@@ -2,13 +2,15 @@
 
 ## Right Now
 
-**Releasing v0.12.7.** 2026-02-13.
+**Post-v0.12.7 cleanup.** 2026-02-13.
 
-Two features shipped: `cqs ci` (PR #425) and `--rerank` cross-encoder re-ranking (PR #426). 3 P4 issues remain (#407, #410, #414).
+Skills synced with v0.12.7 CLI flags (committed `61f6e22`, local only). Created `cqs-review` skill, updated 7 skills with missing flags, updated bootstrap.
+
+Next up: add `--json` to `notes list`, `ref list`, `stats`. Also fix stale warning going to stdout (breaks JSON parsers) and remove `-q` references from gather/scout skills.
 
 ## Pending Changes
 
-None.
+- Commit `61f6e22` (skills sync) not pushed to remote yet.
 
 ## Parked
 

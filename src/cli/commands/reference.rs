@@ -29,7 +29,11 @@ pub(crate) enum RefCommand {
         weight: f32,
     },
     /// List configured references
-    List,
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove a reference index
     Remove {
         /// Name of the reference to remove
@@ -51,7 +55,7 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
             source,
             weight,
         } => cmd_ref_add(cli, name, source, *weight),
-        RefCommand::List => cmd_ref_list(cli),
+        RefCommand::List { json } => cmd_ref_list(cli, *json),
         RefCommand::Remove { name } => cmd_ref_remove(name),
         RefCommand::Update { name } => cmd_ref_update(cli, name),
     }
@@ -145,7 +149,7 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     Ok(())
 }
 
-fn cmd_ref_list(cli: &Cli) -> Result<()> {
+fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
     let root = find_project_root();
     let config = cqs::config::Config::load(&root);
 
@@ -154,7 +158,7 @@ fn cmd_ref_list(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    if cli.json {
+    if json || cli.json {
         let refs: Vec<_> = config
             .references
             .iter()

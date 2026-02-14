@@ -11,7 +11,7 @@ use cqs::{HnswIndex, Parser};
 use crate::cli::Cli;
 
 /// Display index statistics (chunk counts, languages, types)
-pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
+pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_stats").entered();
     let (store, root, cqs_dir) = crate::cli::open_project_store()?;
     let stats = store.stats()?;
@@ -32,7 +32,7 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
         fc_stats.unique_callees,
     );
 
-    if cli.json {
+    if json || cli.json {
         let json = serde_json::json!({
             "total_chunks": stats.total_chunks,
             "total_files": stats.total_files,
@@ -99,22 +99,22 @@ pub(crate) fn cmd_stats(cli: &Cli) -> Result<()> {
 
         // Staleness warning
         if stale_count > 0 || missing_count > 0 {
-            println!();
+            eprintln!();
             if stale_count > 0 {
-                println!(
+                eprintln!(
                     "Stale: {} file{} changed since last index",
                     stale_count,
                     if stale_count == 1 { "" } else { "s" }
                 );
             }
             if missing_count > 0 {
-                println!(
+                eprintln!(
                     "Missing: {} file{} deleted since last index",
                     missing_count,
                     if missing_count == 1 { "" } else { "s" }
                 );
             }
-            println!("  Run 'cqs index' to update, or 'cqs gc' to clean up deleted files");
+            eprintln!("  Run 'cqs index' to update, or 'cqs gc' to clean up deleted files");
         }
 
         // Warning for very large indexes

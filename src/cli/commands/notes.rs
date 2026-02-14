@@ -20,6 +20,9 @@ pub(crate) enum NotesCommand {
         /// Show only patterns (positive sentiment)
         #[arg(long)]
         patterns: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Add a note to project memory
     Add {
@@ -66,7 +69,11 @@ pub(crate) enum NotesCommand {
 pub(crate) fn cmd_notes(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
     match subcmd {
-        NotesCommand::List { warnings, patterns } => cmd_notes_list(cli, *warnings, *patterns),
+        NotesCommand::List {
+            warnings,
+            patterns,
+            json,
+        } => cmd_notes_list(cli, *warnings, *patterns, *json),
         NotesCommand::Add {
             text,
             sentiment,
@@ -386,7 +393,7 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
 }
 
 /// List notes from docs/notes.toml
-fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool) -> Result<()> {
+fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool, json: bool) -> Result<()> {
     let root = find_project_root();
     let notes_path = root.join("docs/notes.toml");
 
@@ -415,7 +422,7 @@ fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool) -> Result
         })
         .collect();
 
-    if cli.json {
+    if json || cli.json {
         let json_notes: Vec<_> = filtered
             .iter()
             .map(|n| {
