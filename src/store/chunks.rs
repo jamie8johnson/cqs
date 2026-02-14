@@ -1228,9 +1228,21 @@ impl Store {
                     id: row.get("id"),
                     origin: row.get("origin"),
                     name: row.get("name"),
-                    chunk_type: row.get("chunk_type"),
+                    chunk_type: {
+                        let raw: String = row.get("chunk_type");
+                        raw.parse().unwrap_or_else(|_| {
+                            tracing::warn!(raw = %raw, "Unknown chunk_type in DB, defaulting to Function");
+                            ChunkType::Function
+                        })
+                    },
                     line_start: clamp_line_number(row.get::<i64, _>("line_start")),
-                    language: row.get("language"),
+                    language: {
+                        let raw: String = row.get("language");
+                        raw.parse().unwrap_or_else(|_| {
+                            tracing::warn!(raw = %raw, "Unknown language in DB, defaulting to Rust");
+                            Language::Rust
+                        })
+                    },
                     parent_id: row.get("parent_id"),
                     window_idx: row
                         .get::<Option<i64>, _>("window_idx")
@@ -1681,12 +1693,12 @@ mod tests {
         // Filter to Rust only
         let identities = store.all_chunk_identities_filtered(Some("rust")).unwrap();
         assert_eq!(identities.len(), 1);
-        assert_eq!(identities[0].language, "rust");
+        assert_eq!(identities[0].language, Language::Rust);
 
         // Filter to Python only
         let identities = store.all_chunk_identities_filtered(Some("python")).unwrap();
         assert_eq!(identities.len(), 1);
-        assert_eq!(identities[0].language, "python");
+        assert_eq!(identities[0].language, Language::Python);
 
         // No filter returns all
         let identities = store.all_chunk_identities_filtered(None).unwrap();

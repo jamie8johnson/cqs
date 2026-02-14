@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use rayon::prelude::*;
 
+use crate::parser::{ChunkType, Language};
+
 use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::store::SearchResult;
 use crate::Store;
@@ -113,6 +115,8 @@ pub struct GatheredChunk {
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
+    pub language: Language,
+    pub chunk_type: ChunkType,
     pub signature: String,
     pub content: String,
     pub score: f32,
@@ -226,6 +230,8 @@ fn fetch_and_assemble(
                         .to_path_buf(),
                     line_start: r.chunk.line_start,
                     line_end: r.chunk.line_end,
+                    language: r.chunk.language,
+                    chunk_type: r.chunk.chunk_type,
                     signature: r.chunk.signature.clone(),
                     content: r.chunk.content.clone(),
                     score: *score,
@@ -415,6 +421,8 @@ pub fn gather_cross_index(
             file: r.chunk.file.clone(),
             line_start: r.chunk.line_start,
             line_end: r.chunk.line_end,
+            language: r.chunk.language,
+            chunk_type: r.chunk.chunk_type,
             signature: r.chunk.signature.clone(),
             content: r.chunk.content.clone(),
             score: r.score,

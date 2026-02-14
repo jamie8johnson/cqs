@@ -10,6 +10,7 @@ use super::helpers::{
     clamp_line_number, CallGraph, CallerInfo, CallerWithContext, ChunkRow, ChunkSummary, StoreError,
 };
 use super::Store;
+use crate::parser::{ChunkType, Language};
 
 /// A dead function with confidence scoring.
 ///
@@ -724,8 +725,8 @@ impl Store {
             struct LightChunk {
                 id: String,
                 file: PathBuf,
-                language: String,
-                chunk_type: String,
+                language: Language,
+                chunk_type: ChunkType,
                 name: String,
                 signature: String,
                 line_start: u32,
@@ -737,8 +738,20 @@ impl Store {
                 .map(|row| LightChunk {
                     id: row.get(0),
                     file: PathBuf::from(row.get::<String, _>(1)),
-                    language: row.get(2),
-                    chunk_type: row.get(3),
+                    language: {
+                        let raw: String = row.get(2);
+                        raw.parse().unwrap_or_else(|_| {
+                            tracing::warn!(raw = %raw, "Unknown language in DB, defaulting to Rust");
+                            Language::Rust
+                        })
+                    },
+                    chunk_type: {
+                        let raw: String = row.get(3);
+                        raw.parse().unwrap_or_else(|_| {
+                            tracing::warn!(raw = %raw, "Unknown chunk_type in DB, defaulting to Function");
+                            ChunkType::Function
+                        })
+                    },
                     name: row.get(4),
                     signature: row.get(5),
                     line_start: clamp_line_number(row.get::<i64, _>(6)),
@@ -790,13 +803,13 @@ impl Store {
                 }
 
                 // Methods with well-known trait names can be skipped without content
-                if chunk.chunk_type == "method" && TRAIT_METHOD_NAMES.contains(&chunk.name.as_str())
+                if chunk.chunk_type == ChunkType::Method && TRAIT_METHOD_NAMES.contains(&chunk.name.as_str())
                 {
                     continue;
                 }
 
                 // Signature-only trait impl check
-                if chunk.chunk_type == "method" && TRAIT_IMPL_RE.is_match(&chunk.signature) {
+                if chunk.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&chunk.signature) {
                     continue;
                 }
 
@@ -841,7 +854,7 @@ impl Store {
                     .unwrap_or_else(|| (String::new(), None));
 
                 // Content-based trait impl check for methods
-                if light.chunk_type == "method" && TRAIT_IMPL_RE.is_match(&content) {
+                if light.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&content) {
                     continue;
                 }
 
@@ -857,7 +870,7 @@ impl Store {
                     || light.signature.starts_with("pub(");
 
                 // Confidence scoring
-                let is_method = light.chunk_type == "method";
+                let is_method = light.chunk_type == ChunkType::Method;
                 let file_str = light.file.to_string_lossy();
                 let file_is_active = files_with_callers.contains(file_str.as_ref());
 
@@ -875,8 +888,8 @@ impl Store {
                 let chunk = ChunkSummary::from(ChunkRow {
                     id: light.id,
                     origin: light.file.to_string_lossy().into_owned(),
-                    language: light.language,
-                    chunk_type: light.chunk_type,
+                    language: light.language.to_string(),
+                    chunk_type: light.chunk_type.to_string(),
                     name: light.name,
                     signature: light.signature,
                     content,

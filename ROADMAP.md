@@ -41,7 +41,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [ ] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
 - [x] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
 - [ ] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests. Deeper than caller-only analysis.
-- [ ] `cqs chat` — interactive REPL for chained queries. Keep store open across commands, pipeline syntax (`search | callers | test-map`).
+- [ ] `cqs chat` — interactive REPL for chained queries. Build order: (1) `ChunkSummary` unification, (2) batch mode `--batch` (persistent store, stdin commands), (3) REPL (readline), (4) pipeline syntax (`search | callers | test-map`).
 
 ### Next — Retrieval Quality
 
@@ -52,7 +52,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 - [x] `store.search()` safety — renamed to `search_embedding_only()` to prevent direct use. All user-facing paths should use `search_filtered()`.
 - [x] `DocFormat` registry table (#412) — static FORMAT_TABLE replaces 4 match blocks, 6→3 changes per new variant.
-- [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.
+- [x] `ChunkSummary` type consistency — `ChunkIdentity`, `LightChunk`, `GatheredChunk` now use `Language`/`ChunkType` enums. Parse boundary at SQL read.
 - [ ] `reverse_bfs_multi` depth accuracy (#407) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
 - [x] Convert filename TOCTOU race (#410) — atomic `create_new` instead of check-then-write.
 - [x] `gather_cross_index` tests (#414) — 4 integration tests added.

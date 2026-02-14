@@ -510,6 +510,20 @@ fn test_gather_json() {
 
     assert_eq!(parsed["query"], "process data");
     assert!(parsed["chunks"].is_array(), "Should have chunks array");
+
+    // Verify language/chunk_type in JSON output
+    if let Some(chunks) = parsed["chunks"].as_array() {
+        for chunk_json in chunks {
+            assert!(
+                chunk_json.get("language").is_some(),
+                "JSON should include language"
+            );
+            assert!(
+                chunk_json.get("chunk_type").is_some(),
+                "JSON should include chunk_type"
+            );
+        }
+    }
 }
 
 #[test]

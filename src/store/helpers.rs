@@ -252,12 +252,12 @@ pub struct ChunkIdentity {
     pub origin: String,
     /// Function/class/etc. name
     pub name: String,
-    /// Type of code element (e.g., "function", "class")
-    pub chunk_type: String,
+    /// Type of code element
+    pub chunk_type: ChunkType,
     /// Starting line number (1-indexed)
     pub line_start: u32,
     /// Programming language
-    pub language: String,
+    pub language: Language,
     /// Parent chunk ID (for windowed chunks)
     pub parent_id: Option<String>,
     /// Window index within parent (for long functions split into windows)

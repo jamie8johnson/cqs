@@ -131,6 +131,8 @@ pub(crate) fn cmd_gather(
                     "file": c.file.to_string_lossy().replace('\\', "/"),
                     "line_start": c.line_start,
                     "line_end": c.line_end,
+                    "language": c.language.to_string(),
+                    "chunk_type": c.chunk_type.to_string(),
                     "signature": c.signature,
                     "score": c.score,
                     "depth": c.depth,
