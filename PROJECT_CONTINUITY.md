@@ -2,15 +2,12 @@
 
 ## Right Now
 
-**v0.12.7 post-release cleanup complete.** 2026-02-13.
+**v0.12.8 released + DocFormat registry refactor.** 2026-02-14.
 
-All shipped in PR #428:
-- Skills synced with v0.12.7 CLI flags (created `cqs-review`, updated 8 skills, updated bootstrap)
-- Added `--json` to `stats`, `notes list`, `ref list` (code existed, clap routing was broken)
-- Stale warnings moved from stdout to stderr (stats, gc, ci, review)
-- Fixed `-q` references in gather/scout skills
-- Notes groomed (90→91: removed 2 MEMORY.md duplicates, added 3 from trial run)
-- Comprehensive 56-command CLI trial run verified all functionality
+This session:
+- v0.12.8 released (PR #430, #431): `cqs health`, `cqs suggest`, search safety, TOCTOU fix, gather tests
+- DocFormat registry refactor (PR #432): static FORMAT_TABLE replaces 4 match blocks, 6→3 changes per variant
+- Issues closed: #410, #412, #414
 
 ## Pending Changes
 
@@ -25,7 +22,7 @@ None.
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
 - **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **P4 audit findings** — 3 remaining in `docs/audit-triage.md` (#407 reverse BFS depth, #410 convert TOCTOU, #414 cross-index tests)
+- **P4 audit findings** — 1 remaining (#407 reverse BFS depth)
 
 ## Open Issues
 
@@ -41,7 +38,7 @@ None.
 
 ## Architecture
 
-- Version: 0.12.7
+- Version: 0.12.8
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
