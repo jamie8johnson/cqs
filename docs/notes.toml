@@ -345,7 +345,7 @@ mentions = [
 
 [[note]]
 sentiment = -1.0
-text = "Never call store.search() directly in production code — raw embedding cosine only, no RRF hybrid or keyword matching. Always use search_filtered() or search_unified_with_index(). gather() and search_across_projects() both had this bug, fixed in PR #305."
+text = "Never call search_embedding_only() directly in production code — raw embedding cosine only, no RRF hybrid or keyword matching. Method was originally store.search(), renamed in PR #430 to make misuse obvious. Always use search_filtered() or search_unified_with_index(). gather() and search_across_projects() both had this bug, fixed in PR #305."
 mentions = [
     "src/gather.rs",
     "src/project.rs",
@@ -743,21 +743,4 @@ mentions = [
     "src/cli/commands/mod.rs",
     ".claude/skills/cqs-gather/SKILL.md",
     ".claude/skills/cqs-scout/SKILL.md",
-]
-
-[[note]]
-sentiment = -0.5
-text = "notes list, ref list, and stats don't support --json. Every other command that produces structured data has it. Inconsistency found during comprehensive CLI trial run."
-mentions = [
-    "src/cli/commands/notes.rs",
-    "src/cli/commands/reference.rs",
-    "src/cli/mod.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Stale file warnings print to stdout before JSON output, breaking JSON parsers. Commands like explain emit 'warning: N result files changed...' to stdout. Should go to stderr. Workaround: pipe stderr to /dev/null when parsing JSON."
-mentions = [
-    "src/cli/mod.rs",
-    "src/cli/commands/mod.rs",
 ]
