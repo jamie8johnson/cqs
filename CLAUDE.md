@@ -47,6 +47,7 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 cqs "search query" --json              # semantic search (default: hybrid RRF)
 cqs "function_name" --name-only --json # definition lookup (fast, no embedding)
 cqs "query" --semantic-only --json     # pure vector similarity, no keyword RRF
+cqs "query" --rerank --json            # cross-encoder re-ranking (slower, more accurate)
 cqs "query" --lang rust --path "src/cli/**" --json  # scoped search
 cqs "query" --ref aveva --json         # search only a named reference (skip project)
 ```

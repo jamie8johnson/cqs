@@ -28,6 +28,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 - Eliminate unsafe transmute in HNSW load + `--ref` integration tests (PR #405, v0.12.5)
 - v0.12.3 audit: 73/76 findings fixed (P1-P3 complete, 11/14 P4 fixed) (PR #421, v0.12.6)
 - `cqs ci` — CI pipeline mode with gate logic and exit codes
+- Cross-encoder re-ranking — `--rerank` flag on query, ms-marco-MiniLM-L-6-v2
 
 ### Next — New Commands
 
@@ -39,7 +40,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Next — Retrieval Quality
 
-- [ ] Re-ranking — cross-encoder `--rerank` flag. Second-pass scoring on top-N retrieval results. Biggest retrieval quality win remaining.
+- [x] Re-ranking — cross-encoder `--rerank` flag. Second-pass scoring on top-N retrieval results. Biggest retrieval quality win remaining.
 - [ ] Embedding model eval — benchmark current E5-base-v2 against CodeSage, UniXcoder, Nomic Code on existing eval harness. Quantify gap before committing to upgrade.
 
 ### Next — Code Quality

@@ -20,11 +20,21 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {
+        if cli.rerank {
+            bail!("--rerank requires embedding search, incompatible with --name-only");
+        }
         if let Some(ref ref_name) = cli.ref_name {
             return cmd_query_ref_name_only(cli, ref_name, query, &root);
         }
         return cmd_query_name_only(cli, &store, query, &root);
     }
+
+    // Over-retrieve when reranking to give the cross-encoder more candidates
+    let effective_limit = if cli.rerank {
+        (cli.limit * 4).min(100)
+    } else {
+        cli.limit
+    };
 
     let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
@@ -123,16 +133,17 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     // Use unified search, or code-only if audit mode active
+    let search_limit = if cli.pattern.is_some() {
+        effective_limit * 3
+    } else {
+        effective_limit
+    };
     let results = if audit_mode.is_active() {
         // Audit mode: search code only, skip notes
         let code_results = store.search_filtered_with_index(
             &query_embedding,
             &filter,
-            if cli.pattern.is_some() {
-                cli.limit * 3
-            } else {
-                cli.limit
-            },
+            search_limit,
             cli.threshold,
             index.as_deref(),
         )?;
@@ -141,11 +152,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         store.search_unified_with_index(
             &query_embedding,
             &filter,
-            if cli.pattern.is_some() {
-                cli.limit * 3
-            } else {
-                cli.limit
-            },
+            search_limit,
             cli.threshold,
             index.as_deref(),
         )?
@@ -176,6 +183,13 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             .collect();
         filtered.truncate(cli.limit);
         filtered
+    } else {
+        results
+    };
+
+    // Cross-encoder re-ranking (no-ref path only)
+    let results = if cli.rerank {
+        rerank_unified(query, results, cli.limit)?
     } else {
         results
     };
@@ -239,6 +253,13 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             )?;
         }
         return Ok(());
+    }
+
+    // Multi-index search: reranking not supported (score scales incompatible)
+    if cli.rerank {
+        eprintln!(
+            "Warning: --rerank is not supported with multi-index search. Skipping re-ranking."
+        );
     }
 
     // Multi-index search: search references in parallel
@@ -364,6 +385,38 @@ fn token_pack_tagged(
     (packed, Some((used, budget)))
 }
 
+/// Re-rank unified results using cross-encoder scoring
+///
+/// Extracts `Code` results, reranks them, preserves `Note` results at the end.
+fn rerank_unified(
+    query: &str,
+    results: Vec<UnifiedResult>,
+    limit: usize,
+) -> Result<Vec<UnifiedResult>> {
+    let mut code_results: Vec<cqs::store::SearchResult> = Vec::new();
+    let mut note_results: Vec<UnifiedResult> = Vec::new();
+
+    for r in results {
+        match r {
+            UnifiedResult::Code(sr) => code_results.push(sr),
+            note @ UnifiedResult::Note(_) => note_results.push(note),
+        }
+    }
+
+    if code_results.len() > 1 {
+        let reranker =
+            cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+        reranker
+            .rerank(query, &mut code_results, limit)
+            .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+    }
+
+    let mut out: Vec<UnifiedResult> = code_results.into_iter().map(UnifiedResult::Code).collect();
+    out.extend(note_results);
+    out.truncate(limit);
+    Ok(out)
+}
+
 /// Name-only search: find by function/struct name, no embedding needed
 fn cmd_query_name_only(
     cli: &Cli,
@@ -441,14 +494,28 @@ fn cmd_query_ref_only(
             )
         })?;
 
-    let results = reference::search_reference(
+    let ref_limit = if cli.rerank {
+        (cli.limit * 4).min(100)
+    } else {
+        cli.limit
+    };
+    let mut results = reference::search_reference(
         ref_idx,
         query_embedding,
         filter,
-        cli.limit,
+        ref_limit,
         cli.threshold,
         false, // no weight for --ref scoped search
     )?;
+
+    // Cross-encoder re-ranking for ref-only path
+    if cli.rerank && results.len() > 1 {
+        let reranker =
+            cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+        reranker
+            .rerank(query, &mut results, cli.limit)
+            .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
+    }
 
     let tagged: Vec<reference::TaggedResult> = results
         .into_iter()

@@ -735,7 +735,7 @@ static CACHED_PROVIDER: OnceCell<ExecutionProvider> = OnceCell::new();
 ///
 /// Provider detection is expensive (checks CUDA/TensorRT availability).
 /// Result is cached in a static OnceCell for subsequent calls.
-fn select_provider() -> ExecutionProvider {
+pub(crate) fn select_provider() -> ExecutionProvider {
     *CACHED_PROVIDER.get_or_init(detect_provider)
 }
 
@@ -762,7 +762,7 @@ fn detect_provider() -> ExecutionProvider {
 }
 
 /// Create an ort session with the specified provider
-fn create_session(
+pub(crate) fn create_session(
     model_path: &Path,
     provider: ExecutionProvider,
 ) -> Result<Session, EmbedderError> {
@@ -790,7 +790,7 @@ fn create_session(
 }
 
 /// Pad 2D sequences to a fixed length
-fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
+pub(crate) fn pad_2d_i64(inputs: &[Vec<i64>], max_len: usize, pad_value: i64) -> Array2<i64> {
     let batch_size = inputs.len();
     let mut arr = Array2::from_elem((batch_size, max_len), pad_value);
     for (i, seq) in inputs.iter().enumerate() {

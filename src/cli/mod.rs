@@ -157,6 +157,10 @@ pub struct Cli {
     #[arg(long)]
     semantic_only: bool,
 
+    /// Re-rank results with cross-encoder (slower, more accurate)
+    #[arg(long)]
+    rerank: bool,
+
     /// Output as JSON
     #[arg(long)]
     json: bool,
@@ -1137,6 +1141,34 @@ mod tests {
             Cli::try_parse_from(["cqs", "--ref", "aveva", "--name-only", "some_function"]).unwrap();
         assert_eq!(cli.ref_name, Some("aveva".to_string()));
         assert!(cli.name_only);
+    }
+
+    // ===== --rerank flag tests =====
+
+    #[test]
+    fn test_cli_rerank_flag() {
+        let cli = Cli::try_parse_from(["cqs", "--rerank", "search query"]).unwrap();
+        assert!(cli.rerank);
+    }
+
+    #[test]
+    fn test_cli_rerank_default_false() {
+        let cli = Cli::try_parse_from(["cqs", "search query"]).unwrap();
+        assert!(!cli.rerank);
+    }
+
+    #[test]
+    fn test_cli_rerank_with_ref() {
+        let cli = Cli::try_parse_from(["cqs", "--rerank", "--ref", "aveva", "query"]).unwrap();
+        assert!(cli.rerank);
+        assert_eq!(cli.ref_name, Some("aveva".to_string()));
+    }
+
+    #[test]
+    fn test_cli_rerank_with_limit() {
+        let cli = Cli::try_parse_from(["cqs", "--rerank", "-n", "20", "query"]).unwrap();
+        assert!(cli.rerank);
+        assert_eq!(cli.limit, 20);
     }
 
     // ===== --tokens flag tests =====

@@ -52,6 +52,7 @@ pub mod reference;
 pub mod store;
 
 pub mod ci;
+pub mod reranker;
 
 // Internal modules - not part of public library API
 // These are pub(crate) to hide implementation details, but specific items are
@@ -84,6 +85,7 @@ pub use note::{
     NOTES_HEADER,
 };
 pub use parser::{Chunk, Parser};
+pub use reranker::Reranker;
 pub use store::{ModelInfo, SearchFilter, Store};
 
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API
