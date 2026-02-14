@@ -79,6 +79,8 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
 - `cqs stats` — index statistics.
+- `cqs health` — codebase quality snapshot: dead code, staleness, hotspots, untested hotspots, notes.
+- `cqs suggest` — auto-suggest notes from patterns (dead clusters, untested hotspots, high-risk). `--apply` to add.
 - `cqs gc` — report/clean stale index entries.
 - `cqs notes add/update/remove` — manage project notes.
 - `cqs audit-mode on/off` — toggle audit mode.

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`cqs health` command** — codebase quality snapshot composing stats, dead code, staleness, hotspot analysis, and untested hotspot detection. Graceful degradation (individual sub-queries fail without aborting). `--json` supported.
+- **`cqs suggest` command** — auto-detect note-worthy patterns (dead code clusters, untested hotspots, high-risk functions) and suggest notes. Dry-run by default, `--apply` to add, `--json` for structured output. Deduplicates against existing notes.
+
+### Changed
+- **`Store::search()` renamed to `search_embedding_only()`** — prevents accidental use of raw cosine similarity without RRF hybrid. All user-facing search should use `search_filtered()`.
+
+### Fixed
+- **Convert TOCTOU race (#410)** — replaced check-then-write with atomic `create_new` to prevent race condition in output file creation.
+- **`gather_cross_index` test coverage (#414)** — added 4 integration tests (basic bridging, empty ref, ref-only, limit).
+
 ## [0.12.7] - 2026-02-13
 
 ### Added

@@ -320,8 +320,13 @@ impl BoundedScoreHeap {
 }
 
 impl Store {
-    /// Search for similar chunks (two-phase for memory efficiency)
-    pub fn search(
+    /// Raw embedding-only cosine similarity search (no RRF, no keyword matching).
+    ///
+    /// **You almost certainly want `search_filtered()` instead.** This method skips
+    /// hybrid RRF ranking, name boosting, and all filters. It exists for tests and
+    /// internal building blocks only. Two production bugs came from calling this
+    /// directly (PR #305).
+    pub fn search_embedding_only(
         &self,
         query: &Embedding,
         limit: usize,

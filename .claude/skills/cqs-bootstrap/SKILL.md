@@ -118,6 +118,8 @@ None.
    - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
    - `cqs-ci` — CI pipeline analysis (impact + risk + dead code + gate)
    - `cqs-review` — comprehensive diff review (impact + notes + risk scoring)
+   - `cqs-health` — codebase quality snapshot (dead code, staleness, hotspots)
+   - `cqs-suggest` — auto-suggest notes from codebase patterns
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
