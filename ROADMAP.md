@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.4
+## Current: v0.12.6
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -25,6 +25,8 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 - `cqs review` — structured diff review with risk scoring (PR #400)
 - Change risk scoring — `compute_risk_batch()` + `find_hotspots()` (PR #400)
 - Split `impact.rs` monolith → `src/impact/` directory (PR #402)
+- Eliminate unsafe transmute in HNSW load + `--ref` integration tests (PR #405, v0.12.5)
+- v0.12.3 audit: 73/76 findings fixed (P1-P3 complete, 11/14 P4 fixed) (PR #421, v0.12.6)
 
 ### Next — New Commands
 
@@ -41,12 +43,11 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Next — Code Quality
 
-- [ ] Extract `read_stdin()` / `run_git_diff()` to shared CLI helper — duplicated in impact_diff.rs, review.rs, will multiply with ci
 - [ ] `store.search()` safety — rename or deprecate to prevent direct use. All user-facing paths should use `search_filtered()`.
 - [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.
-- [ ] `reverse_bfs_multi` depth accuracy (P4 AC-15) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
-- [ ] `--ref` CLI integration tests (P4 TC-6) — zero end-to-end tests for the --ref flag across query and gather. Lib-level tests exist but the CLI flow is untested.
-- [ ] Eliminate unsafe transmute in HNSW load (#270) — lifetime transmute in LoadedHnsw. Evaluate: rebuild-from-embeddings, `self_cell`, or switch to safe HNSW crate.
+- [ ] `reverse_bfs_multi` depth accuracy (#407) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
+- [ ] Convert filename TOCTOU race (#410) — check-then-rename in convert output path.
+- [ ] `gather_cross_index` tests (#414) — zero unit/integration tests for cross-index gather.
 
 ### Next — Expansion
 
@@ -66,11 +67,14 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Open Issues
 
-- #270: HNSW LoadedHnsw uses unsafe transmute (upstream hnsw_rs)
+- #407: `reverse_bfs_multi` depth accuracy (BFS ordering)
+- #410: Convert filename TOCTOU race
+- #412: `DocFormat` requires N changes per variant
+- #414: `gather_cross_index` zero tests
+- #389: CAGRA GPU memory — needs disk persistence layer
 - #255: Pre-built reference packages
 - #106: ort stable (currently 2.0.0-rc.11)
 - #63: paste dep (via tokenizers)
-- #389: CAGRA GPU memory — needs disk persistence layer
 
 ## 1.0 Release Criteria
 
