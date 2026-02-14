@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.7
+## Current: v0.12.8
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -35,11 +35,11 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 Priority order based on competitive gap analysis (Feb 2026).
 
 - [x] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
-- [ ] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
+- [x] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
 - [ ] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
 - [ ] `cqs blame` — semantic git blame. Given a function, show who last changed it, when, and the commit message. Combines call graph with git log.
 - [ ] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
-- [ ] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
+- [x] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
 - [ ] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests. Deeper than caller-only analysis.
 - [ ] `cqs chat` — interactive REPL for chained queries. Keep store open across commands, pipeline syntax (`search | callers | test-map`).
 
@@ -50,11 +50,11 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Next — Code Quality
 
-- [ ] `store.search()` safety — rename or deprecate to prevent direct use. All user-facing paths should use `search_filtered()`.
+- [x] `store.search()` safety — renamed to `search_embedding_only()` to prevent direct use. All user-facing paths should use `search_filtered()`.
 - [ ] `ChunkSummary` type consistency — some paths use stringly-typed fields, others use `Language`/`ChunkType` enums. Unify.
 - [ ] `reverse_bfs_multi` depth accuracy (#407) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
-- [ ] Convert filename TOCTOU race (#410) — check-then-rename in convert output path.
-- [ ] `gather_cross_index` tests (#414) — zero unit/integration tests for cross-index gather.
+- [x] Convert filename TOCTOU race (#410) — atomic `create_new` instead of check-then-write.
+- [x] `gather_cross_index` tests (#414) — 4 integration tests added.
 
 ### Next — Expansion
 
@@ -75,9 +75,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Open Issues
 
 - #407: `reverse_bfs_multi` depth accuracy (BFS ordering)
-- #410: Convert filename TOCTOU race
 - #412: `DocFormat` requires N changes per variant
-- #414: `gather_cross_index` zero tests
 - #389: CAGRA GPU memory — needs disk persistence layer
 - #255: Pre-built reference packages
 - #106: ort stable (currently 2.0.0-rc.11)
