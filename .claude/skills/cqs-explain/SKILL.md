@@ -9,7 +9,8 @@ argument-hint: "<function_name>"
 
 Parse arguments:
 - First positional arg = function name or `file:function` (required)
+- `--tokens <N>` → token budget (includes source content within budget)
 
-Run via Bash: `cqs explain "<name>" --json -q`
+Run via Bash: `cqs explain "<name>" [--tokens N] --json -q`
 
 Present the results to the user. Returns a comprehensive function card: signature, docstring, callers, callees, and similar functions. Collapses 4+ separate lookups into 1.

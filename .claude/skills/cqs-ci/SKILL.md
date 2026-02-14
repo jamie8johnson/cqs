@@ -10,8 +10,9 @@ argument-hint: "[--base HEAD~1] [--stdin] [--gate high|medium|off]"
 Parse arguments:
 - `--base <ref>` — git ref to diff against (default: unstaged changes). Examples: `HEAD`, `HEAD~1`, `main`
 - `--stdin` — read diff from stdin instead of running git diff
+- `--format <fmt>` — output format: `text` (default), `json`, `mermaid`
+- `--json` — alias for `--format json`
 - `--gate <level>` — gate threshold: `high` (default), `medium`, `off`
-- `--json` — JSON output
 - `--tokens <N>` — token budget for output
 
 Run via Bash: `cqs ci [--base <ref>] [--stdin] [--gate high] [--json] [--tokens N]`

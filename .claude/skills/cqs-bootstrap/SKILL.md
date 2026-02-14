@@ -117,6 +117,7 @@ None.
    - `cqs-plan` — task planning with scout data + task-type templates
    - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
    - `cqs-ci` — CI pipeline analysis (impact + risk + dead code + gate)
+   - `cqs-review` — comprehensive diff review (impact + notes + risk scoring)
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
@@ -158,6 +159,8 @@ Skills are auto-discovered — they appear in `/` autocomplete automatically.
 cqs "search query" --json          # semantic search
 cqs "function_name" --name-only    # definition lookup (fast, no embedding)
 cqs "query" --semantic-only        # pure vector similarity, no RRF
+cqs "query" --rerank --json        # cross-encoder re-ranking (slower, more accurate)
+cqs "query" --ref aveva --json     # search only a named reference
 ```
 
 Use it for:
@@ -181,6 +184,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs test-map <function>` — map function to tests that exercise it.
+- `cqs review [--base REF]` — comprehensive diff review: impact + notes + risk scoring.
 - `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate.
 - `cqs dead` — find functions/methods with no callers.
 - `cqs stale` — check index freshness.
