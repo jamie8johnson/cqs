@@ -794,7 +794,7 @@ fn test_all_chunk_identities() {
     // Find chunk1 identity
     let id1 = identities.iter().find(|i| i.name == "fn1").unwrap();
     assert_eq!(id1.origin, "test.rs");
-    assert_eq!(id1.language, "rust");
+    assert_eq!(id1.language, Language::Rust);
     assert_eq!(id1.line_start, 1);
 
     // Find chunk2 identity

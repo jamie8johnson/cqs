@@ -6,7 +6,7 @@
 mod common;
 
 use common::{mock_embedding, test_chunk, TestStore};
-use cqs::parser::{CallSite, FunctionCalls};
+use cqs::parser::{CallSite, ChunkType, FunctionCalls, Language};
 use cqs::reference::ReferenceIndex;
 use cqs::{GatherDirection, GatherOptions};
 use std::path::PathBuf;
@@ -73,6 +73,16 @@ fn test_gather_basic() {
         assert!(
             chunk.depth <= 1,
             "With expand_depth=1, max depth should be 1"
+        );
+        assert_eq!(
+            chunk.language,
+            Language::Rust,
+            "Gathered chunk should have language"
+        );
+        assert_eq!(
+            chunk.chunk_type,
+            ChunkType::Function,
+            "Gathered chunk should have chunk_type"
         );
     }
 }

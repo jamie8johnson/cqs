@@ -56,7 +56,7 @@ impl From<&ChunkIdentity> for ChunkKey {
         ChunkKey {
             origin: c.origin.clone(),
             name: c.name.clone(),
-            chunk_type: c.chunk_type.parse().unwrap_or(ChunkType::Function),
+            chunk_type: c.chunk_type,
         }
     }
 }
@@ -77,20 +77,13 @@ pub fn semantic_diff(
     let target_ids = target_store.all_chunk_identities_filtered(language_filter)?;
 
     // Collapse windowed chunks: keep only window_idx=0 (or None)
-    // When language filter is active, also exclude "unknown" chunk types
     let source_ids: Vec<_> = source_ids
         .into_iter()
-        .filter(|c| {
-            c.window_idx.is_none_or(|i| i == 0)
-                && (language_filter.is_none() || c.chunk_type != "unknown")
-        })
+        .filter(|c| c.window_idx.is_none_or(|i| i == 0))
         .collect();
     let target_ids: Vec<_> = target_ids
         .into_iter()
-        .filter(|c| {
-            c.window_idx.is_none_or(|i| i == 0)
-                && (language_filter.is_none() || c.chunk_type != "unknown")
-        })
+        .filter(|c| c.window_idx.is_none_or(|i| i == 0))
         .collect();
 
     tracing::debug!(
@@ -120,10 +113,7 @@ pub fn semantic_diff(
             added.push(DiffEntry {
                 name: target_chunk.name.clone(),
                 file: target_chunk.origin.clone(),
-                chunk_type: target_chunk
-                    .chunk_type
-                    .parse()
-                    .unwrap_or(ChunkType::Function),
+                chunk_type: target_chunk.chunk_type,
                 similarity: None,
             });
         }
@@ -135,10 +125,7 @@ pub fn semantic_diff(
             removed.push(DiffEntry {
                 name: source_chunk.name.clone(),
                 file: source_chunk.origin.clone(),
-                chunk_type: source_chunk
-                    .chunk_type
-                    .parse()
-                    .unwrap_or(ChunkType::Function),
+                chunk_type: source_chunk.chunk_type,
                 similarity: None,
             });
         }
@@ -163,10 +150,7 @@ pub fn semantic_diff(
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
                         file: target_chunk.origin.clone(),
-                        chunk_type: target_chunk
-                            .chunk_type
-                            .parse()
-                            .unwrap_or(ChunkType::Function),
+                        chunk_type: target_chunk.chunk_type,
                         similarity: Some(sim),
                     });
                 } else {
@@ -178,10 +162,7 @@ pub fn semantic_diff(
                 modified.push(DiffEntry {
                     name: target_chunk.name.clone(),
                     file: target_chunk.origin.clone(),
-                    chunk_type: target_chunk
-                        .chunk_type
-                        .parse()
-                        .unwrap_or(ChunkType::Function),
+                    chunk_type: target_chunk.chunk_type,
                     similarity: None,
                 });
             }
