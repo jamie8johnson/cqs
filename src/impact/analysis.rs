@@ -325,34 +325,29 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
 
 /// Derive a test file path from a source file path.
 ///
-/// EXT-16: These per-language conventions are hardcoded. A future improvement
-/// would make them data-driven (e.g., `test_file_pattern` on language definitions),
-/// but that requires restructuring across parser/store/impact modules.
+/// Uses per-language test file conventions from `LanguageDef::test_file_suggestion`.
+/// Falls back to `{parent}/tests/{stem}_test.{ext}` for unknown languages.
 fn suggest_test_file(source: &str) -> String {
-    // Extract the filename stem and extension
     let path = std::path::Path::new(source);
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("rs");
-
-    // Find the nearest parent directory
     let parent = path
         .parent()
         .and_then(|p| p.to_str())
         .unwrap_or("tests")
         .replace('\\', "/");
 
-    match ext {
-        "rs" => format!("{parent}/tests/{stem}_test.rs"),
-        "py" => format!("{parent}/test_{stem}.py"),
-        "ts" | "tsx" => format!("{parent}/{stem}.test.ts"),
-        "js" | "jsx" => format!("{parent}/{stem}.test.js"),
-        "go" => format!("{parent}/{stem}_test.go"),
-        "java" => format!("{parent}/{stem}Test.java"),
-        _ => format!("{parent}/tests/{stem}_test.{ext}"),
+    // Look up language-specific convention via registry
+    if let Some(lang_def) = crate::language::REGISTRY.from_extension(ext) {
+        if let Some(suggest_fn) = lang_def.test_file_suggestion {
+            return suggest_fn(stem, &parent);
+        }
     }
+    // Fallback for unknown languages
+    format!("{parent}/tests/{stem}_test.{ext}")
 }
 
 #[cfg(test)]

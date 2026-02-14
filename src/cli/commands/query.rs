@@ -181,8 +181,13 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     };
 
     // Token-budget packing for unified results (no-ref path)
+    let json_overhead = if cli.json {
+        super::JSON_OVERHEAD_PER_RESULT
+    } else {
+        0
+    };
     let (results, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_unified(results, budget, &embedder)
+        token_pack_unified(results, budget, json_overhead, &embedder)
     } else {
         (results, None)
     };
@@ -263,7 +268,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // Token-budget packing for tagged results (multi-ref path)
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_tagged(tagged, budget, &embedder)
+        token_pack_tagged(tagged, budget, json_overhead, &embedder)
     } else {
         (tagged, token_info)
     };
@@ -295,6 +300,7 @@ type TokenInfo = Option<(usize, usize)>;
 fn token_pack_unified(
     results: Vec<UnifiedResult>,
     budget: usize,
+    json_overhead: usize,
     embedder: &Embedder,
 ) -> (Vec<UnifiedResult>, TokenInfo) {
     let _span = tracing::info_span!("token_pack_unified", budget).entered();
@@ -307,10 +313,11 @@ fn token_pack_unified(
         })
         .collect();
     let token_counts = super::count_tokens_batch(embedder, &texts);
-    let (packed, used) = super::token_pack(results, &token_counts, budget, |r| match r {
-        UnifiedResult::Code(sr) => sr.score,
-        UnifiedResult::Note(nr) => nr.score,
-    });
+    let (packed, used) =
+        super::token_pack(results, &token_counts, budget, json_overhead, |r| match r {
+            UnifiedResult::Code(sr) => sr.score,
+            UnifiedResult::Note(nr) => nr.score,
+        });
     tracing::info!(
         chunks = packed.len(),
         tokens = used,
@@ -324,6 +331,7 @@ fn token_pack_unified(
 fn token_pack_tagged(
     results: Vec<reference::TaggedResult>,
     budget: usize,
+    json_overhead: usize,
     embedder: &Embedder,
 ) -> (Vec<reference::TaggedResult>, TokenInfo) {
     let _span = tracing::info_span!("token_pack_tagged", budget).entered();
@@ -336,10 +344,17 @@ fn token_pack_tagged(
         })
         .collect();
     let token_counts = super::count_tokens_batch(embedder, &texts);
-    let (packed, used) = super::token_pack(results, &token_counts, budget, |r| match &r.result {
-        UnifiedResult::Code(sr) => sr.score,
-        UnifiedResult::Note(nr) => nr.score,
-    });
+    let (packed, used) =
+        super::token_pack(
+            results,
+            &token_counts,
+            budget,
+            json_overhead,
+            |r| match &r.result {
+                UnifiedResult::Code(sr) => sr.score,
+                UnifiedResult::Note(nr) => nr.score,
+            },
+        );
     tracing::info!(
         chunks = packed.len(),
         tokens = used,
@@ -372,9 +387,14 @@ fn cmd_query_name_only(
     let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
 
     // Token-budget packing (lazy embedder — only created when --tokens is set)
+    let json_overhead = if cli.json {
+        super::JSON_OVERHEAD_PER_RESULT
+    } else {
+        0
+    };
     let (unified, token_info) = if let Some(budget) = cli.tokens {
         let embedder = Embedder::new()?;
-        token_pack_unified(unified, budget, &embedder)
+        token_pack_unified(unified, budget, json_overhead, &embedder)
     } else {
         (unified, None)
     };
@@ -439,8 +459,13 @@ fn cmd_query_ref_only(
         .collect();
 
     // Token-budget packing
+    let json_overhead = if cli.json {
+        super::JSON_OVERHEAD_PER_RESULT
+    } else {
+        0
+    };
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_tagged(tagged, budget, embedder)
+        token_pack_tagged(tagged, budget, json_overhead, embedder)
     } else {
         (tagged, None)
     };
@@ -497,9 +522,14 @@ fn cmd_query_ref_name_only(
         .collect();
 
     // Token-budget packing (lazy embedder — only created when --tokens is set)
+    let json_overhead = if cli.json {
+        super::JSON_OVERHEAD_PER_RESULT
+    } else {
+        0
+    };
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
         let embedder = Embedder::new()?;
-        token_pack_tagged(tagged, budget, &embedder)
+        token_pack_tagged(tagged, budget, json_overhead, &embedder)
     } else {
         (tagged, None)
     };

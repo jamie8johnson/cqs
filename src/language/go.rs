@@ -105,6 +105,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     method_containers: &[],
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
+    test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}_test.go")),
 };
 
 pub fn definition() -> &'static LanguageDef {

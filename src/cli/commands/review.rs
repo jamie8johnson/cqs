@@ -1,7 +1,5 @@
 //! Review command — comprehensive diff review context
 
-use std::io::Read;
-
 use anyhow::Result;
 
 use cqs::review::ReviewResult;
@@ -11,17 +9,23 @@ pub(crate) fn cmd_review(
     _cli: &crate::cli::Cli,
     base: Option<&str>,
     from_stdin: bool,
-    json: bool,
+    format: &crate::cli::OutputFormat,
     max_tokens: Option<usize>,
 ) -> Result<()> {
-    let _span = tracing::info_span!("cmd_review", ?max_tokens).entered();
+    let _span = tracing::info_span!("cmd_review", ?format, ?max_tokens).entered();
+
+    if matches!(format, crate::cli::OutputFormat::Mermaid) {
+        anyhow::bail!("Mermaid output is not supported for review — use text or json");
+    }
+
+    let json = matches!(format, crate::cli::OutputFormat::Json);
     let (store, root, _) = crate::cli::open_project_store()?;
 
     // 1. Get diff text
     let diff_text = if from_stdin {
-        read_stdin()?
+        super::read_stdin()?
     } else {
-        run_git_diff(base)?
+        super::run_git_diff(base)?
     };
 
     // 2. Run review
@@ -37,7 +41,8 @@ pub(crate) fn cmd_review(
         }
         Some(mut review) => {
             // Apply token budget: truncate callers and tests lists to fit
-            let token_count_used = max_tokens.map(|budget| apply_token_budget(&mut review, budget));
+            let token_count_used =
+                max_tokens.map(|budget| apply_token_budget(&mut review, budget, json));
 
             if json {
                 let mut output: serde_json::Value = serde_json::to_value(&review)?;
@@ -59,42 +64,50 @@ pub(crate) fn cmd_review(
 ///
 /// Changed functions and risk summary are always included (small, essential).
 /// Callers and tests are the variable-size sections that get truncated.
+/// `json` adds per-item overhead for JSON field names and structure tokens.
 /// Returns total token count used.
-fn apply_token_budget(review: &mut ReviewResult, budget: usize) -> usize {
-    let _span = tracing::info_span!("review_token_budget", budget).entered();
+fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> usize {
+    let _span = tracing::info_span!("review_token_budget", budget, json).entered();
+
+    // JSON wrapping adds ~35 tokens per item (field names, paths, metadata)
+    let json_per_item = if json {
+        super::JSON_OVERHEAD_PER_RESULT
+    } else {
+        0
+    };
 
     // Estimate tokens per item (~15 tokens per caller/test line in text output)
-    const TOKENS_PER_CALLER: usize = 15;
-    const TOKENS_PER_TEST: usize = 18;
-    const TOKENS_PER_FUNCTION: usize = 12;
-    const TOKENS_PER_NOTE: usize = 20;
+    let tokens_per_caller: usize = 15 + json_per_item;
+    let tokens_per_test: usize = 18 + json_per_item;
+    let tokens_per_function: usize = 12 + json_per_item;
+    let tokens_per_note: usize = 20 + json_per_item;
     const BASE_OVERHEAD: usize = 30; // risk header, section headers, etc.
 
     let mut used = BASE_OVERHEAD;
 
     // Changed functions are always included (essential for review)
-    used += review.changed_functions.len() * TOKENS_PER_FUNCTION;
+    used += review.changed_functions.len() * tokens_per_function;
 
     // Notes are always included (small, high value)
-    used += review.relevant_notes.len() * TOKENS_PER_NOTE;
+    used += review.relevant_notes.len() * tokens_per_note;
 
     // Fit callers within remaining budget (prioritize callers over tests)
     let callers_budget = (budget.saturating_sub(used)) * 2 / 3; // 2/3 of remaining for callers
-    let max_callers = callers_budget / TOKENS_PER_CALLER;
+    let max_callers = callers_budget / tokens_per_caller;
     let original_callers = review.affected_callers.len();
     if review.affected_callers.len() > max_callers {
         review.affected_callers.truncate(max_callers.max(1));
     }
-    used += review.affected_callers.len() * TOKENS_PER_CALLER;
+    used += review.affected_callers.len() * tokens_per_caller;
 
     // Fit tests within remaining budget
     let tests_budget = budget.saturating_sub(used);
-    let max_tests = tests_budget / TOKENS_PER_TEST;
+    let max_tests = tests_budget / tokens_per_test;
     let original_tests = review.affected_tests.len();
     if review.affected_tests.len() > max_tests {
         review.affected_tests.truncate(max_tests.max(1));
     }
-    used += review.affected_tests.len() * TOKENS_PER_TEST;
+    used += review.affected_tests.len() * tokens_per_test;
 
     if review.affected_callers.len() < original_callers
         || review.affected_tests.len() < original_tests
@@ -126,40 +139,6 @@ fn empty_review_json() -> serde_json::Value {
         "risk_summary": { "high": 0, "medium": 0, "low": 0, "overall": "low" },
         "stale_warning": null
     })
-}
-
-fn read_stdin() -> Result<String> {
-    const MAX_STDIN_SIZE: usize = 50 * 1024 * 1024; // 50 MB
-    let mut buf = String::new();
-    std::io::stdin()
-        .take(MAX_STDIN_SIZE as u64 + 1)
-        .read_to_string(&mut buf)?;
-    if buf.len() > MAX_STDIN_SIZE {
-        anyhow::bail!("stdin input exceeds 50 MB limit");
-    }
-    Ok(buf)
-}
-
-fn run_git_diff(base: Option<&str>) -> Result<String> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["--no-pager", "diff", "--no-color"]);
-    if let Some(b) = base {
-        if b.starts_with('-') {
-            anyhow::bail!("Invalid base ref '{}': must not start with '-'", b);
-        }
-        cmd.arg(b);
-    }
-
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run 'git diff': {}. Is git installed?", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {}", stderr.trim());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn display_review_text(
@@ -222,9 +201,20 @@ fn display_review_text(
             RiskLevel::Medium => format!("[{}]", "MED".yellow()),
             RiskLevel::Low => format!("[{}]", "LOW".green()),
         };
+        let blast_info = if f.risk.blast_radius != f.risk.risk_level {
+            format!(", blast radius: {}", f.risk.blast_radius)
+        } else {
+            String::new()
+        };
         println!(
-            "  {} {} ({}:{}) — {} callers, {} tests",
-            risk_indicator, f.name, f.file, f.line_start, f.risk.caller_count, f.risk.test_count,
+            "  {} {} ({}:{}) — {} callers, {} tests{}",
+            risk_indicator,
+            f.name,
+            f.file,
+            f.line_start,
+            f.risk.caller_count,
+            f.risk.test_count,
+            blast_info,
         );
     }
 

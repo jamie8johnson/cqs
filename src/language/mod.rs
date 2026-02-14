@@ -141,6 +141,10 @@ pub struct LanguageDef {
     /// Per-language return type extractor (used by NL description generation).
     /// Returns `None` if the language has no type annotations or the signature has no return type.
     pub extract_return_nl: fn(&str) -> Option<String>,
+    /// Suggest a test file path for a given source file.
+    /// Receives `(stem, parent_dir)` and returns a suggested test path.
+    /// `None` uses the fallback pattern `{parent}/tests/{stem}_test.{ext}`.
+    pub test_file_suggestion: Option<fn(&str, &str) -> String>,
 }
 
 /// How to extract function signatures

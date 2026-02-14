@@ -356,7 +356,7 @@ fn pack_by_relevance(
         .collect();
     let token_counts = super::count_tokens_batch(embedder, &texts);
 
-    let (packed, used) = super::token_pack(indexed, &token_counts, budget, |&(_, cc)| cc as f32);
+    let (packed, used) = super::token_pack(indexed, &token_counts, budget, 0, |&(_, cc)| cc as f32);
 
     let included: HashSet<String> = packed
         .into_iter()

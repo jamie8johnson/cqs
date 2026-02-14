@@ -132,7 +132,7 @@ pub(crate) fn cmd_explain(
             .collect();
         let token_counts = super::count_tokens_batch(&embedder, &texts);
         let (packed, sim_used) =
-            super::token_pack(indexed, &token_counts, remaining, |&(_, score)| score);
+            super::token_pack(indexed, &token_counts, remaining, 0, |&(_, score)| score);
         let sim_included: std::collections::HashSet<String> = packed
             .into_iter()
             .map(|(i, _)| similar[i].chunk.id.clone())

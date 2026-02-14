@@ -10,11 +10,14 @@ use std::path::Path;
 
 use anyhow::Result;
 
+/// Default content subdirectory for WebHelp sites.
+const WEBHELP_CONTENT_DIR: &str = "content";
+
 /// Check if a directory looks like a web help site.
 ///
 /// Heuristic: has a `content/` subdirectory containing at least one `.html` file.
 pub fn is_webhelp_dir(dir: &Path) -> bool {
-    let content_dir = dir.join("content");
+    let content_dir = dir.join(WEBHELP_CONTENT_DIR);
     if !content_dir.is_dir() {
         return false;
     }
@@ -39,7 +42,7 @@ pub fn is_webhelp_dir(dir: &Path) -> bool {
 pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     let _span = tracing::info_span!("webhelp_to_markdown", dir = %dir.display()).entered();
 
-    let content_dir = dir.join("content");
+    let content_dir = dir.join(WEBHELP_CONTENT_DIR);
     if !content_dir.is_dir() {
         anyhow::bail!(
             "Web help directory has no content/ subdirectory: {}",

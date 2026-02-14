@@ -55,6 +55,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     method_containers: &["class_definition"],
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
+    test_file_suggestion: Some(|stem, parent| format!("{parent}/test_{stem}.py")),
 };
 
 pub fn definition() -> &'static LanguageDef {
