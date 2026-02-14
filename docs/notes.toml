@@ -583,25 +583,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "v0.12.1 audit pattern: all 7 post-v0.9.7 modules (scout, where_to_add, related, diff_parse, impact_diff, where_cmd, related cmd) shipped with zero tracing spans and pervasive .unwrap_or_default() error swallowing. ~25 of 125 findings from this single anti-pattern. Lesson: new module checklist should include tracing span + error propagation review."
-mentions = [
-    "src/scout.rs",
-    "src/where_to_add.rs",
-    "src/related.rs",
-    "src/diff_parse.rs",
-    "audit",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Sonnet agents produce shoddy work on audit fixes — ownership bugs (moved Vec used after for loop), missed tracing spans on files they owned. Always use opus agents for code changes. Haiku acceptable only for doc-only edits."
-mentions = [
-    "src/impact/",
-    "audit",
-]
-
-[[note]]
 sentiment = 0.5
 text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<ChangedFunction> — callers pass owned vec, return struct populates changed_functions directly instead of leaving empty for caller to fill."
 mentions = ["src/impact/diff.rs"]
@@ -732,4 +713,51 @@ text = "to_ascii_lowercase() silently passes through non-ASCII chars unchanged �
 mentions = [
     "src/convert/naming.rs",
     "to_lowercase",
+]
+
+[[note]]
+sentiment = -0.5
+text = '''ort 2.0.0-rc.11: raw ndarray can't be passed to ort::inputs\![]. Must wrap with Tensor::from_array(). Easy to miss — compiler error is 'SessionInputValue trait not satisfied' which doesn't mention Tensor.'''
+mentions = [
+    "reranker.rs",
+    "embedder.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "gh release create uses --notes-file not --body-file (unlike gh pr create which uses --body-file). Easy to confuse."
+mentions = ["release"]
+
+[[note]]
+sentiment = 0.0
+text = "Cross-encoder reranking incompatible with multi-index merge — sigmoid scores (0-1) vs cosine/RRF scores are on different scales. Must rerank before merge or skip entirely."
+mentions = [
+    "reranker.rs",
+    "query.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "gather and scout subcommands don't accept -q/--quiet flag. Skills referenced it but CLI rejects it. Progress output already goes to stderr, so -q isn't needed — just don't use it in skill definitions."
+mentions = [
+    "src/cli/commands/mod.rs",
+    ".claude/skills/cqs-gather/SKILL.md",
+    ".claude/skills/cqs-scout/SKILL.md",
+]
+
+[[note]]
+sentiment = -0.5
+text = "notes list, ref list, and stats don't support --json. Every other command that produces structured data has it. Inconsistency found during comprehensive CLI trial run."
+mentions = [
+    "src/cli/commands/notes.rs",
+    "src/cli/commands/reference.rs",
+    "src/cli/mod.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Stale file warnings print to stdout before JSON output, breaking JSON parsers. Commands like explain emit 'warning: N result files changed...' to stdout. Should go to stderr. Workaround: pipe stderr to /dev/null when parsing JSON."
+mentions = [
+    "src/cli/mod.rs",
+    "src/cli/commands/mod.rs",
 ]

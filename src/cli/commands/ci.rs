@@ -272,14 +272,14 @@ fn display_ci_text(
 
     // Stale warning
     if let Some(ref stale) = review.stale_warning {
-        println!();
-        println!(
+        eprintln!();
+        eprintln!(
             "{} Index is stale for {} file(s):",
             "Warning:".yellow().bold(),
             stale.len()
         );
         for f in stale {
-            println!("  {}", f);
+            eprintln!("  {}", f);
         }
     }
 

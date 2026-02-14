@@ -217,7 +217,11 @@ enum Commands {
         no_ignore: bool,
     },
     /// Show index statistics
-    Stats,
+    Stats {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Watch for changes and reindex
     Watch {
         /// Debounce interval in milliseconds
@@ -564,7 +568,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             dry_run,
             no_ignore,
         }) => cmd_index(&cli, force, dry_run, no_ignore),
-        Some(Commands::Stats) => cmd_stats(&cli),
+        Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
             debounce,
             no_ignore,
@@ -860,7 +864,7 @@ mod tests {
     #[test]
     fn test_cmd_stats() {
         let cli = Cli::try_parse_from(["cqs", "stats"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Stats)));
+        assert!(matches!(cli.command, Some(Commands::Stats { .. })));
     }
 
     #[test]
@@ -918,9 +922,14 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "notes", "list"]).unwrap();
         match cli.command {
             Some(Commands::Notes { ref subcmd }) => match subcmd {
-                NotesCommand::List { warnings, patterns } => {
+                NotesCommand::List {
+                    warnings,
+                    patterns,
+                    json,
+                } => {
                     assert!(!warnings);
                     assert!(!patterns);
+                    assert!(!json);
                 }
                 _ => panic!("Expected List subcommand"),
             },
@@ -1074,7 +1083,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Ref {
-                subcmd: RefCommand::List
+                subcmd: RefCommand::List { .. }
             })
         ));
     }

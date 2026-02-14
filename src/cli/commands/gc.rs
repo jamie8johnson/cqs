@@ -80,7 +80,7 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
             }
         }
         if stale_count > 0 {
-            println!(
+            eprintln!(
                 "\nNote: {} file{} changed since last index. Run 'cqs index' to update.",
                 stale_count,
                 if stale_count == 1 { "" } else { "s" },
