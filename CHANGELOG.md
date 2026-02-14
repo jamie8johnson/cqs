@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.6] - 2026-02-13
+
+### Fixed
+- **`score_name_match` empty query bug** (#415): Empty query returned 0.9 (prefix match) instead of 0.0.
+- **`PathBuf::from("")` cosmetic** (#417): Replaced `unwrap_or_default()` with conditional push in PDF script lookup.
+- **Unicode lowercasing** (#418): `title_to_filename` now uses `to_lowercase()` instead of `to_ascii_lowercase()`, properly handling non-ASCII characters.
+
+### Added
+- **`blast_radius` field on `RiskScore`** (#408): Based on caller count alone (Low 0-2, Medium 3-10, High >10). Unlike `risk_level`, does not decrease with test coverage. Displayed when it differs from risk level.
+- **`--format` option for `cqs review`** (#416): Parity with `impact`/`trace` commands. Accepts `text` or `json`. `--json` remains as alias. Mermaid returns an error (unsupported for review data model).
+- **`test_file_suggestion` on `LanguageDef`** (#420): Data-driven test file path conventions per language, replacing hardcoded match in `suggest_test_file`.
+- 14 new tests: 6 token_pack, 2 score_name_match, 3 blast_radius, 1 unicode naming, 2 risk scoring.
+
+### Changed
+- **Token packing JSON overhead** (#409): `token_pack` now accepts `json_overhead_per_item` parameter. JSON output accounts for ~35 tokens per result for field names and metadata. Affects `query`, `gather`, `review`, `context`, `explain`, `scout` commands with `--tokens`.
+- **Cross-index bridge parallelization** (#411): `gather --ref` bridge search uses `rayon::par_iter` instead of sequential loop.
+- **Deduplicated `read_stdin`/`run_git_diff`** (#419): Moved to shared `commands/mod.rs` with tracing span on `run_git_diff`.
+- **`WEBHELP_CONTENT_DIR` constant** (#413): Extracted from duplicated `"content"` string literals.
+
 ## [0.12.5] - 2026-02-13
 
 ### Fixed
