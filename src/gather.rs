@@ -11,8 +11,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use rayon::prelude::*;
 
 use crate::store::helpers::{CallGraph, SearchFilter};
+use crate::store::SearchResult;
 use crate::Store;
 
 /// Default maximum nodes in BFS expansion to prevent blowup on hub functions.
@@ -424,6 +426,7 @@ pub fn gather_cross_index(
     // 3. Bridge: for each ref seed, search the project store with the seed's embedding
     //    to find semantically similar project code.
     //    If no embedding available for a seed, use the original query embedding.
+    //    Parallelized with rayon — Store is Send+Sync (SqlitePool + Runtime + AtomicBool).
     let bridge_filter = SearchFilter {
         query_text: query_text.to_string(),
         enable_rrf: true,
@@ -431,32 +434,42 @@ pub fn gather_cross_index(
     };
 
     let bridge_limit = 3; // Top 3 project matches per ref seed
-    let mut bridge_scores: HashMap<String, (f32, String)> = HashMap::new(); // name -> (score, chunk_id)
 
-    for seed in &ref_seeds {
-        let search_embedding = ref_embeddings
-            .get(&seed.chunk.id)
-            .unwrap_or(query_embedding);
+    let _bridge_span = tracing::info_span!("bridge_search", seed_count = ref_seeds.len()).entered();
 
-        let project_results = match project_store.search_filtered(
-            search_embedding,
-            &bridge_filter,
-            bridge_limit,
-            opts.seed_threshold,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    ref_seed = %seed.chunk.name,
-                    "Bridge search failed for ref seed"
-                );
-                continue;
+    let bridge_results: Vec<(f32, Vec<SearchResult>)> = ref_seeds
+        .par_iter()
+        .filter_map(|seed| {
+            let search_embedding = ref_embeddings
+                .get(&seed.chunk.id)
+                .unwrap_or(query_embedding);
+            match project_store.search_filtered(
+                search_embedding,
+                &bridge_filter,
+                bridge_limit,
+                opts.seed_threshold,
+            ) {
+                Ok(r) if !r.is_empty() => Some((seed.score, r)),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        ref_seed = %seed.chunk.name,
+                        "Bridge search failed for ref seed"
+                    );
+                    None
+                }
             }
-        };
+        })
+        .collect();
 
-        for pr in &project_results {
-            let bridge_score = pr.score * seed.score; // weight by ref relevance
+    drop(_bridge_span);
+
+    // Merge into bridge_scores sequentially (HashMap not Sync)
+    let mut bridge_scores: HashMap<String, (f32, String)> = HashMap::new(); // name -> (score, chunk_id)
+    for (seed_score, results) in bridge_results {
+        for pr in &results {
+            let bridge_score = pr.score * seed_score;
             match bridge_scores.entry(pr.chunk.name.clone()) {
                 std::collections::hash_map::Entry::Vacant(e) => {
                     e.insert((bridge_score, pr.chunk.id.clone()));

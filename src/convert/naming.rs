@@ -75,11 +75,11 @@ pub fn extract_title(markdown: &str, source_path: &Path) -> String {
 pub fn title_to_filename(title: &str) -> String {
     let cleaned: String = title
         .chars()
-        .map(|c| {
+        .flat_map(|c| {
             if c.is_alphanumeric() || c == ' ' || c == '-' {
-                c.to_ascii_lowercase()
+                c.to_lowercase().collect::<Vec<_>>()
             } else {
-                ' '
+                vec![' ']
             }
         })
         .collect();
@@ -177,6 +177,13 @@ mod tests {
             title_to_filename("already-kebab-case"),
             "already-kebab-case.md"
         );
+    }
+
+    #[test]
+    fn test_title_to_filename_unicode() {
+        // Unicode chars are lowercased properly (not skipped by to_ascii_lowercase)
+        assert_eq!(title_to_filename("Über Handbuch"), "über-handbuch.md");
+        assert_eq!(title_to_filename("Ångström Guide"), "ångström-guide.md");
     }
 
     #[test]

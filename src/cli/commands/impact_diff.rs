@@ -1,7 +1,5 @@
 //! Impact-diff command — what breaks based on a git diff
 
-use std::io::Read;
-
 use anyhow::Result;
 
 use cqs::diff_parse::parse_unified_diff;
@@ -27,9 +25,9 @@ pub(crate) fn cmd_impact_diff(
 
     // 1. Get diff text
     let diff_text = if from_stdin {
-        read_stdin()?
+        super::read_stdin()?
     } else {
-        run_git_diff(base)?
+        super::run_git_diff(base)?
     };
 
     // 2. Parse hunks
@@ -67,40 +65,6 @@ pub(crate) fn cmd_impact_diff(
     }
 
     Ok(())
-}
-
-fn read_stdin() -> Result<String> {
-    const MAX_STDIN_SIZE: usize = 50 * 1024 * 1024; // 50 MB
-    let mut buf = String::new();
-    std::io::stdin()
-        .take(MAX_STDIN_SIZE as u64 + 1)
-        .read_to_string(&mut buf)?;
-    if buf.len() > MAX_STDIN_SIZE {
-        anyhow::bail!("stdin input exceeds 50 MB limit");
-    }
-    Ok(buf)
-}
-
-fn run_git_diff(base: Option<&str>) -> Result<String> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.args(["--no-pager", "diff", "--no-color"]);
-    if let Some(b) = base {
-        if b.starts_with('-') {
-            anyhow::bail!("Invalid base ref '{}': must not start with '-'", b);
-        }
-        cmd.arg(b);
-    }
-
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run 'git diff': {}. Is git installed?", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {}", stderr.trim());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Path) {

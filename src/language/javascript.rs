@@ -64,6 +64,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     method_containers: &["class_body", "class_declaration"],
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
+    test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}.test.js")),
 };
 
 pub fn definition() -> &'static LanguageDef {

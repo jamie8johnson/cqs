@@ -323,7 +323,10 @@ enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output as JSON
+        /// Output format: text, json
+        #[arg(long, default_value = "text")]
+        format: OutputFormat,
+        /// Output as JSON (alias for --format json)
         #[arg(long)]
         json: bool,
         /// Maximum token budget for output (truncates callers/tests lists)
@@ -574,9 +577,13 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Review {
             ref base,
             stdin,
+            ref format,
             json,
             tokens,
-        }) => cmd_review(&cli, base.as_deref(), stdin, json, tokens),
+        }) => {
+            let fmt = if json { &OutputFormat::Json } else { format };
+            cmd_review(&cli, base.as_deref(), stdin, fmt, tokens)
+        }
         Some(Commands::Trace {
             ref source,
             ref target,
@@ -1283,11 +1290,13 @@ mod tests {
             Some(Commands::Review {
                 base,
                 stdin,
+                format,
                 json,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
+                assert!(matches!(format, OutputFormat::Text));
                 assert!(!json);
                 assert!(tokens.is_none());
             }

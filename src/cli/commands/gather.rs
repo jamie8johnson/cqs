@@ -74,7 +74,13 @@ pub(crate) fn cmd_gather(
         let chunks = std::mem::take(&mut result.chunks);
         let texts: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
         let token_counts = super::count_tokens_batch(&embedder, &texts);
-        let (mut packed, used) = super::token_pack(chunks, &token_counts, budget, |c| c.score);
+        let overhead = if json {
+            super::JSON_OVERHEAD_PER_RESULT
+        } else {
+            0
+        };
+        let (mut packed, used) =
+            super::token_pack(chunks, &token_counts, budget, overhead, |c| c.score);
         tracing::info!(
             chunks = packed.len(),
             tokens = used,

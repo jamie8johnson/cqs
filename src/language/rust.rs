@@ -74,6 +74,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     method_containers: &["impl_item", "trait_item"],
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
+    test_file_suggestion: Some(|stem, parent| format!("{parent}/tests/{stem}_test.rs")),
 };
 
 pub fn definition() -> &'static LanguageDef {

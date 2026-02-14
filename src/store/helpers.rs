@@ -584,6 +584,9 @@ pub struct IndexStats {
 /// - 0.7: substring match
 /// - 0.0: no name relationship
 pub fn score_name_match(name: &str, query: &str) -> f32 {
+    if query.is_empty() {
+        return 0.0;
+    }
     let name_lower = name.to_lowercase();
     let query_lower = query.to_lowercase();
     if name_lower == query_lower {
@@ -865,5 +868,15 @@ mod tests {
         };
         let json = result.to_json_relative(root);
         assert_eq!(json["has_parent"], true);
+    }
+
+    #[test]
+    fn test_score_name_match_empty_query() {
+        assert_eq!(score_name_match("foo", ""), 0.0);
+    }
+
+    #[test]
+    fn test_score_name_match_case_insensitive() {
+        assert_eq!(score_name_match("FooBar", "foobar"), 1.0);
     }
 }

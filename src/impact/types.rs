@@ -126,5 +126,8 @@ pub struct RiskScore {
     pub test_count: usize,
     pub coverage: f32,
     pub risk_level: RiskLevel,
+    /// Blast radius based on caller count alone (Low 0-2, Medium 3-10, High >10).
+    /// Unlike `risk_level`, this does NOT decrease with test coverage.
+    pub blast_radius: RiskLevel,
     pub score: f32,
 }

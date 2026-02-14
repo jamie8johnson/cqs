@@ -62,13 +62,13 @@ fn find_pdf_script() -> Result<String> {
         tracing::warn!(path = %script, "CQS_PDF_SCRIPT set but file not found");
     }
 
-    let candidates = [
-        PathBuf::from("scripts/pdf_to_md.py"),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("../scripts/pdf_to_md.py")))
-            .unwrap_or_default(),
-    ];
+    let mut candidates = vec![PathBuf::from("scripts/pdf_to_md.py")];
+    if let Some(exe_relative) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("../scripts/pdf_to_md.py")))
+    {
+        candidates.push(exe_relative);
+    }
 
     for candidate in &candidates {
         if candidate.exists() {

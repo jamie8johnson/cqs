@@ -71,6 +71,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     method_containers: &[],
     stopwords: STOPWORDS,
     extract_return_nl: extract_return,
+    test_file_suggestion: None,
 };
 
 pub fn definition() -> &'static LanguageDef {
