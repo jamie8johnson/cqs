@@ -1,4 +1,4 @@
--- cq index schema v10
+-- cq index schema v11
 -- v10: Generalized for multiple sources (filesystem, SQL Server, etc.)
 --   file → origin (unique identifier like "file:src/main.rs" or "mssql:server/db/dbo.MyProc")
 --   file_mtime → source_mtime (nullable for sources without mtime)
@@ -72,6 +72,22 @@ CREATE TABLE IF NOT EXISTS function_calls (
 CREATE INDEX IF NOT EXISTS idx_fcalls_file ON function_calls(file);
 CREATE INDEX IF NOT EXISTS idx_fcalls_caller ON function_calls(caller_name);
 CREATE INDEX IF NOT EXISTS idx_fcalls_callee ON function_calls(callee_name);
+
+-- Type dependency edges: which chunks reference which types (Phase 2b)
+-- Source is chunk-level for precise dependency tracking.
+-- edge_kind stores TypeEdgeKind classification (Param, Return, Field, Impl, Bound, Alias)
+-- or empty string '' for catch-all types (inside generics, etc.).
+-- Empty string used instead of NULL to simplify WHERE clause filtering.
+CREATE TABLE IF NOT EXISTS type_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_chunk_id TEXT NOT NULL,    -- chunk ID of the referencing code
+    target_type_name TEXT NOT NULL,   -- name of the referenced type
+    edge_kind TEXT NOT NULL DEFAULT '',-- TypeEdgeKind or '' for catch-all
+    line_number INTEGER NOT NULL,     -- line where type reference occurs
+    FOREIGN KEY (source_chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_type_edges_source ON type_edges(source_chunk_id);
+CREATE INDEX IF NOT EXISTS idx_type_edges_target ON type_edges(target_type_name);
 
 -- Notes: unified memory entries (sentiment-based, replaces deprecated hunches/scars)
 -- Sentiment field bakes valence into similarity search via 769th embedding dimension

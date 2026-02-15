@@ -115,16 +115,18 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         }
     }
 
-    // Extract full call graph (includes large functions >100 lines)
+    // Extract call graph + type edges (includes large functions >100 lines)
     if !check_interrupted() {
         if !cli.quiet {
-            println!("Extracting call graph...");
+            println!("Extracting relationships...");
         }
 
-        let total_calls = extract_call_graph(&parser, &root, &existing_files, &store)?;
+        let (total_calls, total_type_edges) =
+            extract_relationships(&parser, &root, &existing_files, &store)?;
 
         if !cli.quiet {
             println!("  Call graph: {} calls", total_calls);
+            println!("  Type edges: {} edges", total_type_edges);
         }
     }
 
@@ -165,34 +167,56 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
     Ok(())
 }
 
-/// Extract call graph from source files
+/// Extract call graph and type edges from source files.
 ///
-/// Parses function call relationships for callers/callees queries.
-/// Returns the total number of calls extracted.
-fn extract_call_graph(
+/// Uses `parse_file_relationships()` for a single parse pass that returns
+/// both call sites and type references. Returns (total_calls, total_type_edges).
+fn extract_relationships(
     parser: &CqParser,
     root: &Path,
     files: &HashSet<PathBuf>,
     store: &Store,
-) -> Result<usize> {
-    let _span = tracing::info_span!("extract_call_graph", file_count = files.len()).entered();
+) -> Result<(usize, usize)> {
+    let _span = tracing::info_span!("extract_relationships", file_count = files.len()).entered();
     let mut total_calls = 0;
+    let mut total_type_edges = 0;
     for file in files {
         let abs_path = root.join(file);
-        match parser.parse_file_calls(&abs_path) {
-            Ok(function_calls) => {
+        match parser.parse_file_relationships(&abs_path) {
+            Ok((function_calls, chunk_type_refs)) => {
                 for fc in &function_calls {
                     total_calls += fc.calls.len();
                 }
                 store.upsert_function_calls(file, &function_calls)?;
+
+                if !chunk_type_refs.is_empty() {
+                    for ctr in &chunk_type_refs {
+                        total_type_edges += ctr.type_refs.len();
+                    }
+                    if let Err(e) = store.upsert_type_edges_for_file(file, &chunk_type_refs) {
+                        tracing::warn!(
+                            file = %abs_path.display(),
+                            error = %e,
+                            "Failed to store type edges"
+                        );
+                    }
+                }
             }
             Err(e) => {
-                tracing::warn!("Failed to extract calls from {}: {}", abs_path.display(), e);
+                tracing::warn!(
+                    "Failed to extract relationships from {}: {}",
+                    abs_path.display(),
+                    e
+                );
             }
         }
     }
-    tracing::info!(total_calls, "Call graph extraction complete");
-    Ok(total_calls)
+    tracing::info!(
+        total_calls,
+        total_type_edges,
+        "Relationship extraction complete"
+    );
+    Ok((total_calls, total_type_edges))
 }
 
 /// Index notes from notes.toml if it exists and needs reindexing

@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 10); // v10: Multi-source support
+    assert_eq!(stats.schema_version, 11); // v11: type_edges table
     assert_eq!(stats.model_name, "intfloat/e5-base-v2");
 }
 

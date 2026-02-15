@@ -36,11 +36,11 @@ pub(crate) fn open_project_store(
 #[cfg(feature = "convert")]
 use commands::cmd_convert;
 use commands::{
-    cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_diff, cmd_doctor,
-    cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff, cmd_index, cmd_init,
-    cmd_notes, cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout,
-    cmd_similar, cmd_stale, cmd_stats, cmd_suggest, cmd_test_map, cmd_trace, cmd_where,
-    NotesCommand, ProjectCommand, RefCommand,
+    cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff,
+    cmd_doctor, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff,
+    cmd_index, cmd_init, cmd_notes, cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related,
+    cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest, cmd_test_map, cmd_trace,
+    cmd_where, NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -239,6 +239,17 @@ enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
+    },
+    /// Show type dependencies: who uses a type, or what types a function uses
+    Deps {
+        /// Type name (forward) or function name (with --reverse)
+        name: String,
+        /// Reverse: show types used by a function instead of type users
+        #[arg(long)]
+        reverse: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Find functions that call a given function
     Callers {
@@ -596,6 +607,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             cmd_completions(shell);
             Ok(())
         }
+        Some(Commands::Deps {
+            ref name,
+            reverse,
+            json,
+        }) => cmd_deps(&cli, name, reverse, json),
         Some(Commands::Callers { ref name, json }) => cmd_callers(&cli, name, json),
         Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),

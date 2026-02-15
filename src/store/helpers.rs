@@ -13,8 +13,9 @@ use crate::parser::{ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v10: Current (sentiment in embeddings, call graph, notes)
-pub const CURRENT_SCHEMA_VERSION: i32 = 10;
+/// - v11: Current (type_edges table for type-level dependency tracking)
+/// - v10: sentiment in embeddings, call graph, notes
+pub const CURRENT_SCHEMA_VERSION: i32 = 11;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;

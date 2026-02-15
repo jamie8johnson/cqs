@@ -173,6 +173,14 @@ pub(crate) enum BatchCmd {
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
+    /// Type dependencies: who uses a type, or what types a function uses
+    Deps {
+        /// Type name or function name
+        name: String,
+        /// Show types used by function (instead of type users)
+        #[arg(long)]
+        reverse: bool,
+    },
     /// Find callers of a function
     Callers {
         /// Function name
@@ -317,6 +325,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             path,
             tokens,
         ),
+        BatchCmd::Deps { name, reverse } => dispatch_deps(ctx, &name, reverse),
         BatchCmd::Callers { name } => dispatch_callers(ctx, &name),
         BatchCmd::Callees { name } => dispatch_callees(ctx, &name),
         BatchCmd::Explain { name, tokens } => dispatch_explain(ctx, &name, tokens),
@@ -514,6 +523,35 @@ fn dispatch_search(
         "query": query,
         "total": json_results.len(),
     }))
+}
+
+fn dispatch_deps(ctx: &BatchContext, name: &str, reverse: bool) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_deps", name, reverse).entered();
+
+    if reverse {
+        let types = ctx.store.get_types_used_by(name)?;
+        Ok(serde_json::json!({
+            "function": name,
+            "types": types.iter().map(|(tn, kind)| {
+                serde_json::json!({"type_name": tn, "edge_kind": kind})
+            }).collect::<Vec<_>>(),
+            "count": types.len(),
+        }))
+    } else {
+        let users = ctx.store.get_type_users(name)?;
+        let json_users: Vec<serde_json::Value> = users
+            .iter()
+            .map(|c| {
+                serde_json::json!({
+                    "name": c.name,
+                    "file": cqs::rel_display(&c.file, &ctx.root),
+                    "line_start": c.line_start,
+                    "chunk_type": c.chunk_type.to_string(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!(json_users))
+    }
 }
 
 fn dispatch_callers(ctx: &BatchContext, name: &str) -> Result<serde_json::Value> {
@@ -1169,6 +1207,7 @@ fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     let stats = ctx.store.stats()?;
     let note_count = ctx.store.note_count()?;
     let fc_stats = ctx.store.function_call_stats()?;
+    let te_stats = ctx.store.type_edge_stats()?;
 
     Ok(serde_json::json!({
         "total_chunks": stats.total_chunks,
@@ -1178,6 +1217,10 @@ fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
             "total_calls": fc_stats.total_calls,
             "unique_callers": fc_stats.unique_callers,
             "unique_callees": fc_stats.unique_callees,
+        },
+        "type_graph": {
+            "total_edges": te_stats.total_edges,
+            "unique_types": te_stats.unique_types,
         },
         "by_language": stats.chunks_by_language.iter()
             .map(|(l, c)| (l.to_string(), c))
@@ -1206,7 +1249,7 @@ const PIPELINE_FAN_OUT_LIMIT: usize = 50;
 
 /// Commands that accept a piped function name as their first positional arg.
 const PIPEABLE_COMMANDS: &[&str] = &[
-    "callers", "callees", "explain", "similar", "impact", "test-map", "related",
+    "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related",
 ];
 
 /// Check if a command (first token) can receive piped names.

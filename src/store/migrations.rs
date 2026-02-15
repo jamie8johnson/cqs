@@ -59,13 +59,12 @@ pub async fn migrate(pool: &SqlitePool, from: i32, to: i32) -> Result<(), StoreE
 /// Run a single migration step
 #[allow(clippy::match_single_binding)] // Intentional: migration arms will be added here
 async fn run_migration(
-    _conn: &mut sqlx::SqliteConnection,
+    conn: &mut sqlx::SqliteConnection,
     from: i32,
     to: i32,
 ) -> Result<(), StoreError> {
     match (from, to) {
-        // Future migrations:
-        // (10, 11) => migrate_v10_to_v11(conn).await,
+        (10, 11) => migrate_v10_to_v11(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -74,28 +73,38 @@ async fn run_migration(
 // Migration functions
 // ============================================================================
 
-// Example migration template (uncomment and modify when needed):
-//
-// /// Migrate from v10 to v11
-// ///
-// /// Changes:
-// /// - Add new_column to chunks table
-// async fn migrate_v10_to_v11(pool: &SqlitePool) -> Result<(), StoreError> {
-//     // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we check first
-//     let columns: Vec<(String,)> = sqlx::query_as(
-//         "SELECT name FROM pragma_table_info('chunks') WHERE name = 'new_column'"
-//     )
-//     .fetch_all(pool)
-//     .await?;
-//
-//     if columns.is_empty() {
-//         sqlx::query("ALTER TABLE chunks ADD COLUMN new_column TEXT DEFAULT ''")
-//             .execute(pool)
-//             .await?;
-//     }
-//
-//     Ok(())
-// }
+/// Migrate from v10 to v11: add type_edges table
+///
+/// Adds type-level dependency tracking. Each edge records which chunk references
+/// which type, with an edge_kind classification (Param, Return, Field, Impl, Bound, Alias).
+/// Catch-all types (inside generics, etc.) use empty string '' for edge_kind instead of NULL
+/// to simplify WHERE clause filtering.
+///
+/// The table will be empty after migration — run `cqs index --force` to populate.
+async fn migrate_v10_to_v11(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS type_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_chunk_id TEXT NOT NULL,
+            target_type_name TEXT NOT NULL,
+            edge_kind TEXT NOT NULL DEFAULT '',
+            line_number INTEGER NOT NULL,
+            FOREIGN KEY (source_chunk_id) REFERENCES chunks(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_type_edges_source ON type_edges(source_chunk_id)")
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_type_edges_target ON type_edges(target_type_name)")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!("Created type_edges table. Run 'cqs index --force' to populate type edges.");
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -113,6 +122,6 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 10);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 11);
     }
 }
