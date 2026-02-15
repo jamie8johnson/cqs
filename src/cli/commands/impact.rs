@@ -13,6 +13,7 @@ pub(crate) fn cmd_impact(
     depth: usize,
     format: &OutputFormat,
     do_suggest_tests: bool,
+    include_types: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact", name).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
@@ -23,7 +24,7 @@ pub(crate) fn cmd_impact(
     let chunk = resolved.chunk;
 
     // Run shared impact analysis
-    let result = analyze_impact(&store, &chunk.name, depth)?;
+    let result = analyze_impact(&store, &chunk.name, depth, include_types)?;
 
     // Compute test suggestions if requested
     let suggestions = if do_suggest_tests {
@@ -157,6 +158,26 @@ fn display_impact_text(result: &cqs::ImpactResult, root: &std::path::Path, targe
         for t in &result.tests {
             let rel = cqs::rel_display(&t.file, root);
             println!("  {} ({}:{}) [depth {}]", t.name, rel, t.line, t.call_depth);
+        }
+    }
+
+    // Type-impacted functions
+    if !result.type_impacted.is_empty() {
+        println!();
+        println!(
+            "{} ({}):",
+            "Type-Impacted".magenta(),
+            result.type_impacted.len()
+        );
+        for ti in &result.type_impacted {
+            let rel = cqs::rel_display(&ti.file, root);
+            println!(
+                "  {} ({}:{}) via {}",
+                ti.name,
+                rel,
+                ti.line,
+                ti.shared_types.join(", ")
+            );
         }
     }
 }

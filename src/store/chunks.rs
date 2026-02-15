@@ -952,66 +952,6 @@ impl Store {
 
     /// Batch signature search: find function/method chunks matching any of the given type names.
     ///
-    /// Combines multiple LIKE patterns into a single query with OR, reducing N queries to 1.
-    /// Each result is tagged with which type name(s) it matched. Used by `cqs related`
-    /// to avoid per-type LIKE scans.
-    pub fn search_chunks_by_signatures_batch(
-        &self,
-        type_names: &[String],
-    ) -> Result<Vec<(String, ChunkSummary)>, StoreError> {
-        if type_names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        self.rt.block_on(async {
-            // Build OR clauses for all type names
-            let mut conditions = Vec::new();
-            let mut bind_values = Vec::new();
-            for (i, type_name) in type_names.iter().enumerate() {
-                let escaped = type_name
-                    .replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_");
-                let pattern = format!("%{}%", escaped);
-                conditions.push(format!("signature LIKE ?{} ESCAPE '\\'", i + 1));
-                bind_values.push(pattern);
-            }
-
-            let where_clause = conditions.join(" OR ");
-            let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, parent_id
-                 FROM chunks
-                 WHERE chunk_type IN ('function', 'method')
-                   AND ({})
-                 ORDER BY origin, line_start
-                 LIMIT 500",
-                where_clause
-            );
-
-            let rows: Vec<_> = {
-                let mut q = sqlx::query(&sql);
-                for val in &bind_values {
-                    q = q.bind(val);
-                }
-                q.fetch_all(&self.pool).await?
-            };
-
-            // For each row, determine which type name(s) matched
-            let mut results = Vec::new();
-            for row in &rows {
-                let chunk = ChunkSummary::from(ChunkRow::from_row(row));
-                for type_name in type_names {
-                    if chunk.signature.contains(type_name.as_str()) {
-                        results.push((type_name.clone(), chunk.clone()));
-                    }
-                }
-            }
-
-            Ok(results)
-        })
-    }
-
     /// Get a chunk with its embedding vector.
     ///
     /// Returns `Ok(None)` if the chunk doesn't exist or has a corrupt embedding.

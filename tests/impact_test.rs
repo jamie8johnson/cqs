@@ -99,7 +99,7 @@ fn test_analyze_impact_with_callers() {
         &[("caller_b", 1, &[("target_fn", 10)])],
     );
 
-    let result = analyze_impact(&store, "target_fn", 1).unwrap();
+    let result = analyze_impact(&store, "target_fn", 1, false).unwrap();
     assert_eq!(result.function_name, "target_fn");
     assert!(
         result.callers.len() >= 2,
@@ -134,7 +134,7 @@ fn test_analyze_impact_with_tests() {
         &[("test_caller", 1, &[("caller_fn", 3)])],
     );
 
-    let result = analyze_impact(&store, "target_fn", 1).unwrap();
+    let result = analyze_impact(&store, "target_fn", 1, false).unwrap();
     assert!(
         result.tests.iter().any(|t| t.name == "test_caller"),
         "test_caller should be found via BFS: test_caller -> caller_fn -> target_fn"
@@ -148,7 +148,7 @@ fn test_analyze_impact_no_callers() {
     let chunks = vec![chunk_at("isolated_fn", "src/lib.rs", 1, 10)];
     insert_chunks(&store, &chunks);
 
-    let result = analyze_impact(&store, "isolated_fn", 1).unwrap();
+    let result = analyze_impact(&store, "isolated_fn", 1, false).unwrap();
     assert_eq!(result.function_name, "isolated_fn");
     assert!(result.callers.is_empty(), "Should have no callers");
     assert!(result.tests.is_empty(), "Should have no tests");
@@ -174,7 +174,7 @@ fn test_analyze_impact_transitive_callers() {
     insert_calls(&store, "src/app.rs", &[("indirect", 1, &[("direct", 5)])]);
 
     // depth=2 should find transitive callers
-    let result = analyze_impact(&store, "target_fn", 2).unwrap();
+    let result = analyze_impact(&store, "target_fn", 2, false).unwrap();
     let trans_names: Vec<&str> = result
         .transitive_callers
         .iter()
@@ -209,7 +209,7 @@ fn test_analyze_impact_depth_1_no_transitive() {
     insert_calls(&store, "src/app.rs", &[("indirect", 1, &[("direct", 5)])]);
 
     // depth=1 should NOT include transitive callers
-    let result = analyze_impact(&store, "target_fn", 1).unwrap();
+    let result = analyze_impact(&store, "target_fn", 1, false).unwrap();
     assert!(
         result.transitive_callers.is_empty(),
         "depth=1 should not include transitive callers"
@@ -235,7 +235,7 @@ fn test_suggest_tests_for_untested_caller() {
         &[("untested_caller", 1, &[("target_fn", 5)])],
     );
 
-    let impact = analyze_impact(&store, "target_fn", 1).unwrap();
+    let impact = analyze_impact(&store, "target_fn", 1, false).unwrap();
     let suggestions = suggest_tests(&store, &impact);
 
     // untested_caller has no tests reaching it, should get a suggestion
@@ -274,7 +274,7 @@ fn test_suggest_tests_no_suggestions_when_tested() {
         &[("test_caller", 1, &[("caller_fn", 3)])],
     );
 
-    let impact = analyze_impact(&store, "target_fn", 1).unwrap();
+    let impact = analyze_impact(&store, "target_fn", 1, false).unwrap();
     let suggestions = suggest_tests(&store, &impact);
 
     // caller_fn is tested via test_caller — no suggestion needed
@@ -296,6 +296,7 @@ fn test_suggest_tests_empty_impact() {
         callers: Vec::new(),
         tests: Vec::new(),
         transitive_callers: Vec::new(),
+        type_impacted: Vec::new(),
     };
     let suggestions = suggest_tests(&store, &impact);
     assert!(suggestions.is_empty(), "No callers means no suggestions");
@@ -317,7 +318,7 @@ fn test_suggest_tests_generates_correct_name() {
         &[("process_data", 1, &[("target_fn", 5)])],
     );
 
-    let impact = analyze_impact(&store, "target_fn", 1).unwrap();
+    let impact = analyze_impact(&store, "target_fn", 1, false).unwrap();
     let suggestions = suggest_tests(&store, &impact);
 
     if let Some(suggestion) = suggestions

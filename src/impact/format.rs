@@ -62,6 +62,28 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         }
     }
 
+    // Always include type_impacted for consistent JSON structure
+    let type_json: Vec<_> = result
+        .type_impacted
+        .iter()
+        .map(|ti| {
+            let rel = crate::rel_display(&ti.file, root);
+            serde_json::json!({
+                "name": ti.name,
+                "file": rel,
+                "line": ti.line,
+                "shared_types": ti.shared_types,
+            })
+        })
+        .collect();
+    if let Some(obj) = output.as_object_mut() {
+        obj.insert("type_impacted".into(), serde_json::json!(type_json));
+        obj.insert(
+            "type_impacted_count".into(),
+            serde_json::json!(type_json.len()),
+        );
+    }
+
     output
 }
 
@@ -99,6 +121,23 @@ pub fn impact_to_mermaid(result: &ImpactResult, root: &Path) -> String {
             t.call_depth
         ));
         lines.push(format!("    {} -.-> A", letter));
+        idx += 1;
+    }
+
+    for ti in &result.type_impacted {
+        let rel = crate::rel_display(&ti.file, root);
+        let letter = node_letter(idx);
+        let types_str = ti.shared_types.join(", ");
+        lines.push(format!(
+            "    {}[/\"{} ({}:{})\\nvia: {}\"/]",
+            letter,
+            mermaid_escape(&ti.name),
+            mermaid_escape(&rel),
+            ti.line,
+            mermaid_escape(&types_str),
+        ));
+        lines.push(format!("    {} -. type .-> A", letter));
+        lines.push(format!("    style {} fill:#9cf", letter));
         idx += 1;
     }
 
@@ -252,6 +291,7 @@ mod tests {
                 call_depth: 2,
             }],
             transitive_callers: Vec::new(),
+            type_impacted: Vec::new(),
         };
         let root = Path::new("/project");
         let json = impact_to_json(&result, root);
@@ -284,6 +324,7 @@ mod tests {
                 line: 5,
                 depth: 2,
             }],
+            type_impacted: Vec::new(),
         };
         let root = Path::new("/project");
         let json = impact_to_json(&result, root);
@@ -302,6 +343,7 @@ mod tests {
             callers: Vec::new(),
             tests: Vec::new(),
             transitive_callers: Vec::new(),
+            type_impacted: Vec::new(),
         };
         let root = Path::new("/project");
         let json = impact_to_json(&result, root);
@@ -310,6 +352,8 @@ mod tests {
         assert_eq!(json["caller_count"], 0);
         assert_eq!(json["test_count"], 0);
         assert!(json.get("transitive_callers").is_none());
+        assert_eq!(json["type_impacted"].as_array().unwrap().len(), 0);
+        assert_eq!(json["type_impacted_count"], 0);
     }
 
     // ===== diff_impact_to_json tests =====

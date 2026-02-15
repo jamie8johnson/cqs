@@ -93,7 +93,7 @@ pub use store::{ModelInfo, SearchFilter, Store};
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API
 // but need to be accessible to src/cli/* and tests/
 pub use diff::{semantic_diff, DiffResult};
-pub use focused_read::extract_type_names;
+pub use focused_read::COMMON_TYPES;
 pub use gather::{
     gather, gather_cross_index, GatherDirection, GatherOptions, DEFAULT_MAX_EXPANDED_NODES,
 };
@@ -102,7 +102,7 @@ pub use impact::{
     compute_hints_with_graph_depth, compute_risk_batch, diff_impact_to_json, find_hotspots,
     impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests, CallerDetail,
     ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo, FunctionHints,
-    ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion, TransitiveCaller,
+    ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
     DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};

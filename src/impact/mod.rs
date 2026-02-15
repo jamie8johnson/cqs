@@ -14,6 +14,7 @@ mod types;
 pub use types::{
     CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo,
     FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion, TransitiveCaller,
+    TypeImpacted,
 };
 
 // Re-export public functions
