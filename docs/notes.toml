@@ -769,3 +769,12 @@ mentions = [
     "src/cli/batch.rs",
     "pipeline",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Tree-sitter query patterns must be verified against actual AST dumps (tree.root_node().to_sexp()) — grammar docs are unreliable. Found 3 bugs: Rust trait_bound vs trait_bounds, Go interface types wrapped in type_elem, Go type_alias vs type_spec. Regression test test_type_queries_compile catches this."
+mentions = [
+    "src/language/rust.rs",
+    "src/language/go.rs",
+    "src/parser/calls.rs",
+]
