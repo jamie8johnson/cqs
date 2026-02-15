@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Type edge storage and `cqs deps` command** (Phase 2b Step 2) — schema v11 adds `type_edges` table with FK CASCADE. 10 store methods (upsert, query, batch, stats, graph, prune). `cqs deps <type>` shows who uses a type; `cqs deps --reverse <fn>` shows what types a function uses. Batch mode support with pipeline compatibility. GC prunes orphan type edges. Stats includes type graph counts. 17 new tests.
+
 ## [0.12.10] - 2026-02-14
 
 ### Added

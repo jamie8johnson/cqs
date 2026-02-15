@@ -145,6 +145,8 @@ Find function call relationships:
 ```bash
 cqs callers <name>   # Functions that call <name>
 cqs callees <name>   # Functions called by <name>
+cqs deps <type>      # Who uses this type?
+cqs deps --reverse <fn>  # What types does this function use?
 cqs callers <name> --format mermaid  # Mermaid graph output
 ```
 
@@ -357,6 +359,7 @@ Key commands (all support `--json`):
 - `cqs stats` - index stats, chunk counts, HNSW index status
 - `cqs callers <function>` - find functions that call a given function
 - `cqs callees <function>` - find functions called by a given function
+- `cqs deps <type>` - type dependencies: who uses this type? `--reverse` for what types a function uses
 - `cqs notes add/update/remove` - manage project memory notes
 - `cqs audit-mode on/off` - toggle audit mode (exclude notes from search/read)
 - `cqs similar <function>` - find functions similar to a given function

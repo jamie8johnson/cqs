@@ -72,6 +72,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs where "description"` — placement suggestion: where to add new code, with local patterns.
 - `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes in one call.
 - `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
+- `cqs deps <type>` — type dependencies: who uses this type? `--reverse` for what types a function uses.
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
 - `cqs batch` — batch mode: reads commands from stdin, outputs JSONL. Persistent Store + lazy Embedder. Supports pipeline syntax: `search "error" | callers | test-map` chains commands via fan-out.

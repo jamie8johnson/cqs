@@ -40,7 +40,7 @@ echo 'callees main | callers | test-map' | cqs batch
 echo 'dead --min-confidence high | explain' | cqs batch
 ```
 
-**Pipeable downstream commands:** callers, callees, explain, similar, impact, test-map, related.
+**Pipeable downstream commands:** callers, callees, deps, explain, similar, impact, test-map, related.
 
 Pipeline output is a JSON envelope:
 ```json
@@ -56,6 +56,7 @@ Pipeline output is a JSON envelope:
 | `search <query>` | `search "error handling" --limit 3` |
 | `callers <name>` | `callers search_filtered` |
 | `callees <name>` | `callees gather` |
+| `deps <name>` | `deps Store` or `deps --reverse search_filtered` |
 | `explain <name>` | `explain search_filtered` |
 | `similar <name>` | `similar gather --limit 3` |
 | `gather <query>` | `gather "retry logic" --expand 2` |

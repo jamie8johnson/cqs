@@ -106,6 +106,7 @@ src/
     chunks.rs   - Chunk CRUD, embedding_batches() for streaming
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
     calls.rs    - Call graph storage and queries
+    types.rs    - Type edge storage and queries (Phase 2b)
     helpers.rs  - Types, embedding conversion functions
     migrations.rs - Schema migration framework
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)

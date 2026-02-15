@@ -10,9 +10,9 @@ cqs has 35 CLI commands, 14 in batch mode, pipeline syntax, token budgeting, and
 
 **35 commands.** 14 available in batch mode. Pipeline syntax chains them. Token budgeting on 7 commands. Scout, gather, and impact exist independently but share nothing — each loads its own call graph, test chunks, and staleness data. Where is search-only (no call graph).
 
-**Parser extracts:** Functions, methods, classes, structs, enums, traits, interfaces, constants (+ markdown sections). Call sites (callee name + line). Signatures as raw strings. **Does not extract:** parameter types, return types, field types, trait bounds, generic parameters. No type-reference queries in tree-sitter.
+**Parser extracts:** Functions, methods, classes, structs, enums, traits, interfaces, constants (+ markdown sections). Call sites (callee name + line). Signatures as raw strings. **Type references** (Phase 2b Step 1): parameter types, return types, field types, trait bounds, generic parameters via tree-sitter queries across 7 languages (Rust, Python, TypeScript, Go, Java, C, SQL).
 
-**Schema v10:** `chunks`, `calls`, `function_calls`, `notes` tables. No `type_edges` table. No type-level dependency tracking.
+**Schema v11:** `chunks`, `calls`, `function_calls`, `notes`, `type_edges` tables. Type-level dependency tracking via `type_edges` (Phase 2b Step 2): source_chunk_id → target_type_name with edge_kind classification (Param, Return, Field, Impl, Bound, Alias). `cqs deps` command for forward/reverse queries.
 
 **Search pipeline:** FTS5 keyword → semantic embedding → RRF fusion → HNSW acceleration → unified (code + notes). Notes are separate results merged by score — they don't influence code ranking.
 
