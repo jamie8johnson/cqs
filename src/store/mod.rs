@@ -14,6 +14,7 @@ mod calls;
 mod chunks;
 mod migrations;
 mod notes;
+mod types;
 
 /// Helper types and embedding conversion functions.
 ///
@@ -104,6 +105,12 @@ pub use calls::DeadConfidence;
 
 /// Detailed function call statistics (function_calls table).
 pub use calls::FunctionCallStats;
+
+/// Statistics about type dependency edges (type_edges table).
+pub use types::TypeEdgeStats;
+
+/// In-memory type graph (forward + reverse adjacency lists).
+pub use types::TypeGraph;
 
 // Internal use
 use helpers::{clamp_line_number, ChunkRow};

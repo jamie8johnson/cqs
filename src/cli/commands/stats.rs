@@ -31,6 +31,7 @@ pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
         fc_stats.unique_callers,
         fc_stats.unique_callees,
     );
+    let te_stats = store.type_edge_stats()?;
 
     if json || cli.json {
         let json = serde_json::json!({
@@ -43,6 +44,10 @@ pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
                 "total_calls": call_count,
                 "unique_callers": caller_count,
                 "unique_callees": callee_count,
+            },
+            "type_graph": {
+                "total_edges": te_stats.total_edges,
+                "unique_types": te_stats.unique_types,
             },
             "by_language": stats.chunks_by_language.iter()
                 .map(|(l, c)| (l.to_string(), c))
@@ -81,6 +86,10 @@ pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
         println!(
             "Call graph: {} calls ({} callers, {} callees)",
             call_count, caller_count, callee_count
+        );
+        println!(
+            "Type graph: {} edges ({} types)",
+            te_stats.total_edges, te_stats.unique_types
         );
 
         // HNSW index status (use count_vectors to avoid loading full index)

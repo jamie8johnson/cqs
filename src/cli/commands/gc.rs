@@ -38,6 +38,10 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let pruned_calls = store.prune_stale_calls()?;
     tracing::debug!(pruned_calls, "Calls pruned");
 
+    // Prune orphan type edges
+    let pruned_type_edges = store.prune_stale_type_edges()?;
+    tracing::debug!(pruned_type_edges, "Type edges pruned");
+
     // Rebuild HNSW if we pruned anything
     let hnsw_vectors = if pruned_chunks > 0 {
         build_hnsw_index(&store, &cqs_dir)?
@@ -51,12 +55,13 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
             "missing_files": missing_count,
             "pruned_chunks": pruned_chunks,
             "pruned_calls": pruned_calls,
+            "pruned_type_edges": pruned_type_edges,
             "hnsw_rebuilt": pruned_chunks > 0,
             "hnsw_vectors": hnsw_vectors,
         });
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        if pruned_chunks == 0 && pruned_calls == 0 {
+        if pruned_chunks == 0 && pruned_calls == 0 && pruned_type_edges == 0 {
             println!("Index is clean. Nothing to do.");
         } else {
             if pruned_chunks > 0 {
@@ -73,6 +78,13 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
                     "Removed {} orphan call graph entr{}",
                     pruned_calls,
                     if pruned_calls == 1 { "y" } else { "ies" },
+                );
+            }
+            if pruned_type_edges > 0 {
+                println!(
+                    "Removed {} orphan type edge{}",
+                    pruned_type_edges,
+                    if pruned_type_edges == 1 { "" } else { "s" },
                 );
             }
             if let Some(vectors) = hnsw_vectors {

@@ -385,20 +385,25 @@ fn reindex_files(
         store.replace_file_chunks(file, pairs, mtime)?;
     }
 
-    // Extract call graph for changed files
+    // Extract call graph + type edges for changed files
     for rel_path in files {
         let abs_path = root.join(rel_path);
         if !abs_path.exists() {
             continue;
         }
-        match parser.parse_file_calls(&abs_path) {
-            Ok(function_calls) => {
+        match parser.parse_file_relationships(&abs_path) {
+            Ok((function_calls, chunk_type_refs)) => {
                 if let Err(e) = store.upsert_function_calls(rel_path, &function_calls) {
                     tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update call graph");
                 }
+                if !chunk_type_refs.is_empty() {
+                    if let Err(e) = store.upsert_type_edges_for_file(rel_path, &chunk_type_refs) {
+                        tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update type edges");
+                    }
+                }
             }
             Err(e) => {
-                tracing::warn!(file = %abs_path.display(), error = %e, "Failed to extract calls");
+                tracing::warn!(file = %abs_path.display(), error = %e, "Failed to extract relationships");
             }
         }
     }

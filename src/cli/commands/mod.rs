@@ -8,6 +8,7 @@ mod context;
 #[cfg(feature = "convert")]
 mod convert;
 mod dead;
+mod deps;
 mod diff;
 mod doctor;
 mod explain;
@@ -42,6 +43,7 @@ pub(crate) use context::cmd_context;
 #[cfg(feature = "convert")]
 pub(crate) use convert::cmd_convert;
 pub(crate) use dead::cmd_dead;
+pub(crate) use deps::cmd_deps;
 pub(crate) use diff::cmd_diff;
 pub(crate) use doctor::cmd_doctor;
 pub(crate) use explain::cmd_explain;
