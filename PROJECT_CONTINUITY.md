@@ -2,18 +2,24 @@
 
 ## Right Now
 
-**Pipeline syntax shipped.** 2026-02-14.
+**Phase 2b Step 1 merged.** 2026-02-15. PR #440.
 
-This session:
-- Pipeline syntax for `cqs batch` shipped (PR #438): `search "error" | callers | test-map`
-- Quote-safe parsing via shell_words tokenize → split by `|` token
-- 7 pipeable downstream commands, fan-out capped at 50 names/stage
-- 17 unit tests + 7 integration tests, fresh-eyes caught truncation tracking bug
-- `cqs chat` build path: steps 1-4 complete (ChunkSummary, batch, REPL deferred, pipeline)
+Parser type extraction landed on main. Next session picks up Phase 2b Step 2:
+- Schema v11 migration (type_edges table)
+- Store methods (upsert_type_edges, get_type_users)
+- Pipeline wiring (index.rs/watch.rs call parse_file_relationships())
+- CLI `cqs deps` command
+- Batch mode + integration test upgrades
+
+Plan file: `/home/user001/.claude/plans/goofy-wishing-sphinx.md`
 
 ## Pending Changes
 
-None.
+Unstaged on main (from prior sessions, not type extraction):
+- `Cargo.lock`, `Cargo.toml` — dependency updates from prior session
+- `docs/notes.toml` — note changes from prior session
+- `docs/MOONSHOT.md` — untracked, moonshot roadmap
+- `src/language/markdown.rs`, `src/language/mod.rs`, `src/parser/calls.rs` — stale diffs (check if these are merge artifacts)
 
 ## Parked
 
