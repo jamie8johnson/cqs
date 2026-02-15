@@ -374,6 +374,7 @@ Key commands (all support `--json`):
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
 - `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
 - `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--json`
+- `cqs batch` - batch mode: stdin commands, JSONL output. Pipeline syntax: `search "error" | callers | test-map`
 - `cqs dead` - find functions/methods never called by indexed code
 - `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries

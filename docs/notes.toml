@@ -761,3 +761,11 @@ mentions = [
     "CI",
     "gpu-search",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Pipeline syntax for batch: shell_words tokenize first, then split by standalone | token. Quote-safe by design — pipes inside quoted strings are a single token, never a separator. Fan-out capped at 50 names/stage with any_truncated tracking across all stages."
+mentions = [
+    "src/cli/batch.rs",
+    "pipeline",
+]

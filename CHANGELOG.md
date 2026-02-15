@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.10] - 2026-02-14
+
+### Added
+- **Pipeline syntax for `cqs batch`** — chain commands where upstream names feed downstream via fan-out: `search "error" | callers | test-map`. Quote-safe parsing (shell_words tokenize first, split by `|` token). 7 pipeable downstream commands: callers, callees, explain, similar, impact, test-map, related. Fan-out capped at 50 names per stage. Pipeline envelope output with `_input`/`data` wrappers. No new dependencies.
+- 17 unit tests (name extraction, pipeable check, token splitting) + 7 integration tests (pipeline end-to-end).
+
 ## [0.12.9] - 2026-02-14
 
 ### Added
@@ -946,6 +952,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Filter by language (`-l`) and path pattern (`-p`)
 
 [Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.9...HEAD
+[0.12.10]: https://github.com/jamie8johnson/cqs/compare/v0.12.9...v0.12.10
 [0.12.9]: https://github.com/jamie8johnson/cqs/compare/v0.12.8...v0.12.9
 [0.12.8]: https://github.com/jamie8johnson/cqs/compare/v0.12.7...v0.12.8
 [0.12.7]: https://github.com/jamie8johnson/cqs/compare/v0.12.6...v0.12.7
