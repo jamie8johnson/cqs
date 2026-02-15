@@ -314,6 +314,9 @@ fn reindex_files(
         })
         .collect();
 
+    // Apply windowing to split long chunks into overlapping windows
+    let chunks = crate::cli::pipeline::apply_windowing(chunks, embedder);
+
     if chunks.is_empty() {
         return Ok((0, Vec::new()));
     }
