@@ -145,6 +145,10 @@ pub struct LanguageDef {
     /// Receives `(stem, parent_dir)` and returns a suggested test path.
     /// `None` uses the fallback pattern `{parent}/tests/{stem}_test.{ext}`.
     pub test_file_suggestion: Option<fn(&str, &str) -> String>,
+    /// Tree-sitter query for extracting type references (optional).
+    /// Uses classified capture names: `@param_type`, `@return_type`, `@field_type`,
+    /// `@impl_type`, `@bound_type`, `@alias_type`, `@type_ref` (catch-all).
+    pub type_query: Option<&'static str>,
 }
 
 /// How to extract function signatures
@@ -375,6 +379,11 @@ impl Language {
     /// Get the call extraction query pattern
     pub fn call_query_pattern(&self) -> &'static str {
         self.def().call_query.unwrap_or("")
+    }
+
+    /// Get the type extraction query pattern
+    pub fn type_query_pattern(&self) -> &'static str {
+        self.def().type_query.unwrap_or("")
     }
 }
 

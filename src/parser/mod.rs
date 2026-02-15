@@ -10,7 +10,10 @@ mod chunk;
 pub mod markdown;
 pub mod types;
 
-pub use types::{CallSite, Chunk, ChunkType, FunctionCalls, Language, ParserError, SignatureStyle};
+pub use types::{
+    CallSite, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language, ParserError,
+    SignatureStyle, TypeEdgeKind, TypeRef,
+};
 
 use once_cell::sync::OnceCell;
 use std::collections::HashMap;
@@ -39,6 +42,8 @@ pub struct Parser {
     queries: HashMap<Language, OnceCell<tree_sitter::Query>>,
     /// Lazily compiled call extraction queries per language
     call_queries: HashMap<Language, OnceCell<tree_sitter::Query>>,
+    /// Lazily compiled type extraction queries per language
+    type_queries: HashMap<Language, OnceCell<tree_sitter::Query>>,
 }
 
 // Note: Default impl intentionally omitted to prevent hidden panics.
@@ -49,6 +54,7 @@ impl Parser {
     pub fn new() -> Result<Self, ParserError> {
         let mut queries = HashMap::new();
         let mut call_queries = HashMap::new();
+        let mut type_queries = HashMap::new();
 
         // Initialize empty OnceCells for each registered language
         // (skip grammar-less languages like Markdown — they use custom parsers)
@@ -57,12 +63,16 @@ impl Parser {
             if def.grammar.is_some() {
                 queries.insert(lang, OnceCell::new());
                 call_queries.insert(lang, OnceCell::new());
+                if def.type_query.is_some() {
+                    type_queries.insert(lang, OnceCell::new());
+                }
             }
         }
 
         Ok(Self {
             queries,
             call_queries,
+            type_queries,
         })
     }
 
@@ -95,6 +105,24 @@ impl Parser {
             let pattern = language.call_query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
                 ParserError::QueryCompileFailed(format!("{}_calls", language), format!("{:?}", e))
+            })
+        })
+    }
+
+    /// Get or compile the type extraction query for a language
+    pub(crate) fn get_type_query(
+        &self,
+        language: Language,
+    ) -> Result<&tree_sitter::Query, ParserError> {
+        let cell = self.type_queries.get(&language).ok_or_else(|| {
+            ParserError::QueryCompileFailed(format!("{}_types", language), "not found".into())
+        })?;
+
+        cell.get_or_try_init(|| {
+            let grammar = language.grammar();
+            let pattern = language.type_query_pattern();
+            tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
+                ParserError::QueryCompileFailed(format!("{}_types", language), format!("{:?}", e))
             })
         })
     }
