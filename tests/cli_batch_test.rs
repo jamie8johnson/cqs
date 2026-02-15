@@ -317,3 +317,219 @@ fn test_batch_callees() {
         stdout.trim()
     );
 }
+
+// =============================================================================
+// Pipeline integration tests
+// =============================================================================
+
+#[test]
+#[serial]
+fn test_pipeline_callers_to_explain() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("callers process | explain\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+
+    // Pipeline envelope
+    assert_eq!(parsed.get("stages").and_then(|v| v.as_u64()), Some(2));
+    assert!(parsed.get("results").is_some(), "Should have results array");
+    assert!(
+        parsed.get("pipeline").is_some(),
+        "Should have pipeline field"
+    );
+    assert!(
+        parsed.get("total_inputs").is_some(),
+        "Should have total_inputs"
+    );
+}
+
+#[test]
+#[serial]
+fn test_pipeline_three_stages() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("callees main | callers | explain\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+
+    assert_eq!(
+        parsed.get("stages").and_then(|v| v.as_u64()),
+        Some(3),
+        "Should be 3-stage pipeline: {}",
+        stdout.trim()
+    );
+}
+
+#[test]
+#[serial]
+fn test_pipeline_empty_upstream() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    // Search for something that doesn't exist → 0 names → empty pipeline result
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("callers xyznonexistent99 | explain\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+
+    // Should get empty results, not an error
+    let results = parsed.get("results").and_then(|v| v.as_array());
+    assert!(results.is_some(), "Should have results: {}", stdout.trim());
+    assert_eq!(
+        results.unwrap().len(),
+        0,
+        "Should have 0 results for nonexistent function"
+    );
+    assert_eq!(parsed.get("total_inputs").and_then(|v| v.as_u64()), Some(0));
+}
+
+#[test]
+#[serial]
+fn test_pipeline_ineligible_downstream() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("callers process | stats\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+
+    let error = parsed.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        error.contains("Cannot pipe into 'stats'"),
+        "Should reject non-pipeable downstream: {}",
+        error
+    );
+}
+
+#[test]
+#[serial]
+fn test_pipeline_single_stage_no_pipe() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    // No pipe → should use normal dispatch, NOT pipeline envelope
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("callers process\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+
+    // Should be a bare array (callers output), NOT a pipeline envelope
+    assert!(
+        parsed.is_array(),
+        "Single command should not produce pipeline envelope: {}",
+        stdout.trim()
+    );
+    assert!(
+        parsed.get("pipeline").is_none(),
+        "Should not have pipeline field"
+    );
+}
+
+#[test]
+#[serial]
+fn test_pipeline_quoted_pipe_in_query() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    // Pipe inside quotes should NOT be treated as a pipeline separator.
+    // shell_words tokenizes "foo | bar" as a single token, so no standalone `|`.
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("search \"foo | bar\"\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("Should be valid JSON");
+
+    // Should be a normal search result (with results key), not a pipeline
+    assert!(
+        parsed.get("results").is_some() || parsed.get("error").is_some(),
+        "Should be normal search output: {}",
+        stdout.trim()
+    );
+    assert!(
+        parsed.get("pipeline").is_none(),
+        "Quoted pipe should not trigger pipeline"
+    );
+}
+
+#[test]
+#[serial]
+fn test_pipeline_mixed_with_single() {
+    let dir = setup_graph_project();
+    init_and_index(&dir);
+
+    // Mix of pipeline and single commands in one batch session
+    let output = cqs()
+        .args(["batch"])
+        .current_dir(dir.path())
+        .write_stdin("callers process | explain\nstats\n")
+        .output()
+        .expect("Failed to run batch");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(lines.len(), 2, "Should have two JSONL lines");
+
+    // First line: pipeline result
+    let line1: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("First line should be valid JSON");
+    assert!(
+        line1.get("pipeline").is_some(),
+        "First line should be pipeline envelope"
+    );
+
+    // Second line: stats (single command)
+    let line2: serde_json::Value =
+        serde_json::from_str(lines[1]).expect("Second line should be valid JSON");
+    assert!(
+        line2.get("total_chunks").is_some(),
+        "Second line should be stats output"
+    );
+}
