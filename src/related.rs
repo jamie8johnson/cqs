@@ -1,8 +1,9 @@
 //! Co-occurrence analysis — find functions related by shared callers, callees, or types.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::focused_read::extract_type_names;
+use crate::focused_read::COMMON_TYPES;
 use crate::store::helpers::StoreError;
 use crate::store::Store;
 
@@ -29,17 +30,16 @@ pub struct RelatedResult {
 /// Three dimensions:
 /// 1. Shared callers — called by the same functions as target
 /// 2. Shared callees — calls the same functions as target
-/// 3. Shared types — uses the same custom types in their signature
+/// 3. Shared types — uses the same types (via type_edges)
 pub fn find_related(
     store: &Store,
     target_name: &str,
     limit: usize,
 ) -> Result<RelatedResult, StoreError> {
     let _span = tracing::info_span!("find_related", target = target_name, limit).entered();
-    // Resolve target to get its chunk (for signature/type extraction)
+    // Resolve target to get its chunk
     let resolved = crate::resolve_target(store, target_name)?;
-    let target_chunk = resolved.chunk;
-    let target = target_chunk.name.clone();
+    let target = resolved.chunk.name.clone();
 
     // 1. Shared callers
     let shared_caller_pairs = store.find_shared_callers(&target, limit)?;
@@ -49,8 +49,19 @@ pub fn find_related(
     let shared_callee_pairs = store.find_shared_callees(&target, limit)?;
     let shared_callees = resolve_to_related(store, &shared_callee_pairs);
 
-    // 3. Shared types — extract type names from target signature, find other functions using them
-    let type_names = extract_type_names(&target_chunk.signature);
+    // 3. Shared types — query type_edges for target's types, find other functions using them
+    let type_pairs = store.get_types_used_by(&target)?;
+    let type_names: Vec<String> = type_pairs
+        .into_iter()
+        .map(|(name, _kind)| name)
+        .filter(|name| !COMMON_TYPES.contains(name.as_str()))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    tracing::debug!(
+        type_count = type_names.len(),
+        "Extracted type names for related"
+    );
     let shared_types = find_type_overlap(store, &target, &type_names, limit)?;
 
     Ok(RelatedResult {
@@ -94,9 +105,9 @@ fn resolve_to_related(store: &Store, pairs: &[(String, u32)]) -> Vec<RelatedFunc
         .collect()
 }
 
-/// Find functions that share custom types with the target.
+/// Find functions that share types with the target via type_edges.
 ///
-/// Uses a single batch query instead of N per-type LIKE scans.
+/// Uses batch type-edge queries instead of LIKE-based signature scanning.
 fn find_type_overlap(
     store: &Store,
     target_name: &str,
@@ -107,28 +118,35 @@ fn find_type_overlap(
         return Ok(Vec::new());
     }
 
-    // Single batch query for all type names at once
-    let results = store.search_chunks_by_signatures_batch(type_names)?;
+    // Batch query: for each type name, get all chunks that reference it
+    let refs: Vec<&str> = type_names.iter().map(|s| s.as_str()).collect();
+    let results = store.get_type_users_batch(&refs)?;
 
-    let mut type_counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
-    let mut chunk_info: std::collections::HashMap<String, (PathBuf, u32)> =
-        std::collections::HashMap::new();
+    let mut type_counts: HashMap<String, u32> = HashMap::new();
+    let mut chunk_info: HashMap<String, (PathBuf, u32)> = HashMap::new();
 
-    for (_type_name, chunk) in results {
-        if chunk.name == target_name {
-            continue;
+    for chunks in results.values() {
+        for chunk in chunks {
+            if chunk.name == target_name {
+                continue;
+            }
+            if !matches!(
+                chunk.chunk_type,
+                crate::language::ChunkType::Function | crate::language::ChunkType::Method
+            ) {
+                continue;
+            }
+            *type_counts.entry(chunk.name.clone()).or_insert(0) += 1;
+            chunk_info
+                .entry(chunk.name.clone())
+                .or_insert((chunk.file.clone(), chunk.line_start));
         }
-        if !matches!(
-            chunk.chunk_type,
-            crate::language::ChunkType::Function | crate::language::ChunkType::Method
-        ) {
-            continue;
-        }
-        *type_counts.entry(chunk.name.clone()).or_insert(0) += 1;
-        chunk_info
-            .entry(chunk.name.clone())
-            .or_insert((chunk.file.clone(), chunk.line_start));
     }
+
+    tracing::debug!(
+        candidates = type_counts.len(),
+        "Type overlap candidates found"
+    );
 
     // Sort by overlap count descending
     let mut sorted: Vec<(String, u32)> = type_counts.into_iter().collect();

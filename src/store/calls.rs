@@ -782,6 +782,21 @@ impl Store {
                 rows.into_iter().map(|(f,)| f).collect()
             };
 
+            // Files with type-edge activity (functions that reference types)
+            let files_with_type_activity: std::collections::HashSet<String> = {
+                let rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT DISTINCT c.origin FROM chunks c
+                     JOIN type_edges te ON c.id = te.source_chunk_id",
+                )
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "Failed to query files with type activity");
+                    Vec::new()
+                });
+                rows.into_iter().map(|(f,)| f).collect()
+            };
+
             // Phase 1 filtering: name/test/path checks (don't need content)
             let mut candidates: Vec<LightChunk> = Vec::new();
 
@@ -872,7 +887,8 @@ impl Store {
                 // Confidence scoring
                 let is_method = light.chunk_type == ChunkType::Method;
                 let file_str = light.file.to_string_lossy();
-                let file_is_active = files_with_callers.contains(file_str.as_ref());
+                let file_is_active = files_with_callers.contains(file_str.as_ref())
+                    || files_with_type_activity.contains(file_str.as_ref());
 
                 let confidence = if is_method {
                     // Methods are more likely trait impls or interface implementations

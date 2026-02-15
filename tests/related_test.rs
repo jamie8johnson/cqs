@@ -4,7 +4,7 @@ mod common;
 
 use common::{mock_embedding, TestStore};
 use cqs::find_related;
-use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
+use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language, TypeEdgeKind, TypeRef};
 use std::path::{Path, PathBuf};
 
 /// Create a chunk at a specific file and line
@@ -206,6 +206,30 @@ fn test_find_related_shared_types() {
         ),
     ];
     insert_chunks(&store, &chunks);
+
+    // Insert type edges: both parse_config and validate_config reference Config
+    let config_ref = TypeRef {
+        type_name: "Config".to_string(),
+        line_number: 1,
+        kind: Some(TypeEdgeKind::Param),
+    };
+    store
+        .upsert_type_edges(&chunks[0].id, std::slice::from_ref(&config_ref))
+        .unwrap();
+    store
+        .upsert_type_edges(&chunks[1].id, std::slice::from_ref(&config_ref))
+        .unwrap();
+    // render_ui references AppState (different type)
+    store
+        .upsert_type_edges(
+            &chunks[2].id,
+            &[TypeRef {
+                type_name: "AppState".to_string(),
+                line_number: 1,
+                kind: Some(TypeEdgeKind::Param),
+            }],
+        )
+        .unwrap();
 
     let result = find_related(&store, "parse_config", 10).unwrap();
     // validate_config shares the "Config" type

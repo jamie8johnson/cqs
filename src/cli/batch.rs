@@ -240,6 +240,9 @@ pub(crate) enum BatchCmd {
         /// Suggest tests for untested callers
         #[arg(long)]
         suggest_tests: bool,
+        /// Include type-impacted functions
+        #[arg(long)]
+        include_types: bool,
     },
     /// Map function to tests
     #[command(name = "test-map")]
@@ -354,7 +357,8 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             name,
             depth,
             suggest_tests,
-        } => dispatch_impact(ctx, &name, depth, suggest_tests),
+            include_types,
+        } => dispatch_impact(ctx, &name, depth, suggest_tests, include_types),
         BatchCmd::TestMap { name, depth } => dispatch_test_map(ctx, &name, depth),
         BatchCmd::Trace {
             source,
@@ -814,6 +818,7 @@ fn dispatch_impact(
     name: &str,
     depth: usize,
     do_suggest_tests: bool,
+    include_types: bool,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_impact", name).entered();
 
@@ -821,7 +826,7 @@ fn dispatch_impact(
     let chunk = &resolved.chunk;
     let depth = depth.clamp(1, 10);
 
-    let result = cqs::analyze_impact(&ctx.store, &chunk.name, depth)?;
+    let result = cqs::analyze_impact(&ctx.store, &chunk.name, depth, include_types)?;
 
     let mut json = cqs::impact_to_json(&result, &ctx.root);
 
@@ -1933,10 +1938,12 @@ mod tests {
                 ref name,
                 depth,
                 suggest_tests,
+                include_types,
             } => {
                 assert_eq!(name, "foo");
                 assert_eq!(depth, 3);
                 assert!(suggest_tests);
+                assert!(!include_types);
             }
             _ => panic!("Expected Impact command"),
         }

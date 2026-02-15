@@ -334,6 +334,9 @@ enum Commands {
         /// Suggest tests for untested callers
         #[arg(long)]
         suggest_tests: bool,
+        /// Include type-impacted functions (via shared type dependencies)
+        #[arg(long)]
+        include_types: bool,
     },
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
@@ -640,9 +643,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref format,
             json,
             suggest_tests,
+            include_types,
         }) => {
             let fmt = if json { &OutputFormat::Json } else { format };
-            cmd_impact(&cli, name, depth, fmt, suggest_tests)
+            cmd_impact(&cli, name, depth, fmt, suggest_tests, include_types)
         }
         Some(Commands::ImpactDiff {
             ref base,

@@ -6,16 +6,23 @@ use crate::store::{CallerWithContext, SearchResult};
 use crate::Store;
 
 use super::bfs::reverse_bfs;
-use super::types::{CallerDetail, ImpactResult, TestInfo, TestSuggestion, TransitiveCaller};
+use super::types::{
+    CallerDetail, ImpactResult, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
+};
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
 /// Run impact analysis: find callers, affected tests, and transitive callers.
+///
+/// When `include_types` is true, also performs one-hop type expansion: finds
+/// other functions that share type dependencies with the target via `type_edges`.
 pub fn analyze_impact(
     store: &Store,
     target_name: &str,
     depth: usize,
+    include_types: bool,
 ) -> anyhow::Result<ImpactResult> {
-    let _span = tracing::info_span!("analyze_impact", target = target_name, depth).entered();
+    let _span =
+        tracing::info_span!("analyze_impact", target = target_name, depth, include_types).entered();
     let callers = build_caller_info(store, target_name)?;
     let graph = store.get_call_graph()?;
     let tests = find_affected_tests(store, &graph, target_name)?;
@@ -25,11 +32,24 @@ pub fn analyze_impact(
         Vec::new()
     };
 
+    let type_impacted = if include_types {
+        match find_type_impacted(store, target_name) {
+            Ok(ti) => ti,
+            Err(e) => {
+                tracing::warn!(target = target_name, error = %e, "Failed to compute type-impacted");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     Ok(ImpactResult {
         function_name: target_name.to_string(),
         callers,
         tests,
         transitive_callers,
+        type_impacted,
     })
 }
 
@@ -348,6 +368,89 @@ fn suggest_test_file(source: &str) -> String {
     }
     // Fallback for unknown languages
     format!("{parent}/tests/{stem}_test.{ext}")
+}
+
+/// One-hop type expansion: find functions that share type dependencies with the target.
+///
+/// Uses the type_edges table (not the full TypeGraph) to avoid loading the entire graph
+/// when only one function's types are needed. Steps:
+/// 1. Get types used by target via `get_types_used_by`
+/// 2. Filter out common types (String, Vec, etc.)
+/// 3. For each remaining type, find other users via `get_type_users_batch`
+/// 4. Aggregate by function name, track which types are shared
+fn find_type_impacted(store: &Store, target_name: &str) -> anyhow::Result<Vec<TypeImpacted>> {
+    let _span = tracing::info_span!("find_type_impacted", target = target_name).entered();
+
+    let type_pairs = store.get_types_used_by(target_name)?;
+    let type_names: Vec<String> = type_pairs
+        .into_iter()
+        .map(|(name, _kind)| name)
+        .filter(|name| !crate::focused_read::COMMON_TYPES.contains(name.as_str()))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    if type_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    tracing::debug!(
+        type_count = type_names.len(),
+        "Type names for impact expansion"
+    );
+
+    let refs: Vec<&str> = type_names.iter().map(|s| s.as_str()).collect();
+    let results = store.get_type_users_batch(&refs)?;
+
+    // Aggregate: function_name -> set of shared type names (deduplicated)
+    let mut shared: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut chunk_info: HashMap<String, (std::path::PathBuf, u32)> = HashMap::new();
+
+    for (type_name, chunks) in &results {
+        for chunk in chunks {
+            if chunk.name == target_name {
+                continue;
+            }
+            if !matches!(
+                chunk.chunk_type,
+                crate::language::ChunkType::Function | crate::language::ChunkType::Method
+            ) {
+                continue;
+            }
+            shared
+                .entry(chunk.name.clone())
+                .or_default()
+                .insert(type_name.clone());
+            chunk_info
+                .entry(chunk.name.clone())
+                .or_insert((chunk.file.clone(), chunk.line_start));
+        }
+    }
+
+    tracing::debug!(
+        impacted_count = shared.len(),
+        "Type-impacted functions found"
+    );
+
+    // Sort by number of shared types descending
+    let mut sorted: Vec<(String, Vec<String>)> = shared
+        .into_iter()
+        .map(|(name, set)| (name, set.into_iter().collect()))
+        .collect();
+    sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+    Ok(sorted
+        .into_iter()
+        .filter_map(|(name, types)| {
+            let (file, line) = chunk_info.remove(&name)?;
+            Some(TypeImpacted {
+                name,
+                file,
+                line,
+                shared_types: types,
+            })
+        })
+        .collect())
 }
 
 #[cfg(test)]

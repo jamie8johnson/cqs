@@ -7,9 +7,9 @@ use anyhow::{bail, Context, Result};
 
 use cqs::audit::load_audit_state;
 use cqs::compute_hints;
-use cqs::extract_type_names;
 use cqs::note::{parse_notes, path_matches_mention};
 use cqs::parser::ChunkType;
+use cqs::COMMON_TYPES;
 
 use crate::cli::find_project_root;
 
@@ -204,26 +204,49 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     output.push_str(&chunk.content);
     output.push('\n');
 
-    // Type dependencies
-    let type_names = extract_type_names(&chunk.signature);
-    for type_name in &type_names {
+    // Type dependencies — from type_edges table (exact, not regex on signature)
+    let type_deps = match store.get_types_used_by(&chunk.name) {
+        Ok(pairs) => pairs,
+        Err(e) => {
+            tracing::warn!(function = %chunk.name, error = %e, "Failed to query type deps");
+            Vec::new()
+        }
+    };
+    // Deduplicate type names, filter common types, preserve edge_kind for display
+    let mut seen_types = std::collections::HashSet::new();
+    let filtered_types: Vec<(String, String)> = type_deps
+        .into_iter()
+        .filter(|(name, _kind)| !COMMON_TYPES.contains(name.as_str()))
+        .filter(|(name, _kind)| seen_types.insert(name.clone()))
+        .collect();
+    tracing::debug!(
+        type_count = filtered_types.len(),
+        "Type deps for focused read"
+    );
+
+    for (type_name, edge_kind) in &filtered_types {
         if let Ok(results) = store.search_by_name(type_name, 5) {
             let type_def = results.iter().find(|r| {
                 r.chunk.name == *type_name
                     && matches!(
                         r.chunk.chunk_type,
-                        cqs::parser::ChunkType::Struct
-                            | cqs::parser::ChunkType::Enum
-                            | cqs::parser::ChunkType::Trait
-                            | cqs::parser::ChunkType::Interface
-                            | cqs::parser::ChunkType::Class
+                        ChunkType::Struct
+                            | ChunkType::Enum
+                            | ChunkType::Trait
+                            | ChunkType::Interface
+                            | ChunkType::Class
                     )
             });
             if let Some(r) = type_def {
                 let dep_rel = cqs::rel_display(&r.chunk.file, &root);
+                let kind_label = if edge_kind.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", edge_kind)
+                };
                 output.push_str(&format!(
-                    "\n// --- Type: {} ({}:{}-{}) ---\n",
-                    r.chunk.name, dep_rel, r.chunk.line_start, r.chunk.line_end
+                    "\n// --- Type: {}{} ({}:{}-{}) ---\n",
+                    r.chunk.name, kind_label, dep_rel, r.chunk.line_start, r.chunk.line_end
                 ));
                 output.push_str(&r.chunk.content);
                 output.push('\n');

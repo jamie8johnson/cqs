@@ -34,6 +34,15 @@ pub struct TransitiveCaller {
     pub depth: usize,
 }
 
+/// A function impacted via shared type dependencies (one-hop type expansion).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TypeImpacted {
+    pub name: String,
+    pub file: PathBuf,
+    pub line: u32,
+    pub shared_types: Vec<String>,
+}
+
 /// Complete impact analysis result
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ImpactResult {
@@ -41,6 +50,7 @@ pub struct ImpactResult {
     pub callers: Vec<CallerDetail>,
     pub tests: Vec<TestInfo>,
     pub transitive_callers: Vec<TransitiveCaller>,
+    pub type_impacted: Vec<TypeImpacted>,
 }
 
 /// Lightweight caller + test coverage hints for a function.
