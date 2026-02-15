@@ -112,6 +112,7 @@ None.
    - `cqs-gc` — report index staleness
    - `cqs-stale` — check index freshness (files changed since last index)
    - `cqs-related` — find functions related by shared callers, callees, or types
+   - `cqs-deps` — type dependencies: who uses a type, or what types a function uses
    - `cqs-where` — suggest where to add new code based on semantic similarity
    - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
    - `cqs-plan` — task planning with scout data + task-type templates
