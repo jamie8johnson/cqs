@@ -2,14 +2,14 @@
 
 ## Right Now
 
-**Releasing v0.12.9.** 2026-02-14.
+**Pipeline syntax shipped.** 2026-02-14.
 
 This session:
-- `cqs batch` shipped (PR #436): persistent Store batch mode, 13 commands, JSONL output, lazy Embedder/HNSW via OnceLock, CAGRA amortization
-- Fresh-eyes review caught bare `.unwrap_or_default()` in `dispatch_explain` — fixed with tracing::warn
-- CI feature flag fix: `let _ = store;` for unused var without gpu-search
-
-Next in `cqs chat` build path: step 3 = REPL (readline wrapping `dispatch()`)
+- Pipeline syntax for `cqs batch` shipped (PR #438): `search "error" | callers | test-map`
+- Quote-safe parsing via shell_words tokenize → split by `|` token
+- 7 pipeable downstream commands, fan-out capped at 50 names/stage
+- 17 unit tests + 7 integration tests, fresh-eyes caught truncation tracking bug
+- `cqs chat` build path: steps 1-4 complete (ChunkSummary, batch, REPL deferred, pipeline)
 
 ## Pending Changes
 
@@ -40,14 +40,14 @@ None.
 
 ## Architecture
 
-- Version: 0.12.9
+- Version: 0.12.10
 - MSRV: 1.93
 - Schema: v10
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 929 total
+- Tests: 953 total (926 pass + 27 ignored)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag

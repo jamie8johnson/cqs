@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.12.9"
+version = "0.12.10"
 edition = "2021"
 rust-version = "1.93"
 description = "Semantic code search and code intelligence for AI agents. Find functions by concept, trace call chains, assess impact — in single tool calls. Local ML embeddings."
