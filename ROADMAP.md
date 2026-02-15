@@ -41,7 +41,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [ ] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
 - [x] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
 - [ ] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests. Deeper than caller-only analysis.
-- [ ] `cqs chat` — interactive REPL for chained queries. Build order: (1) ~~`ChunkSummary` unification~~, (2) ~~batch mode `cqs batch`~~, (3) REPL (readline), (4) pipeline syntax (`search | callers | test-map`).
+- [ ] `cqs chat` — interactive REPL for chained queries. Build order: (1) ~~`ChunkSummary` unification~~, (2) ~~batch mode `cqs batch`~~, (3) ~~REPL~~ (deferred — agents use batch), (4) ~~pipeline syntax~~ (`search | callers | test-map` in `cqs batch`).
 
 ### Next — Retrieval Quality
 

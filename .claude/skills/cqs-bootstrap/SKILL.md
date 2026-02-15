@@ -105,7 +105,7 @@ None.
    - `cqs-impact` — what breaks if you change X
    - `cqs-impact-diff` — diff-aware impact: changed functions, callers, tests to re-run
    - `cqs-test-map` — map functions to their tests
-   - `cqs-batch` — batch mode: persistent Store + Embedder, stdin commands, JSONL output
+   - `cqs-batch` — batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
    - `cqs-context` — module-level file overview
    - `cqs-gather` — smart context assembly (seed search + call graph BFS)
    - `cqs-dead` — find dead code (functions with no callers)
