@@ -24,12 +24,12 @@ use super::check_interrupted;
 // These values balance quality with memory/time constraints:
 // - MAX_TOKENS_PER_WINDOW: E5-base-v2 has 512 token limit; we use 480 for safety
 // - WINDOW_OVERLAP_TOKENS: 64 tokens overlap provides context continuity
-const MAX_TOKENS_PER_WINDOW: usize = 480;
-const WINDOW_OVERLAP_TOKENS: usize = 64;
+pub(crate) const MAX_TOKENS_PER_WINDOW: usize = 480;
+pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
 
 /// Apply windowing to chunks that exceed the token limit.
 /// Long chunks are split into overlapping windows; short chunks pass through unchanged.
-fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
+pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
     let mut result = Vec::with_capacity(chunks.len());
 
     for chunk in chunks {

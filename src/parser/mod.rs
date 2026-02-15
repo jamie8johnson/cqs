@@ -193,13 +193,8 @@ impl Parser {
         while let Some(m) = matches.next() {
             match self.extract_chunk(&source, m, query, language, path) {
                 Ok(chunk) => {
-                    // Skip chunks over 100 lines or 100KB
-                    let lines = chunk.line_end - chunk.line_start;
+                    // Skip chunks over 100KB (large functions are handled by windowing in the pipeline)
                     const MAX_CHUNK_BYTES: usize = 100_000;
-                    if lines > 100 {
-                        tracing::debug!("Skipping {} ({} lines > 100 max)", chunk.id, lines);
-                        continue;
-                    }
                     if chunk.content.len() > MAX_CHUNK_BYTES {
                         tracing::debug!(
                             "Skipping {} ({} bytes > {} max)",
