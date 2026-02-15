@@ -7,8 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.11] - 2026-02-15
+
 ### Added
-- **Type edge storage and `cqs deps` command** (Phase 2b Step 2) — schema v11 adds `type_edges` table with FK CASCADE. 10 store methods (upsert, query, batch, stats, graph, prune). `cqs deps <type>` shows who uses a type; `cqs deps --reverse <fn>` shows what types a function uses. Batch mode support with pipeline compatibility. GC prunes orphan type edges. Stats includes type graph counts. 17 new tests.
+- **Type extraction parser** (Phase 1a Step 1) — tree-sitter type queries for 6 languages (Rust, Python, TypeScript, Go, Java, C). Extracts struct/enum/class/interface/typedef definitions and function parameter/return type references. `TypeEdgeKind` enum (Uses, Returns, Field, Impl, Bound, Alias). `parse_file_relationships()` returns both call sites and type refs. 19 new tests.
+- **Type edge storage and `cqs deps` command** (Phase 1a Step 2) — schema v11 adds `type_edges` table with FK CASCADE. 10 store methods (upsert, query, batch, stats, graph, prune). `cqs deps <type>` shows who uses a type; `cqs deps --reverse <fn>` shows what types a function uses. Batch mode support with pipeline compatibility. GC prunes orphan type edges. Stats includes type graph counts. 17 new tests.
+
+### Fixed
+- **Removed 100-line chunk limit** — `parse_file()` silently dropped any chunk over 100 lines, causing 52 functions (including `cmd_index`, `search_filtered`, `cmd_query`) to be entirely absent from the index. Large chunks are now handled by token-based windowing (480 tokens, 64 overlap) in the pipeline instead.
+- **Added windowing to watch mode** — `cqs watch` sent raw chunks directly to the embedder without windowing, silently truncating functions exceeding 480 tokens. Now uses the same `apply_windowing()` as the full indexing pipeline.
 
 ## [0.12.10] - 2026-02-14
 

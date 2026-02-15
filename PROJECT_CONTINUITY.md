@@ -46,9 +46,9 @@ Unstaged on main (from prior sessions, not type extraction):
 
 ## Architecture
 
-- Version: 0.12.10
+- Version: 0.12.11
 - MSRV: 1.93
-- Schema: v10
+- Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup

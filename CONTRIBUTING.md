@@ -179,7 +179,7 @@ src/
 - 769-dim embeddings (768 from E5-base-v2 + 1 sentiment dimension)
 - HNSW index is chunk-only; notes use brute-force SQLite search (always fresh)
 - Streaming HNSW build via `build_batched()` for memory efficiency
-- Chunks capped at 100 lines, notes capped at 10k entries
+- Large chunks split by windowing (480 tokens, 64 overlap); notes capped at 10k entries
 - Schema migrations allow upgrading indexes without full rebuild
 - Skills in `.claude/skills/*/SKILL.md` are auto-discovered by Claude Code
 
