@@ -40,7 +40,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [ ] `cqs blame` — semantic git blame. Given a function, show who last changed it, when, and the commit message. Combines call graph with git log.
 - [ ] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
 - [x] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
-- [ ] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests. Deeper than caller-only analysis.
+- [x] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests (PR #442). Wired into related, impact, read, dead (PR #447).
 - [ ] `cqs chat` — interactive REPL for chained queries. Build order: (1) ~~`ChunkSummary` unification~~, (2) ~~batch mode `cqs batch`~~, (3) ~~REPL~~ (deferred — agents use batch), (4) ~~pipeline syntax~~ (`search | callers | test-map` in `cqs batch`).
 
 ### Next — Retrieval Quality
@@ -83,7 +83,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ## 1.0 Release Criteria
 
-- [ ] Schema stable for 1+ week of daily use (currently v10)
+- [ ] Schema stable for 1+ week of daily use (currently v11)
 - [ ] Used on 2+ different codebases without issues
 - [ ] No known correctness bugs
 

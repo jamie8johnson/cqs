@@ -13,7 +13,10 @@ use crate::index::VectorIndex;
 use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
-use crate::store::helpers::{embedding_slice, ChunkRow, ChunkSummary, SearchFilter, SearchResult};
+use crate::note::path_matches_mention;
+use crate::store::helpers::{
+    embedding_slice, ChunkRow, ChunkSummary, NoteSummary, SearchFilter, SearchResult,
+};
 use crate::store::sanitize_fts_query;
 use crate::store::{Store, StoreError, UnifiedResult};
 
@@ -245,6 +248,43 @@ pub(crate) fn name_match_score(query: &str, name: &str) -> f32 {
     NameMatcher::new(query).score(name)
 }
 
+/// Multiplicative boost factor for note-matched code chunks.
+///
+/// A note with sentiment +1 boosts the chunk's score by 15%.
+/// A note with sentiment -1 reduces it by 15%.
+const NOTE_BOOST_FACTOR: f32 = 0.15;
+
+/// Compute the note-based score boost for a chunk.
+///
+/// Checks if any note's mentions match the chunk's file path or name.
+/// When multiple notes match, takes the strongest absolute sentiment
+/// (preserving sign) to avoid averaging away strong signals.
+///
+/// Returns a multiplier: `1.0 + sentiment * NOTE_BOOST_FACTOR`
+fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
+    let mut strongest: Option<f32> = None;
+    for note in notes {
+        for mention in &note.mentions {
+            if path_matches_mention(file_path, mention) || chunk_name == mention {
+                match strongest {
+                    Some(prev) if note.sentiment.abs() > prev.abs() => {
+                        strongest = Some(note.sentiment);
+                    }
+                    None => {
+                        strongest = Some(note.sentiment);
+                    }
+                    _ => {}
+                }
+                break; // This note already matched, check next note
+            }
+        }
+    }
+    match strongest {
+        Some(s) => 1.0 + s * NOTE_BOOST_FACTOR,
+        None => 1.0,
+    }
+}
+
 /// Bounded min-heap for maintaining top-N search results by score.
 ///
 /// Uses a min-heap internally so the smallest score is always at the top,
@@ -345,6 +385,15 @@ impl Store {
     ) -> Result<Vec<SearchResult>, StoreError> {
         let _span = tracing::info_span!("search_filtered", limit = limit, rrf = filter.enable_rrf)
             .entered();
+
+        // Load notes once for note-boosted ranking (cheap — no embeddings)
+        let notes = match self.list_notes_summaries() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load notes for search boosting");
+                vec![]
+            }
+        };
 
         self.rt.block_on(async {
             // Build WHERE clause from filter
@@ -449,7 +498,7 @@ impl Store {
                         continue;
                     };
 
-                    let score = if let Some(ref matcher) = name_matcher {
+                    let base_score = if let Some(ref matcher) = name_matcher {
                         let n = name.as_deref().unwrap_or("");
                         let name_score = matcher.score(n);
                         (1.0 - filter.name_boost) * embedding_score
@@ -458,12 +507,18 @@ impl Store {
                         embedding_score
                     };
 
+                    let file_part = extract_file_from_chunk_id(&id);
+
                     if let Some(ref matcher) = glob_matcher {
-                        let file_part = extract_file_from_chunk_id(&id);
                         if !matcher.is_match(file_part) {
                             continue;
                         }
                     }
+
+                    // Apply note-based boost: notes mentioning this chunk's file or name
+                    // adjust its score by up to ±15%
+                    let chunk_name = name.as_deref().unwrap_or("");
+                    let score = base_score * note_boost(file_part, chunk_name, &notes);
 
                     if score >= threshold {
                         score_heap.push(id, score);
@@ -585,6 +640,15 @@ impl Store {
 
         let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
 
+        // Load notes once for note-boosted ranking
+        let notes = match self.list_notes_summaries() {
+            Ok(n) => n,
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to load notes for search boosting");
+                vec![]
+            }
+        };
+
         self.rt.block_on(async {
             let rows = self
                 .fetch_chunks_with_embeddings_by_ids_async(candidate_ids)
@@ -639,12 +703,15 @@ impl Store {
                     };
                     let embedding_score = cosine_similarity(query.as_slice(), embedding)?;
 
-                    let score = if let Some(ref matcher) = name_matcher {
+                    let base_score = if let Some(ref matcher) = name_matcher {
                         let name_score = matcher.score(&chunk_row.name);
                         (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
                     } else {
                         embedding_score
                     };
+
+                    // Apply note-based boost
+                    let score = base_score * note_boost(&chunk_row.origin, &chunk_row.name, &notes);
 
                     if score >= threshold {
                         Some((chunk_row, score))
@@ -815,6 +882,87 @@ mod tests {
     #[test]
     fn test_name_match_no_match() {
         assert_eq!(name_match_score("foo", "bar"), 0.0);
+    }
+
+    // ===== note_boost tests =====
+
+    fn make_note(sentiment: f32, mentions: &[&str]) -> NoteSummary {
+        NoteSummary {
+            id: "note:test".to_string(),
+            text: "test note".to_string(),
+            sentiment,
+            mentions: mentions.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn test_note_boost_no_notes() {
+        let boost = note_boost("src/lib.rs", "my_fn", &[]);
+        assert_eq!(boost, 1.0);
+    }
+
+    #[test]
+    fn test_note_boost_no_match() {
+        let notes = vec![make_note(-0.5, &["other.rs"])];
+        let boost = note_boost("src/lib.rs", "my_fn", &notes);
+        assert_eq!(boost, 1.0);
+    }
+
+    #[test]
+    fn test_note_boost_file_match_negative() {
+        let notes = vec![make_note(-1.0, &["lib.rs"])];
+        let boost = note_boost("src/lib.rs", "my_fn", &notes);
+        assert!(
+            (boost - 0.85).abs() < 0.001,
+            "Expected ~0.85, got {}",
+            boost
+        );
+    }
+
+    #[test]
+    fn test_note_boost_file_match_positive() {
+        let notes = vec![make_note(1.0, &["lib.rs"])];
+        let boost = note_boost("src/lib.rs", "my_fn", &notes);
+        assert!(
+            (boost - 1.15).abs() < 0.001,
+            "Expected ~1.15, got {}",
+            boost
+        );
+    }
+
+    #[test]
+    fn test_note_boost_name_match() {
+        let notes = vec![make_note(0.5, &["my_fn"])];
+        let boost = note_boost("src/lib.rs", "my_fn", &notes);
+        assert!(
+            (boost - 1.075).abs() < 0.001,
+            "Expected ~1.075, got {}",
+            boost
+        );
+    }
+
+    #[test]
+    fn test_note_boost_strongest_wins() {
+        // Two notes: weak positive and strong negative. Strong negative should win.
+        let notes = vec![make_note(0.5, &["lib.rs"]), make_note(-1.0, &["lib.rs"])];
+        let boost = note_boost("src/lib.rs", "my_fn", &notes);
+        assert!(
+            (boost - 0.85).abs() < 0.001,
+            "Expected ~0.85, got {}",
+            boost
+        );
+    }
+
+    #[test]
+    fn test_note_boost_strongest_absolute_preserves_sign() {
+        // Two notes: strong positive and weak negative. Strong positive should win.
+        let notes = vec![make_note(1.0, &["lib.rs"]), make_note(-0.5, &["lib.rs"])];
+        let boost = note_boost("src/lib.rs", "my_fn", &notes);
+        assert!(
+            (boost - 1.15).abs() < 0.001,
+            "Expected ~1.15, got {}",
+            boost
+        );
     }
 
     // ===== min_code_slots tests =====
