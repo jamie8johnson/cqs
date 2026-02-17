@@ -13,7 +13,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 use cqs::index::VectorIndex;
@@ -36,6 +36,9 @@ pub(crate) struct BatchContext {
     refs: RefCell<HashMap<String, ReferenceIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
+    file_set: OnceLock<HashSet<PathBuf>>,
+    audit_state: OnceLock<cqs::audit::AuditMode>,
+    notes_cache: OnceLock<Vec<cqs::note::Note>>,
 }
 
 impl BatchContext {
@@ -80,6 +83,43 @@ impl BatchContext {
         })?;
         self.refs.borrow_mut().insert(name.to_string(), found);
         Ok(())
+    }
+
+    /// Get or build the file set for staleness checks (cached).
+    fn file_set(&self) -> Result<&HashSet<PathBuf>> {
+        if let Some(fs) = self.file_set.get() {
+            return Ok(fs);
+        }
+        let _span = tracing::info_span!("batch_file_set").entered();
+        let exts: Vec<&str> = cqs::language::REGISTRY.supported_extensions().collect();
+        let files = cqs::enumerate_files(&self.root, &exts, false)?;
+        let set: HashSet<PathBuf> = files.into_iter().collect();
+        let _ = self.file_set.set(set);
+        Ok(self.file_set.get().unwrap())
+    }
+
+    /// Get cached audit state (loaded once per session).
+    fn audit_state(&self) -> &cqs::audit::AuditMode {
+        self.audit_state
+            .get_or_init(|| cqs::audit::load_audit_state(&self.cqs_dir))
+    }
+
+    /// Get cached notes (parsed once per session).
+    fn notes(&self) -> &[cqs::note::Note] {
+        self.notes_cache.get_or_init(|| {
+            let notes_path = self.root.join("docs/notes.toml");
+            if notes_path.exists() {
+                match cqs::note::parse_notes(&notes_path) {
+                    Ok(notes) => notes,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to parse notes.toml for batch");
+                        vec![]
+                    }
+                }
+            } else {
+                vec![]
+            }
+        })
     }
 
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
@@ -296,6 +336,46 @@ pub(crate) enum BatchCmd {
     },
     /// Index statistics
     Stats,
+    /// Pre-investigation dashboard
+    Scout {
+        /// Task description
+        query: String,
+        /// Max results
+        #[arg(short = 'n', long, default_value = "10")]
+        limit: usize,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
+    /// Suggest where to add new code
+    Where {
+        /// Description of what to add
+        description: String,
+        /// Max suggestions
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+    },
+    /// Read file with note injection
+    Read {
+        /// File path relative to project root
+        path: String,
+        /// Focus on a specific function (focused read mode)
+        #[arg(long)]
+        focus: Option<String>,
+    },
+    /// Check index freshness
+    Stale,
+    /// Codebase quality snapshot
+    Health,
+    /// List notes
+    Notes {
+        /// Show only warnings (negative sentiment)
+        #[arg(long)]
+        warnings: bool,
+        /// Show only patterns (positive sentiment)
+        #[arg(long)]
+        patterns: bool,
+    },
     /// Show help
     Help,
 }
@@ -377,6 +457,16 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             tokens,
         } => dispatch_context(ctx, &path, summary, compact, tokens),
         BatchCmd::Stats => dispatch_stats(ctx),
+        BatchCmd::Scout {
+            query,
+            limit,
+            tokens,
+        } => dispatch_scout(ctx, &query, limit, tokens),
+        BatchCmd::Where { description, limit } => dispatch_where(ctx, &description, limit),
+        BatchCmd::Read { path, focus } => dispatch_read(ctx, &path, focus.as_deref()),
+        BatchCmd::Stale => dispatch_stale(ctx),
+        BatchCmd::Health => dispatch_health(ctx),
+        BatchCmd::Notes { warnings, patterns } => dispatch_notes(ctx, warnings, patterns),
         BatchCmd::Help => dispatch_help(),
     }
 }
@@ -1238,6 +1328,390 @@ fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     }))
 }
 
+fn dispatch_scout(
+    ctx: &BatchContext,
+    query: &str,
+    limit: usize,
+    _tokens: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_scout", query).entered();
+    let embedder = ctx.embedder()?;
+    let limit = limit.clamp(1, 50);
+    let result = cqs::scout(&ctx.store, embedder, query, &ctx.root, limit)?;
+    Ok(cqs::scout_to_json(&result, &ctx.root))
+}
+
+fn dispatch_where(
+    ctx: &BatchContext,
+    description: &str,
+    limit: usize,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_where", description).entered();
+    let embedder = ctx.embedder()?;
+    let limit = limit.clamp(1, 10);
+    let result = cqs::suggest_placement(&ctx.store, embedder, description, limit)?;
+
+    let suggestions_json: Vec<_> = result
+        .suggestions
+        .iter()
+        .map(|s| {
+            let rel = cqs::rel_display(&s.file, &ctx.root);
+            serde_json::json!({
+                "file": rel,
+                "score": s.score,
+                "insertion_line": s.insertion_line,
+                "near_function": s.near_function,
+                "reason": s.reason,
+                "patterns": {
+                    "imports": s.patterns.imports,
+                    "error_handling": s.patterns.error_handling,
+                    "naming_convention": s.patterns.naming_convention,
+                    "visibility": s.patterns.visibility,
+                    "has_inline_tests": s.patterns.has_inline_tests,
+                }
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "description": description,
+        "suggestions": suggestions_json,
+    }))
+}
+
+fn dispatch_read(ctx: &BatchContext, path: &str, focus: Option<&str>) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_read", path).entered();
+
+    // Focused read mode
+    if let Some(focus) = focus {
+        return dispatch_read_focused(ctx, focus);
+    }
+
+    let file_path = ctx.root.join(path);
+
+    if !file_path.exists() {
+        anyhow::bail!("File not found: {}", path);
+    }
+
+    // Path traversal protection
+    let canonical = dunce::canonicalize(&file_path)
+        .with_context(|| format!("Failed to canonicalize path: {}", path))?;
+    let project_canonical =
+        dunce::canonicalize(&ctx.root).context("Failed to canonicalize project root")?;
+    if !canonical.starts_with(&project_canonical) {
+        anyhow::bail!("Path traversal not allowed: {}", path);
+    }
+
+    // File size limit (10MB)
+    const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+    let metadata = std::fs::metadata(&file_path).context("Failed to read file metadata")?;
+    if metadata.len() > MAX_FILE_SIZE {
+        anyhow::bail!(
+            "File too large: {} bytes (max {} bytes)",
+            metadata.len(),
+            MAX_FILE_SIZE
+        );
+    }
+
+    let content = std::fs::read_to_string(&file_path).context("Failed to read file")?;
+
+    let audit_state = ctx.audit_state();
+    let mut context_header = String::new();
+
+    if let Some(status) = audit_state.status_line() {
+        context_header.push_str(&format!("// {}\n//\n", status));
+    }
+
+    // Note injection (skip in audit mode)
+    let mut notes_injected = false;
+    if !audit_state.is_active() {
+        let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let relevant: Vec<_> = ctx
+            .notes()
+            .iter()
+            .filter(|n| {
+                n.mentions.iter().any(|m| {
+                    m == file_name || m == path || cqs::note::path_matches_mention(path, m)
+                })
+            })
+            .collect();
+
+        if !relevant.is_empty() {
+            notes_injected = true;
+            context_header
+                .push_str("// ┌─────────────────────────────────────────────────────────────┐\n");
+            context_header
+                .push_str("// │ [cqs] Context from notes.toml                              │\n");
+            context_header
+                .push_str("// └─────────────────────────────────────────────────────────────┘\n");
+            for n in relevant {
+                if let Some(first_line) = n.text.lines().next() {
+                    context_header.push_str(&format!(
+                        "// [{}] {}\n",
+                        n.sentiment_label(),
+                        first_line.trim()
+                    ));
+                }
+            }
+            context_header.push_str("//\n");
+        }
+    }
+
+    let enriched = if context_header.is_empty() {
+        content
+    } else {
+        format!("{}{}", context_header, content)
+    };
+
+    Ok(serde_json::json!({
+        "path": path,
+        "content": enriched,
+        "notes_injected": notes_injected,
+    }))
+}
+
+fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_read_focused", focus).entered();
+
+    let resolved = cqs::resolve_target(&ctx.store, focus)?;
+    let chunk = &resolved.chunk;
+    let rel_file = cqs::rel_display(&chunk.file, &ctx.root);
+
+    let mut output = String::new();
+    output.push_str(&format!(
+        "// [cqs] Focused read: {} ({}:{}-{})\n",
+        chunk.name, rel_file, chunk.line_start, chunk.line_end
+    ));
+
+    // Hints
+    let hints = if matches!(
+        chunk.chunk_type,
+        cqs::parser::ChunkType::Function | cqs::parser::ChunkType::Method
+    ) {
+        match cqs::compute_hints(&ctx.store, &chunk.name, None) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!(function = %chunk.name, error = %e, "Failed to compute hints");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(ref h) = hints {
+        let caller_label = if h.caller_count == 0 {
+            "! 0 callers".to_string()
+        } else {
+            format!("{} callers", h.caller_count)
+        };
+        let test_label = if h.test_count == 0 {
+            "! 0 tests".to_string()
+        } else {
+            format!("{} tests", h.test_count)
+        };
+        output.push_str(&format!("// [cqs] {} | {}\n", caller_label, test_label));
+    }
+
+    // Audit mode status
+    let audit_state = ctx.audit_state();
+    if let Some(status) = audit_state.status_line() {
+        output.push_str(&format!("// {}\n", status));
+    }
+
+    // Note injection (skip in audit mode)
+    if !audit_state.is_active() {
+        let relevant: Vec<_> = ctx
+            .notes()
+            .iter()
+            .filter(|n| {
+                n.mentions
+                    .iter()
+                    .any(|m| m == &chunk.name || m == &rel_file)
+            })
+            .collect();
+        for n in &relevant {
+            if let Some(first_line) = n.text.lines().next() {
+                output.push_str(&format!(
+                    "// [{}] {}\n",
+                    n.sentiment_label(),
+                    first_line.trim()
+                ));
+            }
+        }
+        if !relevant.is_empty() {
+            output.push_str("//\n");
+        }
+    }
+
+    // Target function
+    output.push_str("\n// --- Target ---\n");
+    if let Some(ref doc) = chunk.doc {
+        output.push_str(doc);
+        output.push('\n');
+    }
+    output.push_str(&chunk.content);
+    output.push('\n');
+
+    // Type dependencies
+    let type_deps = match ctx.store.get_types_used_by(&chunk.name) {
+        Ok(pairs) => pairs,
+        Err(e) => {
+            tracing::warn!(function = %chunk.name, error = %e, "Failed to query type deps");
+            Vec::new()
+        }
+    };
+    let mut seen_types = std::collections::HashSet::new();
+    let filtered_types: Vec<(String, String)> = type_deps
+        .into_iter()
+        .filter(|(name, _kind)| !cqs::COMMON_TYPES.contains(name.as_str()))
+        .filter(|(name, _kind)| seen_types.insert(name.clone()))
+        .collect();
+
+    for (type_name, edge_kind) in &filtered_types {
+        if let Ok(results) = ctx.store.search_by_name(type_name, 5) {
+            let type_def = results.iter().find(|r| {
+                r.chunk.name == *type_name
+                    && matches!(
+                        r.chunk.chunk_type,
+                        cqs::parser::ChunkType::Struct
+                            | cqs::parser::ChunkType::Enum
+                            | cqs::parser::ChunkType::Trait
+                            | cqs::parser::ChunkType::Interface
+                            | cqs::parser::ChunkType::Class
+                    )
+            });
+            if let Some(r) = type_def {
+                let dep_rel = cqs::rel_display(&r.chunk.file, &ctx.root);
+                let kind_label = if edge_kind.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", edge_kind)
+                };
+                output.push_str(&format!(
+                    "\n// --- Type: {}{} ({}:{}-{}) ---\n",
+                    r.chunk.name, kind_label, dep_rel, r.chunk.line_start, r.chunk.line_end
+                ));
+                output.push_str(&r.chunk.content);
+                output.push('\n');
+            }
+        }
+    }
+
+    let mut result = serde_json::json!({
+        "focus": focus,
+        "content": output,
+    });
+    if let Some(ref h) = hints {
+        result["hints"] = serde_json::json!({
+            "caller_count": h.caller_count,
+            "test_count": h.test_count,
+            "no_callers": h.caller_count == 0,
+            "no_tests": h.test_count == 0,
+        });
+    }
+
+    Ok(result)
+}
+
+fn dispatch_stale(ctx: &BatchContext) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_stale").entered();
+
+    let file_set = ctx.file_set()?;
+    let report = ctx.store.list_stale_files(file_set)?;
+
+    let stale_json: Vec<_> = report
+        .stale
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "origin": f.origin,
+                "stored_mtime": f.stored_mtime,
+                "current_mtime": f.current_mtime,
+            })
+        })
+        .collect();
+
+    let missing_json: Vec<_> = report
+        .missing
+        .iter()
+        .map(|origin| serde_json::json!(origin))
+        .collect();
+
+    Ok(serde_json::json!({
+        "stale": stale_json,
+        "missing": missing_json,
+        "total_indexed": report.total_indexed,
+        "stale_count": report.stale.len(),
+        "missing_count": report.missing.len(),
+    }))
+}
+
+fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_health").entered();
+
+    let file_set = ctx.file_set()?;
+    let report = cqs::health::health_check(&ctx.store, file_set, &ctx.cqs_dir)?;
+
+    let hotspots_json: Vec<_> = report
+        .hotspots
+        .iter()
+        .map(|(name, count)| serde_json::json!({"name": name, "caller_count": count}))
+        .collect();
+
+    let untested_json: Vec<_> = report
+        .untested_hotspots
+        .iter()
+        .map(|(name, count)| serde_json::json!({"name": name, "caller_count": count}))
+        .collect();
+
+    Ok(serde_json::json!({
+        "stats": {
+            "total_chunks": report.stats.total_chunks,
+            "total_files": report.stats.total_files,
+        },
+        "stale_count": report.stale_count,
+        "missing_count": report.missing_count,
+        "dead_confident": report.dead_confident,
+        "dead_possible": report.dead_possible,
+        "hotspots": hotspots_json,
+        "untested_hotspots": untested_json,
+        "note_count": report.note_count,
+        "note_warnings": report.note_warnings,
+        "warnings": report.warnings,
+    }))
+}
+
+fn dispatch_notes(ctx: &BatchContext, warnings: bool, patterns: bool) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_notes", warnings, patterns).entered();
+
+    let notes = ctx.notes();
+    let filtered: Vec<_> = notes
+        .iter()
+        .filter(|n| {
+            if warnings {
+                n.is_warning()
+            } else if patterns {
+                n.is_pattern()
+            } else {
+                true
+            }
+        })
+        .map(|n| {
+            serde_json::json!({
+                "text": n.text,
+                "sentiment": n.sentiment,
+                "sentiment_label": n.sentiment_label(),
+                "mentions": n.mentions,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "notes": filtered,
+        "total": filtered.len(),
+    }))
+}
+
 fn dispatch_help() -> Result<serde_json::Value> {
     use clap::CommandFactory;
     let mut buf = Vec::new();
@@ -1254,7 +1728,7 @@ const PIPELINE_FAN_OUT_LIMIT: usize = 50;
 
 /// Commands that accept a piped function name as their first positional arg.
 const PIPEABLE_COMMANDS: &[&str] = &[
-    "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related",
+    "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related", "scout",
 ];
 
 /// Check if a command (first token) can receive piped names.
@@ -1317,6 +1791,19 @@ fn extract_names(val: &serde_json::Value) -> Vec<String> {
             for item in arr {
                 if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
                     push_name(name);
+                }
+            }
+        }
+    }
+
+    // Scout: nested file_groups[].chunks[].name
+    if let Some(groups) = val.get("file_groups").and_then(|v| v.as_array()) {
+        for group in groups {
+            if let Some(chunks) = group.get("chunks").and_then(|v| v.as_array()) {
+                for chunk in chunks {
+                    if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
+                        push_name(name);
+                    }
                 }
             }
         }
@@ -1551,6 +2038,9 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         refs: RefCell::new(HashMap::new()),
         root,
         cqs_dir,
+        file_set: OnceLock::new(),
+        audit_state: OnceLock::new(),
+        notes_cache: OnceLock::new(),
     };
 
     let stdin = std::io::stdin();
@@ -1947,5 +2437,176 @@ mod tests {
             }
             _ => panic!("Expected Impact command"),
         }
+    }
+
+    // ─── New command parse tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_parse_scout() {
+        let input = BatchInput::try_parse_from(["scout", "error handling"]).unwrap();
+        match input.cmd {
+            BatchCmd::Scout {
+                ref query, limit, ..
+            } => {
+                assert_eq!(query, "error handling");
+                assert_eq!(limit, 10); // default
+            }
+            _ => panic!("Expected Scout command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_scout_with_flags() {
+        let input = BatchInput::try_parse_from([
+            "scout",
+            "error handling",
+            "--limit",
+            "20",
+            "--tokens",
+            "2000",
+        ])
+        .unwrap();
+        match input.cmd {
+            BatchCmd::Scout {
+                ref query,
+                limit,
+                tokens,
+            } => {
+                assert_eq!(query, "error handling");
+                assert_eq!(limit, 20);
+                assert_eq!(tokens, Some(2000));
+            }
+            _ => panic!("Expected Scout command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_where() {
+        let input = BatchInput::try_parse_from(["where", "new CLI command"]).unwrap();
+        match input.cmd {
+            BatchCmd::Where {
+                ref description,
+                limit,
+            } => {
+                assert_eq!(description, "new CLI command");
+                assert_eq!(limit, 5); // default
+            }
+            _ => panic!("Expected Where command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_read() {
+        let input = BatchInput::try_parse_from(["read", "src/lib.rs"]).unwrap();
+        match input.cmd {
+            BatchCmd::Read {
+                ref path,
+                ref focus,
+            } => {
+                assert_eq!(path, "src/lib.rs");
+                assert!(focus.is_none());
+            }
+            _ => panic!("Expected Read command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_read_focused() {
+        let input =
+            BatchInput::try_parse_from(["read", "src/lib.rs", "--focus", "enumerate_files"])
+                .unwrap();
+        match input.cmd {
+            BatchCmd::Read {
+                ref path,
+                ref focus,
+            } => {
+                assert_eq!(path, "src/lib.rs");
+                assert_eq!(focus.as_deref(), Some("enumerate_files"));
+            }
+            _ => panic!("Expected Read command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_stale() {
+        let input = BatchInput::try_parse_from(["stale"]).unwrap();
+        assert!(matches!(input.cmd, BatchCmd::Stale));
+    }
+
+    #[test]
+    fn test_parse_health() {
+        let input = BatchInput::try_parse_from(["health"]).unwrap();
+        assert!(matches!(input.cmd, BatchCmd::Health));
+    }
+
+    #[test]
+    fn test_parse_notes() {
+        let input = BatchInput::try_parse_from(["notes"]).unwrap();
+        match input.cmd {
+            BatchCmd::Notes { warnings, patterns } => {
+                assert!(!warnings);
+                assert!(!patterns);
+            }
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_notes_warnings() {
+        let input = BatchInput::try_parse_from(["notes", "--warnings"]).unwrap();
+        match input.cmd {
+            BatchCmd::Notes { warnings, patterns } => {
+                assert!(warnings);
+                assert!(!patterns);
+            }
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_notes_patterns() {
+        let input = BatchInput::try_parse_from(["notes", "--patterns"]).unwrap();
+        match input.cmd {
+            BatchCmd::Notes { warnings, patterns } => {
+                assert!(!warnings);
+                assert!(patterns);
+            }
+            _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_extract_names_scout() {
+        let val = serde_json::json!({
+            "file_groups": [
+                {
+                    "file": "src/search.rs",
+                    "chunks": [
+                        {"name": "search_filtered", "role": "modify_target"},
+                        {"name": "resolve_target", "role": "dependency"}
+                    ]
+                },
+                {
+                    "file": "src/store.rs",
+                    "chunks": [
+                        {"name": "open_store", "role": "modify_target"}
+                    ]
+                }
+            ],
+            "summary": {"total_files": 2}
+        });
+        let names = extract_names(&val);
+        assert_eq!(names.len(), 3);
+        assert!(names.contains(&"search_filtered".to_string()));
+        assert!(names.contains(&"resolve_target".to_string()));
+        assert!(names.contains(&"open_store".to_string()));
+    }
+
+    #[test]
+    fn test_is_pipeable_scout() {
+        assert!(is_pipeable_command(&[
+            "scout".to_string(),
+            "foo".to_string()
+        ]));
     }
 }

@@ -18,7 +18,8 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
 
     // Enumerate current files on disk
     let parser = Parser::new()?;
-    let files = cqs::enumerate_files(&root, &parser, false)?;
+    let exts = parser.supported_extensions();
+    let files = cqs::enumerate_files(&root, &exts, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
     let report = store.list_stale_files(&file_set)?;

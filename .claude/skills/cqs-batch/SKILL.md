@@ -40,7 +40,7 @@ echo 'callees main | callers | test-map' | cqs batch
 echo 'dead --min-confidence high | explain' | cqs batch
 ```
 
-**Pipeable downstream commands:** callers, callees, deps, explain, similar, impact, test-map, related.
+**Pipeable downstream commands:** callers, callees, deps, explain, similar, impact, test-map, related, scout.
 
 Pipeline output is a JSON envelope:
 ```json
@@ -67,6 +67,12 @@ Pipeline output is a JSON envelope:
 | `related <name>` | `related gather --limit 3` |
 | `context <path>` | `context src/lib.rs --compact` |
 | `stats` | `stats` |
+| `scout <query>` | `scout "error handling" --limit 10` |
+| `where <desc>` | `where "new CLI command"` |
+| `read <path>` | `read src/lib.rs --focus enumerate_files` |
+| `stale` | `stale` |
+| `health` | `health` |
+| `notes` | `notes --warnings` or `notes --patterns` |
 
 ## Input Format
 

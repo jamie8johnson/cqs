@@ -290,7 +290,7 @@ const MAX_FILE_SIZE: u64 = 1_048_576;
 /// Shared file enumeration for consistent indexing.
 pub fn enumerate_files(
     root: &Path,
-    parser: &Parser,
+    extensions: &[&str],
     no_ignore: bool,
 ) -> anyhow::Result<Vec<PathBuf>> {
     use anyhow::Context;
@@ -324,7 +324,7 @@ pub fn enumerate_files(
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| parser.supported_extensions().contains(&ext))
+                .map(|ext| extensions.contains(&ext))
                 .unwrap_or(false)
         })
         .filter_map({

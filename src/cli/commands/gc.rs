@@ -24,7 +24,8 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
 
     // Enumerate current files
     let parser = Parser::new()?;
-    let files = cqs::enumerate_files(&root, &parser, false)?;
+    let exts = parser.supported_extensions();
+    let files = cqs::enumerate_files(&root, &exts, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
 
     // Count what we'll clean before doing it
