@@ -29,16 +29,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141). Mitigated with blake3 checksums on save/load. verify_hnsw_checksums validates extension allowlist to prevent path traversal."
-mentions = [
-    "src/hnsw/persist.rs",
-    "hnsw_rs",
-    "bincode",
-    "blake3",
-]
-
-[[note]]
 sentiment = 0.5
 text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
 mentions = [
@@ -453,14 +443,6 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "cuDNN via conda (conda-forge) keeps libcudnn.so.9 in miniforge3/lib which is already on LD_LIBRARY_PATH — no path changes needed"
-mentions = [
-    "cudnn",
-    "LD_LIBRARY_PATH",
-]
-
-[[note]]
-sentiment = 0.5
 text = "SQLite integrity check on every Store::open via PRAGMA quick_check. Catches B-tree corruption early with StoreError::Corruption. Added in PR #343 (DS12)."
 mentions = [
     "src/store/mod.rs",
@@ -495,7 +477,7 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "HNSW checksum file is now mandatory — missing checksum returns error, not warning. Bincode deserializes unverified bytes, so loading without checksum = trusting arbitrary data. Always regenerate with cqs index --force if checksum missing."
+text = "HNSW checksum is mandatory — missing checksum returns error, not warning. hnsw_rs uses bincode 1.3.3 (unmaintained, RUSTSEC-2025-0141) which deserializes unverified bytes. Blake3 checksums on save/load mitigate this. verify_hnsw_checksums validates extension allowlist to prevent path traversal. Always regenerate with cqs index --force if checksum missing."
 mentions = [
     "src/hnsw/persist.rs",
     "blake3",
@@ -581,11 +563,6 @@ mentions = [
     "src/scout.rs",
     "cqs plan",
 ]
-
-[[note]]
-sentiment = 0.5
-text = "P2 audit: analyze_diff_impact changed from &[ChangedFunction] to Vec<ChangedFunction> — callers pass owned vec, return struct populates changed_functions directly instead of leaving empty for caller to fill."
-mentions = ["src/impact/diff.rs"]
 
 [[note]]
 sentiment = 0.5
@@ -737,15 +714,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "gather and scout subcommands don't accept -q/--quiet flag. Skills referenced it but CLI rejects it. Progress output already goes to stderr, so -q isn't needed — just don't use it in skill definitions."
-mentions = [
-    "src/cli/commands/mod.rs",
-    ".claude/skills/cqs-gather/SKILL.md",
-    ".claude/skills/cqs-scout/SKILL.md",
-]
-
-[[note]]
 sentiment = 0.5
 text = "OnceLock pattern for lazy-init in long-running sessions (batch/REPL): Embedder and HNSW/CAGRA index built on first use, cached for session lifetime. Avoids 500ms+ ONNX init per command. Pattern: OnceLock<T> + get_or_init(|| build()). Used in BatchContext."
 mentions = [
@@ -777,4 +745,29 @@ mentions = [
     "src/language/rust.rs",
     "src/language/go.rs",
     "src/parser/calls.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "pub(crate) items can't be re-exported as pub from lib.rs — compiler error E0364. If a constant/type needs to cross the lib→binary crate boundary, it must be pub. COMMON_TYPES hit this in Phase 1b."
+mentions = [
+    "src/focused_read.rs",
+    "src/lib.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "resolve_target picks test functions over production code for ambiguous names. search_filtered resolves to test_search_filtered_empty_store, not Store::search_filtered. Phase 1b trials all showed zero type_impacted until using unique names like open_project_store or cmd_impact_diff."
+mentions = [
+    "src/search.rs",
+    "resolve_target",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Always filter COMMON_TYPES before get_type_users_batch(). Without it, querying users of String/Vec/Result returns most of the codebase. COMMON_TYPES set in focused_read.rs (~35 stdlib types), re-exported from lib.rs."
+mentions = [
+    "src/focused_read.rs",
+    "COMMON_TYPES",
+    "type_edges",
 ]

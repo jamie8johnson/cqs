@@ -55,17 +55,16 @@ Wire type_edges into commands that currently only walk call edges.
 
 **Estimated scope:** ~300-400 lines across `related.rs`, `impact/bfs.rs`, `dead` logic.
 
-### 1c. Note-boosted search ranking
+### 1c. Note-boosted search ranking — DONE
 
-**Today:** Notes appear as separate results merged by score. A note saying "this module is fragile" doesn't boost code results near that module.
+Notes now influence code search ranking. In `search_filtered()` and `search_by_candidate_ids()`, after scoring each chunk, notes whose mentions match the chunk's file path or name apply a multiplicative boost: `adjusted_score = base_score * (1.0 + sentiment * 0.15)`. Multiple matching notes: strongest absolute sentiment wins (preserving sign).
 
-**Change:** In `search_filtered()` scoring loop, after scoring a code chunk, check if any note mentions match the chunk's file path or name. If match, apply multiplicative boost scaled by note sentiment.
-
-**Where:** `src/search.rs`, in the scoring loop inside `search_filtered()`. Requires passing `list_notes_summaries()` results (cheap — no embeddings) into the search function. `path_matches_mention()` already exists in `src/note.rs`.
-
-**Formula:** `adjusted_score = base_score * (1.0 + note_sentiment * NOTE_BOOST_FACTOR)` where `NOTE_BOOST_FACTOR = 0.15`. A note with sentiment -1 about a function reduces its ranking by 15%. Sentiment +1 boosts by 15%. **Multiple notes matching same chunk:** take strongest absolute sentiment (max of |sentiment|, preserving sign). This avoids averaging away strong signals.
-
-~50 lines changed. No schema change.
+**What shipped:**
+- `note_boost()` helper in `src/search.rs` — computes per-chunk boost from note mentions
+- Wired into both brute-force (`search_filtered`) and HNSW-guided (`search_by_candidate_ids`) paths
+- Notes loaded once per search via `list_notes_summaries()` (cheap, no embeddings)
+- 7 unit tests for boost logic (no match, file match, name match, strongest-wins)
+- ~40 lines added. No schema change.
 
 ### 1d. Embedding model evaluation
 
@@ -336,8 +335,8 @@ Phase 3 (Task + Verify)
 | Phase | Item | Status | Sessions |
 |-------|------|--------|----------|
 | 1a | Type extraction + schema v11 + deps | **Done** (PRs #440, #442) | 3 |
-| 1b | Type integration (related, impact, dead) | Not started | 1-2 |
-| 1c | Note-boosted search ranking | Not started | 0.5 |
+| 1b | Type integration (related, impact, dead) | **Done** (PR #447) | 1 |
+| 1c | Note-boosted search ranking | **Done** | 0.5 |
 | 1d | Embedding model eval | Not started | 1 (research) |
 | 2a | Batch: scout, where, read, stale, health, notes | Not started | 1-2 |
 | 2b | `cqs onboard` | Not started | 1-2 |
