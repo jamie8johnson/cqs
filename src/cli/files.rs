@@ -12,7 +12,8 @@ pub(crate) fn enumerate_files(
     parser: &cqs::Parser,
     no_ignore: bool,
 ) -> Result<Vec<PathBuf>> {
-    cqs::enumerate_files(root, parser, no_ignore)
+    let exts = parser.supported_extensions();
+    cqs::enumerate_files(root, &exts, no_ignore)
 }
 
 /// Check if a process with the given PID exists
