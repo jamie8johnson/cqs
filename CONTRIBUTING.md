@@ -101,18 +101,18 @@ src/
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation
-  store/        - SQLite storage layer (Schema v10, WAL mode)
+  store/        - SQLite storage layer (Schema v11, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
     chunks.rs   - Chunk CRUD, embedding_batches() for streaming
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
     calls.rs    - Call graph storage and queries
-    types.rs    - Type edge storage and queries (Phase 2b)
+    types.rs    - Type edge storage and queries
     helpers.rs  - Types, embedding conversion functions
     migrations.rs - Schema migration framework
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
     mod.rs      - Parser struct, parse_file(), supported_extensions()
-    types.rs    - Chunk, CallSite, FunctionCalls, ParserError
-    chunk.rs    - Chunk extraction, signatures, doc comments
+    types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
+    chunk.rs    - Chunk extraction, signatures, doc comments, parent type extraction
     calls.rs    - Call graph extraction, callee filtering
     markdown.rs - Heading-based markdown parser, cross-reference extraction
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings

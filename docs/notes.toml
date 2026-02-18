@@ -175,8 +175,8 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "Embedding model: E5-base-v2, chosen for CUDA compatibility (absolute position embeddings, no rotary). Eval showed E5-base, BGE-base, E5-large all at 100% Recall@5 — saturated, no reason to switch. Any replacement must be BERT-style to avoid ort Gather op CPU fallback."
+sentiment = 1.0
+text = "Embedding model: E5-base-v2 confirmed as best choice. Hard eval (55 confusable queries across 5 languages): E5 90.9% Recall@1, 0.941 MRR vs jina-v2-base-code 80.0% R@1, 0.863 MRR. General-purpose model beats code-specific because NL template transforms code into natural language. BERT-style required for CUDA (no rotary embeddings)."
 mentions = [
     "src/embedder.rs",
     "CUDA",
@@ -786,4 +786,31 @@ text = "OnceLock::get_or_try_init is still unstable (nightly-only). For fallible
 mentions = [
     "src/cli/batch.rs",
     "OnceLock",
+]
+
+[[note]]
+sentiment = 1.0
+text = "Parent type context injection improves method search significantly. E5 Recall@1 went from 86% to 90.9%, MRR from 0.885 to 0.941 on hard eval (55 confusable queries). Methods like should_allow() now get 'circuit breaker method' in their NL description. Extraction covers 6 languages: Rust impl/trait, Python class, JS/TS/Java class, Go receiver."
+mentions = [
+    "src/parser/chunk.rs",
+    "src/nl.rs",
+    "parent_type_name",
+]
+
+[[note]]
+sentiment = -0.5
+text = "TypeScript is the weakest language for embedding search — 0.75 MRR vs 1.0 for Rust/Python/Go. Class constructors interfere: CircuitBreaker class ranks 15th for its own query because TS chunks include constructor as a separate method with the class name."
+mentions = [
+    "tests/model_eval.rs",
+    "TypeScript",
+    "embedding",
+]
+
+[[note]]
+sentiment = -0.5
+text = "HNSW safety test (test_loaded_index_multiple_searches) is flaky in CI — one-hot embeddings with 0.01 baseline produce vectors close enough that HNSW approximate search occasionally returns wrong nearest neighbor. Not a real bug — flaky test on different hardware. Pass rate ~90%."
+mentions = [
+    "src/hnsw/safety.rs",
+    "CI",
+    "flaky test",
 ]

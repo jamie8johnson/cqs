@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.12.11
+## Current: v0.12.12
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0).
 
@@ -46,7 +46,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Next — Retrieval Quality
 
 - [x] Re-ranking — cross-encoder `--rerank` flag. Second-pass scoring on top-N retrieval results. Biggest retrieval quality win remaining.
-- [ ] Embedding model eval — benchmark current E5-base-v2 against CodeSage, UniXcoder, Nomic Code on existing eval harness. Quantify gap before committing to upgrade.
+- [x] Embedding model eval — E5-base-v2 confirmed (90.9% R@1, 0.941 MRR on 55-query hard eval). Beats jina-v2-base-code (80.0% R@1). Parent type context enrichment (PR #455).
 
 ### Next — Code Quality
 
