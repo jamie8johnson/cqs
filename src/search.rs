@@ -1147,6 +1147,7 @@ mod tests {
                 content_hash: hash,
                 parent_id: None,
                 window_idx: None,
+                parent_type_name: None,
             }
         }
 

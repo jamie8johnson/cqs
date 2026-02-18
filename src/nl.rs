@@ -273,6 +273,7 @@ pub enum NlTemplate {
 ///     content_hash: "abcd1234".to_string(),
 ///     parent_id: None,
 ///     window_idx: None,
+///     parent_type_name: None,
 /// };
 ///
 /// let nl = generate_nl_description(&chunk);
@@ -338,6 +339,14 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     if template == NlTemplate::DocFirst && has_doc {
         parts.push(name_words);
         return parts.join(". ");
+    }
+
+    // Parent type context for methods (e.g., "circuit breaker method")
+    if chunk.chunk_type == ChunkType::Method {
+        if let Some(ref parent_name) = chunk.parent_type_name {
+            let parent_words = tokenize_identifier(parent_name).join(" ");
+            parts.push(format!("{} method", parent_words));
+        }
     }
 
     // Name line: with or without "A {type} named" prefix
@@ -644,6 +653,7 @@ mod tests {
             content_hash: "abcd1234".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         let nl = generate_nl_description(&chunk);
@@ -677,6 +687,7 @@ mod tests {
             content_hash: "abcd1234".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         let nl = generate_nl_description(&chunk);
@@ -768,6 +779,7 @@ mod tests {
             content_hash: "abcd1234".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         }
     }
 
@@ -850,6 +862,113 @@ mod tests {
         assert_eq!(strip_markdown_noise(""), "");
         assert_eq!(strip_markdown_noise("   "), "");
         assert_eq!(strip_markdown_noise("\n\n\n"), "");
+    }
+
+    // ===== Parent type context tests =====
+
+    #[test]
+    fn test_method_nl_includes_parent_type() {
+        let chunk = Chunk {
+            id: "test.rs:1:abcd1234".to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Method,
+            name: "should_allow".to_string(),
+            signature: "fn should_allow(&self) -> bool".to_string(),
+            content: "{}".to_string(),
+            line_start: 1,
+            line_end: 1,
+            doc: Some("/// Check if calls should be allowed".to_string()),
+            content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: Some("CircuitBreaker".to_string()),
+        };
+        let nl = generate_nl_description(&chunk);
+        assert!(
+            nl.contains("circuit breaker method"),
+            "NL should contain tokenized parent type: {}",
+            nl
+        );
+        assert!(nl.contains("Check if calls should be allowed"));
+    }
+
+    #[test]
+    fn test_method_nl_without_parent_type() {
+        let chunk = Chunk {
+            id: "test.rs:1:abcd1234".to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Method,
+            name: "process".to_string(),
+            signature: "fn process(&self)".to_string(),
+            content: "{}".to_string(),
+            line_start: 1,
+            line_end: 1,
+            doc: None,
+            content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        let nl = generate_nl_description(&chunk);
+        // Should still say "A method named" but no parent prefix
+        assert!(nl.contains("A method named process"));
+        assert!(
+            !nl.contains("method."),
+            "Should not have orphan 'method.' prefix: {}",
+            nl
+        );
+    }
+
+    #[test]
+    fn test_function_ignores_parent_type() {
+        let chunk = Chunk {
+            id: "test.rs:1:abcd1234".to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "standalone".to_string(),
+            signature: "fn standalone()".to_string(),
+            content: "{}".to_string(),
+            line_start: 1,
+            line_end: 1,
+            doc: None,
+            content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        let nl = generate_nl_description(&chunk);
+        assert!(nl.contains("A function named standalone"));
+    }
+
+    #[test]
+    fn test_docfirst_template_skips_parent_type() {
+        let chunk = Chunk {
+            id: "test.rs:1:abcd1234".to_string(),
+            file: PathBuf::from("test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Method,
+            name: "should_allow".to_string(),
+            signature: "fn should_allow(&self) -> bool".to_string(),
+            content: "{}".to_string(),
+            line_start: 1,
+            line_end: 1,
+            doc: Some("/// Check if allowed".to_string()),
+            content_hash: "abcd1234".to_string(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: Some("CircuitBreaker".to_string()),
+        };
+        let nl = generate_nl_with_template(&chunk, NlTemplate::DocFirst);
+        // DocFirst returns early: doc + name only, no parent type context
+        assert!(
+            !nl.contains("circuit breaker"),
+            "DocFirst should skip parent type: {}",
+            nl
+        );
+        assert!(nl.contains("Check if allowed"));
     }
 
     // ===== Fuzz tests =====

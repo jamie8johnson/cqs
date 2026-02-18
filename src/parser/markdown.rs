@@ -66,6 +66,7 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             content_hash,
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         }];
         extract_table_chunks(&lines, 0, lines.len(), &name, &name, &id, path, &mut chunks);
         return Ok(chunks);
@@ -95,6 +96,7 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             content_hash,
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         }];
         extract_table_chunks(
             &lines,
@@ -153,6 +155,7 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
             content_hash,
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         });
 
         // Extract tables as additional chunks with parent_id = section chunk
@@ -748,6 +751,7 @@ fn extract_table_chunks(
                 content_hash: table_hash,
                 parent_id: Some(section_id.to_string()),
                 window_idx: None,
+                parent_type_name: None,
             });
         } else {
             // Split row-wise with headers preserved
@@ -844,6 +848,7 @@ fn emit_table_window(
         content_hash: whash,
         parent_id: Some(parent_id.to_string()),
         window_idx: Some(window_idx),
+        parent_type_name: None,
     });
 }
 

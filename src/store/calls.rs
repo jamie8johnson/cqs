@@ -1388,6 +1388,7 @@ mod tests {
                 content_hash: format!("{name}_hash"),
                 parent_id: None,
                 window_idx: None,
+                parent_type_name: None,
             };
             store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
         }
@@ -1430,6 +1431,7 @@ mod tests {
             content_hash: "func_hash".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
         store.upsert_chunk(&func_chunk, &emb, Some(12345)).unwrap();
 
@@ -1447,6 +1449,7 @@ mod tests {
             content_hash: "meth_hash".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
         store
             .upsert_chunk(&method_chunk, &emb, Some(12345))
