@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.12] - 2026-02-18
+
+### Added
+- **Parent type context in NL descriptions** — methods now include their parent struct/class/trait name in natural language descriptions (e.g., `should_allow()` on `CircuitBreaker` gets "circuit breaker method"). Extraction covers 6 languages: Rust impl/trait, Python class, JS/TS/Java class, Go method receiver. 15 new tests (11 parser + 4 NL).
+- **Hard eval suite** — 55 confusable queries across 5 languages with 15 similar functions per language (6 sort variants, 4 validators, resilience patterns). Pre-embedded query deduplication eliminates 4x redundant ONNX inference.
+
+### Changed
+- **Docs repositioned as code intelligence + RAG** — README, Cargo.toml description and keywords updated to lead with code intelligence, call graphs, and context assembly rather than just "code search".
+
+### Improved
+- **Retrieval quality** — E5-base-v2 Recall@1 improved from 86% to 90.9%, MRR from 0.885 to 0.941 on hard eval. Perfect MRR (1.0) on Rust, Python, and Go. Confirmed E5 beats jina-v2-base-code (80.0% R@1, 0.863 MRR).
+
 ## [0.12.11] - 2026-02-15
 
 ### Added

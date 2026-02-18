@@ -1,8 +1,8 @@
 # cqs ("seeks")
 
-Semantic code search for AI agents and developers. Search by what code does, not what it's named. Call graph tracing, impact analysis, and smart context assembly. Local ML, GPU-accelerated.
+Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Semantic code search for Claude Code. Instead of grep, it understands what code *does* — so Claude finds relevant functions without knowing exact names. Commands like `trace`, `impact`, and `gather` collapse 5-10 sequential file reads into one, cutting context window usage by 50-80% on common code navigation tasks.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. Cuts token usage 50-80% on common code navigation tasks. 90.9% Recall@1 on confusable function retrieval.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -12,9 +12,9 @@ Semantic code search for AI agents and developers. Search by what code does, not
 
 > **`<claude>`**
 >
-> You're an AI assistant reading this. cqs gives you semantic code search + code intelligence via CLI.
+> You're an AI assistant reading this. cqs is a code intelligence and RAG toolkit — semantic search, call graphs, impact analysis, type dependencies, and smart context assembly via CLI.
 >
-> **Why you want this:** Find functions by what they do, not their names. Commands like `cqs trace`, `cqs impact`, and `cqs gather` collapse 5-10 file reads into one call, saving context window for actual work.
+> **Why you want this:** Single tool calls replace 5-10 sequential file reads. `cqs gather` assembles relevant context via search + call graph BFS. `cqs impact` shows what breaks if you change a function. `cqs trace` follows call chains. `cqs deps` maps type relationships. All searchable by concept, not just name.
 >
 > **Setup:** Add cqs commands to your project's CLAUDE.md so Claude Code uses them automatically. See Claude Code Integration section below.
 >
@@ -331,22 +331,23 @@ weight = 0.8
 
 Without cqs, Claude uses grep/glob to find code and reads entire files for context. With cqs:
 
-- **Fewer tool calls**: `trace`, `impact`, `gather`, `context` each replace 5-10 sequential file reads with a single call
-- **Less context burn**: Focused `cqs read --focus` returns a function + its type dependencies — not the whole file
-- **Find code by behavior**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`
-- **Navigate unfamiliar codebases**: Semantic search finds relevant code without knowing project structure
+- **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
+- **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 90.9% accuracy on confusable functions.
+- **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
+- **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
 ### Setup
 
 Add to your project's `CLAUDE.md` so Claude Code uses cqs automatically:
 
 ```markdown
-## Code Search
+## Code Intelligence
 
-Use `cqs search` for semantic code search instead of grep/glob when looking for:
-- Functions by behavior ("retry with backoff", "parse config")
-- Implementation patterns ("error handling", "database connection")
-- Code where you don't know the exact name
+Use `cqs` for semantic search, call graph analysis, and code intelligence instead of grep/glob:
+- Find functions by concept ("retry with backoff", "parse config")
+- Trace dependencies and impact ("what breaks if I change X?")
+- Assemble context efficiently (one call instead of 5-10 file reads)
 
 Key commands (all support `--json`):
 - `cqs "query"` - semantic search (hybrid RRF by default)
@@ -410,20 +411,16 @@ cqs index --dry-run    # Show what would be indexed
 
 ## How It Works
 
-1. Parses code to extract:
-   - Functions and methods
-   - Classes and structs
-   - Enums, traits, interfaces
-   - Constants
-   - Documentation sections (Markdown)
-2. Generates embeddings with E5-base-v2 (runs locally)
-   - Includes doc comments for better semantic matching
-3. Stores in SQLite with vector search + FTS5 keyword index
-4. **Hybrid search (RRF)**: Combines semantic similarity with keyword matching
-   - Semantic search finds conceptually related code
-   - Keyword search catches exact identifier matches (e.g., `parseConfig`)
-   - Reciprocal Rank Fusion merges both rankings for best results
-5. Uses GPU if available, falls back to CPU
+**Parse → Embed → Index → Reason**
+
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 9 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). This bridges the gap between how developers describe code and how it's written.
+3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
+4. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
+5. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
+6. **Reason** — Call graph traversal, type dependency analysis, impact scoring, risk assessment, and smart context assembly build on the indexed data to answer questions like "what breaks if I change X?" in a single call.
+
+GPU-accelerated where available, CPU fallback everywhere.
 
 ## HNSW Index Tuning
 
@@ -443,17 +440,19 @@ The HNSW (Hierarchical Navigable Small World) index provides fast approximate ne
 
 For most codebases (<100k chunks), defaults work well. Large repos may benefit from tuning ef_search higher (200+) if recall matters more than latency.
 
-## Search Quality
+## Retrieval Quality
 
-Hybrid search (RRF) combines semantic understanding with keyword matching:
+Evaluated on a hard eval suite of 55 queries across 5 languages (Rust, Python, TypeScript, JavaScript, Go) with 15 confusable functions per language (6 sort variants, 4 validators, etc.):
 
-| Query | Top Match | Score |
-|-------|-----------|-------|
-| "cosine similarity" | `cosine_similarity` | 0.85 |
-| "validate email regex" | `validateEmail` | 0.73 |
-| "check if adult age 18" | `isAdult` | 0.71 |
-| "pop from stack" | `Stack.Pop` | 0.70 |
-| "generate random id" | `generateId` | 0.70 |
+| Metric | E5-base-v2 (cqs) | jina-v2-base-code |
+|--------|-------------------|-------------------|
+| **Recall@1** | **90.9%** | 80.0% |
+| **Recall@5** | **98.2%** | 94.5% |
+| **MRR** | **0.941** | 0.863 |
+
+Per-language MRR: Rust 1.0, Python 1.0, Go 1.0, JavaScript 0.95, TypeScript 0.75.
+
+General-purpose E5 outperforms code-specific jina because cqs generates natural language descriptions of each code element — doc comments, parameter types, return types, parent type context — transforming the retrieval task from code→code to NL→NL, where general-purpose models excel.
 
 ## GPU Acceleration (Optional)
 
