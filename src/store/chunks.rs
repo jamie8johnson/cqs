@@ -1420,6 +1420,7 @@ mod tests {
             content_hash: hash,
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         }
     }
 
@@ -1716,6 +1717,7 @@ mod tests {
             content_hash: "abc".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         // Get current mtime
@@ -1763,6 +1765,7 @@ mod tests {
             content_hash: "abc".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         // Store with an old mtime (before the file was created)
@@ -1820,6 +1823,7 @@ mod tests {
             content_hash: "abc".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         // Store with None mtime (will be NULL in DB)
@@ -1871,6 +1875,7 @@ mod tests {
             content_hash: "abc".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         let mtime = file_path
@@ -1914,6 +1919,7 @@ mod tests {
             content_hash: "fresh".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         let fresh_mtime = fresh_path
@@ -1948,6 +1954,7 @@ mod tests {
             content_hash: "stale".to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         };
 
         store

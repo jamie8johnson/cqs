@@ -91,6 +91,19 @@ const MODELS: &[ModelConfig] = &[
         output_tensor: "last_hidden_state",
         pooling: Pooling::MeanPooling,
     },
+    ModelConfig {
+        name: "jina-v2-base-code",
+        repo: "jinaai/jina-embeddings-v2-base-code",
+        model_file: "onnx/model.onnx",
+        tokenizer_file: "tokenizer.json",
+        doc_prefix: None,
+        query_prefix: None,
+        output_dim: 768,
+        max_length: 8192,
+        needs_token_type_ids: false,
+        output_tensor: "last_hidden_state",
+        pooling: Pooling::MeanPooling,
+    },
 ];
 
 // ===== Eval Cases (same as eval_test.rs) =====
@@ -913,6 +926,658 @@ fn test_template_comparison() {
             0.0
         };
         row += &format!(" {:>6.0}%", pct);
+        eprintln!("{}", row);
+    }
+    eprintln!();
+}
+
+// ===== Hard eval - confusable functions =====
+
+fn hard_fixture_path(lang: Language) -> PathBuf {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let ext = match lang {
+        Language::Rust => "rs",
+        Language::Python => "py",
+        Language::TypeScript => "ts",
+        Language::JavaScript => "js",
+        Language::Go => "go",
+        Language::C => "c",
+        Language::Java => "java",
+        Language::Sql => "sql",
+        Language::Markdown => "md",
+    };
+    PathBuf::from(manifest_dir)
+        .join("tests")
+        .join("fixtures")
+        .join(format!(
+            "eval_hard_{}.{}",
+            lang.to_string().to_lowercase(),
+            ext
+        ))
+}
+
+/// Hard eval cases - confusable queries where multiple similar functions exist
+const HARD_EVAL_CASES: &[EvalCase] = &[
+    // Rust (11) - must distinguish between 6 sort variants, 4 validators, etc.
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "merge_sort",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "heap_sort",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "insertion_sort",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "radix_sort",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "validate_phone",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "validate_url",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "pad_string",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "count_words",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "extract_numbers",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreaker",
+        language: Language::Rust,
+    },
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "should_allow",
+        language: Language::Rust,
+    },
+    // Python (11)
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "merge_sort",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "heap_sort",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "insertion_sort",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "radix_sort",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "validate_phone",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "validate_url",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "pad_string",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "count_words",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "extract_numbers",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreaker",
+        language: Language::Python,
+    },
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "should_allow",
+        language: Language::Python,
+    },
+    // TypeScript (11)
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "mergeSort",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "heapSort",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "insertionSort",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "radixSort",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "validatePhone",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "validateUrl",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "padString",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "countWords",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "extractNumbers",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreaker",
+        language: Language::TypeScript,
+    },
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "shouldAllow",
+        language: Language::TypeScript,
+    },
+    // JavaScript (11)
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "mergeSort",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "heapSort",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "insertionSort",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "radixSort",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "validatePhone",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "validateUrl",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "padString",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "countWords",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "extractNumbers",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreaker",
+        language: Language::JavaScript,
+    },
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "shouldAllow",
+        language: Language::JavaScript,
+    },
+    // Go (11)
+    EvalCase {
+        query: "stable sort preserving relative order of equal elements",
+        expected_name: "MergeSort",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "sort using binary max-heap data structure",
+        expected_name: "HeapSort",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "simple sort efficient for small nearly sorted arrays",
+        expected_name: "InsertionSort",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "non-comparison integer sort processing digits",
+        expected_name: "RadixSort",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "validate phone number with international country code",
+        expected_name: "ValidatePhone",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "check if URL has valid protocol and hostname",
+        expected_name: "ValidateUrl",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "pad string to fixed width with fill character",
+        expected_name: "PadString",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "count number of words in text",
+        expected_name: "CountWords",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "extract numeric values from mixed text string",
+        expected_name: "ExtractNumbers",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "stop calling service after consecutive failures",
+        expected_name: "CircuitBreakerGo",
+        language: Language::Go,
+    },
+    EvalCase {
+        query: "check whether circuit allows request through",
+        expected_name: "ShouldAllow",
+        language: Language::Go,
+    },
+];
+
+/// Compute Mean Reciprocal Rank from ranked results using pre-computed query embeddings
+fn compute_mrr(
+    indexed: &[IndexedChunk],
+    cases: &[EvalCase],
+    query_embeddings: &[Vec<f32>],
+) -> (f64, Vec<(Language, f64, usize)>) {
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    let mut total_rr = 0.0;
+    let mut total_count = 0;
+    let mut lang_rr: HashMap<Language, (f64, usize)> = HashMap::new();
+
+    for (case, query_embedding) in cases.iter().zip(query_embeddings.iter()) {
+        let mut scored: Vec<(&str, f32)> = indexed
+            .iter()
+            .filter(|c| c.language == case.language)
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    cosine_similarity(query_embedding, &c.embedding),
+                )
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        // Find rank of expected result (1-indexed)
+        let rank = scored
+            .iter()
+            .position(|(name, _)| *name == case.expected_name)
+            .map(|pos| pos + 1);
+
+        let rr = match rank {
+            Some(r) => 1.0 / r as f64,
+            None => 0.0,
+        };
+
+        total_rr += rr;
+        total_count += 1;
+
+        let entry = lang_rr.entry(case.language).or_insert((0.0, 0));
+        entry.0 += rr;
+        entry.1 += 1;
+    }
+
+    let mrr = if total_count > 0 {
+        total_rr / total_count as f64
+    } else {
+        0.0
+    };
+
+    let per_lang: Vec<(Language, f64, usize)> = languages
+        .iter()
+        .filter_map(|lang| {
+            lang_rr.get(lang).map(|(rr, count)| {
+                (
+                    *lang,
+                    if *count > 0 { rr / *count as f64 } else { 0.0 },
+                    *count,
+                )
+            })
+        })
+        .collect();
+
+    (mrr, per_lang)
+}
+
+/// Per-model hard eval results: (name, recall@1, recall@3, recall@5, MRR, per-lang MRR)
+type HardEvalResults<'a> = Vec<(&'a str, f64, f64, f64, f64, Vec<(Language, f64, usize)>)>;
+
+/// Compute recall at K for given cases using pre-computed query embeddings
+fn compute_recall_at_k(
+    indexed: &[IndexedChunk],
+    cases: &[EvalCase],
+    query_embeddings: &[Vec<f32>],
+    k: usize,
+) -> (usize, usize) {
+    let mut hits = 0;
+    let mut total = 0;
+
+    for (case, query_embedding) in cases.iter().zip(query_embeddings.iter()) {
+        let mut scored: Vec<(&str, f32)> = indexed
+            .iter()
+            .filter(|c| c.language == case.language)
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    cosine_similarity(query_embedding, &c.embedding),
+                )
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(k);
+
+        if scored.iter().any(|(name, _)| *name == case.expected_name) {
+            hits += 1;
+        }
+        total += 1;
+    }
+
+    (hits, total)
+}
+
+#[test]
+#[ignore] // Slow - downloads models. Run with: cargo test hard_model -- --ignored --nocapture
+fn test_hard_model_comparison() {
+    let parser = Parser::new().expect("Failed to initialize parser");
+
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    // Parse BOTH original and hard fixtures — combined corpus
+    struct ChunkDesc {
+        name: String,
+        language: Language,
+        nl_text: String,
+    }
+
+    let mut chunk_descs: Vec<ChunkDesc> = Vec::new();
+    for lang in &languages {
+        // Original fixtures
+        let path = fixture_path(*lang);
+        let chunks = parser
+            .parse_file(&path)
+            .expect("Failed to parse original fixture");
+        for chunk in &chunks {
+            let nl = generate_nl_description(chunk);
+            chunk_descs.push(ChunkDesc {
+                name: chunk.name.clone(),
+                language: *lang,
+                nl_text: nl,
+            });
+        }
+        // Hard fixtures (confusable functions)
+        let hard_path = hard_fixture_path(*lang);
+        if hard_path.exists() {
+            let chunks = parser
+                .parse_file(&hard_path)
+                .expect("Failed to parse hard fixture");
+            for chunk in &chunks {
+                let nl = generate_nl_description(chunk);
+                chunk_descs.push(ChunkDesc {
+                    name: chunk.name.clone(),
+                    language: *lang,
+                    nl_text: nl,
+                });
+            }
+        }
+    }
+    eprintln!(
+        "Parsed {} chunks from original + hard fixtures\n",
+        chunk_descs.len()
+    );
+
+    // Test only E5-base-v2 and jina-v2-base-code for speed
+    let test_models = [&MODELS[0], &MODELS[3]];
+
+    let mut all_results: HardEvalResults = Vec::new();
+
+    for model_config in test_models {
+        eprintln!("--- {} ---", model_config.name);
+
+        let mut embedder = match EvalEmbedder::new(model_config) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("  SKIP: Failed to load model: {}\n", e);
+                continue;
+            }
+        };
+
+        // Embed all chunk descriptions
+        eprintln!("  Embedding {} chunks...", chunk_descs.len());
+        let nl_texts: Vec<&str> = chunk_descs.iter().map(|c| c.nl_text.as_str()).collect();
+
+        let mut all_embeddings: Vec<Vec<f32>> = Vec::new();
+        for batch in nl_texts.chunks(16) {
+            match embedder.embed_documents(batch) {
+                Ok(embs) => all_embeddings.extend(embs),
+                Err(e) => {
+                    eprintln!("  SKIP: Embedding failed: {}\n", e);
+                    continue;
+                }
+            }
+        }
+
+        if all_embeddings.len() != chunk_descs.len() {
+            eprintln!("  SKIP: Embedding count mismatch\n");
+            continue;
+        }
+
+        let indexed: Vec<IndexedChunk> = chunk_descs
+            .iter()
+            .zip(all_embeddings.into_iter())
+            .map(|(desc, emb)| IndexedChunk {
+                name: desc.name.clone(),
+                language: desc.language,
+                embedding: emb,
+            })
+            .collect();
+
+        // Pre-embed all queries once (eliminates 4x redundant ONNX inference)
+        eprintln!("  Embedding {} queries...", HARD_EVAL_CASES.len());
+        let query_embeddings: Vec<Vec<f32>> = HARD_EVAL_CASES
+            .iter()
+            .map(|case| {
+                embedder
+                    .embed_query(case.query)
+                    .expect("Query embed failed")
+            })
+            .collect();
+
+        // Run hard eval cases with detailed output
+        eprintln!("\n  Hard eval cases ({} queries):", HARD_EVAL_CASES.len());
+        for (case, query_embedding) in HARD_EVAL_CASES.iter().zip(query_embeddings.iter()) {
+            let mut scored: Vec<(&str, f32)> = indexed
+                .iter()
+                .filter(|c| c.language == case.language)
+                .map(|c| {
+                    (
+                        c.name.as_str(),
+                        cosine_similarity(query_embedding, &c.embedding),
+                    )
+                })
+                .collect();
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            let rank = scored
+                .iter()
+                .position(|(name, _)| *name == case.expected_name)
+                .map(|pos| pos + 1);
+
+            let top5: Vec<&str> = scored.iter().take(5).map(|(n, _)| *n).collect();
+            let status = match rank {
+                Some(1) => "+",
+                Some(r) if r <= 5 => "~",
+                _ => "-",
+            };
+            eprintln!(
+                "  {} [{:?}] \"{}\" -> exp: {} (rank: {}), top5: {:?}",
+                status,
+                case.language,
+                case.query,
+                case.expected_name,
+                rank.map(|r| r.to_string()).unwrap_or("miss".to_string()),
+                top5
+            );
+        }
+
+        // Compute metrics (reuses pre-embedded queries — no redundant inference)
+        let (r1_hits, r1_total) =
+            compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 1);
+        let (r3_hits, r3_total) =
+            compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 3);
+        let (r5_hits, r5_total) =
+            compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 5);
+        let (mrr, per_lang_mrr) = compute_mrr(&indexed, HARD_EVAL_CASES, &query_embeddings);
+
+        let recall_1 = r1_hits as f64 / r1_total as f64;
+        let recall_3 = r3_hits as f64 / r3_total as f64;
+        let recall_5 = r5_hits as f64 / r5_total as f64;
+
+        eprintln!(
+            "\n  Recall@1: {}/{} ({:.1}%)",
+            r1_hits,
+            r1_total,
+            recall_1 * 100.0
+        );
+        eprintln!(
+            "  Recall@3: {}/{} ({:.1}%)",
+            r3_hits,
+            r3_total,
+            recall_3 * 100.0
+        );
+        eprintln!(
+            "  Recall@5: {}/{} ({:.1}%)",
+            r5_hits,
+            r5_total,
+            recall_5 * 100.0
+        );
+        eprintln!("  MRR: {:.4}", mrr);
+
+        eprintln!("\n  Per-language MRR:");
+        for (lang, lang_mrr, count) in &per_lang_mrr {
+            eprintln!("    {:?}: {:.4} ({} queries)", lang, lang_mrr, count);
+        }
+        eprintln!();
+
+        all_results.push((
+            model_config.name,
+            recall_1,
+            recall_3,
+            recall_5,
+            mrr,
+            per_lang_mrr,
+        ));
+    }
+
+    // Print comparison table
+    eprintln!("=== Hard Eval Comparison ===\n");
+    eprintln!(
+        "{:<25} {:>10} {:>10} {:>10} {:>10}",
+        "Model", "Recall@1", "Recall@3", "Recall@5", "MRR"
+    );
+    eprintln!("{}", "-".repeat(70));
+    for (name, r1, r3, r5, mrr, _) in &all_results {
+        eprintln!(
+            "{:<25} {:>9.1}% {:>9.1}% {:>9.1}% {:>10.4}",
+            name,
+            r1 * 100.0,
+            r3 * 100.0,
+            r5 * 100.0,
+            mrr
+        );
+    }
+    eprintln!();
+
+    // Per-language MRR comparison
+    eprintln!("=== Per-Language MRR ===\n");
+    eprintln!(
+        "{:<25} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Model", "Rust", "Py", "TS", "JS", "Go"
+    );
+    eprintln!("{}", "-".repeat(70));
+    for (name, _, _, _, _, per_lang) in &all_results {
+        let mut row = format!("{:<25}", name);
+        for (_, lang_mrr, _) in per_lang {
+            row += &format!(" {:>7.4}", lang_mrr);
+        }
         eprintln!("{}", row);
     }
     eprintln!();

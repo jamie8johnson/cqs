@@ -55,6 +55,8 @@ pub struct Chunk {
     pub parent_id: Option<String>,
     /// Window index (0, 1, 2...) if this is a windowed portion
     pub window_idx: Option<u32>,
+    /// Parent type name for methods (e.g., "CircuitBreaker" for `impl CircuitBreaker { ... }`)
+    pub parent_type_name: Option<String>,
 }
 
 /// A function call site extracted from code

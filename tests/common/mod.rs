@@ -78,6 +78,7 @@ pub fn test_chunk(name: &str, content: &str) -> Chunk {
         content_hash: hash,
         parent_id: None,
         window_idx: None,
+        parent_type_name: None,
     }
 }
 

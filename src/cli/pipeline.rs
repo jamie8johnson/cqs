@@ -65,6 +65,7 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
                         content_hash: window_hash,
                         parent_id: Some(parent_id.clone()),
                         window_idx: Some(window_idx),
+                        parent_type_name: chunk.parent_type_name.clone(),
                     });
                 }
             }
@@ -705,6 +706,7 @@ mod tests {
             content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
             parent_id: None,
             window_idx: None,
+            parent_type_name: None,
         }
     }
 

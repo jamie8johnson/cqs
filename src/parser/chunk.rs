@@ -77,11 +77,15 @@ impl Parser {
         let doc = extract_doc_comment(node, source, language);
 
         // Determine chunk type - only infer for functions (to detect methods)
-        let chunk_type = if base_chunk_type == ChunkType::Function {
-            infer_chunk_type(node, language)
+        let (chunk_type, parent_type_name) = if base_chunk_type == ChunkType::Function {
+            infer_chunk_type(node, language, source)
         } else {
-            base_chunk_type
+            (base_chunk_type, None)
         };
+
+        if let Some(ref ptn) = parent_type_name {
+            tracing::debug!(parent_type = %ptn, method = %name, "Extracted parent type for method");
+        }
 
         // Content hash for deduplication (BLAKE3 produces 64 hex chars)
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
@@ -102,6 +106,7 @@ impl Parser {
             content_hash,
             parent_id: None,
             window_idx: None,
+            parent_type_name,
         })
     }
 }
@@ -202,24 +207,123 @@ fn extract_name_fallback(content: &str) -> Option<String> {
     None
 }
 
-fn infer_chunk_type(node: tree_sitter::Node, language: Language) -> ChunkType {
+fn infer_chunk_type(
+    node: tree_sitter::Node,
+    language: Language,
+    source: &str,
+) -> (ChunkType, Option<String>) {
     let def = language.def();
 
     // Check if the node itself is a method kind (e.g., Go's "method_declaration")
     if def.method_node_kinds.contains(&node.kind()) {
-        return ChunkType::Method;
+        let parent_type = extract_method_receiver_type(node, language, source);
+        return (ChunkType::Method, parent_type);
     }
 
     // Walk parents looking for method containers (e.g., impl blocks, class bodies)
     let mut current = node.parent();
     while let Some(parent) = current {
         if def.method_containers.contains(&parent.kind()) {
-            return ChunkType::Method;
+            let parent_type = extract_container_type_name(parent, language, source);
+            return (ChunkType::Method, parent_type);
         }
         current = parent.parent();
     }
 
-    ChunkType::Function
+    (ChunkType::Function, None)
+}
+
+/// Extract type name from a method container node (impl block, class, trait).
+fn extract_container_type_name(
+    container: tree_sitter::Node,
+    language: Language,
+    source: &str,
+) -> Option<String> {
+    match language {
+        Language::Rust => {
+            if container.kind() == "impl_item" {
+                // impl Foo { ... } or impl<T> Foo<T> { ... } or impl Trait for Foo { ... }
+                // The "type" field gives us the target type (Foo), not the trait
+                container.child_by_field_name("type").and_then(|t| {
+                    if t.kind() == "type_identifier" {
+                        Some(source[t.byte_range()].to_string())
+                    } else {
+                        // generic_type wraps type_identifier: Foo<T>
+                        find_child_text_by_kind(t, "type_identifier", source)
+                    }
+                })
+            } else {
+                // trait_item: trait Drawable { ... }
+                container
+                    .child_by_field_name("name")
+                    .map(|n| source[n.byte_range()].to_string())
+            }
+        }
+        Language::Python => {
+            // class_definition → name field
+            container
+                .child_by_field_name("name")
+                .map(|n| source[n.byte_range()].to_string())
+        }
+        Language::JavaScript | Language::TypeScript | Language::Java => {
+            // method_containers include "class_body" and "class_declaration"
+            // If matched on class_body, walk up to class_declaration for the name
+            let class_node = if container.kind() == "class_body" {
+                container.parent()
+            } else {
+                Some(container)
+            };
+            class_node.and_then(|cn| {
+                cn.child_by_field_name("name")
+                    .map(|n| source[n.byte_range()].to_string())
+            })
+        }
+        _ => None, // C, SQL, Markdown — no method containers
+    }
+}
+
+/// Extract receiver type from a Go method_declaration.
+///
+/// Go methods: `func (r *Server) Handle()` → "Server"
+fn extract_method_receiver_type(
+    node: tree_sitter::Node,
+    language: Language,
+    source: &str,
+) -> Option<String> {
+    if language != Language::Go {
+        return None;
+    }
+    // method_declaration → receiver (parameter_list) → parameter_declaration → type
+    let receiver = node.child_by_field_name("receiver")?;
+    let first_param = receiver.named_child(0)?;
+    // type_identifier may be nested in pointer_type
+    find_type_identifier_recursive(first_param, source)
+}
+
+/// Find first direct child with given kind and return its text.
+fn find_child_text_by_kind(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            return Some(source[child.byte_range()].to_string());
+        }
+    }
+    None
+}
+
+/// Recursively find a type_identifier node and return its text.
+/// Used for Go where the type may be wrapped in pointer_type.
+fn find_type_identifier_recursive(node: tree_sitter::Node, source: &str) -> Option<String> {
+    if node.kind() == "type_identifier" {
+        return Some(source[node.byte_range()].to_string());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(name) = find_type_identifier_recursive(child, source) {
+            return Some(name);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -480,6 +584,178 @@ enum Direction {
 
             let dir = chunks.iter().find(|c| c.name == "Direction").unwrap();
             assert_eq!(dir.chunk_type, ChunkType::Enum);
+        }
+    }
+
+    mod parent_type_tests {
+        use super::*;
+
+        #[test]
+        fn test_rust_method_has_parent_type_name() {
+            let content = r#"
+struct Counter { value: i32 }
+impl Counter {
+    fn increment(&mut self) { self.value += 1; }
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "increment").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Counter"));
+        }
+
+        #[test]
+        fn test_rust_trait_method_has_parent_type_name() {
+            let content = r#"
+trait Drawable {
+    fn draw(&self) {}
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "draw").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Drawable"));
+        }
+
+        #[test]
+        fn test_rust_impl_trait_for_type() {
+            let content = r#"
+struct Foo;
+trait Display { fn fmt(&self) -> String; }
+impl Display for Foo {
+    fn fmt(&self) -> String { String::new() }
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks
+                .iter()
+                .find(|c| c.name == "fmt" && c.chunk_type == ChunkType::Method)
+                .unwrap();
+            // Should extract the target type (Foo), not the trait (Display)
+            assert_eq!(method.parent_type_name.as_deref(), Some("Foo"));
+        }
+
+        #[test]
+        fn test_rust_generic_impl() {
+            let content = r#"
+struct Container<T> { items: Vec<T> }
+impl<T> Container<T> {
+    fn push(&mut self, item: T) {}
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "push").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            // Should extract the base type name, not the full generic
+            assert_eq!(method.parent_type_name.as_deref(), Some("Container"));
+        }
+
+        #[test]
+        fn test_python_method_has_parent_type_name() {
+            let content = r#"
+class Calculator:
+    def add(self, a, b):
+        return a + b
+"#;
+            let file = write_temp_file(content, "py");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "add").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
+        }
+
+        #[test]
+        fn test_go_method_pointer_receiver() {
+            let content = r#"
+package main
+type Server struct{}
+func (s *Server) Handle() {}
+"#;
+            let file = write_temp_file(content, "go");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "Handle").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Server"));
+        }
+
+        #[test]
+        fn test_go_method_value_receiver() {
+            let content = r#"
+package main
+type Point struct{ x, y int }
+func (p Point) Distance() float64 { return 0.0 }
+"#;
+            let file = write_temp_file(content, "go");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "Distance").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Point"));
+        }
+
+        #[test]
+        fn test_js_method_has_parent_type_name() {
+            let content = r#"
+class Cache {
+    get(key) { return this.data[key]; }
+}
+"#;
+            let file = write_temp_file(content, "js");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "get").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Cache"));
+        }
+
+        #[test]
+        fn test_ts_method_has_parent_type_name() {
+            let content = r#"
+class TypedCache {
+    get(key: string): string { return ""; }
+}
+"#;
+            let file = write_temp_file(content, "ts");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "get").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("TypedCache"));
+        }
+
+        #[test]
+        fn test_java_method_has_parent_type_name() {
+            let content = r#"
+public class Calculator {
+    public int add(int a, int b) { return a + b; }
+}
+"#;
+            let file = write_temp_file(content, "java");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            let method = chunks.iter().find(|c| c.name == "add").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+            assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
+        }
+
+        #[test]
+        fn test_standalone_function_no_parent() {
+            let content = "fn standalone() {}";
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+            assert_eq!(chunks[0].chunk_type, ChunkType::Function);
+            assert!(chunks[0].parent_type_name.is_none());
         }
     }
 }
