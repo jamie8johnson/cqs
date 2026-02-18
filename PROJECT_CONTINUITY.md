@@ -2,21 +2,20 @@
 
 ## Right Now
 
-**Phase 1b complete.** 2026-02-15. PR #447 merged.
+**Moonshot Phase 2a complete.** 2026-02-17.
 
-Moonshot Phase 1 (type system) is done:
 - Phase 1a: Parser type extraction + schema v11 + `cqs deps` (PRs #440, #442)
 - Phase 1b: Wire type_edges into related, impact, read --focus, dead (PR #447)
+- Phase 1c: Note-boosted search ranking (PR #452)
+- Phase 2a: Batch completeness — 6 new commands (PR #453)
 
-Next: Phase 2 per MOONSHOT.md, or pick from roadmap (onboard, blame, drift, C#).
+Also merged 4 dependabot bumps: simsimd 6.5.13, toml 1.0.1, ctrlc 3.5.2, indicatif 0.18.4 (#448-#451).
+
+Next: Phase 2b+ per MOONSHOT.md (onboard, drift, auto-stale notes) or Phase 1d (embedding model eval — research).
 
 ## Pending Changes
 
-Unstaged on main (from prior sessions):
-- `Cargo.lock`, `Cargo.toml` — dependency updates
-- `docs/notes.toml` — note changes
-- `docs/MOONSHOT.md` — untracked, moonshot roadmap
-- `src/language/markdown.rs`, `src/language/mod.rs`, `src/parser/calls.rs` — stale diffs (check if merge artifacts)
+Uncommitted notes in `docs/notes.toml` (Phase 1c + OnceLock notes). `PROJECT_CONTINUITY.md` updated.
 
 ## Parked
 

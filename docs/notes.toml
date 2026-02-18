@@ -771,3 +771,19 @@ mentions = [
     "COMMON_TYPES",
     "type_edges",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Note-boosted search ranking: note_boost() in search.rs applies ±15% score adjustment when note mentions match a chunk's file or name. Strongest absolute sentiment wins across multiple matches. Wired into both brute-force and HNSW-guided paths. Loads notes once per search via list_notes_summaries()."
+mentions = [
+    "src/search.rs",
+    "note_boost",
+]
+
+[[note]]
+sentiment = -0.5
+text = "OnceLock::get_or_try_init is still unstable (nightly-only). For fallible lazy init, use manual pattern: check get(), compute Result, set(), get().unwrap(). See BatchContext::file_set() for the pattern."
+mentions = [
+    "src/cli/batch.rs",
+    "OnceLock",
+]
