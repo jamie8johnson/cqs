@@ -86,7 +86,7 @@ cqs "query" --expand 2                # Expand results via call graph
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result
 
-# Token budgeting (cross-command: query, gather, context, explain, scout)
+# Token budgeting (cross-command: query, gather, context, explain, scout, onboard)
 cqs "query" --tokens 2000     # Limit output to ~2000 tokens
 cqs gather "auth" --tokens 4000
 cqs explain func --tokens 3000
@@ -376,6 +376,7 @@ Key commands (all support `--json`):
 - `cqs related <function>` - co-occurrence: shared callers, callees, types
 - `cqs where "description"` - suggest where to add new code
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
+- `cqs onboard "concept"` - guided tour: entry point, call chain, callers, key types, tests
 - `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
 - `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--json`
 - `cqs batch` - batch mode: stdin commands, JSONL output. Pipeline syntax: `search "error" | callers | test-map`

@@ -71,6 +71,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.
 - `cqs where "description"` — placement suggestion: where to add new code, with local patterns.
 - `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes in one call.
+- `cqs onboard "concept"` — guided tour: entry point → call chain → callers → types → tests. One-call orientation.
 - `cqs callers <function>` / `cqs callees <function>` — call graph navigation.
 - `cqs deps <type>` — type dependencies: who uses this type? `--reverse` for what types a function uses.
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
@@ -88,7 +89,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs audit-mode on/off` — toggle audit mode.
 - `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
 
-**Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, and `scout` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. JSON output adds `token_count` and `token_budget` fields.
+**Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, `scout`, and `onboard` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. JSON output adds `token_count` and `token_budget` fields.
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 

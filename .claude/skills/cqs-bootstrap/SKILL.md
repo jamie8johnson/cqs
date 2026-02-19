@@ -115,6 +115,7 @@ None.
    - `cqs-deps` — type dependencies: who uses a type, or what types a function uses
    - `cqs-where` — suggest where to add new code based on semantic similarity
    - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
+   - `cqs-onboard` — guided codebase tour (entry point + call chain + callers + types + tests)
    - `cqs-plan` — task planning with scout data + task-type templates
    - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
    - `cqs-ci` — CI pipeline analysis (impact + risk + dead code + gate)
@@ -182,6 +183,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs gather "query"` — smart context assembly: seed search + call graph BFS.
 - `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes.
+- `cqs onboard "concept"` — guided tour: entry point, call chain, callers, key types, tests.
 - `cqs where "description"` — placement suggestion for new code.
 - `cqs related <function>` — co-occurrence: shared callers, callees, types.
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.

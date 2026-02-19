@@ -163,6 +163,38 @@ fn find_affected_tests(
     Ok(tests)
 }
 
+/// Find tests that exercise `target_name` via call graph traversal.
+///
+/// Accepts pre-loaded graph and test chunks — no Store access needed.
+/// Used by `onboard` and `task` commands that pre-load shared resources.
+pub(crate) fn find_affected_tests_with_chunks(
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+    target_name: &str,
+    max_depth: usize,
+) -> Vec<TestInfo> {
+    let ancestors = reverse_bfs(graph, target_name, max_depth);
+    let mut tests: Vec<TestInfo> = test_chunks
+        .iter()
+        .filter_map(|test| {
+            ancestors.get(&test.name).and_then(|&d| {
+                if d > 0 {
+                    Some(TestInfo {
+                        name: test.name.clone(),
+                        file: test.file.clone(),
+                        line: test.line_start,
+                        call_depth: d,
+                    })
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+    tests.sort_by_key(|t| t.call_depth);
+    tests
+}
+
 /// Find transitive callers up to the given depth.
 ///
 /// Uses `reverse_bfs` to discover all ancestor names in a single graph traversal,
@@ -488,5 +520,58 @@ mod tests {
     #[test]
     fn test_suggest_test_file_java() {
         assert_eq!(suggest_test_file("src/Search.java"), "src/SearchTest.java");
+    }
+
+    #[test]
+    fn test_find_affected_tests_with_chunks() {
+        use crate::store::helpers::CallGraph;
+        use crate::store::ChunkSummary;
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        // Build a call graph: test_foo -> bar -> target
+        let mut forward = HashMap::new();
+        forward.insert("test_foo".to_string(), vec!["bar".to_string()]);
+        forward.insert("bar".to_string(), vec!["target".to_string()]);
+        forward.insert("unrelated_test".to_string(), vec!["baz".to_string()]);
+        let mut reverse = HashMap::new();
+        reverse.insert("target".to_string(), vec!["bar".to_string()]);
+        reverse.insert("bar".to_string(), vec!["test_foo".to_string()]);
+        reverse.insert("baz".to_string(), vec!["unrelated_test".to_string()]);
+        let graph = CallGraph { forward, reverse };
+
+        let test_chunks = vec![
+            ChunkSummary {
+                id: "1".into(),
+                name: "test_foo".into(),
+                file: PathBuf::from("tests/foo.rs"),
+                line_start: 10,
+                line_end: 20,
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::parser::ChunkType::Function,
+                signature: "fn test_foo()".into(),
+                content: String::new(),
+                doc: None,
+                parent_id: None,
+            },
+            ChunkSummary {
+                id: "2".into(),
+                name: "unrelated_test".into(),
+                file: PathBuf::from("tests/other.rs"),
+                line_start: 5,
+                line_end: 15,
+                language: crate::parser::Language::Rust,
+                chunk_type: crate::parser::ChunkType::Function,
+                signature: "fn unrelated_test()".into(),
+                content: String::new(),
+                doc: None,
+                parent_id: None,
+            },
+        ];
+
+        let tests = find_affected_tests_with_chunks(&graph, &test_chunks, "target", 5);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0].name, "test_foo");
+        assert_eq!(tests[0].call_depth, 2); // test_foo -> bar -> target
     }
 }

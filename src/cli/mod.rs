@@ -38,9 +38,9 @@ use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff,
     cmd_doctor, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff,
-    cmd_index, cmd_init, cmd_notes, cmd_project, cmd_query, cmd_read, cmd_ref, cmd_related,
-    cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest, cmd_test_map, cmd_trace,
-    cmd_where, NotesCommand, ProjectCommand, RefCommand,
+    cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_project, cmd_query, cmd_read, cmd_ref,
+    cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
+    cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -266,6 +266,20 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+    /// Guided codebase tour: entry point → call chain → types → tests
+    Onboard {
+        /// Concept to explore
+        concept: String,
+        /// Callee expansion depth
+        #[arg(short = 'd', long, default_value = "3")]
+        depth: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
     },
     /// List and manage notes
     Notes {
@@ -617,6 +631,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_deps(&cli, name, reverse, json),
         Some(Commands::Callers { ref name, json }) => cmd_callers(&cli, name, json),
         Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
+        Some(Commands::Onboard {
+            ref concept,
+            depth,
+            json,
+            tokens,
+        }) => cmd_onboard(&cli, concept, depth, json, tokens),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
         Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
         Some(Commands::Diff {

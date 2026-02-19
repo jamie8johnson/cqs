@@ -140,7 +140,7 @@ pub struct GatherResult {
 ///
 /// Returns `(name_scores, expansion_capped)` where `name_scores` maps
 /// function names to `(score, depth)`.
-fn bfs_expand(
+pub(crate) fn bfs_expand(
     name_scores: &mut HashMap<String, (f32, usize)>,
     graph: &CallGraph,
     opts: &GatherOptions,
@@ -195,7 +195,7 @@ fn bfs_expand(
 /// Batch-fetch chunks for expanded names, deduplicate by id, assemble `GatheredChunk`s.
 ///
 /// Returns `(chunks, search_degraded)`.
-fn fetch_and_assemble(
+pub(crate) fn fetch_and_assemble(
     store: &Store,
     name_scores: &HashMap<String, (f32, usize)>,
     project_root: &Path,
@@ -248,7 +248,7 @@ fn fetch_and_assemble(
 
 /// Sort chunks by score desc (name tiebreak), truncate to limit,
 /// then re-sort to file/line reading order.
-fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
+pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
     chunks.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`cqs onboard "concept"`** (Phase 2b) — guided codebase tour that replaces the manual scout → read → callers → callees → test-map → explain workflow with a single command. Returns an ordered reading list: entry point → call chain (BFS callees) → callers → key types → tests. Supports `--depth` (1-5), `--tokens` budget, `--json`, and batch mode. Entry point selection prefers callable types (Function/Method) with call graph connections over structs/enums. 12 new tests.
+
 ## [0.12.12] - 2026-02-18
 
 ### Added

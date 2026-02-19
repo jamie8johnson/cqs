@@ -336,6 +336,17 @@ pub(crate) enum BatchCmd {
     },
     /// Index statistics
     Stats,
+    /// Guided codebase tour
+    Onboard {
+        /// Concept to explore
+        query: String,
+        /// Callee expansion depth
+        #[arg(short = 'd', long, default_value = "3")]
+        depth: usize,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
     /// Pre-investigation dashboard
     Scout {
         /// Task description
@@ -457,6 +468,11 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             tokens,
         } => dispatch_context(ctx, &path, summary, compact, tokens),
         BatchCmd::Stats => dispatch_stats(ctx),
+        BatchCmd::Onboard {
+            query,
+            depth,
+            tokens: _tokens,
+        } => dispatch_onboard(ctx, &query, depth),
         BatchCmd::Scout {
             query,
             limit,
@@ -1326,6 +1342,14 @@ fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
         "model": stats.model_name,
         "schema_version": stats.schema_version,
     }))
+}
+
+fn dispatch_onboard(ctx: &BatchContext, query: &str, depth: usize) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_onboard", query, depth).entered();
+    let embedder = ctx.embedder()?;
+    let depth = depth.clamp(1, 5);
+    let result = cqs::onboard(&ctx.store, embedder, query, &ctx.root, depth)?;
+    Ok(cqs::onboard_to_json(&result))
 }
 
 fn dispatch_scout(

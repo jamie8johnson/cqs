@@ -66,6 +66,7 @@ pub(crate) mod gather;
 pub(crate) mod impact;
 pub(crate) mod math;
 pub(crate) mod nl;
+pub(crate) mod onboard;
 pub(crate) mod project;
 pub(crate) mod related;
 pub mod review;
@@ -106,6 +107,10 @@ pub use impact::{
     DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
+pub use onboard::{
+    onboard, onboard_to_json, OnboardEntry, OnboardResult, OnboardSummary, TestEntry, TypeInfo,
+    DEFAULT_ONBOARD_DEPTH,
+};
 pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
