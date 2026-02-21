@@ -191,11 +191,11 @@ impl NameMatcher {
 /// Extract file path from a chunk ID.
 ///
 /// Standard format: `"path:line_start:hash_prefix"` (3 segments from right)
-/// Windowed format: `"path:line_start:hash_prefix:window_idx"` (4 segments)
+/// Windowed format: `"path:line_start:hash_prefix:wN"` (4 segments)
 ///
-/// The hash_prefix is always 8 hex chars. The window_idx is a small integer (0-9).
-/// We detect windowed IDs by checking if the last segment is a short digit-only string
-/// (window index), then strip the appropriate number of trailing segments.
+/// The hash_prefix is always 8 hex chars. Windowed chunk IDs append `:wN` where
+/// N is a small integer (0-99). We detect windowed IDs by checking if the last
+/// segment starts with 'w' followed by digits.
 fn extract_file_from_chunk_id(id: &str) -> &str {
     // Strip last segment
     let Some(last_colon) = id.rfind(':') else {
@@ -205,11 +205,12 @@ fn extract_file_from_chunk_id(id: &str) -> &str {
 
     // Determine how many segments to strip from the right:
     // - Standard: 2 (hash_prefix, line_start)
-    // - Windowed: 3 (window_idx, hash_prefix, line_start)
-    // Window index is a short numeric string (typically 0-9)
+    // - Windowed: 3 (wN, hash_prefix, line_start)
+    // Window suffix format: "w0", "w1", ..., "w99"
     let segments_to_strip = if !last_seg.is_empty()
-        && last_seg.len() <= 2
-        && last_seg.bytes().all(|b| b.is_ascii_digit())
+        && last_seg.starts_with('w')
+        && last_seg.len() <= 3
+        && last_seg[1..].bytes().all(|b| b.is_ascii_digit())
     {
         3
     } else {
@@ -1019,13 +1020,13 @@ mod tests {
 
     #[test]
     fn test_extract_file_windowed_chunk_id() {
-        // Windowed: "path:line_start:hash_prefix:window_idx"
+        // Windowed: "path:line_start:hash_prefix:wN"
         assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:0"),
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w0"),
             "src/foo.rs"
         );
         assert_eq!(
-            extract_file_from_chunk_id("src/foo.rs:10:abc12345:3"),
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w3"),
             "src/foo.rs"
         );
     }
@@ -1037,8 +1038,30 @@ mod tests {
             "src/cli/commands/mod.rs"
         );
         assert_eq!(
-            extract_file_from_chunk_id("src/cli/commands/mod.rs:42:deadbeef:1"),
+            extract_file_from_chunk_id("src/cli/commands/mod.rs:42:deadbeef:w1"),
             "src/cli/commands/mod.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_file_windowed_chunk_id_w_prefix() {
+        // Windowed IDs use "wN" format (not bare digits)
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w0"),
+            "src/foo.rs"
+        );
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:abc12345:w12"),
+            "src/foo.rs"
+        );
+    }
+
+    #[test]
+    fn test_extract_file_hash_not_confused_with_window() {
+        // 8-char hex hash should NOT be mistaken for a window index
+        assert_eq!(
+            extract_file_from_chunk_id("src/foo.rs:10:deadbeef"),
+            "src/foo.rs"
         );
     }
 

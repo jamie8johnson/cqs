@@ -25,12 +25,7 @@ use crate::{scout, AnalysisError, Embedder};
 /// Default callee BFS expansion depth.
 pub const DEFAULT_ONBOARD_DEPTH: usize = 3;
 
-/// Common types to filter from key_types (too noisy to be useful).
-const COMMON_TYPES: &[&str] = &[
-    "String", "str", "Vec", "Option", "Result", "Box", "Arc", "Rc", "HashMap", "HashSet",
-    "BTreeMap", "bool", "usize", "u32", "u64", "i32", "i64", "f32", "f64", "PathBuf", "Path",
-    "Self",
-];
+// Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.
 
 /// Result of an onboard analysis — ordered reading list for understanding a concept.
 #[derive(Debug, Clone, Serialize)]
@@ -103,7 +98,7 @@ pub fn onboard(
     );
 
     if scout_result.file_groups.is_empty() {
-        return Err(AnalysisError::Embedder(format!(
+        return Err(AnalysisError::NotFound(format!(
             "No relevant code found for concept: {concept}"
         )));
     }
@@ -381,17 +376,19 @@ fn fetch_entry_point(
                 depth: 0,
             })
         }
-        None => Err(AnalysisError::Embedder(format!(
+        None => Err(AnalysisError::NotFound(format!(
             "Entry point '{entry_name}' not found in index"
         ))),
     }
 }
 
 /// Filter common types from type dependency results.
+///
+/// Uses `crate::COMMON_TYPES` (from focused_read.rs) — the canonical 44-entry HashSet.
 fn filter_common_types(types: Vec<(String, String)>) -> Vec<TypeInfo> {
     types
         .into_iter()
-        .filter(|(name, _)| !COMMON_TYPES.contains(&name.as_str()))
+        .filter(|(name, _)| !crate::COMMON_TYPES.contains(name.as_str()))
         .map(|(type_name, edge_kind)| TypeInfo {
             type_name,
             edge_kind,
@@ -558,6 +555,22 @@ mod tests {
             ("Vec".to_string(), "Return".to_string()),
             ("Store".to_string(), "Param".to_string()),
             ("Option".to_string(), "Return".to_string()),
+        ];
+        let filtered = filter_common_types(types);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].type_name, "Store");
+    }
+
+    #[test]
+    fn test_common_types_canonical_set_filters_more() {
+        // Verify that filter_common_types now uses the canonical 44-entry HashSet
+        // from focused_read.rs, which includes types like Error, Mutex, etc.
+        // that the old 22-entry local array missed.
+        let types = vec![
+            ("Error".to_string(), "Return".to_string()),
+            ("Mutex".to_string(), "Field".to_string()),
+            ("Debug".to_string(), "Bound".to_string()),
+            ("Store".to_string(), "Param".to_string()),
         ];
         let filtered = filter_common_types(types);
         assert_eq!(filtered.len(), 1);

@@ -49,7 +49,7 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
         );
     }
 
-    let content = std::fs::read_to_string(&file_path).context("Failed to read file")?;
+    let content = std::fs::read_to_string(&canonical).context("Failed to read file")?;
 
     // Check audit mode
     let cqs_dir = cqs::resolve_index_dir(&root);

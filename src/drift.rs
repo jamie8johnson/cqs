@@ -68,7 +68,7 @@ pub fn detect_drift(
         .modified
         .into_iter()
         .filter_map(|entry| {
-            let sim = entry.similarity.unwrap_or(0.0);
+            let sim = entry.similarity?; // skip entries with unknown similarity
             let drift = 1.0 - sim;
             if drift >= min_drift {
                 Some(DriftEntry {

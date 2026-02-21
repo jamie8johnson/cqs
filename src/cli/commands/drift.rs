@@ -43,7 +43,7 @@ pub(crate) fn cmd_drift(
             reference
         );
     }
-    let ref_store = Store::open(&ref_db)?;
+    let ref_store = Store::open_readonly(&ref_db)?;
 
     let index_path = cqs_dir.join("index.db");
     if !index_path.exists() {

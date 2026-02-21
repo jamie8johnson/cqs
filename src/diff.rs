@@ -169,12 +169,14 @@ pub fn semantic_diff(
         }
     }
 
-    // Sort modified by similarity (most changed first)
-    modified.sort_by(|a, b| {
-        a.similarity
-            .unwrap_or(0.0)
-            .partial_cmp(&b.similarity.unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
+    // Sort modified by similarity (most changed first).
+    // Entries with None similarity (missing embeddings) sort to the end
+    // rather than being conflated with maximally-changed (similarity=0.0).
+    modified.sort_by(|a, b| match (a.similarity, b.similarity) {
+        (Some(sa), Some(sb)) => sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
     });
 
     Ok(DiffResult {
@@ -269,6 +271,45 @@ mod tests {
             chunk_type: ChunkType::Function,
         };
         assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn test_diff_sort_none_similarity_at_end() {
+        // Entries with None similarity should sort after entries with known similarity,
+        // not be conflated with similarity=0.0 (maximally changed).
+        let mut entries = vec![
+            DiffEntry {
+                name: "known_low".into(),
+                file: "a.rs".into(),
+                chunk_type: ChunkType::Function,
+                similarity: Some(0.3),
+            },
+            DiffEntry {
+                name: "unknown".into(),
+                file: "b.rs".into(),
+                chunk_type: ChunkType::Function,
+                similarity: None,
+            },
+            DiffEntry {
+                name: "known_high".into(),
+                file: "c.rs".into(),
+                chunk_type: ChunkType::Function,
+                similarity: Some(0.8),
+            },
+        ];
+
+        // Apply the same sort as semantic_diff
+        entries.sort_by(|a, b| match (a.similarity, b.similarity) {
+            (Some(sa), Some(sb)) => sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+
+        // Most changed (lowest similarity) first, unknown at end
+        assert_eq!(entries[0].name, "known_low");
+        assert_eq!(entries[1].name, "known_high");
+        assert_eq!(entries[2].name, "unknown");
     }
 
     #[test]
