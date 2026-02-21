@@ -95,6 +95,7 @@ None.
    - `cqs-explain` — function card (signature, callers, callees, similar)
    - `cqs-similar` — find similar code
    - `cqs-diff` — semantic diff between snapshots
+   - `cqs-drift` — semantic drift detection between reference and project
    - `cqs-add-note` — add a note to project memory
    - `cqs-update-note` — update an existing note
    - `cqs-remove-note` — remove a note

@@ -378,6 +378,23 @@ pub(crate) enum BatchCmd {
     Stale,
     /// Codebase quality snapshot
     Health,
+    /// Semantic drift detection between reference and project
+    Drift {
+        /// Reference name to compare against
+        reference: String,
+        /// Similarity threshold (default: 0.95)
+        #[arg(long, default_value = "0.95")]
+        threshold: f32,
+        /// Minimum drift to show (default: 0.0)
+        #[arg(long, default_value = "0.0")]
+        min_drift: f32,
+        /// Filter by language
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+        /// Maximum entries to show
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
+    },
     /// List notes
     Notes {
         /// Show only warnings (negative sentiment)
@@ -482,6 +499,20 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Read { path, focus } => dispatch_read(ctx, &path, focus.as_deref()),
         BatchCmd::Stale => dispatch_stale(ctx),
         BatchCmd::Health => dispatch_health(ctx),
+        BatchCmd::Drift {
+            reference,
+            threshold,
+            min_drift,
+            lang,
+            limit,
+        } => dispatch_drift(
+            ctx,
+            &reference,
+            threshold,
+            min_drift,
+            lang.as_deref(),
+            limit,
+        ),
         BatchCmd::Notes { warnings, patterns } => dispatch_notes(ctx, warnings, patterns),
         BatchCmd::Help => dispatch_help(),
     }
@@ -1702,6 +1733,70 @@ fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
         "note_count": report.note_count,
         "note_warnings": report.note_warnings,
         "warnings": report.warnings,
+    }))
+}
+
+fn dispatch_drift(
+    ctx: &BatchContext,
+    reference: &str,
+    threshold: f32,
+    min_drift: f32,
+    lang: Option<&str>,
+    limit: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_drift", reference).entered();
+
+    // Load reference store
+    let config = cqs::config::Config::load(&ctx.root);
+    let ref_cfg = config
+        .references
+        .iter()
+        .find(|r| r.name == reference)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                reference
+            )
+        })?;
+
+    let ref_db = ref_cfg.path.join("index.db");
+    if !ref_db.exists() {
+        anyhow::bail!(
+            "Reference '{}' has no index. Run 'cqs ref update {}' first.",
+            reference,
+            reference
+        );
+    }
+    let ref_store = cqs::Store::open(&ref_db)?;
+
+    let result = cqs::drift::detect_drift(
+        &ref_store, &ctx.store, reference, threshold, min_drift, lang,
+    )?;
+
+    let mut drifted_json: Vec<_> = result
+        .drifted
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "file": e.file,
+                "chunk_type": e.chunk_type,
+                "similarity": e.similarity,
+                "drift": e.drift,
+            })
+        })
+        .collect();
+    if let Some(lim) = limit {
+        drifted_json.truncate(lim);
+    }
+
+    Ok(serde_json::json!({
+        "reference": result.reference,
+        "threshold": result.threshold,
+        "min_drift": result.min_drift,
+        "drifted": drifted_json,
+        "total_compared": result.total_compared,
+        "unchanged": result.unchanged,
     }))
 }
 

@@ -65,6 +65,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
 - `cqs explain <function>` — function card: signature, callers, callees, similar. Collapses 4+ lookups into 1.
 - `cqs diff --source <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
+- `cqs drift <ref>` — semantic drift detection: functions that changed most between reference and project. `--min-drift 0.1` to filter noise.
 - `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion. `--ref name` for cross-index: seeds from reference, bridges into project code.
 - `cqs dead` — find dead code: functions/methods with no callers in the index.
 - `cqs stale` — check index freshness: files modified since last index.
@@ -83,7 +84,8 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
 - `cqs stats` — index statistics.
 - `cqs health` — codebase quality snapshot: dead code, staleness, hotspots, untested hotspots, notes.
-- `cqs suggest` — auto-suggest notes from patterns (dead clusters, untested hotspots, high-risk). `--apply` to add.
+- `cqs suggest` — auto-suggest notes from patterns (dead clusters, untested hotspots, high-risk, stale mentions). `--apply` to add.
+- `cqs notes list --check` — verify note mentions still exist (files on disk, symbols in index).
 - `cqs gc` — report/clean stale index entries.
 - `cqs notes add/update/remove` — manage project notes.
 - `cqs audit-mode on/off` — toggle audit mode.

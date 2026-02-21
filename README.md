@@ -181,6 +181,11 @@ cqs explain src/search.rs:search_filtered --json
 cqs diff old-version                           # project vs reference
 cqs diff old-version new-ref                   # two references
 cqs diff old-version --threshold 0.90          # stricter "modified" cutoff
+
+# Drift detection — functions that changed most
+cqs drift old-version                          # all drifted functions
+cqs drift old-version --min-drift 0.1          # only significant changes
+cqs drift old-version --lang rust --limit 20   # scoped + limited
 ```
 
 ## Code Intelligence
@@ -366,6 +371,7 @@ Key commands (all support `--json`):
 - `cqs similar <function>` - find functions similar to a given function
 - `cqs explain <function>` - function card: signature, callers, callees, similar
 - `cqs diff --source <ref>` - semantic diff between indexed snapshots
+- `cqs drift <ref>` - semantic drift: functions that changed most between reference and project
 - `cqs trace <source> <target>` - follow call chain (BFS shortest path)
 - `cqs impact <function>` - what breaks if you change X? Callers + affected tests
 - `cqs impact-diff [--base REF]` - diff-aware impact: changed functions, callers, tests to re-run
