@@ -339,9 +339,9 @@ Phase 3 (Task + Verify)
 | 1c | Note-boosted search ranking | **Done** | 0.5 |
 | 1d | Embedding model eval | Not started | 1 (research) |
 | 2a | Batch: scout, where, read, stale, health, notes | Not started | 1-2 |
-| 2b | `cqs onboard` | Not started | 1-2 |
-| 2c | Auto-stale notes | Not started | 0.5 |
-| 2d | `cqs drift` | Not started | 1 |
+| 2b | `cqs onboard` | **Done** (PR #457) | 1 |
+| 2c | Auto-stale notes | **Done** | 0.5 |
+| 2d | `cqs drift` | **Done** | 0.5 |
 | 2e | `cqs patterns` | Not started | 1-2 |
 | 3 | `cqs task` | Not started | 2-3 |
 | 3 | `cqs verify` | Not started | 1-2 |

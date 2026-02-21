@@ -37,9 +37,9 @@ pub(crate) fn open_project_store(
 use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff,
-    cmd_doctor, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact, cmd_impact_diff,
-    cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_project, cmd_query, cmd_read, cmd_ref,
-    cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
+    cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
+    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_project, cmd_query, cmd_read,
+    cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
     cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
@@ -303,6 +303,26 @@ enum Commands {
         /// Filter by language
         #[arg(short = 'l', long)]
         lang: Option<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Detect semantic drift between a reference and the project
+    Drift {
+        /// Reference name to compare against
+        reference: String,
+        /// Similarity threshold (default: 0.95)
+        #[arg(short = 't', long, default_value = "0.95")]
+        threshold: f32,
+        /// Minimum drift to show (default: 0.0)
+        #[arg(long, default_value = "0.0")]
+        min_drift: f32,
+        /// Filter by language
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+        /// Maximum entries to show
+        #[arg(short = 'n', long)]
+        limit: Option<usize>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -646,6 +666,21 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref lang,
             json,
         }) => cmd_diff(source, target.as_deref(), threshold, lang.as_deref(), json),
+        Some(Commands::Drift {
+            ref reference,
+            threshold,
+            min_drift,
+            ref lang,
+            limit,
+            json,
+        }) => cmd_drift(
+            reference,
+            threshold,
+            min_drift,
+            lang.as_deref(),
+            limit,
+            json,
+        ),
         Some(Commands::Explain {
             ref name,
             json,
@@ -987,10 +1022,12 @@ mod tests {
                     warnings,
                     patterns,
                     json,
+                    check,
                 } => {
                     assert!(!warnings);
                     assert!(!patterns);
                     assert!(!json);
+                    assert!(!check);
                 }
                 _ => panic!("Expected List subcommand"),
             },

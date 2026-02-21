@@ -23,6 +23,9 @@ pub(crate) enum NotesCommand {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Check mentions for staleness (verifies files exist and symbols are in index)
+        #[arg(long)]
+        check: bool,
     },
     /// Add a note to project memory
     Add {
@@ -73,7 +76,8 @@ pub(crate) fn cmd_notes(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
             warnings,
             patterns,
             json,
-        } => cmd_notes_list(cli, *warnings, *patterns, *json),
+            check,
+        } => cmd_notes_list(cli, *warnings, *patterns, *json, *check),
         NotesCommand::Add {
             text,
             sentiment,
@@ -393,7 +397,13 @@ fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
 }
 
 /// List notes from docs/notes.toml
-fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool, json: bool) -> Result<()> {
+fn cmd_notes_list(
+    cli: &Cli,
+    warnings_only: bool,
+    patterns_only: bool,
+    json: bool,
+    check: bool,
+) -> Result<()> {
     let root = find_project_root();
     let notes_path = root.join("docs/notes.toml");
 
@@ -407,6 +417,16 @@ fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool, json: boo
         println!("No notes found.");
         return Ok(());
     }
+
+    // Staleness check (requires store)
+    let staleness: std::collections::HashMap<String, Vec<String>> = if check {
+        let (store, _, _) = crate::cli::open_project_store()?;
+        cqs::suggest::check_note_staleness(&store, &root)?
+            .into_iter()
+            .collect()
+    } else {
+        std::collections::HashMap::new()
+    };
 
     // Filter
     let filtered: Vec<_> = notes
@@ -426,13 +446,21 @@ fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool, json: boo
         let json_notes: Vec<_> = filtered
             .iter()
             .map(|n| {
-                serde_json::json!({
+                let mut obj = serde_json::json!({
                     "id": n.id,
                     "sentiment": n.sentiment,
                     "type": if n.is_warning() { "warning" } else if n.is_pattern() { "pattern" } else { "neutral" },
                     "text": n.text,
                     "mentions": n.mentions,
-                })
+                });
+                if check {
+                    if let Some(stale) = staleness.get(&n.text) {
+                        obj["stale_mentions"] = serde_json::json!(stale);
+                    } else {
+                        obj["stale_mentions"] = serde_json::json!([]);
+                    }
+                }
+                obj
             })
             .collect();
         println!("{}", serde_json::to_string_pretty(&json_notes)?);
@@ -472,7 +500,13 @@ fn cmd_notes_list(cli: &Cli, warnings_only: bool, patterns_only: bool, json: boo
             format!("  mentions: {}", note.mentions.join(", "))
         };
 
-        println!("  {} {}", sentiment_marker, preview);
+        print!("  {} {}", sentiment_marker, preview);
+        if check {
+            if let Some(stale) = staleness.get(&note.text) {
+                print!("  [STALE: {}]", stale.join(", "));
+            }
+        }
+        println!();
         if !mentions.is_empty() {
             println!("  {}", mentions);
         }

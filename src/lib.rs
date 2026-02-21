@@ -61,6 +61,7 @@ pub mod suggest;
 // re-exported below for use by the binary crate (CLI) and integration tests.
 pub(crate) mod diff;
 pub mod diff_parse;
+pub mod drift;
 pub(crate) mod focused_read;
 pub(crate) mod gather;
 pub(crate) mod impact;

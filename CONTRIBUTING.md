@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs
     batch.rs    - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
@@ -137,6 +137,7 @@ src/
   nl.rs         - NL description generation, JSDoc parsing
   note.rs       - Developer notes with sentiment, rewrite_notes_file()
   diff.rs       - Semantic diff between indexed snapshots
+  drift.rs      - Drift detection (semantic change magnitude between snapshots)
   reference.rs  - Multi-index: ReferenceIndex, load, search, merge
   gather.rs     - Smart context assembly (BFS call graph expansion)
   structural.rs - Structural pattern matching on code chunks
