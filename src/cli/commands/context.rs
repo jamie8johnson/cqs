@@ -21,13 +21,7 @@ pub(crate) fn cmd_context(
         bail!("--tokens cannot be used with --compact or --summary");
     }
 
-    let abs_path = root.join(path);
-    let origin = abs_path.to_string_lossy().to_string();
-
-    let mut chunks = store.get_chunks_by_origin(&origin)?;
-    if chunks.is_empty() {
-        chunks = store.get_chunks_by_origin(path)?;
-    }
+    let chunks = store.get_chunks_by_origin(path)?;
     if chunks.is_empty() {
         bail!(
             "No indexed chunks found for '{}'. Is the file indexed?",
@@ -37,7 +31,7 @@ pub(crate) fn cmd_context(
 
     // Proactive staleness warning
     if !cli.quiet && !cli.no_stale_check {
-        staleness::warn_stale_results(&store, &[&origin], &root);
+        staleness::warn_stale_results(&store, &[path], &root);
     }
 
     // Compact mode: signatures-only TOC with caller/callee counts
@@ -121,7 +115,7 @@ pub(crate) fn cmd_context(
             .unwrap_or(&[]);
         for caller in callers {
             let caller_origin = caller.file.to_string_lossy().to_string();
-            if caller_origin != origin && !caller_origin.ends_with(path) {
+            if !caller_origin.ends_with(path) {
                 let rel = cqs::rel_display(&caller.file, &root);
                 external_callers.push((
                     caller.name.clone(),
@@ -295,7 +289,7 @@ pub(crate) fn cmd_context(
             // Print content if within token budget
             if let Some(ref included) = content_set {
                 if included.contains(&c.name) {
-                    println!("{}", "─".repeat(50));
+                    println!("{}", "\u{2500}".repeat(50));
                     println!("{}", c.content);
                     println!();
                 }

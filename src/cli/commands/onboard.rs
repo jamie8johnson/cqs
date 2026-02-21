@@ -1,6 +1,6 @@
 //! Onboard command — guided codebase tour for understanding a concept
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
 
 use cqs::{onboard, onboard_to_json, Embedder};
@@ -20,7 +20,7 @@ pub(crate) fn cmd_onboard(
     let result = onboard(&store, &embedder, concept, &root, depth)?;
 
     if json {
-        let mut output = onboard_to_json(&result);
+        let mut output = onboard_to_json(&result).context("Failed to serialize onboard result")?;
 
         // Token budgeting: pack entry content into budget
         if let Some(budget) = max_tokens {

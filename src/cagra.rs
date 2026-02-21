@@ -1,7 +1,7 @@
 //! CAGRA GPU-accelerated vector search
 //!
 //! Uses NVIDIA cuVS for GPU-accelerated nearest neighbor search.
-//! Only available when compiled with the `gpu-search` feature.
+//! Only available when compiled with the `gpu-index` feature.
 //!
 //! ## Usage
 //!
@@ -14,24 +14,24 @@
 //! The cuVS `search()` method consumes the index. We cache the embeddings
 //! and rebuild the index as needed.
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 use std::sync::Mutex;
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 use ndarray_015::Array2;
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 use thiserror::Error;
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 use crate::embedder::Embedding;
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 use crate::index::{IndexResult, VectorIndex};
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 use crate::EMBEDDING_DIM;
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 #[derive(Error, Debug)]
 pub enum CagraError {
     #[error("cuVS error: {0}")]
@@ -40,6 +40,8 @@ pub enum CagraError {
     NoGpu,
     #[error("Dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
+    #[error("Build error: {0}")]
+    Build(String),
     #[error("Index not built")]
     NotBuilt,
 }
@@ -54,7 +56,7 @@ pub enum CagraError {
 /// Both `resources` and `index` are protected by Mutex to ensure safe concurrent access.
 /// CUDA contexts (managed by cuVS Resources) are not inherently thread-safe, so we
 /// serialize all GPU operations.
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 pub struct CagraIndex {
     /// cuVS resources (CUDA context, streams, etc.) - protected by Mutex for thread safety
     resources: Mutex<cuvs::Resources>,
@@ -66,7 +68,7 @@ pub struct CagraIndex {
     index: Mutex<Option<cuvs::cagra::Index>>,
 }
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 impl CagraIndex {
     /// Check if GPU is available for CAGRA
     pub fn gpu_available() -> bool {
@@ -75,35 +77,13 @@ impl CagraIndex {
 
     /// Build a CAGRA index from embeddings
     pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, CagraError> {
-        if embeddings.is_empty() {
-            return Err(CagraError::Cuvs("Cannot build empty index".into()));
-        }
+        let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings)
+            .map_err(|e| CagraError::Build(e.to_string()))?;
 
-        // Validate dimensions
-        for (id, emb) in &embeddings {
-            if emb.len() != EMBEDDING_DIM {
-                return Err(CagraError::DimensionMismatch {
-                    expected: EMBEDDING_DIM,
-                    actual: emb.len(),
-                });
-            }
-            tracing::trace!("Adding {} to CAGRA index", id);
-        }
-
-        let n_vectors = embeddings.len();
         tracing::info!("Building CAGRA index with {} vectors", n_vectors);
 
         // Create cuVS resources
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
-
-        // Prepare data as ndarray (row-major: [n_vectors, EMBEDDING_DIM])
-        let mut id_map = Vec::with_capacity(n_vectors);
-        let mut flat_data = Vec::with_capacity(n_vectors * EMBEDDING_DIM);
-
-        for (chunk_id, embedding) in embeddings {
-            id_map.push(chunk_id);
-            flat_data.extend(embedding.into_inner());
-        }
 
         let dataset = Array2::from_shape_vec((n_vectors, EMBEDDING_DIM), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
@@ -369,20 +349,20 @@ impl CagraIndex {
 
 /// RAII guard that ensures the CAGRA index is rebuilt on drop.
 /// This guarantees index restoration even on early returns or panics.
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 struct IndexRebuilder<'a> {
     cagra: &'a CagraIndex,
     resources: &'a cuvs::Resources,
 }
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 impl<'a> Drop for IndexRebuilder<'a> {
     fn drop(&mut self) {
         self.cagra.ensure_index_rebuilt(self.resources);
     }
 }
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 impl VectorIndex for CagraIndex {
     fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
         CagraIndex::search(self, query, k)
@@ -405,12 +385,12 @@ impl VectorIndex for CagraIndex {
 // - `resources` is protected by Mutex (CUDA contexts require serialized access)
 // - `index` is protected by Mutex
 // - `dataset` and `id_map` are immutable after construction
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 unsafe impl Send for CagraIndex {}
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 unsafe impl Sync for CagraIndex {}
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 impl CagraIndex {
     /// Build CAGRA index from all embeddings in a Store
     ///
@@ -520,7 +500,7 @@ impl CagraIndex {
     }
 }
 
-#[cfg(all(test, feature = "gpu-search"))]
+#[cfg(all(test, feature = "gpu-index"))]
 mod tests {
     use super::*;
     use crate::index::VectorIndex;
@@ -592,11 +572,8 @@ mod tests {
         let bad_embedding = Embedding::new(vec![1.0; 100]); // wrong dims
         let result = CagraIndex::build(vec![("bad".into(), bad_embedding)]);
         match result {
-            Err(CagraError::DimensionMismatch {
-                expected: 769,
-                actual: 100,
-            }) => {}
-            Err(e) => panic!("Expected DimensionMismatch(769, 100), got: {:?}", e),
+            Err(CagraError::Build(_)) => {} // Now returns Build error via prepare_index_data
+            Err(e) => panic!("Expected Build error, got: {:?}", e),
             Ok(_) => panic!("Expected error, got Ok"),
         }
     }

@@ -87,7 +87,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // Load vector index for O(log n) search
     let index: Option<Box<dyn cqs::index::VectorIndex>> = {
-        #[cfg(feature = "gpu-search")]
+        #[cfg(feature = "gpu-index")]
         {
             // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
             //
@@ -120,7 +120,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                 HnswIndex::try_load(&cqs_dir)
             }
         }
-        #[cfg(not(feature = "gpu-search"))]
+        #[cfg(not(feature = "gpu-index"))]
         {
             HnswIndex::try_load(&cqs_dir)
         }

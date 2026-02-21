@@ -95,12 +95,21 @@ pub enum GateLevel {
 }
 
 /// Parse a non-zero usize for --tokens validation
-fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String> {
+pub(crate) fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String> {
     let val: usize = s.parse().map_err(|e| format!("{e}"))?;
     if val == 0 {
         return Err("value must be at least 1".to_string());
     }
     Ok(val)
+}
+
+/// Validate that a float parameter is finite (not NaN or Infinity).
+pub(crate) fn validate_finite_f32(val: f32, name: &str) -> anyhow::Result<f32> {
+    if val.is_finite() {
+        Ok(val)
+    } else {
+        anyhow::bail!("Invalid {name}: {val} (must be a finite number)")
+    }
 }
 
 #[derive(Parser)]

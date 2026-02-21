@@ -231,7 +231,7 @@ fn test_get_embeddings_by_hashes() {
         chunk2.content_hash.as_str(),
         "nonexistent_hash",
     ];
-    let result = store.get_embeddings_by_hashes(&hashes);
+    let result = store.get_embeddings_by_hashes(&hashes).unwrap();
 
     // Should find exactly 2
     assert_eq!(result.len(), 2);
@@ -240,7 +240,7 @@ fn test_get_embeddings_by_hashes() {
     assert!(!result.contains_key("nonexistent_hash"));
 
     // Empty input should return empty map
-    let empty_result = store.get_embeddings_by_hashes(&[]);
+    let empty_result = store.get_embeddings_by_hashes(&[]).unwrap();
     assert!(empty_result.is_empty());
 }
 

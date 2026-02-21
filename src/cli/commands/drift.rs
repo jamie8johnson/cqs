@@ -16,6 +16,8 @@ pub(crate) fn cmd_drift(
     limit: Option<usize>,
     json: bool,
 ) -> Result<()> {
+    crate::cli::validate_finite_f32(threshold, "threshold")?;
+    crate::cli::validate_finite_f32(min_drift, "min-drift")?;
     let _span = tracing::info_span!("cmd_drift", reference).entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);

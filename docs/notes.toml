@@ -47,7 +47,7 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-search for CUDA-equipped infrastructure."
+text = "cuVS CAGRA: 8-12x faster index builds, 4-8x faster search vs CPU HNSW. Rust bindings exist (cuvs crate). Feature-flagged as gpu-index for CUDA-equipped infrastructure."
 mentions = [
     "src/hnsw/mod.rs",
     "Cargo.toml",
@@ -76,12 +76,12 @@ text = "cuvs-sys crate uses find_package(cuvs), not source build. Needs libcuvs 
 mentions = [
     "cuvs",
     "Cargo.toml",
-    "gpu-search",
+    "gpu-index",
 ]
 
 [[note]]
 sentiment = 0.0
-text = "CI catches what local builds miss. Feature flags differ between dev (gpu-search enabled) and CI (default features). Clippy on CI found dead code invisible locally."
+text = "CI catches what local builds miss. Feature flags differ between dev (gpu-index enabled) and CI (default features). Clippy on CI found dead code invisible locally."
 mentions = [
     "CI",
     "clippy",
@@ -102,7 +102,7 @@ text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=3
 mentions = [
     "src/cli/mod.rs",
     "batch_size",
-    "gpu-search",
+    "gpu-index",
 ]
 
 [[note]]
@@ -350,7 +350,7 @@ mentions = [
     "~/.bashrc",
     "LD_LIBRARY_PATH",
     "CUDA_PATH",
-    "gpu-search",
+    "gpu-index",
 ]
 
 [[note]]
@@ -723,11 +723,11 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = 'CI runs without gpu-search feature — functions with params used only inside #[cfg(feature = "gpu-search")] need let _ = param; at top to avoid unused variable warnings in CI.'
+text = 'CI runs without gpu-index feature — functions with params used only inside #[cfg(feature = "gpu-index")] need let _ = param; at top to avoid unused variable warnings in CI.'
 mentions = [
     "src/cli/batch.rs",
     "CI",
-    "gpu-search",
+    "gpu-index",
 ]
 
 [[note]]

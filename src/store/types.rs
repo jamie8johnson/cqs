@@ -36,6 +36,13 @@ pub struct TypeGraph {
     pub reverse: HashMap<String, Vec<String>>,
 }
 
+/// A type usage relationship from a chunk.
+#[derive(Debug, Clone)]
+pub struct TypeUsage {
+    pub type_name: String,
+    pub edge_kind: String,
+}
+
 impl Store {
     // ============ Type Edge Upsert Methods ============
 
@@ -241,9 +248,9 @@ impl Store {
 
     /// Get types used by a given chunk (by function name).
     ///
-    /// Reverse query: "what types does parse_config use?" Returns (type_name, edge_kind)
-    /// pairs where edge_kind is "" for catch-all types.
-    pub fn get_types_used_by(&self, chunk_name: &str) -> Result<Vec<(String, String)>, StoreError> {
+    /// Reverse query: "what types does parse_config use?" Returns [`TypeUsage`] structs
+    /// where edge_kind is "" for catch-all types.
+    pub fn get_types_used_by(&self, chunk_name: &str) -> Result<Vec<TypeUsage>, StoreError> {
         tracing::debug!(chunk_name, "querying types used by chunk");
 
         self.rt.block_on(async {
@@ -258,7 +265,13 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            Ok(rows)
+            Ok(rows
+                .into_iter()
+                .map(|(type_name, edge_kind)| TypeUsage {
+                    type_name,
+                    edge_kind,
+                })
+                .collect())
         })
     }
 
@@ -608,7 +621,7 @@ mod tests {
 
         let types = store.get_types_used_by("func_a").unwrap();
         assert_eq!(types.len(), 3);
-        let type_names: Vec<&str> = types.iter().map(|(n, _)| n.as_str()).collect();
+        let type_names: Vec<&str> = types.iter().map(|t| t.type_name.as_str()).collect();
         assert!(type_names.contains(&"Config"));
         assert!(type_names.contains(&"Store"));
         assert!(type_names.contains(&"SqlitePool"));
@@ -639,7 +652,7 @@ mod tests {
             .unwrap();
         let types = store.get_types_used_by("func_a").unwrap();
         assert_eq!(types.len(), 1);
-        assert_eq!(types[0].0, "HashMap");
+        assert_eq!(types[0].type_name, "HashMap");
     }
 
     #[test]
@@ -886,11 +899,11 @@ mod tests {
             .unwrap();
 
         let types = store.get_types_used_by("func_a").unwrap();
-        let config = types.iter().find(|(n, _)| n == "Config").unwrap();
-        assert_eq!(config.1, "Param");
+        let config = types.iter().find(|t| t.type_name == "Config").unwrap();
+        assert_eq!(config.edge_kind, "Param");
 
-        let generic = types.iter().find(|(n, _)| n == "Generic").unwrap();
-        assert_eq!(generic.1, ""); // empty string for catch-all
+        let generic = types.iter().find(|t| t.type_name == "Generic").unwrap();
+        assert_eq!(generic.edge_kind, ""); // empty string for catch-all
     }
 
     #[test]

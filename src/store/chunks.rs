@@ -629,9 +629,12 @@ impl Store {
     /// Get embeddings for chunks with matching content hashes (batch lookup).
     ///
     /// Batches queries in groups of 500 to stay within SQLite's parameter limit (~999).
-    pub fn get_embeddings_by_hashes(&self, hashes: &[&str]) -> HashMap<String, Embedding> {
+    pub fn get_embeddings_by_hashes(
+        &self,
+        hashes: &[&str],
+    ) -> Result<HashMap<String, Embedding>, StoreError> {
         if hashes.is_empty() {
-            return HashMap::new();
+            return Ok(HashMap::new());
         }
 
         const BATCH_SIZE: usize = 500;
@@ -653,13 +656,7 @@ impl Store {
                     for hash in batch {
                         q = q.bind(*hash);
                     }
-                    match q.fetch_all(&self.pool).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::warn!("Failed to fetch embeddings by hash: {}", e);
-                            continue;
-                        }
-                    }
+                    q.fetch_all(&self.pool).await?
                 };
 
                 for row in rows {
@@ -670,7 +667,7 @@ impl Store {
                     }
                 }
             }
-            result
+            Ok(result)
         })
     }
 

@@ -77,7 +77,7 @@ pub(crate) mod source;
 pub(crate) mod structural;
 pub(crate) mod where_to_add;
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 pub mod cagra;
 
 pub use audit::parse_duration;
@@ -127,7 +127,7 @@ pub use where_to_add::{
     DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
 };
 
-#[cfg(feature = "gpu-search")]
+#[cfg(feature = "gpu-index")]
 pub use cagra::CagraIndex;
 
 use std::path::PathBuf;

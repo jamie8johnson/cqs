@@ -18,9 +18,8 @@ use crate::gather::{
 };
 use crate::impact::{find_affected_tests_with_chunks, TestInfo, DEFAULT_MAX_TEST_SEARCH_DEPTH};
 use crate::language::ChunkType;
-use crate::scout::{ChunkRole, ScoutResult};
 use crate::store::Store;
-use crate::{scout, AnalysisError, Embedder};
+use crate::{AnalysisError, Embedder};
 
 /// Default callee BFS expansion depth.
 pub const DEFAULT_ONBOARD_DEPTH: usize = 3;
@@ -90,21 +89,32 @@ pub fn onboard(
 ) -> Result<OnboardResult, AnalysisError> {
     let _span = tracing::info_span!("onboard", concept).entered();
 
-    // 1. Scout for relevant code
-    let scout_result = scout(store, embedder, concept, root, 10)?;
-    tracing::debug!(
-        file_groups = scout_result.file_groups.len(),
-        "Scout completed"
-    );
+    // 1. Search for relevant code (direct search, skip full scout overhead)
+    let query_embedding = embedder
+        .embed_query(concept)
+        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    let filter = crate::store::SearchFilter::default();
+    let results = store.search_filtered(&query_embedding, &filter, 10, 0.0)?;
 
-    if scout_result.file_groups.is_empty() {
+    if results.is_empty() {
         return Err(AnalysisError::NotFound(format!(
             "No relevant code found for concept: {concept}"
         )));
     }
 
-    // 2. Pick entry point — first ModifyTarget, fallback to highest-scored chunk
-    let (entry_name, entry_file) = pick_entry_point(&scout_result);
+    // 2. Pick entry point — prefer callable types (Function/Method) for call graph connections
+    let entry = results
+        .iter()
+        .find(|r| is_callable_type(r.chunk.chunk_type))
+        .or(results.first())
+        .unwrap();
+    let entry_name = entry.chunk.name.clone();
+    let entry_file = entry
+        .chunk
+        .file
+        .strip_prefix(root)
+        .unwrap_or(&entry.chunk.file)
+        .to_path_buf();
     tracing::info!(entry_point = %entry_name, file = ?entry_file, "Selected entry point");
 
     // 3. Load shared resources
@@ -230,75 +240,11 @@ pub fn onboard(
 }
 
 /// Convert OnboardResult to JSON.
-pub fn onboard_to_json(result: &OnboardResult) -> serde_json::Value {
-    serde_json::to_value(result).unwrap_or_default()
+pub fn onboard_to_json(result: &OnboardResult) -> Result<serde_json::Value, serde_json::Error> {
+    serde_json::to_value(result)
 }
 
 // --- Internal helpers ---
-
-/// Pick the best entry point from scout results.
-///
-/// Prefers the first ModifyTarget across all file groups (sorted by relevance).
-/// Falls back to the highest-scored callable chunk (Function/Method), then any chunk.
-fn pick_entry_point(scout_result: &ScoutResult) -> (String, PathBuf) {
-    // Try ModifyTarget first — prefer callable types even here
-    let mut best_modify_callable: Option<(f32, String, PathBuf)> = None;
-    let mut best_modify_any: Option<(f32, String, PathBuf)> = None;
-    for group in &scout_result.file_groups {
-        for chunk in &group.chunks {
-            if chunk.role == ChunkRole::ModifyTarget {
-                let entry = (chunk.search_score, chunk.name.clone(), group.file.clone());
-                if is_callable_type(chunk.chunk_type) {
-                    if best_modify_callable
-                        .as_ref()
-                        .is_none_or(|(s, _, _)| *s < chunk.search_score)
-                    {
-                        best_modify_callable = Some(entry);
-                    }
-                } else if best_modify_any
-                    .as_ref()
-                    .is_none_or(|(s, _, _)| *s < chunk.search_score)
-                {
-                    best_modify_any = Some(entry);
-                }
-            }
-        }
-    }
-    if let Some((_, name, file)) = best_modify_callable.or(best_modify_any) {
-        return (name, file);
-    }
-
-    // Fallback: prefer callable types (Function/Method) — they have call graph connections
-    tracing::warn!("No ModifyTarget found, using highest-scored chunk as entry point");
-    let mut best_callable: Option<(f32, String, PathBuf)> = None;
-    let mut best_any: Option<(f32, String, PathBuf)> = None;
-    for group in &scout_result.file_groups {
-        for chunk in &group.chunks {
-            if chunk.role == ChunkRole::TestToUpdate {
-                continue; // skip tests as entry points
-            }
-            let entry = (chunk.search_score, chunk.name.clone(), group.file.clone());
-            if is_callable_type(chunk.chunk_type) {
-                if best_callable
-                    .as_ref()
-                    .is_none_or(|(s, _, _)| *s < chunk.search_score)
-                {
-                    best_callable = Some(entry);
-                }
-            } else if best_any
-                .as_ref()
-                .is_none_or(|(s, _, _)| *s < chunk.search_score)
-            {
-                best_any = Some(entry);
-            }
-        }
-    }
-
-    best_callable
-        .or(best_any)
-        .map(|(_, name, file)| (name, file))
-        .unwrap_or_else(|| ("unknown".to_string(), PathBuf::new()))
-}
 
 /// Returns true for chunk types that have call graph connections (Function, Method).
 fn is_callable_type(ct: ChunkType) -> bool {
@@ -313,7 +259,7 @@ fn gathered_to_onboard(c: GatheredChunk) -> OnboardEntry {
         line_start: c.line_start,
         line_end: c.line_end,
         language: c.language.to_string(),
-        chunk_type: format!("{:?}", c.chunk_type),
+        chunk_type: c.chunk_type.to_string(),
         signature: c.signature,
         content: c.content,
         depth: c.depth,
@@ -370,7 +316,7 @@ fn fetch_entry_point(
                 line_start: r.chunk.line_start,
                 line_end: r.chunk.line_end,
                 language: r.chunk.language.to_string(),
-                chunk_type: format!("{:?}", r.chunk.chunk_type),
+                chunk_type: r.chunk.chunk_type.to_string(),
                 signature: r.chunk.signature.clone(),
                 content: r.chunk.content.clone(),
                 depth: 0,
@@ -385,13 +331,13 @@ fn fetch_entry_point(
 /// Filter common types from type dependency results.
 ///
 /// Uses `crate::COMMON_TYPES` (from focused_read.rs) — the canonical 44-entry HashSet.
-fn filter_common_types(types: Vec<(String, String)>) -> Vec<TypeInfo> {
+fn filter_common_types(types: Vec<crate::store::TypeUsage>) -> Vec<TypeInfo> {
     types
         .into_iter()
-        .filter(|(name, _)| !crate::COMMON_TYPES.contains(name.as_str()))
-        .map(|(type_name, edge_kind)| TypeInfo {
-            type_name,
-            edge_kind,
+        .filter(|t| !crate::COMMON_TYPES.contains(t.type_name.as_str()))
+        .map(|t| TypeInfo {
+            type_name: t.type_name,
+            edge_kind: t.edge_kind,
         })
         .collect()
 }
@@ -409,152 +355,27 @@ fn test_info_to_entry(t: TestInfo) -> TestEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scout::{ChunkRole, FileGroup, ScoutChunk, ScoutResult, ScoutSummary};
-    use std::path::PathBuf;
-
-    fn make_scout_chunk(name: &str, role: ChunkRole, score: f32) -> ScoutChunk {
-        make_scout_chunk_typed(name, role, score, ChunkType::Function)
-    }
-
-    fn make_scout_chunk_typed(
-        name: &str,
-        role: ChunkRole,
-        score: f32,
-        chunk_type: ChunkType,
-    ) -> ScoutChunk {
-        ScoutChunk {
-            name: name.to_string(),
-            chunk_type,
-            signature: format!("fn {name}()"),
-            line_start: 1,
-            role,
-            caller_count: 0,
-            test_count: 0,
-            search_score: score,
-        }
-    }
-
-    fn make_file_group(file: &str, chunks: Vec<ScoutChunk>) -> FileGroup {
-        let relevance = chunks.iter().map(|c| c.search_score).sum::<f32>() / chunks.len() as f32;
-        FileGroup {
-            file: PathBuf::from(file),
-            relevance_score: relevance,
-            chunks,
-            is_stale: false,
-        }
-    }
-
-    fn make_scout_result(file_groups: Vec<FileGroup>) -> ScoutResult {
-        let total_functions = file_groups.iter().map(|g| g.chunks.len()).sum();
-        ScoutResult {
-            file_groups,
-            relevant_notes: Vec::new(),
-            summary: ScoutSummary {
-                total_files: 1,
-                total_functions,
-                untested_count: 0,
-                stale_count: 0,
-            },
-        }
-    }
-
-    #[test]
-    fn test_entry_point_prefers_modify_target() {
-        let result = make_scout_result(vec![make_file_group(
-            "src/foo.rs",
-            vec![
-                make_scout_chunk("dependency_fn", ChunkRole::Dependency, 0.8),
-                make_scout_chunk("target_fn", ChunkRole::ModifyTarget, 0.6),
-            ],
-        )]);
-        let (name, _) = pick_entry_point(&result);
-        assert_eq!(name, "target_fn"); // ModifyTarget wins despite lower score
-    }
-
-    #[test]
-    fn test_entry_point_fallback_no_modify_target() {
-        let result = make_scout_result(vec![make_file_group(
-            "src/bar.rs",
-            vec![
-                make_scout_chunk("low_fn", ChunkRole::Dependency, 0.3),
-                make_scout_chunk("high_fn", ChunkRole::Dependency, 0.9),
-            ],
-        )]);
-        let (name, _) = pick_entry_point(&result);
-        assert_eq!(name, "high_fn"); // Highest score wins as fallback
-    }
-
-    #[test]
-    fn test_entry_point_from_multiple_files() {
-        let result = make_scout_result(vec![
-            make_file_group(
-                "src/first.rs",
-                vec![make_scout_chunk("dep", ChunkRole::Dependency, 0.9)],
-            ),
-            make_file_group(
-                "src/second.rs",
-                vec![make_scout_chunk("target", ChunkRole::ModifyTarget, 0.5)],
-            ),
-        ]);
-        let (name, file) = pick_entry_point(&result);
-        assert_eq!(name, "target"); // ModifyTarget from second file picked
-        assert_eq!(file, PathBuf::from("src/second.rs"));
-    }
-
-    #[test]
-    fn test_entry_point_prefers_callable_over_struct() {
-        // Struct has higher score but Function should be preferred (call graph connections)
-        let result = make_scout_result(vec![make_file_group(
-            "src/search.rs",
-            vec![
-                make_scout_chunk_typed("MyStruct", ChunkRole::Dependency, 0.4, ChunkType::Struct),
-                make_scout_chunk_typed(
-                    "search_fn",
-                    ChunkRole::Dependency,
-                    0.3,
-                    ChunkType::Function,
-                ),
-            ],
-        )]);
-        let (name, _) = pick_entry_point(&result);
-        assert_eq!(name, "search_fn"); // Function preferred over struct
-    }
-
-    #[test]
-    fn test_entry_point_fallback_to_struct_when_no_callable() {
-        // When no Function/Method exists, fall back to struct
-        let result = make_scout_result(vec![make_file_group(
-            "src/types.rs",
-            vec![
-                make_scout_chunk_typed("MyEnum", ChunkRole::Dependency, 0.3, ChunkType::Enum),
-                make_scout_chunk_typed("MyStruct", ChunkRole::Dependency, 0.4, ChunkType::Struct),
-            ],
-        )]);
-        let (name, _) = pick_entry_point(&result);
-        assert_eq!(name, "MyStruct"); // Highest-scored non-callable
-    }
-
-    #[test]
-    fn test_entry_point_skips_tests() {
-        // Tests should not be chosen as entry points
-        let result = make_scout_result(vec![make_file_group(
-            "src/lib.rs",
-            vec![
-                make_scout_chunk("test_something", ChunkRole::TestToUpdate, 0.9),
-                make_scout_chunk("real_fn", ChunkRole::Dependency, 0.2),
-            ],
-        )]);
-        let (name, _) = pick_entry_point(&result);
-        assert_eq!(name, "real_fn"); // Test skipped, real function chosen
-    }
 
     #[test]
     fn test_common_types_filtered() {
+        use crate::store::TypeUsage;
         let types = vec![
-            ("String".to_string(), "Param".to_string()),
-            ("Vec".to_string(), "Return".to_string()),
-            ("Store".to_string(), "Param".to_string()),
-            ("Option".to_string(), "Return".to_string()),
+            TypeUsage {
+                type_name: "String".to_string(),
+                edge_kind: "Param".to_string(),
+            },
+            TypeUsage {
+                type_name: "Vec".to_string(),
+                edge_kind: "Return".to_string(),
+            },
+            TypeUsage {
+                type_name: "Store".to_string(),
+                edge_kind: "Param".to_string(),
+            },
+            TypeUsage {
+                type_name: "Option".to_string(),
+                edge_kind: "Return".to_string(),
+            },
         ];
         let filtered = filter_common_types(types);
         assert_eq!(filtered.len(), 1);
@@ -563,14 +384,27 @@ mod tests {
 
     #[test]
     fn test_common_types_canonical_set_filters_more() {
+        use crate::store::TypeUsage;
         // Verify that filter_common_types now uses the canonical 44-entry HashSet
         // from focused_read.rs, which includes types like Error, Mutex, etc.
         // that the old 22-entry local array missed.
         let types = vec![
-            ("Error".to_string(), "Return".to_string()),
-            ("Mutex".to_string(), "Field".to_string()),
-            ("Debug".to_string(), "Bound".to_string()),
-            ("Store".to_string(), "Param".to_string()),
+            TypeUsage {
+                type_name: "Error".to_string(),
+                edge_kind: "Return".to_string(),
+            },
+            TypeUsage {
+                type_name: "Mutex".to_string(),
+                edge_kind: "Field".to_string(),
+            },
+            TypeUsage {
+                type_name: "Debug".to_string(),
+                edge_kind: "Bound".to_string(),
+            },
+            TypeUsage {
+                type_name: "Store".to_string(),
+                edge_kind: "Param".to_string(),
+            },
         ];
         let filtered = filter_common_types(types);
         assert_eq!(filtered.len(), 1);
@@ -579,10 +413,20 @@ mod tests {
 
     #[test]
     fn test_uncommon_types_kept() {
+        use crate::store::TypeUsage;
         let types = vec![
-            ("Embedder".to_string(), "Param".to_string()),
-            ("CallGraph".to_string(), "Field".to_string()),
-            ("SearchFilter".to_string(), "Param".to_string()),
+            TypeUsage {
+                type_name: "Embedder".to_string(),
+                edge_kind: "Param".to_string(),
+            },
+            TypeUsage {
+                type_name: "CallGraph".to_string(),
+                edge_kind: "Field".to_string(),
+            },
+            TypeUsage {
+                type_name: "SearchFilter".to_string(),
+                edge_kind: "Param".to_string(),
+            },
         ];
         let filtered = filter_common_types(types);
         assert_eq!(filtered.len(), 3);

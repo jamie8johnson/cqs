@@ -214,18 +214,29 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     };
     // Deduplicate type names, filter common types, preserve edge_kind for display
     let mut seen_types = std::collections::HashSet::new();
-    let filtered_types: Vec<(String, String)> = type_deps
+    let filtered_types: Vec<cqs::store::TypeUsage> = type_deps
         .into_iter()
-        .filter(|(name, _kind)| !COMMON_TYPES.contains(name.as_str()))
-        .filter(|(name, _kind)| seen_types.insert(name.clone()))
+        .filter(|t| !COMMON_TYPES.contains(t.type_name.as_str()))
+        .filter(|t| seen_types.insert(t.type_name.clone()))
         .collect();
     tracing::debug!(
         type_count = filtered_types.len(),
         "Type deps for focused read"
     );
 
-    for (type_name, edge_kind) in &filtered_types {
-        if let Ok(results) = store.search_by_name(type_name, 5) {
+    // Batch lookup instead of N+1 queries (CQ-15)
+    let type_names: Vec<&str> = filtered_types
+        .iter()
+        .map(|t| t.type_name.as_str())
+        .collect();
+    let batch_results = store
+        .search_by_names_batch(&type_names, 5)
+        .unwrap_or_default();
+
+    for t in &filtered_types {
+        let type_name = &t.type_name;
+        let edge_kind = &t.edge_kind;
+        if let Some(results) = batch_results.get(type_name.as_str()) {
             let type_def = results.iter().find(|r| {
                 r.chunk.name == *type_name
                     && matches!(

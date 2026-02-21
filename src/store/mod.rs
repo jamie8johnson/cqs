@@ -25,6 +25,7 @@ pub(crate) mod helpers;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use tokio::runtime::Runtime;
@@ -112,6 +113,9 @@ pub use types::TypeEdgeStats;
 /// In-memory type graph (forward + reverse adjacency lists).
 pub use types::TypeGraph;
 
+/// A type usage relationship from a chunk.
+pub use types::TypeUsage;
+
 // Internal use
 use helpers::{clamp_line_number, ChunkRow};
 
@@ -163,6 +167,7 @@ pub struct Store {
     pub(crate) rt: Runtime,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
+    notes_summaries_cache: OnceLock<Vec<NoteSummary>>,
 }
 
 impl Store {
@@ -220,6 +225,7 @@ impl Store {
             pool,
             rt,
             closed: AtomicBool::new(false),
+            notes_summaries_cache: OnceLock::new(),
         };
 
         // Set restrictive permissions on database files (Unix only)
@@ -319,6 +325,7 @@ impl Store {
             pool,
             rt,
             closed: AtomicBool::new(false),
+            notes_summaries_cache: OnceLock::new(),
         };
 
         // Skip permissions setting (read-only, no file creation)
@@ -691,6 +698,16 @@ impl Store {
                 .await?;
             Ok(())
         })
+    }
+
+    /// Get cached notes summaries (loaded once, reused for subsequent search operations).
+    pub fn cached_notes_summaries(&self) -> Result<&[NoteSummary], StoreError> {
+        if let Some(ns) = self.notes_summaries_cache.get() {
+            return Ok(ns);
+        }
+        let ns = self.list_notes_summaries()?;
+        let _ = self.notes_summaries_cache.set(ns);
+        Ok(self.notes_summaries_cache.get().unwrap())
     }
 
     /// Gracefully close the store, performing WAL checkpoint.

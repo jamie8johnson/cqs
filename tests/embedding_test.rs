@@ -1,7 +1,7 @@
 //! Embedding pipeline integration tests
 //!
 //! Tests for `embed_documents` and `embed_query` that require the ONNX model.
-//! Run with: cargo test --features gpu-search --test embedding_test -- --ignored
+//! Run with: cargo test --features gpu-index --test embedding_test -- --ignored
 
 use cqs::embedder::{Embedder, EmbedderError};
 use cqs::EMBEDDING_DIM;

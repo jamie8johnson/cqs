@@ -43,6 +43,9 @@ pub(crate) struct BatchContext {
     file_set: OnceLock<HashSet<PathBuf>>,
     audit_state: OnceLock<cqs::audit::AuditMode>,
     notes_cache: OnceLock<Vec<cqs::note::Note>>,
+    call_graph: OnceLock<cqs::store::CallGraph>,
+    config: OnceLock<cqs::config::Config>,
+    reranker: OnceLock<cqs::Reranker>,
 }
 
 impl BatchContext {
@@ -70,6 +73,9 @@ impl BatchContext {
     }
 
     /// Get a cached reference index by name, loading on first access.
+    ///
+    /// Uses cached config (RM-21) and loads only the target reference (RM-16),
+    /// not all references.
     pub fn get_ref(&self, name: &str) -> Result<()> {
         let refs = self.refs.borrow();
         if refs.contains_key(name) {
@@ -77,11 +83,25 @@ impl BatchContext {
         }
         drop(refs);
 
-        let config = cqs::config::Config::load(&self.root);
-        let loaded = cqs::reference::load_references(&config.references);
-        let found = loaded.into_iter().find(|r| r.name == name).ok_or_else(|| {
-            anyhow::anyhow!(
+        let config = self.config();
+        // Filter to just the target reference instead of loading all (RM-16)
+        let single: Vec<_> = config
+            .references
+            .iter()
+            .filter(|r| r.name == name)
+            .cloned()
+            .collect();
+        if single.is_empty() {
+            anyhow::bail!(
                 "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                name
+            );
+        }
+        let loaded = cqs::reference::load_references(&single);
+        let found = loaded.into_iter().next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Failed to load reference '{}'. Run 'cqs ref update {}' first.",
+                name,
                 name
             )
         })?;
@@ -137,6 +157,34 @@ impl BatchContext {
             None
         }
     }
+
+    /// Get or load the call graph (cached for session). (PERF-22)
+    fn call_graph(&self) -> Result<&cqs::store::CallGraph> {
+        if let Some(g) = self.call_graph.get() {
+            return Ok(g);
+        }
+        let _span = tracing::info_span!("batch_call_graph_init").entered();
+        let g = self.store.get_call_graph()?;
+        let _ = self.call_graph.set(g);
+        Ok(self.call_graph.get().unwrap())
+    }
+
+    /// Get cached project config (loaded once per session). (RM-21)
+    fn config(&self) -> &cqs::config::Config {
+        self.config
+            .get_or_init(|| cqs::config::Config::load(&self.root))
+    }
+
+    /// Get or create the reranker (cached for session). (RM-18)
+    fn reranker(&self) -> Result<&cqs::Reranker> {
+        if let Some(r) = self.reranker.get() {
+            return Ok(r);
+        }
+        let _span = tracing::info_span!("batch_reranker_init").entered();
+        let r = cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+        let _ = self.reranker.set(r);
+        Ok(self.reranker.get().unwrap())
+    }
 }
 
 /// Build the best available vector index for the store.
@@ -144,8 +192,8 @@ fn build_vector_index(
     store: &Store,
     cqs_dir: &std::path::Path,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
-    let _ = store; // Used only with gpu-search feature
-    #[cfg(feature = "gpu-search")]
+    let _ = store; // Used only with gpu-index feature
+    #[cfg(feature = "gpu-index")]
     {
         const CAGRA_THRESHOLD: u64 = 5000;
         let chunk_count = store.chunk_count().unwrap_or(0);
@@ -174,14 +222,7 @@ fn build_vector_index(
 
 // ─── BatchInput / BatchCmd ───────────────────────────────────────────────────
 
-/// Parse a non-zero usize (reuse logic from CLI)
-fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String> {
-    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
-    if val == 0 {
-        return Err("value must be at least 1".to_string());
-    }
-    Ok(val)
-}
+use super::parse_nonzero_usize;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -628,8 +669,7 @@ fn dispatch_search(
             }
         }
         if code_results.len() > 1 {
-            let reranker =
-                cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
+            let reranker = ctx.reranker()?;
             reranker
                 .rerank(query, &mut code_results, limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
@@ -682,8 +722,8 @@ fn dispatch_deps(ctx: &BatchContext, name: &str, reverse: bool) -> Result<serde_
         let types = ctx.store.get_types_used_by(name)?;
         Ok(serde_json::json!({
             "function": name,
-            "types": types.iter().map(|(tn, kind)| {
-                serde_json::json!({"type_name": tn, "edge_kind": kind})
+            "types": types.iter().map(|t| {
+                serde_json::json!({"type_name": t.type_name, "edge_kind": t.edge_kind})
             }).collect::<Vec<_>>(),
             "count": types.len(),
         }))
@@ -834,6 +874,7 @@ fn dispatch_similar(
     threshold: f32,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_similar", target).entered();
+    let threshold = super::validate_finite_f32(threshold, "threshold")?;
     let limit = limit.clamp(1, 100);
 
     let resolved = cqs::resolve_target(&ctx.store, target)?;
@@ -1014,7 +1055,7 @@ fn dispatch_test_map(
     let resolved = cqs::resolve_target(&ctx.store, name)?;
     let target_name = resolved.chunk.name.clone();
 
-    let graph = ctx.store.get_call_graph()?;
+    let graph = ctx.call_graph()?;
     let test_chunks = ctx.store.find_test_chunks()?;
 
     // Reverse BFS from target
@@ -1123,7 +1164,7 @@ fn dispatch_trace(
         }));
     }
 
-    let graph = ctx.store.get_call_graph()?;
+    let graph = ctx.call_graph()?;
 
     // BFS shortest path
     let mut visited: HashMap<String, String> = HashMap::new();
@@ -1162,9 +1203,13 @@ fn dispatch_trace(
 
     match found_path {
         Some(names) => {
+            // Batch lookup instead of N+1 queries (PERF-20)
+            let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+            let batch_results = ctx.store.search_by_names_batch(&name_refs, 1)?;
+
             let mut path_json = Vec::new();
             for name in &names {
-                let entry = match ctx.store.search_by_name(name, 1)?.into_iter().next() {
+                let entry = match batch_results.get(name.as_str()).and_then(|v| v.first()) {
                     Some(r) => {
                         let rel = cqs::rel_display(&r.chunk.file, &ctx.root);
                         serde_json::json!({
@@ -1278,13 +1323,7 @@ fn dispatch_context(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_context", path).entered();
 
-    let abs_path = ctx.root.join(path);
-    let origin = abs_path.to_string_lossy().to_string();
-
-    let mut chunks = ctx.store.get_chunks_by_origin(&origin)?;
-    if chunks.is_empty() {
-        chunks = ctx.store.get_chunks_by_origin(path)?;
-    }
+    let chunks = ctx.store.get_chunks_by_origin(path)?;
     if chunks.is_empty() {
         anyhow::bail!(
             "No indexed chunks found for '{}'. Is the file indexed?",
@@ -1393,7 +1432,7 @@ fn dispatch_onboard(ctx: &BatchContext, query: &str, depth: usize) -> Result<ser
     let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
     let result = cqs::onboard(&ctx.store, embedder, query, &ctx.root, depth)?;
-    Ok(cqs::onboard_to_json(&result))
+    cqs::onboard_to_json(&result).map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))
 }
 
 fn dispatch_scout(
@@ -1629,14 +1668,26 @@ fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::
         }
     };
     let mut seen_types = std::collections::HashSet::new();
-    let filtered_types: Vec<(String, String)> = type_deps
+    let filtered_types: Vec<cqs::store::TypeUsage> = type_deps
         .into_iter()
-        .filter(|(name, _kind)| !cqs::COMMON_TYPES.contains(name.as_str()))
-        .filter(|(name, _kind)| seen_types.insert(name.clone()))
+        .filter(|t| !cqs::COMMON_TYPES.contains(t.type_name.as_str()))
+        .filter(|t| seen_types.insert(t.type_name.clone()))
         .collect();
 
-    for (type_name, edge_kind) in &filtered_types {
-        if let Ok(results) = ctx.store.search_by_name(type_name, 5) {
+    // Batch lookup instead of N+1 queries (CQ-15)
+    let type_names: Vec<&str> = filtered_types
+        .iter()
+        .map(|t| t.type_name.as_str())
+        .collect();
+    let batch_results = ctx
+        .store
+        .search_by_names_batch(&type_names, 5)
+        .unwrap_or_default();
+
+    for t in &filtered_types {
+        let type_name = &t.type_name;
+        let edge_kind = &t.edge_kind;
+        if let Some(results) = batch_results.get(type_name.as_str()) {
             let type_def = results.iter().find(|r| {
                 r.chunk.name == *type_name
                     && matches!(
@@ -1758,32 +1809,22 @@ fn dispatch_drift(
     limit: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_drift", reference).entered();
+    let threshold = super::validate_finite_f32(threshold, "threshold")?;
+    let min_drift = super::validate_finite_f32(min_drift, "min_drift")?;
 
-    // Load reference store
-    let config = cqs::config::Config::load(&ctx.root);
-    let ref_cfg = config
-        .references
-        .iter()
-        .find(|r| r.name == reference)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                reference
-            )
-        })?;
-
-    let ref_db = ref_cfg.path.join("index.db");
-    if !ref_db.exists() {
-        anyhow::bail!(
-            "Reference '{}' has no index. Run 'cqs ref update {}' first.",
-            reference,
-            reference
-        );
-    }
-    let ref_store = cqs::Store::open_readonly(&ref_db)?;
+    // Use cached reference store (PERF-27/RM-17)
+    ctx.get_ref(reference)?;
+    let ref_idx = ctx
+        .borrow_ref(reference)
+        .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", reference))?;
 
     let result = cqs::drift::detect_drift(
-        &ref_store, &ctx.store, reference, threshold, min_drift, lang,
+        &ref_idx.store,
+        &ctx.store,
+        reference,
+        threshold,
+        min_drift,
+        lang,
     )?;
 
     let mut drifted_json: Vec<_> = result
@@ -2173,6 +2214,9 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         file_set: OnceLock::new(),
         audit_state: OnceLock::new(),
         notes_cache: OnceLock::new(),
+        call_graph: OnceLock::new(),
+        config: OnceLock::new(),
+        reranker: OnceLock::new(),
     };
 
     let stdin = std::io::stdin();

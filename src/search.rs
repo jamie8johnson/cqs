@@ -388,11 +388,11 @@ impl Store {
             .entered();
 
         // Load notes once for note-boosted ranking (cheap — no embeddings)
-        let notes = match self.list_notes_summaries() {
+        let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to load notes for search boosting");
-                vec![]
+                &[]
             }
         };
 
@@ -519,7 +519,7 @@ impl Store {
                     // Apply note-based boost: notes mentioning this chunk's file or name
                     // adjust its score by up to ±15%
                     let chunk_name = name.as_deref().unwrap_or("");
-                    let score = base_score * note_boost(file_part, chunk_name, &notes);
+                    let score = base_score * note_boost(file_part, chunk_name, notes);
 
                     if score >= threshold {
                         score_heap.push(id, score);
@@ -642,11 +642,11 @@ impl Store {
         let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
 
         // Load notes once for note-boosted ranking
-        let notes = match self.list_notes_summaries() {
+        let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to load notes for search boosting");
-                vec![]
+                &[]
             }
         };
 
@@ -712,7 +712,7 @@ impl Store {
                     };
 
                     // Apply note-based boost
-                    let score = base_score * note_boost(&chunk_row.origin, &chunk_row.name, &notes);
+                    let score = base_score * note_boost(&chunk_row.origin, &chunk_row.name, notes);
 
                     if score >= threshold {
                         Some((chunk_row, score))
