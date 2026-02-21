@@ -20,7 +20,7 @@ pub(crate) fn cmd_deps(_cli: &Cli, name: &str, reverse: bool, json: bool) -> Res
         if json {
             let json_types: Vec<serde_json::Value> = types
                 .iter()
-                .map(|(tn, kind)| serde_json::json!({"type_name": tn, "edge_kind": kind}))
+                .map(|t| serde_json::json!({"type_name": t.type_name, "edge_kind": t.edge_kind}))
                 .collect();
             let output = serde_json::json!({
                 "function": name,
@@ -33,11 +33,11 @@ pub(crate) fn cmd_deps(_cli: &Cli, name: &str, reverse: bool, json: bool) -> Res
         } else {
             println!("Types used by '{}':", name.cyan());
             println!();
-            for (type_name, kind) in &types {
-                if kind.is_empty() {
-                    println!("  {}", type_name);
+            for t in &types {
+                if t.edge_kind.is_empty() {
+                    println!("  {}", t.type_name);
                 } else {
-                    println!("  {} ({})", type_name, kind.dimmed());
+                    println!("  {} ({})", t.type_name, t.edge_kind.dimmed());
                 }
             }
             println!();

@@ -72,55 +72,55 @@ After de-duplication: **~88 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `get_call_graph()` not cached in BatchContext — reloaded per command | PERF-22 | medium | |
-| 2 | `dispatch_drift` opens fresh Store per call — bypasses reference cache | PERF-27/RM-17 | easy | |
-| 3 | `list_notes_summaries()` redundantly loaded in search paths | PERF-23 | easy | |
-| 4 | N+1 `search_by_name` in focused read type dependency loop | CQ-15 | medium | |
-| 5 | N+1 `search_by_name` in `dispatch_trace` path enrichment | PERF-20 | easy | |
-| 6 | `onboard` uses full `scout()` when only entry point needed | PERF-28 | easy | |
-| 7 | Context abs_path lookup always fails — wasted SQLite query | PB-15/PERF-25 | easy | |
+| 1 | `get_call_graph()` not cached in BatchContext — reloaded per command | PERF-22 | medium | ✅ fixed |
+| 2 | `dispatch_drift` opens fresh Store per call — bypasses reference cache | PERF-27/RM-17 | easy | ✅ fixed |
+| 3 | `list_notes_summaries()` redundantly loaded in search paths | PERF-23 | easy | ✅ fixed |
+| 4 | N+1 `search_by_name` in focused read type dependency loop | CQ-15 | medium | ✅ fixed |
+| 5 | N+1 `search_by_name` in `dispatch_trace` path enrichment | PERF-20 | easy | ✅ fixed |
+| 6 | `onboard` uses full `scout()` when only entry point needed | PERF-28 | easy | ✅ fixed |
+| 7 | Context abs_path lookup always fails — wasted SQLite query | PB-15/PERF-25 | easy | ✅ fixed |
 
 ### Resource Management
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 8 | `get_ref` loads ALL reference stores to find one | RM-16 | easy | |
-| 9 | Reranker model not cached in BatchContext | RM-18 | easy | |
-| 10 | `Config::load` called per batch `get_ref`/`dispatch_drift` | RM-21 | easy | |
-| 11 | Pipeline intermediate merge collects unbounded names | RM-20 | easy | |
+| 8 | `get_ref` loads ALL reference stores to find one | RM-16 | easy | ✅ fixed |
+| 9 | Reranker model not cached in BatchContext | RM-18 | easy | ✅ fixed |
+| 10 | `Config::load` called per batch `get_ref`/`dispatch_drift` | RM-21 | easy | ✅ fixed |
+| 11 | Pipeline intermediate merge collects unbounded names | RM-20 | easy | non-issue (bounded by batch size) |
 
 ### Data Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 12 | Type edges upserted outside chunk transaction — crash inconsistency | DS-13 | medium | |
-| 13 | `get_embeddings_by_hashes` swallows errors — partial results | EH-30/DS-19 | easy | |
+| 12 | Type edges upserted outside chunk transaction — crash inconsistency | DS-13 | medium | deferred to P3 (idempotent) |
+| 13 | `get_embeddings_by_hashes` swallows errors — partial results | EH-30/DS-19 | easy | ✅ fixed |
 
 ### Code Quality / Duplication
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 14 | `dispatch_read_focused` duplicates `cmd_read_focused` (~140 lines) | CQ-8 | medium | |
-| 15 | `dispatch_read` duplicates `cmd_read` (~90 lines) | CQ-9 | medium | |
-| 16 | Duplicate `parse_nonzero_usize` function | CQ-10 | easy | |
-| 17 | Duplicate CAGRA/HNSW vector index construction | CQ-11 | easy | |
-| 18 | Batch `--tokens` accepted but silently ignored in 4 commands | CQ-14/TC-19 | easy | |
+| 14 | `dispatch_read_focused` duplicates `cmd_read_focused` (~140 lines) | CQ-8 | medium | deferred to P3 |
+| 15 | `dispatch_read` duplicates `cmd_read` (~90 lines) | CQ-9 | medium | deferred to P3 |
+| 16 | Duplicate `parse_nonzero_usize` function | CQ-10 | easy | ✅ fixed |
+| 17 | Duplicate CAGRA/HNSW vector index construction | CQ-11 | easy | ✅ fixed |
+| 18 | Batch `--tokens` accepted but silently ignored in 4 commands | CQ-14/TC-19 | easy | deferred to P3 |
 
 ### API Design
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 19 | `get_types_used_by` returns tuple instead of typed struct | AD-21 | easy | |
-| 20 | `onboard_to_json` silently returns null on failure | EH-23/OB-17 | easy | |
-| 21 | `chunk_type` serialized inconsistently (Display vs Debug) | AD-20 | easy | |
+| 19 | `get_types_used_by` returns tuple instead of typed struct | AD-21 | easy | ✅ fixed |
+| 20 | `onboard_to_json` silently returns null on failure | EH-23/OB-17 | easy | ✅ fixed |
+| 21 | `chunk_type` serialized inconsistently (Display vs Debug) | AD-20 | easy | ✅ fixed |
 
 ### Robustness
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 22 | Float params accept NaN/Infinity without validation (drift, similar, query) | RB-24/RB-28 | easy | |
+| 22 | Float params accept NaN/Infinity without validation (drift, similar, query) | RB-24/RB-28 | easy | ✅ fixed |
 
-**P2 Total: 22 findings**
+**P2 Total: 22 findings (18 fixed, 1 non-issue, 3 deferred to P3)**
 
 ---
 

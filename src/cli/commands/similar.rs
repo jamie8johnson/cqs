@@ -41,6 +41,7 @@ pub(crate) fn cmd_similar(
     threshold: f32,
     json: bool,
 ) -> Result<()> {
+    crate::cli::validate_finite_f32(threshold, "threshold")?;
     let _span = tracing::info_span!("cmd_similar", target).entered();
     let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 

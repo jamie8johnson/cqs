@@ -53,7 +53,7 @@ pub fn find_related(
     let type_pairs = store.get_types_used_by(&target)?;
     let type_names: Vec<String> = type_pairs
         .into_iter()
-        .map(|(name, _kind)| name)
+        .map(|t| t.type_name)
         .filter(|name| !COMMON_TYPES.contains(name.as_str()))
         .collect::<std::collections::HashSet<_>>()
         .into_iter()

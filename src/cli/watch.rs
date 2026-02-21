@@ -326,7 +326,7 @@ fn reindex_files(
 
     // Check content hash cache to skip re-embedding unchanged chunks
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-    let existing = store.get_embeddings_by_hashes(&hashes);
+    let existing = store.get_embeddings_by_hashes(&hashes)?;
 
     let mut cached: Vec<(usize, Embedding)> = Vec::new();
     let mut to_embed: Vec<(usize, &cqs::Chunk)> = Vec::new();

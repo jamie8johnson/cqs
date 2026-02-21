@@ -15,7 +15,7 @@ impl HnswIndex {
     /// # When to use `build` vs `build_batched`
     ///
     /// - **`build`**: Use when all embeddings fit comfortably in memory (<50k chunks,
-    ///   ~150MB for 50k × 769 × 4 bytes). Slightly higher graph quality since all
+    ///   ~150MB for 50k x 769 x 4 bytes). Slightly higher graph quality since all
     ///   vectors are available during construction.
     ///
     /// - **`build_batched`**: Use for large indexes (>50k chunks) or memory-constrained
@@ -44,18 +44,8 @@ impl HnswIndex {
             });
         }
 
-        // Validate dimensions
-        for (id, emb) in &embeddings {
-            if emb.len() != EMBEDDING_DIM {
-                return Err(HnswError::DimensionMismatch {
-                    expected: EMBEDDING_DIM,
-                    actual: emb.len(),
-                });
-            }
-            tracing::trace!("Adding {} to HNSW index", id);
-        }
+        let (id_map, data, nb_elem) = super::prepare_index_data(embeddings)?;
 
-        let nb_elem = embeddings.len();
         tracing::info!("Building HNSW index with {} vectors", nb_elem);
 
         // Create HNSW with cosine distance
@@ -67,14 +57,16 @@ impl HnswIndex {
             DistCosine,
         );
 
-        // Build ID map and prepare data for insertion
-        let mut id_map = Vec::with_capacity(nb_elem);
-        let mut data_for_insert: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(nb_elem);
-
-        for (idx, (chunk_id, embedding)) in embeddings.iter().enumerate() {
-            id_map.push(chunk_id.clone());
-            data_for_insert.push((embedding.as_vec(), idx));
-        }
+        // Reconstruct Vec<f32> chunks from flat buffer for hnsw_rs API
+        let chunks: Vec<Vec<f32>> = (0..nb_elem)
+            .map(|i| {
+                let start = i * EMBEDDING_DIM;
+                let end = start + EMBEDDING_DIM;
+                data[start..end].to_vec()
+            })
+            .collect();
+        let data_for_insert: Vec<(&Vec<f32>, usize)> =
+            chunks.iter().enumerate().map(|(i, v)| (v, i)).collect();
 
         // Parallel insert for performance
         hnsw.parallel_insert_data(&data_for_insert);

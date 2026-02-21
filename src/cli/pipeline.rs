@@ -5,6 +5,7 @@
 //! 2. Embedder: Embed chunks (GPU with CPU fallback)
 //! 3. Writer: Write to SQLite
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -136,7 +137,13 @@ fn prepare_for_embedding(
         .iter()
         .map(|c| c.content_hash.as_str())
         .collect();
-    let existing = store.get_embeddings_by_hashes(&hashes);
+    let existing = match store.get_embeddings_by_hashes(&hashes) {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to fetch cached embeddings by hash");
+            HashMap::new()
+        }
+    };
 
     // Step 3: Separate into cached vs to_embed
     let mut to_embed: Vec<Chunk> = Vec::new();

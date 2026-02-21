@@ -67,6 +67,8 @@ pub enum HnswError {
     NotFound(String),
     #[error("Dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
+    #[error("Build error: {0}")]
+    Build(String),
     #[error("HNSW error: {0}")]
     Internal(String),
     #[error(
@@ -224,6 +226,41 @@ impl HnswIndex {
         );
         Ok(items.len())
     }
+}
+
+/// Prepare embeddings for vector index construction.
+///
+/// Validates all dimensions match `EMBEDDING_DIM`, flattens into contiguous f32 buffer,
+/// and returns the ID map for index<->chunk_id mapping.
+pub(crate) fn prepare_index_data(
+    embeddings: Vec<(String, crate::Embedding)>,
+) -> Result<(Vec<String>, Vec<f32>, usize), HnswError> {
+    let n = embeddings.len();
+    if n == 0 {
+        return Err(HnswError::Build("No embeddings to index".into()));
+    }
+
+    // Validate dimensions
+    for (id, emb) in &embeddings {
+        if emb.len() != crate::EMBEDDING_DIM {
+            return Err(HnswError::Build(format!(
+                "Embedding dimension mismatch for {}: got {}, expected {}",
+                id,
+                emb.len(),
+                crate::EMBEDDING_DIM
+            )));
+        }
+    }
+
+    // Build ID map and flat data vector
+    let mut id_map = Vec::with_capacity(n);
+    let mut data = Vec::with_capacity(n * crate::EMBEDDING_DIM);
+    for (chunk_id, embedding) in embeddings {
+        id_map.push(chunk_id);
+        data.extend(embedding.into_inner());
+    }
+
+    Ok((id_map, data, n))
 }
 
 impl VectorIndex for HnswIndex {

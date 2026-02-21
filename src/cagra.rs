@@ -40,6 +40,8 @@ pub enum CagraError {
     NoGpu,
     #[error("Dimension mismatch: expected {expected}, got {actual}")]
     DimensionMismatch { expected: usize, actual: usize },
+    #[error("Build error: {0}")]
+    Build(String),
     #[error("Index not built")]
     NotBuilt,
 }
@@ -75,35 +77,13 @@ impl CagraIndex {
 
     /// Build a CAGRA index from embeddings
     pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, CagraError> {
-        if embeddings.is_empty() {
-            return Err(CagraError::Cuvs("Cannot build empty index".into()));
-        }
+        let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings)
+            .map_err(|e| CagraError::Build(e.to_string()))?;
 
-        // Validate dimensions
-        for (id, emb) in &embeddings {
-            if emb.len() != EMBEDDING_DIM {
-                return Err(CagraError::DimensionMismatch {
-                    expected: EMBEDDING_DIM,
-                    actual: emb.len(),
-                });
-            }
-            tracing::trace!("Adding {} to CAGRA index", id);
-        }
-
-        let n_vectors = embeddings.len();
         tracing::info!("Building CAGRA index with {} vectors", n_vectors);
 
         // Create cuVS resources
         let resources = cuvs::Resources::new().map_err(|e| CagraError::Cuvs(e.to_string()))?;
-
-        // Prepare data as ndarray (row-major: [n_vectors, EMBEDDING_DIM])
-        let mut id_map = Vec::with_capacity(n_vectors);
-        let mut flat_data = Vec::with_capacity(n_vectors * EMBEDDING_DIM);
-
-        for (chunk_id, embedding) in embeddings {
-            id_map.push(chunk_id);
-            flat_data.extend(embedding.into_inner());
-        }
 
         let dataset = Array2::from_shape_vec((n_vectors, EMBEDDING_DIM), flat_data)
             .map_err(|e| CagraError::Cuvs(format!("Failed to create array: {}", e)))?;
@@ -592,11 +572,8 @@ mod tests {
         let bad_embedding = Embedding::new(vec![1.0; 100]); // wrong dims
         let result = CagraIndex::build(vec![("bad".into(), bad_embedding)]);
         match result {
-            Err(CagraError::DimensionMismatch {
-                expected: 769,
-                actual: 100,
-            }) => {}
-            Err(e) => panic!("Expected DimensionMismatch(769, 100), got: {:?}", e),
+            Err(CagraError::Build(_)) => {} // Now returns Build error via prepare_index_data
+            Err(e) => panic!("Expected Build error, got: {:?}", e),
             Ok(_) => panic!("Expected error, got Ok"),
         }
     }

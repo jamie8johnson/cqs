@@ -416,7 +416,7 @@ fn find_type_impacted(store: &Store, target_name: &str) -> anyhow::Result<Vec<Ty
     let type_pairs = store.get_types_used_by(target_name)?;
     let type_names: Vec<String> = type_pairs
         .into_iter()
-        .map(|(name, _kind)| name)
+        .map(|t| t.type_name)
         .filter(|name| !crate::focused_read::COMMON_TYPES.contains(name.as_str()))
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
