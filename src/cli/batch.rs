@@ -192,8 +192,8 @@ fn build_vector_index(
     store: &Store,
     cqs_dir: &std::path::Path,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
-    let _ = store; // Used only with gpu-search feature
-    #[cfg(feature = "gpu-search")]
+    let _ = store; // Used only with gpu-index feature
+    #[cfg(feature = "gpu-index")]
     {
         const CAGRA_THRESHOLD: u64 = 5000;
         let chunk_count = store.chunk_count().unwrap_or(0);

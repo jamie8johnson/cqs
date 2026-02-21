@@ -42,7 +42,7 @@ ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4"
 ndarray = "0.17"
-# cuVS requires ndarray 0.15, import separately for gpu-search
+# cuVS requires ndarray 0.15, import separately for gpu-index
 ndarray_015 = { package = "ndarray", version = "0.15", optional = true }
 
 # Async
@@ -121,7 +121,7 @@ convert = ["dep:fast_html2md", "dep:walkdir"]
 # encrypt feature removed - sqlx doesn't support SQLCipher directly
 # TODO: Re-evaluate encryption strategy with sqlx
 encrypt = ["keyring"]
-gpu-search = ["cuvs", "ndarray_015"]
+gpu-index = ["cuvs", "ndarray_015"]
 
 [dev-dependencies]
 insta = "1"

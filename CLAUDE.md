@@ -179,7 +179,7 @@ The HNSW disaster: built an index, wrote save/load, marked "done" - but search n
 - `thiserror` for library errors, `anyhow` in CLI
 - No `unwrap()` except in tests
 - GPU detection at runtime, graceful CPU fallback
-- **GPU available** — always use `--features gpu-search` for cargo build/test/clippy. This is the default, not the exception. Env vars are in `~/.bashrc` (above the interactive guard).
+- **GPU available** — always use `--features gpu-index` for cargo build/test/clippy. This is the default, not the exception. Env vars are in `~/.bashrc` (above the interactive guard).
 
 ## Documentation
 
