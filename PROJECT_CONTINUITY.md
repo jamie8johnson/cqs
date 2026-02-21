@@ -2,14 +2,13 @@
 
 ## Right Now
 
-**v0.12.12 audit: P1 merged (#459), P2 merged (#460), P3 ready for PR.** 2026-02-21.
+**v0.12.12 audit complete (P1-P3).** 2026-02-21.
 
-- P1: 12 findings fixed — security, correctness, data safety, error handling
-- P2: 18 findings fixed — BatchContext caching (6), N+1 queries (2), code quality (2), API design (4), robustness (4)
-- P2 also renamed `gpu-search` feature flag to `gpu-index`
-- P3: 31 code fixes + 8 non-issues across 20 files — docs (9), error handling (5), observability (4), API design (5), robustness (5), algorithm/platform/perf (5), test coverage (2), documentation comments (3)
-- P3 on branch `fix/p3-audit-findings-v0.12.12`, ready to commit+push+PR
+- P1: 12 fixes merged (#459) — security, correctness, data safety, error handling
+- P2: 18 fixes merged (#460) — BatchContext caching, N+1 queries, API design, robustness. Also renamed `gpu-search` → `gpu-index`
+- P3: 31 fixes merged (#461) — docs (9), error handling (5), observability (4), API design (5), robustness (5), algorithm/platform/perf (5), test coverage (2), doc comments (3). 8 non-issues triaged.
 - P4: 18 findings deferred (tests, extensibility, design)
+- Binary updated, index rebuilt (3984 chunks, 4276 type edges)
 
 Audit triage: `docs/audit-triage.md`
 
@@ -43,19 +42,19 @@ None.
 
 ## Architecture
 
-- Version: 0.12.12
+- Version: 0.13.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1019 pass + 28 ignored
+- Tests: 1020 pass + 28 ignored
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag
 - Build target: `~/.cargo-target/cq/` (Linux FS)
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
 - Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
-- type_edges: 3901 edges, 321 unique types (Phase 1a+1b complete)
+- type_edges: 4276 edges (Phase 1a+1b complete)
 - Eval: E5-base-v2 90.9% Recall@1, 0.941 MRR on 55-query hard eval
