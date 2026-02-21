@@ -31,6 +31,7 @@ pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
 /// Apply windowing to chunks that exceed the token limit.
 /// Long chunks are split into overlapping windows; short chunks pass through unchanged.
 pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
+    let _span = tracing::info_span!("apply_windowing", chunk_count = chunks.len()).entered();
     let mut result = Vec::with_capacity(chunks.len());
 
     for chunk in chunks {
@@ -233,6 +234,7 @@ pub(crate) fn run_index_pipeline(
     force: bool,
     quiet: bool,
 ) -> Result<PipelineStats> {
+    let _span = tracing::info_span!("run_index_pipeline", file_count = files.len()).entered();
     let batch_size = 32; // Embedding batch size (backed off from 64 - crashed at 2%)
     let file_batch_size = 5_000; // Files to parse per batch (bounded memory)
     let channel_depth = 256; // Pipeline buffer depth (larger = smoother utilization)
@@ -402,6 +404,7 @@ pub(crate) fn run_index_pipeline(
 
     // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
     let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
+        let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
         let embedder = Embedder::new().context("Failed to initialize GPU embedder")?;
         embedder.warm().context("Failed to warm GPU embedder")?;
         let store = store_for_gpu;
@@ -495,6 +498,7 @@ pub(crate) fn run_index_pipeline(
     // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
     // CPU embedder is lazy-initialized on first batch to save ~500MB when GPU handles everything.
     let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
+        let _span = tracing::info_span!("embed_thread", mode = "cpu").entered();
         let store = store_for_cpu;
         let mut embedder: Option<Embedder> = None;
 

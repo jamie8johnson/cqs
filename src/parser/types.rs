@@ -1,5 +1,6 @@
 //! Data types for the parser module
 
+use serde::Serialize;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -83,7 +84,7 @@ pub struct FunctionCalls {
 ///
 /// Used for type-level dependency tracking (Phase 2b of moonshot).
 /// Stored as string in SQLite `type_edges.edge_kind` column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum TypeEdgeKind {
     /// Function/method parameter type: `fn foo(x: Config)`
     Param,
@@ -160,4 +161,25 @@ pub struct ChunkTypeRefs {
     pub line_start: u32,
     /// Type references used by this chunk
     pub type_refs: Vec<TypeRef>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn type_edge_kind_round_trip() {
+        for kind in [
+            TypeEdgeKind::Param,
+            TypeEdgeKind::Return,
+            TypeEdgeKind::Field,
+            TypeEdgeKind::Impl,
+            TypeEdgeKind::Bound,
+            TypeEdgeKind::Alias,
+        ] {
+            let s = kind.to_string();
+            let parsed: TypeEdgeKind = s.parse().unwrap();
+            assert_eq!(kind, parsed, "Round-trip failed for {s}");
+        }
+    }
 }

@@ -18,11 +18,19 @@ use crate::gather::{
 };
 use crate::impact::{find_affected_tests_with_chunks, TestInfo, DEFAULT_MAX_TEST_SEARCH_DEPTH};
 use crate::language::ChunkType;
+use crate::parser::TypeEdgeKind;
 use crate::store::Store;
 use crate::{AnalysisError, Embedder};
 
 /// Default callee BFS expansion depth.
 pub const DEFAULT_ONBOARD_DEPTH: usize = 3;
+
+fn serialize_path_forward_slash<S>(path: &std::path::Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&path.to_string_lossy().replace('\\', "/"))
+}
 
 // Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.
 
@@ -42,6 +50,7 @@ pub struct OnboardResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct OnboardEntry {
     pub name: String,
+    #[serde(serialize_with = "serialize_path_forward_slash")]
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
@@ -56,13 +65,14 @@ pub struct OnboardEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeInfo {
     pub type_name: String,
-    pub edge_kind: String,
+    pub edge_kind: TypeEdgeKind,
 }
 
 /// Test that exercises the entry point.
 #[derive(Debug, Clone, Serialize)]
 pub struct TestEntry {
     pub name: String,
+    #[serde(serialize_with = "serialize_path_forward_slash")]
     pub file: PathBuf,
     pub line: u32,
     pub call_depth: usize,
@@ -88,6 +98,7 @@ pub fn onboard(
     depth: usize,
 ) -> Result<OnboardResult, AnalysisError> {
     let _span = tracing::info_span!("onboard", concept).entered();
+    let depth = depth.min(10);
 
     // 1. Search for relevant code (direct search, skip full scout overhead)
     let query_embedding = embedder
@@ -214,7 +225,7 @@ pub fn onboard(
     let max_callee_depth = call_chain.iter().map(|c| c.depth).max().unwrap_or(0);
 
     let summary = OnboardSummary {
-        total_items: 1 + call_chain.len() + callers.len() + tests.len(),
+        total_items: 1 + call_chain.len() + callers.len() + key_types.len() + tests.len(),
         files_covered: all_files.len(),
         callee_depth: max_callee_depth,
         tests_found: tests.len(),
@@ -337,7 +348,10 @@ fn filter_common_types(types: Vec<crate::store::TypeUsage>) -> Vec<TypeInfo> {
         .filter(|t| !crate::COMMON_TYPES.contains(t.type_name.as_str()))
         .map(|t| TypeInfo {
             type_name: t.type_name,
-            edge_kind: t.edge_kind,
+            edge_kind: t
+                .edge_kind
+                .parse::<TypeEdgeKind>()
+                .unwrap_or(TypeEdgeKind::Param),
         })
         .collect()
 }

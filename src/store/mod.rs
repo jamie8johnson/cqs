@@ -587,6 +587,7 @@ impl Store {
         name: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        let limit = limit.min(100);
         let normalized = sanitize_fts_query(&normalize_for_fts(name));
         if normalized.is_empty() {
             return Ok(vec![]);

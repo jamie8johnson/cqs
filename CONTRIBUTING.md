@@ -86,7 +86,7 @@ src/
   cli/          - Command-line interface (clap)
     mod.rs      - Argument parsing, command dispatch
     commands/   - Command implementations
-      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs
+      mod.rs, query.rs, index.rs, stats.rs, graph.rs, init.rs, doctor.rs, notes.rs, reference.rs, similar.rs, explain.rs, diff.rs, drift.rs, trace.rs, impact.rs, impact_diff.rs, test_map.rs, context.rs, resolve.rs, dead.rs, gc.rs, gather.rs, project.rs, audit_mode.rs, read.rs, stale.rs, related.rs, where_cmd.rs, scout.rs, onboard.rs, convert.rs, review.rs, ci.rs, health.rs, suggest.rs, deps.rs
     batch.rs    - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
@@ -159,6 +159,9 @@ src/
   ci.rs           - CI pipeline (review + dead code + gate logic)
   where_to_add.rs - Placement suggestion (semantic search + pattern extraction)
   diff_parse.rs   - Unified diff parser for impact-diff
+  health.rs     - Codebase quality snapshot (dead code, staleness, hotspots)
+  suggest.rs    - Auto-suggest notes from code patterns
+  deps.rs       - Type-level dependency impact analysis
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API

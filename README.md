@@ -81,7 +81,7 @@ cqs --lang rust --chunk-type function --pattern async "database query"
 # Hybrid search tuning
 cqs --name-boost 0.2 "retry logic"   # Semantic-heavy (default)
 cqs --name-boost 0.8 "parse_config"  # Name-heavy for known identifiers
-cqs "query" --expand 2                # Expand results via call graph
+cqs "query" --expand                  # Expand results via call graph
 
 # Show surrounding context
 cqs -C 3 "error handling"       # 3 lines before/after each result
@@ -211,6 +211,7 @@ cqs trace cmd_query search_filtered --max-depth 5
 cqs impact search_filtered                # direct callers + affected tests
 cqs impact search_filtered --depth 3      # transitive callers
 cqs impact search_filtered --suggest-tests  # suggest tests for untested callers
+cqs impact search_filtered --include-types  # include type-level dependencies in impact
 
 # Map functions to their tests
 cqs test-map search_filtered
@@ -246,6 +247,10 @@ cqs dead --json             # JSON output
 
 # Garbage collection (remove stale index entries)
 cqs gc                      # Prune deleted files, rebuild HNSW
+
+# Codebase quality snapshot
+cqs health                  # Codebase quality snapshot — dead code, staleness, hotspots, untested hotspots, notes
+cqs suggest                 # Auto-suggest notes from patterns (dead clusters, untested hotspots, high-risk, stale mentions). `--apply` to add
 
 # Cross-project search
 cqs project register mylib /path/to/lib   # Register a project

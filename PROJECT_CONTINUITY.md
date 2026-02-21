@@ -2,17 +2,16 @@
 
 ## Right Now
 
-**Phase 1d complete + v0.12.12 release.** 2026-02-18.
+**v0.12.12 audit: P1 merged (#459), P2 merged (#460), P3 ready for PR.** 2026-02-21.
 
-- Phase 1d: Parent type context enrichment + embedding model eval (PR #455)
-  - E5-base-v2 confirmed: 90.9% Recall@1, 0.941 MRR (beats jina 80.0%, 0.863)
-  - Method NL descriptions now include parent type ("circuit breaker method")
-  - Hard eval: 55 confusable queries across 5 languages
-- Docs overhaul: repositioned as code intelligence + RAG (not just search)
+- P1: 12 findings fixed — security, correctness, data safety, error handling
+- P2: 18 findings fixed — BatchContext caching (6), N+1 queries (2), code quality (2), API design (4), robustness (4)
+- P2 also renamed `gpu-search` feature flag to `gpu-index`
+- P3: 31 code fixes + 8 non-issues across 20 files — docs (9), error handling (5), observability (4), API design (5), robustness (5), algorithm/platform/perf (5), test coverage (2), documentation comments (3)
+- P3 on branch `fix/p3-audit-findings-v0.12.12`, ready to commit+push+PR
+- P4: 18 findings deferred (tests, extensibility, design)
 
-Previous phases: 1a (type extraction), 1b (type wiring), 1c (note-boosted search), 2a (batch completeness).
-
-Next: Phase 2b+ per MOONSHOT.md (onboard, drift, auto-stale notes) or C# language support.
+Audit triage: `docs/audit-triage.md`
 
 ## Pending Changes
 
@@ -27,7 +26,7 @@ None.
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
 - **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **P4 audit findings** — 1 remaining (#407 reverse BFS depth)
+- **P4 audit findings** — 18 findings deferred (issues TBD)
 - **resolve_target test bias** — ambiguous names resolve to test functions over production code. Not blocking, but `cqs related foo` may pick `test_foo_bar` instead of `foo`. Fix: prefer non-test chunks in resolve_target.
 
 ## Open Issues
@@ -51,7 +50,7 @@ None.
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1026 total (998 pass + 28 ignored)
+- Tests: 1019 pass + 28 ignored
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag

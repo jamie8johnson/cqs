@@ -470,35 +470,19 @@ static MULTI_NEWLINE_RE: LazyLock<Regex> =
 /// strips bold/italic markers, HTML tags, and collapses whitespace.
 /// Keeps inline code content (strips backticks but preserves text).
 pub fn strip_markdown_noise(content: &str) -> String {
-    let mut result = content.to_string();
-
-    // Remove heading prefixes (## Foo → Foo)
-    result = MD_HEADING_RE.replace_all(&result, "").to_string();
-
-    // Remove image syntax entirely (![alt](url) → "")
-    result = MD_IMAGE_RE.replace_all(&result, "").to_string();
-
-    // Simplify links: [text](url) → text
-    result = MD_LINK_RE.replace_all(&result, "$1").to_string();
-
-    // Strip HTML tags
-    result = HTML_TAG_RE.replace_all(&result, "").to_string();
-
-    // Strip bold/italic markers
+    use std::borrow::Cow;
+    let result: Cow<str> = MD_HEADING_RE.replace_all(content, "");
+    let result: Cow<str> = MD_IMAGE_RE.replace_all(&result, "");
+    let result: Cow<str> = MD_LINK_RE.replace_all(&result, "$1");
+    let result: Cow<str> = HTML_TAG_RE.replace_all(&result, "");
+    let mut result = result.into_owned();
     result = result.replace("***", "");
     result = result.replace("**", "");
     result = result.replace('*', "");
-
-    // Strip backticks but keep content
     result = result.replace("```", "");
     result = result.replace('`', "");
-
-    // Collapse multiple spaces/tabs
-    result = MULTI_WHITESPACE_RE.replace_all(&result, " ").to_string();
-
-    // Collapse multiple newlines
-    result = MULTI_NEWLINE_RE.replace_all(&result, "\n\n").to_string();
-
+    let result: Cow<str> = MULTI_WHITESPACE_RE.replace_all(&result, " ");
+    let result: Cow<str> = MULTI_NEWLINE_RE.replace_all(&result, "\n\n");
     result.trim().to_string()
 }
 

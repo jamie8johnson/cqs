@@ -58,7 +58,7 @@ pub struct NoteFile {
 }
 
 /// A parsed note entry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Note {
     /// Unique identifier: "note:{index}"
     pub id: String,

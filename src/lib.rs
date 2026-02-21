@@ -62,6 +62,7 @@ pub mod suggest;
 pub(crate) mod diff;
 pub mod diff_parse;
 pub mod drift;
+pub use drift::{detect_drift, DriftEntry, DriftResult};
 pub(crate) mod focused_read;
 pub(crate) mod gather;
 pub(crate) mod impact;

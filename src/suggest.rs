@@ -191,7 +191,7 @@ fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String
         }
     }
     symbol_mentions.sort_unstable();
-    symbol_mentions.dedup();
+    symbol_mentions.dedup(); // dedup requires sorted input — sort_unstable above ensures this
 
     let symbol_results = if symbol_mentions.is_empty() {
         HashMap::new()

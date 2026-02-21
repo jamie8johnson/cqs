@@ -34,7 +34,7 @@ pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashS
             stale
         }
         Err(e) => {
-            tracing::debug!(error = %e, "Failed to check staleness");
+            tracing::warn!(error = %e, "Failed to check staleness");
             HashSet::new()
         }
     }
@@ -71,6 +71,9 @@ mod tests {
         let result = warn_stale_results(&store, &["nonexistent.rs", "ghost.py"], dir.path());
         // Should return empty or the nonexistent files — depends on implementation.
         // Key: it must not panic.
-        let _ = result;
+        assert!(
+            result.is_empty(),
+            "Nonexistent origins should produce empty stale set"
+        );
     }
 }
