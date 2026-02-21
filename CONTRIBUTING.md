@@ -14,12 +14,14 @@ Thank you for your interest in contributing to cqs!
 
 2. Build:
    ```bash
-   cargo build
+   cargo build                        # CPU-only
+   cargo build --features gpu-index   # with GPU acceleration (requires CUDA)
    ```
 
 3. Run tests:
    ```bash
-   cargo test
+   cargo test                         # CPU-only
+   cargo test --features gpu-index    # with GPU acceleration
    ```
 
 4. Initialize and index (for manual testing):
@@ -48,8 +50,8 @@ Thank you for your interest in contributing to cqs!
 2. Make your changes
 3. Ensure all checks pass:
    ```bash
-   cargo test
-   cargo clippy -- -D warnings
+   cargo test --features gpu-index
+   cargo clippy --features gpu-index -- -D warnings
    cargo fmt --check
    ```
 4. Update documentation if needed (README, CLAUDE.md)
