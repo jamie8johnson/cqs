@@ -23,6 +23,10 @@ use cqs::Embedder;
 
 use super::{open_project_store, DeadConfidenceLevel};
 
+/// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
+/// to prevent unbounded memory allocation from malicious input.
+const MAX_BATCH_LINE_LEN: usize = 1_048_576;
+
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
 /// Shared resources for a batch session.
@@ -123,10 +127,15 @@ impl BatchContext {
     }
 
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
-    pub fn borrow_ref(&self, name: &str) -> std::cell::Ref<'_, ReferenceIndex> {
-        std::cell::Ref::map(self.refs.borrow(), |map| {
-            map.get(name).expect("ref must be loaded via get_ref first")
-        })
+    ///
+    /// Returns `None` if the reference hasn't been loaded yet.
+    pub fn borrow_ref(&self, name: &str) -> Option<std::cell::Ref<'_, ReferenceIndex>> {
+        let map = self.refs.borrow();
+        if map.contains_key(name) {
+            Some(std::cell::Ref::map(map, |m| m.get(name).unwrap()))
+        } else {
+            None
+        }
     }
 }
 
@@ -582,8 +591,8 @@ fn dispatch_search(
         note_only: false,
     };
 
-    // Check audit mode
-    let audit_mode = cqs::audit::load_audit_state(&ctx.cqs_dir);
+    // Check audit mode (cached per session)
+    let audit_mode = ctx.audit_state();
     let index = ctx.vector_index()?;
 
     let results = if audit_mode.is_active() {
@@ -825,6 +834,7 @@ fn dispatch_similar(
     threshold: f32,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_similar", target).entered();
+    let limit = limit.clamp(1, 100);
 
     let resolved = cqs::resolve_target(&ctx.store, target)?;
     let chunk = &resolved.chunk;
@@ -900,13 +910,15 @@ fn dispatch_gather(
     let opts = cqs::GatherOptions {
         expand_depth: expand.clamp(0, 5),
         direction: dir,
-        limit,
+        limit: limit.clamp(1, 100),
         ..cqs::GatherOptions::default()
     };
 
     let result = if let Some(rn) = ref_name {
         ctx.get_ref(rn)?;
-        let ref_idx = ctx.borrow_ref(rn);
+        let ref_idx = ctx
+            .borrow_ref(rn)
+            .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", rn))?;
         cqs::gather_cross_index(
             &ctx.store,
             &ref_idx,
@@ -1230,6 +1242,7 @@ fn dispatch_dead(
 
 fn dispatch_related(ctx: &BatchContext, name: &str, limit: usize) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_related", name).entered();
+    let limit = limit.clamp(1, 100);
 
     let result = cqs::find_related(&ctx.store, name, limit)?;
 
@@ -1468,7 +1481,7 @@ fn dispatch_read(ctx: &BatchContext, path: &str, focus: Option<&str>) -> Result<
         );
     }
 
-    let content = std::fs::read_to_string(&file_path).context("Failed to read file")?;
+    let content = std::fs::read_to_string(&canonical).context("Failed to read file")?;
 
     let audit_state = ctx.audit_state();
     let mut context_header = String::new();
@@ -1767,7 +1780,7 @@ fn dispatch_drift(
             reference
         );
     }
-    let ref_store = cqs::Store::open(&ref_db)?;
+    let ref_store = cqs::Store::open_readonly(&ref_db)?;
 
     let result = cqs::drift::detect_drift(
         &ref_store, &ctx.store, reference, threshold, min_drift, lang,
@@ -2173,6 +2186,14 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
                 break;
             }
         };
+
+        // SEC-12: Reject lines exceeding 1MB to prevent unbounded memory allocation
+        if line.len() > MAX_BATCH_LINE_LEN {
+            let error_json = serde_json::json!({"error": "Line too long (max 1MB)"});
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
+            let _ = stdout.flush();
+            continue;
+        }
 
         let trimmed = line.trim();
 

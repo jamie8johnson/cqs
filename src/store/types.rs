@@ -114,20 +114,25 @@ impl Store {
         );
 
         self.rt.block_on(async {
-            // Resolve chunk names to IDs
+            // DS-14: Begin transaction before reading chunk IDs to prevent TOCTOU
+            let mut tx = self.pool.begin().await?;
+
+            // DS-18: ORDER BY window_idx ASC NULLS LAST for deterministic window priority
             let rows: Vec<(String, String, i64, Option<i64>)> = sqlx::query_as(
-                "SELECT id, name, line_start, window_idx FROM chunks WHERE origin = ?1",
+                "SELECT id, name, line_start, window_idx FROM chunks WHERE origin = ?1 ORDER BY window_idx ASC NULLS LAST",
             )
             .bind(&file_str)
-            .fetch_all(&self.pool)
+            .fetch_all(&mut *tx)
             .await?;
 
             // Build lookup: (name, line_start) -> chunk_id
-            // For windowed chunks, prefer window_idx IS NULL or window_idx = 0
+            // For windowed chunks, prefer non-windowed (window_idx IS NULL).
+            // Due to NULLS LAST ordering, non-windowed rows arrive last and
+            // overwrite any windowed entries, ensuring they always win.
             let mut name_to_id: HashMap<(String, u32), String> = HashMap::new();
             for (id, name, line_start, window_idx) in &rows {
                 let key = (name.clone(), clamp_line_number(*line_start));
-                let is_primary = window_idx.is_none() || *window_idx == Some(0);
+                let is_primary = window_idx.is_none();
                 if is_primary || !name_to_id.contains_key(&key) {
                     name_to_id.insert(key, id.clone());
                 }
@@ -152,10 +157,9 @@ impl Store {
             }
 
             if edges.is_empty() {
+                tx.commit().await?;
                 return Ok(());
             }
-
-            let mut tx = self.pool.begin().await?;
 
             // Delete existing type edges for all resolved chunk IDs
             let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();

@@ -1,27 +1,25 @@
-# Audit Triage — v0.12.3
+# Audit Triage — v0.12.12
 
-Generated: 2026-02-13
+Generated: 2026-02-21
 
-Source: `docs/audit-findings.md` — 14-category audit, 3 batches, 95 raw findings.
+Source: `docs/audit-findings.md` — 14-category audit, 3 batches, 106 raw findings.
 
 ## De-duplication Notes
 
 Cross-category duplicates (fix once):
 
-1. **EH-17 = OB-12**: `suggest_tests` missing tracing span → 1 fix
-2. **EH-21 = RB-13**: Regex per-call in cleaning.rs → 1 fix (LazyLock)
-3. **EH-18 = RB-12**: unwrap() on chars().next() → 1 fix
-4. **CQ-1 = RM-10**: review_diff double-load graph/tests → 1 fix
-5. **CQ-3 = RM-12**: find_transitive_callers N+1 → 1 fix
-6. **CQ-4 ≈ AD-14**: review types vs impact types → 1 fix
-7. **RB-15/16 = DS-7**: SQLite variable limit → 1 fix (batch inserts)
-8. **DS-8 = RM-11**: reference stores read-write → 1 fix
-9. **PERF-14 = RM-15**: cross-index bridge sequential → 1 fix
-10. **AD-15**: read_stdin/run_git_diff duplication → already on roadmap
+1. **CQ-13 = PERF-21 = RM-23**: `dispatch_search` bypasses `audit_state()` cache → 1 fix
+2. **CQ-12 = AC-24**: `COMMON_TYPES` divergence in onboard.rs → 1 fix
+3. **EH-23 = OB-17**: `onboard_to_json` silent null → 1 fix
+4. **EH-30 = DS-19**: `get_embeddings_by_hashes` swallows errors → 1 fix
+5. **PB-15 = PERF-25**: context abs_path always fails → 1 fix
+6. **PERF-27 = RM-17**: `dispatch_drift` uncached store → 1 fix
+7. **SEC-13 = (RM)**: drift opens reference store read-write → 1 fix
+8. **CQ-14 = TC-19**: batch `--tokens` silently ignored → 1 fix
 
-After de-duplication: **~75 unique findings**
+Non-issues (self-identified by auditors): AC-25, AC-26, AC-29, AC-30, AC-31
 
-Non-issues removed: RB-17 (node_letter cast safe), RB-20 (total_limit safe), RB-21 (unicode uppercase edge), RB-23 (random collision), DS-11 (SQL interpolation safe)
+After de-duplication: **~88 unique findings**
 
 ---
 
@@ -31,209 +29,266 @@ Non-issues removed: RB-17 (node_letter cast safe), RB-20 (total_limit safe), RB-
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | CHM symlink escape — arbitrary file read via crafted archive | SEC-9 | easy | ✅ fixed |
-| 2 | Webhelp symlink traversal — file read via symlinks in content dir | SEC-11 | easy | ✅ fixed |
-| 3 | CHM zip-slip — 7z extraction path traversal | SEC-10 | medium | ✅ fixed |
+| 1 | Batch stdin no line length limit — unbounded memory allocation | SEC-12 | easy | ✅ fixed |
+| 2 | Drift opens reference store read-write instead of read-only | SEC-13 | easy | ✅ fixed |
+| 3 | `dispatch_read` TOCTOU — read via canonical path to eliminate race | SEC-15 | easy fix (hard to exploit) | ✅ fixed |
+| 4 | Batch `--limit` unclamped on Similar/Gather/Scout/Related — resource amplification | SEC-14 | easy | ✅ fixed |
 
-### Bugs / Correctness
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 4 | `score_name_match` 0.5 floor causes batch result misassignment | AC-13 | easy | ✅ fixed |
-| 5 | Reference stores opened read-write instead of read-only (regression) | DS-8/RM-11 | easy | ✅ fixed |
-| 6 | `std::canonicalize` in convert overwrite guard (dunce missed) | PB-11 | easy | ✅ fixed |
-| 7 | `DiffTestInfo.via` always picks first changed function (regression) | AC-16 | easy | ✅ fixed |
-
-### Observability Gaps
+### Algorithm Correctness (bugs)
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 8 | `suggest_tests` missing tracing span | EH-17/OB-12 | easy | ✅ fixed |
-| 9 | `compute_hints` missing tracing span | OB-13 | easy | ✅ fixed |
-| 10 | `cmd_query_name_only` missing tracing span | OB-14 | easy | ✅ fixed |
-
-### Error Handling (silent failures)
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 11 | Silent file read failure in `resolve_parent_context` | EH-16 | easy | ✅ fixed |
-| 12 | Missing `.context()` on 7z spawn in CHM conversion | EH-19 | easy | ✅ fixed |
-| 13 | Missing `.context()` on fs::write/mkdir in convert | EH-20 | easy | ✅ fixed |
-| 14 | Regex per-call instead of LazyLock in cleaning.rs (6x) | EH-21/RB-13 | easy | ✅ fixed |
-
-**P1 Total: 14/14 fixed**
-
----
-
-## P2: Fix Next (medium effort + high impact)
-
-### Performance / N+1 Patterns
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 1 | `find_transitive_callers` N+1 search_by_name queries | CQ-3/RM-12 | medium | ✅ fixed |
-| 2 | `review_diff` loads call graph + test chunks twice | CQ-1/RM-10 | easy | ✅ fixed |
-| 3 | SQLite variable limit overflow on large batch inserts | RB-15/16/DS-7 | medium | ✅ fixed |
-| 4 | `analyze_diff_impact` per-function caller fetch N+1 | PERF-13 | easy | ✅ fixed |
-| 5 | `context` command N+1 per-chunk caller/callee queries | PERF-12 | medium | ✅ fixed |
-
-### API Design / Types
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 6 | Impact types missing standard derives (Debug, Clone, Serialize) | AD-12 | easy | ✅ fixed |
-| 7 | Leaked opaque types — public fields use unexported types | AD-13 | medium | ✅ fixed |
-| 8 | CLI args stringly-typed instead of clap value_enum | AD-17 | easy | ✅ fixed |
-| 9 | RiskScore contains redundant name field | AD-18 | easy | ✅ fixed |
-| 10 | GatherOptions lacks Debug derive | AD-19 | easy | ✅ fixed |
-
-### Code Quality
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 11 | Four reference search functions differ only by weight | CQ-5 | easy | ✅ fixed |
-| 12 | `get_caller_counts_batch` / `get_callee_counts_batch` identical | CQ-7 | easy | ✅ fixed |
+| 5 | Windowed chunk IDs misparse — invisible to glob/note filtering | AC-22 | medium | ✅ fixed |
+| 6 | `diff` modified sort conflates "unknown similarity" with "maximally changed" | AC-28 | easy | ✅ fixed |
 
 ### Data Safety
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 13 | `gather_cross_index` no model compatibility check | DS-10 | easy | ✅ fixed |
-| 14 | `review_diff` inconsistent error handling (fail-fast vs degrade) | DS-12 | easy | ✅ fixed |
+| 7 | `upsert_type_edges_for_file` TOCTOU — chunk ID read outside transaction | DS-14 | medium | ✅ fixed |
+| 8 | Window priority depends on undefined row order in type edge resolution | DS-18 | easy | ✅ fixed |
 
-### Documentation
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 15 | README missing `cqs review` command | DOC-1 | easy | ✅ fixed |
-| 16 | README missing `--tokens` flag | DOC-2 | easy | ✅ fixed |
-| 17 | README missing `--ref` scoped search | DOC-3 | easy | ✅ fixed |
-| 18 | CONTRIBUTING.md `impact.rs` → `impact/` directory | DOC-4 | easy | ✅ fixed |
-| 19 | CONTRIBUTING.md missing review.rs (commands + library) | DOC-5/6 | easy | ✅ fixed |
-| 20 | CHANGELOG missing comparison URLs v0.12.2/v0.12.3 | DOC-7 | easy | ✅ fixed |
-| 21 | SECURITY.md missing convert attack surface | DOC-8 | medium | ✅ fixed |
-| 22 | ROADMAP completed items under "Next" | DOC-9 | easy | ✅ fixed |
-
-### Security (defense-in-depth)
+### Error Handling
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 23 | CQS_PDF_SCRIPT env var — log warning when active | SEC-8 | easy | ✅ fixed |
+| 9 | `AnalysisError::Embedder` used for non-embedding errors in onboard | EH-26 | easy | ✅ fixed |
+| 10 | `borrow_ref` panics with `.expect()` in non-test code | EH-24 | easy | ✅ fixed |
 
-**P2 Total: 23/23 fixed**
+### Code Quality
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 11 | `COMMON_TYPES` defined twice with different contents (onboard vs focused_read) | CQ-12/AC-24 | easy | ✅ fixed |
+| 12 | `dispatch_search` bypasses audit_state cache (reads disk per call) | CQ-13/PERF-21/RM-23 | easy | ✅ fixed |
+
+**P1 Total: 12 findings**
 
 ---
 
-## P3: Fix If Time
+## P2: Fix Next (medium effort + high impact)
 
-### Algorithm / Logic
+### Performance / Caching
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | Gather BFS decay double-compounds (expand_depth >= 2) | AC-14 | medium | ✅ fixed |
-| 2 | Gather expansion cap overshoot by out-degree | AC-18 | easy | ✅ fixed |
-| 3 | `extract_call_snippet` wrong for windowed chunks | AC-19 | medium | ✅ fixed |
-| 4 | Context token packing uses file order, not relevance | AC-21 | easy | ✅ fixed |
+| 1 | `get_call_graph()` not cached in BatchContext — reloaded per command | PERF-22 | medium | |
+| 2 | `dispatch_drift` opens fresh Store per call — bypasses reference cache | PERF-27/RM-17 | easy | |
+| 3 | `list_notes_summaries()` redundantly loaded in search paths | PERF-23 | easy | |
+| 4 | N+1 `search_by_name` in focused read type dependency loop | CQ-15 | medium | |
+| 5 | N+1 `search_by_name` in `dispatch_trace` path enrichment | PERF-20 | easy | |
+| 6 | `onboard` uses full `scout()` when only entry point needed | PERF-28 | easy | |
+| 7 | Context abs_path lookup always fails — wasted SQLite query | PB-15/PERF-25 | easy | |
+
+### Resource Management
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 8 | `get_ref` loads ALL reference stores to find one | RM-16 | easy | |
+| 9 | Reranker model not cached in BatchContext | RM-18 | easy | |
+| 10 | `Config::load` called per batch `get_ref`/`dispatch_drift` | RM-21 | easy | |
+| 11 | Pipeline intermediate merge collects unbounded names | RM-20 | easy | |
+
+### Data Safety
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 12 | Type edges upserted outside chunk transaction — crash inconsistency | DS-13 | medium | |
+| 13 | `get_embeddings_by_hashes` swallows errors — partial results | EH-30/DS-19 | easy | |
 
 ### Code Quality / Duplication
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 5 | `gather`/`gather_cross_index` ~80 lines BFS duplication | CQ-2 | medium | ✅ fixed |
-| 6 | Review types near-duplicate impact types (String vs PathBuf) | CQ-4/AD-14 | easy | ✅ fixed |
-| 7 | `convert_file`/`convert_webhelp` duplicate pipeline | CQ-6 | easy | ✅ fixed |
-| 8 | Token packing duplicated across 5 commands | EXT-15 | medium | ✅ fixed |
+| 14 | `dispatch_read_focused` duplicates `cmd_read_focused` (~140 lines) | CQ-8 | medium | |
+| 15 | `dispatch_read` duplicates `cmd_read` (~90 lines) | CQ-9 | medium | |
+| 16 | Duplicate `parse_nonzero_usize` function | CQ-10 | easy | |
+| 17 | Duplicate CAGRA/HNSW vector index construction | CQ-11 | easy | |
+| 18 | Batch `--tokens` accepted but silently ignored in 4 commands | CQ-14/TC-19 | easy | |
+
+### API Design
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 19 | `get_types_used_by` returns tuple instead of typed struct | AD-21 | easy | |
+| 20 | `onboard_to_json` silently returns null on failure | EH-23/OB-17 | easy | |
+| 21 | `chunk_type` serialized inconsistently (Display vs Debug) | AD-20 | easy | |
+
+### Robustness
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 22 | Float params accept NaN/Infinity without validation (drift, similar, query) | RB-24/RB-28 | easy | |
+
+**P2 Total: 22 findings**
+
+---
+
+## P3: Fix If Time
+
+### Documentation
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 1 | README `--expand 2` example wrong — flag is boolean | DOC-10 | easy | |
+| 2 | README missing `cqs health` command | DOC-11 | easy | |
+| 3 | README missing `cqs suggest` command | DOC-12 | easy | |
+| 4 | CONTRIBUTING.md missing `health.rs`, `suggest.rs`, `deps.rs` from commands | DOC-13 | easy | |
+| 5 | CONTRIBUTING.md missing library-level files | DOC-14 | easy | |
+| 6 | CHANGELOG missing comparison URLs for v0.12.11/v0.12.12 | DOC-15 | easy | |
+| 7 | ROADMAP shows onboard/drift as unchecked | DOC-16 | easy | |
+| 8 | SECURITY.md missing reranker model download | DOC-17 | easy | |
+| 9 | README missing `--include-types` on impact | DOC-18 | easy | |
+
+### Error Handling
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 10 | `serde_json::to_string().unwrap()` in batch JSONL loop | EH-25 | easy | |
+| 11 | `Store::open` without `.context()` in drift commands | EH-27/EH-28 | easy | |
+| 12 | `pick_entry_point` returns sentinel instead of error | EH-29 | easy | |
+| 13 | Missing `.context()` on embed_query in batch handlers | EH-31 | easy | |
+| 14 | `staleness.rs` `warn_stale_results` logs error at debug instead of warn | EH-32 | easy | |
+
+### Observability
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 15 | `run_index_pipeline` missing entry tracing span | OB-15 | easy | |
+| 16 | `apply_windowing` missing tracing span | OB-16 | easy | |
+| 17 | Pipeline GPU/CPU embedder threads lack thread-level spans | OB-18 | medium | |
+| 18 | Batch pipeline errors not counted in summary | OB-19 | easy | |
+
+### API Design
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 19 | TypeGraph missing Debug, Clone derives | AD-22 | easy | |
+| 20 | ResolvedTarget missing Debug, Clone derives | AD-23 | easy | |
+| 21 | Note missing Serialize derive — hand-rolled JSON | AD-24 | easy | |
+| 22 | Drift types not re-exported from lib.rs | AD-25 | easy | |
+| 23 | OnboardEntry.edge_kind stringly-typed — TypeEdgeKind exists | AD-26 | easy | |
+
+### Robustness
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 24 | `onboard` depth unbounded in library function | RB-26 | easy | |
+| 25 | BFS chain reconstruction lacks iteration bound | RB-25 | easy | |
+| 26 | `get_type_graph` cast uses `as i64` unnecessarily | RB-27 | easy | |
+| 27 | `search_by_name` limit not clamped | RB-29 | easy | |
+| 28 | `dispatch_trace` BFS no early-exit on target found | RB-30 | easy | |
+
+### Algorithm Correctness
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 29 | `onboard` total_items excludes key_types | AC-23 | easy | |
+| 30 | Pipeline stage numbering off-by-one in logs | AC-27 | easy | |
+
+### Platform Behavior
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 31 | `onboard_to_json` PathBuf without backslash normalization | PB-14 | easy | |
+
+### Data Safety
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 32 | `upsert_type_edges_for_file` deletes ALL file chunks, not just updated | DS-16 | easy | |
+| 33 | `BatchContext::refs` uses RefCell — blocks future parallelization | DS-17 | easy | |
+| 34 | Batch notes/audit cache never invalidated during session | DS-15 | easy (document) | |
+
+### Performance
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 35 | `strip_markdown_noise` chains 8 intermediate Strings | PERF-24 | medium | |
+| 36 | `suggest_notes` dedup uses O(n*m) substring matching | PERF-26 | easy | |
 
 ### Test Coverage
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 9 | `review_diff()` zero tests | TC-1 | medium | ✅ fixed |
-| 10 | `reverse_bfs_multi()` zero tests | TC-3 | easy | ✅ fixed |
-| 11 | Token budgeting no functional tests | TC-5 | medium | ✅ fixed |
-| 12 | `analyze_diff_impact` test discovery not verified e2e | TC-9 | medium | ✅ fixed |
+| 37 | TypeEdgeKind::from_str() round-trip untested | TC-16 | easy | |
+| 38 | `warn_stale_results()` test discards return value | TC-17 | easy | |
+| 39 | `onboard.rs` tests test std library, not project code | TC-20 | easy | |
 
-### Convention / Minor
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 13 | `unwrap()` in non-test code (Java test name) | EH-18/RB-12 | easy | ✅ fixed |
-| 14 | `via` field defaults to empty on BFS anomaly | EH-22 | easy | ✅ fixed |
-| 15 | Byte-index slicing → `strip_prefix` | RB-14 | easy | ✅ fixed |
-| 16 | `--tokens 0` accepted, produces confusing output | RB-18 | easy | ✅ fixed |
-
-### Extensibility
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 17 | Risk score thresholds magic numbers | EXT-13 | easy | ✅ fixed |
-| 18 | `suggest_test_file` hardcoded per-language conventions | EXT-16 | easy | ✅ PR #421 |
-| 19 | Review command missing `--tokens` support | EXT-18 | easy | ✅ fixed |
-| 20 | Copyright regex hardcoded year range + vendor | EXT-19 | easy | ✅ fixed |
-
-### Resource / Performance
-
-| # | Finding | Source | Difficulty | Status |
-|---|---------|--------|------------|--------|
-| 21 | CHM/WebHelp unbounded memory accumulation | RM-13 | easy | ✅ fixed |
-| 22 | `suggest_tests` N+1 get_chunks_by_origin | RM-14 | medium | ✅ fixed |
-| 23 | Token counting per-chunk instead of batch | PERF-15 | easy | ✅ fixed |
-| 24 | `python3` not on stock Windows | PB-12 | easy | ✅ fixed |
-| 25 | `find_7z` error assumes Debian/Ubuntu | PB-13 | easy | ✅ fixed |
-
-**P3 Total: 25/25 fixed**
+**P3 Total: 39 findings**
 
 ---
 
 ## P4: Defer / Create Issues
 
+### Test Coverage
+
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `reverse_bfs_multi` depth accuracy (BFS ordering) | AC-15 | hard | #407 |
-| 2 | Risk scoring loses blast radius at full coverage | AC-20 | easy (design) | ✅ PR #421 |
-| 3 | Token packing doesn't count JSON overhead | AC-17 | easy (design) | ✅ PR #421 |
-| 4 | Convert filename TOCTOU race | DS-9 | medium | #410 |
-| 5 | Cross-index bridge search sequential | PERF-14/RM-15 | medium | ✅ PR #421 |
-| 6 | `DocFormat` N-changes-per-variant (same as #387) | EXT-14 | medium | #412 |
-| 7 | `is_webhelp_dir` hardcodes content/ | EXT-17 | easy | ✅ PR #421 |
-| 8 | `gather_cross_index` zero tests | TC-4 | hard | #414 |
-| 9 | `--ref` CLI integration untested | TC-6 | medium | ✅ PR #405 |
-| 10 | Various minor test gaps (TC-2/7/8/10) | TC-2/7/8/10 | easy-medium | ✅ PR #421 |
-| 11 | Review missing `--format` option | AD-16 | easy (design) | ✅ PR #421 |
-| 12 | PathBuf::from("") fallback cosmetic | RB-19 | easy | ✅ PR #421 |
-| 13 | `to_ascii_lowercase` unicode naming | RB-22 | easy | ✅ PR #421 |
-| 14 | read_stdin/run_git_diff duplication | AD-15 | easy (roadmap) | ✅ PR #421 |
+| 1 | `onboard()` zero integration test | TC-11 | medium | |
+| 2 | `health_check()` only tested with empty store | TC-12 | easy | |
+| 3 | `suggest_notes()` only tested with empty store | TC-13 | medium | |
+| 4 | `detect_drift()` tested only with empty stores | TC-14 | medium | |
+| 5 | `apply_windowing()` zero test coverage | TC-15 | medium | |
+| 6 | No CLI integration tests for drift/onboard/health/suggest/deps | TC-18 | medium | |
 
-**P4 Total: 11 fixed, 3 remaining (#407, #410, #414)**
+### Extensibility
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 7 | `suggest_notes` detector registry hardcoded | EXT-20 | easy | |
+| 8 | `is_callable_type` hardcodes Function/Method | EXT-21 | easy | |
+| 9 | Pipeline tuning constants are local variables | EXT-22 | easy | |
+| 10 | `health_check` hardcodes top-5 hotspots | EXT-23 | easy | |
+| 11 | `detect_dead_clusters` threshold hardcoded | EXT-24 | easy | |
+| 12 | Untested hotspot threshold hardcoded in 2 files | EXT-25 | easy | |
+| 13 | `PIPEABLE_COMMANDS` requires manual update | EXT-26 | easy | |
+| 14 | `extract_names` field list requires manual update | EXT-27 | easy | |
+| 15 | `classify_mention` heuristic tightly coupled | EXT-28 | easy | |
+
+### Resource Management
+
+| # | Finding | Source | Difficulty | Status |
+|---|---------|--------|------------|--------|
+| 16 | `semantic_diff` no size cap on chunk identity loading | RM-19 | medium | |
+| 17 | Batch REPL holds GPU index for entire session | RM-22 | medium (document) | |
+| 18 | `onboard` allocates full content for all callees+callers | RM-24 | medium | |
+
+**P4 Total: 18 findings**
 
 ---
 
 ## Summary
 
-| Priority | Findings | Fixed | Deferred | Action |
-|----------|----------|-------|----------|--------|
-| P1 | 14 | 14 | 0 | All fixed |
-| P2 | 23 | 23 | 0 | All fixed |
-| P3 | 25 | 25 | 0 | All fixed |
-| P4 | 14 | 11 | 3 | #407, #410, #414 remain |
-| **Total** | **~76** | **73** | **3** |
+| Priority | Findings | Action |
+|----------|----------|--------|
+| P1 | 12 | Fix immediately — security + correctness bugs |
+| P2 | 22 | Fix next — performance + caching + duplication |
+| P3 | 39 | Fix if time — docs + observability + robustness + easy cleanups |
+| P4 | 18 | Defer — tests + extensibility + design |
+| **Total** | **~91** (unique) | |
 
 ## Cross-Category Themes
 
-1. **Convert module needs hardening**: 3 security findings (symlink + zip-slip), missing error context, missing LazyLock, memory caps. First new attack surface since MCP removal.
-2. **Impact refactoring preserved bugs**: AC-16 (via attribution) and DS-8 (read-write reference stores) are regressions — issues "fixed" in v0.12.1 that survived the impact.rs → impact/ split unchanged.
-3. **N+1 patterns still emerging**: CQ-3, PERF-12, PERF-13, RM-14 — four new N+1 query patterns in new code. The batch versions exist but aren't used.
-4. **Token budgeting shipped without tests**: 6 commands support `--tokens` but zero behavioral tests. The packing logic is duplicated 5x.
-5. **review_diff shipped without tests**: The entire review command has no unit or integration tests. Risk is amplified by the double-load bug (CQ-1).
+1. **Batch module is the hotspot**: 40+ findings touch `batch.rs`. The module duplicates CLI logic (CQ-8/9), bypasses caches (CQ-13, PERF-27, RM-16-21), lacks input validation (SEC-12/14), and has no caching for call graph, config, or reranker. A `BatchContext` refactor with proper caching would fix ~15 findings at once.
+
+2. **Onboard module shipped incomplete**: Misuses error variants (EH-26), diverges on COMMON_TYPES (CQ-12), PathBuf serialization (PB-14), sentinel values (EH-29), total_items miscount (AC-23), zero integration tests (TC-11), and wasteful scout() call (PERF-28). All stem from rapid feature development without cross-cutting review.
+
+3. **Type edges subsystem has data safety gaps**: Transaction boundary issues (DS-13, DS-14), undefined row order (DS-18), implicit delete-all contract (DS-16). The type edge upsert was bolted on after the pipeline, and it shows.
+
+4. **Documentation continues to drift**: 9 doc findings, all easy. Same pattern as v0.12.3 audit — new features ship without README/CONTRIBUTING updates.
+
+5. **Windowed chunks are second-class citizens**: AC-22 (chunk ID parsing breaks), OB-16 (no windowing tracing), TC-15 (zero tests). The windowing feature was added to the pipeline but downstream consumers don't handle the ID format correctly.
 
 ## Recommended Fix Order
 
-1. **P1 Security (#1-3)** — Symlink/zip-slip in convert module. Easy fixes, real exposure.
-2. **P1 Bugs (#4-7)** — AC-13 (batch misassignment) is a correctness bug affecting gather + diff-impact.
-3. **P1 Observability + Error (#8-14)** — Mechanical one-liners.
-4. **P2 Performance (#1-5)** — N+1 patterns, double-loads, SQLite limit.
-5. **P2 API/Types (#6-10)** — Impact derives enables format.rs cleanup.
-6. **P2 Docs (#15-22)** — Quick documentation sweep.
-7. **P2 Data Safety (#13-14)** — Model compatibility + error consistency.
-8. **P3 Tests (#9-12)** — review_diff and bfs_multi need tests before more features build on them.
-9. **Re-assess at P3 boundary.**
+1. **P1 Security (#1-4)** — SEC-12 (line limit), SEC-13 (read-only), SEC-15 (TOCTOU), SEC-14 (limit clamp). All easy, real exposure.
+2. **P1 Bugs (#5-8)** — AC-22 (windowed chunk parsing), AC-28 (drift sort), DS-14 (type edge TOCTOU), DS-18 (row order).
+3. **P1 Errors/Code (#9-12)** — EH-26 (error variant), EH-24 (panic), CQ-12 (COMMON_TYPES), CQ-13 (cache bypass).
+4. **P2 BatchContext caching (#1-3, 8-11)** — Biggest bang-for-buck: add OnceLock fields for call_graph, config, reranker, and fix get_ref to load single reference.
+5. **P2 N+1 patterns (#4-5)** — Switch to batch queries where available.
+6. **P2 Duplication (#14-18)** — Extract shared read/focused-read/index logic.
+7. **P3 Docs (#1-9)** — One pass to update all documentation.
+8. **P3 Observability (#15-18)** — Add tracing spans to pipeline + batch.
+9. **P3 Easy cleanups (#19-39)** — Derives, depth clamping, iteration bounds.
+10. **Re-assess at P3 boundary.**

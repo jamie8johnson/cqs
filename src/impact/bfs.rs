@@ -54,6 +54,12 @@ pub(super) fn reverse_bfs_multi(
         if d >= max_depth {
             continue;
         }
+        // Skip stale queue entries: if this node was later reached via a
+        // shorter path, the HashMap already has a smaller depth. Processing
+        // the stale entry would propagate incorrect (longer) depths downstream.
+        if ancestors.get(&current).is_some_and(|&stored| d > stored) {
+            continue;
+        }
         if let Some(callers) = graph.reverse.get(&current) {
             for caller in callers {
                 match ancestors.entry(caller.clone()) {
@@ -263,6 +269,44 @@ mod tests {
         assert_eq!(
             result["A"], 1,
             "A is at depth 1 from B (target), not depth 2 from D"
+        );
+    }
+
+    #[test]
+    fn test_reverse_bfs_multi_stale_queue_entry() {
+        // Regression test for #407: stale queue entries propagate wrong depths.
+        //
+        // Graph (reverse edges, i.e., "who calls"):
+        //   target1 <- mid <- deep   (chain: deep calls mid calls target1)
+        //   target2 <- deep          (deep also calls target2 directly)
+        //
+        // Multi-BFS from [target1, target2]:
+        //   - "deep" is first reached at depth 2 via target1 <- mid <- deep
+        //   - "deep" is then reached at depth 1 via target2 <- deep
+        //   - Without the stale-entry fix, the queue still has (deep, 2) which
+        //     would propagate depth 3 to deep's callers instead of depth 2.
+        let mut reverse = HashMap::new();
+        reverse.insert("target1".to_string(), vec!["mid".to_string()]);
+        reverse.insert("mid".to_string(), vec!["deep".to_string()]);
+        reverse.insert("target2".to_string(), vec!["deep".to_string()]);
+        reverse.insert("deep".to_string(), vec!["root".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let result = reverse_bfs_multi(&graph, &["target1", "target2"], 5);
+
+        assert_eq!(result["target1"], 0);
+        assert_eq!(result["target2"], 0);
+        assert_eq!(result["mid"], 1);
+        assert_eq!(
+            result["deep"], 1,
+            "deep should be depth 1 (from target2), not 2 (from target1->mid)"
+        );
+        assert_eq!(
+            result["root"], 2,
+            "root should be depth 2 (deep+1), not 3 (from stale queue entry)"
         );
     }
 }

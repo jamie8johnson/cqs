@@ -141,6 +141,8 @@ pub enum AnalysisError {
     Store(#[from] store::StoreError),
     #[error("embedding failed: {0}")]
     Embedder(String),
+    #[error("not found: {0}")]
+    NotFound(String),
 }
 
 /// Name of the per-project index directory (created by `cqs init`).
