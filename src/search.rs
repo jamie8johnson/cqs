@@ -24,6 +24,7 @@ use crate::store::{Store, StoreError, UnifiedResult};
 ///
 /// Contains the best-matching chunk and any alternative matches
 /// found during resolution (useful for disambiguation UIs).
+#[derive(Debug, Clone)]
 pub struct ResolvedTarget {
     /// The resolved chunk (best match for the target name)
     pub chunk: ChunkSummary,

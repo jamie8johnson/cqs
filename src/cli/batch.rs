@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
@@ -37,15 +38,18 @@ pub(crate) struct BatchContext {
     pub store: Store,
     embedder: OnceLock<Embedder>,
     hnsw: OnceLock<Option<Box<dyn VectorIndex>>>,
+    // Single-threaded by design — RefCell is correct, no Mutex needed
     refs: RefCell<HashMap<String, ReferenceIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     file_set: OnceLock<HashSet<PathBuf>>,
+    // Intentionally never invalidated — notes/audit state fixed for session duration
     audit_state: OnceLock<cqs::audit::AuditMode>,
     notes_cache: OnceLock<Vec<cqs::note::Note>>,
     call_graph: OnceLock<cqs::store::CallGraph>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
+    error_count: AtomicU64,
 }
 
 impl BatchContext {
@@ -609,7 +613,9 @@ fn dispatch_search(
     }
 
     let embedder = ctx.embedder()?;
-    let query_embedding = embedder.embed_query(query)?;
+    let query_embedding = embedder
+        .embed_query(query)
+        .context("Failed to embed query")?;
 
     let languages = match &lang {
         Some(l) => Some(vec![l
@@ -942,7 +948,9 @@ fn dispatch_gather(
     let _span = tracing::info_span!("batch_gather", query, ?ref_name).entered();
 
     let embedder = ctx.embedder()?;
-    let query_embedding = embedder.embed_query(query)?;
+    let query_embedding = embedder
+        .embed_query(query)
+        .context("Failed to embed query")?;
 
     let dir: cqs::GatherDirection = direction
         .parse()
@@ -1402,11 +1410,13 @@ fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     let note_count = ctx.store.note_count()?;
     let fc_stats = ctx.store.function_call_stats()?;
     let te_stats = ctx.store.type_edge_stats()?;
+    let errors = ctx.error_count.load(Ordering::Relaxed);
 
     Ok(serde_json::json!({
         "total_chunks": stats.total_chunks,
         "total_files": stats.total_files,
         "notes": note_count,
+        "errors": errors,
         "call_graph": {
             "total_calls": fc_stats.total_calls,
             "unique_callers": fc_stats.unique_callers,
@@ -2217,6 +2227,7 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         call_graph: OnceLock::new(),
         config: OnceLock::new(),
         reranker: OnceLock::new(),
+        error_count: AtomicU64::new(0),
     };
 
     let stdin = std::io::stdin();
@@ -2233,7 +2244,9 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
 
         // SEC-12: Reject lines exceeding 1MB to prevent unbounded memory allocation
         if line.len() > MAX_BATCH_LINE_LEN {
+            ctx.error_count.fetch_add(1, Ordering::Relaxed);
             let error_json = serde_json::json!({"error": "Line too long (max 1MB)"});
+            // Note: serde_json::to_string on Value is infallible
             let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
             let _ = stdout.flush();
             continue;
@@ -2255,6 +2268,7 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         let tokens = match shell_words::split(trimmed) {
             Ok(t) => t,
             Err(e) => {
+                ctx.error_count.fetch_add(1, Ordering::Relaxed);
                 let error_json = serde_json::json!({"error": format!("Parse error: {}", e)});
                 let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
                 let _ = stdout.flush();
@@ -2278,11 +2292,13 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
                         let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap());
                     }
                     Err(e) => {
+                        ctx.error_count.fetch_add(1, Ordering::Relaxed);
                         let error_json = serde_json::json!({"error": format!("{}", e)});
                         let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
                     }
                 },
                 Err(e) => {
+                    ctx.error_count.fetch_add(1, Ordering::Relaxed);
                     let error_json = serde_json::json!({"error": format!("{}", e)});
                     let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
                 }

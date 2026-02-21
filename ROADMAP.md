@@ -36,9 +36,9 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 - [x] `cqs ci` — CI pipeline mode. Impact analysis on PR diff, suggested test targets, dead code introduced, risk score. Exit codes for CI gates.
 - [x] `cqs health` — codebase quality snapshot. Dead code count, stale files, untested high-impact functions, hotspots, note warnings.
-- [ ] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
+- [x] `cqs onboard "concept"` — guided codebase tour. Entry point → call chain → key types → tests. Ordered reading list from gather + trace + explain.
 - [ ] `cqs blame` — semantic git blame. Given a function, show who last changed it, when, and the commit message. Combines call graph with git log.
-- [ ] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
+- [x] `cqs drift` — detect semantic drift between reference snapshots. Embedding distance, not just text diff. Surface functions that changed behavior.
 - [x] `cqs suggest` — auto-generate notes from code patterns. Scan for anti-patterns (unwrap in non-test code, high-caller untested functions, dead code clusters).
 - [x] `cqs deps` — type-level dependency impact. Trace struct/enum usage through functions and tests (PR #442). Wired into related, impact, read, dead (PR #447).
 - [ ] `cqs chat` — interactive REPL for chained queries. Build order: (1) ~~`ChunkSummary` unification~~, (2) ~~batch mode `cqs batch`~~, (3) ~~REPL~~ (deferred — agents use batch), (4) ~~pipeline syntax~~ (`search | callers | test-map` in `cqs batch`).

@@ -38,6 +38,10 @@ The only network activity is:
   - Source: `huggingface.co/intfloat/e5-base-v2`
   - One-time download, cached in `~/.cache/huggingface/`
 
+- **Reranker model download** (first `--rerank` use): Downloads cross-encoder model from HuggingFace Hub
+  - Model: `ms-marco-MiniLM-L-6-v2` (cross-encoder)
+  - One-time download, cached in `~/.cache/huggingface/`
+
 No other network requests are made. Search, indexing, and all other operations are offline.
 
 ## Filesystem Access

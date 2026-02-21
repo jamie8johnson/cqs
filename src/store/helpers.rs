@@ -152,7 +152,7 @@ impl From<ChunkRow> for ChunkSummary {
 }
 
 /// A search result with similarity score
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     /// The matching chunk
     pub chunk: ChunkSummary,

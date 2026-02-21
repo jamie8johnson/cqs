@@ -29,6 +29,7 @@ pub struct TypeEdgeStats {
 /// Built from a single scan of the `type_edges` table joined with `chunks`.
 /// Forward: chunk_name -> Vec<type_name>, Reverse: type_name -> Vec<chunk_name>.
 /// Used by Phase 4 BFS traversal over type edges.
+#[derive(Debug, Clone)]
 pub struct TypeGraph {
     /// Forward edges: chunk_name -> Vec<type_name>
     pub forward: HashMap<String, Vec<String>>,
@@ -414,18 +415,18 @@ impl Store {
         let _span = tracing::info_span!("get_type_graph").entered();
 
         self.rt.block_on(async {
-            const MAX_TYPE_GRAPH_EDGES: i64 = 500_000;
+            const MAX_TYPE_GRAPH_EDGES: usize = 500_000;
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT c.name, te.target_type_name
                  FROM type_edges te
                  JOIN chunks c ON te.source_chunk_id = c.id
                  LIMIT ?1",
             )
-            .bind(MAX_TYPE_GRAPH_EDGES)
+            .bind(MAX_TYPE_GRAPH_EDGES as i64)
             .fetch_all(&self.pool)
             .await?;
 
-            if rows.len() as i64 >= MAX_TYPE_GRAPH_EDGES {
+            if rows.len() >= MAX_TYPE_GRAPH_EDGES {
                 tracing::warn!(
                     cap = MAX_TYPE_GRAPH_EDGES,
                     "Type graph hit edge cap, results may be incomplete"
