@@ -47,7 +47,7 @@ Release a new version of cqs.
 6. **After PR merge**:
    - Sync main: `git checkout main && git pull`
    - Tag: `git tag vX.Y.Z`
-   - Push tag via PowerShell: `powershell.exe -Command 'cd C:\Projects\cq; git push origin vX.Y.Z'`
+   - Push tag via PowerShell: `powershell.exe -Command 'cd C:\Projects\cqs; git push origin vX.Y.Z'`
    - Publish: `cargo publish`
    - Create GitHub release via PowerShell with `--body-file`
 
@@ -59,4 +59,4 @@ Release a new version of cqs.
 
 - All `git push` and `gh` commands go through PowerShell (Windows has credentials)
 - Always use `--body-file` for PR/release bodies — never inline heredocs
-- Write body content to `/mnt/c/Projects/cq/pr_body.md`, use it, then delete
+- Write body content to `/mnt/c/Projects/cqs/pr_body.md`, use it, then delete

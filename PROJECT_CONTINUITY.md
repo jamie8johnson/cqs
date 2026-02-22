@@ -53,7 +53,7 @@ None.
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
 - convert/ module (7 files) behind `convert` feature flag
-- Build target: `~/.cargo-target/cq/` (Linux FS)
+- Build target: `~/.cargo-target/cqs/` (Linux FS)
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
 - Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
 - type_edges: 4276 edges (Phase 1a+1b complete)
