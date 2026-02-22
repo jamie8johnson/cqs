@@ -76,6 +76,7 @@ pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod source;
 pub(crate) mod structural;
+pub(crate) mod task;
 pub(crate) mod where_to_add;
 
 #[cfg(feature = "gpu-index")]
@@ -98,7 +99,8 @@ pub use store::{ModelInfo, SearchFilter, Store};
 pub use diff::{semantic_diff, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
-    gather, gather_cross_index, GatherDirection, GatherOptions, DEFAULT_MAX_EXPANDED_NODES,
+    gather, gather_cross_index, GatherDirection, GatherOptions, GatheredChunk,
+    DEFAULT_MAX_EXPANDED_NODES,
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
@@ -117,11 +119,11 @@ pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
     scout, scout_to_json, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
-    ScoutResult, ScoutSummary, DEFAULT_MODIFY_TARGET_THRESHOLD, DEFAULT_SCOUT_SEARCH_LIMIT,
-    DEFAULT_SCOUT_SEARCH_THRESHOLD,
+    ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
+pub use task::{task, task_to_json, TaskResult, TaskSummary};
 pub use where_to_add::{
     suggest_placement, suggest_placement_with_options, FileSuggestion, LocalPatterns,
     PlacementOptions, PlacementResult, DEFAULT_PLACEMENT_SEARCH_LIMIT,

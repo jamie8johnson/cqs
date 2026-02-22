@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. Cuts token usage 50-80% on common code navigation tasks. 90.9% Recall@1 on confusable function retrieval.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -343,7 +343,7 @@ Without cqs, Claude uses grep/glob to find code and reads entire files for conte
 
 - **Fewer tool calls**: `gather`, `impact`, `trace`, `context`, `explain` each replace 5-10 sequential file reads with a single call
 - **Less context burn**: `cqs read --focus` returns a function + its type dependencies — not the whole file. Token budgeting (`--tokens N`) caps output across all commands.
-- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 90.9% accuracy on confusable functions.
+- **Find code by concept**: "function that retries with backoff" finds retry logic even if it's named `doWithAttempts`. 90.9% Recall@1, 0.951 NDCG@10 on confusable functions.
 - **Understand dependencies**: Call graphs, type dependencies, impact analysis, and risk scoring answer "what breaks if I change X?" without manual tracing
 - **Navigate unfamiliar codebases**: Semantic search + `cqs scout` + `cqs where` provide instant orientation without knowing project structure
 
@@ -427,7 +427,7 @@ cqs index --dry-run    # Show what would be indexed
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 9 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
+3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
 4. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 5. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
 6. **Reason** — Call graph traversal, type dependency analysis, impact scoring, risk assessment, and smart context assembly build on the indexed data to answer questions like "what breaks if I change X?" in a single call.
@@ -460,22 +460,53 @@ Evaluated on a hard eval suite of 55 queries across 5 languages (Rust, Python, T
 |--------|-------------------|-------------------|
 | **Recall@1** | **90.9%** | 80.0% |
 | **Recall@5** | **98.2%** | 94.5% |
+| **Recall@10** | **98.2%** | 100.0% |
 | **MRR** | **0.941** | 0.863 |
+| **NDCG@10** | **0.951** | 0.896 |
 
 Per-language MRR: Rust 1.0, Python 1.0, Go 1.0, JavaScript 0.95, TypeScript 0.75.
 
 General-purpose E5 outperforms code-specific jina because cqs generates natural language descriptions of each code element — doc comments, parameter types, return types, parent type context — transforming the retrieval task from code→code to NL→NL, where general-purpose models excel.
 
-## GPU Acceleration (Optional)
+E5 reaches its ceiling at Recall@5 — every query that lands in the top 5 also lands at rank 1-5 even when searching 10 results. jina catches up at Recall@10 (100%) but ranks results lower, reflected in its lower MRR and NDCG@10.
 
-cqs works on CPU (~20ms per embedding). GPU provides 3x+ speedup:
+## RAG Efficiency
+
+cqs is a retrieval component for RAG pipelines. Context assembly commands (`gather`, `task`, `scout --tokens`) deliver semantically relevant code within a token budget, replacing full file reads.
+
+| Command | What it does | Token reduction |
+|---------|-------------|-----------------|
+| `cqs gather "query" --tokens 4000` | Seed search + call graph BFS | **17x** vs reading full files |
+| `cqs task "description" --tokens 4000` | Scout + gather + impact + placement + notes | **41x** vs reading full files |
+
+Measured on a 4,110-chunk project: `gather` returned 17 chunks from 9 files in 2,536 tokens where the full files total ~43K tokens. `task` returned a complete implementation brief (12 code chunks, 2 risk scores, 2 tests, 3 placement suggestions, 6 notes) in 3,633 tokens from 12 files totaling ~151K tokens.
+
+Token budgeting works across all context commands: `--tokens N` packs results by relevance score into the budget, guaranteeing the most important context fits the agent's context window.
+
+## Performance
+
+Benchmarked on a 4,110-chunk Rust project (202 files, 9 languages) with CUDA GPU (RTX A6000):
+
+| Metric | Value |
+|--------|-------|
+| **Search latency (hot, p50)** | 45ms |
+| **Search latency (cold, p50)** | 1,767ms |
+| **Throughput (batch mode)** | 22 queries/sec |
+| **Index build (203 files)** | 36 sec |
+| **Index size** | ~8 KB/chunk (31 MB for 4,110 chunks) |
+
+Cold latency includes process startup, model init, and DB open. Batch mode (`cqs batch`) amortizes startup across queries — use it for pipelines and agent workloads.
+
+**Embedding latency (GPU vs CPU):**
 
 | Mode | Single Query | Batch (50 docs) |
 |------|--------------|-----------------|
 | CPU  | ~20ms        | ~15ms/doc       |
-| CUDA | ~6ms         | ~0.3ms/doc      |
+| CUDA | ~3ms         | ~0.3ms/doc      |
 
-For GPU acceleration:
+## GPU Acceleration (Optional)
+
+cqs works on CPU out of the box. GPU provides 5-7x speedup on embedding. To enable:
 
 ### Linux
 

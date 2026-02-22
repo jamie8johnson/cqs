@@ -1312,8 +1312,17 @@ fn compute_mrr(
     (mrr, per_lang)
 }
 
-/// Per-model hard eval results: (name, recall@1, recall@3, recall@5, MRR, per-lang MRR)
-type HardEvalResults<'a> = Vec<(&'a str, f64, f64, f64, f64, Vec<(Language, f64, usize)>)>;
+/// Per-model hard eval results: (name, recall@1, recall@3, recall@5, recall@10, MRR, NDCG@10, per-lang MRR)
+type HardEvalResults<'a> = Vec<(
+    &'a str,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    f64,
+    Vec<(Language, f64, usize)>,
+)>;
 
 /// Compute recall at K for given cases using pre-computed query embeddings
 fn compute_recall_at_k(
@@ -1346,6 +1355,55 @@ fn compute_recall_at_k(
     }
 
     (hits, total)
+}
+
+/// Compute NDCG@k for single-relevant-document queries.
+///
+/// For single-relevant queries, DCG@k = 1/log2(rank+1) if found in top-k, else 0.
+/// IDCG = 1/log2(2) = 1.0 (perfect = rank 1). So NDCG@k = 1/log2(rank+1) if found.
+fn compute_ndcg_at_k(
+    indexed: &[IndexedChunk],
+    cases: &[EvalCase],
+    query_embeddings: &[Vec<f32>],
+    k: usize,
+) -> f64 {
+    let mut total_ndcg = 0.0;
+    let mut count = 0;
+
+    for (case, query_embedding) in cases.iter().zip(query_embeddings.iter()) {
+        let mut scored: Vec<(&str, f32)> = indexed
+            .iter()
+            .filter(|c| c.language == case.language)
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    cosine_similarity(query_embedding, &c.embedding),
+                )
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(k);
+
+        let rank = scored
+            .iter()
+            .position(|(name, _)| *name == case.expected_name)
+            .map(|pos| pos + 1);
+
+        // For single-relevant: NDCG = DCG / IDCG = (1/log2(rank+1)) / (1/log2(2)) = 1/log2(rank+1)
+        let ndcg = match rank {
+            Some(r) => 1.0 / (r as f64 + 1.0).log2(),
+            None => 0.0,
+        };
+
+        total_ndcg += ndcg;
+        count += 1;
+    }
+
+    if count > 0 {
+        total_ndcg / count as f64
+    } else {
+        0.0
+    }
 }
 
 #[test]
@@ -1505,11 +1563,15 @@ fn test_hard_model_comparison() {
             compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 3);
         let (r5_hits, r5_total) =
             compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 5);
+        let (r10_hits, r10_total) =
+            compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 10);
         let (mrr, per_lang_mrr) = compute_mrr(&indexed, HARD_EVAL_CASES, &query_embeddings);
+        let ndcg_10 = compute_ndcg_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 10);
 
         let recall_1 = r1_hits as f64 / r1_total as f64;
         let recall_3 = r3_hits as f64 / r3_total as f64;
         let recall_5 = r5_hits as f64 / r5_total as f64;
+        let recall_10 = r10_hits as f64 / r10_total as f64;
 
         eprintln!(
             "\n  Recall@1: {}/{} ({:.1}%)",
@@ -1529,7 +1591,14 @@ fn test_hard_model_comparison() {
             r5_total,
             recall_5 * 100.0
         );
+        eprintln!(
+            "  Recall@10: {}/{} ({:.1}%)",
+            r10_hits,
+            r10_total,
+            recall_10 * 100.0
+        );
         eprintln!("  MRR: {:.4}", mrr);
+        eprintln!("  NDCG@10: {:.4}", ndcg_10);
 
         eprintln!("\n  Per-language MRR:");
         for (lang, lang_mrr, count) in &per_lang_mrr {
@@ -1542,7 +1611,9 @@ fn test_hard_model_comparison() {
             recall_1,
             recall_3,
             recall_5,
+            recall_10,
             mrr,
+            ndcg_10,
             per_lang_mrr,
         ));
     }
@@ -1550,18 +1621,20 @@ fn test_hard_model_comparison() {
     // Print comparison table
     eprintln!("=== Hard Eval Comparison ===\n");
     eprintln!(
-        "{:<25} {:>10} {:>10} {:>10} {:>10}",
-        "Model", "Recall@1", "Recall@3", "Recall@5", "MRR"
+        "{:<25} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+        "Model", "Recall@1", "Recall@5", "Recall@10", "MRR", "NDCG@10", "Recall@3"
     );
-    eprintln!("{}", "-".repeat(70));
-    for (name, r1, r3, r5, mrr, _) in &all_results {
+    eprintln!("{}", "-".repeat(100));
+    for (name, r1, r3, r5, r10, mrr, ndcg, _) in &all_results {
         eprintln!(
-            "{:<25} {:>9.1}% {:>9.1}% {:>9.1}% {:>10.4}",
+            "{:<25} {:>9.1}% {:>9.1}% {:>9.1}% {:>10.4} {:>10.4} {:>9.1}%",
             name,
             r1 * 100.0,
-            r3 * 100.0,
             r5 * 100.0,
-            mrr
+            r10 * 100.0,
+            mrr,
+            ndcg,
+            r3 * 100.0
         );
     }
     eprintln!();
@@ -1573,7 +1646,7 @@ fn test_hard_model_comparison() {
         "Model", "Rust", "Py", "TS", "JS", "Go"
     );
     eprintln!("{}", "-".repeat(70));
-    for (name, _, _, _, _, per_lang) in &all_results {
+    for (name, _, _, _, _, _, _, per_lang) in &all_results {
         let mut row = format!("{:<25}", name);
         for (_, lang_mrr, _) in per_lang {
             row += &format!(" {:>7.4}", lang_mrr);
