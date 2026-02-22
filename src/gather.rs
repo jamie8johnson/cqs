@@ -109,7 +109,7 @@ impl std::str::FromStr for GatherDirection {
 }
 
 /// A gathered code chunk with context
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GatheredChunk {
     pub name: String,
     pub file: PathBuf,

@@ -16,6 +16,7 @@ use crate::where_to_add::FileSuggestion;
 use crate::{AnalysisError, Embedder, Store};
 
 /// Complete task analysis result.
+#[derive(Debug, Clone)]
 pub struct TaskResult {
     /// Original task description.
     pub description: String,
@@ -34,6 +35,7 @@ pub struct TaskResult {
 }
 
 /// Summary statistics for a task result.
+#[derive(Debug, Clone)]
 pub struct TaskSummary {
     pub total_files: usize,
     pub total_functions: usize,

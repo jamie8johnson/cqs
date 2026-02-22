@@ -49,15 +49,11 @@ fn index_pack(
     overhead_per_item: usize,
     score_fn: impl Fn(usize) -> f32,
 ) -> (Vec<usize>, usize) {
-    if token_counts.is_empty() {
+    if token_counts.is_empty() || budget == 0 {
         return (Vec::new(), 0);
     }
     let mut order: Vec<usize> = (0..token_counts.len()).collect();
-    order.sort_by(|&a, &b| {
-        score_fn(b)
-            .partial_cmp(&score_fn(a))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    order.sort_by(|&a, &b| score_fn(b).total_cmp(&score_fn(a)));
 
     let mut used = 0;
     let mut kept = Vec::new();
@@ -148,8 +144,7 @@ pub(crate) fn waterfall_pack(
     let code_budget = ((budget as f64 * WATERFALL_CODE) as usize
         + scout_budget.saturating_sub(scout_used))
     .min(remaining);
-    let code_texts: Vec<String> = result.code.iter().map(|c| c.content.clone()).collect();
-    let code_text_refs: Vec<&str> = code_texts.iter().map(|s| s.as_str()).collect();
+    let code_text_refs: Vec<&str> = result.code.iter().map(|c| c.content.as_str()).collect();
     let code_counts = super::count_tokens_batch(embedder, &code_text_refs);
     let (code_indices, code_used) = index_pack(&code_counts, code_budget, overhead_per_item, |i| {
         result.code[i].score
@@ -344,11 +339,7 @@ fn build_scout_json(
                         "chunk_type": c.chunk_type.to_string(),
                         "signature": c.signature,
                         "line_start": c.line_start,
-                        "role": match c.role {
-                            cqs::ChunkRole::ModifyTarget => "modify_target",
-                            cqs::ChunkRole::TestToUpdate => "test_to_update",
-                            cqs::ChunkRole::Dependency => "dependency",
-                        },
+                        "role": c.role.as_str(),
                         "caller_count": c.caller_count,
                         "test_count": c.test_count,
                         "search_score": c.search_score,
@@ -563,11 +554,12 @@ fn print_code_section_idx(
         if !c.signature.is_empty() {
             println!("    {}", c.signature.dimmed());
         }
-        let lines: Vec<&str> = c.content.lines().take(5).collect();
-        for line in &lines {
+        let mut line_count = 0;
+        for line in c.content.lines().take(5) {
             println!("    {}", line);
+            line_count += 1;
         }
-        if c.content.lines().count() > 5 {
+        if line_count == 5 && c.content.lines().nth(5).is_some() {
             println!("    {}", "...".dimmed());
         }
     }
@@ -788,5 +780,14 @@ mod tests {
         let (indices, used) = index_pack(&counts, 100, 35, |_| 1.0);
         assert_eq!(indices.len(), 2);
         assert_eq!(used, 90);
+    }
+
+    // TC-8: index_pack with zero budget returns nothing
+    #[test]
+    fn test_index_pack_zero_budget() {
+        let counts = vec![10, 20, 30];
+        let (indices, used) = index_pack(&counts, 0, 0, |_| 1.0);
+        assert!(indices.is_empty());
+        assert_eq!(used, 0);
     }
 }

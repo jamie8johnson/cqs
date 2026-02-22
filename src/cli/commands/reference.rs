@@ -62,13 +62,17 @@ pub(crate) fn cmd_ref(cli: &Cli, subcmd: &RefCommand) -> Result<()> {
 }
 
 fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> Result<()> {
-    let root = find_project_root();
-    let config = cqs::config::Config::load(&root);
+    // Validate name first — fast-fail before any I/O
+    cqs::reference::validate_ref_name(name)
+        .map_err(|e| anyhow::anyhow!("Invalid reference name '{}': {}", name, e))?;
 
     // Validate weight
     if !(0.0..=1.0).contains(&weight) {
         bail!("Weight must be between 0.0 and 1.0 (got {})", weight);
     }
+
+    let root = find_project_root();
+    let config = cqs::config::Config::load(&root);
 
     // Check for duplicate
     if config.references.iter().any(|r| r.name == name) {

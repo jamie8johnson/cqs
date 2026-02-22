@@ -356,7 +356,7 @@ impl BoundedScoreHeap {
             .into_iter()
             .map(|Reverse((OrderedFloat(score), id))| (id, score))
             .collect();
-        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.sort_by(|a, b| b.1.total_cmp(&a.1));
         results
     }
 }
@@ -723,7 +723,7 @@ impl Store {
                 })
                 .collect();
 
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
 
             let mut seen_parents: HashSet<String> = HashSet::new();
             let results: Vec<SearchResult> = scored
