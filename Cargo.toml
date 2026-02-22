@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "0.12.12"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.93"
 description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 90.9% Recall@1. Local ML, GPU-accelerated."

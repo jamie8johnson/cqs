@@ -65,7 +65,7 @@ No other network requests are made. Search, indexing, and all other operations a
 | `.cqs/` directory | Index storage | `cqs init` |
 | `.cqs/index.db` | SQLite database | `cqs index`, note operations |
 | `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
-| `.cqs/cqs.pid` | Process lock file | `cqs watch` |
+| `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 

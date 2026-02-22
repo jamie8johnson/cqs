@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-02-21
+
 ### Added
 - **`cqs onboard "concept"`** (Phase 2b) — guided codebase tour that replaces the manual scout → read → callers → callees → test-map → explain workflow with a single command. Returns an ordered reading list: entry point → call chain (BFS callees) → callers → key types → tests. Supports `--depth` (1-5), `--tokens` budget, `--json`, and batch mode. Entry point selection prefers callable types (Function/Method) with call graph connections over structs/enums. 12 new tests.
 - **Auto-stale note detection** (Phase 2c) — 4th detector in `cqs suggest` identifies notes with stale mentions (deleted files, renamed functions). Classifies mentions as file-like, symbol-like, or concept (skipped). File mentions checked via filesystem, symbol mentions batch-checked via `search_by_names_batch()`. `notes list --check` flag annotates notes with stale mentions inline. 7 new tests.
 - **`cqs drift <reference>`** (Phase 2d) — semantic change detection between reference snapshots. Wraps `semantic_diff()` to surface functions that changed semantically, sorted by drift magnitude (most changed first). Supports `--min-drift` threshold, `--lang` filter, `--limit`, `--json`, and batch mode. 4 new tests.
+
+### Fixed
+- **P1 audit: 12 security + correctness fixes** (#459) — Store path traversal guard, batch input size limit, reference store opened read-only, BFS unbounded iteration guards, error propagation on Store::open/note queries, delete-by-file scoped to chunk IDs, type edge upsert uses chunk-level scope.
+- **P2 audit: 18 caching + quality fixes** (#460) — BatchContext caching for call graph, config, reranker, file set, audit state, and notes (6 fixes). N+1 query elimination in `get_ref`/`dispatch_drift` (2). Code quality: dedup removal, COMMON_TYPES consolidation (2). API design: TypeUsage struct, onboard error propagation, chunk_type Display consistency, float param validation (4). Robustness: NaN/Infinity rejection on float params (4). Renamed `gpu-search` feature flag to `gpu-index`.
+- **P3 audit: 31 docs + observability + robustness fixes** (#461) — Documentation: README, CONTRIBUTING, CHANGELOG, ROADMAP, SECURITY accuracy (9). Error handling: `.context()` on Store::open/embed_query, debug→warn for staleness errors (5). Observability: tracing spans for pipeline/windowing/embed threads, batch error counter (4). API design: Debug+Clone on TypeGraph/ResolvedTarget, Serialize on Note, drift type re-exports, TypeEdgeKind enum replaces stringly-typed edge_kind (5). Robustness: onboard depth clamp, search_by_name limit clamp, usize for type graph constants (5). Performance: Cow<str> in strip_markdown_noise, PathBuf forward-slash serialization (3). Test coverage: TypeEdgeKind round-trip test, staleness assertion (2).
 
 ## [0.12.12] - 2026-02-18
 
@@ -980,7 +987,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.12.12...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/jamie8johnson/cqs/compare/v0.12.12...v0.13.0
 [0.12.12]: https://github.com/jamie8johnson/cqs/compare/v0.12.11...v0.12.12
 [0.12.11]: https://github.com/jamie8johnson/cqs/compare/v0.12.10...v0.12.11
 [0.12.10]: https://github.com/jamie8johnson/cqs/compare/v0.12.9...v0.12.10
