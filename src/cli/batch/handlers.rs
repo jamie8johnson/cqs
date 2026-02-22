@@ -20,7 +20,7 @@ pub(super) fn dispatch_search(
     rerank: bool,
     lang: Option<String>,
     path: Option<String>,
-    _tokens: Option<usize>,
+    tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_search", query).entered();
 
@@ -127,6 +127,32 @@ pub(super) fn dispatch_search(
         results
     };
 
+    // Token-budget packing
+    let (results, token_info) = if let Some(budget) = tokens {
+        let embedder = ctx.embedder()?;
+        let texts: Vec<&str> = results
+            .iter()
+            .map(|r| match r {
+                cqs::store::UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
+                cqs::store::UnifiedResult::Note(nr) => nr.note.text.as_str(),
+            })
+            .collect();
+        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
+        let (packed, used) = crate::cli::commands::token_pack(
+            results,
+            &counts,
+            budget,
+            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+            |r| match r {
+                cqs::store::UnifiedResult::Code(sr) => sr.score,
+                cqs::store::UnifiedResult::Note(nr) => nr.score,
+            },
+        );
+        (packed, Some((used, budget)))
+    } else {
+        (results, None)
+    };
+
     let json_results: Vec<serde_json::Value> = results
         .iter()
         .map(|r| match r {
@@ -150,11 +176,16 @@ pub(super) fn dispatch_search(
         })
         .collect();
 
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "results": json_results,
         "query": query,
         "total": json_results.len(),
-    }))
+    });
+    if let Some((used, budget)) = token_info {
+        response["token_count"] = serde_json::json!(used);
+        response["token_budget"] = serde_json::json!(budget);
+    }
+    Ok(response)
 }
 
 pub(super) fn dispatch_deps(
@@ -221,7 +252,7 @@ pub(super) fn dispatch_callees(ctx: &BatchContext, name: &str) -> Result<serde_j
 pub(super) fn dispatch_explain(
     ctx: &BatchContext,
     target: &str,
-    _tokens: Option<usize>,
+    tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_explain", target).entered();
 
@@ -270,6 +301,36 @@ pub(super) fn dispatch_explain(
         None => vec![],
     };
 
+    // Token budget: decide which content to include
+    let (include_target_content, similar_content_set, token_info) = if let Some(budget) = tokens {
+        let embedder = ctx.embedder()?;
+        let target_tokens =
+            crate::cli::commands::count_tokens(embedder, &chunk.content, &chunk.name);
+        let remaining = budget.saturating_sub(target_tokens);
+
+        let indexed: Vec<(usize, f32)> = similar
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i, r.score))
+            .collect();
+        let texts: Vec<&str> = indexed
+            .iter()
+            .map(|&(i, _)| similar[i].chunk.content.as_str())
+            .collect();
+        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
+        let (packed, sim_used) =
+            crate::cli::commands::token_pack(indexed, &counts, remaining, 0, |&(_, score)| score);
+        let sim_included: std::collections::HashSet<String> = packed
+            .into_iter()
+            .map(|(i, _)| similar[i].chunk.id.clone())
+            .collect();
+
+        let used = target_tokens + sim_used;
+        (true, Some(sim_included), Some((used, budget)))
+    } else {
+        (false, None, None)
+    };
+
     let callers_json: Vec<_> = callers
         .iter()
         .map(|c| {
@@ -289,17 +350,23 @@ pub(super) fn dispatch_explain(
     let similar_json: Vec<_> = similar
         .iter()
         .map(|r| {
-            serde_json::json!({
+            let mut obj = serde_json::json!({
                 "name": r.chunk.name,
                 "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
                 "score": r.score,
-            })
+            });
+            if let Some(ref set) = similar_content_set {
+                if set.contains(&r.chunk.id) {
+                    obj["content"] = serde_json::json!(r.chunk.content);
+                }
+            }
+            obj
         })
         .collect();
 
     let rel_file = cqs::rel_display(&chunk.file, &ctx.root);
 
-    Ok(serde_json::json!({
+    let mut output = serde_json::json!({
         "name": chunk.name,
         "file": rel_file,
         "language": chunk.language.to_string(),
@@ -310,7 +377,15 @@ pub(super) fn dispatch_explain(
         "callers": callers_json,
         "callees": callees_json,
         "similar": similar_json,
-    }))
+    });
+    if include_target_content {
+        output["content"] = serde_json::json!(chunk.content);
+    }
+    if let Some((used, budget)) = token_info {
+        output["token_count"] = serde_json::json!(used);
+        output["token_budget"] = serde_json::json!(budget);
+    }
+    Ok(output)
 }
 
 pub(super) fn dispatch_similar(
@@ -382,7 +457,7 @@ pub(super) fn dispatch_gather(
     expand: usize,
     direction: &str,
     limit: usize,
-    _tokens: Option<usize>,
+    tokens: Option<usize>,
     ref_name: Option<&str>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_gather", query, ?ref_name).entered();
@@ -420,8 +495,24 @@ pub(super) fn dispatch_gather(
         cqs::gather(&ctx.store, &query_embedding, query, &opts, &ctx.root)?
     };
 
-    let json_chunks: Vec<serde_json::Value> = result
-        .chunks
+    // Token-budget packing
+    let (chunks, token_info) = if let Some(budget) = tokens {
+        let embedder = ctx.embedder()?;
+        let texts: Vec<&str> = result.chunks.iter().map(|c| c.content.as_str()).collect();
+        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
+        let (packed, used) = crate::cli::commands::token_pack(
+            result.chunks,
+            &counts,
+            budget,
+            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+            |c| c.score,
+        );
+        (packed, Some((used, budget)))
+    } else {
+        (result.chunks, None)
+    };
+
+    let json_chunks: Vec<serde_json::Value> = chunks
         .iter()
         .map(|c| {
             let mut chunk_json = serde_json::json!({
@@ -443,12 +534,17 @@ pub(super) fn dispatch_gather(
         })
         .collect();
 
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "query": query,
         "chunks": json_chunks,
         "expansion_capped": result.expansion_capped,
         "search_degraded": result.search_degraded,
-    }))
+    });
+    if let Some((used, budget)) = token_info {
+        response["token_count"] = serde_json::json!(used);
+        response["token_budget"] = serde_json::json!(budget);
+    }
+    Ok(response)
 }
 
 pub(super) fn dispatch_impact(
@@ -771,7 +867,7 @@ pub(super) fn dispatch_context(
     path: &str,
     summary: bool,
     compact: bool,
-    _tokens: Option<usize>,
+    tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_context", path).entered();
 
@@ -826,7 +922,44 @@ pub(super) fn dispatch_context(
         }));
     }
 
-    // Full context
+    // Full context — with optional token packing
+    let (chunks, token_info) = if let Some(budget) = tokens {
+        let embedder = ctx.embedder()?;
+        let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+        let caller_counts = ctx.store.get_caller_counts_batch(&names)?;
+
+        let indexed: Vec<(usize, f32)> = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                let cc = caller_counts.get(&c.name).copied().unwrap_or(0) as f32;
+                (i, cc)
+            })
+            .collect();
+        let texts: Vec<&str> = indexed
+            .iter()
+            .map(|&(i, _)| chunks[i].content.as_str())
+            .collect();
+        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
+        let (packed, used) = crate::cli::commands::token_pack(
+            indexed,
+            &counts,
+            budget,
+            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+            |&(_, cc)| cc,
+        );
+        let keep: std::collections::HashSet<usize> = packed.into_iter().map(|(i, _)| i).collect();
+        let filtered: Vec<_> = chunks
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, c)| c)
+            .collect();
+        (filtered, Some((used, budget)))
+    } else {
+        (chunks, None)
+    };
+
     let entries: Vec<_> = chunks
         .iter()
         .map(|c| {
@@ -841,11 +974,16 @@ pub(super) fn dispatch_context(
         })
         .collect();
 
-    Ok(serde_json::json!({
+    let mut response = serde_json::json!({
         "file": path,
         "chunks": entries,
         "total": entries.len(),
-    }))
+    });
+    if let Some((used, budget)) = token_info {
+        response["token_count"] = serde_json::json!(used);
+        response["token_budget"] = serde_json::json!(budget);
+    }
+    Ok(response)
 }
 
 pub(super) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
@@ -885,25 +1023,166 @@ pub(super) fn dispatch_onboard(
     ctx: &BatchContext,
     query: &str,
     depth: usize,
+    tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_onboard", query, depth).entered();
     let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
     let result = cqs::onboard(&ctx.store, embedder, query, &ctx.root, depth)?;
-    cqs::onboard_to_json(&result).map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))
+
+    if tokens.is_none() {
+        return cqs::onboard_to_json(&result)
+            .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"));
+    }
+    let budget = tokens.unwrap();
+
+    // Flatten entries with depth-based scores
+    let mut entries: Vec<(String, f32)> = Vec::new();
+    entries.push((result.entry_point.name.clone(), 1.0));
+    for (i, c) in result.call_chain.iter().enumerate() {
+        entries.push((c.name.clone(), 1.0 / (i as f32 + 2.0)));
+    }
+    for c in &result.callers {
+        entries.push((c.name.clone(), 0.3));
+    }
+
+    // Batch-fetch content
+    let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
+    let chunks_by_name = match ctx.store.get_chunks_by_names_batch(&names) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch chunks for onboard token packing");
+            HashMap::new()
+        }
+    };
+
+    let items: Vec<(String, String, f32)> = entries
+        .into_iter()
+        .filter_map(|(name, score)| {
+            let content = chunks_by_name.get(name.as_str())?.first()?.content.clone();
+            Some((name, content, score))
+        })
+        .collect();
+
+    let texts: Vec<&str> = items.iter().map(|(_, c, _)| c.as_str()).collect();
+    let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
+    let (packed, used) =
+        crate::cli::commands::token_pack(items, &counts, budget, 0, |&(_, _, s)| s);
+    let content_map: HashMap<String, String> = packed
+        .into_iter()
+        .map(|(name, content, _)| (name, content))
+        .collect();
+
+    // Build JSON, injecting content for packed entries
+    let mut json = cqs::onboard_to_json(&result)
+        .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"))?;
+
+    // Inject content into entry_point
+    if let Some(content) = content_map.get(&result.entry_point.name) {
+        json["entry_point"]["content"] = serde_json::json!(content);
+    }
+    // Inject into call_chain
+    if let Some(chain) = json.get_mut("call_chain").and_then(|v| v.as_array_mut()) {
+        for (i, entry) in chain.iter_mut().enumerate() {
+            if let Some(c) = result.call_chain.get(i) {
+                if let Some(content) = content_map.get(&c.name) {
+                    entry["content"] = serde_json::json!(content);
+                }
+            }
+        }
+    }
+    // Inject into callers
+    if let Some(callers) = json.get_mut("callers").and_then(|v| v.as_array_mut()) {
+        for (i, entry) in callers.iter_mut().enumerate() {
+            if let Some(c) = result.callers.get(i) {
+                if let Some(content) = content_map.get(&c.name) {
+                    entry["content"] = serde_json::json!(content);
+                }
+            }
+        }
+    }
+
+    json["token_count"] = serde_json::json!(used);
+    json["token_budget"] = serde_json::json!(budget);
+    Ok(json)
 }
 
 pub(super) fn dispatch_scout(
     ctx: &BatchContext,
     query: &str,
     limit: usize,
-    _tokens: Option<usize>,
+    tokens: Option<usize>,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 50);
     let result = cqs::scout(&ctx.store, embedder, query, &ctx.root, limit)?;
-    Ok(cqs::scout_to_json(&result, &ctx.root))
+
+    if tokens.is_none() {
+        return Ok(cqs::scout_to_json(&result, &ctx.root));
+    }
+    let budget = tokens.unwrap();
+
+    // Batch-fetch content for all chunks
+    let all_names: Vec<&str> = result
+        .file_groups
+        .iter()
+        .flat_map(|g| g.chunks.iter().map(|c| c.name.as_str()))
+        .collect();
+    let chunks_by_name = match ctx.store.get_chunks_by_names_batch(&all_names) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to batch-fetch chunks for scout token packing");
+            HashMap::new()
+        }
+    };
+
+    // Build (name, content, score) triples for packing
+    let items: Vec<(String, String, f32)> = result
+        .file_groups
+        .iter()
+        .flat_map(|g| {
+            g.chunks.iter().filter_map(|c| {
+                let content = chunks_by_name
+                    .get(c.name.as_str())?
+                    .first()?
+                    .content
+                    .clone();
+                Some((c.name.clone(), content, g.relevance_score * c.search_score))
+            })
+        })
+        .collect();
+
+    let texts: Vec<&str> = items
+        .iter()
+        .map(|(_, content, _)| content.as_str())
+        .collect();
+    let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
+    let (packed, used) =
+        crate::cli::commands::token_pack(items, &counts, budget, 0, |&(_, _, score)| score);
+    let content_map: HashMap<String, String> = packed
+        .into_iter()
+        .map(|(name, content, _)| (name, content))
+        .collect();
+
+    // Build JSON with content for packed items
+    let mut json = cqs::scout_to_json(&result, &ctx.root);
+    if let Some(groups) = json.get_mut("file_groups").and_then(|v| v.as_array_mut()) {
+        for group in groups {
+            if let Some(chunks) = group.get_mut("chunks").and_then(|v| v.as_array_mut()) {
+                for chunk in chunks {
+                    if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
+                        if let Some(content) = content_map.get(name) {
+                            chunk["content"] = serde_json::json!(content);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    json["token_count"] = serde_json::json!(used);
+    json["token_budget"] = serde_json::json!(budget);
+    Ok(json)
 }
 
 pub(super) fn dispatch_where(
