@@ -80,11 +80,18 @@ impl std::fmt::Display for EmbeddingDimensionError {
 impl std::error::Error for EmbeddingDimensionError {}
 
 impl Embedding {
-    /// Create a new embedding from raw vector data (unchecked).
+    /// Create a new embedding from raw vector data.
     ///
-    /// This does not validate the dimension. For validated construction,
-    /// use `try_new()` which ensures 769-dimensional input.
+    /// Logs a warning if the dimension doesn't match the expected 769.
+    /// For strict validation, use `try_new()` which returns an error.
     pub fn new(data: Vec<f32>) -> Self {
+        if data.len() != crate::EMBEDDING_DIM {
+            tracing::warn!(
+                expected = crate::EMBEDDING_DIM,
+                actual = data.len(),
+                "Embedding dimension mismatch — may cause incorrect similarity scores"
+            );
+        }
         Self(data)
     }
 

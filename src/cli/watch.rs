@@ -187,6 +187,10 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                             })
                             .collect();
 
+                        // Note: concurrent searches during this window may see partial
+                        // results (RT-DATA-3). Per-file transactions are atomic but the
+                        // batch is not — files indexed so far are visible, remaining are
+                        // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
                         match reindex_files(&root, &store, &files, &parser, emb, cli.quiet) {
                             Ok((count, _content_hashes)) => {
                                 // Record mtimes to skip duplicate events

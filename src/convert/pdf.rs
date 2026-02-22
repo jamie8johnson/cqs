@@ -56,6 +56,12 @@ fn find_pdf_script() -> Result<String> {
     if let Ok(script) = std::env::var("CQS_PDF_SCRIPT") {
         tracing::warn!(script = %script, "Using custom PDF script from CQS_PDF_SCRIPT env var");
         let p = PathBuf::from(&script);
+        if p.extension().is_none_or(|e| e != "py") {
+            tracing::warn!(
+                script = %script,
+                "CQS_PDF_SCRIPT does not have .py extension — ensure this is intentional"
+            );
+        }
         if p.exists() {
             return Ok(script);
         }

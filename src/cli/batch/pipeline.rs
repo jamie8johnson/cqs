@@ -255,14 +255,17 @@ pub(super) fn execute_pipeline(
             );
         }
 
-        // Intermediate stage: merge results for next stage's name extraction
-        // Collect all per-name results into a single object with all names
+        // Intermediate stage: merge results for next stage's name extraction.
+        // Cap at PIPELINE_FAN_OUT_LIMIT to avoid unbounded intermediate growth.
         let mut merged_names: Vec<String> = Vec::new();
         let mut merged_seen = HashSet::new();
-        for (_, val) in &results {
+        'merge: for (_, val) in &results {
             for n in extract_names(val) {
                 if merged_seen.insert(n.clone()) {
                     merged_names.push(n);
+                    if merged_names.len() >= PIPELINE_FAN_OUT_LIMIT {
+                        break 'merge;
+                    }
                 }
             }
         }

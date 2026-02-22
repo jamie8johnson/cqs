@@ -15,6 +15,15 @@ use crate::scout::{scout_core, ChunkRole, ScoutOptions, ScoutResult};
 use crate::where_to_add::FileSuggestion;
 use crate::{AnalysisError, Embedder, Store};
 
+/// BFS expansion depth for gather phase (how many call-graph hops from modify targets).
+const TASK_GATHER_DEPTH: usize = 2;
+
+/// Maximum BFS-expanded nodes in gather phase (prevents blowup on hub functions).
+const TASK_GATHER_MAX_NODES: usize = 100;
+
+/// Multiplier applied to `limit` for gather phase truncation.
+const TASK_GATHER_LIMIT_MULTIPLIER: usize = 3;
+
 /// Complete task analysis result.
 #[derive(Debug, Clone)]
 pub struct TaskResult {
@@ -124,13 +133,13 @@ pub fn task_with_resources(
             &mut name_scores,
             graph,
             &GatherOptions::default()
-                .with_expand_depth(2)
+                .with_expand_depth(TASK_GATHER_DEPTH)
                 .with_direction(GatherDirection::Both)
-                .with_max_expanded_nodes(100),
+                .with_max_expanded_nodes(TASK_GATHER_MAX_NODES),
         );
 
         let (mut chunks, _degraded) = fetch_and_assemble(store, &name_scores, root);
-        sort_and_truncate(&mut chunks, limit * 3);
+        sort_and_truncate(&mut chunks, limit * TASK_GATHER_LIMIT_MULTIPLIER);
         chunks
     };
     tracing::debug!(
@@ -469,5 +478,99 @@ mod tests {
         assert_eq!(json["placement"].as_array().unwrap().len(), 0);
         assert_eq!(json["scout"]["relevant_notes"].as_array().unwrap().len(), 0);
         assert_eq!(json["summary"]["total_files"], 0);
+    }
+
+    // TC-3: task_to_json with populated code/risk/tests/placement
+    #[test]
+    fn test_task_to_json_populated_values() {
+        use crate::gather::GatheredChunk;
+        use crate::impact::TestInfo;
+        use crate::language::{ChunkType, Language};
+        use crate::where_to_add::{FileSuggestion, LocalPatterns};
+
+        let scout = make_scout_result(vec![("fn_a", ChunkRole::ModifyTarget)]);
+        let result = TaskResult {
+            description: "add caching".to_string(),
+            scout,
+            code: vec![GatheredChunk {
+                name: "fn_a".to_string(),
+                file: PathBuf::from("/project/src/lib.rs"),
+                line_start: 10,
+                line_end: 20,
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                signature: "fn fn_a()".to_string(),
+                content: "fn fn_a() { }".to_string(),
+                score: 0.9,
+                depth: 0,
+                source: None,
+            }],
+            risk: vec![(
+                "fn_a".to_string(),
+                RiskScore {
+                    caller_count: 5,
+                    test_count: 1,
+                    coverage: 0.2,
+                    risk_level: RiskLevel::High,
+                    blast_radius: RiskLevel::Medium,
+                    score: 4.0,
+                },
+            )],
+            tests: vec![TestInfo {
+                name: "test_fn_a".to_string(),
+                file: PathBuf::from("/project/tests/a.rs"),
+                line: 5,
+                call_depth: 1,
+            }],
+            placement: vec![FileSuggestion {
+                file: PathBuf::from("/project/src/lib.rs"),
+                score: 0.85,
+                insertion_line: 25,
+                near_function: "fn_a".to_string(),
+                reason: "same module".to_string(),
+                patterns: LocalPatterns {
+                    imports: vec!["use std::path::Path;".to_string()],
+                    naming_convention: "snake_case".to_string(),
+                    error_handling: "Result".to_string(),
+                    visibility: "pub".to_string(),
+                    has_inline_tests: true,
+                },
+            }],
+            summary: TaskSummary {
+                total_files: 1,
+                total_functions: 1,
+                modify_targets: 1,
+                high_risk_count: 1,
+                test_count: 1,
+                stale_count: 0,
+            },
+        };
+
+        let json = task_to_json(&result, Path::new("/project"));
+
+        // Verify code section values
+        let code = json["code"].as_array().unwrap();
+        assert_eq!(code.len(), 1);
+        assert_eq!(code[0]["name"], "fn_a");
+        assert_eq!(code[0]["signature"], "fn fn_a()");
+
+        // Verify risk section values
+        let risk = json["risk"].as_array().unwrap();
+        assert_eq!(risk.len(), 1);
+        assert_eq!(risk[0]["name"], "fn_a");
+        assert_eq!(risk[0]["risk_level"], "high");
+        assert_eq!(risk[0]["caller_count"], 5);
+
+        // Verify tests section values
+        let tests = json["tests"].as_array().unwrap();
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0]["name"], "test_fn_a");
+        assert_eq!(tests[0]["call_depth"], 1);
+
+        // Verify placement section values
+        let placement = json["placement"].as_array().unwrap();
+        assert_eq!(placement.len(), 1);
+        assert_eq!(placement[0]["near_function"], "fn_a");
+        assert_eq!(placement[0]["reason"], "same module");
     }
 }
