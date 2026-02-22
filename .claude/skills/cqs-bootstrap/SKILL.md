@@ -116,6 +116,7 @@ None.
    - `cqs-deps` — type dependencies: who uses a type, or what types a function uses
    - `cqs-where` — suggest where to add new code based on semantic similarity
    - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
+   - `cqs-task` — single-call implementation brief (scout + gather + impact + placement + notes)
    - `cqs-onboard` — guided codebase tour (entry point + call chain + callers + types + tests)
    - `cqs-plan` — task planning with scout data + task-type templates
    - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
@@ -184,6 +185,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs gather "query"` — smart context assembly: seed search + call graph BFS.
 - `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes.
+- `cqs task "description"` — single-call implementation brief: scout + gather + impact + placement + notes.
 - `cqs onboard "concept"` — guided tour: entry point, call chain, callers, key types, tests.
 - `cqs where "description"` — placement suggestion for new code.
 - `cqs related <function>` — co-occurrence: shared callers, callees, types.
@@ -221,7 +223,7 @@ After: `cqs audit-mode off` or let it auto-expire (30 min default).
 
 ## Agent Teams
 
-When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, callers, callees, explain, similar, gather, impact, test-map, trace, context, dead, scout) in every agent prompt.
+When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, read, callers, callees, explain, similar, gather, impact, test-map, trace, context, dead, scout, task, onboard, where, deps, related, drift, batch, review, ci, health, suggest, stale) in every agent prompt.
 ```
 
 ### Phase 6: Verify

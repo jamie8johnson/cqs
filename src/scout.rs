@@ -69,9 +69,10 @@ pub struct ScoutResult {
     pub summary: ScoutSummary,
 }
 
-/// Default minimum search score to classify as ModifyTarget.
-/// Configurable via `ScoutOptions::modify_threshold`.
-pub const DEFAULT_MODIFY_TARGET_THRESHOLD: f32 = 0.5;
+/// Minimum relative gap (%) between consecutive scores to split ModifyTarget
+/// from Dependency. Below this, all non-test chunks are treated as a single
+/// cluster and only the top result becomes a ModifyTarget.
+const MIN_GAP_RATIO: f32 = 0.10;
 
 /// Default number of search results for scout.
 pub const DEFAULT_SCOUT_SEARCH_LIMIT: usize = 15;
@@ -85,8 +86,6 @@ pub struct ScoutOptions {
     pub search_limit: usize,
     /// Minimum search score threshold (default: 0.2)
     pub search_threshold: f32,
-    /// Minimum score to classify as ModifyTarget (default: 0.5)
-    pub modify_threshold: f32,
 }
 
 impl Default for ScoutOptions {
@@ -94,7 +93,6 @@ impl Default for ScoutOptions {
         Self {
             search_limit: DEFAULT_SCOUT_SEARCH_LIMIT,
             search_threshold: DEFAULT_SCOUT_SEARCH_THRESHOLD,
-            modify_threshold: DEFAULT_MODIFY_TARGET_THRESHOLD,
         }
     }
 }
@@ -122,11 +120,39 @@ pub fn scout_with_options(
     opts: &ScoutOptions,
 ) -> Result<ScoutResult, AnalysisError> {
     let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
-    // 1. Embed and search
     let query_embedding = embedder
         .embed_query(task)
         .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    let graph = store.get_call_graph()?;
+    let test_chunks = store.find_test_chunks()?;
+    scout_core(
+        store,
+        &query_embedding,
+        task,
+        root,
+        limit,
+        opts,
+        &graph,
+        &test_chunks,
+    )
+}
 
+/// Core scout implementation accepting pre-loaded resources.
+///
+/// Use this when you already have the call graph and test chunks loaded
+/// (e.g., from `cqs task` which shares them across phases).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scout_core(
+    store: &Store,
+    query_embedding: &crate::Embedding,
+    task: &str,
+    root: &Path,
+    limit: usize,
+    opts: &ScoutOptions,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[ChunkSummary],
+) -> Result<ScoutResult, AnalysisError> {
+    // 1. Search
     let filter = SearchFilter {
         enable_rrf: true,
         query_text: task.to_string(),
@@ -134,7 +160,7 @@ pub fn scout_with_options(
     };
 
     let results = store.search_filtered(
-        &query_embedding,
+        query_embedding,
         &filter,
         opts.search_limit,
         opts.search_threshold,
@@ -162,11 +188,7 @@ pub fn scout_with_options(
             .push((r.score, &r.chunk));
     }
 
-    // 3. Load call graph + test chunks ONCE
-    let graph = store.get_call_graph()?;
-    let test_chunks = store.find_test_chunks()?;
-
-    // 4. Batch caller/callee counts
+    // 3. Batch caller/callee counts
     let all_names: Vec<&str> = results.iter().map(|r| r.chunk.name.as_str()).collect();
     let caller_counts = match store.get_caller_counts_batch(&all_names) {
         Ok(c) => c,
@@ -186,7 +208,14 @@ pub fn scout_with_options(
         }
     };
 
-    // 6. Build file groups
+    // 6. Compute dynamic modify-target threshold via gap detection.
+    // Scores naturally cluster: items matching both semantic + keyword rank
+    // higher than keyword-only or semantic-only. Find the largest relative gap
+    // in the sorted scores and split there. Scale-independent — works on
+    // cosine (0-1), RRF (~0.01-0.03), or any future scoring.
+    let modify_threshold = compute_modify_threshold(&results);
+
+    // 7. Build file groups
     let mut groups: Vec<FileGroup> = file_map
         .into_iter()
         .map(|(file, chunks)| {
@@ -197,8 +226,8 @@ pub fn scout_with_options(
                 .iter()
                 .map(|(score, chunk)| {
                     let hints = compute_hints_with_graph(
-                        &graph,
-                        &test_chunks,
+                        graph,
+                        test_chunks,
                         &chunk.name,
                         caller_counts.get(&chunk.name).map(|&c| c as usize),
                     );
@@ -207,7 +236,7 @@ pub fn scout_with_options(
                         *score,
                         &chunk.name,
                         &chunk.file.to_string_lossy(),
-                        opts.modify_threshold,
+                        modify_threshold,
                     );
 
                     ScoutChunk {
@@ -269,7 +298,49 @@ pub fn scout_with_options(
     })
 }
 
-/// Classify a chunk's role based on score, name/file, and configurable threshold
+/// Find the natural score boundary between high-relevance (ModifyTarget) and
+/// low-relevance (Dependency) chunks using gap detection.
+///
+/// Sorts non-test scores descending, finds the largest relative gap between
+/// consecutive scores, and returns the score at the bottom of the top cluster.
+/// Guarantees at least 1 ModifyTarget, at most half the non-test results.
+/// If no clear gap exists (all gaps < 10%), only the top result qualifies.
+fn compute_modify_threshold(results: &[crate::store::SearchResult]) -> f32 {
+    let mut scores: Vec<f32> = results
+        .iter()
+        .filter(|r| !crate::is_test_chunk(&r.chunk.name, &r.chunk.file.to_string_lossy()))
+        .map(|r| r.score)
+        .collect();
+    scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+
+    if scores.len() <= 1 {
+        return scores.first().copied().unwrap_or(0.0);
+    }
+
+    // Search the top half for the largest relative gap
+    let max_targets = scores.len() / 2;
+    let mut best_gap = 0.0f32;
+    let mut split_at = 0; // index of last item in the top cluster
+
+    for i in 0..max_targets.min(scores.len() - 1) {
+        if scores[i] > 0.0 {
+            let gap = (scores[i] - scores[i + 1]) / scores[i];
+            if gap > best_gap {
+                best_gap = gap;
+                split_at = i;
+            }
+        }
+    }
+
+    // No clear gap → only top result is a ModifyTarget
+    if best_gap < MIN_GAP_RATIO {
+        return scores[0];
+    }
+
+    scores[split_at]
+}
+
+/// Classify a chunk's role based on score, name/file, and dynamic threshold.
 fn classify_role(score: f32, name: &str, file: &str, modify_threshold: f32) -> ChunkRole {
     if crate::is_test_chunk(name, file) {
         ChunkRole::TestToUpdate
@@ -388,21 +459,11 @@ mod tests {
     #[test]
     fn test_classify_role_modify_target() {
         assert_eq!(
-            classify_role(
-                0.6,
-                "search_filtered",
-                "src/search.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.6, "search_filtered", "src/search.rs", 0.5),
             ChunkRole::ModifyTarget
         );
         assert_eq!(
-            classify_role(
-                0.5,
-                "do_something",
-                "src/lib.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.5, "do_something", "src/lib.rs", 0.5),
             ChunkRole::ModifyTarget
         );
     }
@@ -410,21 +471,11 @@ mod tests {
     #[test]
     fn test_classify_role_dependency() {
         assert_eq!(
-            classify_role(
-                0.49,
-                "helper_fn",
-                "src/lib.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.49, "helper_fn", "src/lib.rs", 0.5),
             ChunkRole::Dependency
         );
         assert_eq!(
-            classify_role(
-                0.3,
-                "utility",
-                "src/lib.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.3, "utility", "src/lib.rs", 0.5),
             ChunkRole::Dependency
         );
     }
@@ -433,42 +484,109 @@ mod tests {
     fn test_classify_role_test() {
         // Name-based test detection
         assert_eq!(
-            classify_role(
-                0.9,
-                "test_search",
-                "src/lib.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.9, "test_search", "src/lib.rs", 0.5),
             ChunkRole::TestToUpdate
         );
         assert_eq!(
-            classify_role(
-                0.3,
-                "test_helper",
-                "src/lib.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.3, "test_helper", "src/lib.rs", 0.5),
             ChunkRole::TestToUpdate
         );
         assert_eq!(
-            classify_role(
-                0.8,
-                "TestSuite",
-                "src/lib.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.8, "TestSuite", "src/lib.rs", 0.5),
             ChunkRole::TestToUpdate
         );
         // File-based test detection
         assert_eq!(
-            classify_role(
-                0.9,
-                "helper_fn",
-                "tests/integration.rs",
-                DEFAULT_MODIFY_TARGET_THRESHOLD
-            ),
+            classify_role(0.9, "helper_fn", "tests/integration.rs", 0.5),
             ChunkRole::TestToUpdate
         );
+    }
+
+    fn mock_result(name: &str, file: &str, score: f32) -> crate::store::SearchResult {
+        crate::store::SearchResult {
+            chunk: ChunkSummary {
+                id: name.to_string(),
+                file: std::path::PathBuf::from(file),
+                language: crate::language::Language::Rust,
+                chunk_type: crate::language::ChunkType::Function,
+                name: name.to_string(),
+                signature: String::new(),
+                content: String::new(),
+                doc: None,
+                line_start: 1,
+                line_end: 10,
+                parent_id: None,
+            },
+            score,
+        }
+    }
+
+    #[test]
+    fn test_compute_modify_threshold_clear_gap() {
+        // RRF-like scores: top 3 in both semantic+FTS, bottom 3 in one only
+        let results = vec![
+            mock_result("a", "src/a.rs", 0.033),
+            mock_result("b", "src/b.rs", 0.031),
+            mock_result("c", "src/c.rs", 0.030),
+            mock_result("d", "src/d.rs", 0.016), // big gap here
+            mock_result("e", "src/e.rs", 0.015),
+            mock_result("f", "src/f.rs", 0.014),
+        ];
+        let threshold = compute_modify_threshold(&results);
+        // Should split at the gap: 0.030 is the cutoff
+        assert!(threshold >= 0.030);
+        assert!(threshold <= 0.033);
+    }
+
+    #[test]
+    fn test_compute_modify_threshold_no_gap() {
+        // Nearly uniform scores — no clear gap
+        let results = vec![
+            mock_result("a", "src/a.rs", 0.020),
+            mock_result("b", "src/b.rs", 0.019),
+            mock_result("c", "src/c.rs", 0.018),
+            mock_result("d", "src/d.rs", 0.017),
+        ];
+        let threshold = compute_modify_threshold(&results);
+        // All gaps < 10%, only top result qualifies
+        assert!((threshold - 0.020).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_modify_threshold_single() {
+        let results = vec![mock_result("a", "src/a.rs", 0.05)];
+        assert!((compute_modify_threshold(&results) - 0.05).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_modify_threshold_empty() {
+        assert!((compute_modify_threshold(&[]) - 0.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_modify_threshold_skips_tests() {
+        // test_foo is a test — should be excluded from threshold computation
+        let results = vec![
+            mock_result("test_foo", "src/a.rs", 0.050), // test, ignored
+            mock_result("bar", "src/b.rs", 0.020),
+            mock_result("baz", "src/c.rs", 0.010),
+        ];
+        let threshold = compute_modify_threshold(&results);
+        // Only bar and baz considered; gap between 0.020 and 0.010 is 50%
+        assert!((threshold - 0.020).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_compute_modify_threshold_cosine_scale() {
+        // Works on cosine 0-1 scale too — scale-independent
+        let results = vec![
+            mock_result("a", "src/a.rs", 0.95),
+            mock_result("b", "src/b.rs", 0.90),
+            mock_result("c", "src/c.rs", 0.50), // big gap
+            mock_result("d", "src/d.rs", 0.45),
+        ];
+        let threshold = compute_modify_threshold(&results);
+        assert!(threshold >= 0.90);
     }
 
     #[test]

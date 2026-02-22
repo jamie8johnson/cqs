@@ -240,6 +240,17 @@ pub(crate) enum BatchCmd {
         #[arg(long)]
         patterns: bool,
     },
+    /// One-shot implementation context (terminal — no pipeline chaining)
+    Task {
+        /// Task description
+        description: String,
+        /// Max file groups
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
     /// Show help
     Help,
 }
@@ -352,6 +363,11 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             limit,
         ),
         BatchCmd::Notes { warnings, patterns } => handlers::dispatch_notes(ctx, warnings, patterns),
+        BatchCmd::Task {
+            description,
+            limit,
+            tokens,
+        } => handlers::dispatch_task(ctx, &description, limit, tokens),
         BatchCmd::Help => handlers::dispatch_help(),
     }
 }

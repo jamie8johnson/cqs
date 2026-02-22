@@ -2,17 +2,19 @@
 
 ## Right Now
 
-**v0.13.0 audit + batch split complete.** 2026-02-21.
+**Phase 3 Moonshot: `cqs task` implemented.** 2026-02-22.
 
-- P1-P4 all merged (#459, #460, #461, #463)
-- batch.rs split merged in #463: 2844-line monolith → batch/ directory (4 files) + CQ-8/CQ-9 read dedup
-- Binary updated, main clean
-
-Audit triage: `docs/audit-triage.md`
+- `cqs task "description"` — single-call implementation brief (scout + gather + impact + placement + notes)
+- New files: `src/task.rs` (~580 lines), `src/cli/commands/task.rs` (~610 lines)
+- Modified: `src/scout.rs` (scout_core extraction), `src/cli/mod.rs`, `src/cli/batch/commands.rs`, `src/cli/batch/handlers.rs`, `src/lib.rs`, `src/cli/commands/mod.rs`
+- 1,058 tests passing (20 new), zero clippy warnings
+- Binary installed, manual testing complete
+- Ecosystem updates done (skill, bootstrap, CLAUDE.md, CONTRIBUTING.md, CHANGELOG, MOONSHOT)
+- Ready for commit + PR
 
 ## Pending Changes
 
-None.
+Uncommitted: `cqs task` implementation + ecosystem docs.
 
 ## Parked
 
@@ -39,14 +41,14 @@ None.
 
 ## Architecture
 
-- Version: 0.13.0
+- Version: 0.13.1
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1039 pass + 31 ignored
+- Tests: 1058 pass + 31 ignored
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

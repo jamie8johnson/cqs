@@ -337,13 +337,13 @@ Phase 3 (Task + Verify)
 | 1a | Type extraction + schema v11 + deps | **Done** (PRs #440, #442) | 3 |
 | 1b | Type integration (related, impact, dead) | **Done** (PR #447) | 1 |
 | 1c | Note-boosted search ranking | **Done** | 0.5 |
-| 1d | Embedding model eval | Not started | 1 (research) |
-| 2a | Batch: scout, where, read, stale, health, notes | Not started | 1-2 |
+| 1d | Embedding model eval | **Done** (E5-base-v2 confirmed: 90.9% R@1, 0.941 MRR) | 1 |
+| 2a | Batch completeness (scout, where, read, stale, health, notes, --tokens) | **Done** (PRs #463, #467) | 2 |
 | 2b | `cqs onboard` | **Done** (PR #457) | 1 |
 | 2c | Auto-stale notes | **Done** | 0.5 |
 | 2d | `cqs drift` | **Done** | 0.5 |
-| 2e | `cqs patterns` | Not started | 1-2 |
-| 3 | `cqs task` | Not started | 2-3 |
+| 2e | `cqs patterns` | Parked | — |
+| 3 | `cqs task` | **Done** | 1 |
 | 3 | `cqs verify` | Not started | 1-2 |
 | 4 | C#, binaries, ref install | Not started | ongoing |
 

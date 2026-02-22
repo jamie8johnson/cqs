@@ -1443,6 +1443,58 @@ pub(super) fn dispatch_notes(
     }))
 }
 
+pub(super) fn dispatch_task(
+    ctx: &BatchContext,
+    description: &str,
+    limit: usize,
+    tokens: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_task", description).entered();
+    let embedder = ctx.embedder()?;
+    let limit = limit.clamp(1, 10);
+    let result = cqs::task(&ctx.store, embedder, description, &ctx.root, limit)?;
+
+    let mut json = cqs::task_to_json(&result, &ctx.root);
+
+    // Apply token budgeting if requested (simplified: pack code section only)
+    if let Some(budget) = tokens {
+        let code_texts: Vec<&str> = result.code.iter().map(|c| c.content.as_str()).collect();
+        let counts = crate::cli::commands::count_tokens_batch(embedder, &code_texts);
+        let (packed_idx, used) = crate::cli::commands::token_pack(
+            (0..result.code.len()).collect::<Vec<_>>(),
+            &counts,
+            budget,
+            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
+            |&i| result.code[i].score,
+        );
+
+        // Replace code array with packed subset
+        let code_json: Vec<serde_json::Value> = packed_idx
+            .iter()
+            .map(|&i| {
+                let c = &result.code[i];
+                serde_json::json!({
+                    "name": c.name,
+                    "file": cqs::rel_display(&c.file, &ctx.root),
+                    "line_start": c.line_start,
+                    "line_end": c.line_end,
+                    "language": c.language.to_string(),
+                    "chunk_type": c.chunk_type.to_string(),
+                    "signature": c.signature,
+                    "content": c.content,
+                    "score": c.score,
+                    "depth": c.depth,
+                })
+            })
+            .collect();
+        json["code"] = serde_json::json!(code_json);
+        json["token_count"] = serde_json::json!(used);
+        json["token_budget"] = serde_json::json!(budget);
+    }
+
+    Ok(json)
+}
+
 pub(super) fn dispatch_help() -> Result<serde_json::Value> {
     use clap::CommandFactory;
     let mut buf = Vec::new();
