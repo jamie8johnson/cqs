@@ -55,6 +55,7 @@ pub(crate) struct BatchContext {
     audit_state: OnceLock<cqs::audit::AuditMode>,
     notes_cache: OnceLock<Vec<cqs::note::Note>>,
     call_graph: OnceLock<cqs::store::CallGraph>,
+    test_chunks: OnceLock<Vec<cqs::store::ChunkSummary>>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
     error_count: AtomicU64,
@@ -181,6 +182,17 @@ impl BatchContext {
         Ok(self.call_graph.get().unwrap())
     }
 
+    /// Get or load test chunks (cached for session).
+    pub(super) fn test_chunks(&self) -> Result<&[cqs::store::ChunkSummary]> {
+        if let Some(tc) = self.test_chunks.get() {
+            return Ok(tc);
+        }
+        let _span = tracing::info_span!("batch_test_chunks_init").entered();
+        let tc = self.store.find_test_chunks()?;
+        let _ = self.test_chunks.set(tc);
+        Ok(self.test_chunks.get().unwrap())
+    }
+
     /// Get cached project config (loaded once per session). (RM-21)
     pub(super) fn config(&self) -> &cqs::config::Config {
         self.config
@@ -250,6 +262,7 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         audit_state: OnceLock::new(),
         notes_cache: OnceLock::new(),
         call_graph: OnceLock::new(),
+        test_chunks: OnceLock::new(),
         config: OnceLock::new(),
         reranker: OnceLock::new(),
         error_count: AtomicU64::new(0),

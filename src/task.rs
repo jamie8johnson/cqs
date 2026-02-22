@@ -3,15 +3,14 @@
 //! Combines scout + gather + impact + placement + notes into a single call,
 //! loading shared resources (call graph, test chunks) once instead of per-phase.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::gather::{
     bfs_expand, fetch_and_assemble, sort_and_truncate, GatherDirection, GatherOptions,
     GatheredChunk,
 };
-use crate::impact::compute_risk_batch;
-use crate::impact::{find_affected_tests_with_chunks, RiskLevel, RiskScore, TestInfo};
+use crate::impact::{compute_risk_and_tests, RiskLevel, RiskScore, TestInfo};
 use crate::scout::{scout_core, ChunkRole, ScoutOptions, ScoutResult};
 use crate::where_to_add::FileSuggestion;
 use crate::{AnalysisError, Embedder, Store};
@@ -55,14 +54,6 @@ pub fn task(
     root: &Path,
     limit: usize,
 ) -> Result<TaskResult, AnalysisError> {
-    let _span = tracing::info_span!("task", description_len = description.len(), limit).entered();
-
-    // 1. Embed query
-    let query_embedding = embedder
-        .embed_query(description)
-        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
-
-    // 2. Load shared resources ONCE
     let graph = store.get_call_graph()?;
     let test_chunks = match store.find_test_chunks() {
         Ok(tc) => tc,
@@ -71,8 +62,38 @@ pub fn task(
             Vec::new()
         }
     };
+    task_with_resources(
+        store,
+        embedder,
+        description,
+        root,
+        limit,
+        &graph,
+        &test_chunks,
+    )
+}
 
-    // 3. Scout phase
+/// Like [`task`] but accepts pre-loaded call graph and test chunks.
+///
+/// Use this in batch mode where `BatchContext` caches these resources across
+/// commands, avoiding repeated loading per pipeline stage.
+pub fn task_with_resources(
+    store: &Store,
+    embedder: &Embedder,
+    description: &str,
+    root: &Path,
+    limit: usize,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> Result<TaskResult, AnalysisError> {
+    let _span = tracing::info_span!("task", description_len = description.len(), limit).entered();
+
+    // 1. Embed query
+    let query_embedding = embedder
+        .embed_query(description)
+        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+
+    // 2. Scout phase
     let scout = scout_core(
         store,
         &query_embedding,
@@ -80,8 +101,8 @@ pub fn task(
         root,
         limit,
         &ScoutOptions::default(),
-        &graph,
-        &test_chunks,
+        graph,
+        test_chunks,
     )?;
     tracing::debug!(
         file_groups = scout.file_groups.len(),
@@ -99,7 +120,7 @@ pub fn task(
 
         bfs_expand(
             &mut name_scores,
-            &graph,
+            graph,
             &GatherOptions::default()
                 .with_expand_depth(2)
                 .with_direction(GatherDirection::Both)
@@ -116,24 +137,28 @@ pub fn task(
         "Gather complete"
     );
 
-    // 5. Impact phase — risk scores + affected tests
-    let risk = if targets.is_empty() {
-        Vec::new()
+    // 5. Impact phase — risk scores + affected tests (single BFS per target)
+    let (risk, tests) = if targets.is_empty() {
+        (Vec::new(), Vec::new())
     } else {
         let target_refs: Vec<&str> = targets.iter().map(|s| s.as_str()).collect();
-        let scores = compute_risk_batch(&target_refs, &graph, &test_chunks);
-        target_refs
+        let (scores, tests) = compute_risk_and_tests(&target_refs, graph, test_chunks);
+        let risk = target_refs
             .iter()
             .zip(scores)
             .map(|(&n, r)| (n.to_string(), r))
-            .collect()
+            .collect();
+        (risk, tests)
     };
-
-    let tests = dedup_tests(&targets, &graph, &test_chunks);
     tracing::debug!(risks = risk.len(), tests = tests.len(), "Impact complete");
 
-    // 6. Placement phase
-    let placement = match crate::where_to_add::suggest_placement(store, embedder, description, 3) {
+    // 6. Placement phase — reuse query embedding to avoid redundant ONNX inference
+    let placement = match crate::where_to_add::suggest_placement_with_embedding(
+        store,
+        &query_embedding,
+        description,
+        3,
+    ) {
         Ok(result) => result.suggestions,
         Err(e) => {
             tracing::warn!(error = %e, "Placement suggestion failed, skipping");
@@ -164,7 +189,7 @@ pub fn task(
 }
 
 /// Extract modify target names from scout results.
-pub(crate) fn extract_modify_targets(scout: &ScoutResult) -> Vec<String> {
+pub fn extract_modify_targets(scout: &ScoutResult) -> Vec<String> {
     scout
         .file_groups
         .iter()
@@ -172,24 +197,6 @@ pub(crate) fn extract_modify_targets(scout: &ScoutResult) -> Vec<String> {
         .filter(|c| c.role == ChunkRole::ModifyTarget)
         .map(|c| c.name.clone())
         .collect()
-}
-
-/// Deduplicate tests across multiple targets.
-fn dedup_tests(
-    targets: &[String],
-    graph: &crate::store::CallGraph,
-    test_chunks: &[crate::store::ChunkSummary],
-) -> Vec<TestInfo> {
-    let mut all_tests = Vec::new();
-    let mut seen = HashSet::new();
-    for target in targets {
-        for t in find_affected_tests_with_chunks(graph, test_chunks, target, 5) {
-            if seen.insert(t.name.clone()) {
-                all_tests.push(t);
-            }
-        }
-    }
-    all_tests
 }
 
 /// Compute summary statistics from task phases.
@@ -227,80 +234,11 @@ pub(crate) fn compute_summary(
 pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
     let scout_json = crate::scout::scout_to_json(&result.scout, root);
 
-    let code_json: Vec<serde_json::Value> = result
-        .code
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "file": crate::rel_display(&c.file, root),
-                "line_start": c.line_start,
-                "line_end": c.line_end,
-                "language": c.language.to_string(),
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "content": c.content,
-                "score": c.score,
-                "depth": c.depth,
-            })
-        })
-        .collect();
-
-    let risk_json: Vec<serde_json::Value> = result
-        .risk
-        .iter()
-        .map(|(name, r)| {
-            serde_json::json!({
-                "name": name,
-                "risk_level": format!("{:?}", r.risk_level),
-                "blast_radius": format!("{:?}", r.blast_radius),
-                "score": r.score,
-                "caller_count": r.caller_count,
-                "test_count": r.test_count,
-                "coverage": r.coverage,
-            })
-        })
-        .collect();
-
-    let tests_json: Vec<serde_json::Value> = result
-        .tests
-        .iter()
-        .map(|t| {
-            serde_json::json!({
-                "name": t.name,
-                "file": crate::rel_display(&t.file, root),
-                "line": t.line,
-                "call_depth": t.call_depth,
-            })
-        })
-        .collect();
-
-    let placement_json: Vec<serde_json::Value> = result
-        .placement
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "file": crate::rel_display(&s.file, root),
-                "score": s.score,
-                "insertion_line": s.insertion_line,
-                "near_function": s.near_function,
-                "reason": s.reason,
-            })
-        })
-        .collect();
-
-    let notes_json: Vec<serde_json::Value> = result
-        .scout
-        .relevant_notes
-        .iter()
-        .map(|n| {
-            serde_json::json!({
-                "text": n.text,
-                "sentiment": n.sentiment,
-                "mentions": n.mentions,
-            })
-        })
-        .collect();
+    let code_json: Vec<serde_json::Value> = result.code.iter().map(|c| c.to_json(root)).collect();
+    let risk_json: Vec<serde_json::Value> = result.risk.iter().map(|(n, r)| r.to_json(n)).collect();
+    let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json(root)).collect();
+    let placement_json: Vec<serde_json::Value> =
+        result.placement.iter().map(|s| s.to_json(root)).collect();
 
     serde_json::json!({
         "description": result.description,
@@ -309,7 +247,6 @@ pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
         "risk": risk_json,
         "tests": tests_json,
         "placement": placement_json,
-        "notes": notes_json,
         "summary": {
             "total_files": result.summary.total_files,
             "total_functions": result.summary.total_functions,
@@ -489,7 +426,8 @@ mod tests {
         assert!(json["risk"].is_array());
         assert!(json["tests"].is_array());
         assert!(json["placement"].is_array());
-        assert!(json["notes"].is_array());
+        // Notes are in scout.relevant_notes, no top-level "notes" key
+        assert!(json["scout"]["relevant_notes"].is_array());
         assert!(json["summary"].is_object());
         assert_eq!(json["summary"]["modify_targets"], 1);
     }
@@ -527,47 +465,7 @@ mod tests {
         assert_eq!(json["risk"].as_array().unwrap().len(), 0);
         assert_eq!(json["tests"].as_array().unwrap().len(), 0);
         assert_eq!(json["placement"].as_array().unwrap().len(), 0);
-        assert_eq!(json["notes"].as_array().unwrap().len(), 0);
+        assert_eq!(json["scout"]["relevant_notes"].as_array().unwrap().len(), 0);
         assert_eq!(json["summary"]["total_files"], 0);
-    }
-
-    #[test]
-    fn test_dedup_tests_removes_duplicates() {
-        // Can't easily test dedup_tests without a real graph, but we can test
-        // the HashSet logic directly
-        let mut all_tests: Vec<TestInfo> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-
-        let test_items = vec![
-            TestInfo {
-                name: "test_a".to_string(),
-                file: PathBuf::from("tests/a.rs"),
-                line: 1,
-                call_depth: 1,
-            },
-            TestInfo {
-                name: "test_a".to_string(), // duplicate
-                file: PathBuf::from("tests/a.rs"),
-                line: 1,
-                call_depth: 2,
-            },
-            TestInfo {
-                name: "test_b".to_string(),
-                file: PathBuf::from("tests/b.rs"),
-                line: 5,
-                call_depth: 1,
-            },
-        ];
-
-        for t in test_items {
-            if seen.insert(t.name.clone()) {
-                all_tests.push(t);
-            }
-        }
-
-        assert_eq!(all_tests.len(), 2);
-        assert_eq!(all_tests[0].name, "test_a");
-        assert_eq!(all_tests[0].call_depth, 1); // keeps first occurrence
-        assert_eq!(all_tests[1].name, "test_b");
     }
 }

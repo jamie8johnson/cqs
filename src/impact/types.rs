@@ -25,6 +25,18 @@ pub struct TestInfo {
     pub call_depth: usize,
 }
 
+impl TestInfo {
+    /// Serialize to JSON, relativizing file paths against the project root.
+    pub fn to_json(&self, root: &std::path::Path) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.name,
+            "file": crate::rel_display(&self.file, root),
+            "line": self.line,
+            "call_depth": self.call_depth,
+        })
+    }
+}
+
 /// Transitive caller at a given depth
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TransitiveCaller {
@@ -140,4 +152,19 @@ pub struct RiskScore {
     /// Unlike `risk_level`, this does NOT decrease with test coverage.
     pub blast_radius: RiskLevel,
     pub score: f32,
+}
+
+impl RiskScore {
+    /// Serialize to JSON with the associated function name.
+    pub fn to_json(&self, name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "risk_level": self.risk_level.to_string(),
+            "blast_radius": self.blast_radius.to_string(),
+            "score": self.score,
+            "caller_count": self.caller_count,
+            "test_count": self.test_count,
+            "coverage": self.coverage,
+        })
+    }
 }

@@ -104,11 +104,11 @@ pub use gather::{
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
-    compute_hints_with_graph_depth, compute_risk_batch, diff_impact_to_json, find_hotspots,
-    impact_to_json, impact_to_mermaid, map_hunks_to_functions, suggest_tests, CallerDetail,
-    ChangedFunction, DiffImpactResult, DiffImpactSummary, DiffTestInfo, FunctionHints,
-    ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
-    DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    compute_hints_with_graph_depth, compute_risk_and_tests, compute_risk_batch,
+    diff_impact_to_json, find_hotspots, impact_to_json, impact_to_mermaid, map_hunks_to_functions,
+    suggest_tests, CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary,
+    DiffTestInfo, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion,
+    TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use onboard::{
@@ -123,11 +123,13 @@ pub use scout::{
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
-pub use task::{task, task_to_json, TaskResult, TaskSummary};
+pub use task::{
+    extract_modify_targets, task, task_to_json, task_with_resources, TaskResult, TaskSummary,
+};
 pub use where_to_add::{
-    suggest_placement, suggest_placement_with_options, FileSuggestion, LocalPatterns,
-    PlacementOptions, PlacementResult, DEFAULT_PLACEMENT_SEARCH_LIMIT,
-    DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
+    suggest_placement, suggest_placement_with_embedding, suggest_placement_with_options,
+    FileSuggestion, LocalPatterns, PlacementOptions, PlacementResult,
+    DEFAULT_PLACEMENT_SEARCH_LIMIT, DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
 };
 
 #[cfg(feature = "gpu-index")]

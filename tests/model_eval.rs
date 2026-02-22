@@ -1717,3 +1717,220 @@ fn test_cuda_compatibility() {
         eprintln!();
     }
 }
+
+// ===== Unit tests for retrieval metrics (TC-7) =====
+// These test the pure metric functions without requiring model downloads.
+
+#[cfg(test)]
+mod metric_tests {
+    use super::*;
+
+    /// Build a small corpus of 4 "chunks" with orthogonal unit vectors as embeddings.
+    /// Queries are exact copies of one chunk's embedding, so cosine similarity = 1.0
+    /// for the match and 0.0 for others.
+    fn make_indexed() -> Vec<IndexedChunk> {
+        vec![
+            IndexedChunk {
+                name: "alpha".to_string(),
+                language: Language::Rust,
+                embedding: vec![1.0, 0.0, 0.0, 0.0],
+            },
+            IndexedChunk {
+                name: "beta".to_string(),
+                language: Language::Rust,
+                embedding: vec![0.0, 1.0, 0.0, 0.0],
+            },
+            IndexedChunk {
+                name: "gamma".to_string(),
+                language: Language::Rust,
+                embedding: vec![0.0, 0.0, 1.0, 0.0],
+            },
+            IndexedChunk {
+                name: "delta".to_string(),
+                language: Language::Rust,
+                embedding: vec![0.0, 0.0, 0.0, 1.0],
+            },
+        ]
+    }
+
+    fn make_cases() -> Vec<EvalCase> {
+        vec![
+            EvalCase {
+                query: "find alpha",
+                expected_name: "alpha",
+                language: Language::Rust,
+            },
+            EvalCase {
+                query: "find gamma",
+                expected_name: "gamma",
+                language: Language::Rust,
+            },
+        ]
+    }
+
+    // --- MRR tests ---
+
+    #[test]
+    fn test_mrr_perfect_ranking() {
+        let indexed = make_indexed();
+        let cases = make_cases();
+        // Query embeddings match alpha and gamma exactly → rank 1 for both
+        let query_embeddings = vec![
+            vec![1.0, 0.0, 0.0, 0.0], // matches alpha
+            vec![0.0, 0.0, 1.0, 0.0], // matches gamma
+        ];
+        let (mrr, _per_lang) = compute_mrr(&indexed, &cases, &query_embeddings);
+        assert!(
+            (mrr - 1.0).abs() < 1e-6,
+            "Perfect match → MRR = 1.0, got {mrr}"
+        );
+    }
+
+    #[test]
+    fn test_mrr_second_rank() {
+        let indexed = make_indexed();
+        let cases = vec![EvalCase {
+            query: "find beta",
+            expected_name: "beta",
+            language: Language::Rust,
+        }];
+        // Query embedding is closer to alpha than beta → beta is rank 2
+        let query_embeddings = vec![vec![0.6, 0.5, 0.0, 0.0]];
+        let (mrr, _) = compute_mrr(&indexed, &cases, &query_embeddings);
+        assert!((mrr - 0.5).abs() < 1e-6, "Rank 2 → RR = 0.5, got {mrr}");
+    }
+
+    #[test]
+    fn test_mrr_miss() {
+        let indexed = make_indexed();
+        let cases = vec![EvalCase {
+            query: "find missing",
+            expected_name: "nonexistent",
+            language: Language::Rust,
+        }];
+        let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0]];
+        let (mrr, _) = compute_mrr(&indexed, &cases, &query_embeddings);
+        assert!((mrr).abs() < 1e-6, "Missing target → MRR = 0.0, got {mrr}");
+    }
+
+    #[test]
+    fn test_mrr_empty_cases() {
+        let indexed = make_indexed();
+        let (mrr, per_lang) = compute_mrr(&indexed, &[], &[]);
+        assert!((mrr).abs() < 1e-6, "No cases → MRR = 0.0");
+        assert!(per_lang.is_empty());
+    }
+
+    // --- Recall@K tests ---
+
+    #[test]
+    fn test_recall_at_1_perfect() {
+        let indexed = make_indexed();
+        let cases = make_cases();
+        let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 1.0, 0.0]];
+        let (hits, total) = compute_recall_at_k(&indexed, &cases, &query_embeddings, 1);
+        assert_eq!(hits, 2);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_recall_at_1_partial() {
+        let indexed = make_indexed();
+        let cases = make_cases();
+        // First query matches alpha (rank 1), second is closer to delta than gamma (miss at k=1)
+        let query_embeddings = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.3, 0.8], // delta > gamma
+        ];
+        let (hits, total) = compute_recall_at_k(&indexed, &cases, &query_embeddings, 1);
+        assert_eq!(hits, 1, "Only alpha found at rank 1");
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_recall_at_k_increases_with_k() {
+        let indexed = make_indexed();
+        let cases = make_cases();
+        // gamma query is close to delta (rank 1) then gamma (rank 2)
+        let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 0.3, 0.8]];
+        let (h1, _) = compute_recall_at_k(&indexed, &cases, &query_embeddings, 1);
+        let (h3, _) = compute_recall_at_k(&indexed, &cases, &query_embeddings, 3);
+        assert!(h3 >= h1, "Recall@3 >= Recall@1");
+    }
+
+    #[test]
+    fn test_recall_empty_cases() {
+        let indexed = make_indexed();
+        let (hits, total) = compute_recall_at_k(&indexed, &[], &[], 5);
+        assert_eq!(hits, 0);
+        assert_eq!(total, 0);
+    }
+
+    // --- NDCG@K tests ---
+
+    #[test]
+    fn test_ndcg_perfect_ranking() {
+        let indexed = make_indexed();
+        let cases = make_cases();
+        let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0], vec![0.0, 0.0, 1.0, 0.0]];
+        let ndcg = compute_ndcg_at_k(&indexed, &cases, &query_embeddings, 10);
+        // Both at rank 1 → NDCG = 1/log2(2) = 1.0
+        assert!(
+            (ndcg - 1.0).abs() < 1e-6,
+            "Perfect → NDCG = 1.0, got {ndcg}"
+        );
+    }
+
+    #[test]
+    fn test_ndcg_lower_rank() {
+        let indexed = make_indexed();
+        let cases = vec![EvalCase {
+            query: "find beta",
+            expected_name: "beta",
+            language: Language::Rust,
+        }];
+        // beta at rank 2 → NDCG = 1/log2(3) ≈ 0.631
+        let query_embeddings = vec![vec![0.6, 0.5, 0.0, 0.0]];
+        let ndcg = compute_ndcg_at_k(&indexed, &cases, &query_embeddings, 10);
+        let expected = 1.0 / 3.0_f64.log2();
+        assert!(
+            (ndcg - expected).abs() < 1e-4,
+            "Rank 2 → NDCG ≈ {expected:.4}, got {ndcg:.4}"
+        );
+    }
+
+    #[test]
+    fn test_ndcg_miss() {
+        let indexed = make_indexed();
+        let cases = vec![EvalCase {
+            query: "find missing",
+            expected_name: "nonexistent",
+            language: Language::Rust,
+        }];
+        let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0]];
+        let ndcg = compute_ndcg_at_k(&indexed, &cases, &query_embeddings, 10);
+        assert!((ndcg).abs() < 1e-6, "Miss → NDCG = 0.0, got {ndcg}");
+    }
+
+    #[test]
+    fn test_ndcg_empty_cases() {
+        let indexed = make_indexed();
+        let ndcg = compute_ndcg_at_k(&indexed, &[], &[], 10);
+        assert!((ndcg).abs() < 1e-6, "No cases → NDCG = 0.0");
+    }
+
+    // --- cosine_similarity unit tests ---
+
+    #[test]
+    fn test_cosine_identity() {
+        let v = vec![1.0, 0.0, 0.0];
+        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cosine_orthogonal() {
+        let a = vec![1.0, 0.0, 0.0];
+        let b = vec![0.0, 1.0, 0.0];
+        assert!((cosine_similarity(&a, &b)).abs() < 1e-6);
+    }
+}

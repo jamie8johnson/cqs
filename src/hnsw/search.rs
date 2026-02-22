@@ -47,6 +47,14 @@ impl HnswIndex {
                     // Convert distance to similarity score
                     // Cosine distance is 1 - cosine_similarity, so we convert back
                     let score = 1.0 - n.distance;
+                    if !score.is_finite() {
+                        tracing::warn!(
+                            idx,
+                            distance = n.distance,
+                            "Non-finite HNSW score, skipping"
+                        );
+                        return None;
+                    }
                     Some(IndexResult {
                         id: self.id_map[idx].clone(),
                         score,

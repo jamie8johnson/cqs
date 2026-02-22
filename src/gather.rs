@@ -125,6 +125,24 @@ pub struct GatheredChunk {
     pub source: Option<String>,
 }
 
+impl GatheredChunk {
+    /// Serialize to JSON, relativizing file paths against the project root.
+    pub fn to_json(&self, root: &Path) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.name,
+            "file": crate::rel_display(&self.file, root),
+            "line_start": self.line_start,
+            "line_end": self.line_end,
+            "language": self.language.to_string(),
+            "chunk_type": self.chunk_type.to_string(),
+            "signature": self.signature,
+            "content": self.content,
+            "score": self.score,
+            "depth": self.depth,
+        })
+    }
+}
+
 /// Result of a gather operation
 pub struct GatherResult {
     pub chunks: Vec<GatheredChunk>,

@@ -208,7 +208,19 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                                     }
                                     Ok(None) => {} // empty store
                                     Err(e) => {
-                                        warn!(error = %e, "HNSW rebuild failed (search falls back to brute-force)");
+                                        warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
+                                        // Delete stale HNSW files so search doesn't use an outdated index
+                                        for ext in &[
+                                            "hnsw.graph",
+                                            "hnsw.data",
+                                            "hnsw.ids",
+                                            "hnsw.checksum",
+                                        ] {
+                                            let path = cqs_dir.join(format!("index.{}", ext));
+                                            if path.exists() {
+                                                let _ = std::fs::remove_file(&path);
+                                            }
+                                        }
                                     }
                                 }
                             }

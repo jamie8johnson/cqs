@@ -1,665 +1,766 @@
-# Audit Findings — v0.12.12
+# Audit Findings — v0.14.0
 
-Generated: 2026-02-21
+Generated: 2026-02-22
 
 ## Documentation
 
-#### DOC-10: README `--expand 2` example is wrong — flag is boolean, not numeric
-- **Difficulty:** easy
-- **Location:** README.md:84
-- **Description:** The example `cqs "query" --expand 2` passes a numeric argument to `--expand`, but the CLI defines `--expand` on query as a boolean flag (`expand: bool` in `src/cli/mod.rs:179`). This command would fail with "unexpected argument '2'". The comment "Expand results via call graph" is also misleading — `--expand` triggers small-to-big parent context retrieval, not call graph expansion. Call graph expansion is `--expand` on the `gather` subcommand (which does take a numeric value).
-- **Suggested fix:** Change to `cqs "query" --expand  # Include parent context (small-to-big retrieval)` or remove the example entirely since it duplicates `gather --expand`.
+**Result:** All documentation for v0.14.0 is complete and consistent. No findings.
 
-#### DOC-11: README missing `cqs health` command
-- **Difficulty:** easy
-- **Location:** README.md (Maintenance section, ~line 236)
-- **Description:** `cqs health` was added in v0.12.8 but is not documented in any user-facing README section. It only appears in the Claude Code Integration section indirectly via `cqs suggest`. The command provides a codebase quality snapshot (dead code, staleness, hotspots, coverage) and supports `--json`.
-- **Suggested fix:** Add `cqs health` to the Maintenance section with a brief example: `cqs health` / `cqs health --json`.
+### Verification Summary
 
-#### DOC-12: README missing `cqs suggest` command
-- **Difficulty:** easy
-- **Location:** README.md (Maintenance section, ~line 236)
-- **Description:** `cqs suggest` was added in v0.12.8 but is not documented in the README at all — not in the main sections or the Claude Code Integration section. The command auto-detects note-worthy patterns (dead code clusters, untested hotspots, stale mentions) and suggests notes. Supports `--apply`, `--json`.
-- **Suggested fix:** Add to Maintenance section: `cqs suggest` / `cqs suggest --apply` / `cqs suggest --json`. Also add to the Claude Code Integration command list.
+- ✅ **README.md**: Documents `cqs task` with complete command description and RAG efficiency metrics (line 480)
+- ✅ **CONTRIBUTING.md**: Architecture overview lists task.rs in commands (line 92) and includes library-level task.rs in overview (line 163)
+- ✅ **CHANGELOG.md**: v0.14.0 section includes comprehensive entry for `cqs task` feature, scout gap detection, and retrieval metrics
+- ✅ **SECURITY.md**: No new security-relevant behavior for task command to document
+- ✅ **CLAUDE.md**: Comprehensive command documentation at line 75, including waterfall token budgeting explanation (line 95)
+- ✅ **src/lib.rs**: Properly exports task module (line 79) and re-exports public types (line 126: `task`, `task_to_json`, `TaskResult`, `TaskSummary`)
+- ✅ **src/cli/commands/task.rs**: Has proper module doc comment (line 1: "Task command — one-shot implementation context for a task description")
+- ✅ **src/task.rs**: Has proper module-level doc comment (lines 1-4) describing scout + gather + impact + placement + notes integration
 
-#### DOC-13: CONTRIBUTING.md missing `health.rs`, `suggest.rs`, `deps.rs` from commands list
-- **Difficulty:** easy
-- **Location:** CONTRIBUTING.md:89
-- **Description:** The `commands/` directory listing on line 89 is missing three command implementation files: `health.rs` (added v0.12.8), `suggest.rs` (added v0.12.8), and `deps.rs` (added v0.12.11). All three exist on disk and are wired into the CLI dispatch.
-- **Suggested fix:** Add `health.rs, suggest.rs, deps.rs` to the comma-separated list on line 89.
+### Cross-Documentation Consistency
 
-#### DOC-14: CONTRIBUTING.md missing `health.rs`, `suggest.rs` from library-level files
-- **Difficulty:** easy
-- **Location:** CONTRIBUTING.md:158-161 (between `ci.rs` and `where_to_add.rs`)
-- **Description:** The library-level architecture listing is missing `health.rs` (codebase quality snapshot) and `suggest.rs` (auto-suggest notes from patterns). Both exist at `src/health.rs` and `src/suggest.rs`.
-- **Suggested fix:** Add `health.rs - Codebase quality snapshot (dead code, staleness, hotspots)` and `suggest.rs - Auto-suggest notes from patterns (dead clusters, untested hotspots, stale mentions)` to the listing.
+Checked command definition in src/cli/mod.rs (lines 610-622):
+- Task command struct has all documented flags: `description`, `limit (-n)`, `json`, `tokens`
+- Signature matches all documentation examples
 
-#### DOC-15: CHANGELOG missing comparison URLs for v0.12.11 and v0.12.12
-- **Difficulty:** easy
-- **Location:** CHANGELOG.md:983-984
-- **Description:** The `[Unreleased]` comparison URL points to `v0.12.9...HEAD` instead of `v0.12.12...HEAD`. Versions v0.12.11 and v0.12.12 have changelog entries but no comparison URL footer entries. This means the version headers aren't clickable links.
-- **Suggested fix:** Update `[Unreleased]` to `v0.12.12...HEAD` and add `[0.12.12]: https://github.com/jamie8johnson/cqs/compare/v0.12.11...v0.12.12` and `[0.12.11]: https://github.com/jamie8johnson/cqs/compare/v0.12.10...v0.12.11`.
-
-#### DOC-16: ROADMAP shows `cqs onboard` and `cqs drift` as unchecked
-- **Difficulty:** easy
-- **Location:** ROADMAP.md:39,41
-- **Description:** Both `cqs onboard` (line 39) and `cqs drift` (line 41) are marked `[ ]` (unchecked) in the "Next — New Commands" section, but both are fully implemented: `onboard` is in the Unreleased changelog, and `drift` is in the Unreleased changelog. Both have CLI commands, library modules, tests, and batch mode support.
-- **Suggested fix:** Change `[ ]` to `[x]` for both entries on lines 39 and 41.
-
-#### DOC-17: SECURITY.md missing reranker model download as network request
-- **Difficulty:** easy
-- **Location:** SECURITY.md:36-39
-- **Description:** The Network Requests section only documents the E5-base-v2 model download (~440MB). The `--rerank` flag (added v0.12.7) triggers a separate download of `cross-encoder/ms-marco-MiniLM-L-6-v2` (~91MB) from HuggingFace on first use (`src/reranker.rs:19`). This is an undocumented network request.
-- **Suggested fix:** Add a second bullet under Network Requests: "**Reranker model download** (`cqs "query" --rerank` on first use): Downloads ~91MB model from HuggingFace Hub. Source: `huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2`. One-time download, cached in `~/.cache/huggingface/`."
-
-#### DOC-18: README missing `--include-types` flag on `cqs impact`
-- **Difficulty:** easy
-- **Location:** README.md:211-213 (Code Intelligence section)
-- **Description:** The `cqs impact` examples don't show the `--include-types` flag (added in v0.12.11 with type edges/deps). This flag includes type-impacted functions via shared type dependencies, extending impact analysis beyond just call graph. Defined at `src/cli/mod.rs:373`.
-- **Suggested fix:** Add example: `cqs impact search_filtered --include-types  # include type-dependency impact`.
-
-## Error Handling
-
-#### EH-23: `onboard_to_json` silently returns null on serialization failure
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:239
-- **Description:** `serde_json::to_value(result).unwrap_or_default()` swallows serialization errors, returning `serde_json::Value::Null`. If any field fails to serialize (unlikely but possible with custom Serialize impls or future changes), the caller gets a silent null instead of an error. Since `OnboardResult` derives `Serialize`, this is low risk today, but the pattern masks future breakage.
-- **Suggested fix:** Return `Result<serde_json::Value>` or use `.expect("OnboardResult is Serialize")` to fail fast on invariant violation rather than returning garbage.
-
-#### EH-24: `borrow_ref` panics with `.expect()` in non-test code
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:128
-- **Description:** `map.get(name).expect("ref must be loaded via get_ref first")` will panic if called with an unloaded reference name. The only caller (line 909) always calls `get_ref` first, but the method is `pub(crate)` and the invariant is enforced only by convention, not the type system. A future caller omitting `get_ref` causes a panic in production code.
-- **Suggested fix:** Return `Option<Ref<'_, ReferenceIndex>>` or `Result` instead of panicking. Alternatively, combine `get_ref` + `borrow_ref` into a single method that loads-or-returns.
-
-#### EH-25: `serde_json::to_string().unwrap()` in batch JSONL output loop
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:2194, 2207, 2213, 2217, 2222
-- **Description:** Five `serde_json::to_string(&json_value).unwrap()` calls in the batch REPL loop. While `serde_json::Value` serialization cannot fail (it's already valid JSON), the pattern is fragile — if any of these are refactored to serialize a struct directly, the unwrap becomes a panic risk. Inconsistent with the rest of the codebase which avoids `.unwrap()` in non-test code.
-- **Suggested fix:** Use `serde_json::to_string(&v).unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"))` or extract a helper that handles the error.
-
-#### EH-26: `AnalysisError::Embedder` used for non-embedding errors in onboard
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:106, src/onboard.rs:384
-- **Description:** Two error sites misuse `AnalysisError::Embedder`:
-  - Line 106: "No relevant code found for concept" — this is a search/empty-result error, not an embedding failure.
-  - Line 384: "Entry point not found in index" — this is a store lookup miss, not an embedding failure.
-  Error consumers that match on `AnalysisError::Embedder` (for retry/fallback logic) would incorrectly treat these as embedding infrastructure failures.
-- **Suggested fix:** Add a new `AnalysisError::NotFound(String)` variant for "no results" errors, keeping `Embedder` for actual ONNX/embedding failures.
-
-#### EH-27: `Store::open` calls without `.context()` in drift command
-- **Difficulty:** easy
-- **Location:** src/cli/commands/drift.rs:46, src/cli/commands/drift.rs:52
-- **Description:** Two `Store::open(&path)?` calls propagate bare SQLite errors without any context about which store failed to open. If the reference store's DB is corrupted, the user sees a raw sqlx error with no indication it was the reference (not project) store. The `bail!` checks above verify file existence, but `Store::open` can fail for other reasons (corruption, permissions, schema mismatch).
-- **Suggested fix:** Add `.context(format!("Failed to open reference store at {}", ref_db.display()))` and `.context("Failed to open project store")`.
-
-#### EH-28: `Store::open` without `.context()` in batch drift dispatch
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1770
-- **Description:** Same pattern as EH-27 but in the batch drift handler. `cqs::Store::open(&ref_db)?` propagates a bare error with no indication which store failed.
-- **Suggested fix:** Add `.context(format!("Failed to open reference store '{}'", reference))`.
-
-#### EH-29: `pick_entry_point` returns sentinel value instead of error
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:305
-- **Description:** `unwrap_or_else(|| ("unknown".to_string(), PathBuf::new()))` returns a sentinel ("unknown", empty path) when no entry point can be found. The caller at line 112 does not check for this sentinel — it passes "unknown" to `fetch_entry_point` which will fail with a confusing "Entry point 'unknown' not found in index" error. The empty scout check on line 105 should prevent reaching this, but defensive code shouldn't produce misleading error messages.
-- **Suggested fix:** This code path is theoretically unreachable (line 105 returns early on empty). Either add a `debug_assert!(!scout_result.file_groups.is_empty())` documenting the invariant, or return `Option<(String, PathBuf)>` and handle `None` explicitly with a clear error.
-
-#### EH-30: `get_embeddings_by_hashes` swallows SQL errors returning partial results
-- **Difficulty:** medium
-- **Location:** src/store/chunks.rs:658-661
-- **Description:** The embedding cache lookup logs a warning and `continue`s on SQL errors, returning partial results. This is called from the indexing pipeline (`prepare_for_embedding` in pipeline.rs:139), where a partial cache hit means chunks that *do* have cached embeddings will be re-embedded unnecessarily. The caller cannot distinguish "no cached embedding" from "cache lookup failed". This wastes GPU/CPU time on re-embedding and could mask database corruption during indexing.
-- **Suggested fix:** Return `Result<HashMap<...>, StoreError>` so the pipeline can decide whether to warn-and-continue or abort. The current warn-and-continue behavior is fine as degraded operation, but the function signature should indicate fallibility.
-
-#### EH-31: Missing `.context()` on `Embedder::new()` and `embed_query()` in batch handlers
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:561-562 (dispatch_search), src/cli/batch.rs:894 (dispatch_gather), src/cli/batch.rs:1380-1382 (dispatch_onboard), src/cli/batch.rs:1393-1395 (dispatch_scout), src/cli/batch.rs:1405-1407 (dispatch_where)
-- **Description:** Multiple batch dispatch functions call `ctx.embedder()?` and `embedder.embed_query(query)?` without `.context()`. The embedder errors reference ONNX runtime internals (model paths, dimension mismatches) — adding context like "Failed to embed query for search" tells the user which batch command triggered the failure, especially useful in JSONL output where the command/query association can be lost.
-- **Suggested fix:** Add `.context("embedding query for batch search")` or similar to each `embed_query` call. The `ctx.embedder()` call already has decent error context from `Embedder::new()`.
-
-#### EH-32: `staleness.rs` `warn_stale_results` downgrades error to `tracing::debug`
-- **Difficulty:** easy
-- **Location:** src/cli/staleness.rs:37
-- **Description:** When `store.check_origins_stale()` fails, the error is logged at `debug` level — invisible unless `RUST_LOG=debug` is set. While staleness checks are intentionally non-fatal (comment says "should never break a query"), database errors during staleness checks could indicate corruption or concurrency issues that deserve `warn` level visibility. The comment on line 17 says "Errors are logged and swallowed" but debug != logged for most users.
-- **Suggested fix:** Change `tracing::debug!` to `tracing::warn!` to match the stated intent and the pattern used elsewhere in the codebase (e.g., health.rs:53, onboard.rs:121).
+All examples in README are syntactically correct and match the CLI argument definitions.
 
 ## API Design
 
-#### AD-20: chunk_type serialized inconsistently — Display vs Debug across new types
+#### AD-1: TaskResult and TaskSummary missing standard derives
 - **Difficulty:** easy
-- **Location:** src/drift.rs:77, src/onboard.rs:321
-- **Description:** `DriftEntry.chunk_type` is set via `.to_string()` (Display impl, produces lowercase `"function"`), while `OnboardEntry.chunk_type` is set via `format!("{:?}", ...)` (Debug impl, produces PascalCase `"Function"`). Both are `String` fields on serializable structs that appear in JSON output. The same conceptual field produces different string representations depending on which command you run. `GatheredChunk` and `DiffEntry` avoid this by using the `ChunkType` enum directly.
-- **Suggested fix:** Add `Serialize` derive to `ChunkType` (with `#[serde(rename_all = "lowercase")]` or custom impl) so `DriftEntry` and `OnboardEntry` can use the enum directly. If that's too broad, at least standardize both to use `.to_string()` (Display) for consistency.
+- **Location:** `src/task.rs:20-45`
+- **Description:** `TaskResult` and `TaskSummary` have no `#[derive(...)]` attributes. Every peer result type in the codebase derives at minimum `Debug` and `Clone`: `ImpactResult` (`Debug, Clone, Serialize`), `OnboardResult` (`Debug, Clone, Serialize`), `DiffImpactResult` (`Debug, Clone, Serialize`), `RelatedResult` (`Debug, Clone`), `GatheredChunk` (via `GatherOptions` `Debug`). Missing `Debug` means these types can't be used in `tracing` debug output or `assert_eq!` in tests without manual formatting.
+- **Suggested fix:** Add `#[derive(Debug, Clone)]` to both structs. `Serialize` can be skipped since JSON output is handled by `task_to_json()` manual construction.
 
-#### AD-21: get_types_used_by returns Vec<(String, String)> instead of typed struct
+#### AD-2: ScoutChunk, FileGroup, ScoutSummary, ScoutResult missing standard derives
 - **Difficulty:** easy
-- **Location:** src/store/types.rs:242, src/store/types.rs:328
-- **Description:** `get_types_used_by()` and `get_types_used_by_batch()` return `Vec<(String, String)>` where the tuple is `(type_name, edge_kind)`. This is opaque at call sites — callers must remember tuple field order. The same data is represented by `TypeInfo { type_name, edge_kind }` in `onboard.rs:63`, but the store API doesn't use it. This forces `onboard.rs:395` to manually destructure and reconstruct: `|(type_name, edge_kind)| TypeInfo { type_name, edge_kind }`.
-- **Suggested fix:** Either reuse `TypeInfo` from onboard (move to a shared location) or create a `TypeEdgeRef { type_name: String, edge_kind: String }` in `store/types.rs` and return `Vec<TypeEdgeRef>`. The batch variant would return `HashMap<String, Vec<TypeEdgeRef>>`.
+- **Location:** `src/scout.rs:26-70`
+- **Description:** Same pattern as AD-1. These four structs have no derives (only `ChunkRole` has `#[derive(Debug, Clone, PartialEq, Eq)]`). Peer summary types like `OnboardSummary`, `DiffImpactSummary`, `FunctionHints` all derive `Debug, Clone, Serialize`. `ScoutResult` in particular is embedded in `TaskResult`, so both structs inherit the missing-derives problem.
+- **Suggested fix:** Add `#[derive(Debug, Clone)]` to all four structs. If serde serialization is ever needed directly (instead of via `scout_to_json`), add `Serialize` later.
 
-#### AD-22: TypeGraph missing standard derives (Debug, Clone)
+#### AD-3: PlacementResult, FileSuggestion, LocalPatterns, PlacementOptions, ScoutOptions missing standard derives
 - **Difficulty:** easy
-- **Location:** src/store/types.rs:32
-- **Description:** `TypeGraph` is a `pub` type re-exported from `store::mod.rs` but has zero derives — no `Debug`, no `Clone`. `TypeEdgeStats` (same file, line 19) has `Debug, Clone, Default`. All other new public types in the codebase (DriftEntry, DriftResult, OnboardResult, etc.) have at least `Debug, Clone`. Missing `Debug` makes it hard to log or inspect in tests.
-- **Suggested fix:** Add `#[derive(Debug, Clone)]` to `TypeGraph`.
+- **Location:** `src/where_to_add.rs:21-53,62`, `src/scout.rs:84`
+- **Description:** Continuation of AD-1/AD-2. `GatherOptions` derives `Debug` but `ScoutOptions` and `PlacementOptions` do not. `PlacementResult`, `FileSuggestion`, `LocalPatterns` have no derives. These are all public types re-exported from `lib.rs`.
+- **Suggested fix:** Add `#[derive(Debug, Clone)]` to all five structs. Consistent with `GatherOptions` which already has `Debug`.
 
-#### AD-23: ResolvedTarget missing standard derives (Debug, Clone)
+#### AD-4: risk_level/blast_radius serialized via Debug format instead of Display
 - **Difficulty:** easy
-- **Location:** src/search.rs:27
-- **Description:** `ResolvedTarget` is a public type re-exported from `lib.rs:122` but has zero derives. No `Debug`, no `Clone`. Its fields (`ChunkSummary` and `Vec<SearchResult>`) both support Clone and Debug. Every other public result type in the search/analysis layer has at minimum `Debug, Clone`.
-- **Suggested fix:** Add `#[derive(Debug, Clone)]` to `ResolvedTarget`.
+- **Location:** `src/task.rs:255-256`, `src/cli/commands/task.rs:357-359`
+- **Description:** Both `task_to_json()` and `build_risk_json()` serialize `RiskLevel` using `format!("{:?}", r.risk_level)` which produces PascalCase (`"High"`, `"Medium"`, `"Low"`). However, `RiskLevel` has `#[serde(rename_all = "lowercase")]` and a `Display` impl that outputs lowercase (`"high"`, `"medium"`, `"low"`). This means: (1) `task` JSON output uses `"High"` while a direct `serde_json::to_value(&risk_score)` would produce `"high"`, and (2) the text output in `print_impact_section_idx` uses `format!("{:?}", r.risk_level)` too. JSON consumers see inconsistent casing depending on whether they get the field via task output vs direct serialization.
+- **Suggested fix:** Replace `format!("{:?}", r.risk_level)` with `r.risk_level.to_string()` (uses Display) or `serde_json::to_value(&r.risk_level).unwrap()` (uses serde). Both produce lowercase, consistent with the type's own serialization contract.
 
-#### AD-24: Note missing Serialize derive — hand-rolled JSON in display.rs
+#### AD-5: ScoutChunk uses u64 for caller_count/test_count while all peers use usize
 - **Difficulty:** easy
-- **Location:** src/note.rs:61, src/cli/display.rs:246-249
-- **Description:** `Note` has `#[derive(Debug, Clone)]` but no `Serialize`. The CLI display code at `display.rs:246-249` manually constructs JSON: `json!({"id": r.note.id, "text": r.note.text, "sentiment": r.note.sentiment, "mentions": r.note.mentions})`. This pattern is repeated at `display.rs:477-480`. Meanwhile, `NoteEntry` (the TOML-facing sibling) derives both `Serialize` and `Deserialize`. Adding `Serialize` to `Note` would allow `serde_json::to_value(note)` instead of manual field listing, and prevent drift if fields are added.
-- **Suggested fix:** Add `serde::Serialize` to `Note`'s derive list. Replace manual JSON construction with `serde_json::to_value(&r.note)`.
-
-#### AD-25: Drift types not re-exported from lib.rs — inconsistent access pattern
-- **Difficulty:** easy
-- **Location:** src/lib.rs:64, src/drift.rs
-- **Description:** `drift` is `pub mod` in lib.rs (line 64) but its types (`DriftResult`, `DriftEntry`, `detect_drift`) are not re-exported with `pub use`. CLI code accesses them via `cqs::drift::detect_drift()`. By contrast, the `onboard` module's types are all re-exported (`pub use onboard::{onboard, OnboardResult, ...}`) and accessed as `cqs::onboard()`. Same inconsistency with `diff` which has `pub use diff::semantic_diff`. This creates two access patterns for the same library.
-- **Suggested fix:** Add `pub use drift::{detect_drift, DriftEntry, DriftResult};` to lib.rs, matching the onboard pattern. Or document that drift is intentionally module-scoped (but then onboard should be too).
-
-#### AD-26: OnboardEntry.edge_kind is stringly-typed — TypeEdgeKind enum exists
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:65
-- **Description:** `TypeInfo.edge_kind` is `String`, but the codebase has a well-defined `TypeEdgeKind` enum (`src/parser/types.rs:87`) with `FromStr`, `Display`, and `as_str()` implementations. The string value comes from `get_types_used_by()` which returns `(String, String)` from the database. Downstream consumers of `TypeInfo` get no compile-time guarantees about valid edge kinds.
-- **Suggested fix:** This is a consequence of AD-21 (tuple returns). If that's fixed to return a proper type with `TypeEdgeKind`, `TypeInfo.edge_kind` should also become `TypeEdgeKind`. In the interim, at least document the valid values in the field doc comment.
+- **Location:** `src/scout.rs:38-40`
+- **Description:** `ScoutChunk.caller_count` and `ScoutChunk.test_count` are `u64`, but every other struct in the codebase uses `usize` for these fields: `FunctionHints` (`usize`), `RiskScore` (`usize`), `compute_hints_with_graph()` returns `usize`. This forces `as u64` casts at the boundary (line 248-249) and `as usize` casts would be needed going the other direction. Since these are counts of callers (never exceeding a few thousand), `u64` is unnecessary precision and creates friction.
+- **Suggested fix:** Change both fields to `usize` to match `FunctionHints` and `RiskScore`. Remove the `as u64` casts at lines 248-249.
 
 ## Observability
 
-#### OB-15: `run_index_pipeline` missing entry tracing span
+#### OB-1: `compute_modify_threshold` result not logged — threshold invisible in traces
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:222
-- **Description:** `run_index_pipeline` is the main entry point for the 3-stage indexing pipeline (parser, embedder, writer). It has no `tracing::info_span!` at entry, despite being a long-running operation (seconds to minutes). Child operations (parser thread, GPU/CPU embedder threads) do log, and the function logs a summary at completion (line 667), but there is no enclosing span to correlate all pipeline activity under a single trace. This makes it harder to filter pipeline logs from other concurrent operations (e.g., `cqs watch`).
-- **Suggested fix:** Add `let _span = tracing::info_span!("run_index_pipeline", files = files.len(), force, quiet).entered();` at the top of the function.
+- **Location:** `src/scout.rs:308` (`compute_modify_threshold`), called from `scout_core` at line 216
+- **Description:** The modify/dependency threshold is a key classification decision. `compute_modify_threshold` returns a float that determines which chunks become ModifyTarget vs Dependency, but neither the function itself nor its caller logs the computed value. When users ask "why was function X classified as Dependency?", the answer is invisible in logs. The gap ratio (`best_gap`) and split index are also unlogged — the entire decision is a black box.
+- **Suggested fix:** Add `tracing::debug!(threshold, gap = best_gap, scores = scores.len(), "Modify threshold computed")` before the return in `compute_modify_threshold`, or log it in `scout_core` after the call at line 216.
 
-#### OB-16: `apply_windowing` missing tracing span
+#### OB-2: `scout_core` missing search result count in logs
 - **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:32
-- **Description:** `apply_windowing` is a `pub(crate)` function that transforms chunks before embedding. When windowing splits a chunk, there is a per-failure `tracing::warn!` (line 74), but no entry-level span or debug log showing how many chunks entered vs exited (e.g., 32 chunks in, 40 windows out). This makes it difficult to diagnose embedding dimension mismatches or performance issues caused by excessive windowing.
-- **Suggested fix:** Add `tracing::debug!(input_count = chunks.len(), "applying windowing")` at entry and `tracing::debug!(input = input_count, output = result.len(), "windowing complete")` before return.
+- **Location:** `src/scout.rs:154-299` (`scout_core`)
+- **Description:** `scout_core` performs the search at line 162 but never logs how many results came back from `search_filtered`. When called from `task()`, the parent logs file_groups and functions after grouping, but the raw search result count (before grouping/truncation) is lost. This matters for debugging "why did task return only 2 files?" — was it 2 search results, or 15 results that grouped into 2 files?
+- **Suggested fix:** Add `tracing::debug!(results = results.len(), "Scout search complete")` after the search at line 167, before the empty-results early return.
 
-#### OB-17: `onboard_to_json` silently returns null with no logging
+#### OB-3: `dispatch_task` batch token budgeting not logged
 - **Difficulty:** easy
-- **Location:** src/onboard.rs:239
-- **Description:** `serde_json::to_value(result).unwrap_or_default()` returns `serde_json::Value::Null` on serialization failure with zero logging. This is also reported as EH-23, but from an observability perspective: if serialization fails, the caller receives null and the user sees empty JSON output with no indication of what went wrong. No `tracing::warn!` on the error path.
-- **Suggested fix:** At minimum log the error: `serde_json::to_value(result).unwrap_or_else(|e| { tracing::warn!(error = %e, "OnboardResult serialization failed"); serde_json::Value::Null })`. Better: return `Result`.
+- **Location:** `src/cli/batch/handlers.rs:1460-1493` (`dispatch_task`)
+- **Description:** The CLI's `output_with_budget` logs a detailed waterfall breakdown (`tracing::info!` at cli/commands/task.rs:198 with per-section token counts). But the batch handler's simplified code-only packing at lines 1460-1493 doesn't log anything about what was packed vs total. A user running `cqs batch` with `task --tokens 500` can't see in logs how many code chunks were kept or dropped.
+- **Suggested fix:** Add `tracing::debug!(packed = packed_idx.len(), total = result.code.len(), tokens_used = used, budget, "Batch task token packing")` after the `token_pack` call at line 1463.
 
-#### OB-18: Pipeline GPU/CPU embedder threads lack thread-level spans
+## Error Handling
+
+#### EH-1: `scout_with_options` hard-fails on `find_test_chunks`, `task()` gracefully degrades — inconsistent
+- **Difficulty:** easy
+- **Location:** `src/scout.rs:127` vs `src/task.rs:67-73`
+- **Description:** `scout_with_options()` propagates `find_test_chunks()` failure with `?`, causing the entire scout to fail if test chunk loading hits a store error. In contrast, `task()` wraps the same call in a `match` with `tracing::warn!` and continues with an empty vec. Since `scout()` is also called standalone from `dispatch_scout` in batch mode, a transient test-chunk error kills the whole command. Test chunks are supplementary data (used for caller/test hints), not essential for the core search+group logic.
+- **Suggested fix:** Match `task()`'s pattern — wrap `find_test_chunks()` in `scout_with_options` with `match`/`tracing::warn!` and fall back to empty vec.
+
+#### EH-2: `dispatch_test_map` chain reconstruction uses `.unwrap_or_default()` without tracing
+- **Difficulty:** easy
+- **Location:** `src/cli/batch/handlers.rs:644-647`
+- **Description:** In `dispatch_test_map`, the BFS chain reconstruction loop does `ancestors.get(&current).map(|(_, p)| p.clone()).unwrap_or_default()`. If `.get()` returns `None` (shouldn't happen if BFS is correct, but could if graph data is inconsistent), this silently produces an empty string, which then satisfies the `while !current.is_empty()` exit condition. The chain is silently truncated with no log. Per project convention, `.unwrap_or_default()` should not silently swallow potential issues.
+- **Suggested fix:** Replace with a match that logs `tracing::warn!` if the ancestor lookup fails unexpectedly, then breaks the loop.
+
+#### EH-3: `dispatch_onboard` and `dispatch_scout` use `.unwrap()` after `.is_none()` guard
+- **Difficulty:** easy
+- **Location:** `src/cli/batch/handlers.rs:1037`, `src/cli/batch/handlers.rs:1124`
+- **Description:** Both `dispatch_onboard` and `dispatch_scout` use the pattern `if tokens.is_none() { return ...; } let budget = tokens.unwrap();`. While logically safe (the `is_none` check guarantees `Some`), `.unwrap()` is prohibited in non-test code by project convention. If the code is refactored and the guard is accidentally removed, this becomes a panic.
+- **Suggested fix:** Use `let Some(budget) = tokens else { return ... };` (let-else) or match the `if let Some(budget) = tokens { ... }` pattern already used in other handlers like `dispatch_search` (line 131) and `dispatch_gather` (line 499).
+
+#### EH-4: `scout_core` uses `to_str().unwrap_or("")` for path origins — empty string passed to staleness check
+- **Difficulty:** easy
+- **Location:** `src/scout.rs:202`
+- **Description:** `file_map.keys().map(|p| p.to_str().unwrap_or(""))` converts non-UTF8 paths to empty strings. These empty strings are then passed to `check_origins_stale()`, which will either match nothing (harmless) or could match against an empty-string origin in the store (unlikely but undefined). No warning is logged for the non-UTF8 fallback.
+- **Suggested fix:** Filter out non-UTF8 paths with `.filter_map(|p| p.to_str())` instead of mapping them to empty strings, or log a `tracing::debug!` when a path fails UTF-8 conversion.
+
+#### EH-5: `dispatch_task` batch handler uses simplified token budgeting — code-only packing diverges from CLI behavior
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:397 (GPU thread), src/cli/pipeline.rs:490 (CPU thread)
-- **Description:** Both embedder threads (GPU and CPU) run in `thread::spawn` closures with no enclosing `tracing::info_span!`. Individual operations within the threads do log (e.g., GPU failure at line 470, CPU debug at line 553), but all log lines are attributed to the calling thread's span context. When both GPU and CPU threads are active simultaneously (fail_rx routing), interleaved log output has no thread-level context to distinguish GPU vs CPU processing.
-- **Suggested fix:** Add `let _span = tracing::info_span!("gpu_embedder").entered();` at the top of the GPU thread closure and `let _span = tracing::info_span!("cpu_embedder").entered();` at the top of the CPU thread closure.
+- **Location:** `src/cli/batch/handlers.rs:1459` (comment: "simplified: pack code section only")
+- **Description:** The batch `dispatch_task` handler applies `--tokens` budget only to the code section, while the CLI `cmd_task` in `src/cli/commands/task.rs:67-228` uses full waterfall budgeting across 5 sections (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). This means `cqs batch` and `cqs task --tokens N` produce materially different output for the same inputs — batch retains all scout/risk/test/placement/notes untruncated while only packing code, potentially exceeding the stated token budget significantly. The `token_count` field in the JSON response only reflects code tokens, misleading consumers about actual output size.
+- **Suggested fix:** Either extract the waterfall logic from `cmd_task` into a shared function and call it from both code paths, or document the simplified behavior explicitly in the batch output (e.g., add a `"token_packing": "code_only"` field). The former is preferred for consistency.
 
-#### OB-19: Batch pipeline per-stage errors logged but not counted in summary
+#### EH-6: `AnalysisError` has no variant for general phase failures — forces misuse of existing variants
 - **Difficulty:** easy
-- **Location:** src/cli/batch.rs:2065, 2070
-- **Description:** When a per-name dispatch fails during pipeline fan-out, the error is logged via `tracing::warn!` and added to the `errors` array. However, there is no summary tracing event at pipeline completion showing how many inputs succeeded vs failed. The final JSON envelope contains `errors` and `results` arrays, but the tracing subsystem only sees individual per-name warnings with no rollup. With PIPELINE_FAN_OUT_LIMIT at 50, a batch of failures generates 50 individual warn events with no "pipeline stage 2 completed: 48/50 succeeded" summary.
-- **Suggested fix:** Add `tracing::info!(stage = stage_num + 1, succeeded = results.len(), failed = errors.len(), total = total_inputs, "Pipeline stage complete")` after the per-name dispatch loop (before the "last stage" check at line 2077).
+- **Location:** `src/lib.rs:142-149`
+- **Description:** `AnalysisError` has only 3 variants: `Store`, `Embedder`, `NotFound`. If `task()` or `scout()` needed to report a non-embedding, non-store error (e.g., a placement phase failure that isn't from the store layer), it would have to misuse `Embedder(msg)` or wrap in `NotFound(msg)`. Previous audit (EH-26, v0.13.1) caught this exact misuse in `onboard`. Currently `task()` works around this by catching placement errors and degrading gracefully (line 136-142), but this is only viable because placement is optional. A phase that's required would have no correct error variant.
+- **Suggested fix:** Add an `AnalysisError::Other(String)` variant or `AnalysisError::Phase { phase: &'static str, source: Box<dyn std::error::Error + Send + Sync> }`. Low urgency while all current callers can degrade, but prevents the next misuse.
 
 ## Code Quality
 
-#### CQ-8: `dispatch_read_focused` duplicates `cmd_read_focused` (~140 lines)
+#### CQ-1: `task_to_json` duplicates notes in JSON output
+- **Difficulty:** easy
+- **Location:** `src/task.rs:227-322`
+- **Description:** `task_to_json` embeds `scout_to_json()` output (which includes `relevant_notes` at scout.rs:445) into the `scout` key, then also serializes `result.scout.relevant_notes` into a separate top-level `notes` key (task.rs:292-303). The JSON output contains the identical notes data twice: once under `scout.relevant_notes` and once under `notes`. This wastes tokens for consumers using `--tokens` budgeting and creates a maintenance risk — if notes serialization changes in `scout_to_json`, the top-level `notes` array could diverge. The CLI budgeted path (cli/commands/task.rs) avoids this by using `build_scout_json` (which omits notes) plus a separate `build_notes_json`. Only the library's `task_to_json` has the duplication.
+- **Suggested fix:** Either remove the top-level `notes` key from `task_to_json` (consumers use `scout.relevant_notes`), or strip `relevant_notes` from the embedded scout JSON before inclusion. The former is simpler.
+
+#### CQ-2: GatheredChunk/risk/placement/tests JSON serialization duplicated 3-6x across modules
 - **Difficulty:** medium
-- **Location:** src/cli/batch.rs:1528-1669, src/cli/commands/read.rs:123-263
-- **Description:** `dispatch_read_focused` in batch.rs is a near-exact copy of `cmd_read_focused` in read.rs. Both share the same structure: resolve target, compute hints, format caller/test labels, inject audit state, inject notes, build target section, iterate type dependencies with N+1 `search_by_name` calls, format type sections with edge_kind labels. The only differences are: (1) batch uses `ctx.audit_state()` vs direct `load_audit_state`, (2) batch uses `ctx.notes()` vs parsing notes from file, (3) batch returns `serde_json::Value` vs printing. Same ~140 lines of logic duplicated, same N+1 type resolution pattern in both.
-- **Suggested fix:** Extract a shared `build_focused_read_output(store, chunk, root, audit_mode, notes) -> (String, Option<Hints>)` function in a library module (e.g., `focused_read.rs`). Both `cmd_read_focused` and `dispatch_read_focused` call it, then format output differently (print vs JSON envelope).
+- **Location:** `src/task.rs:230-290`, `src/cli/commands/task.rs:326-420`, `src/cli/batch/handlers.rs:1472-1489`, `src/cli/commands/gather.rs:130-140`, `src/impact/format.rs:50-60`
+- **Description:** The same `serde_json::json!` block for `GatheredChunk` (name, file, line_start, line_end, language, chunk_type, signature, content, score, depth) appears in 6 locations. `RiskScore` JSON construction (risk_level, blast_radius, score, caller_count, test_count, coverage) appears in 3 locations. `FileSuggestion` JSON (file, score, insertion_line, near_function, reason) appears in 4 locations. `TestInfo` JSON (name, file, line, call_depth) appears in 3 locations. Each copy has to stay in sync manually — the `Debug` vs `Display` formatting inconsistency in AD-4 is a direct consequence. Adding a field to any of these structs requires updating 3-6 places.
+- **Suggested fix:** Add `impl GatheredChunk { pub fn to_json(&self, root: &Path) -> serde_json::Value }` methods (or derive Serialize with `#[serde(rename)]` where needed) and call from all sites. Same for `RiskScore`, `FileSuggestion`, `TestInfo`.
 
-#### CQ-9: `dispatch_read` duplicates `cmd_read` (~90 lines)
+#### CQ-3: `dispatch_task` bypasses `BatchContext` call graph cache
+- **Difficulty:** easy
+- **Location:** `src/cli/batch/handlers.rs:1446-1496`
+- **Description:** `dispatch_task` calls `cqs::task()` (the library function), which internally calls `store.get_call_graph()` at task.rs:66. This is a direct SQLite query that builds the full call graph from scratch. Meanwhile, `BatchContext` has a `call_graph()` method (batch/mod.rs:174) backed by `OnceLock` that caches the graph for the entire session. Other batch handlers that need the graph (e.g., `dispatch_test_map`, `dispatch_trace`) use `ctx.call_graph()`. So `dispatch_task` in a pipeline pays the full graph-load cost even when prior commands already loaded it. Same issue for `find_test_chunks()` (task.rs:67) which isn't cached in BatchContext at all.
+- **Suggested fix:** Either (a) add a `task_with_resources()` variant that accepts pre-loaded graph and test chunks (like `scout_core` does for scout), or (b) have `dispatch_task` call `scout_core` + `gather` + `impact` phases individually using `ctx.call_graph()`, replicating `task()` logic at the batch level. Option (a) is cleaner and mirrors the existing `scout` → `scout_core` pattern.
+
+#### CQ-4: Batch `dispatch_task` token budgeting diverges from CLI waterfall — behavioral inconsistency
 - **Difficulty:** medium
-- **Location:** src/cli/batch.rs:1437-1526, src/cli/commands/read.rs:19-121
-- **Description:** Same pattern as CQ-8 but for non-focused reads. Both have: path traversal protection, 10MB file size limit, audit mode check, notes injection with box-drawing header, content enrichment. The only differences are: batch uses `ctx.audit_state()`/`ctx.notes()` vs direct loading, batch returns JSON vs print. ~90 lines duplicated.
-- **Suggested fix:** Extract shared logic into a library function, same as CQ-8.
+- **Location:** `src/cli/batch/handlers.rs:1459-1493` vs `src/cli/commands/task.rs:67-228`
+- **Description:** The batch handler applies `--tokens` budget to the code section only (comment at line 1459: "simplified: pack code section only"), while the CLI command uses full 5-section waterfall budgeting (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). This means `cqs batch` with `task "desc" --tokens 500 --json` and `cqs task "desc" --tokens 500 --json` produce materially different output from the same inputs. The batch version retains all scout/risk/test/placement/notes untruncated, only packing code chunks. The `token_count` field in batch JSON response reflects only code tokens used, understating actual output size.
+- **Suggested fix:** Extract the waterfall logic from `output_with_budget` into a reusable function (e.g., `waterfall_pack(result, budget, embedder) -> PackedSections`) and call from both CLI and batch paths. The `index_pack` function is already a good building block — the waterfall is just 5 sequential `index_pack` calls with surplus forwarding.
 
-#### CQ-10: Duplicate `parse_nonzero_usize` function
+#### CQ-5: `print_code_section_idx` double-iterates content lines
 - **Difficulty:** easy
-- **Location:** src/cli/mod.rs:98, src/cli/batch.rs:169
-- **Description:** Identical 4-line function defined in two files. The batch.rs copy even has a comment `// reuse logic from CLI` — but then redefines it locally instead of reusing.
-- **Suggested fix:** Make the function in `cli/mod.rs` `pub(crate)` and import it in `batch.rs`. Remove the duplicate.
-
-#### CQ-11: Duplicate CAGRA/HNSW vector index construction logic
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:134-163, src/cli/commands/query.rs:88-122
-- **Description:** Both files implement the same GPU index selection logic: check chunk_count >= CAGRA_THRESHOLD (5000), attempt `CagraIndex::build_from_store`, fall back to HNSW. Same threshold constant, same fallback chain, same tracing messages. The batch version is extracted into `build_vector_index()`, but the query version has it inline.
-- **Suggested fix:** Move `build_vector_index(store, cqs_dir)` to a shared location (e.g., `index.rs` or `cli/mod.rs`) and call from both batch and query.
-
-#### CQ-12: `COMMON_TYPES` defined twice with different contents
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:29, src/focused_read.rs:14
-- **Description:** `onboard.rs` defines a local `const COMMON_TYPES: &[&str]` with 16 entries, while the canonical version in `focused_read.rs` is a `LazyLock<HashSet<&str>>` with ~40+ entries (including `Error`, `Mutex`, `RwLock`, `Cow`, `Pin`, `Future`, `Iterator`, `Display`, `Debug`, `Clone`, `Default`, etc.). The onboard version is missing roughly half the entries, so `filter_common_types` in onboard will let through types that `focused_read.rs` would filter. This is already re-exported as `cqs::COMMON_TYPES`.
-- **Suggested fix:** Remove the local `COMMON_TYPES` in `onboard.rs`, import `crate::COMMON_TYPES`, change the filter to `.filter(|(name, _)| !COMMON_TYPES.contains(name.as_str()))` (same API since `HashSet` also has `.contains()`).
-
-#### CQ-13: `dispatch_search` bypasses `BatchContext::audit_state()` cache
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:586
-- **Description:** `dispatch_search` calls `cqs::audit::load_audit_state(&ctx.cqs_dir)` directly — a disk read — instead of using the cached `ctx.audit_state()` method (line 102). All other batch dispatch functions that need audit state (`dispatch_read`, `dispatch_read_focused`, `dispatch_scout`, `dispatch_health`) use the cached method. This means every batch search command re-reads the audit state file from disk.
-- **Suggested fix:** Replace `let audit_mode = cqs::audit::load_audit_state(&ctx.cqs_dir);` with `let audit_mode = ctx.audit_state();` and adjust the borrow accordingly.
-
-#### CQ-14: Batch `--tokens` parameter accepted but silently ignored in 4 commands
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:533 (dispatch_search), 729 (dispatch_explain), 888 (dispatch_gather), 491 (dispatch_onboard)
-- **Description:** Four batch dispatch functions accept `--tokens` from the user but bind it to `_tokens` and drop it. Users can pass `--tokens 500` to batch search/explain/gather/onboard and the parameter is silently ignored — no warning, no token budgeting applied. The regular CLI versions of these commands do support `--tokens`. This is misleading: users think they're getting token-budgeted output in batch mode.
-- **Suggested fix:** Either implement token budgeting in batch dispatch (preferred — the packing infra already exists in `cqs::token_packing`), or remove the `--tokens` parameter from these batch commands and document that batch mode doesn't support token budgeting (to avoid user confusion).
-
-#### CQ-15: N+1 `search_by_name` in `dispatch_read_focused` type dependency loop
-- **Difficulty:** medium
-- **Location:** src/cli/batch.rs:1626, src/cli/commands/read.rs:228
-- **Description:** Both focused read implementations iterate `filtered_types` and call `ctx.store.search_by_name(type_name, 5)` per type in a loop. With 10+ type dependencies this issues 10+ separate SQLite queries. The store already has `search_by_names_batch` which could resolve all type names in one query.
-- **Suggested fix:** Collect all type names from `filtered_types`, call `store.search_by_names_batch(&type_names, 5)`, then iterate the results. This collapses N queries to 1.
-
-## Extensibility
-
-#### EXT-20: `suggest_notes` detector registry is hardcoded — adding a detector requires editing the function body
-- **Difficulty:** easy
-- **Location:** src/suggest.rs:27-59
-- **Description:** `suggest_notes()` has 4 detectors inlined as numbered blocks (dead clusters, untested hotspots, high-risk, stale mentions). Adding a fifth detector (e.g., "high-churn files" or "deep call chains") requires editing the function body, adding another numbered block with identical match/append/warn boilerplate. The pattern is clear — each detector is `{ match detect_X(store) { Ok(mut s) => ..., Err(e) => ... } }` — but there is no trait, function pointer vec, or other extension point.
-- **Suggested fix:** Define `type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>>` and store detectors in a `&[(&str, Detector)]` array. The loop becomes `for (name, detect) in DETECTORS { ... }`. New detectors are one-line additions to the array.
-
-#### EXT-21: `is_callable_type` hardcodes Function/Method — new callable ChunkTypes require surgery
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:309-311
-- **Description:** `is_callable_type(ct: ChunkType) -> bool` matches only `Function | Method`. If a new callable chunk type is added to `ChunkType` (e.g., `Closure`, `Lambda`, `Constructor`), `onboard` will silently skip them as entry points, preferring lower-scored structs/enums. The function is private to `onboard.rs` and only called there. The canonical `ChunkType` enum lives in `src/language/mod.rs` — adding a variant there won't trigger a compile error in `onboard.rs` because the match is `matches!` (not exhaustive).
-- **Suggested fix:** Add a `fn is_callable(&self) -> bool` method to `ChunkType` itself (next to the existing `Display` impl in `language/mod.rs`). This keeps the "callable" classification co-located with the type definition. Any new callable variant gets classified once, not per-consumer.
-
-#### EXT-22: Pipeline tuning constants are local variables, not named constants
-- **Difficulty:** easy
-- **Location:** src/cli/pipeline.rs:229-231
-- **Description:** Three pipeline tuning values (`batch_size = 32`, `file_batch_size = 5_000`, `channel_depth = 256`) are local `let` bindings inside `run_index_pipeline`. The batch_size has a history comment ("backed off from 64 - crashed at 2%") indicating it was tuned empirically. These values are not discoverable via grep for constants, and changing them requires finding the right line inside a 450-line function. The GPU CUDNN limit (`8000` at line 430) is similarly inline.
-- **Suggested fix:** Extract to module-level named constants with doc comments: `const EMBEDDING_BATCH_SIZE: usize = 32;`, `const FILE_BATCH_SIZE: usize = 5_000;`, `const CHANNEL_DEPTH: usize = 256;`, `const GPU_CUDNN_MAX_CHARS: usize = 8000;`.
-
-#### EXT-23: `health_check` hardcodes `find_hotspots(&graph, 5)` — top-N not configurable
-- **Difficulty:** easy
-- **Location:** src/health.rs:73
-- **Description:** `health_check` always fetches the top 5 hotspots via `find_hotspots(&graph, 5)`. The `suggest_notes` function uses `find_hotspots(&graph, 20)` (line 106 of suggest.rs). Users cannot control hotspot count from the CLI. The `cqs health` command has no `--top` flag. If a user wants more or fewer hotspots in the health report, they must edit code.
-- **Suggested fix:** Add a `top_hotspots: usize` parameter to `health_check()` (defaulting to 5), propagate it from a new `--top N` CLI flag on `cqs health`. Low-effort change — only 3 sites: function signature, call site, and CLI arg.
-
-#### EXT-24: `detect_dead_clusters` threshold hardcoded to 5 dead functions per file
-- **Difficulty:** easy
-- **Location:** src/suggest.rs:92
-- **Description:** `.filter(|(_, count)| *count >= 5)` is the threshold for flagging a file as having a "dead code cluster." This magic number controls whether a suggestion is generated. It's not configurable via CLI, config, or function parameter. A file with 4 dead functions gets no suggestion; one with 5 does. The cutoff is reasonable but arbitrary, and there is no way to adjust it for codebases where 3 dead functions per file is already concerning.
-- **Suggested fix:** Accept a `min_cluster_size: usize` parameter on `suggest_notes()` or `detect_dead_clusters()`, defaulting to 5. Propagate from `cqs suggest --min-cluster N`.
-
-#### EXT-25: `detect_risk_patterns` "untested hotspot" threshold hardcoded to caller_count >= 5
-- **Difficulty:** easy
-- **Location:** src/suggest.rs:121, src/health.rs:84
-- **Description:** Both `suggest.rs` and `health.rs` use `caller_count >= 5 && test_count == 0` as the definition of "untested hotspot." The threshold 5 appears as a magic number in two separate files (neither references a shared constant). If the threshold definition changes, both files need updating. The health.rs copy additionally requires `risk_level == RiskLevel::High`, making the definitions inconsistent.
-- **Suggested fix:** Extract `const MIN_HOTSPOT_CALLER_COUNT: usize = 5;` into a shared location (e.g., `impact/hints.rs` next to `find_hotspots`). Both `suggest.rs` and `health.rs` import and use the constant. Consider also aligning the definitions (health.rs additionally checks `RiskLevel::High`).
-
-#### EXT-26: `PIPEABLE_COMMANDS` list requires manual update for each new batch command
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1849-1851
-- **Description:** `PIPEABLE_COMMANDS` is a static list of command name strings: `["callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related", "scout"]`. When a new batch command is added that accepts a function name as its first positional arg, the developer must remember to add it to this list. Nothing enforces this — the command works in batch mode but silently fails as a pipeline downstream target with a confusing error ("Cannot pipe into 'X'"). The `Drift` command, for example, is arguably pipeable (takes a reference name) but isn't listed.
-- **Suggested fix:** Add a `const PIPEABLE: bool` to each `BatchCmd` variant via an attribute or method, so the "is this pipeable?" question is answered next to each command's definition rather than in a separate static list.
-
-#### EXT-27: `extract_names` field list requires manual update for each new JSON shape
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1892-1906
-- **Description:** `NAME_ARRAY_FIELDS` is a hardcoded list of 12 JSON field names that `extract_names` walks to find function names in pipeline results. When a new batch command produces a result with a differently-named array field (e.g., `"drifted"` from drift, `"types"` from deps), names won't be extracted and the pipeline will produce empty fan-out. The drift command returns `"drifted"` array with `"name"` fields, but `"drifted"` is not in `NAME_ARRAY_FIELDS`, so `search "X" | drift ref` pipelines would silently produce no names.
-- **Suggested fix:** Either add `"drifted"` to the list now (it is already missing and drift is pipeable in principle), or switch to a recursive name extraction strategy that walks all arrays looking for `"name"` fields, eliminating the need for a field list entirely.
-
-#### EXT-28: `classify_mention` heuristic tightly couples syntax patterns to classification
-- **Difficulty:** easy
-- **Location:** src/suggest.rs:160-168
-- **Description:** `classify_mention` determines if a note mention is a file, symbol, or concept by checking for `.`/`/`/`\\` (file), `_`/`::`/PascalCase (symbol), else concept. This heuristic breaks for: (1) mentions with dots that aren't files (e.g., `crate.feature`), (2) kebab-case symbols (e.g., `my-feature`), (3) single uppercase words that are concepts not types (e.g., `CUDA`). Adding a new classification rule requires editing the function body.
-- **Suggested fix:** This is acceptable as-is since it only drives staleness suggestions (not user-facing correctness), but document the known limitations. If false positives become noisy, consider allowing `MentionKind` annotations in notes.toml (e.g., `mentions = ["src/foo.rs:file", "CUDA:concept"]`).
-
-## Robustness
-
-#### RB-24: Drift `threshold` and `min_drift` accept NaN/Infinity without validation
-- **Difficulty:** easy
-- **Location:** src/cli/mod.rs:316,319, src/cli/batch.rs:387,390
-- **Description:** Both CLI and batch `drift` commands accept `f32` values for `--threshold` and `--min-drift` with no range validation. Passing `NaN` causes all `drift >= min_drift` comparisons to return `false` (NaN is not >= anything), silently dropping all results. Passing `Infinity` for `min_drift` has the same effect. A `threshold` of `NaN` passes into `semantic_diff()` which uses it for `>= threshold` similarity comparison — NaN makes all entries appear "modified" (similarity is never >= NaN). The `Similar` command's `--threshold` (mod.rs:123) and query `--threshold` (mod.rs:302) have the same issue.
-- **Suggested fix:** Add `value_parser = clap::value_parser!(f32).range(0.0..=1.0)` to threshold/min_drift clap args. This rejects NaN, Infinity, and out-of-range values at parse time.
-
-#### RB-25: `dispatch_test_map` BFS chain reconstruction lacks defensive iteration bound
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1042-1051
-- **Description:** The chain reconstruction `while !current.is_empty()` relies on the `ancestors` map eventually producing an empty string predecessor (the root node at line 1011). The BFS guarantees acyclic predecessors by construction (`if !ancestors.contains_key(caller)` at line 1020), so the loop always terminates when it reaches `target_name` (line 1044 breaks) or the root. While correct today, the termination condition is indirect — a subtle refactoring error (e.g., initializing root with a non-empty predecessor) would create an infinite loop. No explicit cycle detection or iteration bound exists.
-- **Suggested fix:** Add an iteration bound: `for _ in 0..max_depth + 2` instead of `while !current.is_empty()`. This defensively caps the loop even if the predecessor map is malformed.
-
-#### RB-26: `onboard` depth unbounded in library function — CLI clamps but library accepts any usize
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:94
-- **Description:** Both CLI entry points clamp `depth.clamp(1, 5)` before calling `onboard()`, but the library function `onboard(store, embedder, concept, root, depth)` accepts any `usize`. A direct library caller could pass `depth = 1000`. The `max_expanded_nodes(100)` cap on `GatherOptions` (line 133) prevents truly unbounded growth, but BFS still explores all reachable nodes per level up to that cap. The resulting `callee_scores` HashMap is then passed to `fetch_and_assemble` which does store queries per entry.
-- **Suggested fix:** Add `let depth = depth.min(10);` at the top of the `onboard()` library function, independent of CLI clamping.
-
-#### RB-27: `get_type_graph` cap comparison uses unnecessary `as i64` cast direction
-- **Difficulty:** easy
-- **Location:** src/store/types.rs:411
-- **Description:** `rows.len() as i64 >= MAX_TYPE_GRAPH_EDGES` converts `usize` to `i64` for comparison with an `i64` constant. While safe in practice (`MAX_TYPE_GRAPH_EDGES = 500_000`), the cast direction is unusual — `usize as i64` can overflow on 64-bit systems for values > `i64::MAX`. The comparison could be simplified.
-- **Suggested fix:** Change `MAX_TYPE_GRAPH_EDGES` to `usize` and compare directly: `if rows.len() >= MAX_TYPE_GRAPH_EDGES`. Or cast the constant: `rows.len() >= MAX_TYPE_GRAPH_EDGES as usize`.
-
-#### RB-28: `name_boost` and `note_weight` accept `f32` without validation — negative values invert scoring
-- **Difficulty:** easy
-- **Location:** src/cli/mod.rs:126-127 (name_boost), src/cli/mod.rs:130 (note_weight)
-- **Description:** `--name-boost` and `--note-weight` are documented as `0.0-1.0` in the help text but accept any `f32`. A negative `--name-boost` would subtract from matching scores. A `--note-weight` of `-1.0` would invert note sentiment (warnings boost, patterns penalize). NaN would cause undefined sorting behavior.
-- **Suggested fix:** Add `value_parser = clap::value_parser!(f32).range(0.0..=1.0)` to both args, matching the documented range.
-
-#### RB-29: `search_by_name` limit parameter not clamped inside the function
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs (search_by_name function)
-- **Description:** `search_by_name(name, limit)` passes `limit` directly as a SQL `LIMIT` clause. In batch mode, `dispatch_search` clamps to 1..100 (batch.rs:538), but the function itself doesn't enforce an upper bound. All current callers use small constants (1-10), but a future caller passing a user-controlled value without clamping could request millions of rows.
-- **Suggested fix:** Add `let limit = limit.min(1000);` inside `search_by_name` as defense-in-depth.
-
-#### RB-30: `dispatch_trace` BFS doesn't early-exit when target is enqueued
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1141-1146
-- **Description:** The BFS trace only checks for target match when dequeuing (line 1124). When the target is enqueued as a callee (line 1144), BFS continues exploring all other callees at the current depth before dequeuing and finding the target. For a function with 100 callees where target is the first one, 99 unnecessary callees are enqueued and explored. With `max_depth = 50`, this adds up.
-- **Suggested fix:** Add an early exit when target is found during callee enumeration: `if *callee == target_name { visited.insert(callee.clone(), current.clone()); break 'outer; }`. This can dramatically reduce BFS expansion for shallow paths.
+- **Location:** `src/cli/commands/task.rs:554-559`
+- **Description:** Lines 554-558 iterate `c.content.lines()` twice: once with `.take(5).collect()` to get the preview lines, then again with `.count()` to check if there are more than 5 lines. For large functions (hundreds of lines), `.count()` re-scans the entire content string just to determine if it exceeds 5. The same pattern exists in `display.rs` (lines 130, 167, 330, 369) but those are pre-existing.
+- **Suggested fix:** Count lines during the first iteration: `let lines: Vec<&str> = c.content.lines().collect(); let preview = &lines[..lines.len().min(5)];` and check `lines.len() > 5`. Or use `let sixth = c.content.lines().nth(5)` to check without full iteration.
 
 ## Algorithm Correctness
 
-#### AC-22: `extract_file_from_chunk_id` window detection never fires — windowed chunks misparse
+#### AC-1: Waterfall surplus propagation can cause total token usage to exceed stated budget
 - **Difficulty:** medium
-- **Location:** src/search.rs:199-228
-- **Description:** The window detection heuristic checks if the last segment of a chunk ID is a short all-digit string (line 210-213: `last_seg.len() <= 2 && last_seg.bytes().all(|b| b.is_ascii_digit())`). However, windowed chunk IDs use the format `"path:line:hash:wN"` (pipeline.rs:51: `format!("{}:w{}", parent_id, window_idx)`). The `w` prefix means the last segment is `"w0"`, `"w1"`, etc. — never pure digits. So `segments_to_strip` is always 2 (standard), never 3 (windowed). For a windowed ID like `"src/foo.rs:10:abc12345:w0"`, the function strips only `:abc12345` and `:w0`, returning `"src/foo.rs:10"` instead of `"src/foo.rs"`. This causes: (1) glob filter `src/**/*.rs` to reject the chunk (path doesn't end with `.rs`), (2) note boosting via `path_matches_mention` to miss matches. Windowed chunks are effectively invisible to glob filtering and note boosting in `search_filtered`.
-- **Suggested fix:** Either change the window ID format from `:wN` to `:N` (breaking change) or update the detection to match the actual format: `!last_seg.is_empty() && last_seg.starts_with('w') && last_seg[1..].bytes().all(|b| b.is_ascii_digit())`. The latter preserves compatibility. Alternatively, strip any segment starting with `w` followed by digits.
+- **Location:** `src/cli/commands/task.rs:81-195` (`output_with_budget`)
+- **Description:** The waterfall token budgeting has a surplus double-counting bug. Each section's budget is computed as `base_percentage + surplus_from_previous`. The notes section (line 184) uses `(budget * 0.10) + remaining` without any surplus cap — it adds its base allocation to the full remaining budget, but that remaining budget already includes the base allocation for notes. Concrete example: budget=100, only scout uses 5 tokens, all other sections except notes are empty. `remaining` stays at 95 through empty middle sections. `notes_budget = 10 + 95 = 105 > 100`. If notes have enough content, total_used = 5 + 105 = 110 > budget. The `token_count` field in JSON output would report a value exceeding `token_budget`.
+- **Suggested fix:** Either (a) apply the same `.min(prev_budget.saturating_sub(prev_used))` cap to notes: `notes_budget = (budget * 0.10) + remaining.min(placement_budget.saturating_sub(placement_used))`, or (b) switch to a serial deduction model where each section takes `min(base, remaining)` and updates `remaining -= used`. The latter is simpler and makes overflow impossible by construction.
 
-#### AC-23: `onboard` summary `total_items` excludes `key_types` count
+#### AC-2: Waterfall surplus cascading inflates middle section budgets beyond their documented proportion
+- **Difficulty:** medium
+- **Location:** `src/cli/commands/task.rs:105-106,116-117,160-161`
+- **Description:** Related to AC-1 but affects all sections. The surplus forwarding uses `remaining.min(prev_budget - prev_used)` where `prev_budget` may itself include surplus from earlier sections. When scout uses 0 tokens, `code_budget = 50% + 15% = 65%`. If code also uses 0, `impact_budget = 15% + min(remaining, 65%) = 80%`. The cascading means impact's budget can be up to 80% of total, and placement up to 90%. While individual section budgets can't exceed remaining (AC-1 aside), the distribution doesn't match the documented "scout 15%, code 50%, impact 15%, placement 10%, notes 10%" proportions. Empty early sections cause disproportionate inflation of later sections.
+- **Suggested fix:** Same as AC-1 — switch to a serial deduction model. Base percentages serve as priority ordering, not minimum guarantees.
+
+#### AC-3: `index_pack` always includes first item even when budget is 0
 - **Difficulty:** easy
-- **Location:** src/onboard.rs:212
-- **Description:** `total_items: 1 + call_chain.len() + callers.len() + tests.len()` counts entry_point + callees + callers + tests but excludes `key_types.len()`. The `OnboardSummary` is serialized to JSON and consumed by the CLI display. A user reading `total_items: 7` while seeing 7 code entries + 3 type dependencies gets a count that doesn't match the displayed list. The `files_covered` field similarly only counts code entry files, not type definition files. This is a display inconsistency rather than a logic error, but `total_items` claiming to count items while missing an entire section is misleading.
-- **Suggested fix:** Either add `key_types.len()` to the sum: `total_items: 1 + call_chain.len() + callers.len() + key_types.len() + tests.len()`, or rename to `total_code_items` to clarify what is counted.
+- **Location:** `src/cli/commands/task.rs:56`
+- **Description:** `index_pack` has the guard `if used + cost > budget && !kept.is_empty()`. When `budget = 0`, the first item always gets packed because `kept.is_empty()` is true on the first iteration. This is documented behavior ("always includes at least one") and tested by `test_index_pack_always_includes_one`. However, with `budget = 0`, the caller explicitly requests zero tokens. Combined with AC-1's surplus cascading, a section budget computed as 0 due to rounding would still emit one item. Low severity — `budget = 0` is unlikely in practice.
+- **Suggested fix:** Add `if budget == 0 { return (Vec::new(), 0); }` at the top, or document that budget=0 still returns one item.
 
-#### AC-24: `onboard` COMMON_TYPES diverges from canonical `focused_read::COMMON_TYPES`
+#### AC-4: `dedup_tests` deduplicates by name only — same-name tests in different files collapse
 - **Difficulty:** easy
-- **Location:** src/onboard.rs:29-33
-- **Description:** Already noted in CQ-12, but adding the correctness perspective: `onboard.rs` defines a local `const COMMON_TYPES: &[&str]` with 16 entries and uses it in `filter_common_types`. The canonical version in `focused_read.rs` is a `LazyLock<HashSet<&str>>` with 44 entries, including `Error`, `Mutex`, `RwLock`, `Cow`, `Pin`, `Future`, `Iterator`, `Display`, `Debug`, `Clone`, `Default`, `Send`, `Sync`, `Serialize`, `Deserialize`, etc. The `onboard` filter passes through types that `focused_read` would filter. For example, `Error` (among the most commonly referenced types in Rust) appears in onboard's `key_types` output but is filtered in `read --focus` output. This inconsistency means the same function's type dependencies differ depending on which command you use.
-- **Suggested fix:** Remove the local `COMMON_TYPES` in `onboard.rs` and import `crate::COMMON_TYPES`. Change the filter to `.filter(|(name, _)| !COMMON_TYPES.contains(name.as_str()))`.
+- **Location:** `src/task.rs:184-192`
+- **Description:** `dedup_tests` uses `seen.insert(t.name.clone())` to deduplicate. If two genuinely different test functions share the same name in different files (e.g., `test_search` in `tests/unit.rs` and `tests/integration.rs`), the second is silently dropped. Rust allows identically-named test functions in different modules. The call graph stores them with the same short name. The test_map and impact systems treat `(name, file)` as identity, but dedup uses only `name`.
+- **Suggested fix:** Change the dedup key to `format!("{}:{}", t.name, t.file.display())` to match the identity used elsewhere in the impact system.
 
-#### AC-25: `note_boost` takes first match per note instead of best match — mentions order affects result
+#### AC-5: `compute_modify_threshold` makes all tied-top-score chunks ModifyTarget when no clear gap exists
 - **Difficulty:** easy
-- **Location:** src/search.rs:266-280
-- **Description:** The inner loop iterates `note.mentions` and `break`s on the first match (line 278). This means if a note has `mentions = ["lib.rs", "my_fn"]` and both the file path and chunk name match, only the first mention (`lib.rs`) triggers the match. This is correct for determining *whether* the note matches (it does), but the `break` skips checking if later mentions also match. In practice, this doesn't affect the sentiment value chosen (it's per-note, not per-mention), so the result is correct. However, the `break` comment says "This note already matched, check next note" which is exactly right. **Verdict: Not a bug.** The `break` is an intentional optimization. Removing this finding upon verification.
+- **Location:** `src/scout.rs:336-337` and `src/scout.rs:347`
+- **Description:** When `best_gap < MIN_GAP_RATIO`, `compute_modify_threshold` returns `scores[0]`. `classify_role` uses `score >= modify_threshold`, so all chunks with score == `scores[0]` become `ModifyTarget`. The docstring says "only the top result qualifies" but multiple chunks can share the exact same top score. With RRF scores this is rare, but with pure cosine similarity or when multiple functions have identical NL descriptions, tied scores are plausible. This is more of a documentation inaccuracy than a bug — giving all tied-top-score chunks `ModifyTarget` status is reasonable behavior.
+- **Suggested fix:** Update docstring: "only the top result qualifies" -> "only results tied for the top score qualify."
 
-#### AC-26: `extract_file_from_chunk_id` fails for paths containing only digits in segment
+#### AC-6: `compute_modify_threshold` returns 0.0 when all results are test chunks — makes every non-test chunk a ModifyTarget
 - **Difficulty:** easy
-- **Location:** src/search.rs:210-217
-- **Description:** A standard chunk ID for a file at path `"42:1:abc12345"` (e.g., a file literally named `42`) would have `last_seg = "abc12345"`, which is 8 hex chars — not all digits if it contains a-f. But a file named `"99"` with chunk ID `"99:1:00000000"` would have: last_seg = `"00000000"` (8 chars, len > 2, so not matched as window). This is fine. But consider a chunk at line 1 in file `"1"`: ID = `"1:1:abc12345"`. Here last_seg = `"abc12345"`, not digits, strips 2 → `"1"`. Correct. Now consider a numeric-only hash prefix: `"src/foo.rs:1:12345678"`. Last segment `"12345678"` has len 8, > 2, not matched as window. Correct. The heuristic is safe for standard IDs because hash prefixes are always 8 chars. **Verdict: Not a bug for standard IDs.** The only issue is with windowed IDs (AC-22).
+- **Location:** `src/scout.rs:309-317`
+- **Description:** When all search results are test chunks (e.g., searching "test helper" in a test-heavy codebase), the `scores` vec is empty after filtering. The function returns `scores.first().copied().unwrap_or(0.0)` = `0.0`. In `classify_role`, non-test chunks with any positive score satisfy `score >= 0.0`, so all of them become `ModifyTarget`. In practice this is unlikely (scout searches code, not just tests), but if it happens, the role classification is meaningless — every non-test chunk is flagged as a modify target.
+- **Suggested fix:** Return `f32::MAX` when scores is empty (or `f32::INFINITY`), so no chunk qualifies as ModifyTarget when there are no non-test results to calibrate against. Alternatively, handle the empty case in `scout_core` before calling `classify_role`.
 
-#### AC-27: Pipeline `stage_num` offset causes confusing stage numbering in logs
+## Extensibility
+
+#### EX-1: Waterfall budget percentages are magic numbers scattered across function body
 - **Difficulty:** easy
-- **Location:** src/cli/batch.rs:2042
-- **Description:** In the pipeline loop, `stage_num = stage_idx + 1` (line 2022, 1-indexed for display), then the tracing span uses `stage = stage_num + 1` (line 2042), making it 2-indexed. A 3-stage pipeline (A | B | C) logs: stage 0 = "Pipeline stage 0" (from line 1993), then B = "Pipeline stage 3" (stage_idx=0, stage_num=1, log=1+1=2... wait, let me re-read). Actually: `segments[1..]` iterates with `enumerate()`, so `stage_idx` = 0 for the first downstream stage (B). `stage_num = stage_idx + 1 = 1`. Tracing span: `stage = stage_num + 1 = 2`. So stages log as: A=stage 0 (line 1993 uses `stage = 0`), B=stage 2, C=stage 3. Stage 1 is skipped in log output. This is a display bug, not a logic bug, but confusing when debugging pipelines.
-- **Suggested fix:** Use consistent 1-based numbering: change line 2042 to `stage = stage_num` (B=stage 1, C=stage 2) and line 1993 `stage = 0` to `stage = 1`. Or keep 0-based throughout.
+- **Location:** `src/cli/commands/task.rs:84,106,117,160,184` and duplicated in tests at `697-711`
+- **Description:** The 5-section waterfall allocation (scout 15%, code 50%, impact 15%, placement 10%, notes 10%) is hardcoded as inline `0.15`, `0.50`, etc. at each budget computation site, then duplicated in two tests. Adding a sixth section (e.g., "dependencies") requires modifying 5 budget lines, the surplus-forwarding chain, `PackedSections` struct fields, both output functions (`output_json_budgeted`, `output_text_budgeted`), and both tests. The percentages are also documented in CLAUDE.md, making ~10 places total to keep in sync. Compare with the `index_pack` function which is cleanly reusable — the percentages around it are not.
+- **Suggested fix:** Define a `const WATERFALL_WEIGHTS: &[(&str, f64)] = &[("scout", 0.15), ("code", 0.50), ...]` or a small struct, and loop over it. The sections could be driven by a slice of `(name, weight, pack_fn)` tuples, reducing the 5 manual budget blocks to a single loop. Tests would validate `WATERFALL_WEIGHTS.iter().map(|w| w.1).sum::<f64>() == 1.0` against the constant instead of re-stating the values.
 
-#### AC-28: `diff` modified sort uses `unwrap_or(0.0)` for missing similarity — conflates "unknown" with "maximally changed"
+#### EX-2: Task BFS gather parameters hardcoded inline
 - **Difficulty:** easy
-- **Location:** src/diff.rs:173-178
-- **Description:** The sort comparator for `modified` entries uses `.unwrap_or(0.0)` when similarity is `None`. A `similarity: None` means embeddings couldn't be compared (one or both missing). `0.0` similarity means "completely different." By treating unknown similarity as 0.0, these entries sort to the top of the "most changed" list alongside genuinely maximally-drifted functions. In `detect_drift` (drift.rs:72), `similarity: None` becomes `drift = 1.0 - 0.0 = 1.0` (maximum drift). Functions with missing embeddings appear as the most drifted, displacing genuinely changed functions from the top of the output.
-- **Suggested fix:** Sort entries with `None` similarity separately (after all entries with known similarity), or use a sentinel like `-1.0` so they sort to the end. In `detect_drift`, filter out entries with `similarity: None` or flag them distinctly (e.g., `drift: None` or `drift_unknown: true`).
+- **Location:** `src/task.rs:103-106`
+- **Description:** `task()` hardcodes `.with_expand_depth(2)`, `.with_direction(GatherDirection::Both)`, `.with_max_expanded_nodes(100)` inline when constructing `GatherOptions`. These are tuning knobs that control how aggressively the gather phase expands the call graph. Changing any of these requires editing the function body. `onboard()` has the same pattern (lines 153-156, 167-170) but with different values — there's no central place to see or compare the different profiles. The `limit * 3` truncation at line 110 is another embedded constant.
+- **Suggested fix:** Add a `GatherOptions::task_defaults()` constructor (and `onboard_defaults()`) that documents the rationale for the chosen values. Alternatively, add these as fields on a `TaskOptions` struct parallel to `ScoutOptions`, so callers can override without modifying library code.
 
-#### AC-29: `BoundedScoreHeap` capacity 0 accepted — infinite insertion without eviction
+#### EX-3: ChunkRole serialization to string duplicated in 4 match arms across 3 files
 - **Difficulty:** easy
-- **Location:** src/search.rs:318-319
-- **Description:** `BoundedScoreHeap::new(0)` creates a heap with capacity 0. The `push` method checks `self.heap.len() < self.capacity` — which is `0 < 0 = false`, so it goes to the "at capacity" branch. `self.heap.peek()` returns `None` (empty heap), so nothing is inserted. This means a capacity-0 heap correctly rejects all inserts. Not a bug per se, but `BoundedScoreHeap::new(0)` silently becomes a /dev/null. The only caller is `search_filtered` which passes `semantic_limit = limit * 3` (or `limit` if not RRF). If `limit = 0`, `search_unified_with_index` already returns early (line 759), so capacity 0 shouldn't be reachable in practice. **Verdict: Not a bug** due to the early return guard.
+- **Location:** `src/scout.rs:411-413`, `src/cli/commands/task.rs:297-299`, `src/cli/commands/task.rs:515-517`, `src/cli/commands/scout.rs:132-134`
+- **Description:** `ChunkRole` has no `Display` or `Serialize` impl. Every JSON serialization site writes its own `match` block. Worse, the string representations differ: `scout_to_json` and `build_scout_json` use `"modify_target"/"test_to_update"/"dependency"`, the text output uses `"modify"/"test"/"dep"`, and `cmd_scout` uses `""/" [test]"/" [dep]"`. Adding a fourth role (e.g., `Caller` or `Reviewer`) requires updating all 4 match arms across 3 files, and there's no compiler-enforced exhaustiveness guarantee since the match arms are inside `serde_json::json!` macros.
+- **Suggested fix:** Add `impl Display for ChunkRole` (canonical: `"modify_target"`, etc.) and `impl ChunkRole { fn short_label(&self) -> &str }` for text output (`"modify"`, `"test"`, `"dep"`). JSON serialization uses `.to_string()`, text uses `.short_label()`. `serde::Serialize` derive with `#[serde(rename_all = "snake_case")]` would also work.
 
-#### AC-30: `pick_entry_point` ModifyTarget search doesn't consider across-group score comparisons
+#### EX-4: `task()` test depth hardcoded to 5 — not configurable
 - **Difficulty:** easy
-- **Location:** src/onboard.rs:252-271
-- **Description:** The ModifyTarget search iterates all file groups and within each group checks chunks with `ChunkRole::ModifyTarget`. When a callable ModifyTarget is found, it updates `best_modify_callable` only if the new score is strictly greater. But file groups are sorted by relevance (highest first), so the first group's chunks are generally more relevant. If two different groups each have a callable ModifyTarget with the same score, the later one wins (last-write). This is unlikely to cause practical issues since score ties are rare, but the search doesn't leverage the group ordering (which would naturally prefer earlier groups). **Verdict: Low impact** — strict `>` comparison means earlier entries are kept on ties, which actually favors earlier (more relevant) groups.
+- **Location:** `src/task.rs:186`
+- **Description:** `find_affected_tests_with_chunks(graph, test_chunks, target, 5)` hardcodes the max call-chain depth to 5 for test discovery. The same value appears in `tests/model_eval.rs:572` (though that's just a test). If the codebase grows deeper call chains (common with middleware/decorator patterns), tests won't be discovered beyond depth 5 and there's no way to adjust without editing the library function. The `impact` CLI command exposes this as `--depth` (default 1, clamped to 10), but `task` doesn't forward it.
+- **Suggested fix:** Add `test_depth` to a `TaskOptions` struct, defaulting to 5. Or piggyback on the existing `limit` parameter (which is already passed) to scale test depth proportionally.
 
-#### AC-31: `pipeline` intermediate stage always merges ALL extracted names, ignoring fan-out cap
+#### EX-5: Batch dispatch is a single match arm per command — adding a command touches 3 files
 - **Difficulty:** easy
-- **Location:** src/cli/batch.rs:2090-2098
-- **Description:** In intermediate pipeline stages, the code merges names from ALL per-name dispatch results into `merged_names`. But each dispatch result could itself return many names (up to 50 from a search), and there could be up to 50 dispatches (from the fan-out cap). So an intermediate merge could produce up to 50 * 50 = 2500 names. These merged names are then passed as `current_value` to the next iteration, where `extract_names` extracts them and the fan-out cap of 50 is applied. So the cap IS applied in the next iteration — but the intermediate `merged_names` Vec can be large (up to 2500 strings) without any cap. This is bounded memory (2500 short strings) and the downstream fan-out cap prevents runaway dispatches, so it's not a correctness bug. **Verdict: Design acceptable** — the fan-out cap is applied per-stage on dispatch, not on name collection.
+- **Location:** `src/cli/batch/commands.rs:24-256` (enum), `src/cli/batch/commands.rs:264-371` (dispatch), `src/cli/batch/handlers.rs` (handler), `src/cli/batch/pipeline.rs:15-17` (PIPEABLE_COMMANDS)
+- **Description:** Adding a new batch command requires: (1) add a variant to `BatchCmd` enum, (2) add a match arm in `dispatch()`, (3) write a `dispatch_*` handler function, (4) optionally add to `PIPEABLE_COMMANDS`. This is 3-4 files for every new command. The pattern is mechanical but not enforced — prior audit found `PIPEABLE_COMMANDS` requires manual update (EXT-26, now fixed with a test). The dispatch match is ~110 lines of pure boilerplate routing. This is not terrible for ~25 commands, but the cost is linear with command count.
+- **Suggested fix:** This is a pragmatic trade-off: match-arm dispatch is simple and explicit. A registry pattern would add complexity. The current pattern is acceptable as long as the test suite validates completeness (which it does for PIPEABLE_COMMANDS). No immediate fix needed — just acknowledge this is a known cost of the architecture. If command count exceeds ~40, consider a `#[batch_command]` proc macro or dispatch table.
 
-## Platform Behavior
-
-#### PB-14: `onboard_to_json` serializes PathBuf fields without backslash normalization
+#### EX-6: `compute_modify_threshold` MIN_GAP_RATIO is module-level constant but not adjustable from ScoutOptions
 - **Difficulty:** easy
-- **Location:** src/onboard.rs:239, src/onboard.rs:51, src/onboard.rs:72
-- **Description:** `onboard_to_json()` uses `serde_json::to_value(result)` to serialize the entire `OnboardResult` struct, which contains `OnboardEntry.file: PathBuf` and `TestEntry.file: PathBuf`. On Windows (or WSL with native Windows paths), `PathBuf` serialization preserves platform path separators — backslashes on Windows. Every other JSON-producing command in the codebase manually constructs JSON with `.to_string_lossy().replace('\\', '/')` to ensure consistent forward-slash paths (e.g., `gather` at `commands/gather.rs:131`, `search` at `batch.rs:544`, `explain` at `commands/explain.rs:160`). The `onboard` command is the only one that derives `Serialize` on structs containing `PathBuf` fields and serializes them directly. In practice this is safe on WSL (Linux paths are always forward-slash) and stored paths from SQLite are already normalized. But if a `PathBuf` is ever constructed from a Windows-native path (e.g., `entry_file` from `pick_entry_point` which comes from `ScoutResult.file_groups[].file`), the JSON output would contain backslashes.
-- **Suggested fix:** Either (a) add `#[serde(serialize_with = "serialize_path_forward_slash")]` to the `file` fields in `OnboardEntry` and `TestEntry`, or (b) change `file` fields from `PathBuf` to `String` and normalize at construction time (matching `DriftEntry.file: String` which already does this).
+- **Location:** `src/scout.rs:75` (constant), used at `src/scout.rs:336`
+- **Description:** `MIN_GAP_RATIO = 0.10` controls the sensitivity of gap detection — the minimum relative score gap required to split ModifyTarget from Dependency chunks. It's a named constant (good), but `ScoutOptions` doesn't expose it. If a user's codebase consistently produces small score gaps (tight clusters) or large gaps (sparse results), they can't tune this without code changes. `ScoutOptions` already has `search_limit` and `search_threshold` — gap ratio is the same category of tuning knob.
+- **Suggested fix:** Add `min_gap_ratio: f32` to `ScoutOptions` with `default = 0.10`, pass it into `compute_modify_threshold`. The constant remains as the default value. Low priority — current default works well across tested codebases.
 
-#### PB-15: `dispatch_context` constructs absolute path for origin lookup — always fails first query
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1268-1273, src/cli/commands/context.rs:24-29
-- **Description:** Both `dispatch_context` (batch) and `cmd_context` (CLI) do `let origin = abs_path.to_string_lossy().to_string()` (an absolute path like `/mnt/c/Projects/cq/src/foo.rs`) and then call `store.get_chunks_by_origin(&origin)`. But origins in SQLite are stored as relative forward-slash paths (e.g., `src/foo.rs`) — the pipeline normalizes them at `pipeline.rs:288`. The absolute-path lookup always returns 0 results, falling through to the relative-path fallback on the next line. This is harmless (the fallback works) but it means every `cqs context` and batch `context` command issues a wasted SQLite query. On WSL with `/mnt/c/` paths, `to_string_lossy()` produces a Linux-style absolute path, which never matches a relative stored origin. This pattern was pre-existing (not new since v0.12.3) but is duplicated in the new batch.rs code.
-- **Suggested fix:** Remove the absolute path attempt. Query directly with the relative `path` argument, which matches stored origins. Or normalize: `let origin = path.replace('\\', "/")` and query with that.
+#### EX-7: TaskResult sections are a fixed struct — adding a section requires modifying struct + builder + 3 serializers
+- **Difficulty:** medium
+- **Location:** `src/task.rs:20-35` (struct), `src/task.rs:155-163` (builder), `src/task.rs:227-322` (`task_to_json`), `src/cli/commands/task.rs:67-228` (waterfall), `src/cli/commands/task.rs:242-276` (JSON budgeted), `src/cli/batch/handlers.rs:1446-1496` (batch)
+- **Description:** `TaskResult` is a flat struct with 6 named fields (scout, code, risk, tests, placement, summary). Adding a new section (e.g., "related functions", "dependencies", "affected configs") requires: (1) add field to `TaskResult`, (2) populate in `task()`, (3) serialize in `task_to_json()`, (4) add to waterfall budgeting, (5) add to `output_json_budgeted`, (6) add to `output_text_budgeted`, (7) add to batch handler. That's 7 locations for a new section. The waterfall budgeting is particularly fragile because each section's surplus feeds the next — inserting a section in the middle requires re-wiring the surplus chain. Already flagged tangentially by CQ-2 (JSON duplication) and CQ-4/EH-5 (batch divergence), but this is the structural root cause.
+- **Suggested fix:** This is a design trade-off. The flat struct is simple and type-safe — a dynamic `Vec<Section>` would lose type safety. For now, this is acceptable for 6 sections. If sections grow beyond 8-10, consider a `TaskSection` trait with `fn name()`, `fn to_json()`, `fn text_output()`, `fn token_count()` that the waterfall iterates generically.
 
 ## Test Coverage
 
-#### TC-11: `onboard()` has zero integration test — only helper unit tests
+#### TC-1: `task()` has no integration test — only unit tests of sub-functions
 - **Difficulty:** medium
-- **Location:** src/onboard.rs:89
-- **Description:** The main `onboard()` function has zero test coverage (`cqs test-map onboard` returns 0 tests). The 11 unit tests in `onboard.rs` only test internal helpers (`pick_entry_point`, `filter_common_types`, `test_info_to_entry`, `callee_ordering_by_depth`). None exercise the full pipeline: scout -> pick entry -> BFS callees -> BFS callers -> fetch types -> find tests -> assemble. This means the integration between these stages is untested — wrong wiring, incorrect BFS options, or mismatched data flow between stages would not be caught.
-- **Suggested fix:** Add an integration test in `tests/` that creates a small project with call relationships, indexes it, then calls `onboard()` and verifies: (1) entry_point is set, (2) call_chain is non-empty and ordered by depth, (3) callers are found, (4) tests are detected. Requires embedding, so either use the real embedder or extract the core logic into a testable path that accepts pre-embedded data.
+- **Location:** `src/task.rs:51-164`
+- **Description:** The `task()` function — the main entry point for `cqs task` — has zero integration tests. The inline `#[cfg(test)]` module in `task.rs` tests `extract_modify_targets`, `compute_summary`, `dedup_tests` (inline logic only), and `task_to_json` structure — all with manually constructed inputs. No test ever calls `task()` itself with a real `Store` and `Embedder`. This means the wiring between phases (scout -> gather -> impact -> placement) is untested: if `scout_core` changes its output shape, or `bfs_expand` is called with wrong options, or the `suggest_placement` error path is hit, no test catches it. Compare with `onboard()` which got a full integration test after TC-11 in v0.13.1.
+- **Suggested fix:** Add `tests/task_test.rs` integration test: create temp store, index a small fixture, call `task()`, assert non-empty file_groups, code, risk, and summary fields. Pattern: follow `tests/onboard_test.rs`.
 
-#### TC-12: `health_check()` only tested with empty store
+#### TC-2: `dedup_tests()` tested via inline HashSet simulation, not the actual function
 - **Difficulty:** easy
-- **Location:** src/health.rs:140
-- **Description:** The single test `test_health_check_empty_store` verifies the empty case only — all counters zero, no warnings. This doesn't exercise any of the 5 sub-queries (staleness, dead code, hotspots, untested hotspots, notes). Since `health_check` degrades gracefully per sub-query (each has its own `match` with a warning fallback), the test doesn't verify that the degradation paths produce correct warnings or that successful sub-queries produce correct non-zero values.
-- **Suggested fix:** Add a test with a populated store: insert chunks with call relationships, verify `hotspots` is non-empty and `dead_confident > 0`. Add a test that verifies the degradation warning path (e.g., force a sub-query failure and check `warnings` vec).
+- **Location:** `src/task.rs:534-571` (test), `src/task.rs:178-193` (function)
+- **Description:** The test `test_dedup_tests_removes_duplicates` (line 534) duplicates the HashSet dedup logic inline instead of calling the actual `dedup_tests()` function. The comment says "Can't easily test dedup_tests without a real graph". This means the actual function is never tested — if someone changes the dedup logic (e.g., switches from name-based to ID-based dedup), the test would still pass. The function takes `CallGraph` and `ChunkSummary` slice, which can be constructed from a test Store.
+- **Suggested fix:** Either (a) test `dedup_tests()` with a real Store in an integration test, or (b) refactor `dedup_tests` to accept `impl Fn(&str) -> Vec<TestInfo>` so unit tests can inject a mock lookup. Option (a) is simpler if bundled with TC-1.
 
-#### TC-13: `suggest_notes()` only tested with empty store — detectors never produce output
+#### TC-3: `task_to_json` tests check structure but not values for code/risk/tests/placement
+- **Difficulty:** easy
+- **Location:** `src/task.rs:465-495` (`test_task_to_json_structure`)
+- **Description:** `test_task_to_json_structure` asserts that `json["code"]` is an array and `json["risk"]` is an array, but both are empty (the `TaskResult` is constructed with `code: Vec::new(), risk: Vec::new(), tests: Vec::new(), placement: Vec::new()`). No test verifies that `task_to_json` correctly serializes populated code chunks, risk scores, test info, or placement suggestions. The only test with populated data is `test_summary_computation`, which doesn't go through JSON. Since `task_to_json` uses manual `serde_json::json!` construction (not Serialize derives), a field rename or format change would be invisible.
+- **Suggested fix:** Add a test that constructs a `TaskResult` with 1+ item in each field (code, risk, tests, placement) and asserts the JSON values match. Specifically test that `risk_level` serialization matches expectations (relates to AD-4 finding: `format!("{:?}", r.risk_level)` produces PascalCase).
+
+#### TC-4: `compute_modify_threshold` untested with all-test-chunk inputs
+- **Difficulty:** easy
+- **Location:** `src/scout.rs:308-341`
+- **Description:** `compute_modify_threshold` filters out test chunks before computing the gap. The existing test `test_compute_modify_threshold_skips_tests` has one test chunk, but no test covers the case where ALL results are tests (e.g., searching "test helper" in a test-heavy codebase). In that case, `scores` is empty and the function returns `0.0`. This flows into `classify_role` where `score >= 0.0` is always true, making every non-test result a ModifyTarget. While unlikely in practice, it would cause misleading output.
+- **Suggested fix:** Add a test case where all results have test-like names and verify the function returns 0.0.
+
+#### TC-5: `scout_core()` has no integration test — only tested indirectly via CLI
 - **Difficulty:** medium
-- **Location:** src/suggest.rs:285
-- **Description:** `test_suggest_empty_store` only verifies `suggest_notes` returns empty on an empty store. None of the three detectors (`detect_dead_clusters`, `detect_risk_patterns`, `detect_stale_mentions`) are tested with data that would trigger a suggestion. `detect_dead_clusters` requires 5+ dead functions in one file. `detect_risk_patterns` requires hotspots with 5+ callers and 0 tests. The stale mention test (`test_detect_stale_file_mention`) tests the helper directly but not through `suggest_notes`. The deduplication logic (lines 62-73) is also untested.
-- **Suggested fix:** Add tests with populated stores: (1) insert 5+ uncalled functions in one file, verify dead cluster suggestion appears; (2) insert a note with a mention matching an existing function, add the function, verify no stale suggestion; (3) add a suggestion that matches an existing note text, verify deduplication filters it.
+- **Location:** `src/scout.rs:145-299`
+- **Description:** `scout_core()` is the workhorse of both `cqs scout` and `cqs task`. It is `pub(crate)` and has no direct test. The CLI integration tests (`test_scout_json_output`, `test_scout_text_output`) test end-to-end through `cmd_scout` but don't exercise `scout_core` directly. This matters because `scout_core` takes pre-loaded resources (graph, test_chunks) — the shared-resource path used by `task()` — which is different from `scout_with_options()` which loads its own. If the shared-resource path has a bug (e.g., wrong graph), CLI scout tests wouldn't catch it.
+- **Suggested fix:** Add a library-level integration test that calls `scout_core()` with pre-loaded graph/test_chunks and verifies the returned `ScoutResult` contains expected file groups, chunk roles, and summary counts. This is more important than testing `scout_with_options` (which is just a wrapper).
 
-#### TC-14: `detect_drift()` tested only with empty stores — no actual drift detection
+#### TC-6: `classify_role` untested at exact threshold boundary with test-like names
+- **Difficulty:** easy
+- **Location:** `src/scout.rs:344-352`
+- **Description:** `classify_role` checks test status first, then threshold. The existing tests cover test detection by name (`test_search`) and file (`tests/integration.rs`), and threshold above/below/at boundary. But no test verifies that a test-like name at or above the modify threshold is still classified as `TestToUpdate`, not `ModifyTarget`. This is the priority of the `if` chain — test detection trumps score. While the current tests imply this (e.g., `test_classify_role_test` uses score 0.9 with threshold 0.5), the intent is not explicit.
+- **Suggested fix:** Add an explicit test: `classify_role(0.9, "test_critical", "src/lib.rs", 0.5)` should be `TestToUpdate`, with a comment that test detection takes priority over score.
+
+#### TC-7: Retrieval metrics (`compute_mrr`, `compute_ndcg_at_k`, `compute_recall_at_k`) have no unit tests
 - **Difficulty:** medium
-- **Location:** src/drift.rs:123
-- **Description:** `test_drift_empty_stores` only verifies the empty case. The three other tests (`test_drift_entry_fields`, `test_drift_sort_order`, `test_drift_min_filter`) construct `DriftEntry` structs manually and test properties on them, never calling `detect_drift()`. The actual function — which delegates to `semantic_diff()` and filters/sorts the results — is only tested via the empty path. No test verifies that `detect_drift` with two stores containing the same function at different embeddings produces a drift entry with correct similarity/drift values.
-- **Suggested fix:** Add a test that inserts the same function name into two stores with different embeddings, calls `detect_drift`, and verifies: (1) `drifted` is non-empty, (2) `similarity` is between 0 and 1, (3) `drift = 1.0 - similarity`, (4) `min_drift` filtering works correctly on actual data.
+- **Location:** `tests/model_eval.rs:1244-1407`
+- **Description:** The three retrieval metric functions are only exercised indirectly by the `#[ignore]` slow model eval tests which download ONNX models. No fast unit test verifies their mathematical correctness with known inputs. `compute_mrr` should return 1.0 when the expected result is always rank 1, 0.5 when always rank 2, etc. `compute_ndcg_at_k` with rank 1 should return 1.0 (since 1/log2(2) = 1.0). `compute_recall_at_k` with k=1 should return (hits, total) matching rank-1 presence. These are standalone pure functions that take `&[IndexedChunk]`, `&[EvalCase]`, and `&[Vec<f32>]` — easily testable without any model.
+- **Suggested fix:** Add fast `#[test]` (not `#[ignore]`) tests in `model_eval.rs`: construct 3-4 `IndexedChunk` with known embeddings (unit vectors along axes), 2-3 `EvalCase` with known expected names, and hand-computed query embeddings. Assert exact MRR, NDCG, and recall values. Example: if query = [1,0,0] and expected is chunk with embedding [1,0,0], rank is 1, MRR = 1.0, NDCG@k = 1.0, recall@k = 1/1.
 
-#### TC-15: `apply_windowing()` has zero test coverage
+#### TC-8: `index_pack` untested with zero budget
+- **Difficulty:** easy
+- **Location:** `src/cli/commands/task.rs:36-64`
+- **Description:** `index_pack` has a special case: when `budget` is 0 and items exist, the `if used + cost > budget && !kept.is_empty()` guard lets the first item through (because `kept.is_empty()` is true). So `index_pack(&[100], 0, 0, |_| 1.0)` returns `([0], 100)` — the first item is always included regardless of budget. This is the same behavior tested by `test_index_pack_always_includes_one`, but that test uses budget=10 with item cost 100. No test uses budget=0 explicitly. While the "always include one" behavior is tested, the zero-budget edge case where `0 + cost > 0` triggers immediately could interact differently with surplus forwarding in the waterfall.
+- **Suggested fix:** Add `index_pack(&[50, 50], 0, 0, |_| 1.0)` and assert it returns `([0], 50)` — only the first item despite budget=0.
+
+#### TC-9: No CLI integration test for `cqs task`
 - **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:32
-- **Description:** `apply_windowing` transforms chunks before embedding — splitting long chunks into overlapping windows. It has zero tests (`cqs test-map apply_windowing` returns 0). The function handles three code paths: (1) chunk fits in one window (pass-through), (2) chunk splits into multiple windows, (3) tokenization failure (pass-through with warning). None are tested. The windowing constants test (`test_windowing_constants`) only checks compile-time bounds on the constants, not the function behavior.
-- **Suggested fix:** Create a chunk with content longer than `MAX_TOKENS_PER_WINDOW` tokens, call `apply_windowing`, verify: (1) output has more chunks than input, (2) window chunks have `parent_id` set, (3) window chunks have sequential `window_idx`, (4) first window preserves doc, subsequent windows have `None`. Also test the pass-through case with a short chunk.
+- **Location:** `src/cli/commands/task.rs:8-32` (`cmd_task`)
+- **Description:** `tests/cli_commands_test.rs` has integration tests for scout, where, related, impact-diff, stale, query, gather, and ref commands. There is no integration test for `cqs task`. The batch test file (`cli_batch_test.rs`) also has no `task` command test. This means the full pipeline (CLI argument parsing -> `cmd_task` -> `task()` -> JSON output) is completely untested at the integration level. Token budgeting output (`output_with_budget`), text formatting (`output_text`), and the batch `dispatch_task` handler are all untested.
+- **Suggested fix:** Add `test_task_json_output()` and `test_task_text_output()` to `cli_commands_test.rs`, following the pattern of `test_scout_json_output`. Add `test_batch_task()` to `cli_batch_test.rs`. These catch wiring bugs between CLI and library.
 
-#### TC-16: `TypeEdgeKind::from_str()` round-trip untested
+#### TC-10: `note_mention_matches_file` untested with empty strings
 - **Difficulty:** easy
-- **Location:** src/parser/types.rs:122
-- **Description:** `TypeEdgeKind` has `Display` and `FromStr` impls (6 variants each) with zero unit tests. The `FromStr` error case (unknown string) is also untested. While the store tests exercise the types indirectly through `upsert_type_edges`/`get_types_used_by`, the serialization round-trip (`as_str()` -> `from_str()`) is not directly verified. A typo in either the `Display` or `FromStr` match arms would silently break edge kind round-tripping through the database.
-- **Suggested fix:** Add a `#[cfg(test)] mod tests` to `parser/types.rs` with: (1) round-trip test for each variant (`TypeEdgeKind::Param.to_string().parse::<TypeEdgeKind>() == Ok(TypeEdgeKind::Param)`), (2) error case test (`"invalid".parse::<TypeEdgeKind>().is_err()`).
+- **Location:** `src/scout.rs:383-391`
+- **Description:** No test covers `note_mention_matches_file("", "src/foo.rs")` or `note_mention_matches_file("foo.rs", "")`. The empty-mention case would return `false` (no '.' or '/'), which is correct. The empty-file case: `"".ends_with("foo.rs")` is `false`, also correct. But the boundary check `file.as_bytes()[file.len() - mention.len() - 1]` would underflow if `file.len() < mention.len() + 1` — however `ends_with` guards this. Still, the edge case is worth a test to document behavior.
+- **Suggested fix:** Add assertions for empty mention and empty file to the existing `test_note_mention_matches_file` test.
 
-#### TC-17: `warn_stale_results()` test discards return value — no assertion
-- **Difficulty:** easy
-- **Location:** src/cli/staleness.rs:74
-- **Description:** `test_warn_stale_results_nonexistent_origins` calls `warn_stale_results` with origins not in the index, but assigns the result to `let _ = result;` with the comment "Key: it must not panic." This is a non-assertion — it verifies the function doesn't crash, but doesn't verify the return value. The test should at least assert something about the returned `HashSet<String>`.
-- **Suggested fix:** Replace `let _ = result;` with `assert!(result.is_empty(), "Origins not in index should produce empty stale set");` (since the store has no chunks, nothing can be stale).
-
-#### TC-18: No CLI integration tests for `cqs drift`, `cqs onboard`, `cqs health`, `cqs suggest`, `cqs deps`
+#### TC-11: Waterfall surplus forwarding logic untested
 - **Difficulty:** medium
-- **Location:** tests/ (missing files)
-- **Description:** Five commands added since v0.12.3 have zero CLI integration tests. All other major commands (`query`, `callers`, `callees`, `explain`, `gather`, `impact`, `stale`, `batch`) have integration tests in `tests/cli_commands_test.rs` or dedicated test files. The missing commands are: `drift` (requires reference setup), `onboard` (requires embedder), `health`, `suggest`, and `deps` (requires type edges). Batch mode also lacks integration tests for the `health`, `stale`, `drift`, `onboard`, and `deps` dispatch paths.
-- **Suggested fix:** Add integration tests for at least `health --json`, `suggest --json`, and `deps --json` (these three don't require embedding and can work with a basic indexed project). `health` and `suggest` should return valid JSON with expected fields. `deps` in both forward and reverse mode should return correct results when type edges are present. `onboard` and `drift` are harder (require embedder/references) but at minimum a smoke test that verifies exit code 0 and valid JSON output would catch wiring regressions.
+- **Location:** `src/cli/commands/task.rs:84-184`
+- **Description:** The waterfall budget logic forwards surplus from one section to the next: e.g., if scout uses 50 of its 150-token budget, the remaining 100 flows to the code section. This surplus forwarding depends on `remaining.min(scout_budget.saturating_sub(scout_used))` and similar expressions. No test exercises this path. The existing `test_waterfall_allocation_percentages` and `test_waterfall_section_budgets` verify that percentages sum to 1.0 and integer budgets are correct, but they don't test the actual surplus forwarding behavior (which requires a real `TaskResult` with varying section sizes and an `Embedder` for token counting).
+- **Suggested fix:** This requires either (a) an integration test with real embedder, or (b) extracting the surplus calculation into a pure function testable without embedder. Option (b) is cleaner: extract `compute_section_budgets(budget: usize, section_tokens: [usize; 5]) -> [usize; 5]` and test it with known inputs where early sections are under/over budget.
 
-#### TC-19: Batch mode `--tokens` silently ignored — no test catches the gap
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:533, 729, 888, 491
-- **Description:** Related to CQ-14 (already reported in Code Quality), but from a test coverage perspective: there are zero tests that verify `--tokens` behavior in batch mode for `search`, `explain`, `gather`, or `onboard`. If/when token budgeting is implemented in batch, there will be no regression tests. Currently the parameter is accepted and silently dropped (`_tokens`), and no test verifies either that it works or that it is intentionally unsupported.
-- **Suggested fix:** If `--tokens` should work in batch: implement it and add tests. If intentionally unsupported: add a test that verifies a warning or error is emitted when `--tokens` is passed in batch mode.
+## Platform Behavior
 
-#### TC-20: `onboard.rs` tests use isolated helpers but never test full assembly
+**Result:** v0.14.0 code is largely clean on platform behavior. Existing infrastructure (`normalize_origin`, `rel_display`, `note_mention_matches_file` backslash normalization) handles WSL/Windows path issues consistently. The new task/scout code delegates to these functions correctly. Two minor findings.
+
+#### PB-1: `is_test_chunk` path patterns use forward-slash only — fails on native Windows paths
 - **Difficulty:** easy
-- **Location:** src/onboard.rs:622-645
-- **Description:** `test_entry_point_excluded_from_call_chain` tests `HashMap::remove()` behavior, not the actual onboard logic. It creates a scores map, removes "entry", and checks the map has 2 items. This is testing standard library behavior, not project code. Similarly, `test_callee_ordering_by_depth` tests `Vec::sort_by` with custom comparator — the sort is inlined in `onboard()` (line 161-166), so the test only validates the comparator in isolation, not that the sort is applied correctly to `callee_chunks`.
-- **Suggested fix:** Remove the HashMap test (tests std library). The sort test is marginally useful but could be strengthened by testing through a higher-level function that applies the sort, rather than reimplementing it in the test.
+- **Location:** `src/lib.rs:201-207`
+- **Description:** `is_test_chunk()` checks `file.contains("/tests/")`, `file.starts_with("tests/")`, etc. — all with forward-slash separators. In the v0.14.0 scout code, this is called at `src/scout.rs:311` and `src/scout.rs:345` with `chunk.file.to_string_lossy()` as the file argument. Since chunk files come from the DB (stored with forward slashes via `normalize_origin`), this works correctly on WSL/Linux. However, `is_test_chunk` is a public function also called from `src/store/calls.rs:812` with `path_str` from `to_string_lossy()` on a `PathBuf` constructed from filesystem walks — if cqs were ever built natively on Windows, those paths would have backslashes and test detection would silently fail. The scout code itself is safe because it reads from DB, but it inherits this latent fragility from the shared `is_test_chunk` function.
+- **Suggested fix:** Add backslash variants to the path checks: `file.contains("/tests/") || file.contains("\\tests\\")`, or normalize the file argument with `.replace('\\', "/")` before matching. Low priority — cqs targets WSL/Linux where this isn't triggered.
+
+#### PB-2: Scout staleness check mixes `to_str()` and `to_string_lossy()` for the same PathBuf keys
+- **Difficulty:** easy
+- **Location:** `src/scout.rs:202` and `src/scout.rs:223`
+- **Description:** Line 202 converts `file_map` keys with `p.to_str().unwrap_or("")` to pass to `check_origins_stale()`. Line 223 converts the same keys with `file.to_string_lossy().to_string()` to check membership in `stale_set`. For non-UTF-8 paths, `to_str()` returns `None` (mapped to `""`) while `to_string_lossy()` returns a string with U+FFFD replacement characters. This means a non-UTF-8 path would be queried as `""` in the staleness check (finding nothing in the DB), but tested for membership as a `\u{FFFD}`-containing string (never matching the DB results). The path would be marked not-stale regardless of actual file modification time. EH-4 already covers the `unwrap_or("")` half of this — this finding adds the cross-function inconsistency: even if EH-4 is fixed with `filter_map`, the `to_string_lossy` on line 223 should also be updated to match.
+- **Suggested fix:** Use the same conversion on both lines. After applying EH-4's fix (`.filter_map(|p| p.to_str())`), also change line 223 to use `to_str()` with the same filter, or better, store the string representation in `file_map` keys (use `HashMap<String, ...>` instead of `HashMap<PathBuf, ...>`) so the same string is used for both staleness checking and set membership.
 
 ## Performance
 
-#### PERF-20: `dispatch_trace` N+1 `search_by_name` for path enrichment
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1154-1167
-- **Description:** After BFS finds the shortest call path, `dispatch_trace` iterates each node in the path and calls `ctx.store.search_by_name(name, 1)` per node to fetch file/line/signature metadata. For a depth-10 path, this issues 10 separate SQLite FTS queries. The store already provides `search_by_names_batch` which resolves all names in a single query. The CLI `cmd_trace` at `src/cli/commands/trace.rs` has the same N+1 pattern.
-- **Suggested fix:** Collect all path names into a `Vec<&str>`, call `store.search_by_names_batch(&names, 1)`, then look up each name from the returned `HashMap` when building `path_json`.
-
-#### PERF-21: `dispatch_search` bypasses `BatchContext::audit_state()` cache — re-reads disk
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:586
-- **Description:** `dispatch_search` calls `cqs::audit::load_audit_state(&ctx.cqs_dir)` directly instead of using the cached `ctx.audit_state()` method. Every batch search command re-reads the audit state file from disk. All other dispatch functions (`dispatch_read`, `dispatch_read_focused`, `dispatch_health`) use the cached method. This was already noted in CQ-13 (Code Quality) but belongs here as a performance finding: in a batch session with 100 search commands, this issues 100 unnecessary file reads.
-- **Suggested fix:** Replace `let audit_mode = cqs::audit::load_audit_state(&ctx.cqs_dir);` with `let audit_mode = ctx.audit_state();`.
-
-#### PERF-22: `get_call_graph()` not cached in BatchContext — reloaded per command
+#### PF-1: `task()` placement phase re-embeds the query — redundant ONNX inference
 - **Difficulty:** medium
-- **Location:** src/cli/batch.rs:1005, 1114
-- **Description:** `dispatch_test_map` and `dispatch_trace` both call `ctx.store.get_call_graph()?` which scans the entire `function_calls` table and builds in-memory `HashMap<String, Vec<String>>` adjacency lists. This is a full table scan (O(calls)) per invocation. In a batch pipeline like `search "error" | test-map`, the fan-out dispatches `test-map` up to 50 times — each loading the full call graph from SQLite. The call graph is immutable during a batch session (no indexing occurs). The `onboard` library function also loads both the call graph and test chunks (lines 116-124), issuing 2 queries per invocation.
-- **Suggested fix:** Add a `call_graph: OnceLock<CallGraph>` field to `BatchContext`, similar to the existing `hnsw` and `file_set` caches. Load on first use, return `&CallGraph` thereafter. Same pattern for `test_chunks: OnceLock<Vec<TestChunk>>`.
+- **Location:** `src/task.rs:136` calling `suggest_placement()`, which calls `embedder.embed_query(description)` at `src/where_to_add.rs:115-117`
+- **Description:** `task()` embeds the query at line 61 (`embedder.embed_query(description)`) and passes the embedding to `scout_core`. But the placement phase at line 136 calls `suggest_placement(store, embedder, description, 3)`, which internally calls `embedder.embed_query(description)` again. ONNX inference is the most expensive single operation in a `task()` call (~50-100ms on GPU, ~200-500ms on CPU). The same description string is embedded twice, and both calls also perform a full `search_filtered()` against the index — so the HNSW search is also doubled. The scout phase search and the placement search use identical parameters (both `enable_rrf: true`, both use the full query text), differing only in `search_limit` (scout uses `opts.search_limit` = 15, placement uses its own default = 10).
+- **Suggested fix:** Add a `suggest_placement_with_embedding()` variant (or extend `suggest_placement_with_options`) that accepts a pre-computed embedding and optionally pre-filtered search results. `task()` can then pass the embedding from line 61 and avoid the second ONNX call. If scout's search results are a superset (limit 15 >= 10), the placement phase could reuse them entirely, eliminating both the embedding and the HNSW search.
 
-#### PERF-23: `list_notes_summaries()` called redundantly in `search_filtered` and `search_by_candidate_ids`
-- **Difficulty:** easy
-- **Location:** src/search.rs:390, 644
-- **Description:** Both `search_filtered` and `search_by_candidate_ids` call `self.list_notes_summaries()` at the top to load notes for boosting. When `search_filtered_with_index` falls back to brute-force (line 609), it calls `search_filtered` which loads notes again. More critically, `search_unified_with_index` (line 806) calls `search_by_candidate_ids` or `search_filtered`, each of which loads notes independently. Notes are loaded from SQLite, parsed, and allocated fresh each time. In a batch session, notes don't change — they're loaded once per search command but discarded between calls.
-- **Suggested fix:** Accept notes as an optional parameter: `search_filtered(..., notes: Option<&[NoteSummary]>)`. When `None`, load from store (backward-compatible). The caller `search_unified_with_index` loads notes once and passes them down. In batch mode, `BatchContext` already caches notes via `notes_cache: OnceLock` — pass those through.
-
-#### PERF-24: `strip_markdown_noise` chains 8 regex/string replacements creating 8 intermediate Strings
+#### PF-2: `task()` duplicates reverse BFS across impact and test discovery — same graph traversal done twice per target
 - **Difficulty:** medium
-- **Location:** src/nl.rs:472-503
-- **Description:** `strip_markdown_noise` performs 8 sequential string transformations, each creating a new `String` via `.to_string()` or `.replace()`. For a 3000-char markdown chunk (not unusual), this allocates and copies ~24KB of intermediate strings. The function is called once per markdown chunk during indexing via `generate_nl_description`. With hundreds of markdown sections in a documentation index, the allocation overhead adds up. The regex replacements use `replace_all(...).to_string()` which always allocates, even when no match is found (`Cow::Borrowed` is immediately converted to owned).
-- **Suggested fix:** Use `Cow`-aware chaining: keep the result as `Cow<str>` and only convert to `String` at the end. Each `replace_all` already returns `Cow<str>` — chain them without `.to_string()` until the final result. The `replace('*', "")` calls can be batched into a single char-filtering pass. This halves allocations for content with no matches (the common case for most transformations).
+- **Location:** `src/task.rs:124` (`compute_risk_batch`) and `src/task.rs:132` (`dedup_tests` → `find_affected_tests_with_chunks`)
+- **Description:** For each modify target, `task()` performs the identical `reverse_bfs(graph, target_name, depth)` twice: once inside `compute_risk_batch` (via `compute_hints_with_graph` → `reverse_bfs`) and once inside `dedup_tests` (via `find_affected_tests_with_chunks` → `reverse_bfs`). Both traverse the same call graph from the same starting nodes. With `N` modify targets, this is `2N` BFS traversals instead of `N`. Each BFS walks the reverse call graph up to depth 5 (the default `DEFAULT_MAX_TEST_SEARCH_DEPTH`), visiting hundreds of nodes in a typical codebase. The `reverse_bfs` result (ancestor HashMap) contains all the information both consumers need: `compute_hints_with_graph` counts test chunks in ancestors, and `find_affected_tests_with_chunks` extracts test info from ancestors.
+- **Suggested fix:** Factor out a shared `compute_impact_with_tests()` that calls `reverse_bfs` once per target and returns both the `RiskScore` and the `Vec<TestInfo>`. Alternatively, cache the BFS results in a HashMap keyed by target name, since the targets are the same in both calls.
 
-#### PERF-25: `dispatch_context` abs_path lookup always fails — wasted SQLite query
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1268-1273
-- **Description:** Already noted in PB-15 (Platform Behavior), but quantifying the performance impact: `dispatch_context` constructs an absolute path (`/mnt/c/Projects/cq/src/foo.rs`) and calls `store.get_chunks_by_origin(&origin)`, which always returns empty because origins are stored as relative paths (`src/foo.rs`). The function then falls through to a second query with the relative path. Every `cqs context` and batch `context` command issues a wasted SQLite query that scans the origin index and returns 0 rows. In a pipeline like `search "query" | context`, 50 wasted queries are issued.
-- **Suggested fix:** Remove the absolute path attempt. Query directly with the relative `path` argument: `let chunks = ctx.store.get_chunks_by_origin(path)?;`.
-
-#### PERF-26: `suggest_notes` deduplication uses O(n*m) substring matching
-- **Difficulty:** easy
-- **Location:** src/suggest.rs:68-73
-- **Description:** The deduplication loop checks each suggestion against every existing note text with bidirectional `contains()`. With S suggestions and N existing notes, this is O(S*N) string comparisons. For each comparison, `contains()` is O(len_a * len_b) worst case. In practice, S is typically <20 and N <100, so this is bounded — but the pattern scales poorly if note counts grow. More importantly, the substring check `s.text.contains(existing_text)` will false-positive on short existing note texts (e.g., a note "CUDA" would match any suggestion containing "CUDA" as a substring, even if unrelated).
-- **Suggested fix:** For the current scale, the O(n*m) is acceptable. Consider using exact text match or normalized prefix match instead of bidirectional `contains()` to reduce false positives. If note counts grow beyond ~500, switch to a `HashSet<&str>` for exact-text dedup and skip substring matching.
-
-#### PERF-27: `dispatch_drift` opens reference store without caching — not reused across pipeline stages
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1750-1770
-- **Description:** `dispatch_drift` loads the config, finds the reference config, and opens the reference store (`cqs::Store::open(&ref_db)`) on every call. Unlike `get_ref()` (which caches `ReferenceIndex` in `BatchContext::refs`), the drift path opens a raw `Store` each time. In a pipeline like `search "query" | drift ref-name`, each of the 50 fan-out dispatches opens a separate SQLite connection to the reference database. `Store::open` creates a new tokio runtime + sqlx connection pool (~5-10ms per open).
-- **Suggested fix:** Either cache the reference `Store` in `BatchContext` (alongside the existing `ReferenceIndex` cache), or use the `ReferenceIndex` path which already has `store` accessible. Since `detect_drift` takes `&Store` directly, add a `ref_stores: RefCell<HashMap<String, Store>>` field to `BatchContext`.
-
-#### PERF-28: `onboard` calls `scout()` with `limit=10` which internally runs full search + hints computation
-- **Difficulty:** easy
-- **Location:** src/onboard.rs:99
-- **Description:** `onboard` calls `scout(store, embedder, concept, root, 10)` which runs a full search, then computes hints (callers + tests) for each result, and groups by file. The `onboard` function only uses the result to pick an entry point name+file (via `pick_entry_point`). It doesn't use the hints, caller counts, test counts, or staleness information computed by scout. Scout internally calls `compute_hints` which issues 2 SQLite queries per chunk (caller count + test count), plus `check_origins_stale` for staleness. For 10 results, this is ~20+ unnecessary SQLite queries.
-- **Suggested fix:** Either (a) use a lightweight search instead of `scout` — `store.search_filtered()` returns `SearchResult` with file/name/score, enough for `pick_entry_point`, or (b) add a `scout_lite` variant that skips hints/staleness computation. The entry point picker only needs: chunk name, file, chunk_type, role classification, and score.
-
-## Data Safety
-
-#### DS-13: Type edges upserted outside chunk transaction — crash leaves inconsistent state
+#### PF-3: `scout_core` calls `compute_hints_with_graph` per chunk — each does `reverse_bfs` up to depth 3
 - **Difficulty:** medium
-- **Location:** src/cli/commands/index.rs:196, src/cli/watch.rs:403
-- **Description:** The indexing pipeline (`run_index_pipeline`) writes chunks + calls in a single transaction via `upsert_chunks_and_calls`. Type edges are extracted and upserted in a completely separate pass (`extract_relationships` in index.rs, or the loop in watch.rs) *after* the pipeline completes. If the process crashes between pipeline completion and relationship extraction, chunks exist in the DB with stale or missing type edges. The next `cqs index` run sees mtime is current and skips reindexing, leaving type edges permanently stale until `--force`. The `INSERT OR REPLACE` in `upsert_chunks_and_calls` triggers `ON DELETE CASCADE`, removing old type edges for replaced chunks — so after the pipeline commits but before `extract_relationships` runs, the DB has chunks with *no* type edges. Queries like `get_types_used_by` return empty during this window and permanently if the process crashes before the second pass.
-- **Suggested fix:** Either (1) incorporate type edge extraction into the pipeline's writer stage so chunks + calls + type edges are a single transaction, or (2) track type-edge staleness separately (e.g., a per-origin metadata flag) so stale type edges are re-extracted on the next run without `--force`. Option (2) is simpler since it doesn't require the pipeline to carry type refs through the embedding stages.
+- **Location:** `src/scout.rs:228-233` (inside the file group building loop)
+- **Description:** For each search result chunk (up to 15 by default), `scout_core` calls `compute_hints_with_graph()` which calls `reverse_bfs(graph, name, DEFAULT_MAX_TEST_SEARCH_DEPTH)`. The default test search depth is 3. Each BFS explores the reverse call graph from that function, visiting all ancestors up to depth 3 and then scanning all test chunks against the ancestor set. With 15 search results, that's 15 independent BFS traversals. The BFS results overlap significantly when multiple search results are in the same call subgraph (e.g., `foo()` calls `bar()` calls `baz()` — all 3 results share much of their ancestor trees). A multi-source BFS (`reverse_bfs_multi`, which already exists at `src/impact/bfs.rs:40`) would traverse shared ancestors once instead of per-source.
+- **Suggested fix:** Use `reverse_bfs_multi` from `src/impact/bfs.rs:40` for all chunks at once, then derive per-chunk caller/test counts from the combined result. This requires tracking which ancestors belong to which source, which the current `reverse_bfs_multi` doesn't do — but even a simple cache of "already visited" nodes across calls would help. Alternatively, accept the per-chunk BFS as a pragmatic trade-off since `N=15` is small and BFS depth is 3.
 
-#### DS-14: `upsert_type_edges_for_file` reads chunk IDs outside the transaction — TOCTOU race
-- **Difficulty:** medium
-- **Location:** src/store/types.rs:117-123, 158
-- **Description:** `upsert_type_edges_for_file` queries chunk IDs from the `chunks` table (line 118-123) using `&self.pool` (auto-commit read), then later opens a transaction (line 158) for the DELETE + INSERT. Between the read and the transaction, a concurrent process (`cqs watch` or another `cqs index`) could delete or replace the chunks, causing the resolved IDs to be stale. The INSERT would then reference a `source_chunk_id` that no longer exists, causing an FK violation error. Even under WAL mode, the read and the later transaction are separate snapshots — WAL provides snapshot isolation per-statement or per-transaction, not across separate operations.
-- **Suggested fix:** Move the chunk ID resolution query inside the transaction: begin `tx` before the `SELECT id, name, line_start, window_idx FROM chunks ...` query, and use `&mut *tx` instead of `&self.pool`. This provides consistent read + write within a single snapshot.
-
-#### DS-15: Batch `notes_cache` and `audit_state` never invalidated during session
+#### PF-4: Waterfall budgeting clones all code content strings unnecessarily
 - **Difficulty:** easy
-- **Location:** src/cli/batch.rs:108-123, 102-105
-- **Description:** `BatchContext::notes()` and `audit_state()` cache via `OnceLock` — parsed once on first access, never refreshed. If a user modifies `docs/notes.toml` or toggles audit mode in another terminal while a batch session is active, the batch session uses stale data for its entire lifetime. This affects: (1) `dispatch_notes` returning stale note lists, (2) note injection in `dispatch_read`/`dispatch_read_focused`, (3) audit mode detection controlling whether notes are shown in search results. The batch session can run indefinitely (it reads from stdin until EOF/quit), so staleness could accumulate significantly.
-- **Suggested fix:** Document that batch sessions use snapshot-at-start for notes/audit state and changes require restarting the batch session. This is acceptable since batch is designed as a short-lived stdin pipe, not a long-running daemon. Alternatively, add an mtime check on each access and re-parse if the file changed.
+- **Location:** `src/cli/commands/task.rs:107`
+- **Description:** `let code_texts: Vec<String> = result.code.iter().map(|c| c.content.clone()).collect()` clones every `GatheredChunk.content` string into a new `Vec<String>`, then immediately takes `&str` references from those clones for `count_tokens_batch`. The `content` field is already a `String` on `GatheredChunk` — `c.content.as_str()` provides a `&str` directly. Code chunks can be hundreds of lines, so cloning all of them allocates significant memory (total content size can be 10-100KB). The same pattern repeats for `group_texts` (line 85-96) where it's necessary because the strings are constructed via `join()`, but for `code_texts` it's pure waste.
+- **Suggested fix:** Replace with `let code_text_refs: Vec<&str> = result.code.iter().map(|c| c.content.as_str()).collect()` and remove the intermediate `Vec<String>`. Pass `&code_text_refs` directly to `count_tokens_batch`.
 
-#### DS-16: `upsert_type_edges_for_file` deletes type edges for ALL file chunks, not just those being updated
+#### PF-5: `find_relevant_notes` is O(N*M*F) — notes * mentions * result_files
 - **Difficulty:** easy
-- **Location:** src/store/types.rs:160-176
-- **Description:** The DELETE at line 160-176 removes type edges for ALL resolved chunk IDs in the file (`name_to_id.values()`), not just those in `chunk_type_refs`. If `chunk_type_refs` contains only a subset of the file's chunks (e.g., a partial re-extraction), type edges for omitted chunks are deleted and never re-inserted. Both current callers (`index.rs` and `watch.rs`) use `parse_file_relationships` which returns all chunks, so this is safe today. But the function's contract is implicit — a future caller passing partial type refs would silently lose type edges for omitted chunks with no error or warning.
-- **Suggested fix:** Either (1) change the DELETE to only target chunk IDs that appear in the `edges` vec rather than all resolved IDs, or (2) add a doc comment explicitly stating the contract: "`chunk_type_refs` must contain ALL chunks in the file — partial updates will delete type edges for omitted chunks."
+- **Location:** `src/scout.rs:368-375`
+- **Description:** `find_relevant_notes` iterates all notes, and for each note iterates all mentions, and for each mention iterates all result files calling `note_mention_matches_file`. With `N` notes, `M` average mentions per note, and `F` result files, this is O(N*M*F). The `note_mention_matches_file` function does two `String::replace('\\', "/")` allocations per call. In typical use, `N` < 50 notes, `M` < 3 mentions, `F` < 10 files, so total iterations < 1500 — well within acceptable bounds. However, the backslash replacement allocates on every call even on Linux where backslashes never appear.
+- **Suggested fix:** Low priority. The scale is acceptable for typical codebase sizes. If it ever becomes a concern: pre-normalize the result_files set and mentions once before the loop, and use a suffix trie or reverse index for O(1) lookups. For now, document the O(N*M*F) complexity.
 
-#### DS-17: `BatchContext::refs` uses `RefCell` — not `Sync`, blocks future parallelization of fan-out
+#### PF-6: `task_to_json` constructs full JSON then batch handler overwrites `code` key — wasted serialization
 - **Difficulty:** easy
-- **Location:** src/cli/batch.rs:36
-- **Description:** `refs: RefCell<HashMap<String, ReferenceIndex>>` is `!Sync`. `BatchContext` is currently single-threaded (batch stdin loop), so this is safe today. However, all other cached fields use `OnceLock` (which is `Sync`), making `RefCell` the odd one out. If pipeline fan-out (line 2056-2073) were ever parallelized with rayon, concurrent borrows of `RefCell` would panic at runtime. The struct also can't be wrapped in `Arc` for sharing — the compiler would reject it due to `RefCell: !Sync`.
-- **Suggested fix:** Replace `RefCell<HashMap<String, ReferenceIndex>>` with `std::sync::RwLock<HashMap<String, ReferenceIndex>>`. The performance cost of RwLock vs RefCell is negligible for a reference cache accessed at most once per `--ref` command.
+- **Location:** `src/cli/batch/handlers.rs:1457` and `src/cli/batch/handlers.rs:1490`
+- **Description:** In `dispatch_task`, when `--tokens` is specified, the handler first calls `cqs::task_to_json(&result, &ctx.root)` at line 1457 which serializes ALL code chunks into JSON. Then at line 1490, `json["code"] = serde_json::json!(code_json)` overwrites the code array with the token-budgeted subset. The original serialization of all code chunks (which can be the largest section by far — hundreds of lines of content per chunk) is thrown away. The code content strings are serialized to `serde_json::Value` then immediately discarded.
+- **Suggested fix:** When `tokens` is `Some`, build the JSON manually instead of calling `task_to_json` first. Or add a `task_to_json_without_code()` variant. Since CQ-3 already covers the broader `dispatch_task` architecture issue, this is a subset concern — fixing CQ-3 would likely fix this too.
 
-#### DS-18: Window priority in `upsert_type_edges_for_file` depends on undefined row order
-- **Difficulty:** easy
-- **Location:** src/store/types.rs:118-134
-- **Description:** The chunk ID resolution query (line 118) has no `ORDER BY`. The HashMap insertion loop (line 128-134) sets `is_primary = window_idx.is_none() || *window_idx == Some(0)` and inserts when `is_primary || !name_to_id.contains_key(&key)`. For a chunk that has both windowed (window_idx=0) and non-windowed (window_idx=NULL) rows, the correct ID to use is the non-windowed row (it's the logical parent). But without `ORDER BY`, SQLite may return rows in any order. If the non-windowed row appears first, the windowed row (also `is_primary`) overwrites it with a different chunk ID. In practice, the non-windowed row usually doesn't coexist with windowed rows (windowing replaces the parent), but if index repair or partial re-indexing creates both, the wrong ID gets selected nondeterministically.
-- **Suggested fix:** Add `ORDER BY window_idx ASC NULLS LAST` to the query so non-windowed chunks (NULL) are processed last and win the HashMap insertion. Alternatively, in the loop, prefer NULL over `Some(0)`: only overwrite if the incoming row has `window_idx.is_none()` and the existing entry was `Some(0)`.
+## Red Team
 
-#### DS-19: `get_embeddings_by_hashes` returns partial results silently — callers can't detect store errors
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:656-661
-- **Description:** When a batch SQL query fails inside `get_embeddings_by_hashes`, the error is logged at `warn` and the function `continue`s to the next batch, returning whatever was fetched so far. The return type `HashMap<String, Embedding>` (no `Result`) makes it impossible for the caller to distinguish "embedding not cached" from "cache lookup failed due to DB error." The sole caller (`prepare_for_embedding` in pipeline.rs:139) treats missing entries as "needs new embedding," which wastes GPU/CPU time re-embedding chunks that may already be cached. More importantly, a persistent DB error (corruption, locking) causes silent re-embedding of every batch without any escalation.
-- **Suggested fix:** Change return type to `Result<HashMap<String, Embedding>, StoreError>`. The pipeline caller can then decide to warn-and-continue (preserving current degraded behavior) while having the option to detect and escalate persistent failures.
+### Target 1: Batch Pipeline Bypass
 
-## Security
+#### RT-INJ-1: Pipeline boundary is clean — no bypass via shell-words quoting
+- **Severity:** n/a (no finding)
+- **Location:** `src/cli/batch/mod.rs:293-310`, `src/cli/batch/pipeline.rs:101-114,312`
+- **Attack vector:** Batch input containing `|` inside quoted strings or embedded in tokens.
+- **PoC:** `shell_words::split('search "error|handling"')` produces `["search", "error|handling"]`. `has_pipe_token` (line 312) checks for standalone `"|"` tokens only. Embedded `|` inside tokens does not trigger pipeline mode. `split_tokens_by_pipe` splits on exact `"|"` match. An attacker cannot inject a pipeline stage through quoted input — the pipe must be a standalone whitespace-separated token. All pipeline stages after stage 0 are validated against `PIPEABLE_COMMANDS` whitelist (line 137-146), and quit/exit/help are explicitly blocked (line 149-158).
+- **Impact:** None — stated protection is correct.
+- **Suggested mitigation:** None needed.
 
-#### SEC-12: Batch stdin has no line length limit — unbounded memory allocation via single line
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:2168
-- **Description:** `stdin.lock().lines()` reads each line fully into memory with no upper bound on line length. Rust's `BufReader::lines()` will attempt to allocate memory for the entire line. A malicious or accidental input (e.g., a 4GB line piped into `cqs batch`) will cause unbounded memory allocation, potentially OOM-killing the process. While `cqs batch` is primarily consumed by Claude Code agents (not untrusted users), the tool does accept arbitrary stdin. The pipeline fan-out has a `PIPELINE_FAN_OUT_LIMIT` of 50 to prevent dispatch explosion, but there is no equivalent guard on raw input line size. Other commands have size guards: `dispatch_read` has a 10MB file limit, `rewrite_notes_file` has a 10MB guard, `Config::load_file` has a 1MB guard.
-- **Suggested fix:** Add a line length check after reading: `if line.len() > MAX_BATCH_LINE_LEN { emit error JSON and continue; }` after the `Ok(l)` match arm, with `const MAX_BATCH_LINE_LEN: usize = 1_048_576;` (1MB).
+### Target 2: FTS5 Bypass
 
-#### SEC-13: Drift command opens reference store read-write instead of read-only
-- **Difficulty:** easy
-- **Location:** src/cli/commands/drift.rs:46, src/cli/batch.rs:1770
-- **Description:** Both drift implementations use `Store::open(&ref_db)` which creates a connection with `?mode=rwc` (read-write-create). The drift command only reads from both stores — it never writes. Using `mode=rwc` means: (1) if the reference path points to a non-existent location, an empty SQLite database is silently created there, and (2) the reference store is opened with write access unnecessarily. The `ReferenceConfig.path` comes from `.cqs.toml` which is user-editable. While `ref add` safely constructs paths via `ref_path()`, a hand-edited config could contain any path. Combined with `mode=rwc`, this could create empty databases at unexpected locations. `Store::open_readonly()` exists and is already used for reference stores in `load_references()`.
-- **Suggested fix:** Change `Store::open(&ref_db)` to `Store::open_readonly(&ref_db)` in both `src/cli/commands/drift.rs:46` and `src/cli/batch.rs:1770`. This follows the principle of least privilege and matches the `load_references()` pattern.
+#### RT-INJ-2: All FTS5 MATCH code paths are sanitized — no bypass found
+- **Severity:** n/a (no finding)
+- **Location:** `src/search.rs:535-536`, `src/store/mod.rs:559,591`, `src/store/chunks.rs:1064`, `src/store/notes.rs:52`
+- **Attack vector:** Searched for any code path reaching `chunks_fts MATCH` or `notes_fts MATCH` that bypasses `sanitize_fts_query(normalize_for_fts(...))`. Found 5 MATCH callsites, all sanitized:
+  1. `search_filtered` (search.rs:548): sanitized at line 535-536.
+  2. `search_fts` (store/mod.rs:570): sanitized at line 559.
+  3. `search_by_name` (store/mod.rs:605): sanitized at line 591.
+  4. `batch_search_by_name` (store/chunks.rs:1084): sanitized at line 1064.
+  5. `insert_note_with_fts` (store/notes.rs:52): INSERT path (not MATCH), FTS injection n/a.
 
-#### SEC-14: Batch `--limit` not clamped on Similar, Gather, Scout, Related — allows resource amplification
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:248, 264, 320, 355
-- **Description:** The `--limit` parameter on batch `Search` is clamped to `1..100` at dispatch time (line 571), but other commands accept unclamped limits: `Similar` (default 5, no max), `Gather` (default 10, no max), `Related` (default 5, no max), `Scout` (default 10, no max). A user could pass `similar func --limit 999999` in batch mode, causing large allocations and many SQLite queries. In a pipeline, fan-out of 50 dispatches each requesting huge results amplifies memory usage. The `Gather` command's `expand` is also unclamped in batch (default 1, no max enforced at parse time), though the library caps `max_expanded_nodes` at 100.
-- **Suggested fix:** Add `.clamp(1, 100)` at dispatch time for `dispatch_similar`, `dispatch_gather`, `dispatch_related`, and `dispatch_scout`, matching the pattern in `dispatch_search` (line 571). For `expand`, add `.clamp(0, 5)` at dispatch time.
+  New v0.14.0 code paths (`scout_core` at scout.rs:162, `task()` via scout_core) reach FTS only through `store.search_filtered()`, which sanitizes internally.
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
 
-#### SEC-15: `dispatch_read` TOCTOU between canonicalize check and file read
-- **Difficulty:** hard
-- **Location:** src/cli/batch.rs:1447-1471, src/cli/commands/read.rs:27-52
-- **Description:** Both `dispatch_read` and `cmd_read` have a TOCTOU (time-of-check/time-of-use) window: (1) `file_path.exists()`, (2) `dunce::canonicalize` resolves the real path, (3) `canonical.starts_with(&project_canonical)` validates containment, (4) `read_to_string(&file_path)` reads the file. Between steps 3 and 4, any directory component in `file_path` could be replaced with a symlink pointing outside the project. The `canonicalize` check resolves at check time, but `read_to_string` resolves again at read time — if the target changes between these calls, the read could access files outside the project root. Practical exploitation requires local filesystem access and precise timing (microsecond window). Risk is low for a single-user dev tool.
-- **Suggested fix:** Read via the canonical path instead of the original: change `read_to_string(&file_path)` to `read_to_string(&canonical)`. This eliminates the TOCTOU by using the already-resolved path for the actual read.
+### Target 3: TOML Injection
 
-## Resource Management
+#### RT-INJ-3: TOML serialization correctly handles metacharacters — no injection possible
+- **Severity:** n/a (no finding)
+- **Location:** `src/note.rs:237-245` (`rewrite_notes_file`)
+- **Attack vector:** Note text containing TOML metacharacters: `"""`, `[[note]]`, `\n[note]\nsentiment = 1`.
+- **PoC:** `cmd_notes_add` creates a `NoteEntry { text: text.to_string(), ... }`. `rewrite_notes_file` calls `toml::to_string_pretty(&file)` via serde `Serialize` derive on `NoteEntry`/`NoteFile`. The `toml` crate serializer properly escapes all metacharacters: strings containing control characters, `"`, `\`, newlines use basic string escaping. Triple-quote `"""` in note text is serialized as `"\"\"\"" ` (each quote escaped). The fuzz tests at note.rs:496-533 (proptest) confirm `parse_notes_str` never panics on arbitrary input, and the round-trip test `test_rewrite_update_note` verifies serialization fidelity. Note text is capped at 2000 bytes (cli/commands/notes.rs:168).
+- **Impact:** None — `toml::to_string_pretty` is a safe serializer.
+- **Suggested mitigation:** None needed.
 
-#### RM-16: `get_ref` loads ALL reference stores to find one — drops the rest
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:76-78
-- **Description:** `BatchContext::get_ref(name)` calls `load_references(&config.references)` which opens a Store (SQLite pool + tokio runtime) and loads an HNSW index for **every** configured reference, then iterates to find the one matching `name` and discards the rest. Each unwanted `ReferenceIndex` holds a `Store` with a SQLite connection pool plus an optional HNSW index loaded from disk. With 3 configured references, requesting "ref-A" opens all 3 databases (~100ms each), loads 3 HNSW files, then drops 2 stores and 2 indexes immediately. The cache in `self.refs` only prevents re-loading already-seen names — each new reference name triggers another load-all-and-filter.
-- **Suggested fix:** Add a `load_reference_by_name(configs, name)` function that filters `configs` to the single matching entry before calling `Store::open_readonly` + `HnswIndex::try_load`. Alternatively, change `get_ref` to iterate configs, find the matching one, and open only that reference.
+### Target 4: Ref Name Injection
 
-#### RM-17: `dispatch_drift` opens fresh Store per call — bypasses BatchContext reference cache
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:1770
-- **Description:** `dispatch_drift` calls `cqs::Store::open(&ref_db)?` directly for each drift command, creating a new Store (SQLite pool + tokio runtime) per invocation. In batch mode, running `drift ref1` 10 times opens 10 separate database connections. `BatchContext` already caches reference stores via `get_ref()`/`borrow_ref()` — but `dispatch_drift` bypasses this entirely. Each `Store::open` creates a new tokio runtime + sqlx connection pool (~5-10ms overhead). Also loads `Config` from disk per call (line 1750). (Overlaps with PERF-27 — same root cause.)
-- **Suggested fix:** Use `ctx.get_ref(reference)?` and `ctx.borrow_ref(reference)` to get the cached reference store, then pass `&ref_idx.store` to `detect_drift()`. This is exactly the pattern `dispatch_gather` uses (lines 908-909).
+#### RT-INJ-4: `validate_ref_name` does not reject null bytes
+- **Severity:** low
+- **Location:** `src/reference.rs:209-220`
+- **Attack vector:** `cqs ref add "valid\x00evil" /path/to/source`
+- **PoC:**
+  1. `validate_ref_name("valid\x00evil")` — passes all checks (no `/`, `\`, `..`, `.`).
+  2. `ref_path` returns `~/.local/share/cqs/refs/valid\x00evil`.
+  3. `std::fs::create_dir_all` calls `libc::mkdir` via `CString::new()`, which returns `Err(NulError)` for null-containing paths. The directory creation fails.
+  4. However, the error message is confusing ("nul byte found in string"), and the name may have already been checked against config entries (cli/commands/reference.rs:74) before the filesystem operation fails.
+  5. Practical exploitability is very low: the kernel's `execve` uses C strings, so CLI arguments cannot contain null bytes. Only programmatic callers (batch mode or library) could craft this input. Batch mode's `gather --ref "name"` passes through `shell_words::split` which preserves null bytes in Rust strings, but the config lookup at `get_ref` would fail with "not found" since no config entry has a null-byte name.
+- **Impact:** Confusing error message. No filesystem or data impact.
+- **Suggested mitigation:** Add `name.contains('\0')` to `validate_ref_name` for defense-in-depth.
 
-#### RM-18: Reranker model not cached in BatchContext — ~91MB ONNX session re-created per reranked search
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:623
-- **Description:** Each `dispatch_search` with `--rerank` calls `cqs::Reranker::new()` which creates a new Reranker struct. On first `rerank()` call, this loads the cross-encoder ONNX session (~91MB) and tokenizer. Since a new Reranker is created per search, the lazy initialization provides no benefit — the model is loaded, used once, and dropped. 10 reranked searches in batch = 10 ONNX session loads (~200ms each) and ~91MB peak memory allocated and freed repeatedly, fragmenting the heap.
-- **Suggested fix:** Add a `reranker: OnceLock<cqs::Reranker>` to `BatchContext`, initialized on first `--rerank` use. All subsequent reranked searches reuse the same instance.
+#### RT-INJ-5: Batch `get_ref` does not call `validate_ref_name` — but ref name is a config lookup key, not a filesystem path
+- **Severity:** n/a (no finding after analysis)
+- **Location:** `src/cli/batch/mod.rs:91-122`
+- **Attack vector:** `gather "query" --ref "../../../etc"` in batch stdin.
+- **PoC:** `ctx.get_ref("../../../etc")` filters `config.references` by `r.name == name`. Since reference names in config are written by `cqs ref add` (which validates via `ref_path` -> `validate_ref_name`), no config entry can have traversal characters. The ref name is never used as a filesystem path in the batch path — `load_references` uses the config's `path` field, not the name. Config files are trusted per the threat model.
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
 
-#### RM-19: `semantic_diff` loads all chunk identities + all matched embeddings with no size cap
-- **Difficulty:** medium
-- **Location:** src/diff.rs:76-77, 138-139
-- **Description:** `semantic_diff()` calls `all_chunk_identities_filtered()` on both stores (loading all rows), then batch-fetches embeddings for all matched pairs. For cqs (~1800 chunks), peak is ~6MB. But `all_chunk_identities_filtered` has no row limit, unlike `get_call_graph` and `get_type_graph` which cap at 500K. A reference store indexing a large monorepo (50K+ chunks) would load 50K identity structs plus 50K embeddings (769 x 4 bytes = ~3KB each = ~150MB) simultaneously. Two such stores = ~300MB peak. No streaming or chunked comparison.
-- **Suggested fix:** Add a `MAX_DIFF_CHUNKS` cap (e.g., 100K) to `all_chunk_identities_filtered` with a warning when the cap is hit. Matches the precedent from `get_call_graph` (500K) and `get_type_graph` (500K).
+### Target 5: shell-words Edge Cases
 
-#### RM-20: Pipeline intermediate merge collects unbounded names before downstream fan-out cap
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:2090-2098
-- **Description:** In intermediate pipeline stages, `merged_names` collects names from all per-name dispatch results without a cap. Each of 50 dispatches can return results with many names. The downstream `PIPELINE_FAN_OUT_LIMIT` (50) is applied at the next stage's dispatch, not during collection. For `search | callers | test-map`, the callers stage produces up to 50 x N callers. All are inserted into `merged_names` Vec and `merged_seen` HashSet, then only 50 survive to the next stage. Memory is small (short strings) but the work is wasted.
-- **Suggested fix:** Cap `merged_names` at `PIPELINE_FAN_OUT_LIMIT` during collection. Add early break: `if merged_names.len() >= PIPELINE_FAN_OUT_LIMIT { break; }` in the merge loop.
+#### RT-INJ-6: shell-words edge cases handled correctly — no bypass
+- **Severity:** n/a (no finding)
+- **Location:** `src/cli/batch/mod.rs:293-302`
+- **Attack vector:** Unbalanced quotes, null bytes, extremely long tokens.
+- **PoC:** `shell_words::split("search \"unterminated")` returns `Err(...)`, caught at line 296, error logged. Null bytes in Rust strings are valid UTF-8 and pass through shell-words to clap, then to parameterized SQL (safe) or embedding model (safe). The 1MB line limit (MAX_BATCH_LINE_LEN at line 33) bounds token sizes. `shell_words::split` is O(n) — no ReDoS.
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
 
-#### RM-21: `Config::load` called per batch `get_ref` and `dispatch_drift` — redundant disk I/O per command
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:76 (get_ref), src/cli/batch.rs:1750 (dispatch_drift)
-- **Description:** Both `get_ref` and `dispatch_drift` call `cqs::config::Config::load(&self.root)` per invocation, reading and parsing the config file from disk each time. In batch mode with multiple reference commands, the config is re-read per command.
-- **Suggested fix:** Add `config: OnceLock<cqs::config::Config>` to `BatchContext`. Load once on first use.
+### Target 6: CQS_PDF_SCRIPT
 
-#### RM-22: Batch REPL holds CAGRA GPU index for entire session — GPU memory never released
-- **Difficulty:** medium
-- **Location:** src/cli/batch.rs:35, 134-163
-- **Description:** `BatchContext::hnsw` is `OnceLock<Option<Box<dyn VectorIndex>>>`. When a CAGRA GPU index is built (5000+ chunks), it allocates GPU memory proportional to vector count (5K x 769 x 4 = ~15MB on GPU). For 50K+ chunks, GPU memory reaches 100MB+. The HNSW fallback holds an in-memory graph. Neither is released until the batch process exits. `OnceLock` cannot be reset. No mechanism exists for users to release GPU memory during long sessions.
-- **Suggested fix:** Low priority — documented design. If needed, replace `OnceLock` with `Mutex<Option<...>>` and add a `drop-cache` batch command. Document memory expectations in `cqs batch --help`.
+#### RT-INJ-7: `CQS_PDF_SCRIPT` script path not validated beyond existence check — prior SEC-8 extension check not implemented
+- **Severity:** low (documented attack surface)
+- **Location:** `src/convert/pdf.rs:54-63`
+- **Attack vector:** `CQS_PDF_SCRIPT=/tmp/malicious.sh cqs convert document.pdf`
+- **PoC:**
+  1. `find_pdf_script()` reads env var at line 56.
+  2. Line 57: `tracing::warn!` logs the path (SEC-8 fix from v0.12.4).
+  3. Lines 58-60: Only checks `p.exists()`. No extension validation, no canonicalization.
+  4. `pdf_to_markdown` passes the script to `Command::new(&python).args([&script, ...])` (line 21).
+  5. The python interpreter receives the script path as an argument and executes it.
+  6. A non-Python script (e.g., `/tmp/malicious.sh`) would cause Python to fail with a syntax error — Python cannot execute shell scripts. So the attack is limited to Python scripts.
+  7. However: if `find_python()` returned a symlink to a different interpreter, the constraint changes. `find_python` (line 88) tries `python3` then `python` from `$PATH` — both under user control (environment is trusted).
 
-#### RM-23: `dispatch_search` audit mode loaded from disk — bypasses `ctx.audit_state()` cache
-- **Difficulty:** easy
-- **Location:** src/cli/batch.rs:586
-- **Description:** Already reported as CQ-13 (Code Quality). `dispatch_search` reads audit state from disk per call instead of using the cached `ctx.audit_state()`. Duplicate — included for resource management completeness.
-- **Suggested fix:** Replace with `ctx.audit_state()`.
+  **Gap from prior audit:** SEC-8 recommended "verify `.py` extension" — only the warning was implemented, not the extension check.
+- **Impact:** Arbitrary Python code execution, but only when the user's environment is controlled by the attacker (trusted boundary).
+- **Suggested mitigation:** Add a soft warning (not a block) for non-`.py` extensions, completing the SEC-8 recommendation: `if !p.extension().is_some_and(|e| e == "py") { tracing::warn!("CQS_PDF_SCRIPT does not have .py extension — ensure this is intentional"); }`.
 
-#### RM-24: `onboard` allocates full content for all callees + callers — high memory for deep graphs
-- **Difficulty:** medium
-- **Location:** src/onboard.rs:159, 167-177
-- **Description:** `fetch_and_assemble` fetches full `GatheredChunk` structs with `content` for every callee (up to 100 via `max_expanded_nodes`) and every caller (up to 50). Each function body is then cloned into `OnboardEntry.content` via `gathered_to_onboard`. Peak: ~200 function content strings in memory, ~200KB-1MB for a single `onboard` call. In batch fan-out, 50 concurrent onboard calls could hold up to 50MB of content. Currently bounded since batch is single-threaded, but worth noting.
-- **Suggested fix:** No immediate fix needed — bounded and manageable. If parallelized, consider a content-free intermediate representation or streaming assembly.
+### Target 7: Glob ReDoS
+
+#### RT-INJ-8: `globset` is not vulnerable to ReDoS — bounded by design
+- **Severity:** n/a (no finding)
+- **Location:** `src/search.rs:235-243`
+- **Attack vector:** Pathological glob patterns via `--path`.
+- **PoC:** The `globset` crate converts glob patterns into DFA or bounded NFA using `regex-automata`, which has explicit ReDoS protections (DFA state limits, bounded NFA simulation). Invalid patterns are rejected at `Glob::new()` time, caught by `compile_glob_filter` which logs a warning and returns `None`. Confirmed by test at search.rs:1005-1008.
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+### Additional Finding
+
+#### RT-INJ-9: `cmd_ref_add` validates name late — confusing error on invalid ref names
+- **Severity:** low
+- **Location:** `src/cli/commands/reference.rs:64-89`
+- **Attack vector:** `cqs ref add "foo/bar" /path/to/source`
+- **PoC:**
+  1. `cmd_ref_add` receives name `"foo/bar"` (line 64).
+  2. Lines 74-80: Duplicate check against config — passes (no existing "foo/bar").
+  3. Lines 83-84: Source path canonicalization — succeeds.
+  4. Line 87: `reference::ref_path("foo/bar")` calls `validate_ref_name("foo/bar")` which returns `Err` (contains `/`). `ref_path` returns `None`.
+  5. Line 88: `ok_or_else` produces error "Could not determine reference storage directory".
+
+  The error message is misleading — it says "could not determine storage directory" when the actual problem is the invalid ref name. The user doesn't know what's wrong.
+- **Impact:** UX issue only — no security impact. The name IS rejected, just with a confusing error.
+- **Suggested mitigation:** Call `reference::validate_ref_name(name)?` at the top of `cmd_ref_add` (before duplicate check) to fail fast with a clear error message like "Reference name cannot contain '/', '\\', or '..'".
+
+### Target 8: Filesystem Boundary — Path Traversal via `cqs read`
+
+#### RT-FS-1: `validate_and_read_file` canonicalize+starts_with is applied on ALL file-reading code paths — no bypass found
+- **Severity:** n/a (no finding)
+- **Location:** `src/cli/commands/read.rs:27-56`
+- **Attack vector:** Attempted to find any code path that reaches `std::fs::read_to_string` with user-controlled path input without passing through the `canonicalize+starts_with` check.
+- **PoC:** Exhaustive check of all `std::fs::read_to_string` and `std::fs::read` callsites:
+  1. **`cqs read <path>`** (cli/commands/read.rs:273): calls `validate_and_read_file(&root, path)` — protected.
+  2. **Batch `read <path>`** (cli/batch/handlers.rs:1238): calls `validate_and_read_file(&ctx.root, path)` — protected.
+  3. **`cqs read --focus <name>`** (cli/commands/read.rs:306): calls `build_focused_output` which reads from the database via `resolve_target(store, focus)`. No filesystem read of the target — content comes from stored chunks. Not a file read path.
+  4. **Batch `read --focus <name>`** (cli/batch/handlers.rs:1261): same as above, calls `build_focused_output`. No filesystem read.
+  5. **`display.rs:read_context_lines`** (cli/display.rs:34): reads from `root.join(&r.chunk.file)` where `chunk.file` comes from the local DB. The DB is the user's own index — trusted per threat model. Reference results are explicitly excluded from context line reading (display.rs:312,340: `if tagged.source.is_none()`).
+  6. **`query.rs` parent context** (cli/commands/query.rs:688): reads from `root.join(&sr.chunk.file)` — same as display.rs, DB-sourced paths from trusted local index.
+  7. **Indexing paths** (source/filesystem.rs:108, parser/mod.rs:153, parser/calls.rs:225): only called during `cqs index`/`cqs watch`, reads user's own project files. Trusted operation.
+  8. **Convert paths** (convert/mod.rs:113, convert/html.rs:32, convert/chm.rs:122, convert/webhelp.rs:96): reads source documents during explicit user-initiated conversion. CHM extraction has zip-slip containment (chm.rs:54-82).
+  9. **Config/notes/audit** (config.rs, note.rs, audit.rs): reads well-known config files at fixed paths. Not user-path-controlled.
+- **Impact:** None. The stated protection covers all user-facing file read paths.
+- **Suggested mitigation:** None needed.
+
+### Target 9: Filesystem Boundary — Convert Output Escape
+
+#### RT-FS-2: Convert `--output` writes to arbitrary directories — documented and accepted
+- **Severity:** n/a (documented behavior)
+- **Location:** `src/cli/commands/convert.rs:25-26`, `src/convert/mod.rs:230`
+- **Attack vector:** `cqs convert doc.pdf --output /tmp/evil/`
+- **PoC:** SECURITY.md explicitly states: "The output path is not sandboxed beyond normal filesystem permissions." The convert command takes `--output` as a `PathBuf` (convert.rs:25-26) and passes it directly to `ConvertOptions.output_dir` (convert.rs:44). The `finalize_output` function (convert/mod.rs:230) calls `create_dir_all(&opts.output_dir)` and writes the converted file there. No check restricts the output to the project root.
+- **Impact:** The user can write converted Markdown files to any directory they have write access to. This is by design — convert is a utility command, not a sandboxed operation.
+- **Suggested mitigation:** None — this is documented behavior. The user is trusted.
+
+### Target 10: Filesystem Boundary — Reference Index Path Traversal
+
+#### RT-FS-3: Reference name validation blocks traversal — defense in depth with canonicalize
+- **Severity:** n/a (no finding)
+- **Location:** `src/reference.rs:208-226`, `src/cli/commands/reference.rs:205-235`
+- **Attack vector:** `cqs ref add "../../../tmp/evil" /path/to/source`, `cqs ref remove "../../../tmp/evil"`
+- **PoC:**
+  1. **`ref add`**: `ref_path("../../../tmp/evil")` calls `validate_ref_name`, which rejects the name at line 213 (`name.contains("..")`). Returns `None`. `cmd_ref_add` fails at line 88 with "Could not determine reference storage directory". The directory is never created.
+  2. **`ref remove`**: `cmd_ref_remove("../../../tmp/evil")` first calls `remove_reference_from_config`, which looks up `name` in the TOML config. Since `ref add` never stored a `../`-containing name, `remove` returns `false` and bails at line 211. Even if a config entry somehow existed: the deletion path (lines 216-235) constructs `refs_root.join(name)`, then applies `canonicalize+starts_with` at lines 220-224 before `remove_dir_all`. A traversal path that escapes refs_root would be caught and refused with a warning.
+  3. **Null byte in name**: `validate_ref_name("valid\x00evil")` passes validation (RT-INJ-4, separate finding), but `create_dir_all` fails because `CString::new()` rejects null bytes. No filesystem impact.
+  4. **Batch `--ref` parameter**: batch's `get_ref` does a config name lookup, never constructs filesystem paths from the ref name (covered by RT-INJ-5).
+- **Impact:** None. Both name validation and canonicalize+starts_with provide layered defense.
+- **Suggested mitigation:** None needed.
+
+### Target 11: Filesystem Boundary — Function Name as Path Component
+
+#### RT-FS-4: Function names are never used as filesystem path components — no path traversal possible
+- **Severity:** n/a (no finding)
+- **Location:** `src/search.rs:57-84` (`resolve_target`), `src/cli/commands/read.rs:115-258` (`build_focused_output`)
+- **Attack vector:** `cqs read --focus "../../etc/passwd"`, `cqs explain "../../etc/passwd"`
+- **PoC:**
+  1. `resolve_target(store, "../../etc/passwd")` at search.rs:57: parses the target string at line 58, then calls `store.search_by_name(name, 20)` at line 59. This is a parameterized SQL query (`WHERE chunks_fts MATCH ?`). The name is never used as a path component — it's a database lookup key.
+  2. If no matching function exists (likely for "../../etc/passwd"), `resolve_target` returns `Err(StoreError::Runtime("No function found matching..."))`. The command fails safely.
+  3. `build_focused_output` reads all content from the store's `ChunkSummary` (line 195: `chunk.content`), not from disk. Even if a function named `../../etc/passwd` existed in the index, its content would be the indexed source code, not the actual `/etc/passwd` file.
+  4. `cqs explain` follows the same path through `resolve_target`.
+- **Impact:** None. Function names are database lookup keys, never filesystem paths.
+- **Suggested mitigation:** None needed.
+
+### Target 12: Filesystem Boundary — Stale Index Entries as Indirect Reads
+
+#### RT-FS-5: Stale index entries serve stored content, not current file content — no indirect read
+- **Severity:** n/a (no finding)
+- **Location:** `src/cli/commands/read.rs:27-56` (`validate_and_read_file`), `src/cli/commands/read.rs:115-258` (`build_focused_output`)
+- **Attack vector:** Index a file, then replace it with a symlink to `/etc/passwd`. Does `cqs read --focus <function>` serve the symlink target?
+- **PoC:**
+  1. **`cqs read <path>`**: Uses `validate_and_read_file`, which reads from disk. `dunce::canonicalize` resolves symlinks. If the canonical path is outside the project root, the traversal check fails. If a file was replaced by a symlink pointing to `/etc/passwd`, canonicalization resolves to `/etc/passwd`, `starts_with(project_root)` fails. Content is NOT served.
+  2. **`cqs read --focus <function>`**: Uses `build_focused_output`, which reads content from `chunk.content` (database). The content is what was indexed at index time — the original file content. Even if the file has been replaced, the stored content is stale but safe (it's the original code, not the new target). No disk read occurs.
+  3. **`display.rs` context lines**: Reads from disk via `root.join(&chunk.file)`, where `chunk.file` is the stored origin path. If the file was replaced by a symlink, the read might follow it — but this only produces context lines for display (before/after the chunk), not chunk content itself. The file path comes from the user's own DB (trusted). This is a display-only path, not a data extraction path. Note: the TOCTOU documented in SECURITY.md applies here.
+- **Impact:** None. The `cqs read` path validates. The `--focus` path reads from DB. Context lines are display-only from trusted DB paths.
+- **Suggested mitigation:** None needed.
+
+### Adversarial Robustness (RT-RES)
+
+#### RT-RES-1: Pipeline intermediate merge has no fan-out cap — unbounded name extraction before truncation
+- **Severity:** medium
+- **Location:** `src/cli/batch/pipeline.rs:260-275` (intermediate stage merge)
+- **Attack vector:** `search "common term" | callers | callers | callers`
+- **PoC:** Stage 0 returns 15 results. Stage 1 fans out to 50 `callers` calls (capped by `PIPELINE_FAN_OUT_LIMIT=50`). Each returns ~10 callers. The intermediate merge at lines 260-268 collects ALL unique names from ALL 50 dispatch results before applying the fan-out cap. `extract_names` is called on each of 50 results, yielding up to 500 unique names stored in `merged_names` and `merged_seen` (HashSet). These 500 names are wrapped into a synthetic JSON array of 500 objects at line 271-275. The *next* stage's `extract_names` then processes this, and the fan-out cap at line 198 truncates to 50 — but the intermediate data structure held 500 entries. With a 4-stage pipeline: stage results grow to `50 * avg_result_size` per stage, all held in memory before the merge+truncate. For `explain` (which returns full function cards with content), 50 results could be 1-5MB of JSON held simultaneously.
+- **Impact:** Memory spike proportional to `PIPELINE_FAN_OUT_LIMIT * per_call_result_size` per stage. Not unbounded (capped at 50 dispatches), but multi-stage pipelines accumulate. No crash — just higher memory usage than necessary.
+- **Suggested mitigation:** Apply `PIPELINE_FAN_OUT_LIMIT` to the intermediate merge's `merged_names` as well: `if merged_names.len() >= PIPELINE_FAN_OUT_LIMIT { break; }` in the extract loop. Prevents collecting names that will be truncated anyway.
+
+#### RT-RES-2: `gather` BFS correctly bounded — cycles and fan-out both handled
+- **Severity:** none (verified safe)
+- **Location:** `src/gather.rs:143-192` (`bfs_expand`)
+- **Attack vector:** `cqs batch` with `gather "hub function" --expand 10`
+- **PoC:** `bfs_expand` uses `name_scores` HashMap as visited set. `Entry::Vacant` at line 176 ensures nodes are only queued once (or updated if a higher score is found, but not re-queued at line 183). `max_expanded_nodes` (default 200) caps total nodes at lines 162 and 171. Depth limit at line 159. Cycles in the call graph are handled: if A calls B and B calls A, A is inserted first (depth 0), B is found as callee (depth 1), A is already in the map (Occupied entry), so B's neighbor A is skipped. BFS terminates. **Verified safe across all traversal modes (callers, callees, both).**
+- **Impact:** None — correctly bounded.
+- **Suggested mitigation:** None needed. Consider clamping user-supplied `expand_depth` to max 10 in `dispatch_gather` for defense in depth.
+
+#### RT-RES-3: `--tokens 0` causes `index_pack` to emit one item per section despite zero budget
+- **Severity:** low
+- **Location:** `src/cli/commands/task.rs:56` (`index_pack` "always include one" guard)
+- **Attack vector:** `cqs task "anything" --tokens 0 --json`
+- **PoC:** With `budget = 0`: each section's budget computes to 0 (`(0 * 0.15) as usize = 0`). `index_pack` with budget=0 and non-empty items: first item passes because `!kept.is_empty()` is false on the first iteration (line 56). Each of the 5 waterfall sections packs exactly 1 item. `total_used` sums to whatever those items cost (could be 200+ tokens). JSON output: `{"token_count": 200, "token_budget": 0}` — token_count exceeds stated budget. No crash or panic.
+- **Impact:** Misleading JSON output where `token_count > token_budget`. Consumers trusting the budget constraint get more data than expected.
+- **Suggested mitigation:** Add `if budget == 0 { return (Vec::new(), 0); }` at top of `index_pack`. Or clamp `max_tokens` to minimum 1 at CLI entry.
+
+#### RT-RES-4: `--tokens` with extreme values — f64 precision loss is cosmetic only
+- **Severity:** none (verified safe)
+- **Location:** `src/cli/commands/task.rs:84`
+- **Attack vector:** `cqs task "anything" --tokens 18446744073709551615 --json`
+- **PoC:** `budget as f64 * 0.15`: `usize::MAX` as f64 rounds to `1.8446744073709552e19`. `* 0.15 = 2.767e18`. `as usize` converts back safely (within usize range). `index_pack` receives a huge budget, all items fit, no truncation. `token_count` reports actual usage (small), `token_budget` reports `usize::MAX`. The budget is effectively disabled but no crash occurs. `count_tokens_batch` tokenizes all items regardless of budget — bounded by `limit.clamp(1, 10)` which limits items to ~50 total across sections.
+- **Impact:** None — budget is effectively disabled. No OOM or crash.
+- **Suggested mitigation:** Clamp `max_tokens` to reasonable max (e.g., 100_000) at entry. Low priority.
+
+#### RT-RES-5: All graph traversals use visited sets — cycles cannot cause infinite loops
+- **Severity:** none (verified safe)
+- **Location:** `src/impact/bfs.rs:8-33`, `src/impact/bfs.rs:40-83`, `src/gather.rs:143-192`, `src/cli/batch/handlers.rs:606-623`, `src/cli/batch/handlers.rs:714-746`
+- **Attack vector:** Call graph with mutual recursion: A calls B, B calls A.
+- **PoC:** All five BFS implementations use HashMap-based visited sets. `reverse_bfs`: `!ancestors.contains_key(caller)` (line 24). `reverse_bfs_multi`: entry-based check with shortest-path update (lines 65-77). `bfs_expand`: `Entry::Vacant` / `Entry::Occupied` (lines 176-185). `dispatch_test_map`: `!ancestors.contains_key(caller)` (line 617). `dispatch_trace`: `!visited.contains_key(callee)` (line 740). All correctly terminate on cycles. **Verified safe across all five traversals.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-6: Long query string safely truncated by tokenizer — no OOM risk
+- **Severity:** none (verified safe)
+- **Location:** `src/embedder.rs:249,496-501`
+- **Attack vector:** `cqs task "$(python3 -c 'print("A" * 100000)')" --json`
+- **PoC:** `Embedder.max_length = 512` (line 249). In `embed_batch` at line 496-501: `max_len = input_ids.iter().map(|v| v.len()).max().unwrap_or(0).min(self.max_length)`. Sequences longer than 512 tokens are truncated by `pad_2d_i64`. A 100KB query tokenizes to ~25K tokens, truncated to 512. ONNX tensor: `[1, 512, 768]` = 1.5MB — well within bounds. The tokenizer's `encode_batch` call at line 480-482 does produce the full token sequence in memory before truncation, but the tokenizers library handles this efficiently.
+- **Impact:** None — truncation prevents OOM.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-7: Watch mode event queue bounded at both kernel and application level
+- **Severity:** none (verified safe)
+- **Location:** `src/cli/watch.rs:37,138`
+- **Attack vector:** Rapid file creation: `for i in $(seq 1 100000); do touch src/test_$i.rs; done`
+- **PoC:** `MAX_PENDING_FILES = 10_000` (line 37). At line 138: events beyond the cap are dropped. The `notify` crate uses OS inotify with kernel-level queue limit (`max_queued_events`, default 16384). `pending_files` is `HashSet` with `shrink_to(64)` after processing (line 159). The Rust `mpsc::channel()` is unbounded in theory, but event rate is limited by the kernel's inotify queue. **Verified safe.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-8: `dispatch_test_map` chain reconstruction loop lacks iteration bound
+- **Severity:** low
+- **Location:** `src/cli/batch/handlers.rs:638-648`
+- **Attack vector:** Hypothetical bug in BFS predecessor construction causing cyclic predecessor links
+- **PoC:** The chain reconstruction at lines 638-648:
+  ```rust
+  while !current.is_empty() {
+      chain.push(current.clone());
+      if current == target_name { break; }
+      current = ancestors.get(&current).map(|(_, p)| p.clone()).unwrap_or_default();
+  }
+  ```
+  The `ancestors` HashMap is built by BFS (lines 606-623) using `!ancestors.contains_key(caller)`. BFS correctness guarantees acyclic predecessor links. **However**, the chain reconstruction loop has no safety bound — it relies entirely on BFS data being correct. If a future refactoring introduces a bug in the BFS (e.g., allowing predecessor updates), this loop could spin forever. The prior audit (RB-25) noted this was safe due to "max_depth + early exit" — but those are properties of the BFS, not of the chain loop itself.
+- **Impact:** Infinite loop if predecessor data is cyclic. Requires a bug in the BFS to trigger. Extremely unlikely in current code.
+- **Suggested mitigation:** Add `if chain.len() > max_depth + 2 { break; }` as a safety bound. One comparison per iteration, zero cost in the normal case.
+
+#### RT-RES-9: `dispatch_task` reloads call graph and test chunks — bypasses BatchContext caches
+- **Severity:** low
+- **Location:** `src/cli/batch/handlers.rs:1455` calling `cqs::task()` at `src/task.rs:66-67`
+- **Attack vector:** Pipeline: `search "common" | task` — 50 `task` dispatches, each reloading the full call graph
+- **PoC:** `dispatch_task` calls the library `cqs::task()` function which internally calls `store.get_call_graph()` and `store.find_test_chunks()`. These are direct SQLite queries, not using `BatchContext`'s cached `call_graph` (OnceLock at mod.rs:57) or any test chunks cache. If a prior command loaded the graph via `ctx.call_graph()`, `dispatch_task` redundantly reloads it. In a pipeline with 50 fan-out, that's 50 graph loads + 50 test chunk loads. Each graph load is O(edges) — for 100K edges, ~10ms each = 500ms wasted. Already noted in CQ-3.
+- **Impact:** Performance degradation in pipelines. Not a crash or OOM.
+- **Suggested mitigation:** Add `test_chunks: OnceLock<Vec<ChunkSummary>>` to BatchContext. Create `task_with_resources()` accepting pre-loaded resources.
+
+#### RT-RES-10: HNSW corrupted file — checksum verification prevents bincode deserialization panic
+- **Severity:** low
+- **Location:** `src/hnsw/persist.rs:28-78`, hnsw_rs `HnswIo::load_hnsw()`
+- **Attack vector:** Manually corrupt `.hnsw.graph` or `.hnsw.data` file
+- **PoC:** Blake3 checksums are verified before loading (lines 28-78). If checksums don't match, `Err(HnswError::ChecksumMismatch)` is returned before `hnsw_rs` deserialization. If no checksum file exists, `Err(HnswError::Internal("No checksum file..."))`. The only path to `load_hnsw()` goes through `verify_hnsw_checksums()` first. If checksums pass but data is somehow malformed (astronomically unlikely with blake3), `hnsw_rs` uses bincode which can panic on malformed input (RUSTSEC-2025-0141). **Checksum gate is the primary defense.**
+- **Impact:** If checksums pass but data is corrupted: process panic. User re-runs `cqs index --force`. Not exploitable (trusted filesystem).
+- **Suggested mitigation:** Consider `std::panic::catch_unwind()` around `load_hnsw()` for defense in depth. Low priority.
+
+#### RT-RES-11: Empty query string properly rejected
+- **Severity:** none (verified safe)
+- **Location:** `src/embedder.rs:402-404`
+- **Attack vector:** `cqs task "" --json`
+- **PoC:** `embed_query` trims and checks empty at lines 402-404, returning `Err(EmbedderError::EmptyQuery)`. Propagates cleanly as `AnalysisError::Embedder`. No panic.
+- **Impact:** None — clean error.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-12: `compute_modify_threshold` handles all-zero scores safely
+- **Severity:** none (verified safe)
+- **Location:** `src/scout.rs:308-341`
+- **Attack vector:** Search results with all scores = 0.0
+- **PoC:** Line 326: `if scores[i] > 0.0` guards the division, preventing `0.0 / 0.0 = NaN`. `best_gap` stays at 0.0. Returns `scores[0] = 0.0`. Edge case output quality already covered by AC-6.
+- **Impact:** None.
+- **Suggested mitigation:** Already covered by AC-6.
+
+#### RT-RES-13: Waterfall surplus can cause `token_count > token_budget`
+- **Severity:** medium
+- **Location:** `src/cli/commands/task.rs:184`
+- **Attack vector:** `cqs task "anything" --tokens 100 --json` with only notes content
+- **PoC:** Already reported as AC-1. Notes section budget: `(budget * 0.10) + remaining` where `remaining` already includes the notes base allocation. If all previous sections empty: `remaining = 100`, `notes_budget = 10 + 100 = 110 > 100`.
+- **Impact:** `token_count > token_budget`. Already covered by AC-1.
+- **Suggested mitigation:** See AC-1 — serial deduction model.
+
+### Silent Data Corruption (RT-DATA)
+
+#### RT-DATA-1: Failed HNSW rebuild after watch reindex silently degrades search results
+- **Severity:** medium
+- **Location:** `src/cli/watch.rs:202-212`
+- **Scenario:**
+  1. `cqs watch` detects file changes, calls `reindex_files()` which updates chunks in SQLite (via `upsert_chunks_and_calls` — atomic per-file transaction).
+  2. SQLite now has new chunk IDs for modified files (old IDs deleted, new IDs inserted).
+  3. `build_hnsw_index()` is called at line 202. If it fails (e.g., disk full, permission error), execution falls through to the `Err` arm at line 210-212: `warn!(error = %e, "HNSW rebuild failed (search falls back to brute-force)")`.
+  4. The HNSW `.bin` file on disk is now **stale** — it contains vectors for the old chunk IDs that no longer exist in SQLite, and lacks vectors for the new chunk IDs.
+  5. Next search: `search_unified_with_index()` (search.rs:603-617) asks HNSW for candidates → HNSW returns old chunk IDs → `fetch_chunks_with_embeddings_by_ids_async()` does `SELECT ... WHERE id IN (...)` → old IDs return zero rows → results silently shrink.
+  6. The user sees fewer results than expected with no error. The warning at line 211 says "search falls back to brute-force" but this is **incorrect** — the stale HNSW file remains on disk. The next `cqs search` (a separate process) loads the stale HNSW via `try_load()` and uses it. Only if the HNSW file were deleted would brute-force actually activate.
+- **Corruption type:** Silent result set shrinkage. Valid matches are invisible until HNSW is successfully rebuilt.
+- **Suggested mitigation:** On HNSW rebuild failure, delete the stale HNSW `.bin` file so that subsequent searches correctly fall back to brute-force (which reads directly from SQLite and returns complete results). Alternatively, store a generation counter in both SQLite and the HNSW metadata — reject the HNSW if generations mismatch.
+
+#### RT-DATA-2: HNSW contains orphan vectors between SQLite prune and HNSW rebuild
+- **Severity:** low
+- **Location:** `src/cli/commands/gc.rs:35-51`
+- **Scenario:**
+  1. `cmd_gc` calls `store.prune_missing(&file_set)` at line 35, which deletes chunks from SQLite for files no longer on disk.
+  2. At this point, the HNSW index still contains vectors for the pruned chunk IDs.
+  3. If a search runs between line 35 (SQLite prune) and line 47-48 (HNSW rebuild), the HNSW returns orphan IDs that no longer exist in SQLite. `fetch_chunks_with_embeddings_by_ids_async` silently drops them.
+  4. The window is small (gc holds `acquire_index_lock` at line 23, which prevents concurrent `index` and `watch` operations). But a concurrent `cqs search` from another terminal is NOT blocked by the index lock — search only reads, it doesn't acquire the write lock.
+  5. Additionally: if `pruned_chunks == 0` but `pruned_calls > 0` or `pruned_type_edges > 0` (lines 39-44), the HNSW is NOT rebuilt at all (condition at line 47 only checks `pruned_chunks`). This is correct behavior (no chunks changed means HNSW is still valid), but call graph consumers (`callers`, `callees`, `impact`) will see stale data until the in-memory `CallGraph` is rebuilt.
+- **Corruption type:** Transient silent result shrinkage during gc. Self-heals once HNSW rebuild completes.
+- **Suggested mitigation:** Low priority — the gc window is brief and gc is user-initiated. Could delete HNSW file before SQLite prune to force brute-force during the window, but this adds latency to the common case.
+
+#### RT-DATA-3: Watch reindex + concurrent search sees partially-updated SQLite
+- **Severity:** low
+- **Location:** `src/cli/watch.rs:190`, `src/store/chunks.rs:263-354`
+- **Scenario:**
+  1. `cqs watch` batches multiple changed files (watch.rs:157-175, debounce window).
+  2. `reindex_files()` calls the pipeline which calls `upsert_chunks_and_calls()` per file — each file is a single SQLite transaction (chunks.rs:263-354).
+  3. If 5 files changed, after file 3 is committed but before file 4 starts, a concurrent `cqs search` reads from SQLite (WAL mode allows concurrent readers).
+  4. The search sees updated chunks for files 1-3 but stale chunks for files 4-5. HNSW hasn't been rebuilt yet (that happens at watch.rs:202 after all files).
+  5. The search uses the old HNSW (returns old IDs for all 5 files) → hydrates from SQLite → files 1-3 return new chunks (old IDs gone, but HNSW still returns them → silently dropped), files 4-5 return old chunks (still in SQLite).
+  6. Net effect: search results for the 5 modified files are missing or incomplete during the reindex window.
+- **Corruption type:** Transient partial results during active reindexing. Self-heals after HNSW rebuild.
+- **Suggested mitigation:** Acceptable for a development tool — the window is typically < 1 second for small batches. For large reindexes, the user is expected to wait for completion.
+
+#### RT-DATA-4: Batch `call_graph()` cache silently serves stale data after index-mutating commands
+- **Severity:** medium
+- **Location:** `src/cli/batch/mod.rs:173-182`
+- **Scenario:**
+  1. Batch session starts: user sends `callers foo` → `ctx.call_graph()` loads the call graph from SQLite into `OnceLock`, returns fresh data.
+  2. User sends a pipeline: `search "error" | callers` — for each search result, `dispatch_callers` calls `ctx.call_graph()` → returns cached (still fresh) data. Correct.
+  3. User modifies the index outside the batch session: in another terminal, `cqs index` adds new files with new call edges.
+  4. User returns to batch session, sends `callers bar` → `ctx.call_graph()` returns the **cached** call graph from step 1. New edges are invisible.
+  5. The `dispatch_task` handler (handlers.rs:1425) calls `cqs::task()` which constructs its own `CallGraph` from scratch (bypassing the cache), so `task` commands see fresh data. But `callers`, `callees`, `test-map`, `impact`, `trace`, `related`, `dead` all use `ctx.call_graph()` and see stale data.
+  6. The user sees inconsistent results: `task "add feature"` shows callers that `callers foo` doesn't, within the same session.
+- **Corruption type:** Silent stale call graph data. User gets incomplete/inconsistent answers from different commands.
+- **Prior finding:** DS-15 in v0.13.1 audit triage documented this as "intentional: batch is a session-scoped read-only view." However, the inconsistency with `task` (which bypasses the cache) was not documented. The mixed behavior — some commands cached, others fresh — is the actual data integrity concern.
+- **Suggested mitigation:** Either (a) make `task` use the same cached call graph (consistent but stale), or (b) add a `refresh` batch command that resets all OnceLock caches, giving the user an explicit way to get fresh data. Option (a) is simpler and preserves the documented session-scoped semantics.
+
+#### RT-DATA-5: HNSW search path does not check for NaN/Infinity scores — corrupts sort order
+- **Severity:** medium
+- **Location:** `src/hnsw/search.rs:49`
+- **Scenario:**
+  1. `hnsw-rs` `search_neighbours` returns a `Neighbour` with `distance` field.
+  2. Line 49 computes `let score = 1.0 - n.distance`. If `n.distance` is NaN (which `hnsw-rs` can produce for degenerate vectors — zero-magnitude embeddings stored via `Embedding::new(vec![0.0; 769])`), then `score` is NaN.
+  3. The `IndexResult { id, score }` with NaN score flows to `search_unified_with_index()` → `search_by_candidate_ids()`.
+  4. `BoundedScoreHeap::push` (search.rs:329) checks `!score.is_finite()` and skips NaN scores. **This guards the brute-force path correctly.**
+  5. However, `search_by_candidate_ids` does NOT use `BoundedScoreHeap` for HNSW-guided search. Instead it builds a `Vec<(ChunkRow, f32)>` (search.rs:669) and sorts with `partial_cmp...unwrap_or(Equal)` (search.rs:714). NaN scores survive and compare as Equal to everything, causing arbitrary sort order.
+  6. The `rrf_fuse` path (store/mod.rs:674) also uses `partial_cmp...unwrap_or(Equal)` — NaN RRF scores would corrupt the fused ranking.
+- **Corruption type:** Silent ranking corruption. Results exist but in wrong order, potentially pushing the best match below the truncation limit.
+- **Trigger likelihood:** Low in practice — the ONNX model produces normalized embeddings (non-zero), and `build_batched` validates dimensions. However, `Embedding::new()` (unchecked constructor) is called from `store/chunks.rs:666` (loading embeddings from SQLite), `store/chunks.rs:966,1034,1341` (more loads), `store/notes.rs:339` (note embeddings), and `hnsw/mod.rs:298` (HNSW build). If the SQLite database contains a corrupt embedding row (e.g., all zeros from a failed embed), NaN propagates through all these paths.
+- **Suggested mitigation:** Add `if !score.is_finite() { return None; }` guard at `hnsw/search.rs:49` (before constructing `IndexResult`), mirroring the `BoundedScoreHeap` guard. This single check prevents NaN from entering any downstream path.
+
+#### RT-DATA-6: `partial_cmp...unwrap_or(Equal)` conflates NaN with equal scores in 4 sort sites
+- **Severity:** low (dependent on RT-DATA-5)
+- **Location:** `src/store/mod.rs:674` (rrf_fuse), `src/store/notes.rs:164` (note search), `src/diff.rs:181-186` (semantic diff), `src/search.rs:714` (candidate scoring)
+- **Scenario:** All four sites sort `f32` scores using `partial_cmp(&sb).unwrap_or(Equal)`. If any score is NaN, `partial_cmp` returns `None`, and `unwrap_or(Equal)` treats NaN as equal to every other value. This violates sort transitivity (NaN == 0.5 AND NaN == 0.9, but 0.5 != 0.9), potentially causing undefined sort order depending on the sort algorithm's internal comparisons.
+- **Corruption type:** Non-deterministic sort order when NaN scores are present. The same data can produce different rankings on different runs.
+- **Note:** If RT-DATA-5's mitigation is applied (filter NaN at HNSW output), NaN never reaches these sort sites from the HNSW path. The brute-force path in `search_filtered` correctly uses `BoundedScoreHeap` (which filters NaN). These sites are primarily reachable via: (a) HNSW path without the RT-DATA-5 fix, (b) `rrf_fuse` if FTS returns NaN scores (unlikely — FTS uses BM25), or (c) `note_search` using brute-force cosine similarity on corrupt note embeddings.
+- **Suggested mitigation:** Replace `unwrap_or(Equal)` with `f32::total_cmp()` (stable since Rust 1.62, cqs MSRV is 1.93) which defines a total order: NaN sorts after +Infinity. Single-line change at each site.
+
+#### RT-DATA-7: `rewrite_notes_file` reads from separate open while holding exclusive lock on different fd
+- **Severity:** low
+- **Location:** `src/note.rs:185-222`
+- **Scenario:**
+  1. `rewrite_notes_file` opens `notes_path` read-only (line 185-188).
+  2. Acquires exclusive lock on that fd (line 194).
+  3. Reads content via `std::fs::read_to_string(notes_path)` (line 217) — this is a **separate** `open()` + `read()` syscall, not reading from the locked fd.
+  4. Advisory locking on Linux (flock) is per-fd, not per-path. The exclusive lock on fd1 prevents other `rewrite_notes_file` callers from acquiring their own lock (they'll block at line 194). So the read at line 217 IS protected — no other writer can be active.
+  5. However, the split between locked fd and read fd means: (a) two syscalls instead of one, (b) the code is misleading — a reader might assume the lock on fd1 somehow protects the separate read_to_string, which it does only indirectly.
+- **Corruption type:** None found. The locking protocol is correct for the single-writer / multiple-reader pattern. The separate `read_to_string` is cosmetically odd but functionally safe because the exclusive lock prevents concurrent writes.
+- **Suggested mitigation:** Minor cleanup — read from the locked fd instead of re-opening: `let mut content = String::new(); lock_file.read_to_string(&mut content)?;`. Eliminates the second open and is more obviously correct.
+
+#### RT-DATA-8: `Embedding::new()` bypasses dimension validation — production load paths use unchecked constructor
+- **Severity:** low
+- **Location:** `src/embedder.rs:87-89`
+- **Scenario:**
+  1. `Embedding::new(data)` is unchecked — accepts any `Vec<f32>` regardless of length.
+  2. `Embedding::try_new(data)` validates 769 dimensions — but is never called from production code (only from its own doctest).
+  3. Production callsites using `Embedding::new()` include: `store/chunks.rs:666,966,1034,1341` (loading from SQLite), `store/notes.rs:339` (note embeddings), `hnsw/mod.rs:298` (HNSW build), `embedder.rs:573` (model output).
+  4. If SQLite contains a corrupt embedding (truncated row, schema mismatch after partial migration), `Embedding::new()` wraps it without complaint.
+  5. Downstream: `HnswIndex::search()` checks `query.len() != EMBEDDING_DIM` (hnsw/search.rs:29) and returns empty results on mismatch — but this checks the **query**, not stored vectors. `insert_batch` (hnsw/mod.rs:194-201) validates dimensions for HNSW insertion. The brute-force cosine similarity does NOT validate dimensions — `full_cosine_similarity(a, b)` with mismatched lengths iterates the shorter length, ignoring trailing dimensions of the longer vector.
+  6. **Concrete scenario:** An old SQLite database with 768-dim embeddings (before sentiment dimension) is opened by current code. All `Embedding::new()` callsites wrap the 768-dim data. HNSW build rejects them (dimension check). But brute-force search (fallback when HNSW absent) computes cosine similarity between 769-dim query and 768-dim stored embedding, silently ignoring the 769th dimension (sentiment).
+- **Corruption type:** Silent incorrect similarity scores. The sentiment dimension is ignored for mismatched embeddings, biasing results.
+- **Suggested mitigation:** Add a dimension check in `full_cosine_similarity()`: if `a.len() != b.len()` return 0.0 with `tracing::warn!`. This is the single chokepoint where all similarity computations pass.
+
+#### RT-DATA-9: Schema migration is atomic — no silent corruption on crash
+- **Severity:** n/a (no finding)
+- **Location:** `src/store/migrations.rs:43-56`
+- **Analysis:**
+  1. `run_migrations()` runs inside `IMMEDIATE` transaction (line 43-44). All DDL and DML execute within this transaction.
+  2. The schema version is updated as the last step within the same transaction (line 53-55): `PRAGMA user_version = {target}`.
+  3. If the process crashes mid-migration, SQLite rolls back the transaction. The `user_version` remains at the old value. On next startup, `check_schema` detects version mismatch and re-runs migration from scratch.
+  4. SQLite WAL mode provides crash safety: uncheckpointed WAL frames are replayed on recovery.
+  5. The only migration (v10 → v11) adds columns with defaults and creates new tables — idempotent DDL.
+- **Corruption type:** None. The migration is correctly atomic.
+- **Suggested mitigation:** None needed.

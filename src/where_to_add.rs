@@ -47,6 +47,19 @@ pub struct FileSuggestion {
     pub patterns: LocalPatterns,
 }
 
+impl FileSuggestion {
+    /// Serialize to JSON, relativizing file paths against the project root.
+    pub fn to_json(&self, root: &std::path::Path) -> serde_json::Value {
+        serde_json::json!({
+            "file": crate::rel_display(&self.file, root),
+            "score": self.score,
+            "insertion_line": self.insertion_line,
+            "near_function": self.near_function,
+            "reason": self.reason,
+        })
+    }
+}
+
 /// Result from placement analysis
 pub struct PlacementResult {
     pub suggestions: Vec<FileSuggestion>,
@@ -96,6 +109,25 @@ pub fn suggest_placement(
     )
 }
 
+/// Suggest where to place new code using a pre-computed embedding.
+///
+/// Avoids redundant ONNX inference when the caller already embedded the query
+/// (e.g., `task()` embeds once and reuses across phases).
+pub fn suggest_placement_with_embedding(
+    store: &Store,
+    query_embedding: &crate::Embedding,
+    description: &str,
+    limit: usize,
+) -> Result<PlacementResult, AnalysisError> {
+    suggest_placement_with_embedding_and_options(
+        store,
+        query_embedding,
+        description,
+        limit,
+        &PlacementOptions::default(),
+    )
+}
+
 /// Suggest where to place new code matching a description with configurable search parameters.
 ///
 /// 1. Searches for semantically similar code
@@ -109,12 +141,22 @@ pub fn suggest_placement_with_options(
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
-    let _span =
-        tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
-    // Embed the description
     let query_embedding = embedder
         .embed_query(description)
         .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    suggest_placement_with_embedding_and_options(store, &query_embedding, description, limit, opts)
+}
+
+/// Core placement logic using a pre-computed embedding and custom options.
+fn suggest_placement_with_embedding_and_options(
+    store: &Store,
+    query_embedding: &crate::Embedding,
+    description: &str,
+    limit: usize,
+    opts: &PlacementOptions,
+) -> Result<PlacementResult, AnalysisError> {
+    let _span =
+        tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
 
     // Search with RRF hybrid
     let filter = SearchFilter {
@@ -124,7 +166,7 @@ pub fn suggest_placement_with_options(
     };
 
     let results = store.search_filtered(
-        &query_embedding,
+        query_embedding,
         &filter,
         opts.search_limit,
         opts.search_threshold,

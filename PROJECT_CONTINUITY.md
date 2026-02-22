@@ -2,19 +2,14 @@
 
 ## Right Now
 
-**Phase 3 Moonshot: `cqs task` implemented.** 2026-02-22.
+**Next: Score improvements moonshot.** 2026-02-22.
 
-- `cqs task "description"` — single-call implementation brief (scout + gather + impact + placement + notes)
-- New files: `src/task.rs` (~580 lines), `src/cli/commands/task.rs` (~610 lines)
-- Modified: `src/scout.rs` (scout_core extraction), `src/cli/mod.rs`, `src/cli/batch/commands.rs`, `src/cli/batch/handlers.rs`, `src/lib.rs`, `src/cli/commands/mod.rs`
-- 1,058 tests passing (20 new), zero clippy warnings
-- Binary installed, manual testing complete
-- Ecosystem updates done (skill, bootstrap, CLAUDE.md, CONTRIBUTING.md, CHANGELOG, MOONSHOT)
-- Ready for commit + PR
+- v0.14.0 released (crates.io + GitHub)
+- Planning score improvement levers: NL templates, sub-function demotion, RRF eval mode
 
 ## Pending Changes
 
-Uncommitted: `cqs task` implementation + ecosystem docs.
+None.
 
 ## Parked
 
@@ -41,14 +36,14 @@ Uncommitted: `cqs task` implementation + ecosystem docs.
 
 ## Architecture
 
-- Version: 0.13.1
+- Version: 0.14.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1058 pass + 31 ignored
+- Tests: 1035 pass + 22 ignored
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
@@ -56,4 +51,4 @@ Uncommitted: `cqs task` implementation + ecosystem docs.
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
 - Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
 - type_edges: 4276 edges (Phase 1a+1b complete)
-- Eval: E5-base-v2 90.9% Recall@1, 0.941 MRR on 55-query hard eval
+- Eval: E5-base-v2 90.9% Recall@1, 0.951 NDCG@10, 0.941 MRR on 55-query hard eval

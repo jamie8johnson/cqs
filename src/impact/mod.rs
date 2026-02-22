@@ -23,8 +23,8 @@ pub use analysis::{analyze_impact, suggest_tests};
 pub use diff::{analyze_diff_impact, analyze_diff_impact_with_graph, map_hunks_to_functions};
 pub use format::{diff_impact_to_json, impact_to_json, impact_to_mermaid};
 pub use hints::{
-    compute_hints, compute_hints_with_graph, compute_hints_with_graph_depth, compute_risk_batch,
-    find_hotspots,
+    compute_hints, compute_hints_with_graph, compute_hints_with_graph_depth,
+    compute_risk_and_tests, compute_risk_batch, find_hotspots,
 };
 
 /// Default maximum depth for test search BFS.

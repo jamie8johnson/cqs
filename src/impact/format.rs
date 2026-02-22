@@ -21,19 +21,7 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         })
         .collect();
 
-    let tests_json: Vec<_> = result
-        .tests
-        .iter()
-        .map(|t| {
-            let rel = crate::rel_display(&t.file, root);
-            serde_json::json!({
-                "name": t.name,
-                "file": rel,
-                "line": t.line,
-                "call_depth": t.call_depth,
-            })
-        })
-        .collect();
+    let tests_json: Vec<_> = result.tests.iter().map(|t| t.to_json(root)).collect();
 
     let mut output = serde_json::json!({
         "function": result.function_name,
