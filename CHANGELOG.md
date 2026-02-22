@@ -7,12 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-02-22
+
 ### Added
 - **`cqs task "description"`** (Phase 3 Moonshot) — single-call implementation brief combining scout + gather + impact + placement + notes. Loads call graph and test chunks once instead of per-phase. Waterfall token budgeting across 5 sections (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). Supports `--tokens`, `--json`, `-n`, and batch mode. 9 new tests.
 - **NDCG@10 and Recall@10 metrics** in eval harness and README. E5-base-v2: 0.951 NDCG@10, 98.2% Recall@10. Performance benchmarks: 45ms hot-path search (p50), 22 QPS batch throughput, 36s index build for 203 files.
+- **RAG Efficiency section** in README — measured 17-41x token reduction vs full file reads using `gather` and `task` with token budgeting.
 
 ### Fixed
 - **Scout ModifyTarget classification** — replaced hardcoded 0.5 threshold (broken on RRF scores ~0.01-0.03) with automatic gap detection. Finds largest relative score gap to separate modify targets from dependencies. Scale-independent, no tuning parameter. 6 new tests.
+- **Batch `--tokens` wiring** — all batch handlers now correctly pass through token budget parameter (#467).
 
 ## [0.13.1] - 2026-02-21
 
