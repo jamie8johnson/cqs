@@ -387,13 +387,19 @@ Key commands (all support `--json`):
 - `cqs related <function>` - co-occurrence: shared callers, callees, types
 - `cqs where "description"` - suggest where to add new code
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
+- `cqs task "description"` - implementation brief: scout + gather + impact + placement + notes in one call
 - `cqs onboard "concept"` - guided tour: entry point, call chain, callers, key types, tests
 - `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
 - `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--json`
 - `cqs batch` - batch mode: stdin commands, JSONL output. Pipeline syntax: `search "error" | callers | test-map`
 - `cqs dead` - find functions/methods never called by indexed code
+- `cqs health` - codebase quality snapshot: dead code, staleness, hotspots, untested functions
+- `cqs suggest` - auto-suggest notes from code patterns. `--apply` to add them
 - `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries
+- `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
+- `cqs ref add/remove/list` - manage reference indexes for multi-index search
+- `cqs project add/remove/list` - cross-project search registry
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```

@@ -79,6 +79,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
 - `cqs batch` — batch mode: reads commands from stdin, outputs JSONL. Persistent Store + lazy Embedder. Supports pipeline syntax: `search "error" | callers | test-map` chains commands via fan-out.
+- `cqs review` — comprehensive diff review: impact-diff + notes + risk scoring. `--base`, `--json`.
 - `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate. Exit 3 on gate fail.
 - `cqs test-map <function>` — map function to tests that exercise it.
 - `cqs trace <source> <target>` — shortest call path between two functions.
@@ -133,7 +134,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria. Teammates start with zero context — they can't see your conversation.
 
-**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, callers, callees, explain, similar, gather, impact, test-map, trace, context, dead, scout, task, onboard, where, deps, related, drift, batch, review, ci, health, suggest, stale`.
+**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes`.
 
 ## Code Audit
 

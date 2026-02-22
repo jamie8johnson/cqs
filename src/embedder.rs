@@ -85,7 +85,7 @@ impl Embedding {
     /// Logs a warning if the dimension doesn't match the expected 769.
     /// For strict validation, use `try_new()` which returns an error.
     pub fn new(data: Vec<f32>) -> Self {
-        if data.len() != crate::EMBEDDING_DIM {
+        if data.len() != crate::EMBEDDING_DIM && data.len() != MODEL_DIM {
             tracing::warn!(
                 expected = crate::EMBEDDING_DIM,
                 actual = data.len(),

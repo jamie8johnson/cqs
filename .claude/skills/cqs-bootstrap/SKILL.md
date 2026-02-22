@@ -192,12 +192,24 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs test-map <function>` — map function to tests that exercise it.
+- `cqs deps <type>` — type dependencies: who uses this type? `--reverse` for what types a function uses.
+- `cqs diff --source <ref>` — semantic diff between indexed snapshots.
+- `cqs drift <ref>` — semantic drift detection between reference and project.
+- `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
 - `cqs review [--base REF]` — comprehensive diff review: impact + notes + risk scoring.
 - `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate.
+- `cqs batch` — batch mode: stdin commands, JSONL output. Pipeline syntax: `search "error" | callers | test-map`.
 - `cqs dead` — find functions/methods with no callers.
+- `cqs health` — codebase quality snapshot: dead code, staleness, hotspots, untested functions.
+- `cqs suggest` — auto-suggest notes from code patterns. `--apply` to add them.
 - `cqs stale` — check index freshness.
+- `cqs gc` — report/clean stale index entries.
 - `cqs stats` — index statistics.
+- `cqs convert <path>` — convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing.
+- `cqs ref add/remove/list` — manage reference indexes for multi-index search.
+- `cqs project add/remove/list` — cross-project search registry.
 - `cqs notes add/update/remove` — manage project notes.
+- `cqs audit-mode on/off` — toggle audit mode (exclude notes from search/read).
 
 Run `cqs watch` in a separate terminal to keep the index fresh, or `cqs index` for one-time refresh.
 
@@ -223,7 +235,7 @@ After: `cqs audit-mode off` or let it auto-expire (30 min default).
 
 ## Agent Teams
 
-When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, read, callers, callees, explain, similar, gather, impact, test-map, trace, context, dead, scout, task, onboard, where, deps, related, drift, batch, review, ci, health, suggest, stale) in every agent prompt.
+When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes) in every agent prompt.
 ```
 
 ### Phase 6: Verify
