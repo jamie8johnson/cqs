@@ -102,6 +102,9 @@ pub struct ScoutOptions {
     pub search_limit: usize,
     /// Minimum search score threshold (default: 0.2)
     pub search_threshold: f32,
+    /// Minimum relative gap between consecutive scores to split ModifyTarget
+    /// from Dependency (default: 0.10). Lower values create more ModifyTargets.
+    pub min_gap_ratio: f32,
 }
 
 impl Default for ScoutOptions {
@@ -109,6 +112,7 @@ impl Default for ScoutOptions {
         Self {
             search_limit: DEFAULT_SCOUT_SEARCH_LIMIT,
             search_threshold: DEFAULT_SCOUT_SEARCH_THRESHOLD,
+            min_gap_ratio: MIN_GAP_RATIO,
         }
     }
 }
@@ -241,7 +245,7 @@ pub(crate) fn scout_core(
     // higher than keyword-only or semantic-only. Find the largest relative gap
     // in the sorted scores and split there. Scale-independent — works on
     // cosine (0-1), RRF (~0.01-0.03), or any future scoring.
-    let modify_threshold = compute_modify_threshold(&results);
+    let modify_threshold = compute_modify_threshold(&results, opts.min_gap_ratio);
     tracing::debug!(modify_threshold, "Gap-based threshold computed");
 
     // 7. Build file groups
@@ -332,7 +336,7 @@ pub(crate) fn scout_core(
 /// Guarantees at least 1 ModifyTarget, at most half the non-test results.
 /// If no clear gap exists (all gaps < 10%), only the top result qualifies.
 /// Tied scores at the threshold are included as ModifyTargets.
-fn compute_modify_threshold(results: &[crate::store::SearchResult]) -> f32 {
+fn compute_modify_threshold(results: &[crate::store::SearchResult], min_gap_ratio: f32) -> f32 {
     let mut scores: Vec<f32> = results
         .iter()
         .filter(|r| !crate::is_test_chunk(&r.chunk.name, &r.chunk.file.to_string_lossy()))
@@ -360,7 +364,7 @@ fn compute_modify_threshold(results: &[crate::store::SearchResult]) -> f32 {
     }
 
     // No clear gap → only top result is a ModifyTarget
-    if best_gap < MIN_GAP_RATIO {
+    if best_gap < min_gap_ratio {
         return scores[0];
     }
 
@@ -555,7 +559,7 @@ mod tests {
             mock_result("e", "src/e.rs", 0.015),
             mock_result("f", "src/f.rs", 0.014),
         ];
-        let threshold = compute_modify_threshold(&results);
+        let threshold = compute_modify_threshold(&results, MIN_GAP_RATIO);
         // Should split at the gap: 0.030 is the cutoff
         assert!(threshold >= 0.030);
         assert!(threshold <= 0.033);
@@ -570,7 +574,7 @@ mod tests {
             mock_result("c", "src/c.rs", 0.018),
             mock_result("d", "src/d.rs", 0.017),
         ];
-        let threshold = compute_modify_threshold(&results);
+        let threshold = compute_modify_threshold(&results, MIN_GAP_RATIO);
         // All gaps < 10%, only top result qualifies
         assert!((threshold - 0.020).abs() < f32::EPSILON);
     }
@@ -578,12 +582,12 @@ mod tests {
     #[test]
     fn test_compute_modify_threshold_single() {
         let results = vec![mock_result("a", "src/a.rs", 0.05)];
-        assert!((compute_modify_threshold(&results) - 0.05).abs() < f32::EPSILON);
+        assert!((compute_modify_threshold(&results, MIN_GAP_RATIO) - 0.05).abs() < f32::EPSILON);
     }
 
     #[test]
     fn test_compute_modify_threshold_empty() {
-        assert_eq!(compute_modify_threshold(&[]), f32::MAX);
+        assert_eq!(compute_modify_threshold(&[], MIN_GAP_RATIO), f32::MAX);
     }
 
     #[test]
@@ -594,7 +598,7 @@ mod tests {
             mock_result("bar", "src/b.rs", 0.020),
             mock_result("baz", "src/c.rs", 0.010),
         ];
-        let threshold = compute_modify_threshold(&results);
+        let threshold = compute_modify_threshold(&results, MIN_GAP_RATIO);
         // Only bar and baz considered; gap between 0.020 and 0.010 is 50%
         assert!((threshold - 0.020).abs() < f32::EPSILON);
     }
@@ -608,7 +612,7 @@ mod tests {
             mock_result("c", "src/c.rs", 0.50), // big gap
             mock_result("d", "src/d.rs", 0.45),
         ];
-        let threshold = compute_modify_threshold(&results);
+        let threshold = compute_modify_threshold(&results, MIN_GAP_RATIO);
         assert!(threshold >= 0.90);
     }
 
@@ -706,7 +710,7 @@ mod tests {
             mock_result("test_b", "src/b.rs", 0.8),
             mock_result("test_c", "src/c.rs", 0.7),
         ];
-        let threshold = compute_modify_threshold(&results);
+        let threshold = compute_modify_threshold(&results, MIN_GAP_RATIO);
         // All chunks are tests → no non-test scores → should return f32::MAX
         assert_eq!(threshold, f32::MAX);
     }

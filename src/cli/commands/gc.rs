@@ -31,7 +31,7 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     // Count what we'll clean before doing it
     let (stale_count, missing_count) = store.count_stale_files(&file_set).unwrap_or((0, 0));
 
-    // Prune chunks for missing files
+    // Count chunks to prune before deleting HNSW
     let pruned_chunks = store.prune_missing(&file_set)?;
     tracing::debug!(pruned_chunks, "Chunks pruned");
 
@@ -43,8 +43,18 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let pruned_type_edges = store.prune_stale_type_edges()?;
     tracing::debug!(pruned_type_edges, "Type edges pruned");
 
-    // Rebuild HNSW if we pruned anything
+    // Rebuild HNSW if we pruned chunks. Delete the stale HNSW first so
+    // concurrent searches fall back to brute-force during the rebuild window
+    // rather than returning orphan IDs from the old index (RT-DATA-2).
     let hnsw_vectors = if pruned_chunks > 0 {
+        let hnsw_path = cqs_dir.join("index.hnsw.graph");
+        if hnsw_path.exists() {
+            let _ = std::fs::remove_file(&hnsw_path);
+            let _ = std::fs::remove_file(cqs_dir.join("index.hnsw.data"));
+            let _ = std::fs::remove_file(cqs_dir.join("index.hnsw.checksum"));
+            let _ = std::fs::remove_file(cqs_dir.join("index.hnsw.id_map.json"));
+            tracing::debug!("Deleted stale HNSW before rebuild");
+        }
         build_hnsw_index(&store, &cqs_dir)?
     } else {
         None

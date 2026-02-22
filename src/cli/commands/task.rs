@@ -790,4 +790,49 @@ mod tests {
         assert!(indices.is_empty());
         assert_eq!(used, 0);
     }
+
+    // TC-11: Waterfall surplus forwarding — verify unused budget flows to next section
+    #[test]
+    fn test_waterfall_surplus_forwarding() {
+        let budget: usize = 1000;
+        let weights = [
+            WATERFALL_SCOUT,
+            WATERFALL_CODE,
+            WATERFALL_IMPACT,
+            WATERFALL_PLACEMENT,
+        ];
+        let base_budgets: Vec<usize> = weights
+            .iter()
+            .map(|w| (budget as f64 * w) as usize)
+            .collect();
+
+        // Scenario: scout uses only 50 of its 150 budget → 100 surplus flows to code
+        let scout_budget = base_budgets[0]; // 150
+        let scout_used = 50;
+        let code_budget_with_surplus =
+            (base_budgets[1] + scout_budget.saturating_sub(scout_used)).min(budget - scout_used);
+        // Code gets 500 base + 100 surplus = 600 (capped by remaining = 950)
+        assert_eq!(code_budget_with_surplus, 600);
+
+        // Scenario: code uses all 600 → 0 surplus to impact
+        let code_used = 600;
+        let impact_budget_with_surplus = (base_budgets[2]
+            + code_budget_with_surplus.saturating_sub(code_used))
+        .min(budget - scout_used - code_used);
+        // Impact gets 150 base + 0 surplus = 150 (remaining = 350)
+        assert_eq!(impact_budget_with_surplus, 150);
+
+        // Scenario: impact uses only 30 → 120 surplus flows to placement
+        let impact_used = 30;
+        let placement_budget_with_surplus = (base_budgets[3]
+            + impact_budget_with_surplus.saturating_sub(impact_used))
+        .min(budget - scout_used - code_used - impact_used);
+        // Placement gets 100 base + 120 surplus = 220 (remaining = 320)
+        assert_eq!(placement_budget_with_surplus, 220);
+
+        // Notes gets remaining
+        let placement_used = 80;
+        let notes_budget = budget - scout_used - code_used - impact_used - placement_used;
+        assert_eq!(notes_budget, 240);
+    }
 }

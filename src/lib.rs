@@ -148,6 +148,11 @@ pub enum AnalysisError {
     Embedder(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("{phase} phase failed: {message}")]
+    Phase {
+        phase: &'static str,
+        message: String,
+    },
 }
 
 /// Name of the per-project index directory (created by `cqs init`).
@@ -200,8 +205,11 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
         return true;
     }
     // Path-based patterns (mirrors TEST_PATH_PATTERNS in store/calls.rs)
+    // Check both forward and backslash separators for Windows compatibility
     file.contains("/tests/")
+        || file.contains("\\tests\\")
         || file.starts_with("tests/")
+        || file.starts_with("tests\\")
         || file.contains("_test.")
         || file.contains(".test.")
         || file.contains(".spec.")
