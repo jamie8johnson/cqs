@@ -1030,11 +1030,10 @@ pub(super) fn dispatch_onboard(
     let depth = depth.clamp(1, 5);
     let result = cqs::onboard(&ctx.store, embedder, query, &ctx.root, depth)?;
 
-    if tokens.is_none() {
+    let Some(budget) = tokens else {
         return cqs::onboard_to_json(&result)
             .map_err(|e| anyhow::anyhow!("Failed to serialize onboard: {e}"));
-    }
-    let budget = tokens.unwrap();
+    };
 
     // Flatten entries with depth-based scores
     let mut entries: Vec<(String, f32)> = Vec::new();
@@ -1118,10 +1117,9 @@ pub(super) fn dispatch_scout(
     let limit = limit.clamp(1, 50);
     let result = cqs::scout(&ctx.store, embedder, query, &ctx.root, limit)?;
 
-    if tokens.is_none() {
+    let Some(budget) = tokens else {
         return Ok(cqs::scout_to_json(&result, &ctx.root));
-    }
-    let budget = tokens.unwrap();
+    };
 
     // Batch-fetch content for all chunks
     let all_names: Vec<&str> = result
@@ -1452,45 +1450,24 @@ pub(super) fn dispatch_task(
     let _span = tracing::info_span!("batch_task", description).entered();
     let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 10);
-    let result = cqs::task(&ctx.store, embedder, description, &ctx.root, limit)?;
+    let graph = ctx.call_graph()?;
+    let test_chunks = ctx.test_chunks()?;
+    let result = cqs::task_with_resources(
+        &ctx.store,
+        embedder,
+        description,
+        &ctx.root,
+        limit,
+        graph,
+        test_chunks,
+    )?;
 
-    let mut json = cqs::task_to_json(&result, &ctx.root);
-
-    // Apply token budgeting if requested (simplified: pack code section only)
-    if let Some(budget) = tokens {
-        let code_texts: Vec<&str> = result.code.iter().map(|c| c.content.as_str()).collect();
-        let counts = crate::cli::commands::count_tokens_batch(embedder, &code_texts);
-        let (packed_idx, used) = crate::cli::commands::token_pack(
-            (0..result.code.len()).collect::<Vec<_>>(),
-            &counts,
-            budget,
-            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
-            |&i| result.code[i].score,
-        );
-
-        // Replace code array with packed subset
-        let code_json: Vec<serde_json::Value> = packed_idx
-            .iter()
-            .map(|&i| {
-                let c = &result.code[i];
-                serde_json::json!({
-                    "name": c.name,
-                    "file": cqs::rel_display(&c.file, &ctx.root),
-                    "line_start": c.line_start,
-                    "line_end": c.line_end,
-                    "language": c.language.to_string(),
-                    "chunk_type": c.chunk_type.to_string(),
-                    "signature": c.signature,
-                    "content": c.content,
-                    "score": c.score,
-                    "depth": c.depth,
-                })
-            })
-            .collect();
-        json["code"] = serde_json::json!(code_json);
-        json["token_count"] = serde_json::json!(used);
-        json["token_budget"] = serde_json::json!(budget);
-    }
+    // Full waterfall budgeting (same as CLI) when --tokens is specified
+    let json = if let Some(budget) = tokens {
+        crate::cli::commands::task::task_to_budgeted_json(&result, &ctx.root, embedder, budget)
+    } else {
+        cqs::task_to_json(&result, &ctx.root)
+    };
 
     Ok(json)
 }

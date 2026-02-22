@@ -35,7 +35,7 @@ mod similar;
 mod stale;
 mod stats;
 mod suggest;
-mod task;
+pub(crate) mod task;
 mod test_map;
 mod trace;
 mod where_cmd;

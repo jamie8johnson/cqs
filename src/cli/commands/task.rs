@@ -5,6 +5,16 @@ use colored::Colorize;
 
 use cqs::{task, task_to_json, Embedder};
 
+/// Waterfall budget weight for the scout section (file groups, chunk roles).
+const WATERFALL_SCOUT: f64 = 0.15;
+/// Waterfall budget weight for the code section (gathered chunks with content).
+const WATERFALL_CODE: f64 = 0.50;
+/// Waterfall budget weight for the impact section (risk scores + tests).
+const WATERFALL_IMPACT: f64 = 0.15;
+/// Waterfall budget weight for the placement section (where to add).
+const WATERFALL_PLACEMENT: f64 = 0.10;
+// Notes section takes whatever budget remains (no explicit constant needed).
+
 pub(crate) fn cmd_task(
     _cli: &crate::cli::Cli,
     description: &str,
@@ -71,17 +81,49 @@ fn output_with_budget(
     budget: usize,
     json: bool,
 ) -> Result<()> {
-    let _span = tracing::info_span!("waterfall_budget", budget).entered();
-
     let overhead = if json {
         super::JSON_OVERHEAD_PER_RESULT
     } else {
         0
     };
+    let packed = waterfall_pack(result, embedder, budget, overhead);
+
+    if json {
+        output_json_budgeted(result, root, &packed)?;
+    } else {
+        output_text_budgeted(result, root, &packed);
+    }
+
+    Ok(())
+}
+
+/// Packed section indices from waterfall budgeting.
+pub(crate) struct PackedSections {
+    scout: Vec<usize>,
+    code: Vec<usize>,
+    risk: Vec<usize>,
+    tests: Vec<usize>,
+    placement: Vec<usize>,
+    notes: Vec<usize>,
+    pub(crate) total_used: usize,
+    pub(crate) budget: usize,
+}
+
+/// Compute waterfall token budgeting across all task sections.
+///
+/// Shared between CLI `cqs task --tokens` and batch `task --tokens`.
+/// `overhead_per_item` should be `JSON_OVERHEAD_PER_RESULT` for JSON, 0 for text.
+pub(crate) fn waterfall_pack(
+    result: &cqs::TaskResult,
+    embedder: &Embedder,
+    budget: usize,
+    overhead_per_item: usize,
+) -> PackedSections {
+    let _span = tracing::info_span!("waterfall_budget", budget).entered();
     let mut remaining = budget;
 
-    // 1. Scout section (15%) — pack file groups by relevance
-    let scout_budget = (budget as f64 * 0.15) as usize;
+    // 1. Scout section — pack file groups by relevance
+    let scout_budget = ((budget as f64 * WATERFALL_SCOUT) as usize).min(remaining);
     let group_texts: Vec<String> = result
         .scout
         .file_groups
@@ -96,25 +138,28 @@ fn output_with_budget(
         .collect();
     let group_text_refs: Vec<&str> = group_texts.iter().map(|s| s.as_str()).collect();
     let group_counts = super::count_tokens_batch(embedder, &group_text_refs);
-    let (scout_indices, scout_used) = index_pack(&group_counts, scout_budget, overhead, |i| {
-        result.scout.file_groups[i].relevance_score
-    });
+    let (scout_indices, scout_used) =
+        index_pack(&group_counts, scout_budget, overhead_per_item, |i| {
+            result.scout.file_groups[i].relevance_score
+        });
     remaining = remaining.saturating_sub(scout_used);
 
-    // 2. Code section (50% + surplus) — pack gathered chunks by score
-    let code_budget =
-        (budget as f64 * 0.50) as usize + remaining.min(scout_budget.saturating_sub(scout_used));
+    // 2. Code section (+ surplus) — pack gathered chunks by score
+    let code_budget = ((budget as f64 * WATERFALL_CODE) as usize
+        + scout_budget.saturating_sub(scout_used))
+    .min(remaining);
     let code_texts: Vec<String> = result.code.iter().map(|c| c.content.clone()).collect();
     let code_text_refs: Vec<&str> = code_texts.iter().map(|s| s.as_str()).collect();
     let code_counts = super::count_tokens_batch(embedder, &code_text_refs);
-    let (code_indices, code_used) = index_pack(&code_counts, code_budget, overhead, |i| {
+    let (code_indices, code_used) = index_pack(&code_counts, code_budget, overhead_per_item, |i| {
         result.code[i].score
     });
     remaining = remaining.saturating_sub(code_used);
 
-    // 3. Impact section (15% + surplus) — risk by score, tests by depth
-    let impact_budget =
-        (budget as f64 * 0.15) as usize + remaining.min(code_budget.saturating_sub(code_used));
+    // 3. Impact section (+ surplus) — risk by score, tests by depth
+    let impact_budget = ((budget as f64 * WATERFALL_IMPACT) as usize
+        + code_budget.saturating_sub(code_used))
+    .min(remaining);
     let risk_texts: Vec<String> = result
         .risk
         .iter()
@@ -131,9 +176,10 @@ fn output_with_budget(
         .collect();
     let risk_text_refs: Vec<&str> = risk_texts.iter().map(|s| s.as_str()).collect();
     let risk_counts = super::count_tokens_batch(embedder, &risk_text_refs);
-    let (risk_indices, risk_used) = index_pack(&risk_counts, impact_budget, overhead, |i| {
-        result.risk[i].1.score
-    });
+    let (risk_indices, risk_used) =
+        index_pack(&risk_counts, impact_budget, overhead_per_item, |i| {
+            result.risk[i].1.score
+        });
 
     let tests_budget = impact_budget.saturating_sub(risk_used);
     let test_texts: Vec<String> = result
@@ -151,14 +197,16 @@ fn output_with_budget(
         .collect();
     let test_text_refs: Vec<&str> = test_texts.iter().map(|s| s.as_str()).collect();
     let test_counts = super::count_tokens_batch(embedder, &test_text_refs);
-    let (test_indices, tests_used) = index_pack(&test_counts, tests_budget, overhead, |i| {
-        1.0 / (result.tests[i].call_depth as f32 + 1.0)
-    });
+    let (test_indices, tests_used) =
+        index_pack(&test_counts, tests_budget, overhead_per_item, |i| {
+            1.0 / (result.tests[i].call_depth as f32 + 1.0)
+        });
     remaining = remaining.saturating_sub(risk_used + tests_used);
 
-    // 4. Placement section (10% + surplus)
-    let placement_budget = (budget as f64 * 0.10) as usize
-        + remaining.min(impact_budget.saturating_sub(risk_used + tests_used));
+    // 4. Placement section (+ surplus)
+    let placement_budget = ((budget as f64 * WATERFALL_PLACEMENT) as usize
+        + impact_budget.saturating_sub(risk_used + tests_used))
+    .min(remaining);
     let placement_texts: Vec<String> = result
         .placement
         .iter()
@@ -174,14 +222,16 @@ fn output_with_budget(
         .collect();
     let placement_text_refs: Vec<&str> = placement_texts.iter().map(|s| s.as_str()).collect();
     let placement_counts = super::count_tokens_batch(embedder, &placement_text_refs);
-    let (placement_indices, placement_used) =
-        index_pack(&placement_counts, placement_budget, overhead, |i| {
-            result.placement[i].score
-        });
+    let (placement_indices, placement_used) = index_pack(
+        &placement_counts,
+        placement_budget,
+        overhead_per_item,
+        |i| result.placement[i].score,
+    );
     remaining = remaining.saturating_sub(placement_used);
 
-    // 5. Notes section (10% + surplus)
-    let notes_budget = (budget as f64 * 0.10) as usize + remaining;
+    // 5. Notes section — takes whatever budget remains
+    let notes_budget = remaining;
     let note_texts: Vec<&str> = result
         .scout
         .relevant_notes
@@ -189,9 +239,10 @@ fn output_with_budget(
         .map(|n| n.text.as_str())
         .collect();
     let note_counts = super::count_tokens_batch(embedder, &note_texts);
-    let (note_indices, notes_used) = index_pack(&note_counts, notes_budget, overhead, |i| {
-        result.scout.relevant_notes[i].sentiment.abs()
-    });
+    let (note_indices, notes_used) =
+        index_pack(&note_counts, notes_budget, overhead_per_item, |i| {
+            result.scout.relevant_notes[i].sentiment.abs()
+        });
 
     let total_used = scout_used + code_used + risk_used + tests_used + placement_used + notes_used;
 
@@ -207,7 +258,7 @@ fn output_with_budget(
         "Waterfall budget complete"
     );
 
-    let packed = PackedSections {
+    PackedSections {
         scout: scout_indices,
         code: code_indices,
         risk: risk_indices,
@@ -216,49 +267,42 @@ fn output_with_budget(
         notes: note_indices,
         total_used,
         budget,
-    };
-
-    if json {
-        output_json_budgeted(result, root, &packed)?;
-    } else {
-        output_text_budgeted(result, root, &packed);
     }
-
-    Ok(())
 }
 
-/// Packed section indices from waterfall budgeting.
-struct PackedSections {
-    scout: Vec<usize>,
-    code: Vec<usize>,
-    risk: Vec<usize>,
-    tests: Vec<usize>,
-    placement: Vec<usize>,
-    notes: Vec<usize>,
-    total_used: usize,
+/// Build budgeted JSON for a task result using full waterfall token budgeting.
+///
+/// Shared between CLI `cqs task --tokens --json` and batch `task --tokens`.
+pub(crate) fn task_to_budgeted_json(
+    result: &cqs::TaskResult,
+    root: &std::path::Path,
+    embedder: &Embedder,
     budget: usize,
+) -> serde_json::Value {
+    let packed = waterfall_pack(result, embedder, budget, super::JSON_OVERHEAD_PER_RESULT);
+    budgeted_json(result, root, &packed)
 }
 
-fn output_json_budgeted(
+fn budgeted_json(
     result: &cqs::TaskResult,
     root: &std::path::Path,
     packed: &PackedSections,
-) -> Result<()> {
-    let scout_json = build_scout_json(result, root, &packed.scout);
+) -> serde_json::Value {
+    let mut scout_json = build_scout_json(result, root, &packed.scout);
     let code_json = build_code_json(result, root, &packed.code);
     let risk_json = build_risk_json(result, &packed.risk);
     let tests_json = build_tests_json(result, root, &packed.tests);
     let placement_json = build_placement_json(result, root, &packed.placement);
     let notes_json = build_notes_json(result, &packed.notes);
+    scout_json["relevant_notes"] = serde_json::json!(notes_json);
 
-    let output = serde_json::json!({
+    serde_json::json!({
         "description": result.description,
         "scout": scout_json,
         "code": code_json,
         "risk": risk_json,
         "tests": tests_json,
         "placement": placement_json,
-        "notes": notes_json,
         "summary": {
             "total_files": result.summary.total_files,
             "total_functions": result.summary.total_functions,
@@ -269,8 +313,15 @@ fn output_json_budgeted(
         },
         "token_count": packed.total_used,
         "token_budget": packed.budget,
-    });
+    })
+}
 
+fn output_json_budgeted(
+    result: &cqs::TaskResult,
+    root: &std::path::Path,
+    packed: &PackedSections,
+) -> Result<()> {
+    let output = budgeted_json(result, root, packed);
     println!("{}", serde_json::to_string_pretty(&output)?);
     Ok(())
 }
@@ -330,21 +381,7 @@ fn build_code_json(
 ) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .map(|&i| {
-            let c = &result.code[i];
-            serde_json::json!({
-                "name": c.name,
-                "file": cqs::rel_display(&c.file, root),
-                "line_start": c.line_start,
-                "line_end": c.line_end,
-                "language": c.language.to_string(),
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "content": c.content,
-                "score": c.score,
-                "depth": c.depth,
-            })
-        })
+        .map(|&i| result.code[i].to_json(root))
         .collect()
 }
 
@@ -353,15 +390,7 @@ fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
         .iter()
         .map(|&i| {
             let (name, r) = &result.risk[i];
-            serde_json::json!({
-                "name": name,
-                "risk_level": format!("{:?}", r.risk_level),
-                "blast_radius": format!("{:?}", r.blast_radius),
-                "score": r.score,
-                "caller_count": r.caller_count,
-                "test_count": r.test_count,
-                "coverage": r.coverage,
-            })
+            r.to_json(name)
         })
         .collect()
 }
@@ -373,15 +402,7 @@ fn build_tests_json(
 ) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .map(|&i| {
-            let t = &result.tests[i];
-            serde_json::json!({
-                "name": t.name,
-                "file": cqs::rel_display(&t.file, root),
-                "line": t.line,
-                "call_depth": t.call_depth,
-            })
-        })
+        .map(|&i| result.tests[i].to_json(root))
         .collect()
 }
 
@@ -392,16 +413,7 @@ fn build_placement_json(
 ) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .map(|&i| {
-            let s = &result.placement[i];
-            serde_json::json!({
-                "file": cqs::rel_display(&s.file, root),
-                "score": s.score,
-                "insertion_line": s.insertion_line,
-                "near_function": s.near_function,
-                "reason": s.reason,
-            })
-        })
+        .map(|&i| result.placement[i].to_json(root))
         .collect()
 }
 
@@ -694,21 +706,22 @@ mod tests {
 
     #[test]
     fn test_waterfall_allocation_percentages() {
-        let total = 0.15 + 0.50 + 0.15 + 0.10 + 0.10;
+        // Notes takes the remainder, so the explicit weights must sum to ≤1.0
+        let total = WATERFALL_SCOUT + WATERFALL_CODE + WATERFALL_IMPACT + WATERFALL_PLACEMENT;
         assert!(
-            (total - 1.0_f64).abs() < 0.001,
-            "Budget percentages must sum to 1.0"
+            total <= 1.0 && total >= 0.9,
+            "Explicit budget weights must leave a small remainder for notes, got {total}"
         );
     }
 
     #[test]
     fn test_waterfall_section_budgets() {
         let budget: usize = 1000;
-        let scout = (budget as f64 * 0.15) as usize;
-        let code = (budget as f64 * 0.50) as usize;
-        let impact = (budget as f64 * 0.15) as usize;
-        let placement = (budget as f64 * 0.10) as usize;
-        let notes = (budget as f64 * 0.10) as usize;
+        let scout = (budget as f64 * WATERFALL_SCOUT) as usize;
+        let code = (budget as f64 * WATERFALL_CODE) as usize;
+        let impact = (budget as f64 * WATERFALL_IMPACT) as usize;
+        let placement = (budget as f64 * WATERFALL_PLACEMENT) as usize;
+        let notes = budget - scout - code - impact - placement;
         assert_eq!(scout + code + impact + placement + notes, budget);
     }
 

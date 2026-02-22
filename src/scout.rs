@@ -124,7 +124,13 @@ pub fn scout_with_options(
         .embed_query(task)
         .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
     let graph = store.get_call_graph()?;
-    let test_chunks = store.find_test_chunks()?;
+    let test_chunks = match store.find_test_chunks() {
+        Ok(tc) => tc,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to load test chunks, scout will skip test analysis");
+            Vec::new()
+        }
+    };
     scout_core(
         store,
         &query_embedding,
@@ -314,7 +320,7 @@ fn compute_modify_threshold(results: &[crate::store::SearchResult]) -> f32 {
     scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
 
     if scores.len() <= 1 {
-        return scores.first().copied().unwrap_or(0.0);
+        return scores.first().copied().unwrap_or(f32::MAX);
     }
 
     // Search the top half for the largest relative gap
@@ -560,7 +566,7 @@ mod tests {
 
     #[test]
     fn test_compute_modify_threshold_empty() {
-        assert!((compute_modify_threshold(&[]) - 0.0).abs() < f32::EPSILON);
+        assert_eq!(compute_modify_threshold(&[]), f32::MAX);
     }
 
     #[test]

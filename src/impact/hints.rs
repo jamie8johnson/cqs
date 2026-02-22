@@ -149,6 +149,84 @@ pub fn compute_risk_batch(
         .collect()
 }
 
+/// Compute risk scores and collect deduplicated tests in a single pass.
+///
+/// Shares BFS results across risk scoring and test collection, avoiding the
+/// duplicate `reverse_bfs` that occurs when calling `compute_risk_batch` and
+/// `find_affected_tests_with_chunks` separately.
+pub fn compute_risk_and_tests(
+    targets: &[&str],
+    graph: &CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> (Vec<RiskScore>, Vec<super::TestInfo>) {
+    let _span = tracing::info_span!("compute_risk_and_tests", targets = targets.len()).entered();
+
+    let mut scores = Vec::with_capacity(targets.len());
+    let mut all_tests = Vec::new();
+    let mut seen_tests = std::collections::HashSet::new();
+
+    for &name in targets {
+        // Single BFS per target — reused for both risk and tests
+        let ancestors = reverse_bfs(graph, name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
+        // Risk scoring (same logic as compute_risk_batch)
+        let caller_count = graph.reverse.get(name).map(|v| v.len()).unwrap_or(0);
+        let test_count = test_chunks
+            .iter()
+            .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
+            .count();
+        let coverage = if caller_count == 0 {
+            if test_count > 0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            (test_count as f32 / caller_count as f32).min(1.0)
+        };
+        let score = caller_count as f32 * (1.0 - coverage);
+        let risk_level = if caller_count == 0 && test_count == 0 {
+            RiskLevel::Medium
+        } else if score >= RISK_THRESHOLD_HIGH {
+            RiskLevel::High
+        } else if score >= RISK_THRESHOLD_MEDIUM {
+            RiskLevel::Medium
+        } else {
+            RiskLevel::Low
+        };
+        let blast_radius = match caller_count {
+            0..=2 => RiskLevel::Low,
+            3..=10 => RiskLevel::Medium,
+            _ => RiskLevel::High,
+        };
+        scores.push(RiskScore {
+            caller_count,
+            test_count,
+            coverage,
+            risk_level,
+            blast_radius,
+            score,
+        });
+
+        // Test collection — same BFS, deduplicated across targets
+        for test in test_chunks {
+            if let Some(&depth) = ancestors.get(&test.name) {
+                if depth > 0 && seen_tests.insert((test.name.clone(), test.file.clone())) {
+                    all_tests.push(super::TestInfo {
+                        name: test.name.clone(),
+                        file: test.file.clone(),
+                        line: test.line_start,
+                        call_depth: depth,
+                    });
+                }
+            }
+        }
+    }
+
+    all_tests.sort_by_key(|t| t.call_depth);
+    (scores, all_tests)
+}
+
 /// Find the most-called functions in the codebase (hotspots).
 ///
 /// Returns `(function_name, caller_count)` sorted by caller count descending.
