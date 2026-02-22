@@ -178,6 +178,7 @@ src/
     update-tears/ - Session state capture for context persistence
     release/      - Version bump, changelog, publish workflow
     audit/        - 14-category code audit with parallel agents
+    red-team/     - Adversarial security audit (attacker mindset, PoC-required)
     pr/           - WSL-safe PR creation
     cqs-bootstrap/ - New project setup with tears infrastructure
     reindex/      - Rebuild index with before/after stats

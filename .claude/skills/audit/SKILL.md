@@ -54,16 +54,24 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
 
 - `cqs "query" --json` — semantic search (finds code by concept, not text)
 - `cqs "name" --name-only --json` — definition lookup by function/type name
+- `cqs read <path>` — file with notes injected as comments. Use instead of raw Read.
+- `cqs read --focus <fn>` — function + type dependencies only. Saves tokens.
 - `cqs dead --json` — find dead code (uncalled functions)
 - `cqs callers <fn> --json` — who calls this function
 - `cqs callees <fn> --json` — what this function calls
 - `cqs explain <fn> --json` — function card (signature, callers, callees, similar)
 - `cqs similar <fn> --json` — find duplicate/similar code
+- `cqs deps <type> --json` — type dependencies: who uses this type
 - `cqs context <file> --json` — module overview (chunks, callers, callees)
 - `cqs gather "query" --json` — smart context: seed search + call graph BFS
+- `cqs scout "task" --json` — pre-investigation: search + callers/tests + staleness + notes
+- `cqs task "description" --json` — implementation brief: scout + gather + impact + placement
 - `cqs impact <fn> --json` — what breaks if you change this
 - `cqs test-map <fn> --json` — tests that exercise this function
 - `cqs trace <source> <target> --json` — shortest call path between two functions
+- `cqs review --json` — diff review: impact + notes + risk scoring
+- `cqs health --json` — codebase quality snapshot: dead code, staleness, hotspots
+- `cqs stale --json` — check index freshness (files changed since last index)
 ```
 
 6. **Shutdown team** after all agents complete
