@@ -324,8 +324,8 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         BatchCmd::Onboard {
             query,
             depth,
-            tokens: _tokens,
-        } => handlers::dispatch_onboard(ctx, &query, depth),
+            tokens,
+        } => handlers::dispatch_onboard(ctx, &query, depth, tokens),
         BatchCmd::Scout {
             query,
             limit,
