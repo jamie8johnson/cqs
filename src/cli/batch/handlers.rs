@@ -636,15 +636,19 @@ pub(super) fn dispatch_test_map(
             if *depth > 0 {
                 let mut chain = Vec::new();
                 let mut current = test.name.clone();
-                while !current.is_empty() {
+                let chain_limit = max_depth + 1;
+                while !current.is_empty() && chain.len() < chain_limit {
                     chain.push(current.clone());
                     if current == target_name {
                         break;
                     }
-                    current = ancestors
-                        .get(&current)
-                        .map(|(_, p)| p.clone())
-                        .unwrap_or_default();
+                    current = match ancestors.get(&current) {
+                        Some((_, p)) if !p.is_empty() => p.clone(),
+                        _ => {
+                            tracing::debug!(node = %current, "Chain walk hit dead end");
+                            break;
+                        }
+                    };
                 }
                 let rel_file = cqs::rel_display(&test.file, &ctx.root);
                 matches.push(TestMatch {

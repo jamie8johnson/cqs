@@ -182,7 +182,7 @@ pub fn rewrite_notes_file(
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
     // Acquire exclusive lock before the read-modify-write cycle
-    let lock_file = std::fs::OpenOptions::new()
+    let mut lock_file = std::fs::OpenOptions::new()
         .read(true)
         .open(notes_path)
         .map_err(|e| {
@@ -199,9 +199,9 @@ pub fn rewrite_notes_file(
     })?;
     // lock_file held until end of function (dropped automatically)
 
-    // Size guard (same limit as read path)
+    // Size guard (same limit as read path) — use locked fd, not a separate syscall
     const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
-    if let Ok(meta) = std::fs::metadata(notes_path) {
+    if let Ok(meta) = lock_file.metadata() {
         if meta.len() > MAX_NOTES_FILE_SIZE {
             return Err(NoteError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -214,7 +214,10 @@ pub fn rewrite_notes_file(
             )));
         }
     }
-    let content = std::fs::read_to_string(notes_path).map_err(|e| {
+    // Read from the locked fd — avoids a separate open that could see different content
+    use std::io::Read;
+    let mut content = String::new();
+    lock_file.read_to_string(&mut content).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
             format!("{}: {}", notes_path.display(), e),

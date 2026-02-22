@@ -210,6 +210,9 @@ pub fn validate_ref_name(name: &str) -> Result<(), &'static str> {
     if name.is_empty() {
         return Err("Reference name cannot be empty");
     }
+    if name.contains('\0') {
+        return Err("Reference name cannot contain null bytes");
+    }
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err("Reference name cannot contain '/', '\\', or '..'");
     }
@@ -391,6 +394,7 @@ mod tests {
         assert!(validate_ref_name("..").is_err());
         assert!(validate_ref_name(".").is_err());
         assert!(validate_ref_name("").is_err());
+        assert!(validate_ref_name("foo\0bar").is_err());
     }
 
     #[test]

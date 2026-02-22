@@ -22,7 +22,19 @@ pub enum ChunkRole {
     Dependency,
 }
 
+impl ChunkRole {
+    /// Stable string representation for JSON serialization.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ChunkRole::ModifyTarget => "modify_target",
+            ChunkRole::TestToUpdate => "test_to_update",
+            ChunkRole::Dependency => "dependency",
+        }
+    }
+}
+
 /// A chunk in the scout result with hints
+#[derive(Debug, Clone)]
 pub struct ScoutChunk {
     /// Function/class/etc. name
     pub name: String,
@@ -35,14 +47,15 @@ pub struct ScoutChunk {
     /// Role classification
     pub role: ChunkRole,
     /// Number of callers
-    pub caller_count: u64,
+    pub caller_count: usize,
     /// Number of tests reaching this function
-    pub test_count: u64,
+    pub test_count: usize,
     /// Semantic search score (0.0-1.0)
     pub search_score: f32,
 }
 
 /// A file group in the scout result
+#[derive(Debug, Clone)]
 pub struct FileGroup {
     /// File path
     pub file: PathBuf,
@@ -55,6 +68,7 @@ pub struct FileGroup {
 }
 
 /// Summary counts
+#[derive(Debug, Clone)]
 pub struct ScoutSummary {
     pub total_files: usize,
     pub total_functions: usize,
@@ -63,6 +77,7 @@ pub struct ScoutSummary {
 }
 
 /// Complete scout result
+#[derive(Debug, Clone)]
 pub struct ScoutResult {
     pub file_groups: Vec<FileGroup>,
     pub relevant_notes: Vec<NoteSummary>,
@@ -81,6 +96,7 @@ pub const DEFAULT_SCOUT_SEARCH_LIMIT: usize = 15;
 pub const DEFAULT_SCOUT_SEARCH_THRESHOLD: f32 = 0.2;
 
 /// Options for customizing scout behavior.
+#[derive(Debug, Clone)]
 pub struct ScoutOptions {
     /// Number of search results to retrieve (default: 15)
     pub search_limit: usize,
@@ -172,6 +188,8 @@ pub(crate) fn scout_core(
         opts.search_threshold,
     )?;
 
+    tracing::debug!(search_results = results.len(), "Scout search complete");
+
     if results.is_empty() {
         return Ok(ScoutResult {
             file_groups: Vec::new(),
@@ -205,8 +223,12 @@ pub(crate) fn scout_core(
     };
 
     // 5. Check staleness
-    let origins: Vec<&str> = file_map.keys().map(|p| p.to_str().unwrap_or("")).collect();
-    let stale_set = match store.check_origins_stale(&origins, root) {
+    let origins: Vec<String> = file_map
+        .keys()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let origin_refs: Vec<&str> = origins.iter().map(|s| s.as_str()).collect();
+    let stale_set = match store.check_origins_stale(&origin_refs, root) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to check staleness");
@@ -220,6 +242,7 @@ pub(crate) fn scout_core(
     // in the sorted scores and split there. Scale-independent — works on
     // cosine (0-1), RRF (~0.01-0.03), or any future scoring.
     let modify_threshold = compute_modify_threshold(&results);
+    tracing::debug!(modify_threshold, "Gap-based threshold computed");
 
     // 7. Build file groups
     let mut groups: Vec<FileGroup> = file_map
@@ -251,8 +274,8 @@ pub(crate) fn scout_core(
                         signature: chunk.signature.clone(),
                         line_start: chunk.line_start,
                         role,
-                        caller_count: hints.caller_count as u64,
-                        test_count: hints.test_count as u64,
+                        caller_count: hints.caller_count,
+                        test_count: hints.test_count,
                         search_score: *score,
                     }
                 })
@@ -268,11 +291,7 @@ pub(crate) fn scout_core(
         .collect();
 
     // Sort by relevance, take top N
-    groups.sort_by(|a, b| {
-        b.relevance_score
-            .partial_cmp(&a.relevance_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    groups.sort_by(|a, b| b.relevance_score.total_cmp(&a.relevance_score));
     groups.truncate(limit);
 
     // 7. Find relevant notes by mention overlap
@@ -308,16 +327,18 @@ pub(crate) fn scout_core(
 /// low-relevance (Dependency) chunks using gap detection.
 ///
 /// Sorts non-test scores descending, finds the largest relative gap between
-/// consecutive scores, and returns the score at the bottom of the top cluster.
+/// consecutive scores, and returns the score at the top of the gap (i.e. the
+/// lowest score that still qualifies as a ModifyTarget).
 /// Guarantees at least 1 ModifyTarget, at most half the non-test results.
 /// If no clear gap exists (all gaps < 10%), only the top result qualifies.
+/// Tied scores at the threshold are included as ModifyTargets.
 fn compute_modify_threshold(results: &[crate::store::SearchResult]) -> f32 {
     let mut scores: Vec<f32> = results
         .iter()
         .filter(|r| !crate::is_test_chunk(&r.chunk.name, &r.chunk.file.to_string_lossy()))
         .map(|r| r.score)
         .collect();
-    scores.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    scores.sort_by(|a, b| b.total_cmp(a));
 
     if scores.len() <= 1 {
         return scores.first().copied().unwrap_or(f32::MAX);
@@ -413,11 +434,7 @@ pub fn scout_to_json(result: &ScoutResult, root: &Path) -> serde_json::Value {
                         "chunk_type": c.chunk_type.to_string(),
                         "signature": c.signature,
                         "line_start": c.line_start,
-                        "role": match c.role {
-                            ChunkRole::ModifyTarget => "modify_target",
-                            ChunkRole::TestToUpdate => "test_to_update",
-                            ChunkRole::Dependency => "dependency",
-                        },
+                        "role": c.role.as_str(),
                         "caller_count": c.caller_count,
                         "test_count": c.test_count,
                         "search_score": c.search_score,
@@ -672,5 +689,53 @@ mod tests {
         assert_eq!(ChunkRole::ModifyTarget, ChunkRole::ModifyTarget);
         assert_ne!(ChunkRole::ModifyTarget, ChunkRole::Dependency);
         assert_ne!(ChunkRole::TestToUpdate, ChunkRole::Dependency);
+    }
+
+    #[test]
+    fn test_chunk_role_as_str() {
+        assert_eq!(ChunkRole::ModifyTarget.as_str(), "modify_target");
+        assert_eq!(ChunkRole::TestToUpdate.as_str(), "test_to_update");
+        assert_eq!(ChunkRole::Dependency.as_str(), "dependency");
+    }
+
+    // TC-4: compute_modify_threshold with all-test-chunk inputs
+    #[test]
+    fn test_compute_modify_threshold_all_tests() {
+        let results = vec![
+            mock_result("test_a", "src/a.rs", 0.9),
+            mock_result("test_b", "src/b.rs", 0.8),
+            mock_result("test_c", "src/c.rs", 0.7),
+        ];
+        let threshold = compute_modify_threshold(&results);
+        // All chunks are tests → no non-test scores → should return f32::MAX
+        assert_eq!(threshold, f32::MAX);
+    }
+
+    // TC-6: classify_role at exact threshold with test names
+    #[test]
+    fn test_classify_role_exact_threshold_test_name() {
+        // Test name at exact threshold — test detection takes priority over score
+        assert_eq!(
+            classify_role(0.5, "test_foo", "src/lib.rs", 0.5),
+            ChunkRole::TestToUpdate
+        );
+        // Non-test name at exact threshold — should be ModifyTarget
+        assert_eq!(
+            classify_role(0.5, "process_data", "src/lib.rs", 0.5),
+            ChunkRole::ModifyTarget
+        );
+        // Test name below threshold — still TestToUpdate
+        assert_eq!(
+            classify_role(0.3, "test_bar", "src/lib.rs", 0.5),
+            ChunkRole::TestToUpdate
+        );
+    }
+
+    // TC-10: note_mention_matches_file with empty strings
+    #[test]
+    fn test_note_mention_matches_file_empty() {
+        assert!(!note_mention_matches_file("", "src/lib.rs"));
+        assert!(!note_mention_matches_file("lib.rs", ""));
+        assert!(!note_mention_matches_file("", ""));
     }
 }

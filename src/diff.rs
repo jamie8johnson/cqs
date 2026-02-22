@@ -179,7 +179,7 @@ pub fn semantic_diff(
     // Entries with None similarity (missing embeddings) sort to the end
     // rather than being conflated with maximally-changed (similarity=0.0).
     modified.sort_by(|a, b| match (a.similarity, b.similarity) {
-        (Some(sa), Some(sb)) => sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal),
+        (Some(sa), Some(sb)) => sa.total_cmp(&sb),
         (Some(_), None) => std::cmp::Ordering::Less,
         (None, Some(_)) => std::cmp::Ordering::Greater,
         (None, None) => std::cmp::Ordering::Equal,
@@ -306,7 +306,7 @@ mod tests {
 
         // Apply the same sort as semantic_diff
         entries.sort_by(|a, b| match (a.similarity, b.similarity) {
-            (Some(sa), Some(sb)) => sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(sa), Some(sb)) => sa.total_cmp(&sb),
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (None, None) => std::cmp::Ordering::Equal,

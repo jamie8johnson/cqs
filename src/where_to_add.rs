@@ -18,6 +18,7 @@ use crate::{AnalysisError, Store};
 /// when adding new conventions. Adding a new naming convention or error handling
 /// style is a single function change in `detect_naming_convention()` or
 /// `extract_patterns()`.
+#[derive(Debug, Clone)]
 pub struct LocalPatterns {
     /// Common imports/use statements
     pub imports: Vec<String>,
@@ -32,6 +33,7 @@ pub struct LocalPatterns {
 }
 
 /// Suggestion for where to place new code
+#[derive(Debug, Clone)]
 pub struct FileSuggestion {
     /// File path
     pub file: PathBuf,
@@ -61,6 +63,7 @@ impl FileSuggestion {
 }
 
 /// Result from placement analysis
+#[derive(Debug, Clone)]
 pub struct PlacementResult {
     pub suggestions: Vec<FileSuggestion>,
 }
@@ -72,6 +75,7 @@ pub const DEFAULT_PLACEMENT_SEARCH_LIMIT: usize = 10;
 pub const DEFAULT_PLACEMENT_SEARCH_THRESHOLD: f32 = 0.1;
 
 /// Options for customizing placement suggestion behavior.
+#[derive(Debug, Clone)]
 pub struct PlacementOptions {
     /// Number of search results to retrieve (default: 10)
     pub search_limit: usize,
@@ -195,7 +199,7 @@ fn suggest_placement_with_embedding_and_options(
             (file, total_score, chunks)
         })
         .collect();
-    file_scores.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    file_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
     file_scores.truncate(limit);
 
     // Batch-fetch all file chunks upfront (single query instead of per-file N+1)
@@ -222,9 +226,7 @@ fn suggest_placement_with_embedding_and_options(
             .unwrap_or_default();
 
         // Find the most similar chunk in this file (highest individual score)
-        let best_chunk = chunks
-            .iter()
-            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let best_chunk = chunks.iter().max_by(|a, b| a.0.total_cmp(&b.0));
 
         let (near_function, insertion_line) = match best_chunk {
             Some((_, chunk)) => (chunk.name.clone(), chunk.line_end + 1),

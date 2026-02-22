@@ -40,31 +40,31 @@ Generated: 2026-02-22
 
 | # | Finding | Difficulty | Location | Status |
 |---|---------|-----------|----------|--------|
-| 1 | **AD-1**: TaskResult/TaskSummary missing Debug/Clone derives | easy | task.rs:20-45 | |
-| 2 | **AD-2**: ScoutChunk/FileGroup/ScoutSummary/ScoutResult missing derives | easy | scout.rs:26-70 | |
-| 3 | **AD-3**: PlacementResult/FileSuggestion etc missing derives | easy | where_to_add.rs:21-53, scout.rs:84 | |
-| 4 | **AD-5**: ScoutChunk u64 vs usize for counts | easy | scout.rs:38-40 | |
-| 5 | **OB-1**: compute_modify_threshold result not logged | easy | scout.rs:308 | |
-| 6 | **OB-2**: scout_core missing search result count in logs | easy | scout.rs:154-299 | |
-| 7 | **OB-3**: dispatch_task batch token budgeting not logged | easy | batch/handlers.rs:1460-1493 | |
-| 8 | **EH-2**: dispatch_test_map unwrap_or_default without tracing | easy | batch/handlers.rs:644-647 | |
-| 9 | **EH-4/PB-2**: scout_core to_str().unwrap_or("") — empty string for non-UTF8 | easy | scout.rs:202,223 | |
-| 10 | **AC-3**: index_pack includes first item with budget=0 | easy | cli/commands/task.rs:56 | |
-| 11 | **AC-5**: compute_modify_threshold doc inaccuracy (tied scores) | easy | scout.rs:336-337 | |
-| 12 | **CQ-5**: print_code_section_idx double-iterates content lines | easy | cli/commands/task.rs:554-559 | |
-| 13 | **PF-4**: Waterfall budgeting clones code content strings unnecessarily | easy | cli/commands/task.rs:107 | |
-| 14 | **PF-6**: dispatch_task serializes all code then overwrites with budgeted subset | easy | batch/handlers.rs:1457,1490 | |
-| 15 | **EX-3**: ChunkRole string serialization duplicated in 4 match arms | easy | scout.rs:411, cli/commands/task.rs:297,515, cli/commands/scout.rs:132 | |
-| 16 | **RT-DATA-6**: partial_cmp unwrap_or(Equal) — use f32::total_cmp instead | easy | store/mod.rs:674, store/notes.rs:164, diff.rs:181, search.rs:714 | |
-| 17 | **RT-INJ-9**: cmd_ref_add validates name late — confusing error | easy | cli/commands/reference.rs:64-89 | |
-| 18 | **RT-RES-3**: --tokens 0 emits content despite zero budget | easy | cli/commands/task.rs:56 | |
-| 19 | **RT-RES-8**: dispatch_test_map chain loop lacks iteration bound | easy | batch/handlers.rs:638-648 | |
-| 20 | **TC-4**: compute_modify_threshold untested with all-test-chunk inputs | easy | scout.rs:308-341 | |
-| 21 | **TC-6**: classify_role untested at exact threshold with test names | easy | scout.rs:344-352 | |
-| 22 | **TC-8**: index_pack untested with zero budget | easy | cli/commands/task.rs:36-64 | |
-| 23 | **TC-10**: note_mention_matches_file untested with empty strings | easy | scout.rs:383-391 | |
-| 24 | **RT-INJ-4**: validate_ref_name doesn't reject null bytes | easy | reference.rs:209-220 | |
-| 25 | **RT-DATA-7**: rewrite_notes_file reads from separate fd while holding lock | easy | note.rs:185-222 | |
+| 1 | **AD-1**: TaskResult/TaskSummary missing Debug/Clone derives | easy | task.rs:20-45 | ✅ fixed |
+| 2 | **AD-2**: ScoutChunk/FileGroup/ScoutSummary/ScoutResult missing derives | easy | scout.rs:26-70 | ✅ fixed |
+| 3 | **AD-3**: PlacementResult/FileSuggestion etc missing derives | easy | where_to_add.rs:21-53, scout.rs:84 | ✅ fixed |
+| 4 | **AD-5**: ScoutChunk u64 vs usize for counts | easy | scout.rs:38-40 | ✅ fixed |
+| 5 | **OB-1**: compute_modify_threshold result not logged | easy | scout.rs:308 | ✅ fixed |
+| 6 | **OB-2**: scout_core missing search result count in logs | easy | scout.rs:154-299 | ✅ fixed |
+| 7 | **OB-3**: dispatch_task batch token budgeting not logged | easy | batch/handlers.rs:1460-1493 | ✅ fixed (P2) |
+| 8 | **EH-2**: dispatch_test_map unwrap_or_default without tracing | easy | batch/handlers.rs:644-647 | ✅ fixed |
+| 9 | **EH-4/PB-2**: scout_core to_str().unwrap_or("") — empty string for non-UTF8 | easy | scout.rs:202,223 | ✅ fixed |
+| 10 | **AC-3**: index_pack includes first item with budget=0 | easy | cli/commands/task.rs:56 | ✅ fixed |
+| 11 | **AC-5**: compute_modify_threshold doc inaccuracy (tied scores) | easy | scout.rs:336-337 | ✅ fixed |
+| 12 | **CQ-5**: print_code_section_idx double-iterates content lines | easy | cli/commands/task.rs:554-559 | ✅ fixed |
+| 13 | **PF-4**: Waterfall budgeting clones code content strings unnecessarily | easy | cli/commands/task.rs:107 | ✅ fixed |
+| 14 | **PF-6**: dispatch_task serializes all code then overwrites with budgeted subset | easy | batch/handlers.rs:1457,1490 | ✅ fixed (P2) |
+| 15 | **EX-3**: ChunkRole string serialization duplicated in 4 match arms | easy | scout.rs:411, cli/commands/task.rs:297,515, cli/commands/scout.rs:132 | ✅ fixed |
+| 16 | **RT-DATA-6**: partial_cmp unwrap_or(Equal) — use f32::total_cmp instead | easy | store/mod.rs:674, store/notes.rs:164, diff.rs:181, search.rs:714 | ✅ fixed |
+| 17 | **RT-INJ-9**: cmd_ref_add validates name late — confusing error | easy | cli/commands/reference.rs:64-89 | ✅ fixed |
+| 18 | **RT-RES-3**: --tokens 0 emits content despite zero budget | easy | cli/commands/task.rs:56 | ✅ fixed |
+| 19 | **RT-RES-8**: dispatch_test_map chain loop lacks iteration bound | easy | batch/handlers.rs:638-648 | ✅ fixed |
+| 20 | **TC-4**: compute_modify_threshold untested with all-test-chunk inputs | easy | scout.rs:308-341 | ✅ fixed |
+| 21 | **TC-6**: classify_role untested at exact threshold with test names | easy | scout.rs:344-352 | ✅ fixed |
+| 22 | **TC-8**: index_pack untested with zero budget | easy | cli/commands/task.rs:36-64 | ✅ fixed |
+| 23 | **TC-10**: note_mention_matches_file untested with empty strings | easy | scout.rs:383-391 | ✅ fixed |
+| 24 | **RT-INJ-4**: validate_ref_name doesn't reject null bytes | easy | reference.rs:209-220 | ✅ fixed |
+| 25 | **RT-DATA-7**: rewrite_notes_file reads from separate fd while holding lock | easy | note.rs:185-222 | ✅ fixed |
 
 ## P4: Hard or Low Impact — Create Issues
 

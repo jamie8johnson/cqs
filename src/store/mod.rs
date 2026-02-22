@@ -671,7 +671,7 @@ impl Store {
             .into_iter()
             .map(|(k, v)| (k.to_string(), v))
             .collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
         sorted.truncate(limit);
         sorted
     }
