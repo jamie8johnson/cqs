@@ -100,9 +100,10 @@ The convert module spawns external processes for format conversion:
 The `cqs read` command validates paths:
 
 ```rust
-let canonical = file_path.canonicalize()?;
-if !canonical.starts_with(&project_root) {
-    return Err("Path traversal not allowed");
+let canonical = dunce::canonicalize(&file_path)?;
+let project_canonical = dunce::canonicalize(root)?;
+if !canonical.starts_with(&project_canonical) {
+    bail!("Path traversal not allowed: {}", path);
 }
 ```
 
