@@ -205,4 +205,205 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "big");
     }
+
+    // --- Helpers for populated-store tests ---
+
+    use crate::embedder::Embedding;
+    use crate::language::ChunkType;
+    use crate::parser::types::{Chunk, Language};
+    use std::path::PathBuf;
+
+    fn make_chunk(name: &str, file: &str, lang: Language) -> Chunk {
+        let content = format!("fn {}() {{ /* body */ }}", name);
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        Chunk {
+            id: format!("{}:1:{}", file, &hash[..8]),
+            file: PathBuf::from(file),
+            language: lang,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        }
+    }
+
+    /// Create an embedding with a distinct direction based on `seed`.
+    ///
+    /// Uses `seed` as the index of a "hot" dimension (set to 1.0) while the
+    /// rest are 0.0, ensuring different seeds produce orthogonal vectors
+    /// (cosine similarity ≈ 0). The seed is taken modulo 768.
+    fn make_emb(seed: f32) -> Embedding {
+        let mut v = vec![0.0f32; 768];
+        let idx = (seed.abs() as usize) % 768;
+        v[idx] = 1.0;
+        v.push(0.0); // sentiment dimension
+        Embedding::new(v)
+    }
+
+    // --- Populated-store tests (TC-14) ---
+
+    #[test]
+    fn test_drift_with_matching_functions() {
+        let (ref_store, _d1) = make_store();
+        let (proj_store, _d2) = make_store();
+
+        let chunk = make_chunk("process_data", "src/lib.rs", Language::Rust);
+        let emb = make_emb(1.0);
+
+        ref_store.upsert_chunk(&chunk, &emb, Some(100)).unwrap();
+        proj_store.upsert_chunk(&chunk, &emb, Some(100)).unwrap();
+
+        let result = detect_drift(&ref_store, &proj_store, "test-ref", 0.95, 0.0, None).unwrap();
+
+        assert_eq!(result.total_compared, 1);
+        assert_eq!(result.unchanged, 1);
+        assert!(
+            result.drifted.is_empty(),
+            "identical embeddings should produce no drift"
+        );
+    }
+
+    #[test]
+    fn test_drift_with_different_embeddings() {
+        let (ref_store, _d1) = make_store();
+        let (proj_store, _d2) = make_store();
+
+        let chunk = make_chunk("process_data", "src/lib.rs", Language::Rust);
+        let emb_ref = make_emb(1.0);
+        let emb_proj = make_emb(2.0);
+
+        ref_store.upsert_chunk(&chunk, &emb_ref, Some(100)).unwrap();
+        proj_store
+            .upsert_chunk(&chunk, &emb_proj, Some(100))
+            .unwrap();
+
+        let result = detect_drift(&ref_store, &proj_store, "test-ref", 0.95, 0.0, None).unwrap();
+
+        assert!(
+            result.total_compared >= 1,
+            "should compare at least one pair"
+        );
+        assert!(
+            !result.drifted.is_empty(),
+            "different embeddings should produce drift"
+        );
+        let entry = &result.drifted[0];
+        assert_eq!(entry.name, "process_data");
+        assert!(entry.drift > 0.0, "drift should be positive");
+        assert!(
+            entry.similarity < 0.95,
+            "similarity should be below threshold"
+        );
+    }
+
+    #[test]
+    fn test_drift_min_drift_filter_with_stores() {
+        let (ref_store, _d1) = make_store();
+        let (proj_store, _d2) = make_store();
+
+        // Use partially overlapping embeddings so drift is moderate (not 0 or 1).
+        // Ref: hot at index 0. Project: equal weight at indices 0 and 1.
+        // Cosine similarity = 1 * (1/sqrt(2)) / (1 * 1) = 0.707...
+        // Drift = 1 - 0.707 ≈ 0.293
+        let mut ref_v = vec![0.0f32; 768];
+        ref_v[0] = 1.0;
+        ref_v.push(0.0);
+        let emb_ref = Embedding::new(ref_v);
+
+        let mut proj_v = vec![0.0f32; 768];
+        proj_v[0] = 1.0;
+        proj_v[1] = 1.0;
+        let norm = (2.0f32).sqrt();
+        proj_v[0] /= norm;
+        proj_v[1] /= norm;
+        proj_v.push(0.0);
+        let emb_proj = Embedding::new(proj_v);
+
+        let chunk = make_chunk("process_data", "src/lib.rs", Language::Rust);
+
+        ref_store.upsert_chunk(&chunk, &emb_ref, Some(100)).unwrap();
+        proj_store
+            .upsert_chunk(&chunk, &emb_proj, Some(100))
+            .unwrap();
+
+        // First, confirm drift exists with min_drift=0.0
+        let baseline = detect_drift(&ref_store, &proj_store, "test-ref", 0.95, 0.0, None).unwrap();
+        assert!(
+            !baseline.drifted.is_empty(),
+            "precondition: drift should exist (drift ≈ 0.29)"
+        );
+        let actual_drift = baseline.drifted[0].drift;
+        assert!(
+            actual_drift > 0.2 && actual_drift < 0.4,
+            "expected drift ≈ 0.29, got {actual_drift}"
+        );
+
+        // Now filter with min_drift above the actual drift — should exclude everything
+        let result = detect_drift(&ref_store, &proj_store, "test-ref", 0.95, 0.5, None).unwrap();
+
+        assert!(
+            result.drifted.is_empty(),
+            "min_drift=0.5 should filter out drift of ≈0.29"
+        );
+        // total_compared still counts the pair (it was compared, just filtered from output)
+        assert!(result.total_compared >= 1);
+    }
+
+    #[test]
+    fn test_drift_language_filter() {
+        let (ref_store, _d1) = make_store();
+        let (proj_store, _d2) = make_store();
+
+        // Insert a Rust function with different embeddings
+        let rust_chunk = make_chunk("rust_func", "src/lib.rs", Language::Rust);
+        let emb_a = make_emb(1.0);
+        let emb_b = make_emb(2.0);
+
+        ref_store
+            .upsert_chunk(&rust_chunk, &emb_a, Some(100))
+            .unwrap();
+        proj_store
+            .upsert_chunk(&rust_chunk, &emb_b, Some(100))
+            .unwrap();
+
+        // Insert a Python function with different embeddings
+        let py_chunk = make_chunk("py_func", "src/lib.py", Language::Python);
+        let emb_c = make_emb(3.0);
+        let emb_d = make_emb(4.0);
+
+        ref_store
+            .upsert_chunk(&py_chunk, &emb_c, Some(100))
+            .unwrap();
+        proj_store
+            .upsert_chunk(&py_chunk, &emb_d, Some(100))
+            .unwrap();
+
+        // Filter to Rust only
+        let result =
+            detect_drift(&ref_store, &proj_store, "test-ref", 0.95, 0.0, Some("rust")).unwrap();
+
+        // Should only see Rust function
+        let names: Vec<&str> = result.drifted.iter().map(|e| e.name.as_str()).collect();
+        assert!(
+            !names.contains(&"py_func"),
+            "Python function should be excluded by language filter"
+        );
+        // Rust func should be present (different embeddings → drift)
+        assert!(
+            names.contains(&"rust_func"),
+            "Rust function should appear in drift results"
+        );
+        // total_compared should only count the Rust pair
+        assert_eq!(
+            result.total_compared, 1,
+            "only one pair (rust) should be compared"
+        );
+    }
 }

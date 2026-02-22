@@ -34,6 +34,10 @@ const MAX_BATCH_LINE_LEN: usize = 1_048_576;
 ///
 /// Store is opened once. Embedder and vector index are lazily initialized on
 /// first use and cached for the session. References are cached per-name.
+///
+/// The CAGRA/HNSW index is held for the full session lifetime; this is
+/// intentional. Rebuilding between commands would add seconds of latency.
+/// VRAM cost: ~3 KB per vector (769-dim × 4 bytes), so 100k chunks ≈ 300 MB.
 pub(crate) struct BatchContext {
     pub store: Store,
     embedder: OnceLock<Embedder>,
@@ -2808,5 +2812,33 @@ mod tests {
             "scout".to_string(),
             "foo".to_string()
         ]));
+    }
+
+    /// Verify every PIPEABLE_COMMANDS entry accepts a function name as first arg.
+    /// If you add a new pipeable command, add it to PIPEABLE_COMMANDS.
+    /// If this test fails, update the list.
+    #[test]
+    fn test_pipeable_commands_parse_with_name_arg() {
+        for &cmd in PIPEABLE_COMMANDS {
+            let result = BatchInput::try_parse_from([cmd, "test_function"]);
+            assert!(
+                result.is_ok(),
+                "PIPEABLE_COMMANDS entry '{cmd}' should accept a positional name arg"
+            );
+        }
+    }
+
+    /// Non-pipeable commands should not be in the list.
+    #[test]
+    fn test_non_pipeable_not_in_list() {
+        let non_pipeable = [
+            "search", "gather", "dead", "stats", "stale", "health", "context",
+        ];
+        for cmd in non_pipeable {
+            assert!(
+                !PIPEABLE_COMMANDS.contains(&cmd),
+                "'{cmd}' should not be in PIPEABLE_COMMANDS"
+            );
+        }
     }
 }

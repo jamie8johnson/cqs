@@ -225,34 +225,34 @@ After de-duplication: **~88 unique findings**
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 1 | `onboard()` zero integration test | TC-11 | medium | |
-| 2 | `health_check()` only tested with empty store | TC-12 | easy | |
-| 3 | `suggest_notes()` only tested with empty store | TC-13 | medium | |
-| 4 | `detect_drift()` tested only with empty stores | TC-14 | medium | |
-| 5 | `apply_windowing()` zero test coverage | TC-15 | medium | |
-| 6 | No CLI integration tests for drift/onboard/health/suggest/deps | TC-18 | medium | |
+| 1 | `onboard()` zero integration test | TC-11 | medium | ✅ fixed |
+| 2 | `health_check()` only tested with empty store | TC-12 | easy | ✅ fixed |
+| 3 | `suggest_notes()` only tested with empty store | TC-13 | medium | ✅ fixed |
+| 4 | `detect_drift()` tested only with empty stores | TC-14 | medium | ✅ fixed |
+| 5 | `apply_windowing()` zero test coverage | TC-15 | medium | ✅ fixed |
+| 6 | No CLI integration tests for drift/onboard/health/suggest/deps | TC-18 | medium | ✅ fixed |
 
 ### Extensibility
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 7 | `suggest_notes` detector registry hardcoded | EXT-20 | easy | |
-| 8 | `is_callable_type` hardcodes Function/Method | EXT-21 | easy | |
-| 9 | Pipeline tuning constants are local variables | EXT-22 | easy | |
-| 10 | `health_check` hardcodes top-5 hotspots | EXT-23 | easy | |
-| 11 | `detect_dead_clusters` threshold hardcoded | EXT-24 | easy | |
-| 12 | Untested hotspot threshold hardcoded in 2 files | EXT-25 | easy | |
-| 13 | `PIPEABLE_COMMANDS` requires manual update | EXT-26 | easy | |
-| 14 | `extract_names` field list requires manual update | EXT-27 | easy | |
-| 15 | `classify_mention` heuristic tightly coupled | EXT-28 | easy | |
+| 7 | `suggest_notes` detector registry hardcoded | EXT-20 | easy | ✅ fixed |
+| 8 | `is_callable_type` hardcodes Function/Method | EXT-21 | easy | ✅ fixed |
+| 9 | Pipeline tuning constants are local variables | EXT-22 | easy | ✅ fixed |
+| 10 | `health_check` hardcodes top-5 hotspots | EXT-23 | easy | ✅ fixed |
+| 11 | `detect_dead_clusters` threshold hardcoded | EXT-24 | easy | ✅ fixed |
+| 12 | Untested hotspot threshold hardcoded in 2 files | EXT-25 | easy | ✅ fixed |
+| 13 | `PIPEABLE_COMMANDS` requires manual update | EXT-26 | easy | ✅ fixed |
+| 14 | `extract_names` field list requires manual update | EXT-27 | easy | ✅ n/a (already named const) |
+| 15 | `classify_mention` heuristic tightly coupled | EXT-28 | easy | ✅ fixed |
 
 ### Resource Management
 
 | # | Finding | Source | Difficulty | Status |
 |---|---------|--------|------------|--------|
-| 16 | `semantic_diff` no size cap on chunk identity loading | RM-19 | medium | |
-| 17 | Batch REPL holds GPU index for entire session | RM-22 | medium (document) | |
-| 18 | `onboard` allocates full content for all callees+callers | RM-24 | medium | |
+| 16 | `semantic_diff` no size cap on chunk identity loading | RM-19 | medium | ✅ documented |
+| 17 | Batch REPL holds GPU index for entire session | RM-22 | medium (document) | ✅ documented |
+| 18 | `onboard` allocates full content for all callees+callers | RM-24 | medium | ✅ fixed |
 
 **P4 Total: 18 findings**
 

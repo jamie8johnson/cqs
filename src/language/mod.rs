@@ -188,6 +188,13 @@ pub enum ChunkType {
     Section,
 }
 
+impl ChunkType {
+    /// Returns true for types that have call graph connections (Function, Method).
+    pub fn is_callable(self) -> bool {
+        matches!(self, ChunkType::Function | ChunkType::Method)
+    }
+}
+
 impl std::fmt::Display for ChunkType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

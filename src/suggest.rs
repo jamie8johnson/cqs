@@ -11,6 +11,16 @@ use anyhow::Result;
 use crate::impact::find_hotspots;
 use crate::{compute_risk_batch, RiskLevel, Store};
 
+/// Minimum dead functions in a single file to flag as a dead code cluster.
+const DEAD_CLUSTER_MIN_SIZE: usize = 5;
+
+/// Minimum caller count to consider a function an "untested hotspot."
+/// Shared with `health.rs` — keep in sync or extract to a shared constant.
+pub(crate) const HOTSPOT_MIN_CALLERS: usize = 5;
+
+/// Number of top hotspots to evaluate for risk patterns.
+const SUGGEST_HOTSPOT_POOL: usize = 20;
+
 /// A suggested note from pattern detection.
 #[derive(Debug)]
 pub struct SuggestedNote {
@@ -21,6 +31,26 @@ pub struct SuggestedNote {
     pub reason: String,
 }
 
+/// A detector function that scans for a specific anti-pattern.
+///
+/// Takes a store and project root, returns suggested notes or an error.
+/// Errors are non-fatal — other detectors still run.
+type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>>;
+
+/// Registry of all active detectors, run in order by `suggest_notes`.
+///
+/// To add a new detector: define a `fn(&Store, &Path) -> Result<Vec<SuggestedNote>>`
+/// and append it here.
+const DETECTORS: &[(&str, Detector)] = &[
+    ("detect_dead_clusters", |store, _root| {
+        detect_dead_clusters(store)
+    }),
+    ("detect_risk_patterns", |store, _root| {
+        detect_risk_patterns(store)
+    }),
+    ("detect_stale_mentions", detect_stale_mentions),
+];
+
 /// Scan the index for anti-patterns and suggest notes.
 ///
 /// Each detector runs independently — if one fails, the others still produce results.
@@ -29,32 +59,11 @@ pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<Suggested
 
     let mut suggestions = Vec::new();
 
-    // Detector 1: dead code clusters
-    {
-        let _span = tracing::info_span!("detect_dead_clusters").entered();
-        match detect_dead_clusters(store) {
+    for (name, detector) in DETECTORS {
+        let _span = tracing::info_span!("detector", name).entered();
+        match detector(store, project_root) {
             Ok(mut s) => suggestions.append(&mut s),
-            Err(e) => tracing::warn!(error = %e, "Dead code cluster detection failed"),
-        }
-    }
-
-    // Detector 2: untested hotspots
-    // Detector 3: high-risk functions
-    // Both need call graph + test chunks, so share the data
-    {
-        let _span = tracing::info_span!("detect_risk_patterns").entered();
-        match detect_risk_patterns(store) {
-            Ok(mut s) => suggestions.append(&mut s),
-            Err(e) => tracing::warn!(error = %e, "Risk pattern detection failed"),
-        }
-    }
-
-    // Detector 4: stale note mentions
-    {
-        let _span = tracing::info_span!("detect_stale_mentions").entered();
-        match detect_stale_mentions(store, project_root) {
-            Ok(mut s) => suggestions.append(&mut s),
-            Err(e) => tracing::warn!(error = %e, "Stale mention detection failed"),
+            Err(e) => tracing::warn!(error = %e, detector = name, "Detector failed"),
         }
     }
 
@@ -89,7 +98,7 @@ fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>> {
 
     Ok(by_file
         .into_iter()
-        .filter(|(_, count)| *count >= 5)
+        .filter(|(_, count)| *count >= DEAD_CLUSTER_MIN_SIZE)
         .map(|(file, count)| SuggestedNote {
             text: format!("{file} has {count} dead functions — consider cleanup"),
             sentiment: -0.5,
@@ -103,7 +112,7 @@ fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>> {
 fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
-    let hotspots = find_hotspots(&graph, 20); // check top 20
+    let hotspots = find_hotspots(&graph, SUGGEST_HOTSPOT_POOL);
 
     if hotspots.is_empty() {
         return Ok(Vec::new());
@@ -117,8 +126,8 @@ fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>> {
     for (risk, (name, caller_count)) in risks.iter().zip(hotspots.iter()) {
         let mentions = vec![name.to_string()];
 
-        // Untested hotspot: 5+ callers, 0 tests
-        if risk.caller_count >= 5 && risk.test_count == 0 {
+        // Untested hotspot: HOTSPOT_MIN_CALLERS+ callers, 0 tests
+        if risk.caller_count >= HOTSPOT_MIN_CALLERS && risk.test_count == 0 {
             suggestions.push(SuggestedNote {
                 text: format!("{name} has {caller_count} callers but no tests"),
                 sentiment: -0.5,
@@ -147,7 +156,7 @@ fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>> {
 
 /// How a note mention should be verified.
 #[derive(Debug, PartialEq)]
-enum MentionKind {
+pub(crate) enum MentionKind {
     /// Contains `.` or `/` — check filesystem
     File,
     /// Contains `_` or `::` or is PascalCase — check index
@@ -157,7 +166,7 @@ enum MentionKind {
 }
 
 /// Classify a mention string for staleness checking.
-fn classify_mention(mention: &str) -> MentionKind {
+pub(crate) fn classify_mention(mention: &str) -> MentionKind {
     if mention.contains('.') || mention.contains('/') || mention.contains('\\') {
         MentionKind::File
     } else if mention.contains('_') || mention.contains("::") || is_pascal_case(mention) {
@@ -168,7 +177,7 @@ fn classify_mention(mention: &str) -> MentionKind {
 }
 
 /// Check if a string is PascalCase (starts uppercase, has lowercase chars, len > 1).
-fn is_pascal_case(s: &str) -> bool {
+pub(crate) fn is_pascal_case(s: &str) -> bool {
     s.len() > 1
         && s.chars().next().is_some_and(|c| c.is_uppercase())
         && s.chars().any(|c| c.is_lowercase())
@@ -369,5 +378,158 @@ mod tests {
 
         let stale = detect_stale_mentions(&store, dir.path()).unwrap();
         assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_suggest_dead_cluster() {
+        use crate::language::{ChunkType, Language};
+        use crate::parser::Chunk;
+        use std::path::PathBuf;
+
+        let (store, dir) = make_store();
+
+        // Insert 6 functions in the SAME file, all without callers.
+        // Use names that won't be excluded by entry-point or test heuristics.
+        let file = "src/orphans.rs";
+        let names = [
+            "compute_alpha",
+            "compute_beta",
+            "compute_gamma",
+            "compute_delta",
+            "compute_epsilon",
+            "compute_zeta",
+        ];
+
+        for (i, name) in names.iter().enumerate() {
+            let content = format!("fn {}() {{ todo!() }}", name);
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let line = (i as u32 + 1) * 10;
+            let chunk = Chunk {
+                id: format!("{}:{}:{}", file, line, &hash[..8]),
+                file: PathBuf::from(file),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: name.to_string(),
+                signature: format!("fn {}()", name),
+                content,
+                doc: None,
+                line_start: line,
+                line_end: line + 5,
+                content_hash: hash,
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+            };
+            store
+                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+                .unwrap();
+        }
+
+        // No call graph entries — all are dead code
+        let suggestions = suggest_notes(&store, dir.path()).unwrap();
+
+        let dead_cluster = suggestions.iter().find(|s| s.reason == "dead_code_cluster");
+        assert!(
+            dead_cluster.is_some(),
+            "Expected a dead_code_cluster suggestion for {} dead functions in one file. Got: {:?}",
+            names.len(),
+            suggestions.iter().map(|s| &s.reason).collect::<Vec<_>>()
+        );
+        let note = dead_cluster.unwrap();
+        assert!(
+            note.mentions.contains(&file.to_string()),
+            "Expected mention of {}, got {:?}",
+            file,
+            note.mentions
+        );
+    }
+
+    #[test]
+    fn test_suggest_untested_hotspot() {
+        use crate::language::{ChunkType, Language};
+        use crate::parser::{CallSite, Chunk, FunctionCalls};
+        use std::path::PathBuf;
+
+        let (store, dir) = make_store();
+
+        // Insert the hotspot target function
+        let target_content = "fn hot_function() { }";
+        let target_hash = blake3::hash(target_content.as_bytes()).to_hex().to_string();
+        let target = Chunk {
+            id: format!("src/core.rs:1:{}", &target_hash[..8]),
+            file: PathBuf::from("src/core.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "hot_function".to_string(),
+            signature: "fn hot_function()".to_string(),
+            content: target_content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: target_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        store
+            .upsert_chunk(&target, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+            .unwrap();
+
+        // Insert 6 callers that each call hot_function (>= HOTSPOT_MIN_CALLERS)
+        // No test chunks — making this an untested hotspot
+        for i in 0..6 {
+            let caller_name = format!("caller_{}", i);
+            let file = format!("src/user{}.rs", i);
+            let content = format!("fn {}() {{ hot_function() }}", caller_name);
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let chunk = Chunk {
+                id: format!("{}:1:{}", file, &hash[..8]),
+                file: PathBuf::from(&file),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: caller_name.clone(),
+                signature: format!("fn {}()", caller_name),
+                content,
+                doc: None,
+                line_start: 1,
+                line_end: 5,
+                content_hash: hash,
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+            };
+            store
+                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+                .unwrap();
+
+            store
+                .upsert_function_calls(
+                    Path::new(&file),
+                    &[FunctionCalls {
+                        name: caller_name,
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: "hot_function".to_string(),
+                            line_number: 2,
+                        }],
+                    }],
+                )
+                .unwrap();
+        }
+
+        let suggestions = suggest_notes(&store, dir.path()).unwrap();
+
+        let untested = suggestions.iter().find(|s| s.reason == "untested_hotspot");
+        assert!(
+            untested.is_some(),
+            "Expected an untested_hotspot suggestion for a function with 6 callers and no tests. Got: {:?}",
+            suggestions.iter().map(|s| &s.reason).collect::<Vec<_>>()
+        );
+        let note = untested.unwrap();
+        assert!(
+            note.mentions.contains(&"hot_function".to_string()),
+            "Expected mention of hot_function, got {:?}",
+            note.mentions
+        );
     }
 }
