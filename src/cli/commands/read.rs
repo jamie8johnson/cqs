@@ -2,28 +2,29 @@
 //!
 //! Reads a file with context from notes injected as comments.
 //! Respects audit mode (skips notes if active).
+//!
+//! Core logic is in shared functions (`validate_and_read_file`,
+//! `build_file_note_header`, `build_focused_output`) so batch mode
+//! can reuse them without duplicating ~200 lines.
+
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use cqs::audit::load_audit_state;
-use cqs::compute_hints;
-use cqs::note::{parse_notes, path_matches_mention};
+use cqs::note::{parse_notes, path_matches_mention, Note};
 use cqs::parser::ChunkType;
-use cqs::COMMON_TYPES;
+use cqs::store::Store;
+use cqs::{compute_hints, FunctionHints, COMMON_TYPES};
 
 use crate::cli::find_project_root;
 
-use super::resolve::resolve_target;
+// ─── Shared core functions ──────────────────────────────────────────────────
 
-/// Handle read command
-pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_read", path).entered();
-    // Focused read mode
-    if let Some(focus) = focus {
-        return cmd_read_focused(focus, json);
-    }
-
-    let root = find_project_root();
+/// Validate path (traversal, size) and read file contents.
+///
+/// Returns `(file_path, content)` where `file_path` is root.join(path).
+pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf, String)> {
     let file_path = root.join(path);
 
     if !file_path.exists() {
@@ -31,9 +32,10 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     }
 
     // Path traversal protection (dunce strips Windows UNC prefix automatically)
-    let canonical = dunce::canonicalize(&file_path).context("Failed to canonicalize path")?;
+    let canonical = dunce::canonicalize(&file_path)
+        .with_context(|| format!("Failed to canonicalize path: {}", path))?;
     let project_canonical =
-        dunce::canonicalize(&root).context("Failed to canonicalize project root")?;
+        dunce::canonicalize(root).context("Failed to canonicalize project root")?;
     if !canonical.starts_with(&project_canonical) {
         bail!("Path traversal not allowed: {}", path);
     }
@@ -50,82 +52,76 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     }
 
     let content = std::fs::read_to_string(&canonical).context("Failed to read file")?;
+    Ok((file_path, content))
+}
 
-    // Check audit mode
-    let cqs_dir = cqs::resolve_index_dir(&root);
-    let audit_mode = load_audit_state(&cqs_dir);
-    let mut context_header = String::new();
+/// Build note-injection header for a full file read.
+///
+/// Returns `(header_string, notes_injected)`.
+pub(crate) fn build_file_note_header(
+    path: &str,
+    file_path: &Path,
+    audit_state: &cqs::audit::AuditMode,
+    notes: &[Note],
+) -> (String, bool) {
+    let mut header = String::new();
+    let mut notes_injected = false;
 
-    if let Some(status) = audit_mode.status_line() {
-        context_header.push_str(&format!("// {}\n//\n", status));
+    if let Some(status) = audit_state.status_line() {
+        header.push_str(&format!("// {}\n//\n", status));
     }
 
-    // Find relevant notes (skip if audit mode active)
-    if !audit_mode.is_active() {
-        let notes_path = root.join("docs/notes.toml");
-        if notes_path.exists() {
-            if let Ok(notes) = parse_notes(&notes_path) {
-                let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let relevant: Vec<_> = notes
+    if !audit_state.is_active() {
+        let file_name = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let relevant: Vec<_> = notes
+            .iter()
+            .filter(|n| {
+                n.mentions
                     .iter()
-                    .filter(|n| {
-                        n.mentions
-                            .iter()
-                            .any(|m| m == file_name || m == path || path_matches_mention(path, m))
-                    })
-                    .collect();
+                    .any(|m| m == file_name || m == path || path_matches_mention(path, m))
+            })
+            .collect();
 
-                if !relevant.is_empty() {
-                    context_header.push_str(
-                        "// ┌─────────────────────────────────────────────────────────────┐\n",
-                    );
-                    context_header.push_str(
-                        "// │ [cqs] Context from notes.toml                              │\n",
-                    );
-                    context_header.push_str(
-                        "// └─────────────────────────────────────────────────────────────┘\n",
-                    );
-
-                    for n in relevant {
-                        if let Some(first_line) = n.text.lines().next() {
-                            context_header.push_str(&format!(
-                                "// [{}] {}\n",
-                                n.sentiment_label(),
-                                first_line.trim()
-                            ));
-                        }
-                    }
-                    context_header.push_str("//\n");
+        if !relevant.is_empty() {
+            notes_injected = true;
+            header.push_str("// ┌─────────────────────────────────────────────────────────────┐\n");
+            header.push_str("// │ [cqs] Context from notes.toml                              │\n");
+            header.push_str("// └─────────────────────────────────────────────────────────────┘\n");
+            for n in relevant {
+                if let Some(first_line) = n.text.lines().next() {
+                    header.push_str(&format!(
+                        "// [{}] {}\n",
+                        n.sentiment_label(),
+                        first_line.trim()
+                    ));
                 }
             }
+            header.push_str("//\n");
         }
     }
 
-    let enriched = if context_header.is_empty() {
-        content
-    } else {
-        format!("{}{}", context_header, content)
-    };
-
-    if json {
-        let result = serde_json::json!({
-            "path": path,
-            "content": enriched,
-        });
-        println!("{}", serde_json::to_string_pretty(&result)?);
-    } else {
-        print!("{}", enriched);
-    }
-
-    Ok(())
+    (header, notes_injected)
 }
 
-fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
-    let resolved = resolve_target(&store, focus)?;
-    let chunk = resolved.chunk;
+/// Result of a focused read operation.
+pub(crate) struct FocusedReadResult {
+    pub output: String,
+    pub hints: Option<FunctionHints>,
+}
 
-    let rel_file = cqs::rel_display(&chunk.file, &root);
+/// Build focused-read output: header + hints + notes + target + type deps.
+///
+/// Shared between CLI `cmd_read --focus` and batch `dispatch_read --focus`.
+pub(crate) fn build_focused_output(
+    store: &Store,
+    focus: &str,
+    root: &Path,
+    audit_state: &cqs::audit::AuditMode,
+    notes: &[Note],
+) -> Result<FocusedReadResult> {
+    let resolved = cqs::resolve_target(store, focus)?;
+    let chunk = &resolved.chunk;
+    let rel_file = cqs::rel_display(&chunk.file, root);
 
     let mut output = String::new();
 
@@ -135,10 +131,10 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
         chunk.name, rel_file, chunk.line_start, chunk.line_end
     ));
 
-    // Hints (function/method only) — compute once, reuse for JSON
+    // Hints (function/method only)
     let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
-        match compute_hints(&store, &chunk.name, None) {
-            Ok(hints) => Some(hints),
+        match compute_hints(store, &chunk.name, None) {
+            Ok(h) => Some(h),
             Err(e) => {
                 tracing::warn!(function = %chunk.name, error = %e, "Failed to compute hints");
                 None
@@ -161,37 +157,32 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
         output.push_str(&format!("// [cqs] {} | {}\n", caller_label, test_label));
     }
 
-    // Note injection
-    let audit_mode = load_audit_state(&cqs_dir);
-    if let Some(status) = audit_mode.status_line() {
+    // Audit mode status
+    if let Some(status) = audit_state.status_line() {
         output.push_str(&format!("// {}\n", status));
     }
 
-    if !audit_mode.is_active() {
-        let notes_path = root.join("docs/notes.toml");
-        if notes_path.exists() {
-            if let Ok(notes) = parse_notes(&notes_path) {
-                let relevant: Vec<_> = notes
+    // Note injection (skip in audit mode)
+    if !audit_state.is_active() {
+        let relevant: Vec<_> = notes
+            .iter()
+            .filter(|n| {
+                n.mentions
                     .iter()
-                    .filter(|n| {
-                        n.mentions
-                            .iter()
-                            .any(|m| m == &chunk.name || m == &rel_file)
-                    })
-                    .collect();
-                for n in &relevant {
-                    if let Some(first_line) = n.text.lines().next() {
-                        output.push_str(&format!(
-                            "// [{}] {}\n",
-                            n.sentiment_label(),
-                            first_line.trim()
-                        ));
-                    }
-                }
-                if !relevant.is_empty() {
-                    output.push_str("//\n");
-                }
+                    .any(|m| m == &chunk.name || m == &rel_file)
+            })
+            .collect();
+        for n in &relevant {
+            if let Some(first_line) = n.text.lines().next() {
+                output.push_str(&format!(
+                    "// [{}] {}\n",
+                    n.sentiment_label(),
+                    first_line.trim()
+                ));
             }
+        }
+        if !relevant.is_empty() {
+            output.push_str("//\n");
         }
     }
 
@@ -204,7 +195,7 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     output.push_str(&chunk.content);
     output.push('\n');
 
-    // Type dependencies — from type_edges table (exact, not regex on signature)
+    // Type dependencies
     let type_deps = match store.get_types_used_by(&chunk.name) {
         Ok(pairs) => pairs,
         Err(e) => {
@@ -212,7 +203,6 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
             Vec::new()
         }
     };
-    // Deduplicate type names, filter common types, preserve edge_kind for display
     let mut seen_types = std::collections::HashSet::new();
     let filtered_types: Vec<cqs::store::TypeUsage> = type_deps
         .into_iter()
@@ -249,7 +239,7 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
                     )
             });
             if let Some(r) = type_def {
-                let dep_rel = cqs::rel_display(&r.chunk.file, &root);
+                let dep_rel = cqs::rel_display(&r.chunk.file, root);
                 let kind_label = if edge_kind.is_empty() {
                     String::new()
                 } else {
@@ -265,22 +255,83 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
         }
     }
 
+    Ok(FocusedReadResult { output, hints })
+}
+
+// ─── CLI commands ───────────────────────────────────────────────────────────
+
+/// Handle read command
+pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_read", path).entered();
+
+    // Focused read mode
+    if let Some(focus) = focus {
+        return cmd_read_focused(focus, json);
+    }
+
+    let root = find_project_root();
+    let (file_path, content) = validate_and_read_file(&root, path)?;
+
+    // Build note header
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let audit_mode = load_audit_state(&cqs_dir);
+    let notes_path = root.join("docs/notes.toml");
+    let notes = if notes_path.exists() {
+        parse_notes(&notes_path).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let (header, _notes_injected) = build_file_note_header(path, &file_path, &audit_mode, &notes);
+
+    let enriched = if header.is_empty() {
+        content
+    } else {
+        format!("{}{}", header, content)
+    };
+
     if json {
-        let mut result = serde_json::json!({
-            "focus": focus,
-            "content": output,
+        let result = serde_json::json!({
+            "path": path,
+            "content": enriched,
         });
-        if let Some(ref h) = hints {
-            result["hints"] = serde_json::json!({
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        print!("{}", enriched);
+    }
+
+    Ok(())
+}
+
+fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+
+    let audit_mode = load_audit_state(&cqs_dir);
+    let notes_path = root.join("docs/notes.toml");
+    let notes = if notes_path.exists() {
+        parse_notes(&notes_path).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    let result = build_focused_output(&store, focus, &root, &audit_mode, &notes)?;
+
+    if json {
+        let mut json_val = serde_json::json!({
+            "focus": focus,
+            "content": result.output,
+        });
+        if let Some(ref h) = result.hints {
+            json_val["hints"] = serde_json::json!({
                 "caller_count": h.caller_count,
                 "test_count": h.test_count,
                 "no_callers": h.caller_count == 0,
                 "no_tests": h.test_count == 0,
             });
         }
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
-        print!("{}", output);
+        print!("{}", result.output);
     }
 
     Ok(())

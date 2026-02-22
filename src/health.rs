@@ -76,7 +76,7 @@ pub fn health_check(
         Ok(graph) => {
             let spots = find_hotspots(&graph, HEALTH_HOTSPOT_COUNT);
 
-            // Find untested hotspots: functions with 5+ callers and 0 tests
+            // Find untested hotspots: high-caller functions (≥HOTSPOT_MIN_CALLERS) with 0 tests
             let untested = match store.find_test_chunks() {
                 Ok(test_chunks) => {
                     let hotspot_names: Vec<&str> = spots.iter().map(|(n, _)| n.as_str()).collect();
