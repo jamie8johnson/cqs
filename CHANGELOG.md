@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-02-21
+
+### Changed
+- **Split `batch.rs` into `batch/` directory** — 2844-line monolith split into 4 focused files: `mod.rs` (BatchContext, main loop), `commands.rs` (parsing, dispatch), `handlers.rs` (23 handler functions), `pipeline.rs` (pipe chaining, fan-out). No behavior change.
+
+### Fixed
+- **P4 audit: 18 test + extensibility + resource management fixes** (#463) — 6 test improvements (edge cases, property-based tests for health/suggest/onboard), 9 extensibility enhancements (language registry, parser config), 3 resource management fixes (drop ordering, cleanup).
+- **CQ-8/CQ-9 read dedup** — extracted shared read logic (`validate_and_read_file`, `build_file_note_header`, `build_focused_output`) into `commands/read.rs`. Both CLI and batch read paths call shared core, eliminating ~200 lines of duplicated code.
+- **SECURITY.md** — path traversal code snippet updated to reflect `dunce::canonicalize` usage.
+
 ## [0.13.0] - 2026-02-21
 
 ### Added

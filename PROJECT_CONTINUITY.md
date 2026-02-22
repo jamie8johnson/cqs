@@ -2,22 +2,17 @@
 
 ## Right Now
 
-**batch.rs split + P4 audit.** 2026-02-21.
+**v0.13.0 audit + batch split complete.** 2026-02-21.
 
-- P1-P3 merged (#459, #460, #461)
-- P4: 18 fixes on branch `fix/p4-audit-findings`
-- batch.rs split: 2844-line monolith → batch/ directory (4 files) + CQ-8/CQ-9 read dedup
-- Ready to commit split work, then PR
+- P1-P4 all merged (#459, #460, #461, #463)
+- batch.rs split merged in #463: 2844-line monolith → batch/ directory (4 files) + CQ-8/CQ-9 read dedup
+- Binary updated, main clean
 
 Audit triage: `docs/audit-triage.md`
 
 ## Pending Changes
 
-Uncommitted on `fix/p4-audit-findings`:
-- `src/cli/batch.rs` deleted → `src/cli/batch/{mod,commands,handlers,pipeline}.rs`
-- `src/cli/commands/read.rs` rewritten with shared core functions
-- `src/health.rs` cosmetic comment fix
-- `CONTRIBUTING.md` architecture section updated
+None.
 
 ## Parked
 
@@ -28,7 +23,6 @@ Uncommitted on `fix/p4-audit-findings`:
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
 - **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **P4 audit findings** — 18 findings fixed on `fix/p4-audit-findings`
 - **resolve_target test bias** — ambiguous names resolve to test functions over production code. Not blocking, but `cqs related foo` may pick `test_foo_bar` instead of `foo`. Fix: prefer non-test chunks in resolve_target.
 
 ## Open Issues
@@ -52,9 +46,9 @@ Uncommitted on `fix/p4-audit-findings`:
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1037 pass + 31 ignored
+- Tests: 1039 pass + 31 ignored
 - CLI-only (MCP server removed in PR #352)
-- Source layout: parser/, hnsw/, impact/ are directories (impact split in PR #402)
+- Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
 - Build target: `~/.cargo-target/cqs/` (Linux FS)
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
