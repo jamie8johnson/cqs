@@ -28,6 +28,14 @@ use super::check_interrupted;
 pub(crate) const MAX_TOKENS_PER_WINDOW: usize = 480;
 pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
 
+// Pipeline tuning constants
+/// Embedding batch size (backed off from 64 — crashed at 2%)
+const EMBED_BATCH_SIZE: usize = 32;
+/// Files to parse per batch (bounded memory)
+const FILE_BATCH_SIZE: usize = 5_000;
+/// Pipeline buffer depth (larger = smoother GPU/CPU utilization)
+const PIPELINE_CHANNEL_DEPTH: usize = 256;
+
 /// Apply windowing to chunks that exceed the token limit.
 /// Long chunks are split into overlapping windows; short chunks pass through unchanged.
 pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Chunk> {
@@ -235,9 +243,9 @@ pub(crate) fn run_index_pipeline(
     quiet: bool,
 ) -> Result<PipelineStats> {
     let _span = tracing::info_span!("run_index_pipeline", file_count = files.len()).entered();
-    let batch_size = 32; // Embedding batch size (backed off from 64 - crashed at 2%)
-    let file_batch_size = 5_000; // Files to parse per batch (bounded memory)
-    let channel_depth = 256; // Pipeline buffer depth (larger = smoother utilization)
+    let batch_size = EMBED_BATCH_SIZE;
+    let file_batch_size = FILE_BATCH_SIZE;
+    let channel_depth = PIPELINE_CHANNEL_DEPTH;
 
     // Channels
     let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
@@ -799,5 +807,117 @@ mod tests {
         const { assert!(MAX_TOKENS_PER_WINDOW <= 512) };
         const { assert!(WINDOW_OVERLAP_TOKENS < MAX_TOKENS_PER_WINDOW) };
         const { assert!(WINDOW_OVERLAP_TOKENS > 0) };
+    }
+
+    #[test]
+    #[ignore] // Requires model
+    fn test_apply_windowing_empty() {
+        let embedder = Embedder::new_cpu().unwrap();
+        let result = apply_windowing(vec![], &embedder);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    #[ignore] // Requires model
+    fn test_apply_windowing_short_chunk() {
+        let embedder = Embedder::new_cpu().unwrap();
+        let mut chunk = make_test_chunk("short1", "fn foo() {}");
+        chunk.doc = Some("A short function".to_string());
+
+        let result = apply_windowing(vec![chunk], &embedder);
+
+        assert_eq!(result.len(), 1);
+        let c = &result[0];
+        assert_eq!(c.id, "short1");
+        assert_eq!(c.name, "short1");
+        assert_eq!(c.doc, Some("A short function".to_string()));
+        assert_eq!(c.parent_id, None, "short chunk should not have parent_id");
+        assert_eq!(c.window_idx, None, "short chunk should not have window_idx");
+        assert_eq!(c.file, PathBuf::from("test.rs"));
+        assert_eq!(c.language, Language::Rust);
+        assert_eq!(c.chunk_type, ChunkType::Function);
+        assert_eq!(c.content, "fn foo() {}");
+    }
+
+    #[test]
+    #[ignore] // Requires model
+    fn test_apply_windowing_long_chunk() {
+        let embedder = Embedder::new_cpu().unwrap();
+
+        // Build content that exceeds 480 tokens. Each line is a unique function body.
+        // ~500 lines of "let varN = N;\n" should comfortably exceed the token limit.
+        let long_content: String = (0..500)
+            .map(|i| format!("    let variable_{i} = {i};\n"))
+            .collect();
+        let content = format!("fn big_function() {{\n{long_content}}}");
+
+        let mut chunk = make_test_chunk("long1", &content);
+        chunk.doc = Some("A very long function".to_string());
+        chunk.line_start = 10;
+        chunk.line_end = 520;
+        chunk.parent_type_name = Some("MyStruct".to_string());
+
+        let original_id = chunk.id.clone();
+        let result = apply_windowing(vec![chunk], &embedder);
+
+        assert!(
+            result.len() > 1,
+            "Expected multiple windows, got {}",
+            result.len()
+        );
+
+        for (i, window) in result.iter().enumerate() {
+            let idx = i as u32;
+
+            // ID format: "{parent_id}:w{idx}"
+            assert_eq!(
+                window.id,
+                format!("{original_id}:w{idx}"),
+                "window {i} has wrong id"
+            );
+
+            // parent_id set on all windows
+            assert_eq!(
+                window.parent_id,
+                Some(original_id.clone()),
+                "window {i} missing parent_id"
+            );
+
+            // window_idx set correctly
+            assert_eq!(
+                window.window_idx,
+                Some(idx),
+                "window {i} has wrong window_idx"
+            );
+
+            // Shared fields from parent
+            assert_eq!(window.file, PathBuf::from("test.rs"));
+            assert_eq!(window.language, Language::Rust);
+            assert_eq!(window.chunk_type, ChunkType::Function);
+            assert_eq!(window.name, "long1");
+            assert_eq!(window.line_start, 10);
+            assert_eq!(window.line_end, 520);
+            assert_eq!(window.parent_type_name, Some("MyStruct".to_string()));
+
+            // Content hash is blake3 of the window content
+            let expected_hash = blake3::hash(window.content.as_bytes()).to_hex().to_string();
+            assert_eq!(
+                window.content_hash, expected_hash,
+                "window {i} hash mismatch"
+            );
+
+            // Non-empty content
+            assert!(!window.content.is_empty(), "window {i} has empty content");
+        }
+
+        // First window gets doc, subsequent windows do not
+        assert_eq!(
+            result[0].doc,
+            Some("A very long function".to_string()),
+            "first window should preserve doc"
+        );
+        for window in &result[1..] {
+            assert_eq!(window.doc, None, "non-first window should have doc = None");
+        }
     }
 }

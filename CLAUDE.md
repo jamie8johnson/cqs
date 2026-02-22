@@ -195,14 +195,14 @@ When updating docs, keep these in sync:
 
 Git/GitHub operations need PowerShell (Windows has credentials):
 ```bash
-powershell.exe -Command "cd C:\projects\cq; git push"
+powershell.exe -Command "cd C:\Projects\cqs; git push"
 powershell.exe -Command 'gh pr create --title "..." --body "..."'
 powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 ```
 
 **Use `gh pr checks --watch`** to wait for CI. Don't use `sleep` + poll.
 
-**ALWAYS use `--body-file` for PR/issue bodies.** Never inline heredocs or multiline strings in `gh pr create --body` or `gh issue create --body`. Two reasons: (1) PowerShell mangles complex strings, (2) Claude Code captures the entire multiline command as a permission entry in `settings.local.json`, corrupting the file and breaking startup. Write body to `/mnt/c/Projects/cq/pr_body.md`, use `--body-file`, delete after.
+**ALWAYS use `--body-file` for PR/issue bodies.** Never inline heredocs or multiline strings in `gh pr create --body` or `gh issue create --body`. Two reasons: (1) PowerShell mangles complex strings, (2) Claude Code captures the entire multiline command as a permission entry in `settings.local.json`, corrupting the file and breaking startup. Write body to `/mnt/c/Projects/cqs/pr_body.md`, use `--body-file`, delete after.
 
 **main is protected** - all changes via PR.
 

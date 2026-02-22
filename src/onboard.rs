@@ -25,6 +25,13 @@ use crate::{AnalysisError, Embedder};
 /// Default callee BFS expansion depth.
 pub const DEFAULT_ONBOARD_DEPTH: usize = 3;
 
+/// Maximum callees to fetch content for. BFS may discover more, but we only
+/// load content for the top entries by depth/score to cap memory usage.
+const MAX_CALLEE_FETCH: usize = 30;
+
+/// Maximum callers to fetch content for.
+const MAX_CALLER_FETCH: usize = 15;
+
 fn serialize_path_forward_slash<S>(path: &std::path::Path, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -167,7 +174,15 @@ pub fn onboard(
     caller_scores.remove(&entry_name);
     tracing::debug!(caller_count = caller_scores.len(), "Caller BFS complete");
 
-    // 6. Fetch entry point — use search_by_name with exact match filter
+    // 6. Cap score maps to avoid fetching content we'll discard (RM-24).
+    //    BFS may discover 100 callees, but we only load content for the top N.
+    let callee_scores = cap_scores(callee_scores, MAX_CALLEE_FETCH, |(_s, d)| *d);
+    let caller_scores = cap_scores(caller_scores, MAX_CALLER_FETCH, |(score, _)| {
+        // Invert score for ascending sort (highest score = lowest key)
+        u64::MAX - ((*score * 1e6) as u64)
+    });
+
+    // 7. Fetch entry point — use search_by_name with exact match filter
     //    fetch_and_assemble's FTS can fuzzy-match "search" to "test_is_pipeable_search",
     //    so we do a direct lookup and prefer the exact name + file match from scout.
     let entry_point = fetch_entry_point(store, &entry_name, &entry_file, root)?;
@@ -257,9 +272,28 @@ pub fn onboard_to_json(result: &OnboardResult) -> Result<serde_json::Value, serd
 
 // --- Internal helpers ---
 
-/// Returns true for chunk types that have call graph connections (Function, Method).
+/// Truncate a score map to `max` entries, keeping those with the lowest `key_fn` values.
+fn cap_scores<F, K>(
+    scores: HashMap<String, (f32, usize)>,
+    max: usize,
+    key_fn: F,
+) -> HashMap<String, (f32, usize)>
+where
+    F: Fn(&(f32, usize)) -> K,
+    K: Ord,
+{
+    if scores.len() <= max {
+        return scores;
+    }
+    let mut entries: Vec<_> = scores.into_iter().collect();
+    entries.sort_by(|a, b| key_fn(&a.1).cmp(&key_fn(&b.1)));
+    entries.truncate(max);
+    entries.into_iter().collect()
+}
+
+/// Returns true for chunk types that have call graph connections.
 fn is_callable_type(ct: ChunkType) -> bool {
-    matches!(ct, ChunkType::Function | ChunkType::Method)
+    ct.is_callable()
 }
 
 /// Convert GatheredChunk to OnboardEntry.

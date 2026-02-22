@@ -25,7 +25,7 @@ mod notes;
 mod onboard;
 mod project;
 mod query;
-mod read;
+pub(crate) mod read;
 mod reference;
 mod related;
 pub(crate) mod resolve;

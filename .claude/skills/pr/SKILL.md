@@ -18,9 +18,9 @@ Create a PR from the current branch using WSL-safe patterns.
 
 2. **Prepare**:
    - If uncommitted changes exist, ask user whether to commit first
-   - Ensure branch is pushed: `powershell.exe -Command 'cd C:\Projects\cq; git push -u origin BRANCH'`
+   - Ensure branch is pushed: `powershell.exe -Command 'cd C:\Projects\cqs; git push -u origin BRANCH'`
 
-3. **Write PR body** to `/mnt/c/Projects/cq/pr_body.md`:
+3. **Write PR body** to `/mnt/c/Projects/cqs/pr_body.md`:
    ```markdown
    ## Summary
    - Bullet points summarizing changes
@@ -33,12 +33,12 @@ Create a PR from the current branch using WSL-safe patterns.
 
 4. **Create PR** via PowerShell:
    ```
-   powershell.exe -Command 'cd C:\Projects\cq; gh pr create --title "..." --body-file pr_body.md'
+   powershell.exe -Command 'cd C:\Projects\cqs; gh pr create --title "..." --body-file pr_body.md'
    ```
 
 5. **Clean up**: Delete `pr_body.md`
 
-6. **Wait for CI**: `powershell.exe -Command 'cd C:\Projects\cq; gh pr checks N --watch'`
+6. **Wait for CI**: `powershell.exe -Command 'cd C:\Projects\cqs; gh pr checks N --watch'`
 
 7. **Report**: Show PR URL
 

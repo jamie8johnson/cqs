@@ -82,7 +82,7 @@ None.
 ### Phase 2: Skills
 
 4. Create `.claude/skills/` directory
-5. Copy all portable skills from `/mnt/c/Projects/cq/.claude/skills/`:
+5. Copy all portable skills from `/mnt/c/Projects/cqs/.claude/skills/`:
    - `update-tears` — session state capture
    - `groom-notes` — note cleanup
    - `reindex` — rebuild index with stats
