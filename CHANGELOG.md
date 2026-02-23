@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-02-22
+
+### Fixed
+- **61-finding audit: P1-P4 fixes across 3 PRs** (#470, #471, #472) — 14-category code audit with red team adversarial review. P1+P2: 18 fixes (task CLI hardening, HNSW search bounds, impact format safety, gather depth guards). P3: 25 fixes (scout gap detection refactor, search edge cases, note locking, reference validation). P4: 18 fixes (batch pipeline fan-out cap, GC HNSW cleanup, embedding dimension warning, extensibility constants).
+- **Flaky HNSW tests** — relaxed exact top-1 assertions to top-k contains for approximate nearest neighbor tests (#473).
+- **`Embedding::new()` false positive** — dimension warning no longer fires on 768-dim pre-sentiment intermediate embeddings (#473).
+- **Command listing sync** — added missing commands (task, health, suggest, convert, ref, project, review) across README, CLAUDE.md, audit skill, red-team skill, and bootstrap skill (#473).
+
+### Added
+- **Red team audit skill** (`.claude/skills/red-team/`) — reusable `/red-team` skill for adversarial security audits with 4 categories: input injection, filesystem boundary violations, adversarial robustness, silent data corruption (#472).
+
 ## [0.14.0] - 2026-02-22
 
 ### Added
