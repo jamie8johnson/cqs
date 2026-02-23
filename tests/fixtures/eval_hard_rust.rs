@@ -334,3 +334,66 @@ impl CircuitBreaker {
         self.state = CircuitState::Closed;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_merge_sort() {
+        let mut data = vec![5, 3, 8, 1, 2];
+        let result = merge_sort(&mut data);
+        assert_eq!(result, vec![1, 2, 3, 5, 8]);
+    }
+
+    fn test_heap_sort() {
+        let mut data = vec![9, 4, 7, 1, 3];
+        let result = heap_sort(&mut data);
+        assert_eq!(result, vec![1, 3, 4, 7, 9]);
+    }
+
+    fn test_validate_email() {
+        assert!(validate_email("user@example.com"));
+        assert!(!validate_email("not-an-email"));
+    }
+
+    fn test_validate_phone() {
+        assert!(validate_phone("+1-555-0100"));
+        assert!(!validate_phone("abc"));
+    }
+
+    fn test_circuit_breaker() {
+        let mut cb = CircuitBreaker::new(3, 30);
+        assert!(cb.should_allow());
+    }
+}
+
+/// Internal merge helper — merges two sorted slices
+fn _merge_sorted(left: &[i32], right: &[i32]) -> Vec<i32> {
+    let mut result = Vec::with_capacity(left.len() + right.len());
+    let (mut i, mut j) = (0, 0);
+    while i < left.len() && j < right.len() {
+        if left[i] <= right[j] {
+            result.push(left[i]);
+            i += 1;
+        } else {
+            result.push(right[j]);
+            j += 1;
+        }
+    }
+    result.extend_from_slice(&left[i..]);
+    result.extend_from_slice(&right[j..]);
+    result
+}
+
+/// Internal sort helper for small partitions
+fn _insertion_sort_small(arr: &mut [i32]) {
+    for i in 1..arr.len() {
+        let key = arr[i];
+        let mut j = i;
+        while j > 0 && arr[j - 1] > key {
+            arr[j] = arr[j - 1];
+            j -= 1;
+        }
+        arr[j] = key;
+    }
+}

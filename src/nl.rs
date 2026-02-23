@@ -246,11 +246,19 @@ pub enum NlTemplate {
     Compact,
     /// Doc-first: minimal metadata when doc exists, full template when missing
     DocFirst,
+    /// Experiment 3a: Standard but name without "A {type} named" prefix — just the name
+    StandardV2NoPrefix,
+    /// Experiment 3b: Standard + struct/enum field names from content
+    StandardV2Fields,
+    /// Experiment 3c: Standard + top-5 body keywords
+    StandardV2Keywords,
+    /// Experiment 3d: Standard but doc truncated to first sentence
+    StandardV2TruncDoc,
 }
 
 /// Generate natural language description from chunk metadata.
 ///
-/// Produces text like: "A function named parse config. Takes path parameter. Returns config."
+/// Produces text like: "parse config. Takes path parameter. Returns config. Keywords: path, config."
 ///
 /// # Example
 ///
@@ -281,7 +289,7 @@ pub enum NlTemplate {
 /// assert!(nl.contains("Parse configuration"));
 /// ```
 pub fn generate_nl_description(chunk: &Chunk) -> String {
-    generate_nl_with_template(chunk, NlTemplate::Standard)
+    generate_nl_with_template(chunk, NlTemplate::Compact)
 }
 
 /// Generate NL description using a specific template variant.
@@ -306,11 +314,15 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
 
     let mut parts = Vec::new();
 
-    // Shared: doc comment
+    // Shared: doc comment — optionally truncated for StandardV2TruncDoc
     let has_doc = if let Some(ref doc) = chunk.doc {
         let doc_trimmed = doc.trim();
         if !doc_trimmed.is_empty() {
-            parts.push(doc_trimmed.to_string());
+            if template == NlTemplate::StandardV2TruncDoc {
+                parts.push(truncate_doc(doc_trimmed));
+            } else {
+                parts.push(doc_trimmed.to_string());
+            }
             true
         } else {
             false
@@ -351,11 +363,24 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
 
     // Name line: with or without "A {type} named" prefix
     match template {
-        NlTemplate::NoPrefix | NlTemplate::Compact => {
+        NlTemplate::NoPrefix | NlTemplate::Compact | NlTemplate::StandardV2NoPrefix => {
             parts.push(name_words);
         }
         _ => {
             parts.push(format!("A {} named {}", type_word, name_words));
+        }
+    }
+
+    // Struct/enum field names (StandardV2Fields experiment)
+    if template == NlTemplate::StandardV2Fields
+        && matches!(
+            chunk.chunk_type,
+            ChunkType::Struct | ChunkType::Enum | ChunkType::Class
+        )
+    {
+        let fields = extract_field_names(&chunk.content, chunk.language);
+        if !fields.is_empty() {
+            parts.push(format!("Fields: {}", fields.join(", ")));
         }
     }
 
@@ -388,10 +413,19 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     }
 
     // Body keywords for variants that use them
-    if matches!(template, NlTemplate::BodyKeywords | NlTemplate::Compact) {
+    if matches!(
+        template,
+        NlTemplate::BodyKeywords | NlTemplate::Compact | NlTemplate::StandardV2Keywords
+    ) {
         let keywords = extract_body_keywords(&chunk.content, chunk.language);
         if !keywords.is_empty() {
-            parts.push(format!("Uses: {}", keywords.join(", ")));
+            // StandardV2Keywords caps at 5 keywords
+            let capped: Vec<&str> = if template == NlTemplate::StandardV2Keywords {
+                keywords.iter().take(5).map(|s| s.as_str()).collect()
+            } else {
+                keywords.iter().map(|s| s.as_str()).collect()
+            };
+            parts.push(format!("Uses: {}", capped.join(", ")));
         }
     }
 
@@ -484,6 +518,103 @@ pub fn strip_markdown_noise(content: &str) -> String {
     let result: Cow<str> = MULTI_WHITESPACE_RE.replace_all(&result, " ");
     let result: Cow<str> = MULTI_NEWLINE_RE.replace_all(&result, "\n\n");
     result.trim().to_string()
+}
+
+/// Truncate a doc comment to its first sentence (or 150 chars, whichever comes first).
+///
+/// Keeps the most informative part of the doc within the embedding token budget.
+fn truncate_doc(doc: &str) -> String {
+    // Find first sentence boundary: `. ` or `.\n` or just `.` at end
+    if let Some(pos) = doc.find(". ") {
+        return doc[..=pos].to_string();
+    }
+    if let Some(pos) = doc.find(".\n") {
+        return doc[..=pos].to_string();
+    }
+    // No sentence boundary — truncate at 150 chars
+    if doc.len() > 150 {
+        let boundary = doc[..150].rfind(' ').unwrap_or(150);
+        format!("{}...", &doc[..boundary])
+    } else {
+        doc.to_string()
+    }
+}
+
+/// Extract field/variant names from struct, enum, or class content.
+///
+/// Parses field declarations from the chunk's source code.
+/// Returns field names (without types) for embedding.
+fn extract_field_names(content: &str, language: Language) -> Vec<String> {
+    let mut fields = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        // Skip empty lines, comments, braces, decorators
+        if trimmed.is_empty()
+            || trimmed.starts_with("//")
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed == "{"
+            || trimmed == "}"
+            || trimmed.starts_with("pub struct")
+            || trimmed.starts_with("struct")
+            || trimmed.starts_with("pub enum")
+            || trimmed.starts_with("enum")
+            || trimmed.starts_with("class")
+            || trimmed.starts_with("type ")
+            || trimmed.starts_with("export")
+        {
+            continue;
+        }
+
+        // Extract field name based on language
+        let field = match language {
+            Language::Rust | Language::Go => {
+                // `pub name: Type,` or `name Type` (Go)
+                trimmed
+                    .trim_start_matches("pub ")
+                    .trim_start_matches("pub(crate) ")
+                    .split([':', ' '])
+                    .next()
+                    .map(|s| s.trim_end_matches(','))
+            }
+            Language::Python => {
+                // `name: type` or `name = value`
+                trimmed.split([':', '=']).next().map(|s| s.trim())
+            }
+            Language::TypeScript | Language::JavaScript | Language::Java => {
+                // `name: type;` or `private name: type;`
+                let clean = trimmed
+                    .trim_start_matches("public ")
+                    .trim_start_matches("private ")
+                    .trim_start_matches("protected ")
+                    .trim_start_matches("readonly ");
+                clean.split([':', '=', ';']).next().map(|s| s.trim())
+            }
+            _ => None,
+        };
+
+        if let Some(name) = field {
+            let name = name.trim();
+            // Skip if it looks like a variant with data, keyword, or too short
+            if !name.is_empty()
+                && name.len() > 1
+                && !name.contains('(')
+                && !name.contains('{')
+                && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+            {
+                let tokenized = tokenize_identifier(name).join(" ");
+                if !tokenized.is_empty() {
+                    fields.push(tokenized);
+                }
+            }
+        }
+
+        if fields.len() >= 15 {
+            break; // Cap at 15 fields
+        }
+    }
+    fields
 }
 
 /// Extract meaningful keywords from function body, filtering language noise.
@@ -642,7 +773,7 @@ mod tests {
 
         let nl = generate_nl_description(&chunk);
         assert!(nl.contains("Load config from path"));
-        assert!(nl.contains("A function named parse config"));
+        assert!(nl.contains("parse config"));
         assert!(nl.contains("Takes parameters:"));
         assert!(nl.contains("Returns config"));
     }
@@ -676,7 +807,7 @@ mod tests {
 
         let nl = generate_nl_description(&chunk);
         assert!(nl.contains("Validates an email"));
-        assert!(nl.contains("A function named validate email"));
+        assert!(nl.contains("validate email"));
         // Params come from signature (no types in JS), return type from JSDoc
         assert!(
             nl.contains("Takes parameters: email"),
@@ -896,8 +1027,8 @@ mod tests {
             parent_type_name: None,
         };
         let nl = generate_nl_description(&chunk);
-        // Should still say "A method named" but no parent prefix
-        assert!(nl.contains("A method named process"));
+        // Compact: no "A method named" prefix, just tokenized name
+        assert!(nl.contains("process"));
         assert!(
             !nl.contains("method."),
             "Should not have orphan 'method.' prefix: {}",
@@ -924,7 +1055,7 @@ mod tests {
             parent_type_name: None,
         };
         let nl = generate_nl_description(&chunk);
-        assert!(nl.contains("A function named standalone"));
+        assert!(nl.contains("standalone"));
     }
 
     #[test]

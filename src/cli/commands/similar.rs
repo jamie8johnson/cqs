@@ -70,13 +70,9 @@ pub(crate) fn cmd_similar(
 
     let filter = SearchFilter {
         languages,
-        chunk_types: None,
         path_pattern: cli.path.clone(),
-        name_boost: 0.0, // Pure embedding similarity
-        query_text: String::new(),
-        enable_rrf: false, // No RRF — direct embedding comparison
-        note_weight: 0.0,  // Code only
-        note_only: false,
+        note_weight: 0.0, // Code only, no notes
+        ..Default::default()
     };
 
     // Load vector index

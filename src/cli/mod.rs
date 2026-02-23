@@ -203,6 +203,10 @@ pub struct Cli {
     #[arg(long)]
     no_stale_check: bool,
 
+    /// Disable search-time demotion of test functions and underscore-prefixed names
+    #[arg(long)]
+    no_demote: bool,
+
     /// Show debug info (sets RUST_LOG=debug)
     #[arg(short, long)]
     pub verbose: bool,

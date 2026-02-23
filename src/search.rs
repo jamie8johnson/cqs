@@ -287,6 +287,39 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
     }
 }
 
+/// Compute search-time importance multiplier for a chunk.
+///
+/// Demotes test functions and underscore-prefixed private helpers.
+/// Applied as a multiplier like `note_boost`, so it composes: `score * note_boost * importance`.
+///
+/// | Signal                   | Detection                                        | Multiplier |
+/// |--------------------------|--------------------------------------------------|------------|
+/// | Test function (name)     | name starts with `test_` or `Test`               | 0.90       |
+/// | Test file (filename)     | filename contains `_test.` or starts with `test_` | 0.90      |
+/// | Underscore-prefixed      | name starts with `_` (not `__`)                  | 0.95       |
+///
+/// File-based detection uses only the filename, not the full path — being inside a
+/// `tests/` directory doesn't demote. This avoids false positives on test fixtures
+/// and monorepo layouts.
+///
+/// Returns 1.0 (no change) when demotion doesn't apply.
+fn chunk_importance(name: &str, file_path: &str) -> f32 {
+    // Name-based: test function → 0.90
+    if name.starts_with("test_") || name.starts_with("Test") {
+        return 0.90;
+    }
+    // File-based: test file (by filename, not full path) → 0.90
+    let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+    if filename.contains("_test.") || filename.starts_with("test_") {
+        return 0.90;
+    }
+    // Underscore-prefixed private (but not dunder like __init__) → 0.95
+    if name.starts_with('_') && !name.starts_with("__") {
+        return 0.95;
+    }
+    1.0
+}
+
 /// Bounded min-heap for maintaining top-N search results by score.
 ///
 /// Uses a min-heap internally so the smallest score is always at the top,
@@ -427,7 +460,9 @@ impl Store {
             let semantic_limit = if use_rrf { limit * 3 } else { limit };
 
             // Select columns: always id + embedding, optionally name for hybrid scoring
-            let columns = if use_hybrid {
+            // or demotion (test function detection needs the name)
+            let need_name = use_hybrid || filter.enable_demotion;
+            let columns = if need_name {
                 "rowid, id, embedding, name"
             } else {
                 "rowid, id, embedding"
@@ -490,7 +525,7 @@ impl Store {
                 for row in &batch {
                     let id: String = row.get("id");
                     let embedding_bytes: Vec<u8> = row.get("embedding");
-                    let name: Option<String> = if use_hybrid { row.get("name") } else { None };
+                    let name: Option<String> = if need_name { row.get("name") } else { None };
 
                     let Some(embedding) = embedding_slice(&embedding_bytes) else {
                         continue;
@@ -520,7 +555,12 @@ impl Store {
                     // Apply note-based boost: notes mentioning this chunk's file or name
                     // adjust its score by up to ±15%
                     let chunk_name = name.as_deref().unwrap_or("");
-                    let score = base_score * note_boost(file_part, chunk_name, notes);
+                    let mut score = base_score * note_boost(file_part, chunk_name, notes);
+
+                    // Apply demotion for test functions and underscore-prefixed names
+                    if filter.enable_demotion {
+                        score *= chunk_importance(chunk_name, file_part);
+                    }
 
                     if score >= threshold {
                         score_heap.push(id, score);
@@ -713,7 +753,13 @@ impl Store {
                     };
 
                     // Apply note-based boost
-                    let score = base_score * note_boost(&chunk_row.origin, &chunk_row.name, notes);
+                    let mut score =
+                        base_score * note_boost(&chunk_row.origin, &chunk_row.name, notes);
+
+                    // Apply demotion for test functions and underscore-prefixed names
+                    if filter.enable_demotion {
+                        score *= chunk_importance(&chunk_row.name, &chunk_row.origin);
+                    }
 
                     if score >= threshold {
                         Some((chunk_row, score))
@@ -1391,5 +1437,52 @@ mod tests {
             let results = store.search_filtered(&query, &filter, 3, 0.0).unwrap();
             assert_eq!(results.len(), 3);
         }
+    }
+
+    // ===== chunk_importance tests =====
+
+    #[test]
+    fn test_chunk_importance_normal() {
+        assert_eq!(chunk_importance("parse_config", "src/lib.rs"), 1.0);
+    }
+
+    #[test]
+    fn test_chunk_importance_test_prefix() {
+        assert_eq!(chunk_importance("test_parse_config", "src/lib.rs"), 0.90);
+    }
+
+    #[test]
+    fn test_chunk_importance_test_upper() {
+        // Go convention: TestFoo
+        assert_eq!(chunk_importance("TestParseConfig", "src/lib.go"), 0.90);
+    }
+
+    #[test]
+    fn test_chunk_importance_underscore() {
+        assert_eq!(chunk_importance("_helper", "src/lib.rs"), 0.95);
+    }
+
+    #[test]
+    fn test_chunk_importance_dunder_not_demoted() {
+        // Python dunders like __init__ should NOT be demoted
+        assert_eq!(chunk_importance("__init__", "src/lib.py"), 1.0);
+    }
+
+    #[test]
+    fn test_chunk_importance_test_file() {
+        // File named foo_test.rs → demotion via filename
+        assert_eq!(chunk_importance("helper_fn", "src/foo_test.rs"), 0.90);
+    }
+
+    #[test]
+    fn test_chunk_importance_test_dir_no_demote() {
+        // Being in a tests/ directory should NOT demote
+        assert_eq!(chunk_importance("real_fn", "tests/fixtures/eval.rs"), 1.0);
+    }
+
+    #[test]
+    fn test_chunk_importance_test_name_beats_path() {
+        // test_ name triggers demotion even in normal directory
+        assert_eq!(chunk_importance("test_foo", "src/lib.rs"), 0.90);
     }
 }

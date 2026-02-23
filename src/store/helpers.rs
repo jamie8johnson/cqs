@@ -432,6 +432,12 @@ pub struct SearchFilter {
     pub note_weight: f32,
     /// When true, return only notes (skip code search entirely)
     pub note_only: bool,
+    /// Apply search-time demotion for test functions and underscore-prefixed names.
+    ///
+    /// Test functions (`test_*`, `Test*`) get 0.90x multiplier.
+    /// Underscore-prefixed private names (`_foo` but not `__dunder__`) get 0.95x.
+    /// Disable with `--no-demote` CLI flag.
+    pub enable_demotion: bool,
 }
 
 impl Default for SearchFilter {
@@ -445,6 +451,7 @@ impl Default for SearchFilter {
             enable_rrf: false,
             note_weight: 1.0, // Notes weighted equally by default
             note_only: false,
+            enable_demotion: true, // Demote test functions by default
         }
     }
 }
