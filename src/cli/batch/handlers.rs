@@ -65,13 +65,11 @@ pub(super) fn dispatch_search(
 
     let filter = cqs::SearchFilter {
         languages,
-        chunk_types: None,
         path_pattern: path,
         name_boost: 0.2,
         query_text: query.to_string(),
         enable_rrf: !semantic_only,
-        note_weight: 1.0,
-        note_only: false,
+        ..Default::default()
     };
 
     // Check audit mode (cached per session)
@@ -279,14 +277,8 @@ pub(super) fn dispatch_explain(
     let similar = match ctx.store.get_chunk_with_embedding(&chunk.id)? {
         Some((_, embedding)) => {
             let filter = cqs::SearchFilter {
-                languages: None,
-                chunk_types: None,
-                path_pattern: None,
-                name_boost: 0.0,
-                query_text: String::new(),
-                enable_rrf: false,
                 note_weight: 0.0,
-                note_only: false,
+                ..Default::default()
             };
             let index = ctx.vector_index()?;
             let sim_results = ctx
@@ -407,14 +399,8 @@ pub(super) fn dispatch_similar(
         .ok_or_else(|| anyhow::anyhow!("Could not load embedding for '{}'", chunk.name))?;
 
     let filter = cqs::SearchFilter {
-        languages: None,
-        chunk_types: None,
-        path_pattern: None,
-        name_boost: 0.0,
-        query_text: String::new(),
-        enable_rrf: false,
         note_weight: 0.0,
-        note_only: false,
+        ..Default::default()
     };
 
     let index = ctx.vector_index()?;

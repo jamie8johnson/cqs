@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 )
 
@@ -326,4 +327,83 @@ func (cb *CircuitBreakerGo) RecordSuccess() {
 	defer cb.mu.Unlock()
 	cb.failureCount = 0
 	cb.state = "closed"
+}
+
+// Test functions
+func TestMergeSort(t *testing.T) {
+	data := []int{5, 3, 8, 1, 2}
+	result := MergeSort(data)
+	expected := []int{1, 2, 3, 5, 8}
+	for i := range expected {
+		if result[i] != expected[i] {
+			t.Errorf("MergeSort failed at index %d: got %d, want %d", i, result[i], expected[i])
+		}
+	}
+}
+
+func TestHeapSort(t *testing.T) {
+	data := []int{9, 4, 7, 1, 3}
+	result := HeapSort(data)
+	expected := []int{1, 3, 4, 7, 9}
+	for i := range expected {
+		if result[i] != expected[i] {
+			t.Errorf("HeapSort failed at index %d: got %d, want %d", i, result[i], expected[i])
+		}
+	}
+}
+
+func TestValidateEmail(t *testing.T) {
+	if !ValidateEmail("user@example.com") {
+		t.Error("Expected valid email")
+	}
+	if ValidateEmail("not-an-email") {
+		t.Error("Expected invalid email")
+	}
+}
+
+func TestValidatePhone(t *testing.T) {
+	if !ValidatePhone("+1-555-0100") {
+		t.Error("Expected valid phone")
+	}
+	if ValidatePhone("abc") {
+		t.Error("Expected invalid phone")
+	}
+}
+
+func TestCircuitBreaker(t *testing.T) {
+	cb := NewCircuitBreaker(3, 30)
+	if !cb.ShouldAllow() {
+		t.Error("Expected circuit breaker to allow")
+	}
+}
+
+// mergeSorted is an internal merge helper — merges two sorted slices
+func mergeSorted(left, right []int) []int {
+	result := make([]int, 0, len(left)+len(right))
+	i, j := 0, 0
+	for i < len(left) && j < len(right) {
+		if left[i] <= right[j] {
+			result = append(result, left[i])
+			i++
+		} else {
+			result = append(result, right[j])
+			j++
+		}
+	}
+	result = append(result, left[i:]...)
+	result = append(result, right[j:]...)
+	return result
+}
+
+// insertionSortSmall is an internal sort helper for small partitions
+func insertionSortSmall(arr []int) {
+	for i := 1; i < len(arr); i++ {
+		key := arr[i]
+		j := i
+		for j > 0 && arr[j-1] > key {
+			arr[j] = arr[j-1]
+			j--
+		}
+		arr[j] = key
+	}
 }

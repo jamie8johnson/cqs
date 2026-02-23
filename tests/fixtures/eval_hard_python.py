@@ -232,3 +232,50 @@ class CircuitBreaker:
         """Record a success - resets failure count and closes circuit."""
         self.failure_count = 0
         self.state = 'closed'
+
+
+# Test functions for sort algorithms
+def test_merge_sort():
+    data = [5, 3, 8, 1, 2]
+    assert merge_sort(data) == [1, 2, 3, 5, 8]
+
+def test_heap_sort():
+    data = [9, 4, 7, 1, 3]
+    assert heap_sort(data) == [1, 3, 4, 7, 9]
+
+def test_validate_email():
+    assert validate_email("user@example.com")
+    assert not validate_email("not-an-email")
+
+def test_validate_phone():
+    assert validate_phone("+1-555-0100")
+    assert not validate_phone("abc")
+
+def test_circuit_breaker():
+    cb = CircuitBreaker(3, 30)
+    assert cb.should_allow()
+
+def _merge_sorted(left, right):
+    """Internal merge helper — merges two sorted lists."""
+    result = []
+    i = j = 0
+    while i < len(left) and j < len(right):
+        if left[i] <= right[j]:
+            result.append(left[i])
+            i += 1
+        else:
+            result.append(right[j])
+            j += 1
+    result.extend(left[i:])
+    result.extend(right[j:])
+    return result
+
+def _insertion_sort_small(arr):
+    """Internal sort helper for small partitions."""
+    for i in range(1, len(arr)):
+        key = arr[i]
+        j = i
+        while j > 0 and arr[j - 1] > key:
+            arr[j] = arr[j - 1]
+            j -= 1
+        arr[j] = key

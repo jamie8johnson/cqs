@@ -212,3 +212,56 @@ class CircuitBreaker {
         this.state = 'closed';
     }
 }
+
+// Test functions
+function testMergeSort() {
+    const data = [5, 3, 8, 1, 2];
+    const result = mergeSort(data);
+    console.assert(JSON.stringify(result) === JSON.stringify([1, 2, 3, 5, 8]));
+}
+
+function testHeapSort() {
+    const data = [9, 4, 7, 1, 3];
+    const result = heapSort(data);
+    console.assert(JSON.stringify(result) === JSON.stringify([1, 3, 4, 7, 9]));
+}
+
+function testValidateEmail() {
+    console.assert(validateEmail("user@example.com"));
+    console.assert(!validateEmail("not-an-email"));
+}
+
+function testValidatePhone() {
+    console.assert(validatePhone("+1-555-0100"));
+    console.assert(!validatePhone("abc"));
+}
+
+function testCircuitBreaker() {
+    const cb = new CircuitBreaker(3, 30000);
+    console.assert(cb.shouldAllow());
+}
+
+function _mergeSorted(left, right) {
+    const result = [];
+    let i = 0, j = 0;
+    while (i < left.length && j < right.length) {
+        if (left[i] <= right[j]) {
+            result.push(left[i++]);
+        } else {
+            result.push(right[j++]);
+        }
+    }
+    return result.concat(left.slice(i), right.slice(j));
+}
+
+function _insertionSortSmall(arr) {
+    for (let i = 1; i < arr.length; i++) {
+        const key = arr[i];
+        let j = i;
+        while (j > 0 && arr[j - 1] > key) {
+            arr[j] = arr[j - 1];
+            j--;
+        }
+        arr[j] = key;
+    }
+}

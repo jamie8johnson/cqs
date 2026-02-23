@@ -57,6 +57,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         None => None,
     };
 
+    #[allow(clippy::needless_update)]
     let filter = SearchFilter {
         languages,
         chunk_types,
@@ -66,6 +67,8 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         enable_rrf: !cli.semantic_only, // RRF on by default, disable with --semantic-only
         note_weight: cli.note_weight,
         note_only: cli.note_only,
+        enable_demotion: !cli.no_demote,
+        ..Default::default()
     };
     filter.validate().map_err(|e| anyhow::anyhow!(e))?;
 

@@ -70,14 +70,8 @@ pub(crate) fn cmd_explain(
     let similar = match store.get_chunk_with_embedding(&chunk.id)? {
         Some((_, embedding)) => {
             let filter = SearchFilter {
-                languages: None,
-                chunk_types: None,
-                path_pattern: None,
-                name_boost: 0.0,
-                query_text: String::new(),
-                enable_rrf: false,
                 note_weight: 0.0,
-                note_only: false,
+                ..Default::default()
             };
             let index = HnswIndex::try_load(&cqs_dir);
             let sim_results = store.search_filtered_with_index(
