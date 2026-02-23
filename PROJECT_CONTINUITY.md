@@ -2,10 +2,11 @@
 
 ## Right Now
 
-**Next: Score improvements moonshot.** 2026-02-22.
+**Score improvements moonshot complete.** 2026-02-23.
 
-- v0.14.0 released (crates.io + GitHub)
-- Planning score improvement levers: NL templates, sub-function demotion, RRF eval mode
+- PR #480 merged: pipeline eval, sub-function demotion, NL template experiments
+- Production template switched Standard → Compact (+3.6% R@1 on hard eval)
+- Reindex required on all machines (`cqs index --force`)
 
 ## Pending Changes
 
@@ -36,14 +37,14 @@ None.
 
 ## Architecture
 
-- Version: 0.14.0
+- Version: 0.14.1
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1035 pass + 22 ignored
+- Tests: 1099 pass + 35 ignored (1134 total)
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
