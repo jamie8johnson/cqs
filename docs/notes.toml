@@ -717,7 +717,7 @@ mentions = [
 sentiment = 0.5
 text = "OnceLock pattern for lazy-init in long-running sessions (batch/REPL): Embedder and HNSW/CAGRA index built on first use, cached for session lifetime. Avoids 500ms+ ONNX init per command. Pattern: OnceLock<T> + get_or_init(|| build()). Used in BatchContext."
 mentions = [
-    "src/cli/batch.rs",
+    "src/cli/batch/mod.rs",
     "OnceLock",
 ]
 
@@ -725,7 +725,7 @@ mentions = [
 sentiment = -0.5
 text = 'CI runs without gpu-index feature — functions with params used only inside #[cfg(feature = "gpu-index")] need let _ = param; at top to avoid unused variable warnings in CI.'
 mentions = [
-    "src/cli/batch.rs",
+    "src/cli/batch/mod.rs",
     "CI",
     "gpu-index",
 ]
@@ -734,7 +734,7 @@ mentions = [
 sentiment = 0.5
 text = "Pipeline syntax for batch: shell_words tokenize first, then split by standalone | token. Quote-safe by design — pipes inside quoted strings are a single token, never a separator. Fan-out capped at 50 names/stage with any_truncated tracking across all stages."
 mentions = [
-    "src/cli/batch.rs",
+    "src/cli/batch/mod.rs",
     "pipeline",
 ]
 
@@ -784,7 +784,7 @@ mentions = [
 sentiment = -0.5
 text = "OnceLock::get_or_try_init is still unstable (nightly-only). For fallible lazy init, use manual pattern: check get(), compute Result, set(), get().unwrap(). See BatchContext::file_set() for the pattern."
 mentions = [
-    "src/cli/batch.rs",
+    "src/cli/batch/mod.rs",
     "OnceLock",
 ]
 
@@ -808,9 +808,24 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "HNSW safety test (test_loaded_index_multiple_searches) is flaky in CI — one-hot embeddings with 0.01 baseline produce vectors close enough that HNSW approximate search occasionally returns wrong nearest neighbor. Not a real bug — flaky test on different hardware. Pass rate ~90%."
+text = "HNSW tests are non-deterministic — never assert exact top-1 on small indexes. Use top-k contains instead. Fixed 3 flaky tests in build.rs, safety.rs, hnsw_test.rs."
 mentions = [
+    "src/hnsw/build.rs",
     "src/hnsw/safety.rs",
-    "CI",
-    "flaky test",
+    "tests/hnsw_test.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Embedding::new() dimension check must allow MODEL_DIM (768) as valid — the embedding pipeline creates 768-dim vectors before appending sentiment to make 769. Only warn on truly wrong dimensions."
+mentions = ["src/embedder.rs"]
+
+[[note]]
+sentiment = -0.5
+text = "Command listings drift across docs. 6 files have independent command lists (README, CLAUDE.md, bootstrap template, audit agent block, red-team agent block, CLAUDE.md agent instructions). When adding a CLI command, update all 6."
+mentions = [
+    "README.md",
+    "CLAUDE.md",
+    ".claude/skills/audit/SKILL.md",
+    ".claude/skills/cqs-bootstrap/SKILL.md",
 ]
