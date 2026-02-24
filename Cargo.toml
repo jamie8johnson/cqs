@@ -40,7 +40,7 @@ tree-sitter-sql = { version = "0.4", package = "tree-sitter-sequel-tsql", option
 # ML
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
 tokenizers = { version = "0.22", features = ["http"] }
-hf-hub = "0.4"
+hf-hub = "0.5"
 ndarray = "0.17"
 # cuVS requires ndarray 0.15, import separately for gpu-index
 ndarray_015 = { package = "ndarray", version = "0.15", optional = true }
