@@ -83,47 +83,13 @@ None.
 
 4. Create `.claude/skills/` directory
 5. Copy all portable skills from `/mnt/c/Projects/cqs/.claude/skills/`:
+   - `cqs` — unified CLI dispatcher (search, graph, quality, notes, infrastructure — all subcommands)
+   - `cqs-bootstrap` — this skill (for nested projects)
+   - `cqs-batch` — batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
+   - `cqs-plan` — task planning with scout data + task-type templates
    - `update-tears` — session state capture
    - `groom-notes` — note cleanup
    - `reindex` — rebuild index with stats
-   - `cqs-bootstrap` — this skill (for nested projects)
-   - `cqs-search` — semantic code search
-   - `cqs-stats` — index statistics
-   - `cqs-callers` — find callers of a function
-   - `cqs-callees` — find callees of a function
-   - `cqs-read` — read file with contextual notes
-   - `cqs-explain` — function card (signature, callers, callees, similar)
-   - `cqs-similar` — find similar code
-   - `cqs-diff` — semantic diff between snapshots
-   - `cqs-drift` — semantic drift detection between reference and project
-   - `cqs-add-note` — add a note to project memory
-   - `cqs-update-note` — update an existing note
-   - `cqs-remove-note` — remove a note
-   - `cqs-audit-mode` — toggle audit mode for unbiased review
-   - `cqs-ref` — manage reference indexes (add/remove/update/list)
-   - `cqs-watch` — start file watcher for live index updates
-   - `cqs-trace` — follow call chain between two functions
-   - `cqs-impact` — what breaks if you change X
-   - `cqs-impact-diff` — diff-aware impact: changed functions, callers, tests to re-run
-   - `cqs-test-map` — map functions to their tests
-   - `cqs-batch` — batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
-   - `cqs-context` — module-level file overview
-   - `cqs-gather` — smart context assembly (seed search + call graph BFS)
-   - `cqs-dead` — find dead code (functions with no callers)
-   - `cqs-gc` — report index staleness
-   - `cqs-stale` — check index freshness (files changed since last index)
-   - `cqs-related` — find functions related by shared callers, callees, or types
-   - `cqs-deps` — type dependencies: who uses a type, or what types a function uses
-   - `cqs-where` — suggest where to add new code based on semantic similarity
-   - `cqs-scout` — pre-investigation dashboard (search + callers + tests + staleness + notes)
-   - `cqs-task` — single-call implementation brief (scout + gather + impact + placement + notes)
-   - `cqs-onboard` — guided codebase tour (entry point + call chain + callers + types + tests)
-   - `cqs-plan` — task planning with scout data + task-type templates
-   - `cqs-convert` — convert documents (PDF, HTML, CHM, MD) to cleaned Markdown
-   - `cqs-ci` — CI pipeline analysis (impact + risk + dead code + gate)
-   - `cqs-review` — comprehensive diff review (impact + notes + risk scoring)
-   - `cqs-health` — codebase quality snapshot (dead code, staleness, hotspots)
-   - `cqs-suggest` — auto-suggest notes from codebase patterns
    - `troubleshoot` — diagnose common cqs issues
    - `migrate` — handle schema version upgrades
 
