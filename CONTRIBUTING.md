@@ -181,11 +181,13 @@ src/
     red-team/     - Adversarial security audit (attacker mindset, PoC-required)
     pr/           - WSL-safe PR creation
     cqs-bootstrap/ - New project setup with tears infrastructure
+    cqs/          - Unified CLI dispatcher (search, graph, quality, notes, infrastructure)
     reindex/      - Rebuild index with before/after stats
     docs-review/  - Check project docs for staleness
     migrate/      - Schema version upgrades
     troubleshoot/ - Diagnose common cqs issues
-    cqs-*/        - CLI skill wrappers (search, read, callers, etc.)
+    cqs-batch/    - Batch mode with pipeline syntax
+    cqs-plan/     - Task planning with templates
 ```
 
 **Key design notes:**

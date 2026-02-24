@@ -53,7 +53,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [x] `store.search()` safety — renamed to `search_embedding_only()` to prevent direct use. All user-facing paths should use `search_filtered()`.
 - [x] `DocFormat` registry table (#412) — static FORMAT_TABLE replaces 4 match blocks, 6→3 changes per new variant.
 - [x] `ChunkSummary` type consistency — `ChunkIdentity`, `LightChunk`, `GatheredChunk` now use `Language`/`ChunkType` enums. Parse boundary at SQL read.
-- [ ] `reverse_bfs_multi` depth accuracy (#407) — BFS ordering means depth depends on which changed function reaches a node first, not which is closest. Needs per-source BFS or Dijkstra.
+- [x] `reverse_bfs_multi` depth accuracy (#407) — fixed with stale-entry detection + shorter-path updates in multi-source BFS.
 - [x] Convert filename TOCTOU race (#410) — atomic `create_new` instead of check-then-write.
 - [x] `gather_cross_index` tests (#414) — 4 integration tests added.
 
@@ -61,7 +61,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 - [ ] C# language support — biggest missing language by market size
 - [ ] Pre-built release binaries (GitHub Actions) — adoption friction
-- [ ] Skill grouping / organization (30+ skills)
+- [x] Skill grouping — consolidated 35 thin cqs-* wrappers into unified `/cqs` dispatcher (48→14 skills)
 
 ### Parked
 
@@ -75,7 +75,6 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Open Issues
 
-- #407: `reverse_bfs_multi` depth accuracy (BFS ordering)
 - #389: CAGRA GPU memory — needs disk persistence layer
 - #255: Pre-built reference packages
 - #106: ort stable (currently 2.0.0-rc.11)
