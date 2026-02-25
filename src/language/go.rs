@@ -146,6 +146,13 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}_test.go")),
     type_query: Some(TYPE_QUERY),
+    common_types: &[
+        "string", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32",
+        "uint64", "float32", "float64", "bool", "byte", "rune", "error", "any", "comparable",
+        "Context",
+    ],
+    container_body_kinds: &[],
+    extract_container_name: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -2,7 +2,6 @@
 
 use anyhow::{bail, Result};
 
-use cqs::parser::ChunkType;
 use cqs::{compute_hints, HnswIndex, SearchFilter};
 
 use crate::cli::staleness;
@@ -91,7 +90,7 @@ pub(crate) fn cmd_explain(
     };
 
     // Compute hints (only for function/method chunk types)
-    let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
+    let hints = if chunk.chunk_type.is_callable() {
         match compute_hints(&store, &chunk.name, Some(callers.len())) {
             Ok(hints) => Some(hints),
             Err(e) => {

@@ -59,9 +59,33 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Next — Expansion
 
-- [ ] C# language support — biggest missing language by market size
+- [x] C# language support — 10th language. Property, Delegate, Event chunk types. Per-language common_types. Data-driven container extraction.
 - [ ] Pre-built release binaries (GitHub Actions) — adoption friction
 - [x] Skill grouping — consolidated 35 thin cqs-* wrappers into unified `/cqs` dispatcher (48→14 skills)
+
+### Future Languages + ChunkType Variants
+
+Languages that map cleanly to existing variants (no new ChunkType needed):
+- **Kotlin** — Property covers properties, rest maps to Class/Interface/Enum/Function
+- **Swift** — Property covers properties, `protocol` → Interface
+- **PHP** — Property covers properties, `trait` → Trait
+- **Dart** — Property covers properties, `mixin` could map to Trait
+- **Objective-C** — Property covers `@property`, `@protocol` → Interface
+- **C++** — structs/classes/functions/enums cover it
+- **Zig** — maps cleanly
+
+Languages that would likely need new ChunkType variants:
+
+| Variant | Languages | Rationale |
+|---------|-----------|-----------|
+| `Module` | Ruby, Elixir, F#, OCaml | Namespace + mixin container. Ruby `module` is callable (included/extended), distinct from Class. |
+| `Macro` | Elixir (`defmacro`), Rust (currently skipped) | Compile-time code gen, callable-like but different semantics. |
+| `TypeAlias` | Haskell (`type`), Scala (`type`), Kotlin (`typealias`) | Creates type edges but isn't a container or callable. |
+| `Object` | Scala (`object`), Kotlin (`object`) | Singleton — neither class nor instance. Has members, is callable. |
+
+Ruby would push hardest — `module` is a first-class concept that loses information mapped to either Class or Trait. Scala is the other interesting one with `object`, `trait`, `case class`, `sealed`, and `type` members all structurally distinct.
+
+Infrastructure for adding variants is now cheap: per-language LanguageDef fields, data-driven container extraction, dynamic callable SQL. New variant = enum arm + Display/FromStr + is_callable decision + nl.rs + capture_types.
 
 ### Parked
 

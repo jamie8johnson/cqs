@@ -23,6 +23,9 @@ impl Parser {
             ("trait", ChunkType::Trait),
             ("interface", ChunkType::Interface),
             ("const", ChunkType::Constant),
+            ("property", ChunkType::Property),
+            ("delegate", ChunkType::Delegate),
+            ("event", ChunkType::Event),
         ];
 
         // Find which definition capture matched and get its node
@@ -233,53 +236,33 @@ fn infer_chunk_type(
     (ChunkType::Function, None)
 }
 
-/// Extract type name from a method container node (impl block, class, trait).
+/// Extract type name from a method container node.
+/// Uses LanguageDef fields: `container_body_kinds` and `extract_container_name`.
 fn extract_container_type_name(
     container: tree_sitter::Node,
     language: Language,
     source: &str,
 ) -> Option<String> {
-    match language {
-        Language::Rust => {
-            if container.kind() == "impl_item" {
-                // impl Foo { ... } or impl<T> Foo<T> { ... } or impl Trait for Foo { ... }
-                // The "type" field gives us the target type (Foo), not the trait
-                container.child_by_field_name("type").and_then(|t| {
-                    if t.kind() == "type_identifier" {
-                        Some(source[t.byte_range()].to_string())
-                    } else {
-                        // generic_type wraps type_identifier: Foo<T>
-                        find_child_text_by_kind(t, "type_identifier", source)
-                    }
-                })
-            } else {
-                // trait_item: trait Drawable { ... }
-                container
-                    .child_by_field_name("name")
-                    .map(|n| source[n.byte_range()].to_string())
-            }
-        }
-        Language::Python => {
-            // class_definition → name field
-            container
-                .child_by_field_name("name")
-                .map(|n| source[n.byte_range()].to_string())
-        }
-        Language::JavaScript | Language::TypeScript | Language::Java => {
-            // method_containers include "class_body" and "class_declaration"
-            // If matched on class_body, walk up to class_declaration for the name
-            let class_node = if container.kind() == "class_body" {
-                container.parent()
-            } else {
-                Some(container)
-            };
-            class_node.and_then(|cn| {
-                cn.child_by_field_name("name")
-                    .map(|n| source[n.byte_range()].to_string())
-            })
-        }
-        _ => None, // C, SQL, Markdown — no method containers
+    let def = language.def();
+
+    // If language provides a custom extractor, use it
+    if let Some(extractor) = def.extract_container_name {
+        return extractor(container, source);
     }
+
+    // Default algorithm:
+    // 1. If container is a body node (e.g., class_body, declaration_list), walk up
+    // 2. Read the "name" field from the resulting node
+    let type_node = if def.container_body_kinds.contains(&container.kind()) {
+        container.parent()
+    } else {
+        Some(container)
+    };
+
+    type_node.and_then(|n| {
+        n.child_by_field_name("name")
+            .map(|name| source[name.byte_range()].to_string())
+    })
 }
 
 /// Extract receiver type from a Go method_declaration.
@@ -298,17 +281,6 @@ fn extract_method_receiver_type(
     let first_param = receiver.named_child(0)?;
     // type_identifier may be nested in pointer_type
     find_type_identifier_recursive(first_param, source)
-}
-
-/// Find first direct child with given kind and return its text.
-fn find_child_text_by_kind(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(source[child.byte_range()].to_string());
-        }
-    }
-    None
 }
 
 /// Recursively find a type_identifier node and return its text.
@@ -584,6 +556,150 @@ enum Direction {
 
             let dir = chunks.iter().find(|c| c.name == "Direction").unwrap();
             assert_eq!(dir.chunk_type, ChunkType::Enum);
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_class_and_method() {
+            let content = r#"
+public class Calculator {
+    public int Add(int a, int b) {
+        return a + b;
+    }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
+            assert_eq!(class.chunk_type, ChunkType::Class);
+
+            let method = chunks.iter().find(|c| c.name == "Add").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_property() {
+            let content = r#"
+public class Foo {
+    public int Value { get; set; }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Value" && c.chunk_type == ChunkType::Property));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_delegate() {
+            let content = "public delegate void OnComplete(int result);";
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "OnComplete" && c.chunk_type == ChunkType::Delegate));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_event() {
+            let content = r#"
+public class Foo {
+    public event EventHandler Changed;
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Changed" && c.chunk_type == ChunkType::Event));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_interface_and_enum() {
+            let content = r#"
+public interface ICalculator {
+    int Add(int a, int b);
+}
+
+public enum Color { Red, Green, Blue }
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "ICalculator" && c.chunk_type == ChunkType::Interface));
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_record_maps_to_struct() {
+            let content = "public record Person(string Name, int Age);";
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Person" && c.chunk_type == ChunkType::Struct));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_constructor_inferred_method() {
+            let content = r#"
+public class Foo {
+    public Foo(int x) { }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            // Constructor → Function → inferred to Method (inside declaration_list)
+            let ctors: Vec<_> = chunks
+                .iter()
+                .filter(|c| c.name == "Foo" && c.chunk_type == ChunkType::Method)
+                .collect();
+            assert!(
+                !ctors.is_empty(),
+                "Constructor should be inferred as Method"
+            );
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_local_function() {
+            let content = r#"
+public class Foo {
+    public void Bar() {
+        int Helper(int x) { return x + 1; }
+        Helper(5);
+    }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks.iter().any(|c| c.name == "Helper"));
         }
     }
 

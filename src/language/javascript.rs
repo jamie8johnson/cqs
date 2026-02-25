@@ -66,6 +66,12 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}.test.js")),
     type_query: None,
+    common_types: &[
+        "Array", "Map", "Set", "Promise", "Date", "Error", "RegExp", "Function", "Object",
+        "Symbol", "WeakMap", "WeakSet",
+    ],
+    container_body_kinds: &["class_body"],
+    extract_container_name: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

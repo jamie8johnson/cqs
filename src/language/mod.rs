@@ -16,6 +16,7 @@
 //! - `lang-go` - Go support (enabled by default)
 //! - `lang-c` - C support (enabled by default)
 //! - `lang-java` - Java support (enabled by default)
+//! - `lang-csharp` - C# support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -149,6 +150,18 @@ pub struct LanguageDef {
     /// Uses classified capture names: `@param_type`, `@return_type`, `@field_type`,
     /// `@impl_type`, `@bound_type`, `@alias_type`, `@type_ref` (catch-all).
     pub type_query: Option<&'static str>,
+    /// Standard library / builtin types to exclude from type-edge analysis.
+    /// Each language defines its own set. At runtime, these are unioned into
+    /// the global `COMMON_TYPES` set in `focused_read.rs`.
+    pub common_types: &'static [&'static str],
+    /// Node kinds that are intermediate body containers (walk up to parent for name).
+    /// e.g., `"class_body"` (JS/TS/Java), `"declaration_list"` (C#/Rust).
+    /// Used by the generic container type extraction algorithm.
+    pub container_body_kinds: &'static [&'static str],
+    /// Override for extracting parent type name from a method container node.
+    /// `None` = use default algorithm (walk up from body kinds, read `"name"` field).
+    /// Only Rust needs an override (`impl_item` uses `"type"` field, not `"name"`).
+    pub extract_container_name: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
 }
 
 /// How to extract function signatures
@@ -186,12 +199,32 @@ pub enum ChunkType {
     Constant,
     /// Documentation section (Markdown)
     Section,
+    /// Property (C# get/set properties)
+    Property,
+    /// Delegate type declaration (C#)
+    Delegate,
+    /// Event declaration (C#)
+    Event,
 }
 
 impl ChunkType {
-    /// Returns true for types that have call graph connections (Function, Method).
+    /// Returns true for types that have call graph connections (Function, Method, Property).
     pub fn is_callable(self) -> bool {
-        matches!(self, ChunkType::Function | ChunkType::Method)
+        matches!(
+            self,
+            ChunkType::Function | ChunkType::Method | ChunkType::Property
+        )
+    }
+
+    /// SQL IN clause string for all callable chunk types.
+    /// Derived from `is_callable()` — keep in sync when adding new callable variants.
+    pub fn callable_sql_list() -> String {
+        let callable = [ChunkType::Function, ChunkType::Method, ChunkType::Property];
+        callable
+            .iter()
+            .map(|ct| format!("'{}'", ct))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 
@@ -207,6 +240,9 @@ impl std::fmt::Display for ChunkType {
             ChunkType::Interface => write!(f, "interface"),
             ChunkType::Constant => write!(f, "constant"),
             ChunkType::Section => write!(f, "section"),
+            ChunkType::Property => write!(f, "property"),
+            ChunkType::Delegate => write!(f, "delegate"),
+            ChunkType::Event => write!(f, "event"),
         }
     }
 }
@@ -222,7 +258,7 @@ impl std::fmt::Display for ParseChunkTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section",
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event",
             self.input
         )
     }
@@ -243,6 +279,9 @@ impl std::str::FromStr for ChunkType {
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
             "section" => Ok(ChunkType::Section),
+            "property" => Ok(ChunkType::Property),
+            "delegate" => Ok(ChunkType::Delegate),
+            "event" => Ok(ChunkType::Event),
             _ => Err(ParseChunkTypeError {
                 input: s.to_string(),
             }),
@@ -326,6 +365,8 @@ define_languages! {
     C => "c", feature = "lang-c", module = c;
     /// Java (.java files)
     Java => "java", feature = "lang-java", module = java;
+    /// C# (.cs files)
+    CSharp => "csharp", feature = "lang-csharp", module = csharp;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
@@ -432,6 +473,8 @@ mod tests {
         }
         #[cfg(feature = "lang-java")]
         assert!(REGISTRY.from_extension("java").is_some());
+        #[cfg(feature = "lang-csharp")]
+        assert!(REGISTRY.from_extension("cs").is_some());
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
         #[cfg(feature = "lang-markdown")]
@@ -472,6 +515,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-java")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-csharp")]
         {
             expected += 1;
         }
@@ -520,6 +567,7 @@ mod tests {
         assert_eq!(Language::from_extension("c"), Some(Language::C));
         assert_eq!(Language::from_extension("h"), Some(Language::C));
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
+        assert_eq!(Language::from_extension("cs"), Some(Language::CSharp));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
@@ -536,6 +584,7 @@ mod tests {
         );
         assert_eq!("c".parse::<Language>().unwrap(), Language::C);
         assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
+        assert_eq!("csharp".parse::<Language>().unwrap(), Language::CSharp);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
@@ -550,6 +599,7 @@ mod tests {
         assert_eq!(Language::Go.to_string(), "go");
         assert_eq!(Language::C.to_string(), "c");
         assert_eq!(Language::Java.to_string(), "java");
+        assert_eq!(Language::CSharp.to_string(), "csharp");
         assert_eq!(Language::Sql.to_string(), "sql");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
@@ -667,6 +717,10 @@ mod tests {
             Some("Returns string".to_string())
         );
         assert_eq!(
+            (Language::CSharp.def().extract_return_nl)("public int Add(int a, int b)"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
             (Language::Sql.def().extract_return_nl)(
                 "CREATE FUNCTION dbo.fn_Calc(@id INT) RETURNS DECIMAL(10,2)"
             ),
@@ -703,6 +757,15 @@ mod tests {
             "constant".parse::<ChunkType>().unwrap(),
             ChunkType::Constant
         );
+        assert_eq!(
+            "property".parse::<ChunkType>().unwrap(),
+            ChunkType::Property
+        );
+        assert_eq!(
+            "delegate".parse::<ChunkType>().unwrap(),
+            ChunkType::Delegate
+        );
+        assert_eq!("event".parse::<ChunkType>().unwrap(), ChunkType::Event);
     }
 
     #[test]
@@ -738,11 +801,25 @@ mod tests {
             ChunkType::Interface,
             ChunkType::Constant,
             ChunkType::Section,
+            ChunkType::Property,
+            ChunkType::Delegate,
+            ChunkType::Event,
         ];
         for ct in types {
             let s = ct.to_string();
             let parsed: ChunkType = s.parse().unwrap();
             assert_eq!(ct, parsed);
         }
+    }
+
+    #[test]
+    fn test_callable_sql_list() {
+        let list = ChunkType::callable_sql_list();
+        assert!(list.contains("'function'"));
+        assert!(list.contains("'method'"));
+        assert!(list.contains("'property'"));
+        assert!(!list.contains("'class'"));
+        assert!(!list.contains("'delegate'"));
+        assert!(!list.contains("'event'"));
     }
 }

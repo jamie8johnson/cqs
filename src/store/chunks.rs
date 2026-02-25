@@ -927,18 +927,20 @@ impl Store {
                 .replace('%', "\\%")
                 .replace('_', "\\_");
             let pattern = format!("%{}%", escaped);
-            let rows: Vec<_> = sqlx::query(
+            let callable = ChunkType::callable_sql_list();
+            let sql = format!(
                 "SELECT id, origin, language, chunk_type, name, signature, content, doc,
                         line_start, line_end, parent_id
                  FROM chunks
-                 WHERE chunk_type IN ('function', 'method')
+                 WHERE chunk_type IN ({callable})
                    AND signature LIKE ?1 ESCAPE '\\'
                  ORDER BY origin, line_start
-                 LIMIT 100",
-            )
-            .bind(&pattern)
-            .fetch_all(&self.pool)
-            .await?;
+                 LIMIT 100"
+            );
+            let rows: Vec<_> = sqlx::query(&sql)
+                .bind(&pattern)
+                .fetch_all(&self.pool)
+                .await?;
 
             Ok(rows
                 .iter()

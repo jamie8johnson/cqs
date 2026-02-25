@@ -25,6 +25,8 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Go => "go",
         Language::C => "c",
         Language::Java => "java",
+        #[cfg(feature = "lang-csharp")]
+        Language::CSharp => "cs",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };
@@ -45,6 +47,8 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Go => "go",
         Language::C => "c",
         Language::Java => "java",
+        #[cfg(feature = "lang-csharp")]
+        Language::CSharp => "cs",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };

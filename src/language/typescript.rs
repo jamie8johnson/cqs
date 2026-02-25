@@ -117,6 +117,14 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}.test.ts")),
     type_query: Some(TYPE_QUERY),
+    common_types: &[
+        "string", "number", "boolean", "void", "null", "undefined", "any", "never", "unknown",
+        "Array", "Map", "Set", "Promise", "Record", "Partial", "Required", "Readonly", "Pick",
+        "Omit", "Exclude", "Extract", "NonNullable", "ReturnType", "Date", "Error", "RegExp",
+        "Function", "Object", "Symbol",
+    ],
+    container_body_kinds: &["class_body"],
+    extract_container_name: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

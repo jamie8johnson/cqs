@@ -132,7 +132,7 @@ pub(crate) fn build_focused_output(
     ));
 
     // Hints (function/method only)
-    let hints = if matches!(chunk.chunk_type, ChunkType::Function | ChunkType::Method) {
+    let hints = if chunk.chunk_type.is_callable() {
         match compute_hints(store, &chunk.name, None) {
             Ok(h) => Some(h),
             Err(e) => {

@@ -345,6 +345,9 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         ChunkType::Interface => "interface",
         ChunkType::Constant => "constant",
         ChunkType::Section => "section", // unreachable — early return above
+        ChunkType::Property => "property",
+        ChunkType::Delegate => "delegate",
+        ChunkType::Event => "event",
     };
 
     // DocFirst: minimal metadata when doc exists
