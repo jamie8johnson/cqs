@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-02-25
+
 ### Added
-- **C# language support** — 10th language. Tree-sitter parsing for classes, structs, records, interfaces, enums, methods, constructors, properties, delegates, events, and local functions. Call graph extraction (invocations + object creation). Type dependency extraction (base types, generic args, parameter/return types, property types). Behind `lang-csharp` feature flag (enabled by default).
+- **C# language support** (#484) — 10th language. Tree-sitter parsing for classes, structs, records, interfaces, enums, methods, constructors, properties, delegates, events, and local functions. Call graph extraction (invocations + object creation). Type dependency extraction (base types, generic args, parameter/return types, property types). Behind `lang-csharp` feature flag (enabled by default).
 - **ChunkType variants: Property, Delegate, Event** — new chunk types for C# (and future languages). `callable_sql_list()` replaces hardcoded SQL `IN` clauses. `is_callable()` method for type-safe callable checks.
 - **Per-language `common_types`** — each LanguageDef now carries its own common type set. Runtime union replaces global hardcoded list. Enables language-specific type filtering in focused reads.
 - **Data-driven container extraction** — `container_body_kinds` and `extract_container_name` on LanguageDef replace per-language match arms. Adding a language no longer requires editing the container extraction logic.
+- **Score improvements moonshot** (#480) — pipeline eval harness, sub-function demotion in NL descriptions, NL template experiments. Production template switched Standard → Compact (+3.6% R@1 on hard eval).
+
+### Changed
+- **Skill consolidation** (#482) — consolidated 35 thin cqs-* skill wrappers into unified `/cqs` dispatcher (48 → 14 skills).
+
+### Fixed
+- **hf-hub reverted to 0.4.3** (#483) — 0.5.0 broke model downloads.
+
+### Dependencies
+- clap 4.5.58 → 4.5.60, toml 1.0.1 → 1.0.3, anyhow 1.0.101 → 1.0.102, chrono 0.4.43 → 0.4.44
 
 ## [0.14.1] - 2026-02-22
 
