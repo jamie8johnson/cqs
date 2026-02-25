@@ -2,13 +2,15 @@
 
 ## Right Now
 
-**Releasing v0.15.0 — C# language support.** 2026-02-25.
+**v0.15.0 released.** 2026-02-25.
 
-C# merged via PR #484. Release PR in progress.
+C# language support shipped. crates.io published, GitHub release tagged, binary installed.
+
+No active task.
 
 ## Pending Changes
 
-Release branch `release/v0.15.0` — version bump + changelog.
+None.
 
 ## Parked
 
@@ -49,5 +51,5 @@ Release branch `release/v0.15.0` — version bump + changelog.
 - Build target: `~/.cargo-target/cqs/` (Linux FS)
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
 - Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
-- type_edges: 4276 edges (Phase 1a+1b complete)
+- type_edges: 4567 edges
 - Eval: E5-base-v2 90.9% Recall@1, 0.951 NDCG@10, 0.941 MRR on 55-query hard eval
