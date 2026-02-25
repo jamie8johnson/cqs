@@ -110,6 +110,12 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: None,
     type_query: Some(TYPE_QUERY),
+    common_types: &[
+        "int", "char", "float", "double", "void", "long", "short", "unsigned", "size_t",
+        "ssize_t", "ptrdiff_t", "FILE", "bool",
+    ],
+    container_body_kinds: &[],
+    extract_container_name: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

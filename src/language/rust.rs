@@ -106,6 +106,40 @@ fn extract_return(signature: &str) -> Option<String> {
     None
 }
 
+/// Custom container name extraction for Rust.
+/// `impl_item` uses `"type"` field (not `"name"`), and may wrap in `generic_type`.
+fn extract_container_name_rust(container: tree_sitter::Node, source: &str) -> Option<String> {
+    if container.kind() == "impl_item" {
+        container.child_by_field_name("type").and_then(|t| {
+            if t.kind() == "type_identifier" {
+                Some(source[t.byte_range()].to_string())
+            } else {
+                // generic_type wraps type_identifier: Foo<T>
+                let mut cursor = t.walk();
+                for child in t.children(&mut cursor) {
+                    if child.kind() == "type_identifier" {
+                        return Some(source[child.byte_range()].to_string());
+                    }
+                }
+                None
+            }
+        })
+    } else {
+        // trait_item: read "name" field
+        container
+            .child_by_field_name("name")
+            .map(|n| source[n.byte_range()].to_string())
+    }
+}
+
+const COMMON_TYPES: &[&str] = &[
+    "String", "Vec", "Result", "Option", "Box", "Arc", "Rc", "HashMap", "HashSet", "BTreeMap",
+    "BTreeSet", "Path", "PathBuf", "Value", "Error", "Self", "None", "Some", "Ok", "Err", "Mutex",
+    "RwLock", "Cow", "Pin", "Future", "Iterator", "Display", "Debug", "Clone", "Default", "Send",
+    "Sync", "Sized", "Copy", "From", "Into", "AsRef", "AsMut", "Deref", "DerefMut", "Read",
+    "Write", "Seek", "BufRead", "ToString", "Serialize", "Deserialize",
+];
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "rust",
     grammar: Some(|| tree_sitter_rust::LANGUAGE.into()),
@@ -120,6 +154,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/tests/{stem}_test.rs")),
     type_query: Some(TYPE_QUERY),
+    common_types: COMMON_TYPES,
+    container_body_kinds: &[],
+    extract_container_name: Some(extract_container_name_rust),
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -118,6 +118,14 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/{stem}Test.java")),
     type_query: Some(TYPE_QUERY),
+    common_types: &[
+        "String", "Object", "Integer", "Long", "Double", "Float", "Boolean", "Byte", "Character",
+        "List", "ArrayList", "Map", "HashMap", "Set", "HashSet", "Collection", "Iterator",
+        "Iterable", "Optional", "Stream", "Exception", "RuntimeException", "IOException", "Class",
+        "Void", "Comparable", "Serializable", "Cloneable",
+    ],
+    container_body_kinds: &["class_body"],
+    extract_container_name: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

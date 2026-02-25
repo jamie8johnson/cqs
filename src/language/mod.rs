@@ -149,6 +149,18 @@ pub struct LanguageDef {
     /// Uses classified capture names: `@param_type`, `@return_type`, `@field_type`,
     /// `@impl_type`, `@bound_type`, `@alias_type`, `@type_ref` (catch-all).
     pub type_query: Option<&'static str>,
+    /// Standard library / builtin types to exclude from type-edge analysis.
+    /// Each language defines its own set. At runtime, these are unioned into
+    /// the global `COMMON_TYPES` set in `focused_read.rs`.
+    pub common_types: &'static [&'static str],
+    /// Node kinds that are intermediate body containers (walk up to parent for name).
+    /// e.g., `"class_body"` (JS/TS/Java), `"declaration_list"` (C#/Rust).
+    /// Used by the generic container type extraction algorithm.
+    pub container_body_kinds: &'static [&'static str],
+    /// Override for extracting parent type name from a method container node.
+    /// `None` = use default algorithm (walk up from body kinds, read `"name"` field).
+    /// Only Rust needs an override (`impl_item` uses `"type"` field, not `"name"`).
+    pub extract_container_name: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
 }
 
 /// How to extract function signatures

@@ -83,6 +83,14 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_return_nl: extract_return,
     test_file_suggestion: Some(|stem, parent| format!("{parent}/test_{stem}.py")),
     type_query: Some(TYPE_QUERY),
+    common_types: &[
+        "str", "int", "float", "bool", "list", "dict", "set", "tuple", "None", "Any", "Optional",
+        "Union", "List", "Dict", "Set", "Tuple", "Type", "Callable", "Iterator", "Generator",
+        "Coroutine", "Exception", "ValueError", "TypeError", "KeyError", "IndexError", "Path",
+        "Self",
+    ],
+    container_body_kinds: &[],
+    extract_container_name: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

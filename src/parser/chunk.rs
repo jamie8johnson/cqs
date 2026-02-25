@@ -236,53 +236,33 @@ fn infer_chunk_type(
     (ChunkType::Function, None)
 }
 
-/// Extract type name from a method container node (impl block, class, trait).
+/// Extract type name from a method container node.
+/// Uses LanguageDef fields: `container_body_kinds` and `extract_container_name`.
 fn extract_container_type_name(
     container: tree_sitter::Node,
     language: Language,
     source: &str,
 ) -> Option<String> {
-    match language {
-        Language::Rust => {
-            if container.kind() == "impl_item" {
-                // impl Foo { ... } or impl<T> Foo<T> { ... } or impl Trait for Foo { ... }
-                // The "type" field gives us the target type (Foo), not the trait
-                container.child_by_field_name("type").and_then(|t| {
-                    if t.kind() == "type_identifier" {
-                        Some(source[t.byte_range()].to_string())
-                    } else {
-                        // generic_type wraps type_identifier: Foo<T>
-                        find_child_text_by_kind(t, "type_identifier", source)
-                    }
-                })
-            } else {
-                // trait_item: trait Drawable { ... }
-                container
-                    .child_by_field_name("name")
-                    .map(|n| source[n.byte_range()].to_string())
-            }
-        }
-        Language::Python => {
-            // class_definition → name field
-            container
-                .child_by_field_name("name")
-                .map(|n| source[n.byte_range()].to_string())
-        }
-        Language::JavaScript | Language::TypeScript | Language::Java => {
-            // method_containers include "class_body" and "class_declaration"
-            // If matched on class_body, walk up to class_declaration for the name
-            let class_node = if container.kind() == "class_body" {
-                container.parent()
-            } else {
-                Some(container)
-            };
-            class_node.and_then(|cn| {
-                cn.child_by_field_name("name")
-                    .map(|n| source[n.byte_range()].to_string())
-            })
-        }
-        _ => None, // C, SQL, Markdown — no method containers
+    let def = language.def();
+
+    // If language provides a custom extractor, use it
+    if let Some(extractor) = def.extract_container_name {
+        return extractor(container, source);
     }
+
+    // Default algorithm:
+    // 1. If container is a body node (e.g., class_body, declaration_list), walk up
+    // 2. Read the "name" field from the resulting node
+    let type_node = if def.container_body_kinds.contains(&container.kind()) {
+        container.parent()
+    } else {
+        Some(container)
+    };
+
+    type_node.and_then(|n| {
+        n.child_by_field_name("name")
+            .map(|name| source[name.byte_range()].to_string())
+    })
 }
 
 /// Extract receiver type from a Go method_declaration.
@@ -301,17 +281,6 @@ fn extract_method_receiver_type(
     let first_param = receiver.named_child(0)?;
     // type_identifier may be nested in pointer_type
     find_type_identifier_recursive(first_param, source)
-}
-
-/// Find first direct child with given kind and return its text.
-fn find_child_text_by_kind(node: tree_sitter::Node, kind: &str, source: &str) -> Option<String> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(source[child.byte_range()].to_string());
-        }
-    }
-    None
 }
 
 /// Recursively find a type_identifier node and return its text.
