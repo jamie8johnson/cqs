@@ -372,15 +372,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "Adding a new language to cqs requires: (1) tree-sitter grammar crate, (2) one-liner in define_languages! macro, (3) LanguageDef with chunk_query + call_query, (4) test fixture + parser tests, (5) match arms in eval_test.rs and model_eval.rs. The define_languages! macro (PR #307) reduced this from 13 scattered changes."
-mentions = [
-    "src/language/mod.rs",
-    "define_languages",
-    "src/language/sql.rs",
-]
-
-[[note]]
 sentiment = -0.5
 text = "extract_name_fallback() in chunk.rs searches for SQL keywords (PROCEDURE, FUNCTION, VIEW, TRIGGER) but lives in generic parser code. Harmless for non-SQL languages (returns None) but couples generic parsing to SQL-specific knowledge."
 mentions = [
@@ -828,4 +819,20 @@ mentions = [
     "CLAUDE.md",
     ".claude/skills/audit/SKILL.md",
     ".claude/skills/cqs-bootstrap/SKILL.md",
+]
+
+[[note]]
+sentiment = 1.0
+text = "C# language support shipped in v0.15.0. 10th language. New ChunkType variants: Property, Delegate, Event. Per-language common_types on LanguageDef. Data-driven container extraction. tree-sitter-c-sharp 0.23 behind lang-csharp feature flag."
+mentions = [
+    "src/language/csharp.rs",
+    "src/language/mod.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Adding a new language is now data-driven: one-line define_languages! entry, fill LanguageDef struct (queries, stopwords, common_types, container_body_kinds), done. No parser dispatch edits needed. Property/Delegate/Event ChunkType variants ready for reuse."
+mentions = [
+    "src/language/mod.rs",
+    "src/parser/chunk.rs",
 ]
