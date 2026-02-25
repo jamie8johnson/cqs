@@ -186,12 +186,32 @@ pub enum ChunkType {
     Constant,
     /// Documentation section (Markdown)
     Section,
+    /// Property (C# get/set properties)
+    Property,
+    /// Delegate type declaration (C#)
+    Delegate,
+    /// Event declaration (C#)
+    Event,
 }
 
 impl ChunkType {
-    /// Returns true for types that have call graph connections (Function, Method).
+    /// Returns true for types that have call graph connections (Function, Method, Property).
     pub fn is_callable(self) -> bool {
-        matches!(self, ChunkType::Function | ChunkType::Method)
+        matches!(
+            self,
+            ChunkType::Function | ChunkType::Method | ChunkType::Property
+        )
+    }
+
+    /// SQL IN clause string for all callable chunk types.
+    /// Derived from `is_callable()` — keep in sync when adding new callable variants.
+    pub fn callable_sql_list() -> String {
+        let callable = [ChunkType::Function, ChunkType::Method, ChunkType::Property];
+        callable
+            .iter()
+            .map(|ct| format!("'{}'", ct))
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 
@@ -207,6 +227,9 @@ impl std::fmt::Display for ChunkType {
             ChunkType::Interface => write!(f, "interface"),
             ChunkType::Constant => write!(f, "constant"),
             ChunkType::Section => write!(f, "section"),
+            ChunkType::Property => write!(f, "property"),
+            ChunkType::Delegate => write!(f, "delegate"),
+            ChunkType::Event => write!(f, "event"),
         }
     }
 }
@@ -222,7 +245,7 @@ impl std::fmt::Display for ParseChunkTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section",
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event",
             self.input
         )
     }
@@ -243,6 +266,9 @@ impl std::str::FromStr for ChunkType {
             "interface" => Ok(ChunkType::Interface),
             "constant" => Ok(ChunkType::Constant),
             "section" => Ok(ChunkType::Section),
+            "property" => Ok(ChunkType::Property),
+            "delegate" => Ok(ChunkType::Delegate),
+            "event" => Ok(ChunkType::Event),
             _ => Err(ParseChunkTypeError {
                 input: s.to_string(),
             }),
@@ -703,6 +729,15 @@ mod tests {
             "constant".parse::<ChunkType>().unwrap(),
             ChunkType::Constant
         );
+        assert_eq!(
+            "property".parse::<ChunkType>().unwrap(),
+            ChunkType::Property
+        );
+        assert_eq!(
+            "delegate".parse::<ChunkType>().unwrap(),
+            ChunkType::Delegate
+        );
+        assert_eq!("event".parse::<ChunkType>().unwrap(), ChunkType::Event);
     }
 
     #[test]
@@ -738,11 +773,25 @@ mod tests {
             ChunkType::Interface,
             ChunkType::Constant,
             ChunkType::Section,
+            ChunkType::Property,
+            ChunkType::Delegate,
+            ChunkType::Event,
         ];
         for ct in types {
             let s = ct.to_string();
             let parsed: ChunkType = s.parse().unwrap();
             assert_eq!(ct, parsed);
         }
+    }
+
+    #[test]
+    fn test_callable_sql_list() {
+        let list = ChunkType::callable_sql_list();
+        assert!(list.contains("'function'"));
+        assert!(list.contains("'method'"));
+        assert!(list.contains("'property'"));
+        assert!(!list.contains("'class'"));
+        assert!(!list.contains("'delegate'"));
+        assert!(!list.contains("'event'"));
     }
 }

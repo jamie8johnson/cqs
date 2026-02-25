@@ -23,6 +23,9 @@ impl Parser {
             ("trait", ChunkType::Trait),
             ("interface", ChunkType::Interface),
             ("const", ChunkType::Constant),
+            ("property", ChunkType::Property),
+            ("delegate", ChunkType::Delegate),
+            ("event", ChunkType::Event),
         ];
 
         // Find which definition capture matched and get its node
