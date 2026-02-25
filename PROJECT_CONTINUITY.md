@@ -2,15 +2,37 @@
 
 ## Right Now
 
-**Score improvements moonshot complete.** 2026-02-23.
+**C# language support — implementation in progress.** 2026-02-25.
 
-- PR #480 merged: pipeline eval, sub-function demotion, NL template experiments
-- Production template switched Standard → Compact (+3.6% R@1 on hard eval)
-- Reindex required on all machines (`cqs index --force`)
+Branch: `feat/csharp-language-support` (5 commits ahead of main).
+
+Design: `docs/plans/2026-02-25-csharp-language-support-design.md`
+Plan: `docs/plans/2026-02-25-csharp-implementation-plan.md`
+
+### Completed tasks (committed):
+
+1. **Task 1: ChunkType variants** — Added Property, Delegate, Event to ChunkType enum. Added `callable_sql_list()`. Updated nl.rs, capture_types, CLI help. Replaced inline callable checks with `is_callable()`.
+
+2. **Task 2: Dynamic callable SQL** — Replaced 3 hardcoded `IN ('function','method')` queries in calls.rs and chunks.rs with `ChunkType::callable_sql_list()`.
+
+3. **Tasks 3+4: Infrastructure + backfill** — Added `common_types`, `container_body_kinds`, `extract_container_name` fields to LanguageDef. Replaced per-language match arms in `extract_container_type_name` with data-driven algorithm. Rust has custom extractor for `impl_item`. COMMON_TYPES in focused_read.rs now union of per-language sets. All 9 languages backfilled.
+
+4. **Tasks 5+6: tree-sitter-c-sharp + C# module** — Added dep, feature flag, csharp.rs with all queries (chunk, call, type), stopwords, common types, extract_return. Registered in define_languages! macro. Added C# to registry tests.
+
+### Current blocker:
+
+**1 test failure: `test_registry_all_languages`.** Already added the `#[cfg(feature = "lang-csharp")]` counter block, but still failing. Need to debug — probably a test count issue or the test needs rebuild. The build itself is clean (0 warnings).
+
+### Remaining tasks:
+
+- Task 7: C# unit tests (chunk extraction tests in parser/chunk.rs, return extraction tests in csharp.rs)
+- Task 8: Registry tests (mostly done — folded into Task 6 commit)
+- Task 9: Documentation (README, CONTRIBUTING, CHANGELOG, ROADMAP)
+- Task 10: Final verification, release build, PR
 
 ## Pending Changes
 
-None.
+Branch `feat/csharp-language-support` — not yet pushed. 5 local commits on feature branch.
 
 ## Parked
 
@@ -43,8 +65,8 @@ None.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 9 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, SQL, Markdown)
-- Tests: 1099 pass + 35 ignored (1134 total)
+- 10 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, SQL, Markdown)
+- Tests: ~622 pass + 5 ignored (lib), 1 failure pending debug
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
