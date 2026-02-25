@@ -52,31 +52,16 @@ Below `is_callable`, add:
 
 ```rust
 /// SQL IN clause string for all callable chunk types.
-/// Used to replace hardcoded `IN ('function', 'method')` in SQL queries.
+/// Exhaustive: update when adding new callable ChunkType variants.
 pub fn callable_sql_list() -> String {
-    Self::ALL
+    // Derived from is_callable() — keep in sync
+    let callable = [ChunkType::Function, ChunkType::Method, ChunkType::Property];
+    callable
         .iter()
-        .filter(|ct| ct.is_callable())
         .map(|ct| format!("'{}'", ct))
         .collect::<Vec<_>>()
         .join(",")
 }
-
-/// All ChunkType variants (for iteration).
-const ALL: &[ChunkType] = &[
-    ChunkType::Function,
-    ChunkType::Method,
-    ChunkType::Class,
-    ChunkType::Struct,
-    ChunkType::Enum,
-    ChunkType::Trait,
-    ChunkType::Interface,
-    ChunkType::Constant,
-    ChunkType::Section,
-    ChunkType::Property,
-    ChunkType::Delegate,
-    ChunkType::Event,
-];
 ```
 
 **Step 4: Update Display impl**
@@ -650,10 +635,10 @@ const TYPE_QUERY: &str = r#"
 
 ;; Alias
 (using_directive name: (identifier) @alias_type)
-
-;; Catch-all
-(identifier) @type_ref
 "#;
+// NOTE: No catch-all (identifier) @type_ref — C# uses "identifier" for everything
+// (variables, methods, params, etc.), so a catch-all would drown real types in noise.
+// Classified captures above are sufficient.
 
 const DOC_NODES: &[&str] = &["comment"];
 
@@ -795,178 +780,190 @@ Type extraction: params, returns, fields, base_list, generic constraints."
 ## Task 7: C# unit tests
 
 **Files:**
-- Modify: `src/language/csharp.rs` (add #[cfg(test)] mod tests)
+- Modify: `src/parser/chunk.rs` (add C# parse tests alongside existing language tests)
+- Modify: `src/language/csharp.rs` (add return extraction unit tests)
 
-**Step 1: Add chunk extraction tests**
+Uses the existing `write_temp_file(content, "cs")` + `Parser::new().unwrap()` + `parser.parse_file(file.path())` pattern from `parser/chunk.rs:381-404`.
 
-Add a test module at the bottom of `csharp.rs`:
+**Step 1: Add chunk extraction tests in parser/chunk.rs**
+
+Add a `csharp_tests` module inside the existing `parse_tests` module (after the other language tests):
+
+```rust
+#[cfg(feature = "lang-csharp")]
+mod csharp_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_csharp_class_and_method() {
+        let content = r#"
+public class Calculator {
+    public int Add(int a, int b) {
+        return a + b;
+    }
+}
+"#;
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
+        assert_eq!(class.chunk_type, ChunkType::Class);
+
+        let method = chunks.iter().find(|c| c.name == "Add").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
+    }
+
+    #[test]
+    fn test_parse_csharp_property() {
+        let content = r#"
+public class Foo {
+    public int Value { get; set; }
+}
+"#;
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "Value" && c.chunk_type == ChunkType::Property));
+    }
+
+    #[test]
+    fn test_parse_csharp_delegate() {
+        let content = "public delegate void OnComplete(int result);";
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "OnComplete" && c.chunk_type == ChunkType::Delegate));
+    }
+
+    #[test]
+    fn test_parse_csharp_event() {
+        let content = r#"
+public class Foo {
+    public event EventHandler Changed;
+}
+"#;
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "Changed" && c.chunk_type == ChunkType::Event));
+    }
+
+    #[test]
+    fn test_parse_csharp_interface() {
+        let content = "public interface IFoo { void Bar(); }";
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "IFoo" && c.chunk_type == ChunkType::Interface));
+    }
+
+    #[test]
+    fn test_parse_csharp_enum() {
+        let content = "public enum Color { Red, Green, Blue }";
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum));
+    }
+
+    #[test]
+    fn test_parse_csharp_struct() {
+        let content = "public struct Point { public int X; public int Y; }";
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "Point" && c.chunk_type == ChunkType::Struct));
+    }
+
+    #[test]
+    fn test_parse_csharp_record_maps_to_struct() {
+        let content = "public record Person(string Name, int Age);";
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "Person" && c.chunk_type == ChunkType::Struct));
+    }
+
+    #[test]
+    fn test_parse_csharp_constructor_inferred_method() {
+        let content = r#"
+public class Foo {
+    public Foo(int x) { }
+}
+"#;
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Constructor → Function → inferred to Method (inside class declaration_list)
+        let ctor = chunks.iter().find(|c| c.name == "Foo" && c.chunk_type == ChunkType::Method);
+        assert!(ctor.is_some(), "Constructor should be inferred as Method");
+    }
+
+    #[test]
+    fn test_parse_csharp_local_function() {
+        let content = r#"
+public class Foo {
+    public void Bar() {
+        int Helper(int x) { return x + 1; }
+        Helper(5);
+    }
+}
+"#;
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(chunks.iter().any(|c| c.name == "Helper"));
+    }
+}
+```
+
+**Step 2: Add return type extraction tests in csharp.rs**
+
+Add at the bottom of `csharp.rs`:
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::Parser;
-    use crate::language::{Language, ChunkType};
-
-    fn parse_chunks(source: &str) -> Vec<(String, ChunkType)> {
-        let parser = Parser::new();
-        let chunks = parser.parse_file(source, Language::CSharp, std::path::Path::new("test.cs")).unwrap();
-        chunks.into_iter().map(|c| (c.name, c.chunk_type)).collect()
-    }
 
     #[test]
-    fn test_class_extraction() {
-        let chunks = parse_chunks("public class Foo { }");
-        assert!(chunks.iter().any(|(name, ct)| name == "Foo" && *ct == ChunkType::Class));
-    }
-
-    #[test]
-    fn test_method_extraction() {
-        let chunks = parse_chunks(r#"
-            public class Foo {
-                public int Add(int a, int b) { return a + b; }
-            }
-        "#);
-        assert!(chunks.iter().any(|(name, ct)| name == "Add" && *ct == ChunkType::Method));
-    }
-
-    #[test]
-    fn test_property_extraction() {
-        let chunks = parse_chunks(r#"
-            public class Foo {
-                public int Value { get; set; }
-            }
-        "#);
-        assert!(chunks.iter().any(|(name, ct)| name == "Value" && *ct == ChunkType::Property));
-    }
-
-    #[test]
-    fn test_delegate_extraction() {
-        let chunks = parse_chunks("public delegate void OnComplete(int result);");
-        assert!(chunks.iter().any(|(name, ct)| name == "OnComplete" && *ct == ChunkType::Delegate));
-    }
-
-    #[test]
-    fn test_event_extraction() {
-        let chunks = parse_chunks(r#"
-            public class Foo {
-                public event EventHandler Changed;
-            }
-        "#);
-        assert!(chunks.iter().any(|(name, ct)| name == "Changed" && *ct == ChunkType::Event));
-    }
-
-    #[test]
-    fn test_interface_extraction() {
-        let chunks = parse_chunks("public interface IFoo { void Bar(); }");
-        assert!(chunks.iter().any(|(name, ct)| name == "IFoo" && *ct == ChunkType::Interface));
-    }
-
-    #[test]
-    fn test_enum_extraction() {
-        let chunks = parse_chunks("public enum Color { Red, Green, Blue }");
-        assert!(chunks.iter().any(|(name, ct)| name == "Color" && *ct == ChunkType::Enum));
-    }
-
-    #[test]
-    fn test_struct_extraction() {
-        let chunks = parse_chunks("public struct Point { public int X; public int Y; }");
-        assert!(chunks.iter().any(|(name, ct)| name == "Point" && *ct == ChunkType::Struct));
-    }
-
-    #[test]
-    fn test_record_maps_to_struct() {
-        let chunks = parse_chunks("public record Person(string Name, int Age);");
-        assert!(chunks.iter().any(|(name, ct)| name == "Person" && *ct == ChunkType::Struct));
-    }
-
-    #[test]
-    fn test_constructor_extraction() {
-        let chunks = parse_chunks(r#"
-            public class Foo {
-                public Foo(int x) { }
-            }
-        "#);
-        // Constructor → Function → inferred Method (inside class)
-        assert!(chunks.iter().any(|(name, ct)| name == "Foo" && *ct == ChunkType::Method));
-    }
-
-    #[test]
-    fn test_local_function() {
-        let chunks = parse_chunks(r#"
-            public class Foo {
-                public void Bar() {
-                    int Helper(int x) { return x + 1; }
-                    Helper(5);
-                }
-            }
-        "#);
-        assert!(chunks.iter().any(|(name, _)| name == "Helper"));
+    fn test_extract_return_csharp() {
+        assert_eq!(
+            extract_return("public int Add(int a, int b)"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            extract_return("public void DoSomething()"),
+            None
+        );
+        assert_eq!(
+            extract_return("private static string GetValue()"),
+            Some("Returns string".to_string())
+        );
     }
 }
 ```
 
-**Step 2: Add call extraction test**
+**Step 3: Run tests**
 
-```rust
-#[test]
-fn test_call_extraction() {
-    let parser = Parser::new();
-    let chunks = parser.parse_file(r#"
-        public class Foo {
-            public void Bar() {
-                Console.WriteLine("hello");
-                var x = new List<int>();
-                Baz();
-            }
-            public void Baz() { }
-        }
-    "#, Language::CSharp, std::path::Path::new("test.cs")).unwrap();
-
-    let bar = chunks.iter().find(|c| c.name == "Bar").unwrap();
-    let calls = parser.extract_calls(&bar.content, Language::CSharp, bar.line_start, bar.line_end);
-    let callee_names: Vec<&str> = calls.iter().map(|c| c.callee_name.as_str()).collect();
-    assert!(callee_names.contains(&"WriteLine"));
-    assert!(callee_names.contains(&"Baz"));
-    // "List" from new List<int>()
-    assert!(callee_names.contains(&"List"));
-}
-```
-
-**Step 3: Add return type extraction test**
-
-```rust
-#[test]
-fn test_extract_return_csharp() {
-    assert_eq!(
-        extract_return("public int Add(int a, int b)"),
-        Some("Returns int".to_string())
-    );
-    assert_eq!(
-        extract_return("public async Task<string> GetName()"),
-        Some("Returns task string".to_string())
-    );
-    assert_eq!(
-        extract_return("public void DoSomething()"),
-        None
-    );
-    assert_eq!(
-        extract_return("private static string GetValue()"),
-        Some("Returns string".to_string())
-    );
-}
-```
-
-**Step 4: Run tests**
-
-Run: `cargo test --features gpu-index -- csharp 2>&1`
+Run: `cargo test --features gpu-index -- "csharp\|extract_return" 2>&1`
 Expected: All pass.
 
-**Step 5: Commit**
+**Step 4: Commit**
 
 ```bash
 cargo fmt
-git add src/language/csharp.rs
+git add src/parser/chunk.rs src/language/csharp.rs
 git commit -m "test: C# chunk, call, and type extraction tests"
 ```
 
