@@ -2,29 +2,13 @@
 
 ## Right Now
 
-**C# language support — implementation complete, ready for PR.** 2026-02-25.
+**Releasing v0.15.0 — C# language support.** 2026-02-25.
 
-Branch: `feat/csharp-language-support` (7 commits ahead of main).
-
-Design: `docs/plans/2026-02-25-csharp-language-support-design.md`
-Plan: `docs/plans/2026-02-25-csharp-implementation-plan.md`
-
-### All tasks complete:
-
-1. **Task 1: ChunkType variants** — Property, Delegate, Event. `callable_sql_list()`. `is_callable()`.
-2. **Task 2: Dynamic callable SQL** — 3 hardcoded queries replaced.
-3. **Tasks 3+4: Infrastructure + backfill** — Per-language common_types, container_body_kinds, extract_container_name. Data-driven container extraction. All 9 existing languages backfilled.
-4. **Tasks 5+6: tree-sitter-c-sharp + C# module** — Full csharp.rs with chunk/call/type queries, stopwords, common types, extract_return. Registered in define_languages! macro.
-5. **Task 7: C# unit tests** — 8 parse tests (class, method, property, delegate, event, interface, enum, record→struct, constructor, local function). eval_common.rs CSharp arm added.
-6. **Task 8: Registry tests** — folded into Task 6.
-7. **Task 9: Documentation** — README (10 languages, C# in list), CHANGELOG, CONTRIBUTING, ROADMAP all updated.
-8. **Task 10: Final verification** — clippy clean, release build clean, 1101 tests pass (0 failures, 35 ignored).
-
-### Next: Push branch and create PR.
+C# merged via PR #484. Release PR in progress.
 
 ## Pending Changes
 
-Branch `feat/csharp-language-support` — not yet pushed. 7 local commits.
+Release branch `release/v0.15.0` — version bump + changelog.
 
 ## Parked
 
@@ -51,7 +35,7 @@ Branch `feat/csharp-language-support` — not yet pushed. 7 local commits.
 
 ## Architecture
 
-- Version: 0.14.1
+- Version: 0.15.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
