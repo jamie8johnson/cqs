@@ -709,17 +709,19 @@ impl Store {
     ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
         self.rt.block_on(async {
             // Phase 1: Lightweight query without content/doc
-            let rows: Vec<_> = sqlx::query(
+            let callable = ChunkType::callable_sql_list();
+            let sql = format!(
                 "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
                         c.line_start, c.line_end, c.parent_id
                  FROM chunks c
-                 WHERE c.chunk_type IN ('function', 'method')
+                 WHERE c.chunk_type IN ({callable})
                    AND c.name NOT IN (SELECT DISTINCT callee_name FROM function_calls)
                    AND c.parent_id IS NULL
-                 ORDER BY c.origin, c.line_start",
-            )
-            .fetch_all(&self.pool)
-            .await?;
+                 ORDER BY c.origin, c.line_start"
+            );
+            let rows: Vec<_> = sqlx::query(&sql)
+                .fetch_all(&self.pool)
+                .await?;
 
             // Build lightweight summaries (no content/doc yet)
             struct LightChunk {
@@ -960,11 +962,12 @@ impl Store {
 
         // Select only lightweight columns; content/doc filtering happens in WHERE
         // but we don't need them in the result set
+        let callable = ChunkType::callable_sql_list();
         let sql = format!(
             "SELECT id, origin, language, chunk_type, name, signature,
                     line_start, line_end, parent_id
              FROM chunks
-             WHERE chunk_type IN ('function', 'method')
+             WHERE chunk_type IN ({callable})
                AND (
                  {filter}
                )
