@@ -274,7 +274,14 @@ impl Parser {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
                 matches!(
                     name,
-                    "function" | "struct" | "class" | "enum" | "trait" | "interface" | "const"
+                    "function"
+                        | "struct"
+                        | "class"
+                        | "enum"
+                        | "trait"
+                        | "interface"
+                        | "const"
+                        | "module"
                 )
             });
 
