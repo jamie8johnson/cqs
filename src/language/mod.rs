@@ -371,6 +371,8 @@ define_languages! {
     Java => "java", feature = "lang-java", module = java;
     /// C# (.cs files)
     CSharp => "csharp", feature = "lang-csharp", module = csharp;
+    /// F# (.fs, .fsi files)
+    FSharp => "fsharp", feature = "lang-fsharp", module = fsharp;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
