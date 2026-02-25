@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **F# language support** — 11th language. Tree-sitter parsing for functions, records, discriminated unions, classes, interfaces, modules, and members. Call graph extraction (function application + dot access). Type dependency extraction (record fields, parameter types, inheritance, interface implementation). Behind `lang-fsharp` feature flag (enabled by default).
+- **PowerShell language support** — 12th language. Tree-sitter parsing for functions, classes, methods, properties, and enums. Call graph extraction (command calls, .NET method invocations, member access). Behind `lang-powershell` feature flag (enabled by default).
+- **ChunkType variant: Module** — new chunk type for F# modules (not callable). Infrastructure for future Ruby/Elixir module support.
+
 ## [0.15.0] - 2026-02-25
 
 ### Added

@@ -2,7 +2,7 @@
 
 ## Current: v0.15.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 10 languages.
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 12 languages.
 
 ### Recently Completed
 
@@ -60,6 +60,8 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Next — Expansion
 
 - [x] C# language support — 10th language. Property, Delegate, Event chunk types. Per-language common_types. Data-driven container extraction.
+- [x] F# language support — 11th language. Module ChunkType. Functions, records, discriminated unions, classes, interfaces, modules, members.
+- [x] PowerShell language support — 12th language. Functions, classes, methods, properties, enums, command/method calls.
 - [ ] Pre-built release binaries (GitHub Actions) — adoption friction
 - [x] Skill grouping — consolidated 35 thin cqs-* wrappers into unified `/cqs` dispatcher (48→14 skills)
 
@@ -78,7 +80,7 @@ Languages that would likely need new ChunkType variants:
 
 | Variant | Languages | Rationale |
 |---------|-----------|-----------|
-| `Module` | Ruby, Elixir, F#, OCaml | Namespace + mixin container. Ruby `module` is callable (included/extended), distinct from Class. |
+| `Module` | Ruby, Elixir, ~~F#~~, OCaml | Namespace + mixin container. Ruby `module` is callable (included/extended), distinct from Class. F# shipped in v0.15.0. |
 | `Macro` | Elixir (`defmacro`), Rust (currently skipped) | Compile-time code gen, callable-like but different semantics. |
 | `TypeAlias` | Haskell (`type`), Scala (`type`), Kotlin (`typealias`) | Creates type edges but isn't a container or callable. |
 | `Object` | Scala (`object`), Kotlin (`object`) | Singleton — neither class nor instance. Has members, is callable. |

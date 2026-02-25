@@ -530,6 +530,14 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-fsharp")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-powershell")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-sql")]
         {
             expected += 1;
