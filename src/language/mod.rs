@@ -16,6 +16,7 @@
 //! - `lang-go` - Go support (enabled by default)
 //! - `lang-c` - C support (enabled by default)
 //! - `lang-java` - Java support (enabled by default)
+//! - `lang-csharp` - C# support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -364,6 +365,8 @@ define_languages! {
     C => "c", feature = "lang-c", module = c;
     /// Java (.java files)
     Java => "java", feature = "lang-java", module = java;
+    /// C# (.cs files)
+    CSharp => "csharp", feature = "lang-csharp", module = csharp;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
@@ -470,6 +473,8 @@ mod tests {
         }
         #[cfg(feature = "lang-java")]
         assert!(REGISTRY.from_extension("java").is_some());
+        #[cfg(feature = "lang-csharp")]
+        assert!(REGISTRY.from_extension("cs").is_some());
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
         #[cfg(feature = "lang-markdown")]
@@ -510,6 +515,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-java")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-csharp")]
         {
             expected += 1;
         }
@@ -558,6 +567,7 @@ mod tests {
         assert_eq!(Language::from_extension("c"), Some(Language::C));
         assert_eq!(Language::from_extension("h"), Some(Language::C));
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
+        assert_eq!(Language::from_extension("cs"), Some(Language::CSharp));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
@@ -574,6 +584,7 @@ mod tests {
         );
         assert_eq!("c".parse::<Language>().unwrap(), Language::C);
         assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
+        assert_eq!("csharp".parse::<Language>().unwrap(), Language::CSharp);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
@@ -588,6 +599,7 @@ mod tests {
         assert_eq!(Language::Go.to_string(), "go");
         assert_eq!(Language::C.to_string(), "c");
         assert_eq!(Language::Java.to_string(), "java");
+        assert_eq!(Language::CSharp.to_string(), "csharp");
         assert_eq!(Language::Sql.to_string(), "sql");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
@@ -703,6 +715,10 @@ mod tests {
         assert_eq!(
             (Language::Java.def().extract_return_nl)("public String getName()"),
             Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::CSharp.def().extract_return_nl)("public int Add(int a, int b)"),
+            Some("Returns int".to_string())
         );
         assert_eq!(
             (Language::Sql.def().extract_return_nl)(

@@ -557,6 +557,150 @@ enum Direction {
             let dir = chunks.iter().find(|c| c.name == "Direction").unwrap();
             assert_eq!(dir.chunk_type, ChunkType::Enum);
         }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_class_and_method() {
+            let content = r#"
+public class Calculator {
+    public int Add(int a, int b) {
+        return a + b;
+    }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
+            assert_eq!(class.chunk_type, ChunkType::Class);
+
+            let method = chunks.iter().find(|c| c.name == "Add").unwrap();
+            assert_eq!(method.chunk_type, ChunkType::Method);
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_property() {
+            let content = r#"
+public class Foo {
+    public int Value { get; set; }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Value" && c.chunk_type == ChunkType::Property));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_delegate() {
+            let content = "public delegate void OnComplete(int result);";
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "OnComplete" && c.chunk_type == ChunkType::Delegate));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_event() {
+            let content = r#"
+public class Foo {
+    public event EventHandler Changed;
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Changed" && c.chunk_type == ChunkType::Event));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_interface_and_enum() {
+            let content = r#"
+public interface ICalculator {
+    int Add(int a, int b);
+}
+
+public enum Color { Red, Green, Blue }
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "ICalculator" && c.chunk_type == ChunkType::Interface));
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_record_maps_to_struct() {
+            let content = "public record Person(string Name, int Age);";
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks
+                .iter()
+                .any(|c| c.name == "Person" && c.chunk_type == ChunkType::Struct));
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_constructor_inferred_method() {
+            let content = r#"
+public class Foo {
+    public Foo(int x) { }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            // Constructor → Function → inferred to Method (inside declaration_list)
+            let ctors: Vec<_> = chunks
+                .iter()
+                .filter(|c| c.name == "Foo" && c.chunk_type == ChunkType::Method)
+                .collect();
+            assert!(
+                !ctors.is_empty(),
+                "Constructor should be inferred as Method"
+            );
+        }
+
+        #[test]
+        #[cfg(feature = "lang-csharp")]
+        fn test_parse_csharp_local_function() {
+            let content = r#"
+public class Foo {
+    public void Bar() {
+        int Helper(int x) { return x + 1; }
+        Helper(5);
+    }
+}
+"#;
+            let file = write_temp_file(content, "cs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert!(chunks.iter().any(|c| c.name == "Helper"));
+        }
     }
 
     mod parent_type_tests {

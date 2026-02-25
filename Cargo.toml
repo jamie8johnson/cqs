@@ -35,6 +35,7 @@ tree-sitter-javascript = { version = "0.25", optional = true }
 tree-sitter-go = { version = "0.25", optional = true }
 tree-sitter-c = { version = "0.24", optional = true }
 tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.23", optional = true }
 tree-sitter-sql = { version = "0.4", package = "tree-sitter-sequel-tsql", optional = true }
 
 # ML
@@ -100,7 +101,7 @@ self_cell = "1"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql", "lang-markdown", "convert"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-csharp", "lang-sql", "lang-markdown", "convert"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -110,9 +111,10 @@ lang-javascript = ["dep:tree-sitter-javascript"]
 lang-go = ["dep:tree-sitter-go"]
 lang-c = ["dep:tree-sitter-c"]
 lang-java = ["dep:tree-sitter-java"]
+lang-csharp = ["dep:tree-sitter-c-sharp"]
 lang-sql = ["dep:tree-sitter-sql"]
 lang-markdown = []  # No external deps — custom parser
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-sql", "lang-markdown"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-csharp", "lang-sql", "lang-markdown"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]
