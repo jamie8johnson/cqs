@@ -373,6 +373,8 @@ define_languages! {
     CSharp => "csharp", feature = "lang-csharp", module = csharp;
     /// F# (.fs, .fsi files)
     FSharp => "fsharp", feature = "lang-fsharp", module = fsharp;
+    /// PowerShell (.ps1, .psm1 files)
+    PowerShell => "powershell", feature = "lang-powershell", module = powershell;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)

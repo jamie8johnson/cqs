@@ -29,6 +29,8 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::CSharp => "cs",
         #[cfg(feature = "lang-fsharp")]
         Language::FSharp => "fs",
+        #[cfg(feature = "lang-powershell")]
+        Language::PowerShell => "ps1",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };
@@ -53,6 +55,8 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::CSharp => "cs",
         #[cfg(feature = "lang-fsharp")]
         Language::FSharp => "fs",
+        #[cfg(feature = "lang-powershell")]
+        Language::PowerShell => "ps1",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };
