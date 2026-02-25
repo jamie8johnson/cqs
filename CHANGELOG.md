@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **C# language support** — 10th language. Tree-sitter parsing for classes, structs, records, interfaces, enums, methods, constructors, properties, delegates, events, and local functions. Call graph extraction (invocations + object creation). Type dependency extraction (base types, generic args, parameter/return types, property types). Behind `lang-csharp` feature flag (enabled by default).
+- **ChunkType variants: Property, Delegate, Event** — new chunk types for C# (and future languages). `callable_sql_list()` replaces hardcoded SQL `IN` clauses. `is_callable()` method for type-safe callable checks.
+- **Per-language `common_types`** — each LanguageDef now carries its own common type set. Runtime union replaces global hardcoded list. Enables language-specific type filtering in focused reads.
+- **Data-driven container extraction** — `container_body_kinds` and `extract_container_name` on LanguageDef replace per-language match arms. Adding a language no longer requires editing the container extraction logic.
+
 ## [0.14.1] - 2026-02-22
 
 ### Fixed

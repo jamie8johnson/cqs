@@ -413,6 +413,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - Go
 - C
 - Java
+- C# (classes, structs, records, interfaces, enums, properties, delegates, events)
 - SQL (T-SQL, PostgreSQL)
 - Markdown (.md, .mdx — heading-based chunking with cross-reference extraction)
 
@@ -431,7 +432,7 @@ cqs index --dry-run    # Show what would be indexed
 
 **Parse → Embed → Index → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 9 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 10 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
 4. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
@@ -491,7 +492,7 @@ Token budgeting works across all context commands: `--tokens N` packs results by
 
 ## Performance
 
-Benchmarked on a 4,110-chunk Rust project (202 files, 9 languages) with CUDA GPU (RTX A6000):
+Benchmarked on a 4,110-chunk Rust project (202 files, 10 languages) with CUDA GPU (RTX A6000):
 
 | Metric | Value |
 |--------|-------|

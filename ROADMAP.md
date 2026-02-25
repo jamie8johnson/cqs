@@ -59,7 +59,7 @@ Priority order based on competitive gap analysis (Feb 2026).
 
 ### Next — Expansion
 
-- [ ] C# language support — biggest missing language by market size (in progress, branch `feat/csharp-language-support`)
+- [x] C# language support — 10th language. Property, Delegate, Event chunk types. Per-language common_types. Data-driven container extraction.
 - [ ] Pre-built release binaries (GitHub Actions) — adoption friction
 - [x] Skill grouping — consolidated 35 thin cqs-* wrappers into unified `/cqs` dispatcher (48→14 skills)
 
