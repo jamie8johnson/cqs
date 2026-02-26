@@ -72,6 +72,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     ],
     container_body_kinds: &["class_body"],
     extract_container_name: None,
+    extract_qualified_method: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

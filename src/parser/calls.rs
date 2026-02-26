@@ -982,6 +982,7 @@ fn another() {
             Language::CSharp,
             // FSharp type query has pre-existing compile issues (#node-type mismatch)
             Language::Scala,
+            Language::Cpp,
         ];
         for lang in languages_with_types {
             let result = parser.get_type_query(lang);

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **C++ language support** — 15th language. Tree-sitter parsing for classes, structs, unions, enums (including `enum class`), namespaces, functions, inline methods, out-of-class methods (`Class::method`), destructors, concepts (C++20), type aliases (`using`/`typedef`), preprocessor macros and constants. Call graph extraction (direct, member, qualified, template function calls, `new` expressions). Type dependency extraction (parameters, return types, fields, base classes, template arguments). Out-of-class method inference via `extract_qualified_method` infrastructure. Behind `lang-cpp` feature flag (enabled by default).
+- **`extract_qualified_method` on LanguageDef** — new optional field for languages where methods can be defined outside their class body (C++ `void Foo::bar() {}`). Infers `ChunkType::Method` + `parent_type_name` from the function's own declarator before parent-walking.
+
+### Dependencies
+- tree-sitter-cpp 0.23 (new)
+
 ## [0.17.0] - 2026-02-26
 
 ### Added

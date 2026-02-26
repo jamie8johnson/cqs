@@ -2,13 +2,13 @@
 
 ## Right Now
 
-**Releasing v0.17.0.** 2026-02-26.
+**C++ language support (15th language).** 2026-02-26. Branch: `feat/cpp-language-support`.
 
-Scala + Ruby language support shipped (PR #490). TypeAlias backfill across 5 languages. Capture gap fixes in C, SQL, Java, TypeScript, Ruby. 1150 tests, 0 failures.
+All 16 C++ tests pass + full suite green (1166 pass + 35 ignored). Docs updated. Ready for commit + PR.
 
 ## Pending Changes
 
-None — releasing v0.17.0.
+C++ language support on `feat/cpp-language-support` branch, uncommitted.
 
 ## Parked
 
@@ -41,9 +41,9 @@ None — releasing v0.17.0.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 14 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, F#, PowerShell, Scala, Ruby, SQL, Markdown)
+- 15 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, SQL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1150 pass, 0 failures
+- Tests: 1166 pass + 35 ignored, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

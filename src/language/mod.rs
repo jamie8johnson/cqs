@@ -15,6 +15,7 @@
 //! - `lang-javascript` - JavaScript support (enabled by default)
 //! - `lang-go` - Go support (enabled by default)
 //! - `lang-c` - C support (enabled by default)
+//! - `lang-cpp` - C++ support (enabled by default)
 //! - `lang-java` - Java support (enabled by default)
 //! - `lang-csharp` - C# support (enabled by default)
 //! - `lang-scala` - Scala support (enabled by default)
@@ -164,6 +165,10 @@ pub struct LanguageDef {
     /// `None` = use default algorithm (walk up from body kinds, read `"name"` field).
     /// Only Rust needs an override (`impl_item` uses `"type"` field, not `"name"`).
     pub extract_container_name: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
+    /// Override for extracting parent type from a function's own declarator.
+    /// For C++ out-of-class methods: `void MyClass::method()` → Some("MyClass").
+    /// Called in `infer_chunk_type` before parent-walking.
+    pub extract_qualified_method: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
 }
 
 /// How to extract function signatures
@@ -388,6 +393,8 @@ define_languages! {
     Go => "go", feature = "lang-go", module = go;
     /// C (.c, .h files)
     C => "c", feature = "lang-c", module = c;
+    /// C++ (.cpp, .cxx, .cc, .hpp, .hxx, .hh, .ipp files)
+    Cpp => "cpp", feature = "lang-cpp", module = cpp;
     /// Java (.java files)
     Java => "java", feature = "lang-java", module = java;
     /// C# (.cs files)
@@ -519,6 +526,11 @@ mod tests {
             assert!(REGISTRY.from_extension("rake").is_some());
             assert!(REGISTRY.from_extension("gemspec").is_some());
         }
+        #[cfg(feature = "lang-cpp")]
+        {
+            assert!(REGISTRY.from_extension("cpp").is_some());
+            assert!(REGISTRY.from_extension("hpp").is_some());
+        }
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
         #[cfg(feature = "lang-markdown")]
@@ -582,6 +594,10 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-cpp")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-sql")]
         {
             expected += 1;
@@ -637,6 +653,13 @@ mod tests {
         assert_eq!(Language::from_extension("rb"), Some(Language::Ruby));
         assert_eq!(Language::from_extension("rake"), Some(Language::Ruby));
         assert_eq!(Language::from_extension("gemspec"), Some(Language::Ruby));
+        assert_eq!(Language::from_extension("cpp"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("cxx"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("cc"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("hpp"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("hxx"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("hh"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("ipp"), Some(Language::Cpp));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
@@ -661,6 +684,7 @@ mod tests {
         );
         assert_eq!("scala".parse::<Language>().unwrap(), Language::Scala);
         assert_eq!("ruby".parse::<Language>().unwrap(), Language::Ruby);
+        assert_eq!("cpp".parse::<Language>().unwrap(), Language::Cpp);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
@@ -680,6 +704,7 @@ mod tests {
         assert_eq!(Language::PowerShell.to_string(), "powershell");
         assert_eq!(Language::Scala.to_string(), "scala");
         assert_eq!(Language::Ruby.to_string(), "ruby");
+        assert_eq!(Language::Cpp.to_string(), "cpp");
         assert_eq!(Language::Sql.to_string(), "sql");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
@@ -821,6 +846,14 @@ mod tests {
         assert_eq!(
             (Language::Ruby.def().extract_return_nl)("def calculate(x, y)"),
             None
+        );
+        assert_eq!(
+            (Language::Cpp.def().extract_return_nl)("int add(int a, int b)"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Cpp.def().extract_return_nl)("auto foo() -> int"),
+            Some("Returns int".to_string())
         );
     }
 
