@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-02-26
+
 ### Added
 - **Scala language support** — 13th language. Tree-sitter parsing for classes, objects, traits, enums (Scala 3), functions, val/var bindings, and type aliases. Call graph extraction (function calls + field expression calls). Type dependency extraction (parameter types, return types, field types, extends clauses, generic type arguments). Behind `lang-scala` feature flag (enabled by default).
 - **Ruby language support** — 14th language. Tree-sitter parsing for classes, modules, methods, and singleton methods. Call graph extraction. Behind `lang-ruby` feature flag (enabled by default).
