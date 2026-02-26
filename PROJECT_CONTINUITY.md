@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**F# + PowerShell language support** — 2026-02-25.
+**v0.16.0 releasing.** 2026-02-26.
 
-F# (11th) and PowerShell (12th) languages added. Module ChunkType variant added for F# modules. All tests pass. Needs branch + PR (main is protected).
+F# (11th) and PowerShell (12th) languages. Module ChunkType. PR #487 merged.
 
 ## Pending Changes
 
@@ -35,14 +35,14 @@ None.
 
 ## Architecture
 
-- Version: 0.15.0
+- Version: 0.16.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 12 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, F#, PowerShell, SQL, Markdown)
-- Tests: 1101 pass + 35 ignored, 0 failures
+- Tests: 1115 pass + 34 ignored, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
