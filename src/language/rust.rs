@@ -21,6 +21,9 @@ const CHUNK_QUERY: &str = r#"
 
 (static_item
   name: (identifier) @name) @const
+
+(macro_definition
+  name: (identifier) @name) @macro
 "#;
 
 /// Tree-sitter query for extracting function calls

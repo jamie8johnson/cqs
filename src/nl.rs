@@ -349,6 +349,7 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         ChunkType::Delegate => "delegate",
         ChunkType::Event => "event",
         ChunkType::Module => "module",
+        ChunkType::Macro => "macro",
     };
 
     // DocFirst: minimal metadata when doc exists

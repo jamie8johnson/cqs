@@ -81,7 +81,7 @@ Languages that would likely need new ChunkType variants:
 | Variant | Languages | Rationale |
 |---------|-----------|-----------|
 | `Module` | Ruby, Elixir, ~~F#~~, OCaml | Namespace + mixin container. Ruby `module` is callable (included/extended), distinct from Class. F# shipped in v0.15.0. |
-| `Macro` | Elixir (`defmacro`), Rust (currently skipped) | Compile-time code gen, callable-like but different semantics. |
+| `Macro` | Elixir (`defmacro`), ~~Rust~~ (shipped v0.17.0) | Compile-time code gen, callable-like but different semantics. Rust `macro_rules!` indexed. |
 | `TypeAlias` | Haskell (`type`), Scala (`type`), Kotlin (`typealias`) | Creates type edges but isn't a container or callable. |
 | `Object` | Scala (`object`), Kotlin (`object`) | Singleton — neither class nor instance. Has members, is callable. |
 
