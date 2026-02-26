@@ -43,6 +43,12 @@ const CHUNK_QUERY: &str = r#"
     (type_name
       type_name: (identifier) @name))) @delegate
 
+;; Type definitions — type abbreviations (type Foo = string)
+(type_definition
+  (type_abbrev_defn
+    (type_name
+      type_name: (identifier) @name))) @typealias
+
 ;; Type definitions — classes (anon_type_defn = class with optional primary constructor)
 (type_definition
   (anon_type_defn
@@ -315,6 +321,19 @@ module Helpers =
         let chunks = parser.parse_file(file.path()).unwrap();
         let module = chunks.iter().find(|c| c.name == "Helpers").unwrap();
         assert_eq!(module.chunk_type, crate::parser::ChunkType::Module);
+    }
+
+    #[test]
+    fn parse_fsharp_type_abbreviation() {
+        // F# type abbreviation: `type X = ExistingType`
+        // Note: `type Name = string` is parsed as union_type_defn by tree-sitter-fsharp
+        // because bare lowercase identifiers are ambiguous. Use function types to test.
+        let content = "type Callback = int -> string\n";
+        let file = write_temp_file(content, "fs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ta = chunks.iter().find(|c| c.name == "Callback").unwrap();
+        assert_eq!(ta.chunk_type, crate::parser::ChunkType::TypeAlias);
     }
 
     #[test]

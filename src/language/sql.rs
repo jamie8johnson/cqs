@@ -17,10 +17,18 @@ const CHUNK_QUERY: &str = r#"
   (object_reference) @name) @function
 
 (create_view
-  (object_reference) @name) @const
+  (object_reference) @name) @function
 
 (create_trigger
   name: (identifier) @name) @function
+
+;; Tables
+(create_table
+  (object_reference) @name) @struct
+
+;; User-defined types
+(create_type
+  (object_reference) @name) @typealias
 "#;
 
 /// Tree-sitter query for extracting calls (function invocations + EXEC)
@@ -80,4 +88,50 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_sql_create_table() {
+        let content = "CREATE TABLE users (\n  id INT PRIMARY KEY,\n  name VARCHAR(100)\n);\n";
+        let file = write_temp_file(content, "sql");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let table = chunks.iter().find(|c| c.name == "users").unwrap();
+        assert_eq!(table.chunk_type, ChunkType::Struct);
+    }
+
+    #[test]
+    fn parse_sql_create_view_as_function() {
+        let content = "CREATE VIEW active_users AS\nSELECT * FROM users WHERE active = 1;\n";
+        let file = write_temp_file(content, "sql");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let view = chunks.iter().find(|c| c.name == "active_users").unwrap();
+        assert_eq!(view.chunk_type, ChunkType::Function);
+    }
+
+    #[test]
+    fn parse_sql_create_type() {
+        let content = "CREATE TYPE status AS ENUM ('active', 'inactive');\n";
+        let file = write_temp_file(content, "sql");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ty = chunks.iter().find(|c| c.name == "status").unwrap();
+        assert_eq!(ty.chunk_type, ChunkType::TypeAlias);
+    }
 }

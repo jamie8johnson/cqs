@@ -67,7 +67,7 @@ Thank you for your interest in contributing to cqs!
 
 ### Feature Ideas
 
-- Additional language support (tree-sitter grammars: C++, Ruby, and more)
+- Additional language support (tree-sitter grammars: C++, Kotlin, Swift, and more)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
@@ -103,7 +103,7 @@ src/
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
-    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, sql.rs, markdown.rs
+    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, sql.rs, markdown.rs
   source/       - Source abstraction layer
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation

@@ -2,7 +2,7 @@
 
 ## Current: v0.16.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 12 languages.
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 14 languages.
 
 ### Recently Completed
 
@@ -62,30 +62,43 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [x] C# language support — 10th language. Property, Delegate, Event chunk types. Per-language common_types. Data-driven container extraction.
 - [x] F# language support — 11th language. Module ChunkType. Functions, records, discriminated unions, classes, interfaces, modules, members.
 - [x] PowerShell language support — 12th language. Functions, classes, methods, properties, enums, command/method calls.
+- [x] Scala language support — 13th language. Object, TypeAlias ChunkTypes. Functions, classes, objects, traits, enums, type aliases, vals/vars. Type dependency extraction.
+- [x] Ruby language support — 14th language. SignatureStyle::FirstLine. Functions, classes, modules, singleton methods. Call graph extraction.
 - [ ] Pre-built release binaries (GitHub Actions) — adoption friction
 - [x] Skill grouping — consolidated 35 thin cqs-* wrappers into unified `/cqs` dispatcher (48→14 skills)
 
-### Future Languages + ChunkType Variants
+### Future Languages — Priority Order
 
-Languages that map cleanly to existing variants (no new ChunkType needed):
-- **Kotlin** — Property covers properties, rest maps to Class/Interface/Enum/Function
-- **Swift** — Property covers properties, `protocol` → Interface
-- **PHP** — Property covers properties, `trait` → Trait
-- **Dart** — Property covers properties, `mixin` could map to Trait
-- **Objective-C** — Property covers `@property`, `@protocol` → Interface
-- **C++** — structs/classes/functions/enums cover it
-- **Zig** — maps cleanly
+**Tier 1 — High value, easy mapping:**
+- [ ] **Shell/Bash** — Function only. Every project has scripts, nobody indexes them semantically. `tree-sitter-bash` mature. Easiest win.
+- [ ] **C++** — Biggest gap by dev population. All variants mapped: namespace → Module, concept → Trait, `#define` → Macro/Constant, union → Struct, typedef/using → TypeAlias. `tree-sitter-cpp` mature.
 
-Languages that would likely need new ChunkType variants:
+**Tier 2 — Structured schemas (better RAG, not just code search):**
+- [ ] **Terraform/HCL** — resource/data → Struct, module → Module, variable/output → Constant. Huge market. People search Terraform the same way they search docs.
+- [ ] **Protobuf** — message → Struct, service → Interface, rpc → Function, enum → Enum. Every microservices shop has `.proto` files.
+- [ ] **GraphQL** — type/input → Struct, query/mutation/subscription → Function, interface → Interface, enum → Enum. Every web API shop has these.
 
-| Variant | Languages | Rationale |
-|---------|-----------|-----------|
-| `Module` | Ruby, Elixir, ~~F#~~, OCaml | Namespace + mixin container. Ruby `module` is callable (included/extended), distinct from Class. F# shipped in v0.15.0. |
-| `Macro` | Elixir (`defmacro`), ~~Rust~~ (shipped v0.17.0) | Compile-time code gen, callable-like but different semantics. Rust `macro_rules!` indexed. |
-| `TypeAlias` | Haskell (`type`), Scala (`type`), Kotlin (`typealias`) | Creates type edges but isn't a container or callable. |
-| `Object` | Scala (`object`), Kotlin (`object`) | Singleton — neither class nor instance. Has members, is callable. |
+**Tier 3 — Programming languages with clean mappings:**
+- [ ] **Kotlin** — Object (companion/singleton), TypeAlias, Property; data class → Struct, sealed class → Class
+- [ ] **Swift** — protocol → Trait, actor → Class, TypeAlias, Property. May need `Extension` variant (primary code org).
+- [ ] **Elixir** — Module + Macro exist. defprotocol → Trait, defrecord → Struct. Clean mapping.
+- [ ] **Lua** — Function-only. Game dev niche (Roblox, Neovim). Easy.
+- [ ] **Haskell** — TypeAlias exists. data → Enum, class → Trait. Niche but loved.
+- [ ] **PHP** — Property covers properties, trait → Trait
+- [ ] **Dart** — Property covers properties, mixin → Trait
+- [ ] **Objective-C** — Property covers `@property`, `@protocol` → Interface
+- [ ] **Zig** — maps cleanly
 
-Ruby would push hardest — `module` is a first-class concept that loses information mapped to either Class or Trait. Scala is the other interesting one with `object`, `trait`, `case class`, `sealed`, and `type` members all structurally distinct.
+### ChunkType Variant Status
+
+All 16 variants shipped and used across languages. Only one potential new variant remains: `Extension` for Swift.
+
+| Variant | Shipped in | Used by |
+|---------|-----------|---------|
+| `Module` | v0.16.0 | F#, Ruby, TS (namespace) |
+| `Macro` | v0.17.0 | Rust, C (`#define(...)`) |
+| `TypeAlias` | v0.17.0 | Scala, Rust, TypeScript, Go, C, F#, SQL |
+| `Object` | v0.17.0 | Scala |
 
 Infrastructure for adding variants is now cheap: per-language LanguageDef fields, data-driven container extraction, dynamic callable SQL. New variant = enum arm + Display/FromStr + is_callable decision + nl.rs + capture_types.
 

@@ -17,6 +17,8 @@
 //! - `lang-c` - C support (enabled by default)
 //! - `lang-java` - Java support (enabled by default)
 //! - `lang-csharp` - C# support (enabled by default)
+//! - `lang-scala` - Scala support (enabled by default)
+//! - `lang-ruby` - Ruby support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -174,6 +176,8 @@ pub enum SignatureStyle {
     UntilColon,
     /// Extract until standalone `AS` keyword (SQL)
     UntilAs,
+    /// Extract first line only (Ruby — no `{` or `:` delimiter)
+    FirstLine,
     /// Signature is built by the parser as a breadcrumb path (Markdown)
     Breadcrumb,
 }
@@ -209,6 +213,10 @@ pub enum ChunkType {
     Module,
     /// Macro definition (Rust `macro_rules!`, future: Elixir `defmacro`)
     Macro,
+    /// Object/singleton definition (Scala)
+    Object,
+    /// Type alias definition (Scala, future: Haskell, Kotlin)
+    TypeAlias,
 }
 
 impl ChunkType {
@@ -254,6 +262,8 @@ impl std::fmt::Display for ChunkType {
             ChunkType::Event => write!(f, "event"),
             ChunkType::Module => write!(f, "module"),
             ChunkType::Macro => write!(f, "macro"),
+            ChunkType::Object => write!(f, "object"),
+            ChunkType::TypeAlias => write!(f, "typealias"),
         }
     }
 }
@@ -269,7 +279,7 @@ impl std::fmt::Display for ParseChunkTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro",
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias",
             self.input
         )
     }
@@ -295,6 +305,8 @@ impl std::str::FromStr for ChunkType {
             "event" => Ok(ChunkType::Event),
             "module" => Ok(ChunkType::Module),
             "macro" => Ok(ChunkType::Macro),
+            "object" => Ok(ChunkType::Object),
+            "typealias" => Ok(ChunkType::TypeAlias),
             _ => Err(ParseChunkTypeError {
                 input: s.to_string(),
             }),
@@ -384,6 +396,10 @@ define_languages! {
     FSharp => "fsharp", feature = "lang-fsharp", module = fsharp;
     /// PowerShell (.ps1, .psm1 files)
     PowerShell => "powershell", feature = "lang-powershell", module = powershell;
+    /// Scala (.scala, .sc files)
+    Scala => "scala", feature = "lang-scala", module = scala;
+    /// Ruby (.rb, .rake, .gemspec files)
+    Ruby => "ruby", feature = "lang-ruby", module = ruby;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
@@ -492,6 +508,17 @@ mod tests {
         assert!(REGISTRY.from_extension("java").is_some());
         #[cfg(feature = "lang-csharp")]
         assert!(REGISTRY.from_extension("cs").is_some());
+        #[cfg(feature = "lang-scala")]
+        {
+            assert!(REGISTRY.from_extension("scala").is_some());
+            assert!(REGISTRY.from_extension("sc").is_some());
+        }
+        #[cfg(feature = "lang-ruby")]
+        {
+            assert!(REGISTRY.from_extension("rb").is_some());
+            assert!(REGISTRY.from_extension("rake").is_some());
+            assert!(REGISTRY.from_extension("gemspec").is_some());
+        }
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
         #[cfg(feature = "lang-markdown")]
@@ -547,6 +574,14 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-scala")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-ruby")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-sql")]
         {
             expected += 1;
@@ -593,6 +628,15 @@ mod tests {
         assert_eq!(Language::from_extension("h"), Some(Language::C));
         assert_eq!(Language::from_extension("java"), Some(Language::Java));
         assert_eq!(Language::from_extension("cs"), Some(Language::CSharp));
+        assert_eq!(Language::from_extension("fs"), Some(Language::FSharp));
+        assert_eq!(Language::from_extension("fsi"), Some(Language::FSharp));
+        assert_eq!(Language::from_extension("ps1"), Some(Language::PowerShell));
+        assert_eq!(Language::from_extension("psm1"), Some(Language::PowerShell));
+        assert_eq!(Language::from_extension("scala"), Some(Language::Scala));
+        assert_eq!(Language::from_extension("sc"), Some(Language::Scala));
+        assert_eq!(Language::from_extension("rb"), Some(Language::Ruby));
+        assert_eq!(Language::from_extension("rake"), Some(Language::Ruby));
+        assert_eq!(Language::from_extension("gemspec"), Some(Language::Ruby));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
@@ -610,6 +654,13 @@ mod tests {
         assert_eq!("c".parse::<Language>().unwrap(), Language::C);
         assert_eq!("java".parse::<Language>().unwrap(), Language::Java);
         assert_eq!("csharp".parse::<Language>().unwrap(), Language::CSharp);
+        assert_eq!("fsharp".parse::<Language>().unwrap(), Language::FSharp);
+        assert_eq!(
+            "powershell".parse::<Language>().unwrap(),
+            Language::PowerShell
+        );
+        assert_eq!("scala".parse::<Language>().unwrap(), Language::Scala);
+        assert_eq!("ruby".parse::<Language>().unwrap(), Language::Ruby);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
@@ -625,6 +676,10 @@ mod tests {
         assert_eq!(Language::C.to_string(), "c");
         assert_eq!(Language::Java.to_string(), "java");
         assert_eq!(Language::CSharp.to_string(), "csharp");
+        assert_eq!(Language::FSharp.to_string(), "fsharp");
+        assert_eq!(Language::PowerShell.to_string(), "powershell");
+        assert_eq!(Language::Scala.to_string(), "scala");
+        assert_eq!(Language::Ruby.to_string(), "ruby");
         assert_eq!(Language::Sql.to_string(), "sql");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
@@ -759,6 +814,14 @@ mod tests {
             (Language::Markdown.def().extract_return_nl)("any markdown content"),
             None
         );
+        assert_eq!(
+            (Language::Scala.def().extract_return_nl)("def foo(x: Int): String ="),
+            Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::Ruby.def().extract_return_nl)("def calculate(x, y)"),
+            None
+        );
     }
 
     // ===== ChunkType tests =====
@@ -793,6 +856,11 @@ mod tests {
         assert_eq!("event".parse::<ChunkType>().unwrap(), ChunkType::Event);
         assert_eq!("module".parse::<ChunkType>().unwrap(), ChunkType::Module);
         assert_eq!("macro".parse::<ChunkType>().unwrap(), ChunkType::Macro);
+        assert_eq!("object".parse::<ChunkType>().unwrap(), ChunkType::Object);
+        assert_eq!(
+            "typealias".parse::<ChunkType>().unwrap(),
+            ChunkType::TypeAlias
+        );
     }
 
     #[test]
@@ -833,6 +901,8 @@ mod tests {
             ChunkType::Event,
             ChunkType::Module,
             ChunkType::Macro,
+            ChunkType::Object,
+            ChunkType::TypeAlias,
         ];
         for ct in types {
             let s = ct.to_string();
@@ -852,5 +922,7 @@ mod tests {
         assert!(!list.contains("'event'"));
         assert!(!list.contains("'module'"));
         assert!(list.contains("'macro'"));
+        assert!(!list.contains("'object'"));
+        assert!(!list.contains("'typealias'"));
     }
 }

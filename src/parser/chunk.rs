@@ -28,6 +28,8 @@ impl Parser {
             ("event", ChunkType::Event),
             ("module", ChunkType::Module),
             ("macro", ChunkType::Macro),
+            ("object", ChunkType::Object),
+            ("typealias", ChunkType::TypeAlias),
         ];
 
         // Find which definition capture matched and get its node
@@ -120,6 +122,7 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
     let sig_end = match language.def().signature_style {
         SignatureStyle::UntilBrace => content.find('{').unwrap_or(content.len()),
         SignatureStyle::UntilColon => content.find(':').unwrap_or(content.len()),
+        SignatureStyle::FirstLine => content.find('\n').unwrap_or(content.len()),
         SignatureStyle::UntilAs => {
             // Case-insensitive search for AS as a standalone word
             let upper = content.to_uppercase();
@@ -342,6 +345,13 @@ mod tests {
             let content = "function processData(input: string): Promise<Result> {\n  return ok;\n}";
             let sig = extract_signature(content, Language::TypeScript);
             assert_eq!(sig, "function processData(input: string): Promise<Result>");
+        }
+
+        #[test]
+        fn test_ruby_signature_stops_at_newline() {
+            let content = "def calculate(x, y)\n  x + y\nend";
+            let sig = extract_signature(content, Language::Ruby);
+            assert_eq!(sig, "def calculate(x, y)");
         }
 
         #[test]

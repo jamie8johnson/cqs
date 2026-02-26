@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Scala language support** — 13th language. Tree-sitter parsing for classes, objects, traits, enums (Scala 3), functions, val/var bindings, and type aliases. Call graph extraction (function calls + field expression calls). Type dependency extraction (parameter types, return types, field types, extends clauses, generic type arguments). Behind `lang-scala` feature flag (enabled by default).
+- **Ruby language support** — 14th language. Tree-sitter parsing for classes, modules, methods, and singleton methods. Call graph extraction. Behind `lang-ruby` feature flag (enabled by default).
+- **ChunkType variants: Object, TypeAlias** — `Object` for Scala singleton objects, `TypeAlias` for Scala `type X = Y` definitions. Neither is callable.
+- **SignatureStyle::FirstLine** — new signature extraction mode for Ruby (no `{` or `:` delimiter, extracts up to first newline).
+- **TypeAlias backfill** — added TypeAlias capture to 5 existing languages: Rust (`type Foo = Bar`), TypeScript (`type Foo = ...`), Go (`type MyInt int`, `type Foo = int`), C (`typedef` — was incorrectly captured as Constant), F# (`type Foo = int -> string`).
+- **C capture gaps filled** — `#define` constants (→ Constant), `#define(...)` function macros (→ Macro), `union` (→ Struct).
+- **SQL capture gaps filled** — `CREATE TABLE` (→ Struct), `CREATE TYPE` (→ TypeAlias), `CREATE VIEW` reclassified from Constant to Function (named query).
+- **Java capture gaps filled** — annotation types `@interface` (→ Interface), class fields (→ Property).
+- **TypeScript namespace** — `namespace Foo { }` now captured as Module.
+- **Ruby constants** — `CONSTANT = value` assignments now captured as Constant.
+
+### Dependencies
+- tree-sitter-scala 0.24 (new), tree-sitter-ruby 0.23 (new)
+
 ## [0.16.0] - 2026-02-26
 
 ### Added

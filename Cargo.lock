@@ -677,7 +677,9 @@ dependencies = [
  "tree-sitter-javascript",
  "tree-sitter-powershell",
  "tree-sitter-python",
+ "tree-sitter-ruby",
  "tree-sitter-rust",
+ "tree-sitter-scala",
  "tree-sitter-sequel-tsql",
  "tree-sitter-typescript",
  "walkdir",
@@ -4025,10 +4027,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-ruby"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be0484ea4ef6bb9c575b4fdabde7e31340a8d2dbc7d52b321ac83da703249f95"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-rust"
 version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b9b18034c684a2420722be8b2a91c9c44f2546b631c039edf575ccba8c61be1"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-scala"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7516aeb3d1f40ede8e3045b163e86993b3434514dd06c34c0b75e782d9a0b251"
 dependencies = [
  "cc",
  "tree-sitter-language",

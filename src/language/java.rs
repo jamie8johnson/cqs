@@ -21,6 +21,15 @@ const CHUNK_QUERY: &str = r#"
 
 (record_declaration
   name: (identifier) @name) @struct
+
+;; Annotation types (@interface)
+(annotation_type_declaration
+  name: (identifier) @name) @interface
+
+;; Fields (class-level only — local vars are local_variable_declaration)
+(field_declaration
+  declarator: (variable_declarator
+    name: (identifier) @name)) @property
 "#;
 
 /// Tree-sitter query for extracting function calls
@@ -130,4 +139,51 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_java_annotation_type() {
+        let content = r#"
+public @interface Inject {
+    String value() default "";
+}
+"#;
+        let file = write_temp_file(content, "java");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ann = chunks.iter().find(|c| c.name == "Inject").unwrap();
+        assert_eq!(ann.chunk_type, ChunkType::Interface);
+    }
+
+    #[test]
+    fn parse_java_field_as_property() {
+        let content = r#"
+public class Config {
+    private String name;
+    public static final int MAX_SIZE = 100;
+}
+"#;
+        let file = write_temp_file(content, "java");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let field = chunks.iter().find(|c| c.name == "name").unwrap();
+        assert_eq!(field.chunk_type, ChunkType::Property);
+        let constant = chunks.iter().find(|c| c.name == "MAX_SIZE").unwrap();
+        assert_eq!(constant.chunk_type, ChunkType::Property);
+    }
 }

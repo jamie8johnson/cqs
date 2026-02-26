@@ -17,12 +17,25 @@ const CHUNK_QUERY: &str = r#"
   body: (enumerator_list)) @enum
 
 (type_definition
-  declarator: (type_identifier) @name) @const
+  declarator: (type_identifier) @name) @typealias
 
 (declaration
   declarator: (init_declarator
     declarator: (function_declarator
       declarator: (identifier) @name))) @function
+
+;; Union definitions
+(union_specifier
+  name: (type_identifier) @name
+  body: (field_declaration_list)) @struct
+
+;; Preprocessor constants (#define FOO 42)
+(preproc_def
+  name: (identifier) @name) @const
+
+;; Preprocessor function macros (#define FOO(x) ...)
+(preproc_function_def
+  name: (identifier) @name) @macro
 "#;
 
 /// Tree-sitter query for extracting function calls
@@ -120,4 +133,60 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_c_union() {
+        let content = "union Data {\n  int i;\n  float f;\n};\n";
+        let file = write_temp_file(content, "c");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let u = chunks.iter().find(|c| c.name == "Data").unwrap();
+        assert_eq!(u.chunk_type, ChunkType::Struct);
+    }
+
+    #[test]
+    fn parse_c_define_constant() {
+        let content = "#define MAX_SIZE 1024\n";
+        let file = write_temp_file(content, "c");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let c = chunks.iter().find(|c| c.name == "MAX_SIZE").unwrap();
+        assert_eq!(c.chunk_type, ChunkType::Constant);
+    }
+
+    #[test]
+    fn parse_c_define_macro() {
+        let content = "#define SWAP(a, b) do { int t = a; a = b; b = t; } while(0)\n";
+        let file = write_temp_file(content, "c");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let m = chunks.iter().find(|c| c.name == "SWAP").unwrap();
+        assert_eq!(m.chunk_type, ChunkType::Macro);
+    }
+
+    #[test]
+    fn parse_c_typedef_as_typealias() {
+        let content = "typedef int MyInt;\n";
+        let file = write_temp_file(content, "c");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ta = chunks.iter().find(|c| c.name == "MyInt").unwrap();
+        assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
+    }
 }
