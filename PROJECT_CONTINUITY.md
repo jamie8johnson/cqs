@@ -2,13 +2,13 @@
 
 ## Right Now
 
-**C++ language support (15th language).** 2026-02-26. Branch: `feat/cpp-language-support`.
+**Releasing v0.18.0.** 2026-02-26.
 
-All 16 C++ tests pass + full suite green (1166 pass + 35 ignored). Docs updated. Ready for commit + PR.
+C++ language support shipped (PR #492). 15th language. 1166 tests, 0 failures.
 
 ## Pending Changes
 
-C++ language support on `feat/cpp-language-support` branch, uncommitted.
+None — releasing v0.18.0.
 
 ## Parked
 
@@ -35,7 +35,7 @@ C++ language support on `feat/cpp-language-support` branch, uncommitted.
 
 ## Architecture
 
-- Version: 0.17.0
+- Version: 0.18.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
