@@ -494,7 +494,7 @@ Token budgeting works across all context commands: `--tokens N` packs results by
 
 ## Performance
 
-Benchmarked on a 4,110-chunk Rust project (202 files, 10 languages) with CUDA GPU (RTX A6000):
+Benchmarked on a 4,110-chunk Rust project (202 files, 12 languages) with CUDA GPU (RTX A6000):
 
 | Metric | Value |
 |--------|-------|
