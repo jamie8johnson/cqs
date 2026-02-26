@@ -205,6 +205,8 @@ pub enum ChunkType {
     Delegate,
     /// Event declaration (C#)
     Event,
+    /// Module definition (F#, future: Ruby, Elixir)
+    Module,
 }
 
 impl ChunkType {
@@ -243,6 +245,7 @@ impl std::fmt::Display for ChunkType {
             ChunkType::Property => write!(f, "property"),
             ChunkType::Delegate => write!(f, "delegate"),
             ChunkType::Event => write!(f, "event"),
+            ChunkType::Module => write!(f, "module"),
         }
     }
 }
@@ -258,7 +261,7 @@ impl std::fmt::Display for ParseChunkTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event",
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module",
             self.input
         )
     }
@@ -282,6 +285,7 @@ impl std::str::FromStr for ChunkType {
             "property" => Ok(ChunkType::Property),
             "delegate" => Ok(ChunkType::Delegate),
             "event" => Ok(ChunkType::Event),
+            "module" => Ok(ChunkType::Module),
             _ => Err(ParseChunkTypeError {
                 input: s.to_string(),
             }),
@@ -367,6 +371,10 @@ define_languages! {
     Java => "java", feature = "lang-java", module = java;
     /// C# (.cs files)
     CSharp => "csharp", feature = "lang-csharp", module = csharp;
+    /// F# (.fs, .fsi files)
+    FSharp => "fsharp", feature = "lang-fsharp", module = fsharp;
+    /// PowerShell (.ps1, .psm1 files)
+    PowerShell => "powershell", feature = "lang-powershell", module = powershell;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
@@ -519,6 +527,14 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-csharp")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-fsharp")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-powershell")]
         {
             expected += 1;
         }
@@ -766,6 +782,7 @@ mod tests {
             ChunkType::Delegate
         );
         assert_eq!("event".parse::<ChunkType>().unwrap(), ChunkType::Event);
+        assert_eq!("module".parse::<ChunkType>().unwrap(), ChunkType::Module);
     }
 
     #[test]
@@ -804,6 +821,7 @@ mod tests {
             ChunkType::Property,
             ChunkType::Delegate,
             ChunkType::Event,
+            ChunkType::Module,
         ];
         for ct in types {
             let s = ct.to_string();
@@ -821,5 +839,6 @@ mod tests {
         assert!(!list.contains("'class'"));
         assert!(!list.contains("'delegate'"));
         assert!(!list.contains("'event'"));
+        assert!(!list.contains("'module'"));
     }
 }

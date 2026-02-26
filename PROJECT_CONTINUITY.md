@@ -2,11 +2,9 @@
 
 ## Right Now
 
-**v0.15.0 released.** 2026-02-25.
+**F# + PowerShell language support** — 2026-02-25.
 
-C# language support shipped. crates.io published, GitHub release tagged, binary installed.
-
-No active task.
+F# (11th) and PowerShell (12th) languages added. Module ChunkType variant added for F# modules. All tests pass. Needs branch + PR (main is protected).
 
 ## Pending Changes
 
@@ -43,7 +41,7 @@ None.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 10 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, SQL, Markdown)
+- 12 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, F#, PowerShell, SQL, Markdown)
 - Tests: 1101 pass + 35 ignored, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
