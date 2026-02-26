@@ -164,6 +164,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &[],
     extract_container_name: Some(extract_container_name_rust),
     extract_qualified_method: None,
+    post_process_chunk: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -254,6 +254,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &["field_declaration_list"],
     extract_container_name: None,
     extract_qualified_method: Some(extract_qualified_method),
+    post_process_chunk: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

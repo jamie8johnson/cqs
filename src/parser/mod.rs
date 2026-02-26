@@ -192,7 +192,7 @@ impl Parser {
 
         while let Some(m) = matches.next() {
             match self.extract_chunk(&source, m, query, language, path) {
-                Ok(chunk) => {
+                Ok(mut chunk) => {
                     // Skip chunks over 100KB (large functions are handled by windowing in the pipeline)
                     const MAX_CHUNK_BYTES: usize = 100_000;
                     if chunk.content.len() > MAX_CHUNK_BYTES {
@@ -203,6 +203,20 @@ impl Parser {
                             MAX_CHUNK_BYTES
                         );
                         continue;
+                    }
+                    // Apply post-process hook (e.g., HCL block reclassification)
+                    if let Some(post_process) = language.def().post_process_chunk {
+                        if let Some(node) = extract_definition_node(m, query) {
+                            if !post_process(&mut chunk.name, &mut chunk.chunk_type, node, &source)
+                            {
+                                tracing::debug!(
+                                    name = %chunk.name,
+                                    file = %path.display(),
+                                    "post_process_chunk: discarded"
+                                );
+                                continue;
+                            }
+                        }
                     }
                     chunks.push(chunk);
                 }
@@ -218,4 +232,33 @@ impl Parser {
     pub fn supported_extensions(&self) -> Vec<&'static str> {
         crate::language::REGISTRY.supported_extensions().collect()
     }
+}
+
+/// Find the definition node (function/struct/class/etc.) from a query match's captures.
+pub(crate) fn extract_definition_node<'c, 't>(
+    m: &tree_sitter::QueryMatch<'c, 't>,
+    query: &tree_sitter::Query,
+) -> Option<tree_sitter::Node<'t>> {
+    const DEF_CAPTURES: &[&str] = &[
+        "function",
+        "struct",
+        "class",
+        "enum",
+        "trait",
+        "interface",
+        "const",
+        "module",
+        "macro",
+        "object",
+        "typealias",
+        "property",
+        "delegate",
+        "event",
+    ];
+    DEF_CAPTURES.iter().find_map(|name| {
+        query
+            .capture_index_for_name(name)
+            .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+            .map(|c| c.node)
+    })
 }

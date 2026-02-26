@@ -2,7 +2,7 @@
 
 ## Current: v0.18.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 15 languages.
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 17 languages.
 
 ### Recently Completed
 
@@ -70,11 +70,11 @@ Priority order based on competitive gap analysis (Feb 2026).
 ### Future Languages — Priority Order
 
 **Tier 1 — High value, easy mapping:**
-- [ ] **Shell/Bash** — Function only. Every project has scripts, nobody indexes them semantically. `tree-sitter-bash` mature. Easiest win.
-- [x] **C++** — Biggest gap by dev population. All variants mapped: namespace → Module, concept → Trait, `#define` → Macro/Constant, union → Struct, typedef/using → TypeAlias. `tree-sitter-cpp` mature.
+- [x] **Shell/Bash** — 16th language. Function only. Every project has scripts, nobody indexes them semantically. `tree-sitter-bash` mature.
+- [x] **C++** — 15th language. Biggest gap by dev population. All variants mapped: namespace → Module, concept → Trait, `#define` → Macro/Constant, union → Struct, typedef/using → TypeAlias. `tree-sitter-cpp` mature.
 
 **Tier 2 — Structured schemas (better RAG, not just code search):**
-- [ ] **Terraform/HCL** — resource/data → Struct, module → Module, variable/output → Constant. Huge market. People search Terraform the same way they search docs.
+- [x] **Terraform/HCL** — 17th language. resource/data → Struct, module → Module, variable/output → Constant. Huge market. People search Terraform the same way they search docs. Qualified naming (aws_instance.web).
 - [ ] **Protobuf** — message → Struct, service → Interface, rpc → Function, enum → Enum. Every microservices shop has `.proto` files.
 - [ ] **GraphQL** — type/input → Struct, query/mutation/subscription → Function, interface → Interface, enum → Enum. Every web API shop has these.
 

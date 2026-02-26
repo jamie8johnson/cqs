@@ -3,7 +3,7 @@ name = "cqs"
 version = "0.18.0"
 edition = "2021"
 rust-version = "1.93"
-description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
+description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 17 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"
@@ -41,6 +41,8 @@ tree-sitter-fsharp = { version = "0.1", optional = true }
 tree-sitter-powershell = { version = "0.26", optional = true }
 tree-sitter-scala = { version = "0.24", optional = true }
 tree-sitter-ruby = { version = "0.23", optional = true }
+tree-sitter-bash = { version = "0.23", optional = true }
+tree-sitter-hcl = { version = "1.1", optional = true }
 tree-sitter-sql = { version = "0.4", package = "tree-sitter-sequel-tsql", optional = true }
 
 # ML
@@ -106,7 +108,7 @@ self_cell = "1"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-sql", "lang-markdown", "convert"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-sql", "lang-markdown", "convert"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -122,9 +124,11 @@ lang-fsharp = ["dep:tree-sitter-fsharp"]
 lang-powershell = ["dep:tree-sitter-powershell"]
 lang-scala = ["dep:tree-sitter-scala"]
 lang-ruby = ["dep:tree-sitter-ruby"]
+lang-bash = ["dep:tree-sitter-bash"]
+lang-hcl = ["dep:tree-sitter-hcl"]
 lang-sql = ["dep:tree-sitter-sql"]
 lang-markdown = []  # No external deps — custom parser
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-sql", "lang-markdown"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-sql", "lang-markdown"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]
