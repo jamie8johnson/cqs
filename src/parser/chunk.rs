@@ -27,6 +27,7 @@ impl Parser {
             ("delegate", ChunkType::Delegate),
             ("event", ChunkType::Event),
             ("module", ChunkType::Module),
+            ("macro", ChunkType::Macro),
         ];
 
         // Find which definition capture matched and get its node
@@ -701,6 +702,25 @@ public class Foo {
             let chunks = parser.parse_file(file.path()).unwrap();
 
             assert!(chunks.iter().any(|c| c.name == "Helper"));
+        }
+
+        #[test]
+        fn test_parse_rust_macro() {
+            let content = r#"
+macro_rules! my_macro {
+    ($x:expr) => {
+        println!("{}", $x);
+    };
+}
+"#;
+            let file = write_temp_file(content, "rs");
+            let parser = Parser::new().unwrap();
+            let chunks = parser.parse_file(file.path()).unwrap();
+
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].name, "my_macro");
+            assert_eq!(chunks[0].chunk_type, ChunkType::Macro);
+            assert!(chunks[0].signature.contains("macro_rules! my_macro"));
         }
     }
 

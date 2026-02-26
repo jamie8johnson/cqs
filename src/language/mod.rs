@@ -207,21 +207,28 @@ pub enum ChunkType {
     Event,
     /// Module definition (F#, future: Ruby, Elixir)
     Module,
+    /// Macro definition (Rust `macro_rules!`, future: Elixir `defmacro`)
+    Macro,
 }
 
 impl ChunkType {
-    /// Returns true for types that have call graph connections (Function, Method, Property).
+    /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
     pub fn is_callable(self) -> bool {
         matches!(
             self,
-            ChunkType::Function | ChunkType::Method | ChunkType::Property
+            ChunkType::Function | ChunkType::Method | ChunkType::Property | ChunkType::Macro
         )
     }
 
     /// SQL IN clause string for all callable chunk types.
     /// Derived from `is_callable()` — keep in sync when adding new callable variants.
     pub fn callable_sql_list() -> String {
-        let callable = [ChunkType::Function, ChunkType::Method, ChunkType::Property];
+        let callable = [
+            ChunkType::Function,
+            ChunkType::Method,
+            ChunkType::Property,
+            ChunkType::Macro,
+        ];
         callable
             .iter()
             .map(|ct| format!("'{}'", ct))
@@ -246,6 +253,7 @@ impl std::fmt::Display for ChunkType {
             ChunkType::Delegate => write!(f, "delegate"),
             ChunkType::Event => write!(f, "event"),
             ChunkType::Module => write!(f, "module"),
+            ChunkType::Macro => write!(f, "macro"),
         }
     }
 }
@@ -261,7 +269,7 @@ impl std::fmt::Display for ParseChunkTypeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module",
+            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro",
             self.input
         )
     }
@@ -286,6 +294,7 @@ impl std::str::FromStr for ChunkType {
             "delegate" => Ok(ChunkType::Delegate),
             "event" => Ok(ChunkType::Event),
             "module" => Ok(ChunkType::Module),
+            "macro" => Ok(ChunkType::Macro),
             _ => Err(ParseChunkTypeError {
                 input: s.to_string(),
             }),
@@ -783,6 +792,7 @@ mod tests {
         );
         assert_eq!("event".parse::<ChunkType>().unwrap(), ChunkType::Event);
         assert_eq!("module".parse::<ChunkType>().unwrap(), ChunkType::Module);
+        assert_eq!("macro".parse::<ChunkType>().unwrap(), ChunkType::Macro);
     }
 
     #[test]
@@ -822,6 +832,7 @@ mod tests {
             ChunkType::Delegate,
             ChunkType::Event,
             ChunkType::Module,
+            ChunkType::Macro,
         ];
         for ct in types {
             let s = ct.to_string();
@@ -840,5 +851,6 @@ mod tests {
         assert!(!list.contains("'delegate'"));
         assert!(!list.contains("'event'"));
         assert!(!list.contains("'module'"));
+        assert!(list.contains("'macro'"));
     }
 }

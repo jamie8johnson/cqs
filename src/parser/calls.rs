@@ -282,6 +282,10 @@ impl Parser {
                         | "interface"
                         | "const"
                         | "module"
+                        | "macro"
+                        | "property"
+                        | "delegate"
+                        | "event"
                 )
             });
 
