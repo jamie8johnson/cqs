@@ -20,6 +20,8 @@
 //! - `lang-csharp` - C# support (enabled by default)
 //! - `lang-scala` - Scala support (enabled by default)
 //! - `lang-ruby` - Ruby support (enabled by default)
+//! - `lang-bash` - Bash support (enabled by default)
+//! - `lang-hcl` - HCL/Terraform support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -119,6 +121,11 @@ macro_rules! define_languages {
 // Type definitions (prerequisites for language modules and macro expansion)
 // ---------------------------------------------------------------------------
 
+/// Function signature for post-processing extracted chunks.
+/// Takes `(&mut name, &mut chunk_type, definition_node, source)`.
+/// Returns `false` to discard the chunk.
+pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node, &str) -> bool;
+
 /// A language definition with all parsing configuration
 #[non_exhaustive]
 pub struct LanguageDef {
@@ -169,6 +176,11 @@ pub struct LanguageDef {
     /// For C++ out-of-class methods: `void MyClass::method()` → Some("MyClass").
     /// Called in `infer_chunk_type` before parent-walking.
     pub extract_qualified_method: Option<fn(tree_sitter::Node, &str) -> Option<String>>,
+    /// Optional post-processing of extracted chunks.
+    /// Called after basic extraction. Can override name, chunk_type, etc.
+    /// Return `false` to discard the chunk entirely.
+    /// Takes `(&mut name, &mut chunk_type, definition_node, source)`.
+    pub post_process_chunk: Option<PostProcessChunkFn>,
 }
 
 /// How to extract function signatures
@@ -407,6 +419,10 @@ define_languages! {
     Scala => "scala", feature = "lang-scala", module = scala;
     /// Ruby (.rb, .rake, .gemspec files)
     Ruby => "ruby", feature = "lang-ruby", module = ruby;
+    /// Bash (.sh, .bash files)
+    Bash => "bash", feature = "lang-bash", module = bash;
+    /// HCL/Terraform (.tf, .tfvars, .hcl files)
+    Hcl => "hcl", feature = "lang-hcl", module = hcl;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
@@ -531,6 +547,17 @@ mod tests {
             assert!(REGISTRY.from_extension("cpp").is_some());
             assert!(REGISTRY.from_extension("hpp").is_some());
         }
+        #[cfg(feature = "lang-bash")]
+        {
+            assert!(REGISTRY.from_extension("sh").is_some());
+            assert!(REGISTRY.from_extension("bash").is_some());
+        }
+        #[cfg(feature = "lang-hcl")]
+        {
+            assert!(REGISTRY.from_extension("tf").is_some());
+            assert!(REGISTRY.from_extension("tfvars").is_some());
+            assert!(REGISTRY.from_extension("hcl").is_some());
+        }
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
         #[cfg(feature = "lang-markdown")]
@@ -598,6 +625,14 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-bash")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-hcl")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-sql")]
         {
             expected += 1;
@@ -660,6 +695,11 @@ mod tests {
         assert_eq!(Language::from_extension("hxx"), Some(Language::Cpp));
         assert_eq!(Language::from_extension("hh"), Some(Language::Cpp));
         assert_eq!(Language::from_extension("ipp"), Some(Language::Cpp));
+        assert_eq!(Language::from_extension("sh"), Some(Language::Bash));
+        assert_eq!(Language::from_extension("bash"), Some(Language::Bash));
+        assert_eq!(Language::from_extension("tf"), Some(Language::Hcl));
+        assert_eq!(Language::from_extension("tfvars"), Some(Language::Hcl));
+        assert_eq!(Language::from_extension("hcl"), Some(Language::Hcl));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
@@ -685,6 +725,8 @@ mod tests {
         assert_eq!("scala".parse::<Language>().unwrap(), Language::Scala);
         assert_eq!("ruby".parse::<Language>().unwrap(), Language::Ruby);
         assert_eq!("cpp".parse::<Language>().unwrap(), Language::Cpp);
+        assert_eq!("bash".parse::<Language>().unwrap(), Language::Bash);
+        assert_eq!("hcl".parse::<Language>().unwrap(), Language::Hcl);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
@@ -705,6 +747,8 @@ mod tests {
         assert_eq!(Language::Scala.to_string(), "scala");
         assert_eq!(Language::Ruby.to_string(), "ruby");
         assert_eq!(Language::Cpp.to_string(), "cpp");
+        assert_eq!(Language::Bash.to_string(), "bash");
+        assert_eq!(Language::Hcl.to_string(), "hcl");
         assert_eq!(Language::Sql.to_string(), "sql");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
@@ -854,6 +898,14 @@ mod tests {
         assert_eq!(
             (Language::Cpp.def().extract_return_nl)("auto foo() -> int"),
             Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Bash.def().extract_return_nl)("function foo()"),
+            None
+        );
+        assert_eq!(
+            (Language::Hcl.def().extract_return_nl)("resource \"aws_instance\" \"web\""),
+            None
         );
     }
 

@@ -37,6 +37,10 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Scala => "scala",
         #[cfg(feature = "lang-ruby")]
         Language::Ruby => "rb",
+        #[cfg(feature = "lang-bash")]
+        Language::Bash => "sh",
+        #[cfg(feature = "lang-hcl")]
+        Language::Hcl => "tf",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };
@@ -69,6 +73,10 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Scala => "scala",
         #[cfg(feature = "lang-ruby")]
         Language::Ruby => "rb",
+        #[cfg(feature = "lang-bash")]
+        Language::Bash => "sh",
+        #[cfg(feature = "lang-hcl")]
+        Language::Hcl => "tf",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };

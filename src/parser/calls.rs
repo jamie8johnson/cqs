@@ -4,7 +4,7 @@ use std::path::Path;
 use tree_sitter::StreamingIterator;
 
 use super::types::{
-    CallSite, ChunkTypeRefs, FunctionCalls, Language, ParserError, TypeEdgeKind, TypeRef,
+    CallSite, ChunkType, ChunkTypeRefs, FunctionCalls, Language, ParserError, TypeEdgeKind, TypeRef,
 };
 use super::Parser;
 
@@ -299,10 +299,39 @@ impl Parser {
 
             // Get chunk name
             let name_idx = chunk_query.capture_index_for_name("name");
-            let name = name_idx
+            let mut name = name_idx
                 .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
                 .map(|c| source[c.node.byte_range()].to_string())
                 .unwrap_or_else(|| "<anonymous>".to_string());
+
+            // Apply post-process hook for name corrections (needed for HCL qualified names)
+            if let Some(post_process) = language.def().post_process_chunk {
+                // Infer chunk_type from capture name
+                let cap_name = capture_names
+                    .get(func_capture.index as usize)
+                    .copied()
+                    .unwrap_or("");
+                let mut ct = match cap_name {
+                    "function" => ChunkType::Function,
+                    "struct" => ChunkType::Struct,
+                    "class" => ChunkType::Class,
+                    "enum" => ChunkType::Enum,
+                    "trait" => ChunkType::Trait,
+                    "interface" => ChunkType::Interface,
+                    "const" => ChunkType::Constant,
+                    "module" => ChunkType::Module,
+                    "macro" => ChunkType::Macro,
+                    "object" => ChunkType::Object,
+                    "typealias" => ChunkType::TypeAlias,
+                    "property" => ChunkType::Property,
+                    "delegate" => ChunkType::Delegate,
+                    "event" => ChunkType::Event,
+                    _ => ChunkType::Function,
+                };
+                if !post_process(&mut name, &mut ct, node, &source) {
+                    continue; // Skip discarded chunks
+                }
+            }
 
             let line_start = node.start_position().row as u32 + 1;
             let byte_range = node.byte_range();

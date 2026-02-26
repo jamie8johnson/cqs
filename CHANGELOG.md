@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Bash/Shell language support** — 16th language. Tree-sitter parsing for functions and command calls. Behind `lang-bash` feature flag (enabled by default).
+- **HCL/Terraform language support** — 17th language. Tree-sitter parsing for resources, data sources, variables, outputs, modules, and providers. Qualified naming support (e.g., `aws_instance.web`). Call graph extraction (HCL built-in function calls like `lookup`, `format`, `toset`). Behind `lang-hcl` feature flag (enabled by default).
+- **`post_process_chunk` hook on LanguageDef** — optional field for language-specific chunk reclassification (used by HCL for qualified naming).
+
 ## [0.18.0] - 2026-02-26
 
 ### Added
@@ -1073,7 +1078,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.18.0...HEAD
 [0.13.0]: https://github.com/jamie8johnson/cqs/compare/v0.12.12...v0.13.0
 [0.12.12]: https://github.com/jamie8johnson/cqs/compare/v0.12.11...v0.12.12
 [0.12.11]: https://github.com/jamie8johnson/cqs/compare/v0.12.10...v0.12.11
