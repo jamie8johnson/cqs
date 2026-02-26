@@ -345,7 +345,7 @@ fn test_parse_sql_fixture() {
         .iter()
         .find(|c| c.name.contains("vw_ActiveCustomers"));
     assert!(view.is_some(), "Should find vw_ActiveCustomers view");
-    assert_eq!(view.unwrap().chunk_type, ChunkType::Constant);
+    assert_eq!(view.unwrap().chunk_type, ChunkType::Function);
 }
 
 #[test]

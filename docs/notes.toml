@@ -836,3 +836,12 @@ mentions = [
     "src/language/mod.rs",
     "src/parser/chunk.rs",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Macro ChunkType added for Rust macro_rules! definitions. Also fixed pre-existing gap: property/delegate/event missing from calls.rs definition filter — those chunk types had call extraction silently skipped in parse_file_relationships."
+mentions = [
+    "src/language/mod.rs",
+    "src/parser/calls.rs",
+    "ChunkType",
+]

@@ -30,6 +30,13 @@ const CHUNK_QUERY: &str = r#"
 
 (enum_declaration
   name: (identifier) @name) @enum
+
+(type_alias_declaration
+  name: (type_identifier) @name) @typealias
+
+;; Namespace/module declarations
+(internal_module
+  name: (identifier) @name) @module
 "#;
 
 /// Tree-sitter query for extracting function calls
@@ -129,4 +136,40 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_typescript_namespace() {
+        let content = "namespace Validators {\n  export function check() {}\n}\n";
+        let file = write_temp_file(content, "ts");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ns = chunks.iter().find(|c| c.name == "Validators").unwrap();
+        assert_eq!(ns.chunk_type, ChunkType::Module);
+    }
+
+    #[test]
+    fn parse_typescript_type_alias() {
+        let content = "type Result = Success | Failure;\n";
+        let file = write_temp_file(content, "ts");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ta = chunks.iter().find(|c| c.name == "Result").unwrap();
+        assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
+    }
 }

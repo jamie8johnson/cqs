@@ -2,13 +2,23 @@
 
 ## Right Now
 
-**v0.16.0 releasing.** 2026-02-26.
+**Scala + Ruby language support.** 2026-02-26.
 
-F# (11th) and PowerShell (12th) languages. Module ChunkType. PR #487 merged.
+Adding languages 13 (Scala) and 14 (Ruby). New ChunkType variants: `Object`, `TypeAlias`. New SignatureStyle: `FirstLine`.
+
+Done:
+- Infrastructure: ChunkType::Object/TypeAlias, SignatureStyle::FirstLine in mod.rs, chunk.rs, calls.rs, nl.rs, query.rs
+- `src/language/scala.rs` — full module with TYPE_QUERY, 8 tests
+- `src/language/ruby.rs` — full module, 7 tests
+- `tests/eval_common.rs` — exhaustive match arms
+- Build/clippy/fmt clean, all tests pass (17 new)
+- Docs updated: README, ROADMAP, CHANGELOG, CONTRIBUTING
+
+Not committed yet — ready for commit + PR.
 
 ## Pending Changes
 
-None.
+Uncommitted: Scala + Ruby language support (all files listed above).
 
 ## Parked
 
@@ -41,7 +51,7 @@ None.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 12 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, F#, PowerShell, SQL, Markdown)
+- 14 languages (Rust, Python, TypeScript, JavaScript, Go, C, Java, C#, F#, PowerShell, Scala, Ruby, SQL, Markdown)
 - Tests: 1115 pass + 34 ignored, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories

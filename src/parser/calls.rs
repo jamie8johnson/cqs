@@ -283,6 +283,8 @@ impl Parser {
                         | "const"
                         | "module"
                         | "macro"
+                        | "object"
+                        | "typealias"
                         | "property"
                         | "delegate"
                         | "event"
@@ -977,6 +979,9 @@ fn another() {
             Language::Go,
             Language::Java,
             Language::C,
+            Language::CSharp,
+            // FSharp type query has pre-existing compile issues (#node-type mismatch)
+            Language::Scala,
         ];
         for lang in languages_with_types {
             let result = parser.get_type_query(lang);

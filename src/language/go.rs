@@ -20,6 +20,59 @@ const CHUNK_QUERY: &str = r#"
     name: (type_identifier) @name
     type: (interface_type))) @interface
 
+;; Type aliases — named types (type MyInt int)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (type_identifier))) @typealias
+
+;; Type aliases — function types (type Handler func(...))
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (function_type))) @typealias
+
+;; Type aliases — pointer types (type Ptr *int)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (pointer_type))) @typealias
+
+;; Type aliases — slice types (type Names []string)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (slice_type))) @typealias
+
+;; Type aliases — map types (type Cache map[string]int)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (map_type))) @typealias
+
+;; Type aliases — array types (type Data [10]byte)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (array_type))) @typealias
+
+;; Type aliases — channel types (type Ch chan int)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (channel_type))) @typealias
+
+;; Type aliases — qualified types (type Foo pkg.Type)
+(type_declaration
+  (type_spec
+    name: (type_identifier) @name
+    type: (qualified_type))) @typealias
+
+;; Go 1.9+ type alias (type Foo = int)
+(type_declaration
+  (type_alias
+    name: (type_identifier) @name)) @typealias
+
 (const_declaration
   (const_spec
     name: (identifier) @name)) @const
@@ -157,4 +210,61 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_go_named_type() {
+        let content = "package main\n\ntype MyInt int\n";
+        let file = write_temp_file(content, "go");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ta = chunks.iter().find(|c| c.name == "MyInt").unwrap();
+        assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
+    }
+
+    #[test]
+    fn parse_go_function_type() {
+        let content = "package main\n\ntype Handler func(w Writer, r *Request)\n";
+        let file = write_temp_file(content, "go");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ta = chunks.iter().find(|c| c.name == "Handler").unwrap();
+        assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
+    }
+
+    #[test]
+    fn parse_go_type_alias_equals() {
+        let content = "package main\n\ntype MyInt = int\n";
+        let file = write_temp_file(content, "go");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ta = chunks.iter().find(|c| c.name == "MyInt").unwrap();
+        assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
+    }
+
+    #[test]
+    fn parse_go_struct_still_struct() {
+        // Ensure struct type declarations are NOT captured as TypeAlias
+        let content = "package main\n\ntype Foo struct {\n\tX int\n}\n";
+        let file = write_temp_file(content, "go");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let s = chunks.iter().find(|c| c.name == "Foo").unwrap();
+        assert_eq!(s.chunk_type, ChunkType::Struct);
+    }
 }

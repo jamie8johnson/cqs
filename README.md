@@ -434,7 +434,7 @@ cqs index --dry-run    # Show what would be indexed
 
 **Parse → Embed → Index → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 12 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 14 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
 4. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
