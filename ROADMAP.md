@@ -2,7 +2,7 @@
 
 ## Current: v0.18.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 17 languages.
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 20 languages.
 
 ### Recently Completed
 
@@ -79,14 +79,14 @@ Priority order based on competitive gap analysis (Feb 2026).
 - [ ] **GraphQL** — type/input → Struct, query/mutation/subscription → Function, interface → Interface, enum → Enum. Every web API shop has these.
 
 **Tier 3 — Programming languages with clean mappings:**
-- [ ] **Kotlin** — Object (companion/singleton), TypeAlias, Property; data class → Struct, sealed class → Class
-- [ ] **Swift** — protocol → Trait, actor → Class, TypeAlias, Property. May need `Extension` variant (primary code org).
+- [x] **Kotlin** — 18th language. Classes, interfaces, enum classes, objects, functions, properties, type aliases. Call graph + type dependency extraction. post_process_chunk for interface/enum reclassification.
+- [x] **Swift** — 19th language. Classes, structs, enums, actors, protocols, extensions, functions, type aliases. Call graph + type dependency extraction. post_process_chunk for struct/enum/actor/extension reclassification.
+- [x] **Objective-C** — 20th language. Class interfaces, protocols, methods, properties, C functions. Call graph extraction (message sends + C calls). No type dependency extraction.
 - [ ] **Elixir** — Module + Macro exist. defprotocol → Trait, defrecord → Struct. Clean mapping.
 - [ ] **Lua** — Function-only. Game dev niche (Roblox, Neovim). Easy.
 - [ ] **Haskell** — TypeAlias exists. data → Enum, class → Trait. Niche but loved.
 - [ ] **PHP** — Property covers properties, trait → Trait
 - [ ] **Dart** — Property covers properties, mixin → Trait
-- [ ] **Objective-C** — Property covers `@property`, `@protocol` → Interface
 - [ ] **Zig** — maps cleanly
 
 ### ChunkType Variant Status

@@ -10,7 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Bash/Shell language support** — 16th language. Tree-sitter parsing for functions and command calls. Behind `lang-bash` feature flag (enabled by default).
 - **HCL/Terraform language support** — 17th language. Tree-sitter parsing for resources, data sources, variables, outputs, modules, and providers. Qualified naming support (e.g., `aws_instance.web`). Call graph extraction (HCL built-in function calls like `lookup`, `format`, `toset`). Behind `lang-hcl` feature flag (enabled by default).
-- **`post_process_chunk` hook on LanguageDef** — optional field for language-specific chunk reclassification (used by HCL for qualified naming).
+- **Kotlin language support** — 18th language. Tree-sitter parsing for classes, interfaces, enum classes, objects, functions, properties, type aliases. Call graph extraction (function calls + property access). Type dependency extraction (parameter types, return types, property types, inheritance, interface implementation). Behind `lang-kotlin` feature flag (enabled by default).
+- **Swift language support** — 19th language. Tree-sitter parsing for classes, structs, enums, actors, protocols, extensions, functions, type aliases. Call graph extraction (function calls + property access + method calls). Type dependency extraction (parameter types, return types, property types, conformances). Behind `lang-swift` feature flag (enabled by default).
+- **Objective-C language support** — 20th language. Tree-sitter parsing for class interfaces, protocols, methods, properties, C functions. Call graph extraction (message sends + C function calls). Behind `lang-objc` feature flag (enabled by default).
+- **`post_process_chunk` hook on LanguageDef** — optional field for language-specific chunk reclassification (used by HCL for qualified naming; Kotlin for interface/enum reclassification; Swift for struct/enum/actor/extension reclassification).
 
 ## [0.18.0] - 2026-02-26
 

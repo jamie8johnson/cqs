@@ -41,6 +41,12 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Bash => "sh",
         #[cfg(feature = "lang-hcl")]
         Language::Hcl => "tf",
+        #[cfg(feature = "lang-kotlin")]
+        Language::Kotlin => "kt",
+        #[cfg(feature = "lang-swift")]
+        Language::Swift => "swift",
+        #[cfg(feature = "lang-objc")]
+        Language::ObjC => "m",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };
@@ -77,6 +83,12 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Bash => "sh",
         #[cfg(feature = "lang-hcl")]
         Language::Hcl => "tf",
+        #[cfg(feature = "lang-kotlin")]
+        Language::Kotlin => "kt",
+        #[cfg(feature = "lang-swift")]
+        Language::Swift => "swift",
+        #[cfg(feature = "lang-objc")]
+        Language::ObjC => "m",
         Language::Sql => "sql",
         Language::Markdown => "md",
     };
