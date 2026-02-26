@@ -228,6 +228,14 @@ fn infer_chunk_type(
         return (ChunkType::Method, parent_type);
     }
 
+    // Check if the function has a qualified name (e.g., C++ out-of-class methods)
+    if let Some(extractor) = def.extract_qualified_method {
+        if let Some(class_name) = extractor(node, source) {
+            tracing::debug!(class = %class_name, "Qualified method inference");
+            return (ChunkType::Method, Some(class_name));
+        }
+    }
+
     // Walk parents looking for method containers (e.g., impl blocks, class bodies)
     let mut current = node.parent();
     while let Some(parent) = current {

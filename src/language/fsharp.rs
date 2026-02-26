@@ -200,6 +200,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     common_types: COMMON_TYPES,
     container_body_kinds: &[],
     extract_container_name: Some(extract_container_name_fsharp),
+    extract_qualified_method: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

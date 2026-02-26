@@ -34,6 +34,7 @@ tree-sitter-typescript = { version = "0.23", optional = true }
 tree-sitter-javascript = { version = "0.25", optional = true }
 tree-sitter-go = { version = "0.25", optional = true }
 tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
 tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-c-sharp = { version = "0.23", optional = true }
 tree-sitter-fsharp = { version = "0.1", optional = true }
@@ -105,7 +106,7 @@ self_cell = "1"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-sql", "lang-markdown", "convert"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-sql", "lang-markdown", "convert"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -114,6 +115,7 @@ lang-typescript = ["dep:tree-sitter-typescript"]
 lang-javascript = ["dep:tree-sitter-javascript"]
 lang-go = ["dep:tree-sitter-go"]
 lang-c = ["dep:tree-sitter-c"]
+lang-cpp = ["dep:tree-sitter-cpp"]
 lang-java = ["dep:tree-sitter-java"]
 lang-csharp = ["dep:tree-sitter-c-sharp"]
 lang-fsharp = ["dep:tree-sitter-fsharp"]
@@ -122,7 +124,7 @@ lang-scala = ["dep:tree-sitter-scala"]
 lang-ruby = ["dep:tree-sitter-ruby"]
 lang-sql = ["dep:tree-sitter-sql"]
 lang-markdown = []  # No external deps — custom parser
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-sql", "lang-markdown"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-sql", "lang-markdown"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]
