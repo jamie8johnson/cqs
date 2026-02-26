@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-02-26
+
 ### Added
 - **Bash/Shell language support** — 16th language. Tree-sitter parsing for functions and command calls. Behind `lang-bash` feature flag (enabled by default).
 - **HCL/Terraform language support** — 17th language. Tree-sitter parsing for resources, data sources, variables, outputs, modules, and providers. Qualified naming support (e.g., `aws_instance.web`). Call graph extraction (HCL built-in function calls like `lookup`, `format`, `toset`). Behind `lang-hcl` feature flag (enabled by default).
@@ -14,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Swift language support** — 19th language. Tree-sitter parsing for classes, structs, enums, actors, protocols, extensions, functions, type aliases. Call graph extraction (function calls + property access + method calls). Type dependency extraction (parameter types, return types, property types, conformances). Behind `lang-swift` feature flag (enabled by default).
 - **Objective-C language support** — 20th language. Tree-sitter parsing for class interfaces, protocols, methods, properties, C functions. Call graph extraction (message sends + C function calls). Behind `lang-objc` feature flag (enabled by default).
 - **`post_process_chunk` hook on LanguageDef** — optional field for language-specific chunk reclassification (used by HCL for qualified naming; Kotlin for interface/enum reclassification; Swift for struct/enum/actor/extension reclassification).
+
+### Fixed
+- **Flaky `test_search_returns_results` CLI test** — relaxed assertion from checking specific function name to checking that results are returned. Embedding similarity between `add` and `subtract` functions is too close for deterministic ordering across CPU/GPU.
+
+### Dependencies
+- tree-sitter-bash 0.23 (new), tree-sitter-hcl 1.1 (new), tree-sitter-kotlin-ng 1.1 (new), tree-sitter-swift 0.7 (new), tree-sitter-objc 3.0 (new)
 
 ## [0.18.0] - 2026-02-26
 
@@ -1081,7 +1089,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI commands: init, doctor, index, stats, serve
 - Filter by language (`-l`) and path pattern (`-p`)
 
-[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/jamie8johnson/cqs/compare/v0.19.0...HEAD
+[0.19.0]: https://github.com/jamie8johnson/cqs/compare/v0.18.0...v0.19.0
+[0.18.0]: https://github.com/jamie8johnson/cqs/compare/v0.17.0...v0.18.0
+[0.17.0]: https://github.com/jamie8johnson/cqs/compare/v0.16.0...v0.17.0
+[0.16.0]: https://github.com/jamie8johnson/cqs/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/jamie8johnson/cqs/compare/v0.14.1...v0.15.0
+[0.14.1]: https://github.com/jamie8johnson/cqs/compare/v0.14.0...v0.14.1
+[0.14.0]: https://github.com/jamie8johnson/cqs/compare/v0.13.1...v0.14.0
+[0.13.1]: https://github.com/jamie8johnson/cqs/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/jamie8johnson/cqs/compare/v0.12.12...v0.13.0
 [0.12.12]: https://github.com/jamie8johnson/cqs/compare/v0.12.11...v0.12.12
 [0.12.11]: https://github.com/jamie8johnson/cqs/compare/v0.12.10...v0.12.11
