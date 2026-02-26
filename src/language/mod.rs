@@ -22,6 +22,7 @@
 //! - `lang-ruby` - Ruby support (enabled by default)
 //! - `lang-bash` - Bash support (enabled by default)
 //! - `lang-hcl` - HCL/Terraform support (enabled by default)
+//! - `lang-kotlin` - Kotlin support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -423,6 +424,12 @@ define_languages! {
     Bash => "bash", feature = "lang-bash", module = bash;
     /// HCL/Terraform (.tf, .tfvars, .hcl files)
     Hcl => "hcl", feature = "lang-hcl", module = hcl;
+    /// Kotlin (.kt, .kts files)
+    Kotlin => "kotlin", feature = "lang-kotlin", module = kotlin;
+    /// Swift (.swift files)
+    Swift => "swift", feature = "lang-swift", module = swift;
+    /// Objective-C (.m, .mm files)
+    ObjC => "objc", feature = "lang-objc", module = objc;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
     /// Markdown (.md, .mdx files)
@@ -558,6 +565,18 @@ mod tests {
             assert!(REGISTRY.from_extension("tfvars").is_some());
             assert!(REGISTRY.from_extension("hcl").is_some());
         }
+        #[cfg(feature = "lang-kotlin")]
+        {
+            assert!(REGISTRY.from_extension("kt").is_some());
+            assert!(REGISTRY.from_extension("kts").is_some());
+        }
+        #[cfg(feature = "lang-swift")]
+        assert!(REGISTRY.from_extension("swift").is_some());
+        #[cfg(feature = "lang-objc")]
+        {
+            assert!(REGISTRY.from_extension("m").is_some());
+            assert!(REGISTRY.from_extension("mm").is_some());
+        }
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
         #[cfg(feature = "lang-markdown")]
@@ -633,6 +652,18 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-kotlin")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-swift")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-objc")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-sql")]
         {
             expected += 1;
@@ -700,6 +731,11 @@ mod tests {
         assert_eq!(Language::from_extension("tf"), Some(Language::Hcl));
         assert_eq!(Language::from_extension("tfvars"), Some(Language::Hcl));
         assert_eq!(Language::from_extension("hcl"), Some(Language::Hcl));
+        assert_eq!(Language::from_extension("kt"), Some(Language::Kotlin));
+        assert_eq!(Language::from_extension("kts"), Some(Language::Kotlin));
+        assert_eq!(Language::from_extension("swift"), Some(Language::Swift));
+        assert_eq!(Language::from_extension("m"), Some(Language::ObjC));
+        assert_eq!(Language::from_extension("mm"), Some(Language::ObjC));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
@@ -727,6 +763,9 @@ mod tests {
         assert_eq!("cpp".parse::<Language>().unwrap(), Language::Cpp);
         assert_eq!("bash".parse::<Language>().unwrap(), Language::Bash);
         assert_eq!("hcl".parse::<Language>().unwrap(), Language::Hcl);
+        assert_eq!("kotlin".parse::<Language>().unwrap(), Language::Kotlin);
+        assert_eq!("swift".parse::<Language>().unwrap(), Language::Swift);
+        assert_eq!("objc".parse::<Language>().unwrap(), Language::ObjC);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
@@ -749,6 +788,9 @@ mod tests {
         assert_eq!(Language::Cpp.to_string(), "cpp");
         assert_eq!(Language::Bash.to_string(), "bash");
         assert_eq!(Language::Hcl.to_string(), "hcl");
+        assert_eq!(Language::Kotlin.to_string(), "kotlin");
+        assert_eq!(Language::Swift.to_string(), "swift");
+        assert_eq!(Language::ObjC.to_string(), "objc");
         assert_eq!(Language::Sql.to_string(), "sql");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
@@ -905,6 +947,26 @@ mod tests {
         );
         assert_eq!(
             (Language::Hcl.def().extract_return_nl)("resource \"aws_instance\" \"web\""),
+            None
+        );
+        assert_eq!(
+            (Language::Kotlin.def().extract_return_nl)("fun add(a: Int, b: Int): Int {"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Kotlin.def().extract_return_nl)("fun doSomething(): Unit {"),
+            None
+        );
+        assert_eq!(
+            (Language::Swift.def().extract_return_nl)("func greet(name: String) -> String {"),
+            Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::Swift.def().extract_return_nl)("func doSomething() {"),
+            None
+        );
+        assert_eq!(
+            (Language::ObjC.def().extract_return_nl)("- (void)greet"),
             None
         );
     }
