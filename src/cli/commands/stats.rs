@@ -4,7 +4,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use cqs::{HnswIndex, Parser};
 
@@ -14,13 +14,15 @@ use crate::cli::Cli;
 pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_stats").entered();
     let (store, root, cqs_dir) = crate::cli::open_project_store()?;
-    let stats = store.stats()?;
+    let stats = store.stats().context("Failed to read index statistics")?;
 
     // Check staleness by scanning filesystem
     let parser = Parser::new()?;
     let files = crate::cli::enumerate_files(&root, &parser, false)?;
     let file_set: HashSet<_> = files.into_iter().collect();
-    let (stale_count, missing_count) = store.count_stale_files(&file_set)?;
+    let (stale_count, missing_count) = store
+        .count_stale_files(&file_set)
+        .context("Failed to count stale files")?;
 
     // Use count_vectors to avoid loading full HNSW index just for stats
     let hnsw_vectors = HnswIndex::count_vectors(&cqs_dir, "index");

@@ -4,7 +4,7 @@
 //! `compact_to_json`, `full_to_json`) so batch mode can reuse them without
 //! duplicating ~120 lines.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -23,7 +23,9 @@ pub(crate) struct CompactData {
 
 /// Build compact-mode data: chunks with caller/callee counts.
 pub(crate) fn build_compact_data(store: &Store, path: &str) -> Result<CompactData> {
-    let chunks = store.get_chunks_by_origin(path)?;
+    let chunks = store
+        .get_chunks_by_origin(path)
+        .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
             "No indexed chunks found for '{}'. Is the file indexed?",
@@ -79,7 +81,9 @@ pub(crate) struct FullData {
 ///
 /// Shared between CLI summary mode (uses counts) and full mode (uses details).
 pub(crate) fn build_full_data(store: &Store, path: &str, root: &Path) -> Result<FullData> {
-    let chunks = store.get_chunks_by_origin(path)?;
+    let chunks = store
+        .get_chunks_by_origin(path)
+        .context("Failed to load chunks for file")?;
     if chunks.is_empty() {
         bail!(
             "No indexed chunks found for '{}'. Is the file indexed?",

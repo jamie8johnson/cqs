@@ -39,70 +39,107 @@ impl Store {
         })
     }
 
-    /// Insert or update chunks in batch (10x faster than individual inserts)
+    /// Insert or update chunks in batch using multi-row INSERT.
     ///
-    /// FTS operations (DELETE then INSERT per chunk) are not batched because:
-    /// - FTS5 doesn't support INSERT OR REPLACE, requiring DELETE+INSERT
-    /// - Batching DELETEs with WHERE IN requires dynamic SQL with varying params
-    /// - All operations run in a single transaction, so disk I/O is already batched
-    /// - FTS operations are fast (in-memory B-tree), not the bottleneck vs embeddings
+    /// Chunks are inserted in batches of 55 rows (55 * 18 params = 990 < SQLite's 999 limit).
+    /// FTS operations remain per-row because FTS5 doesn't support INSERT OR REPLACE.
     pub fn upsert_chunks_batch(
         &self,
         chunks: &[(Chunk, Embedding)],
         source_mtime: Option<i64>,
     ) -> Result<usize, StoreError> {
+        // 55 rows * 18 bind params = 990 < SQLite's 999 parameter limit
+        const CHUNK_INSERT_BATCH: usize = 55;
+
+        // Pre-compute embedding bytes outside async (embedding_to_bytes returns Result)
+        let embedding_bytes: Vec<Vec<u8>> = chunks
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb))
+            .collect::<Result<Vec<_>, _>>()?;
+
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
+            // Snapshot existing content hashes before batch INSERT overwrites them
+            let mut old_hashes: HashMap<String, String> = HashMap::new();
+            for (chunk, _) in chunks {
+                let existing: Option<(String,)> =
+                    sqlx::query_as("SELECT content_hash FROM chunks WHERE id = ?1")
+                        .bind(&chunk.id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                if let Some((hash,)) = existing {
+                    old_hashes.insert(chunk.id.clone(), hash);
+                }
+            }
+
             let now = chrono::Utc::now().to_rfc3339();
-            for (chunk, embedding) in chunks {
-                sqlx::query(
-                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-                )
-                .bind(&chunk.id)
-                .bind(normalize_origin(&chunk.file))
-                .bind("file")
-                .bind(chunk.language.to_string())
-                .bind(chunk.chunk_type.to_string())
-                .bind(&chunk.name)
-                .bind(&chunk.signature)
-                .bind(&chunk.content)
-                .bind(&chunk.content_hash)
-                .bind(&chunk.doc)
-                .bind(chunk.line_start as i64)
-                .bind(chunk.line_end as i64)
-                .bind(embedding_to_bytes(embedding)?)
-                .bind(source_mtime)
-                .bind(&now)
-                .bind(&now)
-                .bind(&chunk.parent_id)
-                .bind(chunk.window_idx.map(|i| i as i64))
-                .execute(&mut *tx)
-                .await?;
 
-                // Pre-compute FTS normalized values
-                let fts_name = normalize_for_fts(&chunk.name);
-                let fts_sig = normalize_for_fts(&chunk.signature);
-                let fts_content = normalize_for_fts(&chunk.content);
-                let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
+            // Batch INSERT chunks
+            for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
+                let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx) ",
+                );
+                qb.push_values(
+                    batch.iter().enumerate(),
+                    |mut b, (i, (chunk, _))| {
+                        b.push_bind(&chunk.id)
+                            .push_bind(normalize_origin(&chunk.file))
+                            .push_bind("file")
+                            .push_bind(chunk.language.to_string())
+                            .push_bind(chunk.chunk_type.to_string())
+                            .push_bind(&chunk.name)
+                            .push_bind(&chunk.signature)
+                            .push_bind(&chunk.content)
+                            .push_bind(&chunk.content_hash)
+                            .push_bind(&chunk.doc)
+                            .push_bind(chunk.line_start as i64)
+                            .push_bind(chunk.line_end as i64)
+                            .push_bind(&embedding_bytes[emb_offset + i])
+                            .push_bind(source_mtime)
+                            .push_bind(&now)
+                            .push_bind(&now)
+                            .push_bind(&chunk.parent_id)
+                            .push_bind(chunk.window_idx.map(|i| i as i64));
+                    },
+                );
+                qb.build().execute(&mut *tx).await?;
+            }
 
-                // Delete from FTS before insert - error must fail transaction to prevent desync
-                sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+            // FTS per-row — skip if content_hash unchanged (compared to pre-INSERT snapshot)
+            for (chunk, _) in chunks {
+                let content_changed = old_hashes
+                    .get(&chunk.id)
+                    .map(|old_hash| old_hash != &chunk.content_hash)
+                    .unwrap_or(true);
+
+                if content_changed {
+                    let fts_name = normalize_for_fts(&chunk.name);
+                    let fts_sig = normalize_for_fts(&chunk.signature);
+                    let fts_content = normalize_for_fts(&chunk.content);
+                    let fts_doc = chunk
+                        .doc
+                        .as_ref()
+                        .map(|d| normalize_for_fts(d))
+                        .unwrap_or_default();
+
+                    sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                        .bind(&chunk.id)
+                        .execute(&mut *tx)
+                        .await?;
+
+                    sqlx::query(
+                        "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
                     .bind(&chunk.id)
+                    .bind(&fts_name)
+                    .bind(&fts_sig)
+                    .bind(&fts_content)
+                    .bind(&fts_doc)
                     .execute(&mut *tx)
                     .await?;
-
-                sqlx::query(
-                    "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
-                )
-                .bind(&chunk.id)
-                .bind(&fts_name)
-                .bind(&fts_sig)
-                .bind(&fts_content)
-                .bind(&fts_doc)
-                .execute(&mut *tx)
-                .await?;
+                }
             }
 
             tx.commit().await?;
@@ -173,15 +210,24 @@ impl Store {
 
     /// Atomically replace all chunks for a file in a single transaction.
     ///
-    /// Deletes existing chunks (+ FTS) for the origin, then inserts new chunks.
-    /// This prevents data loss from crashes between separate delete and insert calls.
+    /// Deletes existing chunks (+ FTS) for the origin, then inserts new chunks
+    /// using multi-row INSERT (batches of 55). FTS always computed here since
+    /// the bulk DELETE already cleared all FTS entries for this origin.
     pub fn replace_file_chunks(
         &self,
         origin: &Path,
         chunks: &[(Chunk, Embedding)],
         source_mtime: Option<i64>,
     ) -> Result<usize, StoreError> {
+        const CHUNK_INSERT_BATCH: usize = 55;
+
         let origin_str = normalize_origin(origin);
+
+        // Pre-compute embedding bytes (returns Result)
+        let embedding_bytes: Vec<Vec<u8>> = chunks
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb))
+            .collect::<Result<Vec<_>, _>>()?;
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -200,41 +246,50 @@ impl Store {
                 .execute(&mut *tx)
                 .await?;
 
-            // Insert new chunks + FTS
+            // Batch INSERT new chunks
             let now = chrono::Utc::now().to_rfc3339();
-            for (chunk, embedding) in chunks {
-                sqlx::query(
-                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-                )
-                .bind(&chunk.id)
-                .bind(normalize_origin(&chunk.file))
-                .bind("file")
-                .bind(chunk.language.to_string())
-                .bind(chunk.chunk_type.to_string())
-                .bind(&chunk.name)
-                .bind(&chunk.signature)
-                .bind(&chunk.content)
-                .bind(&chunk.content_hash)
-                .bind(&chunk.doc)
-                .bind(chunk.line_start as i64)
-                .bind(chunk.line_end as i64)
-                .bind(embedding_to_bytes(embedding)?)
-                .bind(source_mtime)
-                .bind(&now)
-                .bind(&now)
-                .bind(&chunk.parent_id)
-                .bind(chunk.window_idx.map(|i| i as i64))
-                .execute(&mut *tx)
-                .await?;
+            for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
+                let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx) ",
+                );
+                qb.push_values(
+                    batch.iter().enumerate(),
+                    |mut b, (i, (chunk, _))| {
+                        b.push_bind(&chunk.id)
+                            .push_bind(normalize_origin(&chunk.file))
+                            .push_bind("file")
+                            .push_bind(chunk.language.to_string())
+                            .push_bind(chunk.chunk_type.to_string())
+                            .push_bind(&chunk.name)
+                            .push_bind(&chunk.signature)
+                            .push_bind(&chunk.content)
+                            .push_bind(&chunk.content_hash)
+                            .push_bind(&chunk.doc)
+                            .push_bind(chunk.line_start as i64)
+                            .push_bind(chunk.line_end as i64)
+                            .push_bind(&embedding_bytes[emb_offset + i])
+                            .push_bind(source_mtime)
+                            .push_bind(&now)
+                            .push_bind(&now)
+                            .push_bind(&chunk.parent_id)
+                            .push_bind(chunk.window_idx.map(|i| i as i64));
+                    },
+                );
+                qb.build().execute(&mut *tx).await?;
+            }
 
-                // Pre-compute FTS normalized values
+            // FTS per-row (bulk DELETE above already cleared all FTS for this origin)
+            for (chunk, _) in chunks {
                 let fts_name = normalize_for_fts(&chunk.name);
                 let fts_sig = normalize_for_fts(&chunk.signature);
                 let fts_content = normalize_for_fts(&chunk.content);
-                let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
+                let fts_doc = chunk
+                    .doc
+                    .as_ref()
+                    .map(|d| normalize_for_fts(d))
+                    .unwrap_or_default();
 
-                // No per-chunk FTS DELETE needed — bulk DELETE above already cleared all FTS for this origin
                 sqlx::query(
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
@@ -256,64 +311,103 @@ impl Store {
     ///
     /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
     /// preventing inconsistency from crashes between separate operations.
+    /// Chunks are inserted in batches of 55 rows (55 * 18 = 990 < SQLite's 999 limit).
     pub fn upsert_chunks_and_calls(
         &self,
         chunks: &[(Chunk, Embedding)],
         source_mtime: Option<i64>,
         calls: &[(String, crate::parser::CallSite)],
     ) -> Result<usize, StoreError> {
+        const CHUNK_INSERT_BATCH: usize = 55;
+
+        // Pre-compute embedding bytes (returns Result)
+        let embedding_bytes: Vec<Vec<u8>> = chunks
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb))
+            .collect::<Result<Vec<_>, _>>()?;
+
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
-            // Upsert chunks + FTS
+            // Snapshot existing content hashes before batch INSERT overwrites them
+            let mut old_hashes: HashMap<String, String> = HashMap::new();
+            for (chunk, _) in chunks {
+                let existing: Option<(String,)> =
+                    sqlx::query_as("SELECT content_hash FROM chunks WHERE id = ?1")
+                        .bind(&chunk.id)
+                        .fetch_optional(&mut *tx)
+                        .await?;
+                if let Some((hash,)) = existing {
+                    old_hashes.insert(chunk.id.clone(), hash);
+                }
+            }
+
+            // Batch INSERT chunks
             let now = chrono::Utc::now().to_rfc3339();
-            for (chunk, embedding) in chunks {
-                sqlx::query(
-                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-                )
-                .bind(&chunk.id)
-                .bind(normalize_origin(&chunk.file))
-                .bind("file")
-                .bind(chunk.language.to_string())
-                .bind(chunk.chunk_type.to_string())
-                .bind(&chunk.name)
-                .bind(&chunk.signature)
-                .bind(&chunk.content)
-                .bind(&chunk.content_hash)
-                .bind(&chunk.doc)
-                .bind(chunk.line_start as i64)
-                .bind(chunk.line_end as i64)
-                .bind(embedding_to_bytes(embedding)?)
-                .bind(source_mtime)
-                .bind(&now)
-                .bind(&now)
-                .bind(&chunk.parent_id)
-                .bind(chunk.window_idx.map(|i| i as i64))
-                .execute(&mut *tx)
-                .await?;
+            for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
+                let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx) ",
+                );
+                qb.push_values(
+                    batch.iter().enumerate(),
+                    |mut b, (i, (chunk, _))| {
+                        b.push_bind(&chunk.id)
+                            .push_bind(normalize_origin(&chunk.file))
+                            .push_bind("file")
+                            .push_bind(chunk.language.to_string())
+                            .push_bind(chunk.chunk_type.to_string())
+                            .push_bind(&chunk.name)
+                            .push_bind(&chunk.signature)
+                            .push_bind(&chunk.content)
+                            .push_bind(&chunk.content_hash)
+                            .push_bind(&chunk.doc)
+                            .push_bind(chunk.line_start as i64)
+                            .push_bind(chunk.line_end as i64)
+                            .push_bind(&embedding_bytes[emb_offset + i])
+                            .push_bind(source_mtime)
+                            .push_bind(&now)
+                            .push_bind(&now)
+                            .push_bind(&chunk.parent_id)
+                            .push_bind(chunk.window_idx.map(|i| i as i64));
+                    },
+                );
+                qb.build().execute(&mut *tx).await?;
+            }
 
-                // Pre-compute FTS normalized values
-                let fts_name = normalize_for_fts(&chunk.name);
-                let fts_sig = normalize_for_fts(&chunk.signature);
-                let fts_content = normalize_for_fts(&chunk.content);
-                let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
+            // FTS per-row — skip if content_hash unchanged (compared to pre-INSERT snapshot)
+            for (chunk, _) in chunks {
+                let content_changed = old_hashes
+                    .get(&chunk.id)
+                    .map(|old_hash| old_hash != &chunk.content_hash)
+                    .unwrap_or(true);
 
-                sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                if content_changed {
+                    let fts_name = normalize_for_fts(&chunk.name);
+                    let fts_sig = normalize_for_fts(&chunk.signature);
+                    let fts_content = normalize_for_fts(&chunk.content);
+                    let fts_doc = chunk
+                        .doc
+                        .as_ref()
+                        .map(|d| normalize_for_fts(d))
+                        .unwrap_or_default();
+
+                    sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
+                        .bind(&chunk.id)
+                        .execute(&mut *tx)
+                        .await?;
+
+                    sqlx::query(
+                        "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    )
                     .bind(&chunk.id)
+                    .bind(&fts_name)
+                    .bind(&fts_sig)
+                    .bind(&fts_content)
+                    .bind(&fts_doc)
                     .execute(&mut *tx)
                     .await?;
-
-                sqlx::query(
-                    "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
-                )
-                .bind(&chunk.id)
-                .bind(&fts_name)
-                .bind(&fts_sig)
-                .bind(&fts_content)
-                .bind(&fts_doc)
-                .execute(&mut *tx)
-                .await?;
+                }
             }
 
             // Upsert calls: delete old calls for these chunk IDs, insert new ones

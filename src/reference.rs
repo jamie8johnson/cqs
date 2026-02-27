@@ -5,10 +5,12 @@
 //! from references have their scores multiplied by a weight (default 0.8) to
 //! rank them below equally-similar project results.
 
+use rayon::prelude::*;
+
 use crate::config::ReferenceConfig;
 use crate::hnsw::HnswIndex;
 use crate::index::VectorIndex;
-use crate::store::{SearchFilter, SearchResult, Store, UnifiedResult};
+use crate::store::{SearchFilter, SearchResult, Store, StoreError, UnifiedResult};
 use crate::Embedding;
 
 /// A loaded reference index ready for searching
@@ -32,49 +34,54 @@ pub struct TaggedResult {
     pub source: Option<String>,
 }
 
-/// Load reference indexes from config, skipping any that fail to open
+/// Load reference indexes from config, skipping any that fail to open.
+///
+/// References are loaded in parallel via rayon — each Store::open_readonly +
+/// HnswIndex::try_load is independent I/O (10-50ms each). Both Store and
+/// HnswIndex are Send + Sync.
 pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
-    let mut refs = Vec::with_capacity(configs.len());
-
-    for cfg in configs {
-        // Reject symlink reference paths (trust boundary — could redirect to arbitrary locations)
-        if cfg
-            .path
-            .symlink_metadata()
-            .map(|m| m.is_symlink())
-            .unwrap_or(false)
-        {
-            tracing::warn!(
-                name = cfg.name,
-                path = %cfg.path.display(),
-                "Skipping reference: path is a symlink (use the real path instead)"
-            );
-            continue;
-        }
-
-        let db_path = cfg.path.join("index.db");
-        let store = match Store::open_readonly(&db_path) {
-            Ok(s) => s,
-            Err(e) => {
+    let refs: Vec<ReferenceIndex> = configs
+        .par_iter()
+        .filter_map(|cfg| {
+            // Reject symlink reference paths (trust boundary — could redirect to arbitrary locations)
+            if cfg
+                .path
+                .symlink_metadata()
+                .map(|m| m.is_symlink())
+                .unwrap_or(false)
+            {
                 tracing::warn!(
-                    "Skipping reference '{}': failed to open {}: {}",
-                    cfg.name,
-                    db_path.display(),
-                    e
+                    name = cfg.name,
+                    path = %cfg.path.display(),
+                    "Skipping reference: path is a symlink (use the real path instead)"
                 );
-                continue;
+                return None;
             }
-        };
 
-        let index = HnswIndex::try_load(&cfg.path);
+            let db_path = cfg.path.join("index.db");
+            let store = match Store::open_readonly(&db_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        "Skipping reference '{}': failed to open {}: {}",
+                        cfg.name,
+                        db_path.display(),
+                        e
+                    );
+                    return None;
+                }
+            };
 
-        refs.push(ReferenceIndex {
-            name: cfg.name.clone(),
-            store,
-            index,
-            weight: cfg.weight,
-        });
-    }
+            let index = HnswIndex::try_load(&cfg.path);
+
+            Some(ReferenceIndex {
+                name: cfg.name.clone(),
+                store,
+                index,
+                weight: cfg.weight,
+            })
+        })
+        .collect();
 
     if !refs.is_empty() {
         tracing::info!("Loaded {} reference indexes", refs.len());
@@ -95,7 +102,7 @@ pub fn search_reference(
     limit: usize,
     threshold: f32,
     apply_weight: bool,
-) -> anyhow::Result<Vec<SearchResult>> {
+) -> Result<Vec<SearchResult>, StoreError> {
     let _span =
         tracing::info_span!("search_reference", name = %ref_idx.name, weight = ref_idx.weight, apply_weight)
             .entered();
@@ -128,7 +135,7 @@ pub fn search_reference_by_name(
     limit: usize,
     threshold: f32,
     apply_weight: bool,
-) -> anyhow::Result<Vec<SearchResult>> {
+) -> Result<Vec<SearchResult>, StoreError> {
     let _span =
         tracing::info_span!("search_reference_by_name", ref_name = %ref_idx.name, query = name, apply_weight)
             .entered();

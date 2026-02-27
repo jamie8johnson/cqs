@@ -1,6 +1,6 @@
 //! Test map command — find tests that exercise a function
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::resolve::resolve_target;
@@ -16,8 +16,12 @@ pub(crate) fn cmd_test_map(
     let resolved = resolve_target(&store, name)?;
     let target_name = resolved.chunk.name.clone();
 
-    let graph = store.get_call_graph()?;
-    let test_chunks = store.find_test_chunks()?;
+    let graph = store
+        .get_call_graph()
+        .context("Failed to load call graph")?;
+    let test_chunks = store
+        .find_test_chunks()
+        .context("Failed to find test chunks")?;
     let _test_names: HashSet<String> = test_chunks.iter().map(|t| t.name.clone()).collect();
 
     // Reverse BFS from target
