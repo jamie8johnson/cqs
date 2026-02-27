@@ -30,7 +30,7 @@ All P1 items fixed.
 
 ## P2: Medium Effort + High Impact — Fix in Batch
 
-9 of 22 items fixed by parallel agents. 11 deferred as larger refactors. 2 not addressed.
+19 of 22 items fixed by parallel agents. 1 deferred (pure type refactor). 2 not addressed.
 
 | # | Finding | Difficulty | Location | Status |
 |---|---------|-----------|----------|--------|
@@ -43,17 +43,17 @@ All P1 items fixed.
 | 7 | **CQ-3**: `context` CLI/batch duplicates ~120 lines of JSON assembly | medium | cli/commands/context.rs, cli/batch/handlers.rs | ✅ fixed |
 | 8 | **AD-8**: `HealthReport` missing `Serialize` derive — CLI/batch hand-assembles JSON | medium | health.rs, impact/hints.rs, suggest.rs, cli/commands/health.rs, cli/batch/handlers.rs, language/mod.rs, store/helpers.rs, tests/cli_health_test.rs | ✅ fixed |
 | 9 | **RM-3**: `semantic_diff` loads all embeddings at once — O(N) peak memory | medium | diff.rs | ✅ fixed |
-| 10 | **AD-1**: Inconsistent `String` vs `PathBuf` for file paths across result types | medium | multiple | deferred |
-| 11 | **AD-5**: Error types inconsistent — some use `StoreError`, others `anyhow` | medium | multiple | deferred |
-| 12 | **CQ-5**: Pipeline stage extraction — complex match arms in single function | medium | cli/pipeline.rs | deferred |
-| 13 | **CQ-6**: Batch JSON output structs — manual `serde_json::json!` assembly | medium | cli/batch/handlers.rs | deferred |
-| 14 | **EH-5**: `.context()` sweep — bare `?` on store operations across CLI | medium | multiple | deferred |
-| 15 | **PF-1**: Multi-row INSERT for batch upserts | medium | store/chunks.rs | deferred |
-| 16 | **PF-9**: FTS normalization redundantly computed on unchanged content | easy | store/chunks.rs | deferred |
-| 17 | **RM-8**: Parallel reference loading in multi-ref search | medium | reference.rs | deferred |
-| 18 | **EX-6**: Config expansion — adding config fields requires touching 4 locations | medium | config.rs | deferred |
-| 19 | **AC-5**: `bfs_expand` revisits nodes when called with overlapping seeds | easy | gather.rs | deferred |
-| 20 | **AC-8**: HNSW candidate multiplier hardcoded — suboptimal for varying index sizes | easy | hnsw/ | deferred |
+| 10 | **AD-1**: Inconsistent `String` vs `PathBuf` for file paths across result types | medium | multiple | deferred (pure type refactor, no functional value) |
+| 11 | **AD-5**: Error types inconsistent — some use `StoreError`, others `anyhow` | medium | reference.rs | ✅ PR #499 |
+| 12 | **CQ-5**: Pipeline stage extraction — complex match arms in single function | medium | cli/batch/pipeline.rs | ✅ PR #499 |
+| 13 | **CQ-6**: Batch JSON output structs — manual `serde_json::json!` assembly | medium | cli/batch/handlers.rs, cli/batch/types.rs | ✅ PR #499 |
+| 14 | **EH-5**: `.context()` sweep — bare `?` on store operations across CLI | medium | 10 CLI command files | ✅ PR #499 |
+| 15 | **PF-1**: Multi-row INSERT for batch upserts | medium | store/chunks.rs | ✅ PR #499 |
+| 16 | **PF-9**: FTS normalization redundantly computed on unchanged content | easy | store/chunks.rs | ✅ PR #499 |
+| 17 | **RM-8**: Parallel reference loading in multi-ref search | medium | reference.rs | ✅ PR #499 |
+| 18 | **EX-6**: Config expansion — adding config fields requires touching 4 locations | medium | config.rs | ✅ PR #499 |
+| 19 | **AC-5**: `bfs_expand` revisits nodes when called with overlapping seeds | easy | gather.rs | ✅ PR #499 |
+| 20 | **AC-8**: HNSW candidate multiplier hardcoded — suboptimal for varying index sizes | easy | hnsw/search.rs | ✅ PR #499 |
 
 ## P3/P4: Not Addressed This Audit
 
@@ -87,6 +87,19 @@ If a future audit is needed, re-running will re-discover these items. The P1+P2 
 - **CLI/batch dedup**: Shared `pub(crate)` core functions for `explain` and `context` (-284 lines)
 - **HealthReport Serialize**: Proper derive chain with `Hotspot` struct, eliminated ~50 lines of hand-assembled JSON
 - **Diff batching**: Embedding loading in batches of 1000 pairs (peak memory ~9MB vs ~240MB)
+
+### Deferred P2 Fixes (10 items, PR #499)
+
+- **AC-5**: BFS visited set in `gather` prevents duplicate node expansion with overlapping seeds
+- **AC-8**: Adaptive `ef_search` scales with HNSW index size
+- **AD-5**: `search_reference()` returns typed `StoreError` instead of `anyhow::Error`
+- **RM-8**: Parallel reference loading via `rayon::par_iter()` in `load_references()`
+- **EX-6**: Consolidated config validation into `Config::validate()` method
+- **PF-1**: Multi-row INSERT batching (55 rows/batch via `QueryBuilder::push_values`)
+- **PF-9**: Skip FTS normalization when `content_hash` unchanged
+- **CQ-5**: Pipeline `extract_names` refactored into 3 focused sub-functions
+- **CQ-6**: Typed `ChunkOutput` struct replaces manual JSON assembly
+- **EH-5**: `.context()` sweep across 10 CLI command files
 
 ### Test Results
 
