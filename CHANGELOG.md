@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-02-27
+
+### Fixed
+- **BFS duplicate expansion** — `bfs_expand` in `gather` revisited nodes when called with overlapping seeds. Added `HashSet<String>` visited set.
+- **HNSW adaptive ef_search** — hardcoded `EF_SEARCH` candidate multiplier was suboptimal for varying index sizes. Now scales: `EF_SEARCH.max(k * 2).min(index_size.max(EF_SEARCH))`.
+- **CLI error context sweep** — added `.context("Failed to ...")` on store operations across 10 CLI command files (stats, dead, graph, context, gc, trace, test_map, deps, index, query).
+
+### Changed
+- **Multi-row INSERT batching** — `upsert_chunks_batch`, `replace_file_chunks`, and `upsert_chunks_and_calls` now use `QueryBuilder::push_values` for multi-row INSERT in batches of 55 (55×18=990 < SQLite 999 param limit). Fewer round-trips for large chunk sets.
+- **FTS skip on unchanged content** — `replace_file_chunks` snapshots content hashes before INSERT and skips FTS normalization for chunks whose `content_hash` didn't change. Reduces reindex cost for files with few modified functions.
+- **Typed batch output** — new `ChunkOutput` struct with `#[derive(Serialize)]` replaces manual `serde_json::json!` assembly in batch handlers. Path normalization extracted to `normalize_path()` helper.
+- **Pipeline `extract_names` refactored** — monolithic function split into `extract_from_bare_array`, `extract_from_standard_fields`, and `extract_from_scout_groups`.
+- **Reference search typed errors** — `search_reference()` and `search_reference_by_name()` return `Result<_, StoreError>` instead of `anyhow::Result`.
+- **Parallel reference loading** — `load_references()` uses `rayon::par_iter()` for concurrent Store+HNSW loading.
+- **Config validation consolidated** — extracted `Config::validate(&mut self)` method, single `tracing::debug!(?merged)` log replaces per-field debug logging.
+
 ## [0.19.1] - 2026-02-27
 
 ### Fixed

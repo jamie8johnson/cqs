@@ -94,6 +94,7 @@ src/
       commands.rs - BatchInput/BatchCmd parsing, dispatch router
       handlers.rs - Handler functions (one per command)
       pipeline.rs - Pipeline execution (pipe chaining via `|`)
+      types.rs    - Output types (ChunkOutput, normalize_path)
     config.rs   - Configuration file loading
     display.rs  - Output formatting, result display
     files.rs    - File enumeration, lock files, path utilities
