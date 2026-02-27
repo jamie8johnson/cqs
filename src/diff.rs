@@ -137,40 +137,44 @@ pub fn semantic_diff(
         }
     }
 
-    // Batch-fetch all embeddings upfront to avoid N+1 queries
-    let source_ids: Vec<&str> = matched_pairs.iter().map(|(s, _)| s.id.as_str()).collect();
-    let target_ids: Vec<&str> = matched_pairs.iter().map(|(_, t)| t.id.as_str()).collect();
+    // Batch-fetch embeddings in groups of ~1000 to bound memory usage.
+    // For 20k pairs at ~12 bytes/dim * 769 dims, each batch is ~9 MB instead of ~240 MB total.
+    const EMBEDDING_BATCH_SIZE: usize = 1000;
 
-    let source_embeddings = source_store.get_embeddings_by_ids(&source_ids)?;
-    let target_embeddings = target_store.get_embeddings_by_ids(&target_ids)?;
+    for batch in matched_pairs.chunks(EMBEDDING_BATCH_SIZE) {
+        let batch_source_ids: Vec<&str> = batch.iter().map(|(s, _)| s.id.as_str()).collect();
+        let batch_target_ids: Vec<&str> = batch.iter().map(|(_, t)| t.id.as_str()).collect();
 
-    // Compare embeddings for matched pairs using pre-fetched data
-    for (source_chunk, target_chunk) in &matched_pairs {
-        let source_emb = source_embeddings.get(&source_chunk.id);
-        let target_emb = target_embeddings.get(&target_chunk.id);
+        let source_embeddings = source_store.get_embeddings_by_ids(&batch_source_ids)?;
+        let target_embeddings = target_store.get_embeddings_by_ids(&batch_target_ids)?;
 
-        match (source_emb, target_emb) {
-            (Some(s_emb), Some(t_emb)) => {
-                let sim = full_cosine_similarity(s_emb.as_slice(), t_emb.as_slice());
-                if sim < threshold {
+        for (source_chunk, target_chunk) in batch {
+            let source_emb = source_embeddings.get(&source_chunk.id);
+            let target_emb = target_embeddings.get(&target_chunk.id);
+
+            match (source_emb, target_emb) {
+                (Some(s_emb), Some(t_emb)) => {
+                    let sim = full_cosine_similarity(s_emb.as_slice(), t_emb.as_slice());
+                    if sim < threshold {
+                        modified.push(DiffEntry {
+                            name: target_chunk.name.clone(),
+                            file: target_chunk.origin.clone(),
+                            chunk_type: target_chunk.chunk_type,
+                            similarity: Some(sim),
+                        });
+                    } else {
+                        unchanged_count += 1;
+                    }
+                }
+                _ => {
+                    // Can't compare — treat as modified
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
                         file: target_chunk.origin.clone(),
                         chunk_type: target_chunk.chunk_type,
-                        similarity: Some(sim),
+                        similarity: None,
                     });
-                } else {
-                    unchanged_count += 1;
                 }
-            }
-            _ => {
-                // Can't compare — treat as modified
-                modified.push(DiffEntry {
-                    name: target_chunk.name.clone(),
-                    file: target_chunk.origin.clone(),
-                    chunk_type: target_chunk.chunk_type,
-                    similarity: None,
-                });
             }
         }
     }

@@ -469,11 +469,12 @@ impl Store {
     pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
         self.rt.block_on(async {
             const MAX_CALL_GRAPH_EDGES: i64 = 500_000;
-            let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT caller_name, callee_name FROM function_calls LIMIT ?1")
-                    .bind(MAX_CALL_GRAPH_EDGES)
-                    .fetch_all(&self.pool)
-                    .await?;
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT ?1",
+            )
+            .bind(MAX_CALL_GRAPH_EDGES)
+            .fetch_all(&self.pool)
+            .await?;
 
             let mut forward: std::collections::HashMap<String, Vec<String>> =
                 std::collections::HashMap::new();

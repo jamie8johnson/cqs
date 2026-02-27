@@ -118,12 +118,14 @@ fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>> {
         return Ok(Vec::new());
     }
 
-    let names: Vec<&str> = hotspots.iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = hotspots.iter().map(|h| h.name.as_str()).collect();
     let risks = compute_risk_batch(&names, &graph, &test_chunks);
 
     let mut suggestions = Vec::new();
 
-    for (risk, (name, caller_count)) in risks.iter().zip(hotspots.iter()) {
+    for (risk, hotspot) in risks.iter().zip(hotspots.iter()) {
+        let name = &hotspot.name;
+        let caller_count = hotspot.caller_count;
         let mentions = vec![name.to_string()];
 
         // Untested hotspot: HOTSPOT_MIN_CALLERS+ callers, 0 tests

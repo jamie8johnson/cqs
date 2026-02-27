@@ -160,11 +160,7 @@ impl Reranker {
         }
 
         // 5. Sort descending by score, truncate
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
         results.truncate(limit);
 
         tracing::info!(reranked = results.len(), batch_size, "Re-ranking complete");

@@ -234,11 +234,7 @@ impl Store {
                 let fts_content = normalize_for_fts(&chunk.content);
                 let fts_doc = chunk.doc.as_ref().map(|d| normalize_for_fts(d)).unwrap_or_default();
 
-                sqlx::query("DELETE FROM chunks_fts WHERE id = ?1")
-                    .bind(&chunk.id)
-                    .execute(&mut *tx)
-                    .await?;
-
+                // No per-chunk FTS DELETE needed — bulk DELETE above already cleared all FTS for this origin
                 sqlx::query(
                     "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
                 )
@@ -555,47 +551,51 @@ impl Store {
         }
 
         self.rt.block_on(async {
-            // Batch query: get stored mtimes for these origins
-            let placeholders: String = (1..=origins.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT origin, source_mtime FROM chunks WHERE origin IN ({}) GROUP BY origin",
-                placeholders
-            );
-
-            let mut query = sqlx::query_as::<_, (String, Option<i64>)>(&sql);
-            for origin in origins {
-                query = query.bind(*origin);
-            }
-            let rows = query.fetch_all(&self.pool).await?;
-
             let mut stale = HashSet::new();
-            for (origin, stored_mtime) in rows {
-                let stored = match stored_mtime {
-                    Some(m) => m,
-                    None => {
-                        stale.insert(origin);
-                        continue;
-                    }
-                };
 
-                let path = root.join(&origin);
-                let current_mtime = path
-                    .metadata()
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64);
+            // Batch in groups of 900 to stay under SQLite's 999-parameter limit
+            const BATCH_SIZE: usize = 900;
+            for batch in origins.chunks(BATCH_SIZE) {
+                let placeholders: String = (1..=batch.len())
+                    .map(|i| format!("?{}", i))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT origin, source_mtime FROM chunks WHERE origin IN ({}) GROUP BY origin",
+                    placeholders
+                );
 
-                if let Some(current) = current_mtime {
-                    if current > stored {
+                let mut query = sqlx::query_as::<_, (String, Option<i64>)>(&sql);
+                for origin in batch {
+                    query = query.bind(*origin);
+                }
+                let rows = query.fetch_all(&self.pool).await?;
+
+                for (origin, stored_mtime) in rows {
+                    let stored = match stored_mtime {
+                        Some(m) => m,
+                        None => {
+                            stale.insert(origin);
+                            continue;
+                        }
+                    };
+
+                    let path = root.join(&origin);
+                    let current_mtime = path
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64);
+
+                    if let Some(current) = current_mtime {
+                        if current > stored {
+                            stale.insert(origin);
+                        }
+                    } else {
+                        // File deleted or inaccessible — treat as stale
                         stale.insert(origin);
                     }
-                } else {
-                    // File deleted or inaccessible — treat as stale
-                    stale.insert(origin);
                 }
             }
 

@@ -254,130 +254,25 @@ pub(super) fn dispatch_explain(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_explain", target).entered();
 
-    let resolved = cqs::resolve_target(&ctx.store, target)?;
-    let chunk = &resolved.chunk;
-
-    let callers = match ctx.store.get_callers_full(&chunk.name) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, name = chunk.name, "Failed to get callers in explain");
-            vec![]
-        }
-    };
-    let chunk_file = chunk.file.to_string_lossy();
-    let callees = match ctx.store.get_callees_full(&chunk.name, Some(&chunk_file)) {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::warn!(error = %e, name = chunk.name, "Failed to get callees in explain");
-            vec![]
-        }
-    };
-
-    // Similar (top 3)
-    let similar = match ctx.store.get_chunk_with_embedding(&chunk.id)? {
-        Some((_, embedding)) => {
-            let filter = cqs::SearchFilter {
-                note_weight: 0.0,
-                ..Default::default()
-            };
-            let index = ctx.vector_index()?;
-            let sim_results = ctx
-                .store
-                .search_filtered_with_index(&embedding, &filter, 4, 0.3, index)?;
-            sim_results
-                .into_iter()
-                .filter(|r| r.chunk.id != chunk.id)
-                .take(3)
-                .collect::<Vec<_>>()
-        }
-        None => vec![],
-    };
-
-    // Token budget: decide which content to include
-    let (include_target_content, similar_content_set, token_info) = if let Some(budget) = tokens {
-        let embedder = ctx.embedder()?;
-        let target_tokens =
-            crate::cli::commands::count_tokens(embedder, &chunk.content, &chunk.name);
-        let remaining = budget.saturating_sub(target_tokens);
-
-        let indexed: Vec<(usize, f32)> = similar
-            .iter()
-            .enumerate()
-            .map(|(i, r)| (i, r.score))
-            .collect();
-        let texts: Vec<&str> = indexed
-            .iter()
-            .map(|&(i, _)| similar[i].chunk.content.as_str())
-            .collect();
-        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-        let (packed, sim_used) =
-            crate::cli::commands::token_pack(indexed, &counts, remaining, 0, |&(_, score)| score);
-        let sim_included: std::collections::HashSet<String> = packed
-            .into_iter()
-            .map(|(i, _)| similar[i].chunk.id.clone())
-            .collect();
-
-        let used = target_tokens + sim_used;
-        (true, Some(sim_included), Some((used, budget)))
+    let index = ctx.vector_index()?;
+    let embedder = if tokens.is_some() {
+        Some(ctx.embedder()?)
     } else {
-        (false, None, None)
+        None
     };
 
-    let callers_json: Vec<_> = callers
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "name": c.name,
-                "file": c.file.to_string_lossy().replace('\\', "/"),
-                "line": c.line,
-            })
-        })
-        .collect();
+    let data = crate::cli::commands::explain::build_explain_data(
+        &ctx.store,
+        &ctx.cqs_dir,
+        target,
+        tokens,
+        Some(index),
+        embedder,
+    )?;
 
-    let callees_json: Vec<_> = callees
-        .iter()
-        .map(|(name, line)| serde_json::json!({"name": name, "line": line}))
-        .collect();
-
-    let similar_json: Vec<_> = similar
-        .iter()
-        .map(|r| {
-            let mut obj = serde_json::json!({
-                "name": r.chunk.name,
-                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
-                "score": r.score,
-            });
-            if let Some(ref set) = similar_content_set {
-                if set.contains(&r.chunk.id) {
-                    obj["content"] = serde_json::json!(r.chunk.content);
-                }
-            }
-            obj
-        })
-        .collect();
-
-    let rel_file = cqs::rel_display(&chunk.file, &ctx.root);
-
-    let mut output = serde_json::json!({
-        "name": chunk.name,
-        "file": rel_file,
-        "language": chunk.language.to_string(),
-        "chunk_type": chunk.chunk_type.to_string(),
-        "lines": [chunk.line_start, chunk.line_end],
-        "signature": chunk.signature,
-        "doc": chunk.doc,
-        "callers": callers_json,
-        "callees": callees_json,
-        "similar": similar_json,
-    });
-    if include_target_content {
-        output["content"] = serde_json::json!(chunk.content);
-    }
-    if let Some((used, budget)) = token_info {
-        output["token_count"] = serde_json::json!(used);
-        output["token_budget"] = serde_json::json!(budget);
-    }
-    Ok(output)
+    Ok(crate::cli::commands::explain::explain_to_json(
+        &data, &ctx.root,
+    ))
 }
 
 pub(super) fn dispatch_similar(
@@ -861,43 +756,20 @@ pub(super) fn dispatch_context(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_context", path).entered();
 
-    let chunks = ctx.store.get_chunks_by_origin(path)?;
-    if chunks.is_empty() {
-        anyhow::bail!(
-            "No indexed chunks found for '{}'. Is the file indexed?",
-            path
-        );
-    }
-
     if compact {
-        let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = ctx.store.get_caller_counts_batch(&names)?;
-        let callee_counts = ctx.store.get_callee_counts_batch(&names)?;
-
-        let entries: Vec<_> = chunks
-            .iter()
-            .map(|c| {
-                let cc = caller_counts.get(&c.name).copied().unwrap_or(0);
-                let ce = callee_counts.get(&c.name).copied().unwrap_or(0);
-                serde_json::json!({
-                    "name": c.name,
-                    "chunk_type": c.chunk_type.to_string(),
-                    "signature": c.signature,
-                    "lines": [c.line_start, c.line_end],
-                    "caller_count": cc,
-                    "callee_count": ce,
-                })
-            })
-            .collect();
-
-        return Ok(serde_json::json!({
-            "file": path,
-            "chunks": entries,
-            "total": entries.len(),
-        }));
+        let data = crate::cli::commands::context::build_compact_data(&ctx.store, path)?;
+        return Ok(crate::cli::commands::context::compact_to_json(&data, path));
     }
 
     if summary {
+        // Batch summary is a simpler aggregation (total counts, no per-caller detail)
+        let chunks = ctx.store.get_chunks_by_origin(path)?;
+        if chunks.is_empty() {
+            anyhow::bail!(
+                "No indexed chunks found for '{}'. Is the file indexed?",
+                path
+            );
+        }
         let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
         let caller_counts = ctx.store.get_caller_counts_batch(&names)?;
         let callee_counts = ctx.store.get_callee_counts_batch(&names)?;
@@ -913,37 +785,27 @@ pub(super) fn dispatch_context(
     }
 
     // Full context — with optional token packing
+    let chunks = ctx.store.get_chunks_by_origin(path)?;
+    if chunks.is_empty() {
+        anyhow::bail!(
+            "No indexed chunks found for '{}'. Is the file indexed?",
+            path
+        );
+    }
+
     let (chunks, token_info) = if let Some(budget) = tokens {
         let embedder = ctx.embedder()?;
         let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
         let caller_counts = ctx.store.get_caller_counts_batch(&names)?;
-
-        let indexed: Vec<(usize, f32)> = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
-                let cc = caller_counts.get(&c.name).copied().unwrap_or(0) as f32;
-                (i, cc)
-            })
-            .collect();
-        let texts: Vec<&str> = indexed
-            .iter()
-            .map(|&(i, _)| chunks[i].content.as_str())
-            .collect();
-        let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
-        let (packed, used) = crate::cli::commands::token_pack(
-            indexed,
-            &counts,
+        let (included, used) = crate::cli::commands::context::pack_by_relevance(
+            &chunks,
+            &caller_counts,
             budget,
-            crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
-            |&(_, cc)| cc,
+            embedder,
         );
-        let keep: std::collections::HashSet<usize> = packed.into_iter().map(|(i, _)| i).collect();
         let filtered: Vec<_> = chunks
             .into_iter()
-            .enumerate()
-            .filter(|(i, _)| keep.contains(i))
-            .map(|(_, c)| c)
+            .filter(|c| included.contains(&c.name))
             .collect();
         (filtered, Some((used, budget)))
     } else {
@@ -1313,33 +1175,7 @@ pub(super) fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
     let file_set = ctx.file_set()?;
     let report = cqs::health::health_check(&ctx.store, file_set, &ctx.cqs_dir)?;
 
-    let hotspots_json: Vec<_> = report
-        .hotspots
-        .iter()
-        .map(|(name, count)| serde_json::json!({"name": name, "caller_count": count}))
-        .collect();
-
-    let untested_json: Vec<_> = report
-        .untested_hotspots
-        .iter()
-        .map(|(name, count)| serde_json::json!({"name": name, "caller_count": count}))
-        .collect();
-
-    Ok(serde_json::json!({
-        "stats": {
-            "total_chunks": report.stats.total_chunks,
-            "total_files": report.stats.total_files,
-        },
-        "stale_count": report.stale_count,
-        "missing_count": report.missing_count,
-        "dead_confident": report.dead_confident,
-        "dead_possible": report.dead_possible,
-        "hotspots": hotspots_json,
-        "untested_hotspots": untested_json,
-        "note_count": report.note_count,
-        "note_warnings": report.note_warnings,
-        "warnings": report.warnings,
-    }))
+    Ok(serde_json::to_value(&report)?)
 }
 
 pub(super) fn dispatch_drift(

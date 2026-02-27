@@ -29,7 +29,8 @@ pub(crate) fn open_project_store(
         anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
     }
 
-    let store = cqs::Store::open(&index_path)?;
+    let store = cqs::Store::open(&index_path)
+        .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))?;
     Ok((store, root, cqs_dir))
 }
 

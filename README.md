@@ -375,7 +375,7 @@ Key commands (all support `--json`):
 - `cqs audit-mode on/off` - toggle audit mode (exclude notes from search/read)
 - `cqs similar <function>` - find functions similar to a given function
 - `cqs explain <function>` - function card: signature, callers, callees, similar
-- `cqs diff --source <ref>` - semantic diff between indexed snapshots
+- `cqs diff <ref>` - semantic diff between indexed snapshots
 - `cqs drift <ref>` - semantic drift: functions that changed most between reference and project
 - `cqs trace <source> <target>` - follow call chain (BFS shortest path)
 - `cqs impact <function>` - what breaks if you change X? Callers + affected tests

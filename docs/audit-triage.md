@@ -1,118 +1,93 @@
-# Audit Triage — v0.14.0
+# Audit Triage — v0.19.0
 
-Generated: 2026-02-22
+Generated: 2026-02-27
 
 ## Summary
 
-- **Total findings:** 61 (16 Batch 1 + 26 Batch 2 + 19 Batch 3)
-- **Red team:** 4 categories, 3 actionable findings, filesystem boundaries fully verified clean
-- **Batches:** 3 (Code Quality/Docs/API/EH/Obs, Tests/Algo/Ext/Platform, Red Team + Performance)
+- **Total findings:** ~123 (41 Batch 1 + 43 Batch 2 + 39 Batch 3)
+- **14 categories** across 3 batches
+- **Findings detail lost** — agents wrote findings but file reverted during context compaction. This triage covers the P1+P2 items that were identified, triaged, and fixed.
+- **Prior audit (v0.14.0):** archived as `audit-triage-v0.19.0-pre.md`
 
 ## P1: Easy + High Impact — Fix Immediately
 
+All P1 items fixed.
+
 | # | Finding | Difficulty | Location | Status |
 |---|---------|-----------|----------|--------|
-| 1 | **AD-4**: risk_level Debug vs Display (PascalCase vs lowercase in JSON) | easy | task.rs:255, cli/commands/task.rs:357 | ✅ fixed |
-| 2 | **AC-1/AC-2**: Waterfall surplus overflow — token_count > token_budget | medium | cli/commands/task.rs:81-195 | ✅ fixed |
-| 3 | **RT-DATA-5**: HNSW search NaN scores corrupt sort order | easy | hnsw/search.rs:49 | ✅ fixed |
-| 4 | **RT-DATA-1**: Failed HNSW rebuild leaves stale .bin — silent result shrinkage | easy | cli/watch.rs:202-212 | ✅ fixed |
-| 5 | **EH-1**: scout_with_options hard-fails on find_test_chunks (task degrades) | easy | scout.rs:127 | ✅ fixed |
-| 6 | **EH-3**: unwrap() after is_none() guard — violates no-unwrap convention | easy | batch/handlers.rs:1037,1124 | ✅ fixed |
-| 7 | **CQ-1**: task_to_json duplicates notes in JSON output | easy | task.rs:227-322 | ✅ fixed |
-| 8 | **AC-4**: dedup_tests by name only — same-name tests in different files collapse | easy | task.rs:184-192 | ✅ fixed |
-| 9 | **AC-6**: compute_modify_threshold returns 0.0 when all test chunks — everything becomes ModifyTarget | easy | scout.rs:309-317 | ✅ fixed |
+| 1 | **AC-1/AC-2/PF-5**: `partial_cmp().unwrap_or(Equal)` — use `f32::total_cmp()` for NaN-safe sorting | easy | 11 sites across 8 files (drift.rs, gather.rs, onboard.rs, search.rs, project.rs, reranker.rs, reference.rs, cli/commands/mod.rs) | ✅ fixed |
+| 2 | **RB-1**: `first_sentence_or_truncate` panics on multibyte UTF-8 (`doc[..150]` can split codepoint) | easy | nl.rs:543 | ✅ fixed |
+| 3 | **DOC-1**: `cqs diff --source <ref>` documented but `--source` flag doesn't exist (correct: `cqs diff <ref>`) | easy | CLAUDE.md, README.md, cqs-bootstrap SKILL.md | ✅ fixed |
+| 4 | **DS-8**: `check_origins_stale` builds unbounded SQL placeholders — hits SQLite 999-param limit on large projects | easy | store/chunks.rs:548 | ✅ fixed |
+| 5 | **EH-3**: `open_project_store` bare `Store::open` error lacks path context | easy | cli/mod.rs:32 | ✅ fixed |
+| 6 | **EH-8**: Batch REPL `let _ = writeln!()` silently swallows broken pipe — should break loop | easy | cli/batch/mod.rs (5 sites) | ✅ fixed |
+| 7 | **OB-9**: `gc` command `count_stale_files` error swallowed by `unwrap_or((0,0))` | easy | cli/commands/gc.rs:32 | ✅ fixed |
+| 8 | **SEC-1/PB-2**: `config.rs` uses predictable `"toml.tmp"` temp file name | easy | config.rs:329,395 | ✅ fixed |
+| 9 | **SEC-8**: `audit.rs` uses predictable `"json.tmp"` temp file name | easy | audit.rs:114 | ✅ fixed |
+| 10 | **PF-10**: `get_call_graph` returns duplicate edges — missing `DISTINCT` | easy | store/calls.rs:473 | ✅ fixed |
+| 11 | **PF-6**: `replace_file_chunks` does redundant per-chunk `DELETE FROM chunks_fts` after bulk origin DELETE | easy | store/chunks.rs:237 | ✅ fixed |
+| 12 | **SEC-7**: Webhelp zip-slip vulnerability | easy | convert/ | ❌ false positive (walks directories, not archives) |
 
 ## P2: Medium Effort + High Impact — Fix in Batch
 
-| # | Finding | Difficulty | Location | Status |
-|---|---------|-----------|----------|--------|
-| 1 | **CQ-2**: JSON serialization duplicated 3-6x (root cause of AD-4) | medium | task.rs, cli/commands/task.rs, batch/handlers.rs, gather.rs, impact/format.rs | ✅ fixed |
-| 2 | **CQ-3/RT-RES-9**: dispatch_task bypasses BatchContext caches | easy | batch/handlers.rs:1446-1496 | ✅ fixed |
-| 3 | **CQ-4/EH-5**: Batch dispatch_task token budgeting diverges from CLI waterfall | medium | batch/handlers.rs:1459 vs cli/commands/task.rs:67-228 | ✅ fixed |
-| 4 | **RT-DATA-4**: Batch call_graph cache inconsistent with task() fresh load | medium | batch/mod.rs:173-182 | ✅ fixed |
-| 5 | **PF-1**: Re-embed query in placement phase — redundant ONNX inference | medium | task.rs:136, where_to_add.rs:115 | ✅ fixed |
-| 6 | **PF-2**: Duplicate reverse_bfs across impact and test discovery | medium | task.rs:124,132 | ✅ fixed |
-| 7 | **EX-1**: Waterfall percentages as magic numbers in 5+ locations | easy | cli/commands/task.rs:84,106,117,160,184 | ✅ fixed |
-| 8 | **TC-1/TC-9**: task() and cqs task have no integration tests | medium | task.rs, cli_commands_test.rs | ✅ fixed |
-| 9 | **TC-7**: Retrieval metrics have no unit tests | medium | tests/model_eval.rs:1244-1407 | ✅ fixed |
-
-## P3: Easy + Low Impact — Fix If Time
+9 of 22 items fixed by parallel agents. 11 deferred as larger refactors. 2 not addressed.
 
 | # | Finding | Difficulty | Location | Status |
 |---|---------|-----------|----------|--------|
-| 1 | **AD-1**: TaskResult/TaskSummary missing Debug/Clone derives | easy | task.rs:20-45 | ✅ fixed |
-| 2 | **AD-2**: ScoutChunk/FileGroup/ScoutSummary/ScoutResult missing derives | easy | scout.rs:26-70 | ✅ fixed |
-| 3 | **AD-3**: PlacementResult/FileSuggestion etc missing derives | easy | where_to_add.rs:21-53, scout.rs:84 | ✅ fixed |
-| 4 | **AD-5**: ScoutChunk u64 vs usize for counts | easy | scout.rs:38-40 | ✅ fixed |
-| 5 | **OB-1**: compute_modify_threshold result not logged | easy | scout.rs:308 | ✅ fixed |
-| 6 | **OB-2**: scout_core missing search result count in logs | easy | scout.rs:154-299 | ✅ fixed |
-| 7 | **OB-3**: dispatch_task batch token budgeting not logged | easy | batch/handlers.rs:1460-1493 | ✅ fixed (P2) |
-| 8 | **EH-2**: dispatch_test_map unwrap_or_default without tracing | easy | batch/handlers.rs:644-647 | ✅ fixed |
-| 9 | **EH-4/PB-2**: scout_core to_str().unwrap_or("") — empty string for non-UTF8 | easy | scout.rs:202,223 | ✅ fixed |
-| 10 | **AC-3**: index_pack includes first item with budget=0 | easy | cli/commands/task.rs:56 | ✅ fixed |
-| 11 | **AC-5**: compute_modify_threshold doc inaccuracy (tied scores) | easy | scout.rs:336-337 | ✅ fixed |
-| 12 | **CQ-5**: print_code_section_idx double-iterates content lines | easy | cli/commands/task.rs:554-559 | ✅ fixed |
-| 13 | **PF-4**: Waterfall budgeting clones code content strings unnecessarily | easy | cli/commands/task.rs:107 | ✅ fixed |
-| 14 | **PF-6**: dispatch_task serializes all code then overwrites with budgeted subset | easy | batch/handlers.rs:1457,1490 | ✅ fixed (P2) |
-| 15 | **EX-3**: ChunkRole string serialization duplicated in 4 match arms | easy | scout.rs:411, cli/commands/task.rs:297,515, cli/commands/scout.rs:132 | ✅ fixed |
-| 16 | **RT-DATA-6**: partial_cmp unwrap_or(Equal) — use f32::total_cmp instead | easy | store/mod.rs:674, store/notes.rs:164, diff.rs:181, search.rs:714 | ✅ fixed |
-| 17 | **RT-INJ-9**: cmd_ref_add validates name late — confusing error | easy | cli/commands/reference.rs:64-89 | ✅ fixed |
-| 18 | **RT-RES-3**: --tokens 0 emits content despite zero budget | easy | cli/commands/task.rs:56 | ✅ fixed |
-| 19 | **RT-RES-8**: dispatch_test_map chain loop lacks iteration bound | easy | batch/handlers.rs:638-648 | ✅ fixed |
-| 20 | **TC-4**: compute_modify_threshold untested with all-test-chunk inputs | easy | scout.rs:308-341 | ✅ fixed |
-| 21 | **TC-6**: classify_role untested at exact threshold with test names | easy | scout.rs:344-352 | ✅ fixed |
-| 22 | **TC-8**: index_pack untested with zero budget | easy | cli/commands/task.rs:36-64 | ✅ fixed |
-| 23 | **TC-10**: note_mention_matches_file untested with empty strings | easy | scout.rs:383-391 | ✅ fixed |
-| 24 | **RT-INJ-4**: validate_ref_name doesn't reject null bytes | easy | reference.rs:209-220 | ✅ fixed |
-| 25 | **RT-DATA-7**: rewrite_notes_file reads from separate fd while holding lock | easy | note.rs:185-222 | ✅ fixed |
+| 1 | **EX-1/EX-8**: ChunkType Display/FromStr/error duplicated in 4 manual match blocks — use `define_chunk_types!` macro | medium | language/mod.rs | ✅ fixed |
+| 2 | **RB-2**: Embedder `embed_batch_inner` missing seq_len and total data length validation | medium | embedder.rs | ✅ fixed |
+| 3 | **OB-3**: Pipeline missing elapsed time logging | easy | cli/pipeline.rs | ✅ fixed |
+| 4 | **DS-1/DS-6**: Watch mode reindex cycle has no index lock — concurrent writes possible | medium | cli/watch.rs | ✅ fixed |
+| 5 | **DS-2**: Watch `reindex_files` not atomic — chunk and call graph can diverge | medium | cli/watch.rs | ✅ fixed |
+| 6 | **CQ-2**: `explain` CLI/batch duplicates ~130 lines of JSON assembly | medium | cli/commands/explain.rs, cli/batch/handlers.rs | ✅ fixed |
+| 7 | **CQ-3**: `context` CLI/batch duplicates ~120 lines of JSON assembly | medium | cli/commands/context.rs, cli/batch/handlers.rs | ✅ fixed |
+| 8 | **AD-8**: `HealthReport` missing `Serialize` derive — CLI/batch hand-assembles JSON | medium | health.rs, impact/hints.rs, suggest.rs, cli/commands/health.rs, cli/batch/handlers.rs, language/mod.rs, store/helpers.rs, tests/cli_health_test.rs | ✅ fixed |
+| 9 | **RM-3**: `semantic_diff` loads all embeddings at once — O(N) peak memory | medium | diff.rs | ✅ fixed |
+| 10 | **AD-1**: Inconsistent `String` vs `PathBuf` for file paths across result types | medium | multiple | deferred |
+| 11 | **AD-5**: Error types inconsistent — some use `StoreError`, others `anyhow` | medium | multiple | deferred |
+| 12 | **CQ-5**: Pipeline stage extraction — complex match arms in single function | medium | cli/pipeline.rs | deferred |
+| 13 | **CQ-6**: Batch JSON output structs — manual `serde_json::json!` assembly | medium | cli/batch/handlers.rs | deferred |
+| 14 | **EH-5**: `.context()` sweep — bare `?` on store operations across CLI | medium | multiple | deferred |
+| 15 | **PF-1**: Multi-row INSERT for batch upserts | medium | store/chunks.rs | deferred |
+| 16 | **PF-9**: FTS normalization redundantly computed on unchanged content | easy | store/chunks.rs | deferred |
+| 17 | **RM-8**: Parallel reference loading in multi-ref search | medium | reference.rs | deferred |
+| 18 | **EX-6**: Config expansion — adding config fields requires touching 4 locations | medium | config.rs | deferred |
+| 19 | **AC-5**: `bfs_expand` revisits nodes when called with overlapping seeds | easy | gather.rs | deferred |
+| 20 | **AC-8**: HNSW candidate multiplier hardcoded — suboptimal for varying index sizes | easy | hnsw/ | deferred |
 
-## P4: Hard or Low Impact — Create Issues
+## P3/P4: Not Addressed This Audit
 
-| # | Finding | Difficulty | Location | Status |
-|---|---------|-----------|----------|--------|
-| 1 | **EH-6**: AnalysisError lacks general phase failure variant | easy | lib.rs:142-149 | ✅ fixed |
-| 2 | **EX-2**: Task BFS gather params hardcoded inline | easy | task.rs:103-106 | ✅ fixed |
-| 3 | **EX-4**: task() test depth hardcoded to 5 | easy | task.rs:186 | ✅ already named const (DEFAULT_MAX_TEST_SEARCH_DEPTH) |
-| 4 | **EX-5**: Batch dispatch requires 3-4 file changes per command | easy | batch/ | ✅ accepted (match-arm dispatch is explicit, test validates completeness) |
-| 5 | **EX-6**: MIN_GAP_RATIO not exposed in ScoutOptions | easy | scout.rs:75 | ✅ fixed |
-| 6 | **EX-7**: TaskResult fixed struct — adding section touches 7 locations | medium | task.rs:20-35 | ✅ accepted (flat struct is simple + type-safe for 6 sections) |
-| 7 | **TC-2**: dedup_tests tested via simulation, not actual function | easy | task.rs:534-571 | ✅ accepted (dedup is inline in compute_risk_and_tests, tested via integration) |
-| 8 | **TC-3**: task_to_json tests check structure but not values | easy | task.rs:465-495 | ✅ fixed |
-| 9 | **TC-5**: scout_core() has no integration test | medium | scout.rs:145-299 | ✅ deferred (needs Store setup harness) |
-| 10 | **TC-11**: Waterfall surplus forwarding logic untested | medium | cli/commands/task.rs:84-184 | ✅ fixed |
-| 11 | **PB-1**: is_test_chunk forward-slash only patterns | easy | lib.rs:201-207 | ✅ fixed |
-| 12 | **PF-3**: scout_core calls reverse_bfs per chunk (15x BFS) | medium | scout.rs:228-233 | ✅ accepted (N=15, depth=3, acceptable at current scale) |
-| 13 | **PF-5**: find_relevant_notes O(N*M*F) with per-call allocations | easy | scout.rs:368-375 | ✅ accepted (N<50, M<3, F<10, <1500 iterations) |
-| 14 | **RT-DATA-2**: GC orphan vectors between prune and rebuild | low | cli/commands/gc.rs:35-51 | ✅ fixed (delete stale HNSW before prune) |
-| 15 | **RT-DATA-3**: Watch reindex + concurrent search sees partial state | low | cli/watch.rs:190 | ✅ documented (transient, self-heals) |
-| 16 | **RT-DATA-8**: Embedding::new() bypasses dimension validation | easy | embedder.rs:87-89 | ✅ fixed (warn on mismatch) |
-| 17 | **RT-INJ-7**: CQS_PDF_SCRIPT .py extension check not implemented (SEC-8 gap) | easy | convert/pdf.rs:54-63 | ✅ fixed |
-| 18 | **RT-RES-1**: Pipeline intermediate merge unbounded before truncation | easy | batch/pipeline.rs:260-275 | ✅ fixed |
+~86 additional findings across P3 (easy+low impact) and P4 (hard/low impact) were identified by audit agents but the detailed findings were lost during context compaction. These categories were covered:
 
-**Also fixed:** Flaky `test_build_batched_search_quality` in hnsw_test.rs (bumped search k from 5 to 15 — ANN recall on small batched builds is approximate).
+- Code Quality, Documentation, API Design, Error Handling, Observability (Batch 1)
+- Test Coverage, Robustness, Algorithm Correctness, Extensibility, Platform Behavior (Batch 2)
+- Security, Data Safety, Performance, Resource Management (Batch 3)
 
-## Red Team Summary
+If a future audit is needed, re-running will re-discover these items. The P1+P2 fixes above addressed the highest-value findings.
 
-| Category | Targets Examined | Findings | Clean |
-|---|---|---|---|
-| RT-INJ (Input Injection) | 9 | 2 low + 1 UX | 6 verified safe |
-| RT-FS (Filesystem Boundary) | 5 | 0 | 5 verified safe |
-| RT-RES (Adversarial Robustness) | 13 | 1 medium + 2 low | 8 verified safe, 2 cross-refs |
-| RT-DATA (Silent Data Corruption) | 9 | 3 medium + 4 low | 1 verified safe |
+## Changes Summary
 
-**Strongest defenses:** FTS5 sanitization (all paths covered), path traversal (all paths covered), graph cycle handling (all 5 BFS implementations have visited sets), batch line limits, tokenizer truncation.
+### P1 Fixes (12 items, 1 false positive)
 
-**Weakest area:** Data integrity under concurrent access and cache consistency in batch mode.
+- **NaN-safe sorting**: Replaced `partial_cmp().unwrap_or(Equal)` with `f32::total_cmp()` across 11 sort sites
+- **UTF-8 safety**: `floor_char_boundary(150)` before byte-slicing doc strings
+- **Security**: PID+timestamp temp file names in config.rs and audit.rs (matches existing note.rs/project.rs pattern)
+- **SQL safety**: Batched `check_origins_stale` in groups of 900 (SQLite 999-param limit)
+- **Performance**: `SELECT DISTINCT` in `get_call_graph`, removed redundant per-chunk FTS DELETE
+- **Error handling**: Store open path context, gc count warn, batch REPL broken-pipe detection
+- **Docs**: Corrected `cqs diff` syntax in 3 files
 
-## Cross-References
+### P2 Fixes (9 items by parallel agents)
 
-| Finding | Cross-ref | Note |
-|---|---|---|
-| CQ-4/EH-5 | Same issue | Batch vs CLI waterfall divergence |
-| CQ-3/RT-RES-9 | Same issue | dispatch_task bypasses BatchContext cache |
-| AC-1/RT-RES-13 | Same issue | Waterfall surplus overflow |
-| AC-3/RT-RES-3 | Related | index_pack budget=0 behavior |
-| AD-4/CQ-2/EX-3 | Related chain | Debug format → JSON duplication → ChunkRole duplication |
-| EH-4/PB-2 | Related | to_str vs to_string_lossy inconsistency |
-| RT-DATA-5/RT-DATA-6 | Related | NaN in HNSW → corrupt sorting |
-| PF-1 | Related to CQ-3 | Both involve redundant work in task() |
+- **`define_chunk_types!` macro**: Eliminated 4 manual match blocks for ChunkType (language/mod.rs)
+- **Embedder validation**: seq_len and data length bounds checks (embedder.rs)
+- **Pipeline timing**: Elapsed time in final tracing log (pipeline.rs)
+- **Watch locking**: `acquire_index_lock()` with `try_lock()` before reindex cycles (watch.rs)
+- **Atomic transactions**: `upsert_chunks_and_calls()` for chunk+call graph atomicity (watch.rs)
+- **CLI/batch dedup**: Shared `pub(crate)` core functions for `explain` and `context` (-284 lines)
+- **HealthReport Serialize**: Proper derive chain with `Hotspot` struct, eliminated ~50 lines of hand-assembled JSON
+- **Diff batching**: Embedding loading in batches of 1000 pairs (peak memory ~9MB vs ~240MB)
+
+### Test Results
+
+1212 pass, 0 fail, 35 ignored. No warnings.

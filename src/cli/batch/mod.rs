@@ -284,8 +284,9 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         if line.len() > MAX_BATCH_LINE_LEN {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
             let error_json = serde_json::json!({"error": "Line too long (max 1MB)"});
-            // Note: serde_json::to_string on Value is infallible
-            let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
+            if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap()).is_err() {
+                break;
+            }
             let _ = stdout.flush();
             continue;
         }
@@ -308,7 +309,9 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
             Err(e) => {
                 ctx.error_count.fetch_add(1, Ordering::Relaxed);
                 let error_json = serde_json::json!({"error": format!("Parse error: {}", e)});
-                let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
+                if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap()).is_err() {
+                    break;
+                }
                 let _ = stdout.flush();
                 continue;
             }
@@ -321,24 +324,35 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         // Pipeline detection: if tokens contain a standalone `|`, route to pipeline
         if pipeline::has_pipe_token(&tokens) {
             let result = pipeline::execute_pipeline(&ctx, &tokens, trimmed);
-            let _ = writeln!(stdout, "{}", serde_json::to_string(&result).unwrap());
+            if writeln!(stdout, "{}", serde_json::to_string(&result).unwrap()).is_err() {
+                break;
+            }
         } else {
             // Single command — existing path
             match commands::BatchInput::try_parse_from(&tokens) {
                 Ok(input) => match commands::dispatch(&ctx, input.cmd) {
                     Ok(value) => {
-                        let _ = writeln!(stdout, "{}", serde_json::to_string(&value).unwrap());
+                        if writeln!(stdout, "{}", serde_json::to_string(&value).unwrap()).is_err() {
+                            break;
+                        }
                     }
                     Err(e) => {
                         ctx.error_count.fetch_add(1, Ordering::Relaxed);
                         let error_json = serde_json::json!({"error": format!("{}", e)});
-                        let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
+                        if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap())
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                 },
                 Err(e) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
                     let error_json = serde_json::json!({"error": format!("{}", e)});
-                    let _ = writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap());
+                    if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap()).is_err()
+                    {
+                        break;
+                    }
                 }
             }
         }

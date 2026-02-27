@@ -29,7 +29,13 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let file_set: HashSet<_> = files.into_iter().collect();
 
     // Count what we'll clean before doing it
-    let (stale_count, missing_count) = store.count_stale_files(&file_set).unwrap_or((0, 0));
+    let (stale_count, missing_count) = match store.count_stale_files(&file_set) {
+        Ok(counts) => counts,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to count stale files");
+            (0, 0)
+        }
+    };
 
     // Count chunks to prune before deleting HNSW
     let pruned_chunks = store.prune_missing(&file_set)?;

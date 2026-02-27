@@ -224,11 +224,7 @@ pub fn search_across_projects(
     }
 
     // Sort by score descending, take top N
-    all_results.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
     all_results.truncate(limit);
 
     Ok(all_results)

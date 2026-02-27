@@ -560,7 +560,7 @@ impl Default for ModelInfo {
 ///
 /// Provides overview information about the indexed codebase.
 /// Retrieved via `Store::stats()`.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct IndexStats {
     /// Total number of code chunks indexed
     pub total_chunks: u64,

@@ -65,7 +65,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs read --focus <function>` — focused read: function + type dependencies only. Saves tokens.
 - `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
 - `cqs explain <function>` — function card: signature, callers, callees, similar. Collapses 4+ lookups into 1.
-- `cqs diff --source <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
+- `cqs diff <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
 - `cqs drift <ref>` — semantic drift detection: functions that changed most between reference and project. `--min-drift 0.1` to filter noise.
 - `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion. `--ref name` for cross-index: seeds from reference, bridges into project code.
 - `cqs dead` — find dead code: functions/methods with no callers in the index.

@@ -55,7 +55,8 @@ macro_rules! define_languages {
         )+
 
         /// Supported programming languages
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+        #[serde(rename_all = "lowercase")]
         pub enum Language {
             $(
                 $(#[doc = $doc])*
@@ -201,7 +202,8 @@ pub enum SignatureStyle {
 }
 
 /// Type of code element extracted by the parser
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ChunkType {
     /// Standalone function
     Function,

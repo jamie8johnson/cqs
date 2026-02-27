@@ -20,30 +20,7 @@ pub(crate) fn cmd_health(json: bool) -> Result<()> {
     let report = cqs::health::health_check(&store, &file_set, &cqs_dir)?;
 
     if json {
-        let json_val = serde_json::json!({
-            "total_chunks": report.stats.total_chunks,
-            "total_files": report.stats.total_files,
-            "stale_files": report.stale_count,
-            "missing_files": report.missing_count,
-            "dead_code": {
-                "confident": report.dead_confident,
-                "possible": report.dead_possible,
-            },
-            "hotspots": report.hotspots.iter()
-                .map(|(name, count)| serde_json::json!({"name": name, "callers": count}))
-                .collect::<Vec<_>>(),
-            "untested_hotspots": report.untested_hotspots.iter()
-                .map(|(name, count)| serde_json::json!({"name": name, "callers": count}))
-                .collect::<Vec<_>>(),
-            "notes": {
-                "total": report.note_count,
-                "warnings": report.note_warnings,
-            },
-            "hnsw_vectors": report.hnsw_vectors,
-            "schema_version": report.stats.schema_version,
-            "model": report.stats.model_name,
-            "warnings": report.warnings,
-        });
+        let json_val = serde_json::to_value(&report)?;
         println!("{}", serde_json::to_string_pretty(&json_val)?);
     } else {
         // Dashboard display
@@ -109,8 +86,8 @@ pub(crate) fn cmd_health(json: bool) -> Result<()> {
         if !report.hotspots.is_empty() {
             println!();
             println!("{}:", "Top hotspots".cyan());
-            for (name, count) in &report.hotspots {
-                println!("  {} ({} callers)", name, count);
+            for h in &report.hotspots {
+                println!("  {} ({} callers)", h.name, h.caller_count);
             }
         }
 
@@ -122,8 +99,13 @@ pub(crate) fn cmd_health(json: bool) -> Result<()> {
                 "Untested hotspots".red().bold(),
                 report.untested_hotspots.len()
             );
-            for (name, count) in &report.untested_hotspots {
-                println!("  {} ({} callers, {} tests)", name, count, "0".red());
+            for h in &report.untested_hotspots {
+                println!(
+                    "  {} ({} callers, {} tests)",
+                    h.name,
+                    h.caller_count,
+                    "0".red()
+                );
             }
         }
 

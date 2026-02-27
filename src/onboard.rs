@@ -200,11 +200,7 @@ pub fn onboard(
 
     let (mut caller_chunks, _) = fetch_and_assemble(store, &caller_scores, root);
     // Sort callers by score desc
-    caller_chunks.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    caller_chunks.sort_by(|a, b| b.score.total_cmp(&a.score));
     let callers: Vec<OnboardEntry> = caller_chunks.into_iter().map(gathered_to_onboard).collect();
 
     // 7. Type dependencies — filter common types
@@ -332,11 +328,9 @@ fn fetch_entry_point(
             // Prefer match from scout's file
             let a_file_match = a.chunk.file.ends_with(entry_file);
             let b_file_match = b.chunk.file.ends_with(entry_file);
-            a_file_match.cmp(&b_file_match).then_with(|| {
-                a.score
-                    .partial_cmp(&b.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            a_file_match
+                .cmp(&b_file_match)
+                .then_with(|| a.score.total_cmp(&b.score))
         })
         .or_else(|| {
             // Fallback: any result from the expected file

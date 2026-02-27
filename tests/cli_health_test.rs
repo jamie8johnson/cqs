@@ -132,40 +132,48 @@ fn test_health_cli_json() {
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Invalid JSON: {} -- raw: {}", e, stdout));
 
-    // Verify expected top-level fields
+    // Verify expected fields (HealthReport derives Serialize directly)
     assert!(
-        parsed["total_chunks"].is_number(),
-        "health --json should have total_chunks"
+        parsed["stats"]["total_chunks"].is_number(),
+        "health --json should have stats.total_chunks"
     );
     assert!(
-        parsed["total_files"].is_number(),
-        "health --json should have total_files"
+        parsed["stats"]["total_files"].is_number(),
+        "health --json should have stats.total_files"
     );
     assert!(
-        parsed["dead_code"].is_object(),
-        "health --json should have dead_code object"
+        parsed["dead_confident"].is_number(),
+        "health --json should have dead_confident"
+    );
+    assert!(
+        parsed["dead_possible"].is_number(),
+        "health --json should have dead_possible"
     );
     assert!(
         parsed["hotspots"].is_array(),
         "health --json should have hotspots array"
     );
     assert!(
-        parsed["notes"].is_object(),
-        "health --json should have notes object"
+        parsed["note_count"].is_number(),
+        "health --json should have note_count"
     );
     assert!(
-        parsed["schema_version"].is_number(),
-        "health --json should have schema_version"
+        parsed["note_warnings"].is_number(),
+        "health --json should have note_warnings"
     );
     assert!(
-        parsed["model"].is_string(),
-        "health --json should have model string"
+        parsed["stats"]["schema_version"].is_number(),
+        "health --json should have stats.schema_version"
+    );
+    assert!(
+        parsed["stats"]["model_name"].is_string(),
+        "health --json should have stats.model_name"
     );
 
     // Verify total_chunks > 0 (we indexed real files)
-    let total_chunks = parsed["total_chunks"]
+    let total_chunks = parsed["stats"]["total_chunks"]
         .as_u64()
-        .expect("total_chunks should be a number");
+        .expect("stats.total_chunks should be a number");
     assert!(
         total_chunks > 0,
         "total_chunks should be > 0 after indexing, got {}",

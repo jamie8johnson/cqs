@@ -540,7 +540,8 @@ fn truncate_doc(doc: &str) -> String {
     }
     // No sentence boundary — truncate at 150 chars
     if doc.len() > 150 {
-        let boundary = doc[..150].rfind(' ').unwrap_or(150);
+        let boundary = doc.floor_char_boundary(150);
+        let boundary = doc[..boundary].rfind(' ').unwrap_or(boundary);
         format!("{}...", &doc[..boundary])
     } else {
         doc.to_string()

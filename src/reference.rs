@@ -174,12 +174,7 @@ pub fn merge_results(
     }
 
     // Sort by score descending (highest first)
-    tagged.sort_by(|a, b| {
-        b.result
-            .score()
-            .partial_cmp(&a.result.score())
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    tagged.sort_by(|a, b| b.result.score().total_cmp(&a.result.score()));
 
     // Deduplicate code results by content hash (keeps highest-scoring occurrence).
     // Notes are never deduplicated — they're project-local and unique.

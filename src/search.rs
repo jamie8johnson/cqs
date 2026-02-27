@@ -887,11 +887,7 @@ impl Store {
             .collect();
         unified.extend(notes_to_add);
 
-        unified.sort_by(|a, b| {
-            b.score()
-                .partial_cmp(&a.score())
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        unified.sort_by(|a, b| b.score().total_cmp(&a.score()));
         unified.truncate(limit);
 
         Ok(unified)

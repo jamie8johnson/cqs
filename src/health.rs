@@ -16,18 +16,25 @@ use crate::{compute_risk_batch, HnswIndex, RiskLevel, Store};
 /// Number of top hotspots to include in the health report.
 const HEALTH_HOTSPOT_COUNT: usize = 5;
 
+/// A function hotspot: high caller count indicates central importance.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Hotspot {
+    pub name: String,
+    pub caller_count: usize,
+}
+
 /// Codebase health report.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct HealthReport {
     pub stats: IndexStats,
     pub stale_count: u64,
     pub missing_count: u64,
     pub dead_confident: usize,
     pub dead_possible: usize,
-    /// Top most-called functions: (name, caller_count)
-    pub hotspots: Vec<(String, usize)>,
-    /// High-caller functions with zero tests: (name, caller_count)
-    pub untested_hotspots: Vec<(String, usize)>,
+    /// Top most-called functions
+    pub hotspots: Vec<Hotspot>,
+    /// High-caller functions with zero tests
+    pub untested_hotspots: Vec<Hotspot>,
     pub note_count: u64,
     pub note_warnings: u64,
     pub hnsw_vectors: Option<usize>,
@@ -79,7 +86,7 @@ pub fn health_check(
             // Find untested hotspots: high-caller functions (≥HOTSPOT_MIN_CALLERS) with 0 tests
             let untested = match store.find_test_chunks() {
                 Ok(test_chunks) => {
-                    let hotspot_names: Vec<&str> = spots.iter().map(|(n, _)| n.as_str()).collect();
+                    let hotspot_names: Vec<&str> = spots.iter().map(|h| h.name.as_str()).collect();
                     let risks = compute_risk_batch(&hotspot_names, &graph, &test_chunks);
                     risks
                         .into_iter()
@@ -89,7 +96,7 @@ pub fn health_check(
                                 && r.test_count == 0
                                 && r.risk_level == RiskLevel::High
                         })
-                        .map(|(_, (name, count))| (name.clone(), *count))
+                        .map(|(_, h)| h.clone())
                         .collect()
                 }
                 Err(e) => {
@@ -330,11 +337,11 @@ mod tests {
         );
         // The hotspot should be hot_target
         let top = &report.hotspots[0];
-        assert_eq!(top.0, "hot_target");
+        assert_eq!(top.name, "hot_target");
         assert!(
-            top.1 >= 5,
+            top.caller_count >= 5,
             "Expected hot_target caller count >= 5, got {}",
-            top.1
+            top.caller_count
         );
     }
 }
