@@ -428,7 +428,9 @@ fn cmd_query_name_only(
     root: &std::path::Path,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_query_name_only", query).entered();
-    let results = store.search_by_name(query, cli.limit)?;
+    let results = store
+        .search_by_name(query, cli.limit)
+        .context("Failed to search by name")?;
 
     if results.is_empty() {
         if cli.json {

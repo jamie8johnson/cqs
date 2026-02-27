@@ -26,14 +26,14 @@ fn is_pipeable_command(tokens: &[String]) -> bool {
 
 /// Extract function/chunk names from a dispatch result JSON value.
 ///
-/// Walks known array fields (results, chunks, callers, calls, tests, dead,
-/// possibly_dead_pub, path, shared_callers, shared_callees, shared_types)
-/// plus the top-level "name" field (explain). Deduplicates preserving order.
+/// Tries each extractor in order: bare array, standard named fields, scout
+/// nested groups, plus the top-level "name" field (explain). Deduplicates
+/// preserving order.
 fn extract_names(val: &serde_json::Value) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut names = Vec::new();
 
-    let mut push_name = |n: &str| {
+    let mut push = |n: &str| {
         if !n.is_empty() && seen.insert(n.to_string()) {
             names.push(n.to_string());
         }
@@ -41,20 +41,46 @@ fn extract_names(val: &serde_json::Value) -> Vec<String> {
 
     // Top-level "name" (explain returns the target's own name)
     if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
-        push_name(name);
+        push(name);
     }
 
-    // Bare array (callers returns [...])
-    if let Some(arr) = val.as_array() {
-        for item in arr {
-            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                push_name(name);
-            }
+    // Bare array (callers returns [...]) — early return, nothing else to check
+    if val.is_array() {
+        for n in extract_from_bare_array(val) {
+            push(&n);
         }
         return names;
     }
 
-    // Known array fields in dispatch results
+    // Known named array fields (search, gather, impact, dead, trace, related, explain)
+    for n in extract_from_standard_fields(val) {
+        push(&n);
+    }
+
+    // Scout: nested file_groups[].chunks[].name
+    for n in extract_from_scout_groups(val) {
+        push(&n);
+    }
+
+    names
+}
+
+/// Extract names from a bare JSON array (e.g., callers returns `[{name: ...}, ...]`).
+fn extract_from_bare_array(val: &serde_json::Value) -> Vec<String> {
+    val.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("name")?.as_str().map(String::from))
+        .collect()
+}
+
+/// Extract names from known named array fields in dispatch results.
+///
+/// Covers: results (search/similar), chunks (gather/context), callers (impact/explain),
+/// calls (callees), tests (impact/test-map), dead/possibly_dead_pub (dead),
+/// path (trace), shared_callers/shared_callees/shared_types (related),
+/// similar/callees (explain).
+fn extract_from_standard_fields(val: &serde_json::Value) -> Vec<String> {
     const NAME_ARRAY_FIELDS: &[&str] = &[
         "results",           // search, similar
         "chunks",            // gather, context
@@ -71,30 +97,33 @@ fn extract_names(val: &serde_json::Value) -> Vec<String> {
         "callees",           // explain
     ];
 
-    for field in NAME_ARRAY_FIELDS {
-        if let Some(arr) = val.get(*field).and_then(|v| v.as_array()) {
-            for item in arr {
-                if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                    push_name(name);
-                }
-            }
-        }
-    }
+    NAME_ARRAY_FIELDS
+        .iter()
+        .flat_map(|field| {
+            val.get(*field)
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item.get("name")?.as_str().map(String::from))
+        })
+        .collect()
+}
 
-    // Scout: nested file_groups[].chunks[].name
-    if let Some(groups) = val.get("file_groups").and_then(|v| v.as_array()) {
-        for group in groups {
-            if let Some(chunks) = group.get("chunks").and_then(|v| v.as_array()) {
-                for chunk in chunks {
-                    if let Some(name) = chunk.get("name").and_then(|v| v.as_str()) {
-                        push_name(name);
-                    }
-                }
-            }
-        }
-    }
-
-    names
+/// Extract names from scout's nested `file_groups[].chunks[].name` structure.
+fn extract_from_scout_groups(val: &serde_json::Value) -> Vec<String> {
+    val.get("file_groups")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .flat_map(|group| {
+            group
+                .get("chunks")
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|chunk| chunk.get("name")?.as_str().map(String::from))
+        })
+        .collect()
 }
 
 /// Split a token list by standalone `|` into pipeline segments.

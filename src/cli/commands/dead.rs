@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use cqs::store::{DeadConfidence, DeadFunction};
 
 use crate::cli::Cli;
@@ -16,7 +16,9 @@ pub(crate) fn cmd_dead(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
     let (store, root, _) = crate::cli::open_project_store()?;
-    let (confident, possibly_pub) = store.find_dead_code(include_pub)?;
+    let (confident, possibly_pub) = store
+        .find_dead_code(include_pub)
+        .context("Failed to detect dead code")?;
 
     // Filter by minimum confidence
     let confident: Vec<_> = confident

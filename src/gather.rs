@@ -168,6 +168,11 @@ pub(crate) fn bfs_expand(
         return false;
     }
 
+    // Track visited nodes to prevent re-expansion from overlapping seeds.
+    // Without this, if two seeds overlap (e.g., bridge results matching ref seeds
+    // in gather_cross_index), the same node gets expanded twice, doubling neighbor lookups.
+    let mut visited: HashSet<String> = name_scores.keys().cloned().collect();
+
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
     for (name, &(_, depth)) in name_scores.iter() {
         queue.push_back((name.clone(), depth));
@@ -190,16 +195,14 @@ pub(crate) fn bfs_expand(
                 expansion_capped = true;
                 break;
             }
-            match name_scores.entry(neighbor.clone()) {
-                std::collections::hash_map::Entry::Vacant(e) => {
-                    e.insert((new_score, depth + 1));
-                    queue.push_back((neighbor, depth + 1));
-                }
-                std::collections::hash_map::Entry::Occupied(mut e) => {
-                    if new_score > e.get().0 {
-                        e.insert((new_score, depth + 1));
-                        // Don't re-add to queue — already explored or queued
-                    }
+            if !visited.contains(&neighbor) {
+                visited.insert(neighbor.clone());
+                name_scores.insert(neighbor.clone(), (new_score, depth + 1));
+                queue.push_back((neighbor, depth + 1));
+            } else if let Some(existing) = name_scores.get_mut(&neighbor) {
+                // Already visited — update score if higher (no re-queue)
+                if new_score > existing.0 {
+                    *existing = (new_score, depth + 1);
                 }
             }
         }

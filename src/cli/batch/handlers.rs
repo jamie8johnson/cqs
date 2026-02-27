@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 use super::commands::BatchInput;
+use super::types::{normalize_path, ChunkOutput};
 use super::BatchContext;
 use crate::cli::{validate_finite_f32, DeadConfidenceLevel};
 
@@ -29,16 +30,8 @@ pub(super) fn dispatch_search(
         let json_results: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
-                serde_json::json!({
-                    "name": r.chunk.name,
-                    "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
-                    "line_start": r.chunk.line_start,
-                    "line_end": r.chunk.line_end,
-                    "language": r.chunk.language.to_string(),
-                    "chunk_type": r.chunk.chunk_type.to_string(),
-                    "signature": r.chunk.signature,
-                    "score": r.score,
-                })
+                serde_json::to_value(ChunkOutput::from_search_result(r, false))
+                    .expect("ChunkOutput serialization cannot fail")
             })
             .collect();
         return Ok(serde_json::json!({
@@ -154,17 +147,10 @@ pub(super) fn dispatch_search(
     let json_results: Vec<serde_json::Value> = results
         .iter()
         .map(|r| match r {
-            cqs::store::UnifiedResult::Code(sr) => serde_json::json!({
-                "name": sr.chunk.name,
-                "file": sr.chunk.file.to_string_lossy().replace('\\', "/"),
-                "line_start": sr.chunk.line_start,
-                "line_end": sr.chunk.line_end,
-                "language": sr.chunk.language.to_string(),
-                "chunk_type": sr.chunk.chunk_type.to_string(),
-                "signature": sr.chunk.signature,
-                "score": sr.score,
-                "content": sr.chunk.content,
-            }),
+            cqs::store::UnifiedResult::Code(sr) => {
+                serde_json::to_value(ChunkOutput::from_search_result(sr, true))
+                    .expect("ChunkOutput serialization cannot fail")
+            }
             cqs::store::UnifiedResult::Note(nr) => serde_json::json!({
                 "type": "note",
                 "text": nr.note.text,
@@ -227,7 +213,7 @@ pub(super) fn dispatch_callers(ctx: &BatchContext, name: &str) -> Result<serde_j
         .map(|c| {
             serde_json::json!({
                 "name": c.name,
-                "file": c.file.to_string_lossy().replace('\\', "/"),
+                "file": normalize_path(&c.file),
                 "line": c.line,
             })
         })
@@ -318,7 +304,7 @@ pub(super) fn dispatch_similar(
         .map(|r| {
             serde_json::json!({
                 "name": r.chunk.name,
-                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                "file": normalize_path(&r.chunk.file),
                 "score": r.score,
             })
         })
@@ -398,7 +384,7 @@ pub(super) fn dispatch_gather(
         .map(|c| {
             let mut chunk_json = serde_json::json!({
                 "name": c.name,
-                "file": c.file.to_string_lossy().replace('\\', "/"),
+                "file": normalize_path(&c.file),
                 "line_start": c.line_start,
                 "line_end": c.line_end,
                 "language": c.language.to_string(),

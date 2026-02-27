@@ -10,6 +10,7 @@
 mod commands;
 mod handlers;
 mod pipeline;
+mod types;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};

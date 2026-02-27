@@ -87,7 +87,9 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
 
     // Prune missing files
     let existing_files: HashSet<_> = files.into_iter().collect();
-    let pruned = store.prune_missing(&existing_files)?;
+    let pruned = store
+        .prune_missing(&existing_files)
+        .context("Failed to prune deleted files from index")?;
 
     if !cli.quiet {
         println!();
@@ -142,7 +144,9 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
             if was_skipped && note_count == 0 {
                 println!("Notes up to date.");
             } else if note_count > 0 {
-                let ns = store.note_stats()?;
+                let ns = store
+                    .note_stats()
+                    .context("Failed to read note statistics")?;
                 println!(
                     "  Notes: {} total ({} warnings, {} patterns)",
                     ns.total, ns.warnings, ns.patterns
@@ -187,7 +191,9 @@ fn extract_relationships(
                 for fc in &function_calls {
                     total_calls += fc.calls.len();
                 }
-                store.upsert_function_calls(file, &function_calls)?;
+                store
+                    .upsert_function_calls(file, &function_calls)
+                    .context("Failed to store function calls")?;
 
                 if !chunk_type_refs.is_empty() {
                     for ctr in &chunk_type_refs {
@@ -263,7 +269,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 /// Notes are excluded from HNSW — they use brute-force search from SQLite
 /// so that notes are immediately searchable without rebuild.
 pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
-    let chunk_count = store.chunk_count()? as usize;
+    let chunk_count = store.chunk_count().context("Failed to read chunk count")? as usize;
     let _span = tracing::info_span!("build_hnsw_index", chunk_count).entered();
 
     if chunk_count == 0 {

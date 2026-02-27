@@ -5,7 +5,7 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use cqs::Parser;
 
@@ -38,15 +38,21 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     };
 
     // Count chunks to prune before deleting HNSW
-    let pruned_chunks = store.prune_missing(&file_set)?;
+    let pruned_chunks = store
+        .prune_missing(&file_set)
+        .context("Failed to prune deleted files from index")?;
     tracing::debug!(pruned_chunks, "Chunks pruned");
 
     // Prune orphan call graph entries
-    let pruned_calls = store.prune_stale_calls()?;
+    let pruned_calls = store
+        .prune_stale_calls()
+        .context("Failed to prune orphan call graph entries")?;
     tracing::debug!(pruned_calls, "Calls pruned");
 
     // Prune orphan type edges
-    let pruned_type_edges = store.prune_stale_type_edges()?;
+    let pruned_type_edges = store
+        .prune_stale_type_edges()
+        .context("Failed to prune orphan type edges")?;
     tracing::debug!(pruned_type_edges, "Type edges pruned");
 
     // Rebuild HNSW if we pruned chunks. Delete the stale HNSW first so

@@ -2,7 +2,7 @@
 //!
 //! Shows which chunks reference a type (forward), or what types a function uses (reverse).
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use colored::Colorize;
 
 use crate::cli::Cli;
@@ -16,7 +16,9 @@ pub(crate) fn cmd_deps(_cli: &Cli, name: &str, reverse: bool, json: bool) -> Res
     let (store, root, _) = crate::cli::open_project_store()?;
 
     if reverse {
-        let types = store.get_types_used_by(name)?;
+        let types = store
+            .get_types_used_by(name)
+            .context("Failed to load type dependencies")?;
         if json {
             let json_types: Vec<serde_json::Value> = types
                 .iter()
@@ -44,7 +46,9 @@ pub(crate) fn cmd_deps(_cli: &Cli, name: &str, reverse: bool, json: bool) -> Res
             println!("Total: {} type(s)", types.len());
         }
     } else {
-        let users = store.get_type_users(name)?;
+        let users = store
+            .get_type_users(name)
+            .context("Failed to load type users")?;
         if json {
             let json_users: Vec<serde_json::Value> = users
                 .iter()

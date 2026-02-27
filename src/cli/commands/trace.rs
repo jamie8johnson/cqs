@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use colored::Colorize;
 
 use cqs::Store;
@@ -57,7 +57,9 @@ pub(crate) fn cmd_trace(
     }
 
     // Load call graph and BFS
-    let graph = store.get_call_graph()?;
+    let graph = store
+        .get_call_graph()
+        .context("Failed to load call graph")?;
     let path = bfs_shortest_path(&graph.forward, &source_name, &target_name, max_depth);
 
     match path {

@@ -136,47 +136,45 @@ impl Config {
 
         // Project overrides user
         let mut merged = user_config.override_with(project_config);
+        merged.validate();
 
+        tracing::debug!(?merged, "Effective config");
+        merged
+    }
+
+    /// Clamp all fields to valid ranges and enforce invariants.
+    ///
+    /// Called once from `load()` after merging user + project configs.
+    /// Adding a new field? Add its clamping here — this is the single
+    /// validation choke point.
+    fn validate(&mut self) {
         // Limit reference count
         const MAX_REFERENCES: usize = 20;
-        if merged.references.len() > MAX_REFERENCES {
+        if self.references.len() > MAX_REFERENCES {
             tracing::warn!(
-                count = merged.references.len(),
+                count = self.references.len(),
                 max = MAX_REFERENCES,
                 "Too many references configured, truncating"
             );
-            merged.references.truncate(MAX_REFERENCES);
+            self.references.truncate(MAX_REFERENCES);
         }
 
         // Clamp reference weights to [0.0, 1.0]
-        for r in &mut merged.references {
+        for r in &mut self.references {
             clamp_config_f32(&mut r.weight, "reference.weight", 0.0, 1.0);
         }
-        if let Some(ref mut limit) = merged.limit {
+        if let Some(ref mut limit) = self.limit {
             clamp_config_usize(limit, "limit", 1, 100);
         }
-        if let Some(ref mut t) = merged.threshold {
+        if let Some(ref mut t) = self.threshold {
             clamp_config_f32(t, "threshold", 0.0, 1.0);
         }
-        if let Some(ref mut nb) = merged.name_boost {
+        if let Some(ref mut nb) = self.name_boost {
             clamp_config_f32(nb, "name_boost", 0.0, 1.0);
         }
-        if let Some(ref mut nw) = merged.note_weight {
+        if let Some(ref mut nw) = self.note_weight {
             clamp_config_f32(nw, "note_weight", 0.0, 1.0);
         }
-
-        tracing::debug!(
-            limit = ?merged.limit,
-            threshold = ?merged.threshold,
-            name_boost = ?merged.name_boost,
-            note_weight = ?merged.note_weight,
-            note_only = ?merged.note_only,
-            quiet = ?merged.quiet,
-            verbose = ?merged.verbose,
-            references = merged.references.len(),
-            "Effective config after merge"
-        );
-        merged
     }
 
     /// Load configuration from a specific file
@@ -222,16 +220,7 @@ impl Config {
 
         match toml::from_str::<Self>(&content) {
             Ok(config) => {
-                tracing::debug!(
-                    path = %path.display(),
-                    limit = ?config.limit,
-                    threshold = ?config.threshold,
-                    name_boost = ?config.name_boost,
-                    quiet = ?config.quiet,
-                    verbose = ?config.verbose,
-                    references = config.references.len(),
-                    "Loaded config"
-                );
+                tracing::debug!(path = %path.display(), ?config, "Loaded config");
                 Ok(Some(config))
             }
             Err(e) => Err(format!("Failed to parse config {}: {}", path.display(), e)),
@@ -255,6 +244,7 @@ impl Config {
             }
         }
 
+        // MERGE: add new Option<T> fields here (other.field.or(self.field))
         Config {
             limit: other.limit.or(self.limit),
             threshold: other.threshold.or(self.threshold),

@@ -2,7 +2,7 @@
 //!
 //! Provides callers/callees analysis.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use colored::Colorize;
 
 use crate::cli::Cli;
@@ -12,7 +12,9 @@ pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name).entered();
     let (store, _, _) = crate::cli::open_project_store()?;
     // Use full call graph (includes large functions)
-    let callers = store.get_callers_full(name)?;
+    let callers = store
+        .get_callers_full(name)
+        .context("Failed to load callers")?;
 
     if callers.is_empty() {
         if json {
@@ -59,7 +61,9 @@ pub(crate) fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
     let (store, _, _) = crate::cli::open_project_store()?;
     // Use full call graph (includes large functions)
     // No file context available from CLI input — pass None
-    let callees = store.get_callees_full(name, None)?;
+    let callees = store
+        .get_callees_full(name, None)
+        .context("Failed to load callees")?;
 
     if json {
         let json_output = serde_json::json!({

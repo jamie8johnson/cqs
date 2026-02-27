@@ -35,9 +35,14 @@ impl HnswIndex {
             return Vec::new();
         }
 
+        // Adaptive ef_search: baseline EF_SEARCH or 2*k (whichever is larger),
+        // capped at index size (searching more than the index is pointless for small indexes).
+        let index_size = self.id_map.len();
+        let ef_search = EF_SEARCH.max(k * 2).min(index_size.max(EF_SEARCH));
+
         let neighbors = self
             .inner
-            .with_hnsw(|h| h.search_neighbours(query.as_slice(), k, EF_SEARCH));
+            .with_hnsw(|h| h.search_neighbours(query.as_slice(), k, ef_search));
 
         neighbors
             .into_iter()
