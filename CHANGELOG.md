@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-02-27
+
+### Fixed
+- **NaN-safe sorting** — replaced 11 `partial_cmp().unwrap_or(Equal)` sites with `f32::total_cmp()` across drift, gather, onboard, search, project, reranker, reference, and CLI token budgeting. NaN scores no longer corrupt sort order.
+- **UTF-8 panic in `first_sentence_or_truncate`** — `doc[..150]` can split multibyte codepoints. Now uses `floor_char_boundary(150)` before byte-slicing.
+- **Predictable temp file names** — `config.rs` and `audit.rs` used fixed `"toml.tmp"` / `"json.tmp"` names. Now uses PID+timestamp suffix (matches existing `note.rs`/`project.rs` pattern).
+- **SQLite 999-parameter limit** — `check_origins_stale` built unbounded `IN (?)` clauses. Now batched in groups of 900.
+- **Duplicate call graph edges** — `get_call_graph` query missing `DISTINCT`, returning duplicate rows.
+- **Redundant per-chunk FTS DELETE** — `replace_file_chunks` did per-chunk `DELETE FROM chunks_fts` inside loop after already bulk-deleting all FTS entries for the origin.
+- **Batch REPL broken pipe** — `let _ = writeln!()` silently swallowed broken pipe errors. Now breaks the REPL loop on write failure.
+- **Store::open error context** — bare `?` replaced with path-annotated error message.
+- **GC stale count error** — `unwrap_or((0,0))` replaced with `tracing::warn!` on failure.
+- **Doc syntax** — `cqs diff --source <ref>` corrected to `cqs diff <ref>` in CLAUDE.md, README.md, and bootstrap skill.
+
+### Changed
+- **`define_chunk_types!` macro** — replaces 4 manual match blocks for ChunkType Display/FromStr/error messages. Same pattern as existing `define_languages!`.
+- **HealthReport Serialize** — added `#[derive(Serialize)]` chain through `HealthReport`, `IndexStats`, `Language`, `ChunkType`, and new `Hotspot` struct. Eliminated ~50 lines of hand-assembled JSON in CLI and batch handlers.
+- **CLI/batch dedup for `explain` and `context`** — extracted shared `pub(crate)` core functions (`build_explain_data`, `build_compact_data`, `build_full_data`). Net -284 lines.
+- **`semantic_diff` memory batching** — embedding loading changed from all-at-once to batches of 1000 pairs. Peak memory reduced from ~240MB to ~9MB for 20k-pair diffs.
+- **Embedder validation** — `embed_batch_inner` now validates `seq_len` and total data length before ONNX inference.
+- **Pipeline timing** — indexing pipeline now logs total elapsed time.
+- **Watch mode locking** — reindex cycles acquire index lock via `try_lock()`, skip if already locked. Chunk and call graph writes use `upsert_chunks_and_calls()` for atomic transactions.
+
 ## [0.19.0] - 2026-02-26
 
 ### Added
