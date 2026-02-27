@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**v0.19.1 + deferred P2 fixes merged.** 2026-02-27.
+**v0.19.2 released.** 2026-02-27.
 
 Full 14-category audit completed (123 findings across 3 batches). 12 P1 + 19 P2 fixes shipped in three PRs (#497, #498, #499). v0.19.1 published to crates.io.
 
@@ -39,7 +39,7 @@ None — clean working tree on main.
 
 ## Architecture
 
-- Version: 0.19.1
+- Version: 0.19.2
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
