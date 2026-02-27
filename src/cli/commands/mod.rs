@@ -4,7 +4,7 @@
 
 mod audit_mode;
 mod ci;
-mod context;
+pub(crate) mod context;
 #[cfg(feature = "convert")]
 mod convert;
 mod dead;
@@ -12,7 +12,7 @@ mod deps;
 mod diff;
 mod doctor;
 mod drift;
-mod explain;
+pub(crate) mod explain;
 mod gather;
 mod gc;
 mod graph;
@@ -122,11 +122,7 @@ pub(crate) fn token_pack<T>(
 
     // Build index order sorted by score descending
     let mut order: Vec<usize> = (0..items.len()).collect();
-    order.sort_by(|&a, &b| {
-        score_fn(&items[b])
-            .partial_cmp(&score_fn(&items[a]))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    order.sort_by(|&a, &b| score_fn(&items[b]).total_cmp(&score_fn(&items[a])));
 
     // Greedy pack in score order, tracking which indices to keep
     let mut used: usize = 0;

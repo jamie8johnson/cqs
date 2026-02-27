@@ -326,7 +326,14 @@ pub fn add_reference_to_config(
     }
 
     // Atomic write: temp file + rename (while holding lock)
-    let tmp_path = config_path.with_extension("toml.tmp");
+    let tmp_path = config_path.with_extension(format!(
+        "toml.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     let serialized = toml::to_string_pretty(&table)?;
     std::fs::write(&tmp_path, &serialized)?;
     if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
@@ -392,7 +399,14 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
 
     if removed {
         // Atomic write: temp file + rename (while holding lock)
-        let tmp_path = config_path.with_extension("toml.tmp");
+        let tmp_path = config_path.with_extension(format!(
+            "toml.tmp.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
         let serialized = toml::to_string_pretty(&table)?;
         std::fs::write(&tmp_path, &serialized)?;
         if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {

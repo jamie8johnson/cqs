@@ -85,11 +85,7 @@ pub fn detect_drift(
         .collect();
 
     // Sort by drift desc (most changed first)
-    drifted.sort_by(|a, b| {
-        b.drift
-            .partial_cmp(&a.drift)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    drifted.sort_by(|a, b| b.drift.total_cmp(&a.drift));
 
     tracing::info!(
         drifted = drifted.len(),

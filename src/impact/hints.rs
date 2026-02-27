@@ -229,16 +229,19 @@ pub fn compute_risk_and_tests(
 
 /// Find the most-called functions in the codebase (hotspots).
 ///
-/// Returns `(function_name, caller_count)` sorted by caller count descending.
-pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<(String, usize)> {
+/// Returns [`Hotspot`] entries sorted by caller count descending.
+pub fn find_hotspots(graph: &CallGraph, top_n: usize) -> Vec<crate::health::Hotspot> {
     let _span = tracing::info_span!("find_hotspots", top_n).entered();
 
-    let mut hotspots: Vec<(String, usize)> = graph
+    let mut hotspots: Vec<crate::health::Hotspot> = graph
         .reverse
         .iter()
-        .map(|(name, callers)| (name.clone(), callers.len()))
+        .map(|(name, callers)| crate::health::Hotspot {
+            name: name.clone(),
+            caller_count: callers.len(),
+        })
         .collect();
-    hotspots.sort_by(|a, b| b.1.cmp(&a.1));
+    hotspots.sort_by(|a, b| b.caller_count.cmp(&a.caller_count));
     hotspots.truncate(top_n);
     hotspots
 }
@@ -540,9 +543,9 @@ mod tests {
         };
         let hotspots = find_hotspots(&graph, 2);
         assert_eq!(hotspots.len(), 2);
-        assert_eq!(hotspots[0].0, "hot");
-        assert_eq!(hotspots[0].1, 3);
-        assert_eq!(hotspots[1].0, "warm");
-        assert_eq!(hotspots[1].1, 2);
+        assert_eq!(hotspots[0].name, "hot");
+        assert_eq!(hotspots[0].caller_count, 3);
+        assert_eq!(hotspots[1].name, "warm");
+        assert_eq!(hotspots[1].caller_count, 2);
     }
 }

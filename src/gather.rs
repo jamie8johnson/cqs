@@ -267,12 +267,7 @@ pub(crate) fn fetch_and_assemble(
 /// Sort chunks by score desc (name tiebreak), truncate to limit,
 /// then re-sort to file/line reading order.
 pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
-    chunks.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.name.cmp(&b.name))
-    });
+    chunks.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.name.cmp(&b.name)));
     chunks.truncate(limit);
     chunks.sort_by(|a, b| {
         a.file
@@ -545,12 +540,7 @@ pub fn gather_cross_index(
     let mut all_chunks = ref_chunks;
     all_chunks.extend(project_chunks);
 
-    all_chunks.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.name.cmp(&b.name))
-    });
+    all_chunks.sort_by(|a, b| b.score.total_cmp(&a.score).then(a.name.cmp(&b.name)));
     all_chunks.truncate(opts.limit);
     // Sort: ref chunks first (by source name), then project chunks, each group in file/line order
     all_chunks.sort_by(|a, b| {

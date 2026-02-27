@@ -159,7 +159,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs test-map <function>` — map function to tests that exercise it.
 - `cqs deps <type>` — type dependencies: who uses this type? `--reverse` for what types a function uses.
-- `cqs diff --source <ref>` — semantic diff between indexed snapshots.
+- `cqs diff <ref>` — semantic diff between indexed snapshots.
 - `cqs drift <ref>` — semantic drift detection between reference and project.
 - `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
 - `cqs review [--base REF]` — comprehensive diff review: impact + notes + risk scoring.
