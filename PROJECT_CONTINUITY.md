@@ -2,13 +2,17 @@
 
 ## Right Now
 
-**Releasing v0.18.0.** 2026-02-26.
+**v0.19.1 + deferred P2 fixes merged.** 2026-02-27.
 
-C++ language support shipped (PR #492). 15th language. 1166 tests, 0 failures.
+Full 14-category audit completed (123 findings across 3 batches). 12 P1 + 19 P2 fixes shipped in three PRs (#497, #498, #499). v0.19.1 published to crates.io.
+
+Key fixes: NaN-safe sorting (11 sites), UTF-8 panic, predictable temp files, SQLite param batching, HealthReport Serialize, semantic_diff memory batching (240MB→9MB), CLI/batch dedup (-284 lines), watch mode locking, multi-row INSERT batching, adaptive HNSW ef_search, BFS visited set, parallel ref loading, typed batch output structs, .context() sweep.
+
+Only AD-1 (String vs PathBuf) remains deferred — pure type refactor, no functional value.
 
 ## Pending Changes
 
-None — releasing v0.18.0.
+None — clean working tree on main.
 
 ## Parked
 
@@ -35,15 +39,15 @@ None — releasing v0.18.0.
 
 ## Architecture
 
-- Version: 0.18.0
+- Version: 0.19.1
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 15 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, SQL, Markdown)
+- 20 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1166 pass + 35 ignored, 0 failures
+- Tests: 1212 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

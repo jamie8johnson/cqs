@@ -845,3 +845,19 @@ mentions = [
     "src/parser/calls.rs",
     "ChunkType",
 ]
+
+[[note]]
+sentiment = -1.0
+text = "Context compaction reverted ALL uncommitted file edits — 14 P1 fixes across 15+ files lost silently. Lesson: commit early and often during multi-step work, don't batch edits across many files without committing"
+mentions = [
+    "audit",
+    "context-compaction",
+]
+
+[[note]]
+sentiment = 0.5
+text = "P2 agent file edits survive context compaction because agents write independently. Main-context edits don't survive. Strategy: delegate file-editing work to agents when possible"
+mentions = [
+    "audit",
+    "agents",
+]
