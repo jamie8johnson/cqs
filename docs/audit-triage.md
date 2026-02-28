@@ -71,7 +71,7 @@ Informational/well-designed: 3 (RM-7, RM-9, RM-10) — no action needed
 | 10 | **DS-3**: OnceLock notes cache never invalidated in long-lived Store | Data Safety | store/mod.rs:170 | ✅ PR #502 |
 | 11 | **DS-5**: HNSW copy fallback not atomic — crash loses index | Data Safety | persist.rs:225 | ✅ PR #502 |
 | 12 | **DS-6**: `prune_missing` per-batch transactions — partial prune on crash | Data Safety | chunks.rs:474 | ✅ PR #502 |
-| 13 | **PB-3**: 30+ sites manual `.replace('\\', "/")` — no centralized function | Platform | 15+ files | deferred |
+| 13 | **PB-3**: 30+ sites manual `.replace('\\', "/")` — no centralized function | Platform | 15+ files | ✅ PR #509 |
 | 14 | **PF-1**: N+1 SELECT for content hash snapshotting in upsert | Performance | chunks.rs:64 | ✅ PR #502 |
 | 15 | **PF-5**: HNSW search loads full content for all 500 candidates before scoring | Performance | chunks.rs:1235, search.rs:694 | deferred |
 | 16 | **PF-7**: `get_call_graph` called 15 times with no caching | Performance | calls.rs:469 | ✅ PR #502 |
