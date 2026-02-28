@@ -95,35 +95,35 @@ Informational/well-designed: 3 (RM-7, RM-9, RM-10) — no action needed
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | **AD-3**: Inconsistent positional arg naming (task/query/concept) | API Design | cli/mod.rs | |
-| 2 | **AD-4**: 4 commands have both --format and --json flags | API Design | cli/mod.rs | |
-| 3 | **AD-5**: 7 handlers accept `_cli: &Cli` but never use it | API Design | multiple | |
-| 4 | **AD-7**: `suggest_placement` 4 API variants | API Design | where_to_add.rs:101 | |
-| 5 | **RB-2/EH-2**: BatchContext OnceLock unwrap — should use get_or_init | Robustness | batch/mod.rs | |
-| 6 | **RB-3**: search_filtered unwrap with non-local invariant | Robustness | search.rs:523,583 | |
-| 7 | **RB-4**: Embedder/Reranker session guard unwrap | Robustness | embedder.rs:523 | |
-| 8 | **RB-9**: convert FORMAT_TABLE expect — runtime panic for compile-time invariant | Robustness | convert/mod.rs:191 | |
-| 9 | **RB-10/EH-8**: onboard.rs unwrap with non-local early-return invariant | Robustness | onboard.rs:128 | |
-| 10 | **EH-7**: impact swallows search_by_names_batch errors — no degraded flag | Error Handling | analysis.rs:72 | |
-| 11 | **OB-5**: Store::open/open_readonly lack timing span | Observability | store/mod.rs:175 | |
-| 12 | **OB-6**: search_across_projects missing entry span | Observability | project.rs:155 | |
-| 13 | **OB-7**: gather() doesn't log BFS expansion stats | Observability | gather.rs | |
-| 14 | **OB-8**: HNSW build_batched no per-batch progress logging | Observability | hnsw/build.rs | |
-| 15 | **SEC-2**: Temp file PID+nanos — low entropy, use RandomState | Security | 5 sites | |
-| 16 | **SEC-5**: FTS query safety depends on undocumented sanitization ordering | Security | store/mod.rs:598 | |
-| 17 | **EX-3**: ENTRY_POINT_NAMES/TRAIT_METHOD_NAMES not connected to languages | Extensibility | calls.rs:44 | |
-| 18 | **EX-5**: PIPEABLE_COMMANDS manually maintained | Extensibility | pipeline.rs:15 | |
-| 19 | **EX-6**: NAME_ARRAY_FIELDS manually maintained | Extensibility | pipeline.rs:84 | |
-| 20 | **PF-9**: search_filtered rebuilds identical SQL per cursor batch | Performance | search.rs:489 | |
-| 21 | **TC-3**: check_origins_stale batch boundary untested | Test Coverage | chunks.rs:638 | |
-| 22 | **TC-4**: resolve_index_dir migration zero tests | Test Coverage | lib.rs:168 | |
-| 23 | **TC-6**: suggest_placement only trivial empty test | Test Coverage | where_to_add.rs:101 | |
-| 24 | **TC-8**: review_diff note matching never tested with actual notes | Test Coverage | review_test.rs | |
-| 25 | **TC-9**: enumerate_files zero tests | Test Coverage | lib.rs:312 | |
-| 26 | **PB-8**: ChunkSummary.file PathBuf semantics mismatch — needs doc comment | Platform | helpers.rs:99 | |
-| 27 | **RM-1**: count_vectors reads entire HNSW id map as string | Resource Mgmt | persist.rs:389 | |
-| 28 | **RM-3**: find_dead_code loads full ChunkSummary just for names | Resource Mgmt | calls.rs:768 | |
-| 29 | **RM-8**: Verify cmd_index routes to build_batched for >50K | Resource Mgmt | hnsw/build.rs | |
+| 1 | **AD-3**: Inconsistent positional arg naming (task/query/concept) | API Design | cli/mod.rs | ✅ PR #504 |
+| 2 | **AD-4**: 4 commands have both --format and --json flags | API Design | cli/mod.rs | ✅ PR #504 |
+| 3 | **AD-5**: 7 handlers accept `_cli: &Cli` but never use it | API Design | multiple | ✅ PR #504 |
+| 4 | **AD-7**: `suggest_placement` 4 API variants | API Design | where_to_add.rs:101 | ✅ PR #504 |
+| 5 | **RB-2/EH-2**: BatchContext OnceLock unwrap — should use get_or_init | Robustness | batch/mod.rs | ✅ PR #504 |
+| 6 | **RB-3**: search_filtered unwrap with non-local invariant | Robustness | search.rs:523,583 | ✅ PR #504 |
+| 7 | **RB-4**: Embedder/Reranker session guard unwrap | Robustness | embedder.rs:523 | ✅ PR #504 |
+| 8 | **RB-9**: convert FORMAT_TABLE expect — runtime panic for compile-time invariant | Robustness | convert/mod.rs:191 | ✅ PR #504 |
+| 9 | **RB-10/EH-8**: onboard.rs unwrap with non-local early-return invariant | Robustness | onboard.rs:128 | ✅ PR #504 |
+| 10 | **EH-7**: impact swallows search_by_names_batch errors — no degraded flag | Error Handling | analysis.rs:72 | ✅ PR #504 |
+| 11 | **OB-5**: Store::open/open_readonly lack timing span | Observability | store/mod.rs:175 | ✅ PR #504 |
+| 12 | **OB-6**: search_across_projects missing entry span | Observability | project.rs:155 | ✅ PR #504 |
+| 13 | **OB-7**: gather() doesn't log BFS expansion stats | Observability | gather.rs | ✅ PR #504 |
+| 14 | **OB-8**: HNSW build_batched no per-batch progress logging | Observability | hnsw/build.rs | ✅ PR #504 |
+| 15 | **SEC-2**: Temp file PID+nanos — low entropy, use RandomState | Security | 5 sites | ✅ PR #504 |
+| 16 | **SEC-5**: FTS query safety depends on undocumented sanitization ordering | Security | store/mod.rs:598 | ✅ PR #504 |
+| 17 | **EX-3**: ENTRY_POINT_NAMES/TRAIT_METHOD_NAMES not connected to languages | Extensibility | calls.rs:44 | ✅ PR #504 |
+| 18 | **EX-5**: PIPEABLE_COMMANDS manually maintained | Extensibility | pipeline.rs:15 | ✅ PR #504 |
+| 19 | **EX-6**: NAME_ARRAY_FIELDS manually maintained | Extensibility | pipeline.rs:84 | ✅ PR #504 |
+| 20 | **PF-9**: search_filtered rebuilds identical SQL per cursor batch | Performance | search.rs:489 | ✅ PR #504 |
+| 21 | **TC-3**: check_origins_stale batch boundary untested | Test Coverage | chunks.rs:638 | ✅ PR #504 |
+| 22 | **TC-4**: resolve_index_dir migration zero tests | Test Coverage | lib.rs:168 | ✅ PR #504 |
+| 23 | **TC-6**: suggest_placement only trivial empty test | Test Coverage | where_to_add.rs:101 | ✅ PR #504 |
+| 24 | **TC-8**: review_diff note matching never tested with actual notes | Test Coverage | review_test.rs | ✅ PR #504 |
+| 25 | **TC-9**: enumerate_files zero tests | Test Coverage | lib.rs:312 | ✅ PR #504 |
+| 26 | **PB-8**: ChunkSummary.file PathBuf semantics mismatch — needs doc comment | Platform | helpers.rs:99 | ✅ PR #504 |
+| 27 | **RM-1**: count_vectors reads entire HNSW id map as string | Resource Mgmt | persist.rs:389 | ✅ PR #504 |
+| 28 | **RM-3**: find_dead_code loads full ChunkSummary just for names | Resource Mgmt | calls.rs:768 | ✅ PR #504 |
+| 29 | **RM-8**: Verify cmd_index routes to build_batched for >50K | Resource Mgmt | hnsw/build.rs | ✅ PR #504 |
 
 ## P4: Hard or Low Impact — Defer/Create Issues
 
