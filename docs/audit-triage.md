@@ -59,37 +59,37 @@ Informational/well-designed: 3 (RM-7, RM-9, RM-10) — no action needed
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | **DS-1**: Watch mode never acquired index lock (claimed fixed, wasn't) | Data Safety | watch.rs | |
-| 2 | **DS-2**: Watch mode chunks+calls not atomic (claimed fixed, wasn't) | Data Safety | watch.rs:394-427 | |
-| 3 | **AC-1**: HNSW path skips RRF fusion — search differs by index presence | Algorithm | search.rs:664 | |
-| 4 | **AC-2**: BFS depth overwrite — deeper depth replaces shallower | Algorithm | gather.rs:202 | |
-| 5 | **AD-6**: ScoutResult/TaskResult/GatherResult etc missing Serialize | API Design | multiple | |
-| 6 | **AD-8**: cmd_diff/cmd_drift duplicate reference resolution ~30 lines | API Design | diff.rs, drift.rs | |
-| 7 | **AD-10**: `StoreError::Runtime` catch-all masks unrelated errors | API Design | helpers.rs:34 | |
-| 8 | **EH-6**: `AnalysisError::Embedder(String)` discards typed error chain | Error Handling | lib.rs:148 | |
-| 9 | **OB-1**: Store module zero tracing spans on 8+ critical operations | Observability | store/*.rs | |
-| 10 | **DS-3**: OnceLock notes cache never invalidated in long-lived Store | Data Safety | store/mod.rs:170 | |
-| 11 | **DS-5**: HNSW copy fallback not atomic — crash loses index | Data Safety | persist.rs:225 | |
-| 12 | **DS-6**: `prune_missing` per-batch transactions — partial prune on crash | Data Safety | chunks.rs:474 | |
-| 13 | **PB-3**: 30+ sites manual `.replace('\\', "/")` — no centralized function | Platform | 15+ files | |
-| 14 | **PF-1**: N+1 SELECT for content hash snapshotting in upsert | Performance | chunks.rs:64 | |
-| 15 | **PF-5**: HNSW search loads full content for all 500 candidates before scoring | Performance | chunks.rs:1235, search.rs:694 | |
-| 16 | **PF-7**: `get_call_graph` called 15 times with no caching | Performance | calls.rs:469 | |
-| 17 | **PF-10**: `find_test_chunks` LIKE content scan — 50MB, called 13 times | Performance | calls.rs:946 | |
-| 18 | **EX-1**: ChunkType Display/FromStr still manual — macro never created | Extensibility | language/mod.rs:268 | |
-| 19 | **EX-2**: Structural patterns no language-specific dispatch hooks | Extensibility | structural.rs:64 | |
-| 20 | **EX-8**: Test heuristics hardcoded, not connected to language system | Extensibility | calls.rs:83 | |
-| 21 | **CQ-1**: cmd_query repeats boilerplate across 5 code paths | Code Quality | query.rs:16 | |
-| 22 | **CQ-4**: cmd_watch 9 indent levels, duplicated embedder init | Code Quality | watch.rs:39 | |
-| 23 | **CQ-6**: find_dead_code 233 lines with inline struct, 3 phases | Code Quality | calls.rs:707 | |
-| 24 | **TC-1**: `search_across_projects` zero tests | Test Coverage | project.rs:155 | |
-| 25 | **TC-2**: Schema migration never executed in tests | Test Coverage | migrations.rs:29 | |
-| 26 | **TC-7**: HNSW search path no RRF behavior test | Test Coverage | search.rs:664 | |
-| 27 | **TC-10**: `index_notes` zero tests | Test Coverage | lib.rs:247 | |
-| 28 | **RM-2**: gather/scout load full call graph per CLI call — no _with_resources | Resource Mgmt | gather.rs:325 | |
-| 29 | **RM-6**: BatchContext no idle timeout for embedder/reranker | Resource Mgmt | batch/mod.rs:46 | |
-| 30 | **PB-4**: HNSW advisory locking silently ineffective on WSL — no warning | Platform | persist.rs:119 | |
-| 31 | **DS-7**: `rewrite_notes_file` lock on read-only fd | Data Safety | note.rs:185 | |
+| 1 | **DS-1**: Watch mode never acquired index lock (claimed fixed, wasn't) | Data Safety | watch.rs | ✅ PR #502 |
+| 2 | **DS-2**: Watch mode chunks+calls not atomic (claimed fixed, wasn't) | Data Safety | watch.rs:394-427 | ✅ PR #502 |
+| 3 | **AC-1**: HNSW path skips RRF fusion — search differs by index presence | Algorithm | search.rs:664 | ✅ PR #502 |
+| 4 | **AC-2**: BFS depth overwrite — deeper depth replaces shallower | Algorithm | gather.rs:202 | ✅ PR #502 |
+| 5 | **AD-6**: ScoutResult/TaskResult/GatherResult etc missing Serialize | API Design | multiple | ✅ PR #502 |
+| 6 | **AD-8**: cmd_diff/cmd_drift duplicate reference resolution ~30 lines | API Design | diff.rs, drift.rs | ✅ PR #502 |
+| 7 | **AD-10**: `StoreError::Runtime` catch-all masks unrelated errors | API Design | helpers.rs:34 | ✅ PR #502 |
+| 8 | **EH-6**: `AnalysisError::Embedder(String)` discards typed error chain | Error Handling | lib.rs:148 | ✅ PR #502 |
+| 9 | **OB-1**: Store module zero tracing spans on 8+ critical operations | Observability | store/*.rs | ✅ PR #502 |
+| 10 | **DS-3**: OnceLock notes cache never invalidated in long-lived Store | Data Safety | store/mod.rs:170 | ✅ PR #502 |
+| 11 | **DS-5**: HNSW copy fallback not atomic — crash loses index | Data Safety | persist.rs:225 | ✅ PR #502 |
+| 12 | **DS-6**: `prune_missing` per-batch transactions — partial prune on crash | Data Safety | chunks.rs:474 | ✅ PR #502 |
+| 13 | **PB-3**: 30+ sites manual `.replace('\\', "/")` — no centralized function | Platform | 15+ files | deferred |
+| 14 | **PF-1**: N+1 SELECT for content hash snapshotting in upsert | Performance | chunks.rs:64 | ✅ PR #502 |
+| 15 | **PF-5**: HNSW search loads full content for all 500 candidates before scoring | Performance | chunks.rs:1235, search.rs:694 | deferred |
+| 16 | **PF-7**: `get_call_graph` called 15 times with no caching | Performance | calls.rs:469 | ✅ PR #502 |
+| 17 | **PF-10**: `find_test_chunks` LIKE content scan — 50MB, called 13 times | Performance | calls.rs:946 | ✅ PR #502 |
+| 18 | **EX-1**: ChunkType Display/FromStr still manual — macro never created | Extensibility | language/mod.rs:268 | ✅ PR #502 |
+| 19 | **EX-2**: Structural patterns no language-specific dispatch hooks | Extensibility | structural.rs:64 | ✅ PR #502 |
+| 20 | **EX-8**: Test heuristics hardcoded, not connected to language system | Extensibility | calls.rs:83 | ✅ PR #502 |
+| 21 | **CQ-1**: cmd_query repeats boilerplate across 5 code paths | Code Quality | query.rs:16 | ✅ PR #502 |
+| 22 | **CQ-4**: cmd_watch 9 indent levels, duplicated embedder init | Code Quality | watch.rs:39 | ✅ PR #502 |
+| 23 | **CQ-6**: find_dead_code 233 lines with inline struct, 3 phases | Code Quality | calls.rs:707 | ✅ PR #502 |
+| 24 | **TC-1**: `search_across_projects` zero tests | Test Coverage | project.rs:155 | ✅ PR #502 |
+| 25 | **TC-2**: Schema migration never executed in tests | Test Coverage | migrations.rs:29 | ✅ PR #502 |
+| 26 | **TC-7**: HNSW search path no RRF behavior test | Test Coverage | search.rs:664 | ✅ PR #502 |
+| 27 | **TC-10**: `index_notes` zero tests | Test Coverage | lib.rs:247 | ✅ PR #502 |
+| 28 | **RM-2**: gather/scout load full call graph per CLI call — no _with_resources | Resource Mgmt | gather.rs:325 | ✅ PR #502 |
+| 29 | **RM-6**: BatchContext no idle timeout for embedder/reranker | Resource Mgmt | batch/mod.rs:46 | ✅ PR #502 |
+| 30 | **PB-4**: HNSW advisory locking silently ineffective on WSL — no warning | Platform | persist.rs:119 | ✅ PR #502 |
+| 31 | **DS-7**: `rewrite_notes_file` lock on read-only fd | Data Safety | note.rs:185 | ✅ PR #502 |
 
 ## P3: Easy + Low Impact — Fix If Time
 
