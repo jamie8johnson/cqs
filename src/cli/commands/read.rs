@@ -221,7 +221,10 @@ pub(crate) fn build_focused_output(
         .collect();
     let batch_results = store
         .search_by_names_batch(&type_names, 5)
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to batch-lookup type definitions for focused read");
+            std::collections::HashMap::new()
+        });
 
     for t in &filtered_types {
         let type_name = &t.type_name;
@@ -277,7 +280,10 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     let audit_mode = load_audit_state(&cqs_dir);
     let notes_path = root.join("docs/notes.toml");
     let notes = if notes_path.exists() {
-        parse_notes(&notes_path).unwrap_or_default()
+        parse_notes(&notes_path).unwrap_or_else(|e| {
+            tracing::warn!(path = %notes_path.display(), error = %e, "Failed to parse notes.toml");
+            vec![]
+        })
     } else {
         vec![]
     };
@@ -309,7 +315,10 @@ fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     let audit_mode = load_audit_state(&cqs_dir);
     let notes_path = root.join("docs/notes.toml");
     let notes = if notes_path.exists() {
-        parse_notes(&notes_path).unwrap_or_default()
+        parse_notes(&notes_path).unwrap_or_else(|e| {
+            tracing::warn!(path = %notes_path.display(), error = %e, "Failed to parse notes.toml in focused read");
+            vec![]
+        })
     } else {
         vec![]
     };

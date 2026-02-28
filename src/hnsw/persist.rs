@@ -14,6 +14,9 @@ use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
 /// Valid HNSW file extensions (prevents path traversal via malicious checksum file)
 const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
 
+/// All HNSW file extensions including checksum (for cleanup/deletion)
+pub const HNSW_ALL_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+
 /// Verify HNSW index file checksums using blake3.
 ///
 /// # Security Model

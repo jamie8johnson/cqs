@@ -245,6 +245,57 @@ fn build_vector_index(
     Ok(cqs::HnswIndex::try_load(cqs_dir))
 }
 
+// ─── JSON serialization helpers ──────────────────────────────────────────────
+
+/// Recursively replace NaN/Infinity f64 values with null in a serde_json::Value.
+/// serde_json::to_string panics on NaN — this prevents that.
+fn sanitize_json_floats(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(f) = n.as_f64() {
+                if f.is_nan() || f.is_infinite() {
+                    *value = serde_json::Value::Null;
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                sanitize_json_floats(item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_k, v) in map.iter_mut() {
+                sanitize_json_floats(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Serialize a JSON value to a line on stdout. Sanitizes NaN/Infinity before
+/// serialization to prevent serde_json panics. Returns Err on write failure
+/// (broken pipe).
+fn write_json_line(
+    out: &mut impl std::io::Write,
+    value: &serde_json::Value,
+) -> std::io::Result<()> {
+    match serde_json::to_string(value) {
+        Ok(s) => writeln!(out, "{}", s),
+        Err(_) => {
+            // NaN/Infinity in the value — sanitize and retry
+            let mut sanitized = value.clone();
+            sanitize_json_floats(&mut sanitized);
+            match serde_json::to_string(&sanitized) {
+                Ok(s) => writeln!(out, "{}", s),
+                Err(e) => {
+                    tracing::warn!(error = %e, "JSON serialization failed after sanitization");
+                    writeln!(out, r#"{{"error":"JSON serialization failed"}}"#)
+                }
+            }
+        }
+    }
+}
+
 // ─── Main loop ───────────────────────────────────────────────────────────────
 
 /// Entry point for `cqs batch`.
@@ -284,8 +335,8 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         // SEC-12: Reject lines exceeding 1MB to prevent unbounded memory allocation
         if line.len() > MAX_BATCH_LINE_LEN {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
-            let error_json = serde_json::json!({"error": "Line too long (max 1MB)"});
-            if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap()).is_err() {
+            // Hardcoded JSON — no serialization needed, no NaN risk
+            if writeln!(stdout, r#"{{"error":"Line too long (max 1MB)"}}"#).is_err() {
                 break;
             }
             let _ = stdout.flush();
@@ -310,8 +361,22 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
             Err(e) => {
                 ctx.error_count.fetch_add(1, Ordering::Relaxed);
                 let error_json = serde_json::json!({"error": format!("Parse error: {}", e)});
-                if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap()).is_err() {
-                    break;
+                match serde_json::to_string(&error_json) {
+                    Ok(s) => {
+                        if writeln!(stdout, "{}", s).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        if writeln!(
+                            stdout,
+                            r#"{{"error":"Parse error (serialization failed)"}}"#
+                        )
+                        .is_err()
+                        {
+                            break;
+                        }
+                    }
                 }
                 let _ = stdout.flush();
                 continue;
@@ -325,7 +390,7 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         // Pipeline detection: if tokens contain a standalone `|`, route to pipeline
         if pipeline::has_pipe_token(&tokens) {
             let result = pipeline::execute_pipeline(&ctx, &tokens, trimmed);
-            if writeln!(stdout, "{}", serde_json::to_string(&result).unwrap()).is_err() {
+            if write_json_line(&mut stdout, &result).is_err() {
                 break;
             }
         } else {
@@ -333,16 +398,14 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
             match commands::BatchInput::try_parse_from(&tokens) {
                 Ok(input) => match commands::dispatch(&ctx, input.cmd) {
                     Ok(value) => {
-                        if writeln!(stdout, "{}", serde_json::to_string(&value).unwrap()).is_err() {
+                        if write_json_line(&mut stdout, &value).is_err() {
                             break;
                         }
                     }
                     Err(e) => {
                         ctx.error_count.fetch_add(1, Ordering::Relaxed);
                         let error_json = serde_json::json!({"error": format!("{}", e)});
-                        if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap())
-                            .is_err()
-                        {
+                        if write_json_line(&mut stdout, &error_json).is_err() {
                             break;
                         }
                     }
@@ -350,8 +413,7 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
                 Err(e) => {
                     ctx.error_count.fetch_add(1, Ordering::Relaxed);
                     let error_json = serde_json::json!({"error": format!("{}", e)});
-                    if writeln!(stdout, "{}", serde_json::to_string(&error_json).unwrap()).is_err()
-                    {
+                    if write_json_line(&mut stdout, &error_json).is_err() {
                         break;
                     }
                 }

@@ -101,7 +101,8 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
 
     // Initialize store schema
     {
-        let store = Store::open(&db_path)?;
+        let store = Store::open(&db_path)
+            .with_context(|| format!("Failed to open store at {}", db_path.display()))?;
         store.init(&ModelInfo::default())?;
         // Drop store — pipeline opens its own
     }

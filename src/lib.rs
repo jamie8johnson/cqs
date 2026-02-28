@@ -32,7 +32,11 @@
 //!
 //! // Search for similar code (hybrid RRF search)
 //! let query_embedding = embedder.embed_query("parse configuration file")?;
-//! let filter = SearchFilter { enable_rrf: true, ..Default::default() };
+//! let filter = SearchFilter {
+//!     enable_rrf: true,
+//!     query_text: "parse configuration file".to_string(),
+//!     ..Default::default()
+//! };
 //! let results = store.search_filtered(&query_embedding, &filter, 5, 0.3)?;
 //! # Ok(())
 //! # }
@@ -427,5 +431,45 @@ mod tests {
         assert!(is_test_chunk("test_search", "src/search.rs"));
         // Path matches, name doesn't
         assert!(is_test_chunk("setup_fixtures", "tests/fixtures.rs"));
+    }
+
+    // ─── rel_display tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_rel_display_relative_path_within_base() {
+        let root = Path::new("/home/user/project");
+        let path = Path::new("/home/user/project/src/main.rs");
+        assert_eq!(rel_display(path, root), "src/main.rs");
+    }
+
+    #[test]
+    fn test_rel_display_path_outside_base() {
+        let root = Path::new("/home/user/project");
+        let path = Path::new("/tmp/other/file.rs");
+        // Path outside root — returns full path with normalized separators
+        assert_eq!(rel_display(path, root), "/tmp/other/file.rs");
+    }
+
+    #[test]
+    fn test_rel_display_exact_base_path() {
+        let root = Path::new("/home/user/project");
+        let path = Path::new("/home/user/project");
+        // Exact match — strip_prefix returns ""
+        assert_eq!(rel_display(path, root), "");
+    }
+
+    #[test]
+    fn test_rel_display_backslash_normalization() {
+        // Simulate a Windows-style path stored as a PathBuf
+        let root = Path::new("/home/user/project");
+        let path = PathBuf::from("/home/user/project/src\\cli\\mod.rs");
+        assert_eq!(rel_display(&path, root), "src/cli/mod.rs");
+    }
+
+    #[test]
+    fn test_rel_display_no_common_prefix() {
+        let root = Path::new("/opt/tools");
+        let path = Path::new("/var/log/app.log");
+        assert_eq!(rel_display(path, root), "/var/log/app.log");
     }
 }

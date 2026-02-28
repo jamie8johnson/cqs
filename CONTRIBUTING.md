@@ -67,7 +67,7 @@ Thank you for your interest in contributing to cqs!
 
 ### Feature Ideas
 
-- Additional language support (tree-sitter grammars: C++, Kotlin, Swift, and more)
+- Additional language support (see `src/language/` for current list — 20 languages supported)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
@@ -105,7 +105,7 @@ src/
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
     rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, markdown.rs
-  source/       - Source abstraction layer
+  source/       - Source abstraction layer (reserved — not yet wired into indexing pipeline)
     mod.rs      - Source trait
     filesystem.rs - File-based source implementation
   store/        - SQLite storage layer (Schema v11, WAL mode)
@@ -169,7 +169,6 @@ src/
   diff_parse.rs   - Unified diff parser for impact-diff
   health.rs     - Codebase quality snapshot (dead code, staleness, hotspots)
   suggest.rs    - Auto-suggest notes from code patterns
-  deps.rs       - Type-level dependency impact analysis
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   lib.rs        - Public API

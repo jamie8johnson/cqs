@@ -476,6 +476,17 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
+            let edge_count = rows.len();
+            if edge_count as i64 >= MAX_CALL_GRAPH_EDGES {
+                tracing::warn!(
+                    limit = MAX_CALL_GRAPH_EDGES,
+                    "Call graph truncated at {} edges — analysis may be incomplete",
+                    MAX_CALL_GRAPH_EDGES
+                );
+            } else {
+                tracing::info!(edges = edge_count, "Call graph loaded");
+            }
+
             let mut forward: std::collections::HashMap<String, Vec<String>> =
                 std::collections::HashMap::new();
             let mut reverse: std::collections::HashMap<String, Vec<String>> =
@@ -708,6 +719,7 @@ impl Store {
         &self,
         include_pub: bool,
     ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
+        let _span = tracing::info_span!("find_dead_code", include_pub).entered();
         self.rt.block_on(async {
             // Phase 1: Lightweight query without content/doc
             let callable = ChunkType::callable_sql_list();
@@ -716,7 +728,7 @@ impl Store {
                         c.line_start, c.line_end, c.parent_id
                  FROM chunks c
                  WHERE c.chunk_type IN ({callable})
-                   AND c.name NOT IN (SELECT DISTINCT callee_name FROM function_calls)
+                   AND NOT EXISTS (SELECT 1 FROM function_calls fc WHERE fc.callee_name = c.name LIMIT 1)
                    AND c.parent_id IS NULL
                  ORDER BY c.origin, c.line_start"
             );
@@ -812,11 +824,7 @@ impl Store {
                     continue;
                 }
                 let path_str = chunk.file.to_string_lossy();
-                if path_str.contains("/tests/")
-                    || path_str.contains("_test.")
-                    || path_str.contains(".test.")
-                    || path_str.contains(".spec.")
-                {
+                if crate::is_test_chunk(&chunk.name, &path_str) {
                     continue;
                 }
 
@@ -927,7 +935,7 @@ impl Store {
                 }
             }
 
-            tracing::debug!(
+            tracing::info!(
                 total_uncalled,
                 confident = confident.len(),
                 possibly_dead = possibly_dead_pub.len(),

@@ -217,7 +217,9 @@ fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String
         for mention in &note.mentions {
             match classify_mention(mention) {
                 MentionKind::File => {
-                    if !project_root.join(mention).exists() {
+                    // Normalize backslashes to forward slashes for cross-platform path joining
+                    let normalized = mention.replace('\\', "/");
+                    if !project_root.join(&normalized).exists() {
                         stale.push(mention.clone());
                     }
                 }

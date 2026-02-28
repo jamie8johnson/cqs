@@ -42,6 +42,11 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     }
 
     let root = find_project_root();
+
+    if cqs::config::is_wsl() {
+        tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Consider running 'cqs index' periodically.");
+    }
+
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
 
@@ -214,12 +219,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
                                     Err(e) => {
                                         warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
                                         // Delete stale HNSW files so search doesn't use an outdated index
-                                        for ext in &[
-                                            "hnsw.graph",
-                                            "hnsw.data",
-                                            "hnsw.ids",
-                                            "hnsw.checksum",
-                                        ] {
+                                        for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
                                             let path = cqs_dir.join(format!("index.{}", ext));
                                             if path.exists() {
                                                 let _ = std::fs::remove_file(&path);

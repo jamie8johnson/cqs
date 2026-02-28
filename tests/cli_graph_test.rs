@@ -180,7 +180,7 @@ fn test_audit_mode_invalid_state() {
         .current_dir(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("Invalid state"));
+        .stderr(predicate::str::contains("possible values: on, off"));
 }
 
 #[test]

@@ -397,9 +397,7 @@ impl UnifiedResult {
 /// Filter and scoring options for search.
 ///
 /// Fields are public for direct construction via struct literals.
-/// Builder methods ([`SearchFilter::new()`], [`SearchFilter::with_query()`])
-/// are provided as convenience helpers for common patterns — both styles
-/// are supported and equivalent.
+/// [`SearchFilter::with_query()`] is a convenience builder for setting query text.
 ///
 /// All fields are optional. Unset filters match all chunks.
 /// Use [`SearchFilter::validate()`] to check constraints before searching.
@@ -459,15 +457,9 @@ impl Default for SearchFilter {
 impl SearchFilter {
     /// Create a new SearchFilter with default values.
     ///
-    /// Use struct literal syntax to customize:
-    /// ```ignore
-    /// let filter = SearchFilter {
-    ///     languages: Some(vec![Language::Rust]),
-    ///     path_pattern: Some("src/**/*.rs".to_string()),
-    ///     query_text: "retry logic".to_string(),
-    ///     ..SearchFilter::new()
-    /// };
-    /// ```
+    /// Equivalent to `SearchFilter::default()`. Prefer `Default::default()`
+    /// or struct literal syntax for direct construction.
+    #[inline]
     pub fn new() -> Self {
         Self::default()
     }
@@ -591,17 +583,40 @@ pub struct IndexStats {
 /// - 0.9: prefix match
 /// - 0.7: substring match
 /// - 0.0: no name relationship
+///
+/// For batch/loop usage where the same query is reused, prefer
+/// [`score_name_match_pre_lower`] with pre-lowercased strings to avoid
+/// redundant `to_lowercase()` allocations.
 pub fn score_name_match(name: &str, query: &str) -> f32 {
     if query.is_empty() {
         return 0.0;
     }
     let name_lower = name.to_lowercase();
     let query_lower = query.to_lowercase();
+    score_name_match_pre_lower(&name_lower, &query_lower)
+}
+
+/// Score a pre-lowercased chunk name against a pre-lowercased query.
+///
+/// Same scoring logic as [`score_name_match`] but skips `to_lowercase()`.
+/// Use when calling in a loop where caller can pre-lowercase outside the loop
+/// to avoid redundant heap allocations.
+///
+/// Returns a score between 0.0 and 1.0:
+/// - 1.0: exact match
+/// - 0.9: prefix match
+/// - 0.7: substring match
+/// - 0.0: no name relationship
+#[inline]
+pub fn score_name_match_pre_lower(name_lower: &str, query_lower: &str) -> f32 {
+    if query_lower.is_empty() {
+        return 0.0;
+    }
     if name_lower == query_lower {
         1.0
-    } else if name_lower.starts_with(&query_lower) {
+    } else if name_lower.starts_with(query_lower) {
         0.9
-    } else if name_lower.contains(&query_lower) {
+    } else if name_lower.contains(query_lower) {
         0.7
     } else {
         0.0

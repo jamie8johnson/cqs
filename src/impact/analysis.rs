@@ -25,7 +25,13 @@ pub fn analyze_impact(
         tracing::info_span!("analyze_impact", target = target_name, depth, include_types).entered();
     let callers = build_caller_info(store, target_name)?;
     let graph = store.get_call_graph()?;
-    let tests = find_affected_tests(store, &graph, target_name)?;
+    let test_chunks = store.find_test_chunks()?;
+    let tests = find_affected_tests_with_chunks(
+        &graph,
+        &test_chunks,
+        target_name,
+        DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    );
     let transitive_callers = if depth > 1 {
         find_transitive_callers(store, &graph, target_name, depth)?
     } else {
@@ -130,37 +136,6 @@ pub(super) fn extract_call_snippet_from_cache(
     } else {
         None
     }
-}
-
-/// Find tests that transitively call the target via reverse BFS
-fn find_affected_tests(
-    store: &Store,
-    graph: &crate::store::CallGraph,
-    target_name: &str,
-) -> anyhow::Result<Vec<TestInfo>> {
-    let test_chunks = store.find_test_chunks()?;
-    let ancestors = reverse_bfs(graph, target_name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
-
-    let mut tests: Vec<TestInfo> = test_chunks
-        .iter()
-        .filter_map(|test| {
-            ancestors.get(&test.name).and_then(|&d| {
-                if d > 0 {
-                    Some(TestInfo {
-                        name: test.name.clone(),
-                        file: test.file.clone(),
-                        line: test.line_start,
-                        call_depth: d,
-                    })
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-
-    tests.sort_by_key(|t| t.call_depth);
-    Ok(tests)
 }
 
 /// Find tests that exercise `target_name` via call graph traversal.

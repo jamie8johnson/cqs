@@ -27,6 +27,8 @@ mod persist;
 mod safety;
 mod search;
 
+pub use persist::HNSW_ALL_EXTENSIONS;
+
 use std::cell::UnsafeCell;
 
 use hnsw_rs::anndists::dist::distances::DistCosine;

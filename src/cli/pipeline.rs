@@ -359,17 +359,30 @@ pub(crate) fn run_index_pipeline(
                 }
                 chunks
             } else {
+                // Cache needs_reindex results per-file to avoid redundant DB queries
+                // when multiple chunks come from the same file.
+                let mut reindex_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
                 chunks
                     .into_iter()
                     .filter(|c| {
+                        if let Some(cached) = reindex_cache.get(&c.file) {
+                            if let Some(mtime) = cached {
+                                file_mtimes.entry(c.file.clone()).or_insert(*mtime);
+                            }
+                            return cached.is_some();
+                        }
                         let abs_path = root.join(&c.file);
                         // needs_reindex returns Some(mtime) if reindex needed, None otherwise
                         match store.needs_reindex(&abs_path) {
                             Ok(Some(mtime)) => {
+                                reindex_cache.insert(c.file.clone(), Some(mtime));
                                 file_mtimes.insert(c.file.clone(), mtime);
                                 true
                             }
-                            Ok(None) => false,
+                            Ok(None) => {
+                                reindex_cache.insert(c.file.clone(), None);
+                                false
+                            }
                             Err(e) => {
                                 tracing::warn!(file = %abs_path.display(), error = %e, "mtime check failed, reindexing");
                                 true

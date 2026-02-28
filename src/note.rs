@@ -309,11 +309,15 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
 /// "gather.rs" matches "src/gather.rs" but not "src/gatherer.rs"
 /// "src/store" matches "src/store/chunks.rs" but not "my_src/store.rs"
 pub fn path_matches_mention(path: &str, mention: &str) -> bool {
+    // Normalize backslashes to forward slashes for cross-platform matching
+    let path = path.replace('\\', "/");
+    let mention = mention.replace('\\', "/");
+
     // Check if mention matches as a path suffix (component-aligned)
-    if let Some(stripped) = path.strip_suffix(mention) {
+    if let Some(stripped) = path.strip_suffix(mention.as_str()) {
         // Must be at component boundary: empty prefix or ends with /
         stripped.is_empty() || stripped.ends_with('/')
-    } else if let Some(stripped) = path.strip_prefix(mention) {
+    } else if let Some(stripped) = path.strip_prefix(mention.as_str()) {
         // Check prefix match at component boundary
         stripped.is_empty() || stripped.starts_with('/')
     } else {

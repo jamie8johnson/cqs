@@ -31,7 +31,10 @@ pub(super) fn dispatch_search(
             .iter()
             .map(|r| {
                 serde_json::to_value(ChunkOutput::from_search_result(r, false))
-                    .expect("ChunkOutput serialization cannot fail")
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, name = %r.chunk.name, "ChunkOutput serialization failed (NaN score?)");
+                        serde_json::json!({"error": "serialization failed", "name": r.chunk.name})
+                    })
             })
             .collect();
         return Ok(serde_json::json!({
@@ -149,7 +152,10 @@ pub(super) fn dispatch_search(
         .map(|r| match r {
             cqs::store::UnifiedResult::Code(sr) => {
                 serde_json::to_value(ChunkOutput::from_search_result(sr, true))
-                    .expect("ChunkOutput serialization cannot fail")
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, name = %sr.chunk.name, "ChunkOutput serialization failed (NaN score?)");
+                        serde_json::json!({"error": "serialization failed", "name": sr.chunk.name})
+                    })
             }
             cqs::store::UnifiedResult::Note(nr) => serde_json::json!({
                 "type": "note",

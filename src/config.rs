@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Detect if running under Windows Subsystem for Linux (cached)
-fn is_wsl() -> bool {
+pub fn is_wsl() -> bool {
     static IS_WSL: OnceLock<bool> = OnceLock::new();
     *IS_WSL.get_or_init(|| {
         std::fs::read_to_string("/proc/version")
