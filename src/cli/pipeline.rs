@@ -231,381 +231,341 @@ fn flush_to_cpu(
     true
 }
 
-/// Run the indexing pipeline with 3 concurrent stages:
-/// 1. Parser: Parse files in parallel batches
-/// 2. Embedder: Embed chunks (GPU)
-/// 3. Writer: Write to SQLite
-pub(crate) fn run_index_pipeline(
-    root: &Path,
+/// Stage 1: Parse files in parallel batches, filter by staleness, and send to embedder channels.
+#[allow(clippy::too_many_arguments)]
+fn parser_stage(
     files: Vec<PathBuf>,
-    store_path: &Path,
+    root: PathBuf,
     force: bool,
-    quiet: bool,
-) -> Result<PipelineStats> {
-    let _span = tracing::info_span!("run_index_pipeline", file_count = files.len()).entered();
+    parser: Arc<CqParser>,
+    store: Arc<Store>,
+    parsed_count: Arc<AtomicUsize>,
+    parse_errors: Arc<AtomicUsize>,
+    parse_tx: Sender<ParsedBatch>,
+) -> Result<()> {
     let batch_size = EMBED_BATCH_SIZE;
     let file_batch_size = FILE_BATCH_SIZE;
-    let channel_depth = PIPELINE_CHANNEL_DEPTH;
 
-    // Channels
-    let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
-    let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
-        bounded(channel_depth);
-    // GPU failure channel - GPU requeues failed batches here for CPU to handle async
-    let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) = bounded(channel_depth);
+    for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
+        if check_interrupted() {
+            break;
+        }
 
-    // Shared state for progress
-    let total_files = files.len();
-    let parsed_count = Arc::new(AtomicUsize::new(0));
-    let embedded_count = Arc::new(AtomicUsize::new(0));
-    let gpu_failures = Arc::new(AtomicUsize::new(0));
-    let parse_errors = Arc::new(AtomicUsize::new(0));
+        tracing::info!(
+            batch = batch_idx + 1,
+            files = file_batch.len(),
+            "Processing file batch"
+        );
 
-    // Create parser once and share via Arc (avoids re-creating ~1ms init per thread)
-    let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);
-    let parser_for_thread = Arc::clone(&parser);
-
-    // Create store once and share via Arc (single runtime + connection pool)
-    let store = Arc::new(Store::open(store_path).context("Failed to open store")?);
-    let store_for_parser = Arc::clone(&store);
-    let store_for_gpu = Arc::clone(&store);
-    let store_for_cpu = Arc::clone(&store);
-
-    // Clone for threads
-    let root_clone = root.to_path_buf();
-    let parsed_count_clone = Arc::clone(&parsed_count);
-    let parse_errors_clone = Arc::clone(&parse_errors);
-
-    // Stage 1: Parser thread - parse files in parallel batches
-    let parser_handle = thread::spawn(move || -> Result<()> {
-        let parser = parser_for_thread;
-        let store = store_for_parser;
-        let root = root_clone;
-
-        for (batch_idx, file_batch) in files.chunks(file_batch_size).enumerate() {
-            if check_interrupted() {
-                break;
-            }
-
-            tracing::info!(
-                batch = batch_idx + 1,
-                files = file_batch.len(),
-                "Processing file batch"
-            );
-
-            // Parse files in parallel
-            let chunks: Vec<Chunk> = file_batch
-                .par_iter()
-                .flat_map(|rel_path| {
-                    let abs_path = root.join(rel_path);
-                    match parser.parse_file(&abs_path) {
-                        Ok(mut chunks) => {
-                            // Rewrite paths to be relative for storage
-                            // Normalize path separators to forward slashes for cross-platform consistency
-                            let path_str = rel_path.to_string_lossy().replace('\\', "/");
-                            // Build a map of old IDs → new IDs for parent_id fixup
-                            let id_map: std::collections::HashMap<String, String> = chunks
-                                .iter()
-                                .map(|chunk| {
-                                    let hash_prefix =
-                                        chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
-                                    let new_id = format!(
-                                        "{}:{}:{}",
-                                        path_str, chunk.line_start, hash_prefix
-                                    );
-                                    (chunk.id.clone(), new_id)
-                                })
-                                .collect();
-                            for chunk in &mut chunks {
-                                chunk.file = rel_path.clone();
-                                if let Some(new_id) = id_map.get(&chunk.id) {
-                                    chunk.id = new_id.clone();
-                                }
-                                // Rewrite parent_id to match rewritten chunk IDs
-                                if let Some(ref pid) = chunk.parent_id {
-                                    if let Some(new_pid) = id_map.get(pid) {
-                                        chunk.parent_id = Some(new_pid.clone());
-                                    }
+        // Parse files in parallel
+        let chunks: Vec<Chunk> = file_batch
+            .par_iter()
+            .flat_map(|rel_path| {
+                let abs_path = root.join(rel_path);
+                match parser.parse_file(&abs_path) {
+                    Ok(mut chunks) => {
+                        // Rewrite paths to be relative for storage
+                        // Normalize path separators to forward slashes for cross-platform consistency
+                        let path_str = rel_path.to_string_lossy().replace('\\', "/");
+                        // Build a map of old IDs → new IDs for parent_id fixup
+                        let id_map: std::collections::HashMap<String, String> = chunks
+                            .iter()
+                            .map(|chunk| {
+                                let hash_prefix =
+                                    chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
+                                let new_id =
+                                    format!("{}:{}:{}", path_str, chunk.line_start, hash_prefix);
+                                (chunk.id.clone(), new_id)
+                            })
+                            .collect();
+                        for chunk in &mut chunks {
+                            chunk.file = rel_path.clone();
+                            if let Some(new_id) = id_map.get(&chunk.id) {
+                                chunk.id = new_id.clone();
+                            }
+                            // Rewrite parent_id to match rewritten chunk IDs
+                            if let Some(ref pid) = chunk.parent_id {
+                                if let Some(new_pid) = id_map.get(pid) {
+                                    chunk.parent_id = Some(new_pid.clone());
                                 }
                             }
-                            chunks
+                        }
+                        chunks
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                        parse_errors.fetch_add(1, Ordering::Relaxed);
+                        vec![]
+                    }
+                }
+            })
+            .collect();
+
+        // Filter by needs_reindex unless forced, caching mtime per-file to avoid double reads
+        let mut file_mtimes: std::collections::HashMap<PathBuf, i64> =
+            std::collections::HashMap::new();
+        let chunks: Vec<Chunk> = if force {
+            // Force mode: still need to get mtimes for storage
+            for c in &chunks {
+                if !file_mtimes.contains_key(&c.file) {
+                    let abs_path = root.join(&c.file);
+                    let mtime = abs_path
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0);
+                    file_mtimes.insert(c.file.clone(), mtime);
+                }
+            }
+            chunks
+        } else {
+            // Cache needs_reindex results per-file to avoid redundant DB queries
+            // when multiple chunks come from the same file.
+            let mut reindex_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
+            chunks
+                .into_iter()
+                .filter(|c| {
+                    if let Some(cached) = reindex_cache.get(&c.file) {
+                        if let Some(mtime) = cached {
+                            file_mtimes.entry(c.file.clone()).or_insert(*mtime);
+                        }
+                        return cached.is_some();
+                    }
+                    let abs_path = root.join(&c.file);
+                    // needs_reindex returns Some(mtime) if reindex needed, None otherwise
+                    match store.needs_reindex(&abs_path) {
+                        Ok(Some(mtime)) => {
+                            reindex_cache.insert(c.file.clone(), Some(mtime));
+                            file_mtimes.insert(c.file.clone(), mtime);
+                            true
+                        }
+                        Ok(None) => {
+                            reindex_cache.insert(c.file.clone(), None);
+                            false
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
-                            parse_errors_clone.fetch_add(1, Ordering::Relaxed);
-                            vec![]
+                            tracing::warn!(file = %abs_path.display(), error = %e, "mtime check failed, reindexing");
+                            true
                         }
                     }
                 })
-                .collect();
+                .collect()
+        };
 
-            // Filter by needs_reindex unless forced, caching mtime per-file to avoid double reads
-            let mut file_mtimes: std::collections::HashMap<PathBuf, i64> =
-                std::collections::HashMap::new();
-            let chunks: Vec<Chunk> = if force {
-                // Force mode: still need to get mtimes for storage
-                for c in &chunks {
-                    if !file_mtimes.contains_key(&c.file) {
-                        let abs_path = root.join(&c.file);
-                        let mtime = abs_path
-                            .metadata()
-                            .and_then(|m| m.modified())
-                            .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                            .map(|d| d.as_secs() as i64)
-                            .unwrap_or(0);
-                        file_mtimes.insert(c.file.clone(), mtime);
-                    }
-                }
-                chunks
-            } else {
-                // Cache needs_reindex results per-file to avoid redundant DB queries
-                // when multiple chunks come from the same file.
-                let mut reindex_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
-                chunks
-                    .into_iter()
-                    .filter(|c| {
-                        if let Some(cached) = reindex_cache.get(&c.file) {
-                            if let Some(mtime) = cached {
-                                file_mtimes.entry(c.file.clone()).or_insert(*mtime);
-                            }
-                            return cached.is_some();
-                        }
-                        let abs_path = root.join(&c.file);
-                        // needs_reindex returns Some(mtime) if reindex needed, None otherwise
-                        match store.needs_reindex(&abs_path) {
-                            Ok(Some(mtime)) => {
-                                reindex_cache.insert(c.file.clone(), Some(mtime));
-                                file_mtimes.insert(c.file.clone(), mtime);
-                                true
-                            }
-                            Ok(None) => {
-                                reindex_cache.insert(c.file.clone(), None);
-                                false
-                            }
-                            Err(e) => {
-                                tracing::warn!(file = %abs_path.display(), error = %e, "mtime check failed, reindexing");
-                                true
-                            }
-                        }
+        parsed_count.fetch_add(file_batch.len(), Ordering::Relaxed);
+
+        if !chunks.is_empty() {
+            // Send in embedding-sized batches with per-file mtimes
+            for chunk_batch in chunks.chunks(batch_size) {
+                let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunk_batch
+                    .iter()
+                    .filter_map(|c| file_mtimes.get(&c.file).map(|&m| (c.file.clone(), m)))
+                    .collect();
+                if parse_tx
+                    .send(ParsedBatch {
+                        chunks: chunk_batch.to_vec(),
+                        file_mtimes: batch_mtimes,
                     })
-                    .collect()
-            };
-
-            parsed_count_clone.fetch_add(file_batch.len(), Ordering::Relaxed);
-
-            if !chunks.is_empty() {
-                // Send in embedding-sized batches with per-file mtimes
-                for chunk_batch in chunks.chunks(batch_size) {
-                    let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunk_batch
-                        .iter()
-                        .filter_map(|c| file_mtimes.get(&c.file).map(|&m| (c.file.clone(), m)))
-                        .collect();
-                    if parse_tx
-                        .send(ParsedBatch {
-                            chunks: chunk_batch.to_vec(),
-                            file_mtimes: batch_mtimes,
-                        })
-                        .is_err()
-                    {
-                        break; // Receiver dropped
-                    }
+                    .is_err()
+                {
+                    break; // Receiver dropped
                 }
             }
         }
-        Ok(())
-    });
+    }
+    Ok(())
+}
 
-    // Clone for embedders (GPU and CPU run in parallel)
-    let embedded_count_gpu = Arc::clone(&embedded_count);
-    let embedded_count_cpu = Arc::clone(&embedded_count);
-    let gpu_failures_clone = Arc::clone(&gpu_failures);
-    let parse_rx_cpu = parse_rx.clone(); // CPU also grabs regular batches
-    let embed_tx_cpu = embed_tx.clone();
+/// Stage 2a: GPU embedder — embed chunks, requeue failures to CPU fallback.
+fn gpu_embed_stage(
+    parse_rx: Receiver<ParsedBatch>,
+    embed_tx: Sender<EmbeddedBatch>,
+    fail_tx: Sender<ParsedBatch>,
+    store: Arc<Store>,
+    embedded_count: Arc<AtomicUsize>,
+    gpu_failures: Arc<AtomicUsize>,
+) -> Result<()> {
+    let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
+    let embedder = Embedder::new().context("Failed to initialize GPU embedder")?;
+    embedder.warm().context("Failed to warm GPU embedder")?;
 
-    // Stage 2a: GPU Embedder thread - embed chunks, requeue failures to CPU
-    let gpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let _span = tracing::info_span!("embed_thread", mode = "gpu").entered();
-        let embedder = Embedder::new().context("Failed to initialize GPU embedder")?;
-        embedder.warm().context("Failed to warm GPU embedder")?;
-        let store = store_for_gpu;
+    for batch in parse_rx {
+        if check_interrupted() {
+            break;
+        }
 
-        for batch in parse_rx {
-            if check_interrupted() {
+        // Use shared preparation logic (windowing + cache check + NL generation)
+        let prepared = prepare_for_embedding(batch, &embedder, &store);
+
+        if prepared.to_embed.is_empty() {
+            // All cached, send directly
+            let cached_count = prepared.cached.len();
+            embedded_count.fetch_add(cached_count, Ordering::Relaxed);
+            if embed_tx
+                .send(EmbeddedBatch {
+                    chunk_embeddings: prepared.cached,
+                    cached_count,
+                    file_mtimes: prepared.file_mtimes,
+                })
+                .is_err()
+            {
                 break;
             }
+            continue;
+        }
 
-            // Use shared preparation logic (windowing + cache check + NL generation)
-            let prepared = prepare_for_embedding(batch, &embedder, &store);
+        let max_len = prepared.texts.iter().map(|t| t.len()).max().unwrap_or(0);
 
-            if prepared.to_embed.is_empty() {
-                // All cached, send directly
+        // Pre-filter long batches to CPU (GPU hits CUDNN limits >8k chars)
+        if max_len > 8000 {
+            tracing::warn!(
+                chunks = prepared.to_embed.len(),
+                max_len,
+                "Routing long batch to CPU (GPU CUDNN limit)"
+            );
+            if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count) {
+                break;
+            }
+            continue;
+        }
+
+        let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
+        match embedder.embed_documents(&text_refs) {
+            Ok(embs) => {
+                let new_embeddings: Vec<Embedding> =
+                    embs.into_iter().map(|e| e.with_sentiment(0.0)).collect();
                 let cached_count = prepared.cached.len();
-                embedded_count_gpu.fetch_add(cached_count, Ordering::Relaxed);
+                let mut chunk_embeddings = prepared.cached;
+                chunk_embeddings.extend(prepared.to_embed.into_iter().zip(new_embeddings));
+                embedded_count.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
                 if embed_tx
                     .send(EmbeddedBatch {
-                        chunk_embeddings: prepared.cached,
+                        chunk_embeddings,
                         cached_count,
-                        file_mtimes: prepared.file_mtimes,
+                        file_mtimes: prepared.file_mtimes.clone(),
                     })
                     .is_err()
                 {
                     break;
                 }
-                continue;
             }
-
-            let max_len = prepared.texts.iter().map(|t| t.len()).max().unwrap_or(0);
-
-            // Pre-filter long batches to CPU (GPU hits CUDNN limits >8k chars)
-            if max_len > 8000 {
+            Err(e) => {
+                // GPU failed - log details, then flush cached + requeue to CPU
+                gpu_failures.fetch_add(prepared.to_embed.len(), Ordering::Relaxed);
+                let files: Vec<_> = prepared
+                    .to_embed
+                    .iter()
+                    .map(|c| c.file.display().to_string())
+                    .collect();
                 tracing::warn!(
+                    error = %e,
                     chunks = prepared.to_embed.len(),
                     max_len,
-                    "Routing long batch to CPU (GPU CUDNN limit)"
+                    ?files,
+                    "GPU embedding failed, requeueing to CPU"
                 );
-                if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count_gpu) {
+                if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count) {
                     break;
                 }
-                continue;
             }
+        }
+    }
+    drop(fail_tx); // Signal CPU thread to finish when done
+    tracing::debug!("GPU embedder thread finished");
+    Ok(())
+}
 
+/// Stage 2b: CPU embedder — handles GPU failures + overflow (GPU gets priority).
+///
+/// CPU embedder is lazy-initialized on first batch to save ~500MB when GPU handles everything.
+fn cpu_embed_stage(
+    parse_rx: Receiver<ParsedBatch>,
+    fail_rx: Receiver<ParsedBatch>,
+    embed_tx: Sender<EmbeddedBatch>,
+    store: Arc<Store>,
+    embedded_count: Arc<AtomicUsize>,
+) -> Result<()> {
+    let _span = tracing::info_span!("embed_thread", mode = "cpu").entered();
+    let mut embedder: Option<Embedder> = None;
+
+    loop {
+        if check_interrupted() {
+            break;
+        }
+
+        // Race: GPU and CPU both grab from parse_rx, CPU also handles routed long batches
+        let batch = select! {
+            recv(fail_rx) -> msg => match msg {
+                Ok(b) => b,
+                Err(_) => match parse_rx.recv() {
+                    Ok(b) => b,
+                    Err(_) => break,
+                },
+            },
+            recv(parse_rx) -> msg => match msg {
+                Ok(b) => b,
+                Err(_) => match fail_rx.recv() {
+                    Ok(b) => b,
+                    Err(_) => break,
+                },
+            },
+        };
+
+        // Lazy-init CPU embedder on first batch
+        let emb = match &embedder {
+            Some(e) => e,
+            None => {
+                let e = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
+                embedder.insert(e)
+            }
+        };
+
+        // Prepare batch: windowing, cache check, text generation
+        let prepared = prepare_for_embedding(batch, emb, &store);
+
+        // Embed new chunks (CPU only)
+        let new_embeddings: Vec<Embedding> = if prepared.to_embed.is_empty() {
+            vec![]
+        } else {
             let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
-            match embedder.embed_documents(&text_refs) {
-                Ok(embs) => {
-                    let new_embeddings: Vec<Embedding> =
-                        embs.into_iter().map(|e| e.with_sentiment(0.0)).collect();
-                    let cached_count = prepared.cached.len();
-                    let mut chunk_embeddings = prepared.cached;
-                    chunk_embeddings.extend(prepared.to_embed.into_iter().zip(new_embeddings));
-                    embedded_count_gpu.fetch_add(chunk_embeddings.len(), Ordering::Relaxed);
-                    if embed_tx
-                        .send(EmbeddedBatch {
-                            chunk_embeddings,
-                            cached_count,
-                            file_mtimes: prepared.file_mtimes.clone(),
-                        })
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-                Err(e) => {
-                    // GPU failed - log details, then flush cached + requeue to CPU
-                    gpu_failures_clone.fetch_add(prepared.to_embed.len(), Ordering::Relaxed);
-                    let files: Vec<_> = prepared
-                        .to_embed
-                        .iter()
-                        .map(|c| c.file.display().to_string())
-                        .collect();
-                    tracing::warn!(
-                        error = %e,
-                        chunks = prepared.to_embed.len(),
-                        max_len,
-                        ?files,
-                        "GPU embedding failed, requeueing to CPU"
-                    );
-                    if !flush_to_cpu(prepared, &embed_tx, &fail_tx, &embedded_count_gpu) {
-                        break;
-                    }
-                }
-            }
+            emb.embed_documents(&text_refs)?
+                .into_iter()
+                .map(|e| e.with_sentiment(0.0))
+                .collect()
+        };
+
+        let embedded_batch = create_embedded_batch(
+            prepared.cached,
+            prepared.to_embed,
+            new_embeddings,
+            prepared.file_mtimes,
+        );
+
+        embedded_count.fetch_add(embedded_batch.chunk_embeddings.len(), Ordering::Relaxed);
+
+        if embed_tx.send(embedded_batch).is_err() {
+            break; // Receiver dropped
         }
-        drop(fail_tx); // Signal CPU thread to finish when done
-        tracing::debug!("GPU embedder thread finished");
-        Ok(())
-    });
+    }
+    tracing::debug!("CPU embedder thread finished");
+    Ok(())
+}
 
-    // Stage 2b: CPU Embedder thread - handles failures + overflow (GPU gets priority)
-    // CPU embedder is lazy-initialized on first batch to save ~500MB when GPU handles everything.
-    let cpu_embedder_handle = thread::spawn(move || -> Result<()> {
-        let _span = tracing::info_span!("embed_thread", mode = "cpu").entered();
-        let store = store_for_cpu;
-        let mut embedder: Option<Embedder> = None;
-
-        loop {
-            if check_interrupted() {
-                break;
-            }
-
-            // Race: GPU and CPU both grab from parse_rx, CPU also handles routed long batches
-            let batch = select! {
-                recv(fail_rx) -> msg => match msg {
-                    Ok(b) => b,
-                    Err(_) => match parse_rx_cpu.recv() {
-                        Ok(b) => b,
-                        Err(_) => break,
-                    },
-                },
-                recv(parse_rx_cpu) -> msg => match msg {
-                    Ok(b) => b,
-                    Err(_) => match fail_rx.recv() {
-                        Ok(b) => b,
-                        Err(_) => break,
-                    },
-                },
-            };
-
-            // Lazy-init CPU embedder on first batch
-            let emb = match &embedder {
-                Some(e) => e,
-                None => {
-                    let e = Embedder::new_cpu().context("Failed to initialize CPU embedder")?;
-                    embedder.insert(e)
-                }
-            };
-
-            // Prepare batch: windowing, cache check, text generation
-            let prepared = prepare_for_embedding(batch, emb, &store);
-
-            // Embed new chunks (CPU only)
-            let new_embeddings: Vec<Embedding> = if prepared.to_embed.is_empty() {
-                vec![]
-            } else {
-                let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
-                emb.embed_documents(&text_refs)?
-                    .into_iter()
-                    .map(|e| e.with_sentiment(0.0))
-                    .collect()
-            };
-
-            let embedded_batch = create_embedded_batch(
-                prepared.cached,
-                prepared.to_embed,
-                new_embeddings,
-                prepared.file_mtimes,
-            );
-
-            embedded_count_cpu.fetch_add(embedded_batch.chunk_embeddings.len(), Ordering::Relaxed);
-
-            if embed_tx_cpu.send(embedded_batch).is_err() {
-                break; // Receiver dropped
-            }
-        }
-        tracing::debug!("CPU embedder thread finished");
-        Ok(())
-    });
-
-    // Stage 3: Writer (main thread) - write to SQLite
-    // Uses shared store created earlier (single runtime + connection pool)
-    // Reuse shared parser for call graph extraction
+/// Stage 3: Write embedded chunks to SQLite with call graph extraction.
+///
+/// Returns `(total_embedded, total_cached)` counts.
+fn store_stage(
+    embed_rx: Receiver<EmbeddedBatch>,
+    store: &Store,
+    parser: &CqParser,
+    parsed_count: &AtomicUsize,
+    embedded_count: &AtomicUsize,
+    progress: &ProgressBar,
+) -> Result<(usize, usize)> {
     let mut total_embedded = 0;
     let mut total_cached = 0;
-
-    let progress = if quiet {
-        ProgressBar::hidden()
-    } else {
-        let pb = ProgressBar::new(total_files as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
-                .unwrap_or_else(|e| {
-                    tracing::warn!("Progress template error: {}, using default", e);
-                    ProgressStyle::default_bar()
-                }),
-        );
-        pb
-    };
 
     for batch in embed_rx {
         if check_interrupted() {
@@ -671,16 +631,125 @@ pub(crate) fn run_index_pipeline(
         ));
     }
 
+    Ok((total_embedded, total_cached))
+}
+
+/// Run the indexing pipeline with 3 concurrent stages:
+/// 1. Parser: Parse files in parallel batches
+/// 2. Embedder: Embed chunks (GPU with CPU fallback)
+/// 3. Writer: Write to SQLite
+pub(crate) fn run_index_pipeline(
+    root: &Path,
+    files: Vec<PathBuf>,
+    store_path: &Path,
+    force: bool,
+    quiet: bool,
+) -> Result<PipelineStats> {
+    let _span = tracing::info_span!("run_index_pipeline", file_count = files.len()).entered();
+    let total_files = files.len();
+
+    // Channels
+    let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
+        bounded(PIPELINE_CHANNEL_DEPTH);
+    let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
+        bounded(PIPELINE_CHANNEL_DEPTH);
+    let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
+        bounded(PIPELINE_CHANNEL_DEPTH);
+
+    // Shared state
+    let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);
+    let store = Arc::new(Store::open(store_path).context("Failed to open store")?);
+    let parsed_count = Arc::new(AtomicUsize::new(0));
+    let embedded_count = Arc::new(AtomicUsize::new(0));
+    let gpu_failures = Arc::new(AtomicUsize::new(0));
+    let parse_errors = Arc::new(AtomicUsize::new(0));
+
+    // CPU embedder also races on parse_rx
+    let parse_rx_cpu = parse_rx.clone();
+    let embed_tx_cpu = embed_tx.clone();
+
+    // Stage 1: Parser thread
+    let parser_handle = {
+        let parser = Arc::clone(&parser);
+        let store = Arc::clone(&store);
+        let parsed_count = Arc::clone(&parsed_count);
+        let parse_errors = Arc::clone(&parse_errors);
+        let root = root.to_path_buf();
+        thread::spawn(move || {
+            parser_stage(
+                files,
+                root,
+                force,
+                parser,
+                store,
+                parsed_count,
+                parse_errors,
+                parse_tx,
+            )
+        })
+    };
+
+    // Stage 2a: GPU embedder thread
+    let gpu_handle = {
+        let store = Arc::clone(&store);
+        let embedded_count = Arc::clone(&embedded_count);
+        let gpu_failures = Arc::clone(&gpu_failures);
+        thread::spawn(move || {
+            gpu_embed_stage(
+                parse_rx,
+                embed_tx,
+                fail_tx,
+                store,
+                embedded_count,
+                gpu_failures,
+            )
+        })
+    };
+
+    // Stage 2b: CPU embedder thread
+    let cpu_handle = {
+        let store = Arc::clone(&store);
+        let embedded_count = Arc::clone(&embedded_count);
+        thread::spawn(move || {
+            cpu_embed_stage(parse_rx_cpu, fail_rx, embed_tx_cpu, store, embedded_count)
+        })
+    };
+
+    // Stage 3: Writer (main thread)
+    let progress = if quiet {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(total_files as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {msg}")
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Progress template error: {}, using default", e);
+                    ProgressStyle::default_bar()
+                }),
+        );
+        pb
+    };
+
+    let (total_embedded, total_cached) = store_stage(
+        embed_rx,
+        &store,
+        &parser,
+        &parsed_count,
+        &embedded_count,
+        &progress,
+    )?;
+
     progress.finish_with_message("done");
 
     // Wait for threads to finish
     parser_handle
         .join()
         .map_err(|e| anyhow::anyhow!("Parser thread panicked: {}", panic_message(&e)))??;
-    gpu_embedder_handle
+    gpu_handle
         .join()
         .map_err(|e| anyhow::anyhow!("GPU embedder thread panicked: {}", panic_message(&e)))??;
-    cpu_embedder_handle
+    cpu_handle
         .join()
         .map_err(|e| anyhow::anyhow!("CPU embedder thread panicked: {}", panic_message(&e)))??;
 
