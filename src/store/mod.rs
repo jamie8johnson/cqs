@@ -159,6 +159,14 @@ pub(crate) fn sanitize_fts_query(s: &str) -> String {
 /// for crash safety. All methods are synchronous but internally use
 /// an async runtime to execute sqlx operations.
 ///
+/// # Memory-mapped I/O
+///
+/// `open()` sets `PRAGMA mmap_size = 256MB` per connection with a 4-connection pool,
+/// reserving up to 1GB of virtual address space. `open_readonly()` uses 64MB × 1.
+/// This is intentional and benign on 64-bit systems (128TB virtual address space).
+/// Mmap pages are demand-paged from the database file and evicted under memory
+/// pressure — actual RSS reflects only accessed pages, not the mmap reservation.
+///
 /// # Example
 ///
 /// ```no_run

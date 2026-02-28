@@ -478,6 +478,124 @@ impl BoundedScoreHeap {
     }
 }
 
+/// Result of assembling SQL WHERE conditions from a [`SearchFilter`].
+///
+/// Separates filter analysis (testable without a database) from SQL execution.
+/// The caller combines these pieces with cursor-specific clauses (rowid, LIMIT).
+struct FilterSql {
+    /// SQL WHERE conditions (e.g., `"language IN (?1,?2)"`)
+    conditions: Vec<String>,
+    /// Bind values corresponding to the placeholders in `conditions`, in order
+    bind_values: Vec<String>,
+    /// Column list for SELECT (includes `name` when hybrid scoring or demotion is needed)
+    columns: &'static str,
+    /// Whether hybrid name+embedding scoring is active
+    use_hybrid: bool,
+    /// Whether RRF fusion with FTS keyword search is active
+    use_rrf: bool,
+}
+
+/// Build SQL filter components from a [`SearchFilter`].
+///
+/// Pure function — no database access. Returns conditions, bind values, and
+/// the column list needed for the scoring loop. Bind parameter indices are
+/// 1-based and contiguous.
+fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
+    let mut conditions = Vec::new();
+    let mut bind_values: Vec<String> = Vec::new();
+
+    if let Some(ref langs) = filter.languages {
+        let placeholders: Vec<_> = (0..langs.len())
+            .map(|i| format!("?{}", bind_values.len() + i + 1))
+            .collect();
+        conditions.push(format!("language IN ({})", placeholders.join(",")));
+        for lang in langs {
+            bind_values.push(lang.to_string());
+        }
+    }
+
+    if let Some(ref types) = filter.chunk_types {
+        let placeholders: Vec<_> = (0..types.len())
+            .map(|i| format!("?{}", bind_values.len() + i + 1))
+            .collect();
+        conditions.push(format!("chunk_type IN ({})", placeholders.join(",")));
+        for ct in types {
+            bind_values.push(ct.to_string());
+        }
+    }
+
+    let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+    let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
+
+    // Select columns: always id + embedding, optionally name for hybrid scoring
+    // or demotion (test function detection needs the name)
+    let need_name = use_hybrid || filter.enable_demotion;
+    let columns = if need_name {
+        "rowid, id, embedding, name"
+    } else {
+        "rowid, id, embedding"
+    };
+
+    FilterSql {
+        conditions,
+        bind_values,
+        columns,
+        use_hybrid,
+        use_rrf,
+    }
+}
+
+/// Score a single candidate chunk against the query.
+///
+/// Pure function — no database access. Combines embedding similarity, optional
+/// name boosting, glob filtering, note boosting, and test-function demotion.
+///
+/// Returns `None` if the candidate is filtered out (glob mismatch or below threshold).
+#[allow(clippy::too_many_arguments)]
+fn score_candidate(
+    embedding: &[f32],
+    query: &[f32],
+    name: Option<&str>,
+    file_part: &str,
+    filter: &SearchFilter,
+    name_matcher: Option<&NameMatcher>,
+    glob_matcher: Option<&globset::GlobMatcher>,
+    note_index: &NoteBoostIndex<'_>,
+    threshold: f32,
+) -> Option<f32> {
+    let embedding_score = cosine_similarity(query, embedding)?;
+
+    let base_score = if let Some(matcher) = name_matcher {
+        let n = name.unwrap_or("");
+        let name_score = matcher.score(n);
+        (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
+    } else {
+        embedding_score
+    };
+
+    if let Some(matcher) = glob_matcher {
+        if !matcher.is_match(file_part) {
+            return None;
+        }
+    }
+
+    // Apply note-based boost: notes mentioning this chunk's file or name
+    // adjust its score by up to ±15%
+    let chunk_name = name.unwrap_or("");
+    let mut score = base_score * note_index.boost(file_part, chunk_name);
+
+    // Apply demotion for test functions and underscore-prefixed names
+    if filter.enable_demotion {
+        score *= chunk_importance(chunk_name, file_part);
+    }
+
+    if score >= threshold {
+        Some(score)
+    } else {
+        None
+    }
+}
+
 impl Store {
     /// Raw embedding-only cosine similarity search (no RRF, no keyword matching).
     ///
@@ -515,42 +633,9 @@ impl Store {
         };
 
         self.rt.block_on(async {
-            // Build WHERE clause from filter
-            let mut conditions = Vec::new();
-            let mut bind_values: Vec<String> = Vec::new();
-
-            if let Some(ref langs) = filter.languages {
-                let placeholders: Vec<_> = (0..langs.len())
-                    .map(|i| format!("?{}", bind_values.len() + i + 1))
-                    .collect();
-                conditions.push(format!("language IN ({})", placeholders.join(",")));
-                for lang in langs {
-                    bind_values.push(lang.to_string());
-                }
-            }
-
-            if let Some(ref types) = filter.chunk_types {
-                let placeholders: Vec<_> = (0..types.len())
-                    .map(|i| format!("?{}", bind_values.len() + i + 1))
-                    .collect();
-                conditions.push(format!("chunk_type IN ({})", placeholders.join(",")));
-                for ct in types {
-                    bind_values.push(ct.to_string());
-                }
-            }
-
-            let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
-            let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
-            let semantic_limit = if use_rrf { limit * 3 } else { limit };
-
-            // Select columns: always id + embedding, optionally name for hybrid scoring
-            // or demotion (test function detection needs the name)
-            let need_name = use_hybrid || filter.enable_demotion;
-            let columns = if need_name {
-                "rowid, id, embedding, name"
-            } else {
-                "rowid, id, embedding"
-            };
+            let fsql = build_filter_sql(filter);
+            let semantic_limit = if fsql.use_rrf { limit * 3 } else { limit };
+            let need_name = fsql.use_hybrid || filter.enable_demotion;
 
             // Compile glob pattern once outside the loop (not per-chunk).
             // Note: Invalid patterns are logged and silently ignored (returns all results).
@@ -560,7 +645,7 @@ impl Store {
             let glob_matcher = compile_glob_filter(filter.path_pattern.as_ref());
 
             // Pre-tokenize query for name matching (avoids re-tokenizing per result)
-            let name_matcher = if use_hybrid {
+            let name_matcher = if fsql.use_hybrid {
                 Some(NameMatcher::new(&filter.query_text))
             } else {
                 None
@@ -580,9 +665,9 @@ impl Store {
             let mut last_rowid: i64 = 0;
 
             // Hoist SQL template out of cursor loop — only last_rowid changes per iteration
-            let rowid_condition = format!("rowid > ?{}", bind_values.len() + 1);
-            let limit_param = format!("?{}", bind_values.len() + 2);
-            let batch_where = if conditions.is_empty() {
+            let rowid_condition = format!("rowid > ?{}", fsql.bind_values.len() + 1);
+            let limit_param = format!("?{}", fsql.bind_values.len() + 2);
+            let batch_where = if fsql.conditions.is_empty() {
                 format!(
                     " WHERE {} ORDER BY rowid ASC LIMIT {}",
                     rowid_condition, limit_param
@@ -590,17 +675,17 @@ impl Store {
             } else {
                 format!(
                     " WHERE {} AND {} ORDER BY rowid ASC LIMIT {}",
-                    conditions.join(" AND "),
+                    fsql.conditions.join(" AND "),
                     rowid_condition,
                     limit_param
                 )
             };
-            let sql = format!("SELECT {} FROM chunks{}", columns, batch_where);
+            let sql = format!("SELECT {} FROM chunks{}", fsql.columns, batch_where);
 
             loop {
                 let batch: Vec<_> = {
                     let mut q = sqlx::query(&sql);
-                    for val in &bind_values {
+                    for val in &fsql.bind_values {
                         q = q.bind(val);
                     }
                     q = q.bind(last_rowid);
@@ -624,39 +709,19 @@ impl Store {
                     let Some(embedding) = embedding_slice(&embedding_bytes) else {
                         continue;
                     };
-                    let Some(embedding_score) = cosine_similarity(query.as_slice(), embedding)
-                    else {
-                        continue;
-                    };
-
-                    let base_score = if let Some(ref matcher) = name_matcher {
-                        let n = name.as_deref().unwrap_or("");
-                        let name_score = matcher.score(n);
-                        (1.0 - filter.name_boost) * embedding_score
-                            + filter.name_boost * name_score
-                    } else {
-                        embedding_score
-                    };
-
                     let file_part = extract_file_from_chunk_id(&id);
 
-                    if let Some(ref matcher) = glob_matcher {
-                        if !matcher.is_match(file_part) {
-                            continue;
-                        }
-                    }
-
-                    // Apply note-based boost: notes mentioning this chunk's file or name
-                    // adjust its score by up to ±15%
-                    let chunk_name = name.as_deref().unwrap_or("");
-                    let mut score = base_score * note_index.boost(file_part, chunk_name);
-
-                    // Apply demotion for test functions and underscore-prefixed names
-                    if filter.enable_demotion {
-                        score *= chunk_importance(chunk_name, file_part);
-                    }
-
-                    if score >= threshold {
+                    if let Some(score) = score_candidate(
+                        embedding,
+                        query.as_slice(),
+                        name.as_deref(),
+                        file_part,
+                        filter,
+                        name_matcher.as_ref(),
+                        glob_matcher.as_ref(),
+                        &note_index,
+                        threshold,
+                    ) {
                         score_heap.push(id, score);
                     }
                 }
@@ -665,14 +730,14 @@ impl Store {
             let mut scored = score_heap.into_sorted_vec();
 
             // Normalize + sanitize query text for FTS5 MATCH (defense-in-depth)
-            let normalized_query = if use_rrf {
+            let normalized_query = if fsql.use_rrf {
                 let normalized = normalize_for_fts(&filter.query_text);
                 Some(sanitize_fts_query(&normalized))
             } else {
                 None
             };
 
-            let final_scored: Vec<(String, f32)> = if use_rrf {
+            let final_scored: Vec<(String, f32)> = if fsql.use_rrf {
                 let fts_ids = if let Some(nq) = normalized_query.as_ref() {
                     if nq.is_empty() {
                         vec![]
@@ -837,39 +902,21 @@ impl Store {
                         }
                     }
 
-                    if let Some(ref matcher) = glob_matcher {
-                        if !matcher.is_match(&chunk_row.origin) {
-                            return None;
-                        }
-                    }
+                    let embedding = embedding_slice(&embedding_bytes)?;
 
-                    let embedding = match embedding_slice(&embedding_bytes) {
-                        Some(e) => e,
-                        None => return None,
-                    };
-                    let embedding_score = cosine_similarity(query.as_slice(), embedding)?;
+                    let score = score_candidate(
+                        embedding,
+                        query.as_slice(),
+                        Some(&chunk_row.name),
+                        &chunk_row.origin,
+                        filter,
+                        name_matcher.as_ref(),
+                        glob_matcher.as_ref(),
+                        &note_index,
+                        threshold,
+                    )?;
 
-                    let base_score = if let Some(ref matcher) = name_matcher {
-                        let name_score = matcher.score(&chunk_row.name);
-                        (1.0 - filter.name_boost) * embedding_score + filter.name_boost * name_score
-                    } else {
-                        embedding_score
-                    };
-
-                    // Apply note-based boost
-                    let mut score =
-                        note_index.boost(&chunk_row.origin, &chunk_row.name) * base_score;
-
-                    // Apply demotion for test functions and underscore-prefixed names
-                    if filter.enable_demotion {
-                        score *= chunk_importance(&chunk_row.name, &chunk_row.origin);
-                    }
-
-                    if score >= threshold {
-                        Some((chunk_row, score))
-                    } else {
-                        None
-                    }
+                    Some((chunk_row, score))
                 })
                 .collect();
 
@@ -1727,5 +1774,360 @@ mod tests {
     fn test_chunk_importance_test_name_beats_path() {
         // test_ name triggers demotion even in normal directory
         assert_eq!(chunk_importance("test_foo", "src/lib.rs"), 0.90);
+    }
+
+    // ===== build_filter_sql tests =====
+
+    #[test]
+    fn test_build_filter_sql_default() {
+        let filter = SearchFilter::default();
+        let fsql = build_filter_sql(&filter);
+        assert!(fsql.conditions.is_empty());
+        assert!(fsql.bind_values.is_empty());
+        // Default has enable_demotion=true, which requires name column
+        assert_eq!(fsql.columns, "rowid, id, embedding, name");
+        assert!(!fsql.use_hybrid);
+        assert!(!fsql.use_rrf);
+    }
+
+    #[test]
+    fn test_build_filter_sql_no_name_column() {
+        // Explicitly disable demotion + no hybrid → no name column needed
+        let filter = SearchFilter {
+            enable_demotion: false,
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.columns, "rowid, id, embedding");
+    }
+
+    #[test]
+    fn test_build_filter_sql_language_filter() {
+        use crate::parser::Language;
+        let filter = SearchFilter {
+            languages: Some(vec![Language::Rust, Language::Python]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.conditions.len(), 1);
+        assert!(fsql.conditions[0].starts_with("language IN"));
+        assert_eq!(fsql.bind_values.len(), 2);
+        assert_eq!(fsql.bind_values[0], "rust");
+        assert_eq!(fsql.bind_values[1], "python");
+    }
+
+    #[test]
+    fn test_build_filter_sql_chunk_type_filter() {
+        use crate::parser::ChunkType;
+        let filter = SearchFilter {
+            chunk_types: Some(vec![ChunkType::Function]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.conditions.len(), 1);
+        assert!(fsql.conditions[0].starts_with("chunk_type IN"));
+        assert_eq!(fsql.bind_values.len(), 1);
+    }
+
+    #[test]
+    fn test_build_filter_sql_combined_filters() {
+        use crate::parser::{ChunkType, Language};
+        let filter = SearchFilter {
+            languages: Some(vec![Language::Rust]),
+            chunk_types: Some(vec![ChunkType::Function, ChunkType::Method]),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert_eq!(fsql.conditions.len(), 2);
+        // 1 language + 2 chunk types = 3 bind values
+        assert_eq!(fsql.bind_values.len(), 3);
+        // Verify contiguous bind param indices: language gets ?1, chunk_types get ?2,?3
+        assert!(fsql.conditions[0].contains("?1"));
+        assert!(fsql.conditions[1].contains("?2"));
+        assert!(fsql.conditions[1].contains("?3"));
+    }
+
+    #[test]
+    fn test_build_filter_sql_hybrid_flags() {
+        let filter = SearchFilter {
+            name_boost: 0.3,
+            query_text: "parse".to_string(),
+            enable_rrf: true,
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert!(fsql.use_hybrid);
+        assert!(fsql.use_rrf);
+        // name needed for hybrid scoring
+        assert!(fsql.columns.contains("name"));
+    }
+
+    #[test]
+    fn test_build_filter_sql_demotion_includes_name() {
+        let filter = SearchFilter {
+            enable_demotion: true,
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert!(fsql.columns.contains("name"));
+    }
+
+    #[test]
+    fn test_build_filter_sql_rrf_needs_query_text() {
+        // RRF enabled but empty query text → use_rrf should be false
+        let filter = SearchFilter {
+            enable_rrf: true,
+            query_text: String::new(),
+            ..Default::default()
+        };
+        let fsql = build_filter_sql(&filter);
+        assert!(!fsql.use_rrf);
+    }
+
+    // ===== score_candidate tests =====
+
+    /// Build a normalized 769-dim test vector (768 base + 1 sentiment) for score_candidate tests.
+    fn test_embedding(seed: f32) -> Vec<f32> {
+        let mut v = vec![seed; 768];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v.push(0.0); // sentiment dimension
+        v
+    }
+
+    #[test]
+    fn test_score_candidate_basic() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoostIndex::new(&[]);
+
+        let score = score_candidate(
+            &emb,
+            &query,
+            None,
+            "src/lib.rs",
+            &filter,
+            None,
+            None,
+            &note_index,
+            0.0,
+        );
+        assert!(score.is_some());
+        assert!(
+            score.unwrap() > 0.9,
+            "Self-similarity should be ~1.0, got {}",
+            score.unwrap()
+        );
+    }
+
+    #[test]
+    fn test_score_candidate_below_threshold() {
+        // Near-orthogonal vectors → low cosine similarity
+        let emb = test_embedding(1.0);
+        let query = test_embedding(-1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoostIndex::new(&[]);
+
+        let score = score_candidate(
+            &emb,
+            &query,
+            None,
+            "src/lib.rs",
+            &filter,
+            None,
+            None,
+            &note_index,
+            0.5,
+        );
+        assert!(
+            score.is_none(),
+            "Opposite vectors should be below 0.5 threshold"
+        );
+    }
+
+    #[test]
+    fn test_score_candidate_glob_filters() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter = SearchFilter::default();
+        let note_index = NoteBoostIndex::new(&[]);
+        let glob = globset::Glob::new("src/**/*.rs").unwrap().compile_matcher();
+
+        // Matching path
+        let score = score_candidate(
+            &emb,
+            &query,
+            None,
+            "src/lib.rs",
+            &filter,
+            None,
+            Some(&glob),
+            &note_index,
+            0.0,
+        );
+        assert!(score.is_some());
+
+        // Non-matching path
+        let score = score_candidate(
+            &emb,
+            &query,
+            None,
+            "tests/foo.py",
+            &filter,
+            None,
+            Some(&glob),
+            &note_index,
+            0.0,
+        );
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn test_score_candidate_name_boost() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter_no_boost = SearchFilter::default();
+        let filter_with_boost = SearchFilter {
+            name_boost: 0.3,
+            query_text: "parseConfig".to_string(),
+            ..Default::default()
+        };
+        let note_index = NoteBoostIndex::new(&[]);
+        let matcher = NameMatcher::new("parseConfig");
+
+        let score_no = score_candidate(
+            &emb,
+            &query,
+            Some("parseConfig"),
+            "src/a.rs",
+            &filter_no_boost,
+            None,
+            None,
+            &note_index,
+            0.0,
+        )
+        .unwrap();
+        let score_yes = score_candidate(
+            &emb,
+            &query,
+            Some("parseConfig"),
+            "src/a.rs",
+            &filter_with_boost,
+            Some(&matcher),
+            None,
+            &note_index,
+            0.0,
+        )
+        .unwrap();
+
+        assert!(score_yes > 0.0);
+        assert!(score_no > 0.0);
+    }
+
+    #[test]
+    fn test_score_candidate_demotion() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let note_index = NoteBoostIndex::new(&[]);
+
+        let filter_no_demote = SearchFilter {
+            enable_demotion: false,
+            ..Default::default()
+        };
+        let filter_demote = SearchFilter {
+            enable_demotion: true,
+            ..Default::default()
+        };
+
+        let score_normal = score_candidate(
+            &emb,
+            &query,
+            Some("real_fn"),
+            "src/lib.rs",
+            &filter_demote,
+            None,
+            None,
+            &note_index,
+            0.0,
+        )
+        .unwrap();
+        let score_test = score_candidate(
+            &emb,
+            &query,
+            Some("test_foo"),
+            "src/lib.rs",
+            &filter_demote,
+            None,
+            None,
+            &note_index,
+            0.0,
+        )
+        .unwrap();
+        let score_no_demote = score_candidate(
+            &emb,
+            &query,
+            Some("test_foo"),
+            "src/lib.rs",
+            &filter_no_demote,
+            None,
+            None,
+            &note_index,
+            0.0,
+        )
+        .unwrap();
+
+        // With demotion, test_ function should score lower than normal
+        assert!(score_test < score_normal, "test_ should be demoted");
+        // Without demotion flag, test_ function scores the same as normal
+        assert!(
+            (score_no_demote - score_normal).abs() < 0.001,
+            "No demotion without flag"
+        );
+    }
+
+    #[test]
+    fn test_score_candidate_note_boost() {
+        let emb = test_embedding(1.0);
+        let query = test_embedding(1.0);
+        let filter = SearchFilter::default();
+
+        let notes = vec![make_note(1.0, &["lib.rs"])];
+        let note_index_boosted = NoteBoostIndex::new(&notes);
+        let note_index_empty = NoteBoostIndex::new(&[]);
+
+        let score_boosted = score_candidate(
+            &emb,
+            &query,
+            Some("my_fn"),
+            "src/lib.rs",
+            &filter,
+            None,
+            None,
+            &note_index_boosted,
+            0.0,
+        )
+        .unwrap();
+        let score_plain = score_candidate(
+            &emb,
+            &query,
+            Some("my_fn"),
+            "src/lib.rs",
+            &filter,
+            None,
+            None,
+            &note_index_empty,
+            0.0,
+        )
+        .unwrap();
+
+        assert!(
+            score_boosted > score_plain,
+            "Positive note should boost score"
+        );
     }
 }
