@@ -7,6 +7,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.3] - 2026-02-28
+
+Second 14-category audit completed (117 findings). 107 of 109 actionable findings fixed across 4 priority tiers.
+
+### Fixed
+- **SQLite URL injection** — unescaped `?`/`#` in paths could corrupt SQLite connection URLs (SEC-1)
+- **NaN panics in batch REPL** — 6 `serde_json::to_string().unwrap()` sites panic on NaN scores; switched to `serialize_f32_safe` (RB-1, RB-5)
+- **NaN ordering in onboard** — score-to-u64 cast produces garbage sort order; now uses `total_cmp` (RB-8)
+- **diff_parse unwrap on external input** — `starts_with` guard followed by bare `unwrap` (RB-7)
+- **Watch mode lock/atomicity regressions** — index lock and atomic chunk+call writes claimed fixed in v0.19.0 but code was never applied (DS-1, DS-2)
+- **HNSW RRF skip** — HNSW-guided search path bypassed RRF fusion, producing different results than brute-force path (AC-1)
+- **BFS depth overwrite** — deeper depth replaced shallower in gather BFS expansion (AC-2)
+- **Onboard embedding-only search** — missing RRF hybrid, keyword matches invisible (AC-3)
+- **Parent dedup reduces below limit** — parent deduplication ran after limit, shrinking result count (AC-4)
+- **open_readonly skipped integrity check** — `PRAGMA quick_check` only ran on writable opens despite SECURITY.md claims (DOC-6/SEC-3)
+- **Symlink traversal in convert** — `convert_directory` followed symlinks outside project root (SEC-4)
+- **Notes cache staleness** — `OnceLock` notes cache never invalidated in long-lived `Store` (DS-3)
+- **HNSW copy not atomic** — fallback copy on cross-device rename could lose index on crash (DS-5)
+- **GC prune partial crash** — per-batch transactions left orphans on interruption (DS-6, DS-4)
+- **Notes file lock on read-only fd** — exclusive lock acquired on read-only file descriptor (DS-7)
+- **N+1 SELECT in upsert** — content hash snapshotting queried per-chunk instead of batch (PF-1)
+- **Call graph loaded 15 times** — `get_call_graph` called repeatedly with no caching (PF-7)
+- **50MB test chunk scan** — `find_test_chunks` LIKE content scan called 13 times per session (PF-10)
+- **Pipeline per-chunk staleness** — `needs_reindex` checked per-chunk not per-file (PF-2)
+- **Note boost O(n*m)** — note boost computed O(notes × mentions) per chunk in inner loop (PF-4)
+- **Redundant test chunk loading** — `analyze_impact` loaded test chunks separately from callers (PF-6)
+- **Stale docs** — lib.rs example wouldn't compile, CONTRIBUTING.md listed phantom files and implemented languages as "future work", README commands wrong (DOC-1 through DOC-7)
+- **Platform path matching** — `path_matches_mention` and `find_stale_mentions` failed on backslash paths (PB-1, PB-7)
+- **Dead code test divergence** — `find_dead_code` inline path filter diverged from `is_test_chunk` (PB-2)
+
+### Changed
+- **Pipeline refactored** — 458-line `run_index_pipeline` split into `parser_stage`, `gpu_embed_stage`, `cpu_embed_stage`, `store_stage` (~136 lines of orchestration) (CQ-2)
+- **Search refactored** — extracted `build_filter_sql()` (pure SQL assembly) and `score_candidate()` (shared scoring) from `search_filtered`, with 14 unit tests (CQ-8)
+- **GatherDirection clap ValueEnum** — raw string replaced with typed enum (AD-1)
+- **Audit mode state typed** — `Option<String>` replaced with enum (AD-2)
+- **CLI arg naming unified** — `Scout.task` → `Scout.query`, `Onboard.concept` → `Onboard.query` (AD-3)
+- **Redundant --json flags removed** — 4 commands had both `--format` and `--json` (AD-4)
+- **Unused `_cli` params removed** — 7 command handlers accepted unused `&Cli` (AD-5)
+- **Placement API consolidated** — 4 `suggest_placement` variants collapsed to 2 with `PlacementOptions` (AD-7)
+- **StoreError variants refined** — `Runtime` catch-all split into specific variants; `AnalysisError::Embedder` preserves typed error chain (AD-10, EH-6)
+- **Reference resolution deduped** — `cmd_diff`/`cmd_drift` shared 30 lines of boilerplate, now `resolve_reference()` helper (AD-8)
+- **Serialize derives added** — `ScoutResult`, `TaskResult`, `GatherResult`, and related types now derive `Serialize` (AD-6)
+- **Entry/trait names language-driven** — `ENTRY_POINT_NAMES`/`TRAIT_METHOD_NAMES` constants replaced with `LanguageDef` fields across 20 languages (EX-3)
+- **Pipeline constants self-maintaining** — `is_pipeable()` on `BatchCmd` replaces manual constant; name extraction key-agnostic (EX-5, EX-6)
+- **Structural pattern hooks** — language-specific pattern dispatch via `LanguageDef` (EX-2)
+- **Test heuristics connected to language system** — `is_test_chunk` uses language registry (EX-8)
+- **Tracing spans added** — `Store::open`, `search_across_projects`, gather BFS, HNSW `build_batched`, `find_dead_code` now have entry spans and stats logging (OB-1 through OB-9)
+- **Temp file entropy** — PID+nanos replaced with `RandomState`-based entropy at 5 sites (SEC-2)
+- **FTS safety documented** — `sanitize_fts_query` ordering invariant documented with `debug_assert` guards (SEC-5)
+- **Impact degraded flag** — `ImpactResult.degraded` propagates batch name search failures (EH-7)
+- **`SearchFilter::new()` removed** — duplicated `Default::default()` (AD-9)
+- **HNSW extensions centralized** — single `HNSW_EXTENSIONS` constant replaces mismatched duplicates (CQ-3)
+- **Reference lookup deduped** — `resolve_and_open_reference()` replaces 6-site boilerplate (CQ-5)
+- **GatheredChunk From impl** — replaces 4 repeated 11-field constructions (CQ-7)
+- **Dead code refactored** — 233-line function split into phases with named structs (CQ-6)
+- **Watch mode refactored** — 9 indent levels flattened, embedder init deduped (CQ-4)
+- **Query command deduped** — 5 repeated code paths consolidated (CQ-1)
+- **Store mmap documented** — 256MB × 4 connection pool virtual address reservation explained (RM-4)
+- **HNSW id map BufReader** — `count_vectors` uses buffered read instead of loading entire id map (RM-1)
+- **Lightweight test chunk query** — `find_test_chunk_names_async()` avoids loading full `ChunkSummary` (RM-3)
+- **merge_results truncate-first** — hash dedup runs on truncated results, not full set (RM-5)
+- **Batch embedder idle timeout** — `BatchContext` releases embedder/reranker after inactivity (RM-6)
+- **Gather/scout shared resources** — `_with_resources` variants avoid reloading call graph per call (RM-2)
+
+### Added
+- **14 new unit tests for `build_filter_sql`** — pure SQL assembly tested without database
+- **`resolve_index_dir` tests** — 3 tests for `.cq` → `.cqs` migration
+- **`enumerate_files` tests** — 2 tests for file enumeration
+- **Batch boundary test** — 950-origin staleness check test
+- **Review note matching test** — review diff tested with actual notes
+- **Placement integration test** — `tests/where_test.rs`
+- **Cross-project search tests** — `search_across_projects` test coverage
+- **Schema migration test** — v10→v11 migration executed in tests
+- **HNSW RRF behavior test** — verifies HNSW path produces same results as brute-force
+- **Notes indexing test** — `index_notes` test coverage
+
 ## [0.19.2] - 2026-02-27
 
 ### Fixed
