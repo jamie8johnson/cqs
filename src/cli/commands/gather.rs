@@ -4,7 +4,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use cqs::Embedder;
-use cqs::{gather, gather_cross_index, reference, GatherDirection, GatherOptions};
+use cqs::{gather, gather_cross_index, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
 
@@ -13,7 +13,7 @@ pub(crate) fn cmd_gather(
     cli: &crate::cli::Cli,
     query: &str,
     expand: usize,
-    direction: &str,
+    direction: GatherDirection,
     limit: usize,
     max_tokens: Option<usize>,
     ref_name: Option<&str>,
@@ -33,10 +33,6 @@ pub(crate) fn cmd_gather(
     let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
 
-    let dir: GatherDirection = direction
-        .parse()
-        .map_err(|e: String| anyhow::anyhow!("{e}"))?;
-
     // When token-budgeted, fetch more chunks than limit so we have candidates to pack
     let fetch_limit = if max_tokens.is_some() {
         limit.max(50) // Fetch at least 50 candidates for token packing
@@ -46,23 +42,16 @@ pub(crate) fn cmd_gather(
 
     let opts = GatherOptions {
         expand_depth: expand.clamp(0, 5),
-        direction: dir,
+        direction,
         limit: fetch_limit,
         ..GatherOptions::default()
     };
 
     // Cross-index gather: seed from reference, bridge into project code
     let mut result = if let Some(rn) = ref_name {
-        let config = cqs::config::Config::load(&root);
-        let references = reference::load_references(&config.references);
-        let ref_idx = references.iter().find(|r| r.name == rn).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                rn
-            )
-        })?;
+        let ref_idx = super::resolve::find_reference(&root, rn)?;
 
-        gather_cross_index(&store, ref_idx, &query_embedding, query, &opts, &root)?
+        gather_cross_index(&store, &ref_idx, &query_embedding, query, &opts, &root)?
     } else {
         gather(&store, &query_embedding, query, &opts, &root)?
     };

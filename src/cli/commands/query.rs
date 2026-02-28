@@ -486,18 +486,7 @@ fn cmd_query_ref_only(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_query_ref_only", ref_name).entered();
 
-    let config = cqs::config::Config::load(root);
-    let references = reference::load_references(&config.references);
-
-    let ref_idx = references
-        .iter()
-        .find(|r| r.name == ref_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                ref_name
-            )
-        })?;
+    let ref_idx = super::resolve::find_reference(root, ref_name)?;
 
     let ref_limit = if cli.rerank {
         (cli.limit * 4).min(100)
@@ -505,7 +494,7 @@ fn cmd_query_ref_only(
         cli.limit
     };
     let mut results = reference::search_reference(
-        ref_idx,
+        &ref_idx,
         query_embedding,
         filter,
         ref_limit,
@@ -569,21 +558,10 @@ fn cmd_query_ref_name_only(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_query_ref_name_only", ref_name).entered();
 
-    let config = cqs::config::Config::load(root);
-    let references = reference::load_references(&config.references);
-
-    let ref_idx = references
-        .iter()
-        .find(|r| r.name == ref_name)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                ref_name
-            )
-        })?;
+    let ref_idx = super::resolve::find_reference(root, ref_name)?;
 
     let results =
-        reference::search_reference_by_name(ref_idx, query, cli.limit, cli.threshold, false)?;
+        reference::search_reference_by_name(&ref_idx, query, cli.limit, cli.threshold, false)?;
 
     let tagged: Vec<reference::TaggedResult> = results
         .into_iter()

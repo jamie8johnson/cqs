@@ -4,7 +4,7 @@
 //! search. See `math.rs` for similarity scoring.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use sqlx::Row;
 
@@ -263,6 +263,10 @@ const NOTE_BOOST_FACTOR: f32 = 0.15;
 /// (preserving sign) to avoid averaging away strong signals.
 ///
 /// Returns a multiplier: `1.0 + sentiment * NOTE_BOOST_FACTOR`
+///
+/// Production code uses [`NoteBoostIndex::boost`] for amortized O(1) lookups.
+/// This function is retained for unit tests.
+#[cfg(test)]
 fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
     let mut strongest: Option<f32> = None;
     for note in notes {
@@ -284,6 +288,86 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
     match strongest {
         Some(s) => 1.0 + s * NOTE_BOOST_FACTOR,
         None => 1.0,
+    }
+}
+
+/// Pre-computed note boost lookup for O(1) name matching and reduced path scans.
+///
+/// Built once from notes before the scoring loop, amortizing the O(notes x mentions)
+/// cost across all chunks. Name mentions use exact HashMap lookup (O(1)).
+/// Path mentions are stored separately for suffix/prefix matching, but with only
+/// the path-type mentions instead of all mentions.
+struct NoteBoostIndex<'a> {
+    /// Exact name -> strongest sentiment (absolute value wins, preserving sign)
+    name_sentiments: HashMap<&'a str, f32>,
+    /// (mention_str, sentiment) pairs for path-based mentions
+    path_mentions: Vec<(&'a str, f32)>,
+}
+
+impl<'a> NoteBoostIndex<'a> {
+    /// Build the lookup index from notes. O(notes x mentions), done once.
+    fn new(notes: &'a [NoteSummary]) -> Self {
+        let mut name_sentiments: HashMap<&'a str, f32> = HashMap::new();
+        let mut path_mentions: Vec<(&'a str, f32)> = Vec::new();
+
+        for note in notes {
+            for mention in &note.mentions {
+                // Heuristic: mentions containing '/' or '.' or '\' are path-like,
+                // others are name-like (exact match on chunk name)
+                let is_path_like =
+                    mention.contains('/') || mention.contains('.') || mention.contains('\\');
+                if is_path_like {
+                    path_mentions.push((mention.as_str(), note.sentiment));
+                } else {
+                    let entry = name_sentiments.entry(mention.as_str()).or_insert(0.0);
+                    if note.sentiment.abs() > entry.abs() {
+                        *entry = note.sentiment;
+                    }
+                }
+            }
+        }
+
+        Self {
+            name_sentiments,
+            path_mentions,
+        }
+    }
+
+    /// Compute the note-based score boost for a chunk.
+    ///
+    /// Checks name mentions via HashMap lookup (O(1)), then scans path mentions
+    /// for suffix/prefix matches. Takes strongest absolute sentiment across all
+    /// matches (preserving sign).
+    ///
+    /// Returns a multiplier: `1.0 + sentiment * NOTE_BOOST_FACTOR`
+    #[inline]
+    fn boost(&self, file_path: &str, chunk_name: &str) -> f32 {
+        let mut strongest: Option<f32> = None;
+
+        // O(1) name lookup
+        if let Some(&sentiment) = self.name_sentiments.get(chunk_name) {
+            strongest = Some(sentiment);
+        }
+
+        // Path mention scan (only path-like mentions, not all mentions)
+        for &(mention, sentiment) in &self.path_mentions {
+            if path_matches_mention(file_path, mention) {
+                match strongest {
+                    Some(prev) if sentiment.abs() > prev.abs() => {
+                        strongest = Some(sentiment);
+                    }
+                    None => {
+                        strongest = Some(sentiment);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        match strongest {
+            Some(s) => 1.0 + s * NOTE_BOOST_FACTOR,
+            None => 1.0,
+        }
     }
 }
 
@@ -482,6 +566,9 @@ impl Store {
                 None
             };
 
+            // Pre-compute note boost lookup for O(1) name matching in scoring loop
+            let note_index = NoteBoostIndex::new(notes);
+
             // Use bounded heap to maintain only top-N results during iteration.
             // This bounds memory to O(semantic_limit) instead of O(total_chunks).
             let mut score_heap = BoundedScoreHeap::new(semantic_limit);
@@ -555,7 +642,7 @@ impl Store {
                     // Apply note-based boost: notes mentioning this chunk's file or name
                     // adjust its score by up to ±15%
                     let chunk_name = name.as_deref().unwrap_or("");
-                    let mut score = base_score * note_boost(file_part, chunk_name, notes);
+                    let mut score = base_score * note_index.boost(file_part, chunk_name);
 
                     // Apply demotion for test functions and underscore-prefixed names
                     if filter.enable_demotion {
@@ -595,7 +682,9 @@ impl Store {
                     }
                 };
                 let semantic_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
-                Self::rrf_fuse(&semantic_ids, &fts_ids, limit)
+                // Request extra candidates from RRF to compensate for parent dedup
+                // filtering below — dedup can drop results, leaving fewer than `limit`.
+                Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
             } else {
                 scored.truncate(limit);
                 scored
@@ -610,7 +699,7 @@ impl Store {
             let rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
 
             let mut seen_parents: HashSet<String> = HashSet::new();
-            let results: Vec<SearchResult> = final_scored
+            let mut results: Vec<SearchResult> = final_scored
                 .into_iter()
                 .filter_map(|(id, score)| {
                     rows_map.get(&id).and_then(|row| {
@@ -626,6 +715,9 @@ impl Store {
                     })
                 })
                 .collect();
+
+            // Truncate back to requested limit after parent dedup
+            results.truncate(limit);
 
             Ok(results)
         })
@@ -706,6 +798,9 @@ impl Store {
                 None
             };
 
+            // Pre-compute note boost lookup for O(1) name matching in scoring loop
+            let note_index = NoteBoostIndex::new(notes);
+
             let mut scored: Vec<(ChunkRow, f32)> = rows
                 .into_iter()
                 .filter_map(|(chunk_row, embedding_bytes)| {
@@ -754,7 +849,7 @@ impl Store {
 
                     // Apply note-based boost
                     let mut score =
-                        base_score * note_boost(&chunk_row.origin, &chunk_row.name, notes);
+                        note_index.boost(&chunk_row.origin, &chunk_row.name) * base_score;
 
                     // Apply demotion for test functions and underscore-prefixed names
                     if filter.enable_demotion {

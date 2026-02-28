@@ -399,7 +399,7 @@ Key commands (all support `--json`):
 - `cqs gc` - report/clean stale index entries
 - `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
-- `cqs project add/remove/list` - cross-project search registry
+- `cqs project register/remove/list/search` - cross-project search registry
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
@@ -460,10 +460,10 @@ The HNSW (Hierarchical Navigable Small World) index provides fast approximate ne
 | M (connections) | 24 | Max edges per node. Higher = better recall, more memory |
 | ef_construction | 200 | Search width during build. Higher = better index, slower build |
 | max_layers | 16 | Graph layers. ~log(N) is typical |
-| ef_search | 100 | Search width at query time. Higher = better recall, slower search |
+| ef_search | 100 (adaptive) | Baseline search width; actual value scales with k and index size |
 
 **Trade-offs:**
-- **Recall vs speed**: Higher ef_search improves recall but slows queries
+- **Recall vs speed**: Higher ef_search baseline improves recall but slows queries. ef_search adapts automatically based on k and index size
 - **Index size**: ~4KB per vector with current settings
 - **Build time**: O(N * M * ef_construction) complexity
 

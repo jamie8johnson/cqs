@@ -95,6 +95,15 @@ pub enum GateLevel {
     Off,
 }
 
+/// Audit mode state for the audit-mode command
+#[derive(Clone, Debug, clap::ValueEnum)]
+pub enum AuditModeState {
+    /// Enable audit mode
+    On,
+    /// Disable audit mode
+    Off,
+}
+
 /// Parse a non-zero usize for --tokens validation
 pub(crate) fn parse_nonzero_usize(s: &str) -> std::result::Result<usize, String> {
     let val: usize = s.parse().map_err(|e| format!("{e}"))?;
@@ -503,7 +512,7 @@ enum Commands {
         expand: usize,
         /// Expansion direction: both, callers, callees
         #[arg(long, default_value = "both")]
-        direction: String,
+        direction: cqs::GatherDirection,
         /// Max chunks to return
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
@@ -538,7 +547,7 @@ enum Commands {
     #[command(name = "audit-mode")]
     AuditMode {
         /// State: on or off (omit to query current state)
-        state: Option<String>,
+        state: Option<AuditModeState>,
         /// Expiry duration (e.g., "30m", "1h", "2h30m")
         #[arg(long, default_value = "30m")]
         expires: String,
@@ -787,7 +796,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Gather {
             ref query,
             expand,
-            ref direction,
+            direction,
             limit,
             tokens,
             ref ref_name,
@@ -809,7 +818,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref state,
             ref expires,
             json,
-        }) => cmd_audit_mode(state.as_deref(), expires, json),
+        }) => cmd_audit_mode(state.as_ref(), expires, json),
         Some(Commands::Stale { json, count_only }) => cmd_stale(&cli, json, count_only),
         Some(Commands::Suggest { json, apply }) => cmd_suggest(json, apply),
         Some(Commands::Read {

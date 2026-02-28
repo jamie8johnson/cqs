@@ -240,6 +240,26 @@ pub enum ChunkType {
 }
 
 impl ChunkType {
+    /// All 16 ChunkType variants. Used by `callable_sql_list()` and iteration.
+    pub const ALL: &'static [ChunkType] = &[
+        ChunkType::Function,
+        ChunkType::Method,
+        ChunkType::Class,
+        ChunkType::Struct,
+        ChunkType::Enum,
+        ChunkType::Trait,
+        ChunkType::Interface,
+        ChunkType::Constant,
+        ChunkType::Section,
+        ChunkType::Property,
+        ChunkType::Delegate,
+        ChunkType::Event,
+        ChunkType::Module,
+        ChunkType::Macro,
+        ChunkType::Object,
+        ChunkType::TypeAlias,
+    ];
+
     /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
     pub fn is_callable(self) -> bool {
         matches!(
@@ -249,16 +269,11 @@ impl ChunkType {
     }
 
     /// SQL IN clause string for all callable chunk types.
-    /// Derived from `is_callable()` — keep in sync when adding new callable variants.
+    /// Derived from `ALL` filtered by `is_callable()` — stays in sync automatically.
     pub fn callable_sql_list() -> String {
-        let callable = [
-            ChunkType::Function,
-            ChunkType::Method,
-            ChunkType::Property,
-            ChunkType::Macro,
-        ];
-        callable
+        Self::ALL
             .iter()
+            .filter(|ct| ct.is_callable())
             .map(|ct| format!("'{}'", ct))
             .collect::<Vec<_>>()
             .join(",")

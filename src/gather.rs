@@ -86,7 +86,7 @@ impl Default for GatherOptions {
 }
 
 /// Direction of call graph expansion
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum GatherDirection {
     Both,
     Callers,
@@ -126,6 +126,34 @@ pub struct GatheredChunk {
 }
 
 impl GatheredChunk {
+    /// Build from a `SearchResult`, relativizing its file path against `root`.
+    pub fn from_search(
+        sr: &crate::store::SearchResult,
+        root: &Path,
+        score: f32,
+        depth: usize,
+        source: Option<String>,
+    ) -> Self {
+        Self {
+            name: sr.chunk.name.clone(),
+            file: sr
+                .chunk
+                .file
+                .strip_prefix(root)
+                .unwrap_or(&sr.chunk.file)
+                .to_path_buf(),
+            line_start: sr.chunk.line_start,
+            line_end: sr.chunk.line_end,
+            language: sr.chunk.language,
+            chunk_type: sr.chunk.chunk_type,
+            signature: sr.chunk.signature.clone(),
+            content: sr.chunk.content.clone(),
+            score,
+            depth,
+            source,
+        }
+    }
+
     /// Serialize to JSON, relativizing file paths against the project root.
     pub fn to_json(&self, root: &Path) -> serde_json::Value {
         serde_json::json!({
@@ -241,24 +269,13 @@ pub(crate) fn fetch_and_assemble(
                 }
                 seen_ids.insert(r.chunk.id.clone());
 
-                chunks.push(GatheredChunk {
-                    name: r.chunk.name.clone(),
-                    file: r
-                        .chunk
-                        .file
-                        .strip_prefix(project_root)
-                        .unwrap_or(&r.chunk.file)
-                        .to_path_buf(),
-                    line_start: r.chunk.line_start,
-                    line_end: r.chunk.line_end,
-                    language: r.chunk.language,
-                    chunk_type: r.chunk.chunk_type,
-                    signature: r.chunk.signature.clone(),
-                    content: r.chunk.content.clone(),
-                    score: *score,
-                    depth: *depth,
-                    source: None,
-                });
+                chunks.push(GatheredChunk::from_search(
+                    r,
+                    project_root,
+                    *score,
+                    *depth,
+                    None,
+                ));
             }
         }
     }
@@ -429,21 +446,12 @@ pub fn gather_cross_index(
         }
     };
 
-    // Build ref seed output chunks (these go into the result as reference context)
+    // Build ref seed output chunks (these go into the result as reference context).
+    // Use Path::new("") as root since ref files don't need path relativization.
     let ref_chunks: Vec<GatheredChunk> = ref_seeds
         .iter()
-        .map(|r| GatheredChunk {
-            name: r.chunk.name.clone(),
-            file: r.chunk.file.clone(),
-            line_start: r.chunk.line_start,
-            line_end: r.chunk.line_end,
-            language: r.chunk.language,
-            chunk_type: r.chunk.chunk_type,
-            signature: r.chunk.signature.clone(),
-            content: r.chunk.content.clone(),
-            score: r.score,
-            depth: 0,
-            source: Some(ref_idx.name.clone()),
+        .map(|r| {
+            GatheredChunk::from_search(r, Path::new(""), r.score, 0, Some(ref_idx.name.clone()))
         })
         .collect();
 

@@ -10,9 +10,14 @@ use cqs::audit::{load_audit_state, save_audit_state, AuditMode};
 use cqs::parse_duration;
 
 use crate::cli::find_project_root;
+use crate::cli::AuditModeState;
 
 /// Handle audit-mode command
-pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_audit_mode(
+    state: Option<&AuditModeState>,
+    expires: &str,
+    json: bool,
+) -> Result<()> {
     let _span = tracing::info_span!("cmd_audit_mode").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -49,7 +54,7 @@ pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> 
     };
 
     match state {
-        "on" => {
+        AuditModeState::On => {
             let duration = parse_duration(expires)?;
             let expires_at = Utc::now() + duration;
 
@@ -74,7 +79,7 @@ pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> 
                 );
             }
         }
-        "off" => {
+        AuditModeState::Off => {
             let mode = AuditMode {
                 enabled: false,
                 expires_at: None,
@@ -90,9 +95,6 @@ pub(crate) fn cmd_audit_mode(state: Option<&str>, expires: &str, json: bool) -> 
             } else {
                 println!("Audit mode disabled. Notes included.");
             }
-        }
-        _ => {
-            bail!("Invalid state '{}'. Use 'on' or 'off'.", state);
         }
     }
 

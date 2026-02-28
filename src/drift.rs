@@ -164,11 +164,7 @@ mod tests {
                 drift: 0.3,
             },
         ];
-        entries.sort_by(|a, b| {
-            b.drift
-                .partial_cmp(&a.drift)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        entries.sort_by(|a, b| b.drift.total_cmp(&a.drift));
         assert_eq!(entries[0].name, "b"); // most drift
         assert_eq!(entries[1].name, "c");
         assert_eq!(entries[2].name, "a"); // least drift

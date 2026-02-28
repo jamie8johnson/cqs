@@ -341,9 +341,10 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         }
     }
 
-    // Walk individual files, skipping those under web help directories
+    // Walk individual files, skipping symlinks and those under web help directories
     for entry in walkdir::WalkDir::new(dir)
         .into_iter()
+        .filter_entry(|e| !e.path_is_symlink())
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| detect_format(e.path()).is_some())

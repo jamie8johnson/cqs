@@ -59,7 +59,12 @@ impl Parser {
         // Initialize empty OnceCells for each registered language
         // (skip grammar-less languages like Markdown — they use custom parsers)
         for def in crate::language::REGISTRY.all() {
-            let lang: Language = def.name.parse().expect("registry/enum mismatch");
+            let lang: Language = def.name.parse().unwrap_or_else(|_| {
+                panic!(
+                    "Language registry/enum mismatch: '{}' is registered but has no Language variant",
+                    def.name
+                )
+            });
             if def.grammar.is_some() {
                 queries.insert(lang, OnceCell::new());
                 call_queries.insert(lang, OnceCell::new());

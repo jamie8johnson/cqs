@@ -46,8 +46,7 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
 
     for line in input.lines() {
         // New file boundary
-        if line.starts_with("+++ ") {
-            let path = line.strip_prefix("+++ ").unwrap();
+        if let Some(path) = line.strip_prefix("+++ ") {
             if path == "/dev/null" {
                 // Deleted file — no new-side hunks
                 current_file = None;

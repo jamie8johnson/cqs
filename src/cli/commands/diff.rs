@@ -1,6 +1,6 @@
 //! Diff command — semantic diff between indexed snapshots
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 
 use cqs::Store;
@@ -43,7 +43,8 @@ pub(crate) fn cmd_diff(
             source
         );
     }
-    let source_store = Store::open(&source_db)?;
+    let source_store = Store::open(&source_db)
+        .with_context(|| format!("Failed to open source store at {}", source_db.display()))?;
 
     // Resolve target store
     let target_label = target.unwrap_or("project");
@@ -52,7 +53,8 @@ pub(crate) fn cmd_diff(
         if !index_path.exists() {
             bail!("Project index not found. Run 'cqs init && cqs index' first.");
         }
-        Store::open(&index_path)?
+        Store::open(&index_path)
+            .with_context(|| format!("Failed to open project store at {}", index_path.display()))?
     } else {
         let target_cfg = config
             .references
@@ -72,7 +74,8 @@ pub(crate) fn cmd_diff(
                 target_db.display()
             );
         }
-        Store::open(&target_db)?
+        Store::open(&target_db)
+            .with_context(|| format!("Failed to open target store at {}", target_db.display()))?
     };
 
     let result = semantic_diff(

@@ -45,13 +45,15 @@ pub(crate) fn cmd_drift(
             reference
         );
     }
-    let ref_store = Store::open_readonly(&ref_db).context("Failed to open reference store")?;
+    let ref_store = Store::open_readonly(&ref_db)
+        .with_context(|| format!("Failed to open reference store at {}", ref_db.display()))?;
 
     let index_path = cqs_dir.join("index.db");
     if !index_path.exists() {
         bail!("Project index not found. Run 'cqs init && cqs index' first.");
     }
-    let project_store = Store::open(&index_path).context("Failed to open project store")?;
+    let project_store = Store::open(&index_path)
+        .with_context(|| format!("Failed to open project store at {}", index_path.display()))?;
 
     let result = cqs::drift::detect_drift(
         &ref_store,

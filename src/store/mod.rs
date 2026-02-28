@@ -27,7 +27,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::SqlitePool;
 use tokio::runtime::Runtime;
 
 // Re-export public types with documentation
@@ -175,9 +176,16 @@ impl Store {
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let rt = Runtime::new().map_err(|e| StoreError::Runtime(e.to_string()))?;
 
-        // Convert path to forward slashes for URL compatibility (Windows backslashes don't work)
-        let path_str = path.to_string_lossy().replace('\\', "/");
-        let db_url = format!("sqlite://{}?mode=rwc", path_str);
+        // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
+        // special characters in paths (spaces, #, ?, %, unicode).
+        let connect_opts = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .synchronous(SqliteSynchronous::Normal)
+            .pragma("mmap_size", "268435456"); // 256MB memory-mapped I/O
 
         // SQLite connection pool with WAL mode for concurrent reads
         let pool = rt.block_on(async {
@@ -186,22 +194,6 @@ impl Store {
                 .idle_timeout(std::time::Duration::from_secs(300)) // Close idle connections after 5 min
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
-                        // Enable foreign key enforcement (off by default in SQLite)
-                        sqlx::query("PRAGMA foreign_keys = ON")
-                            .execute(&mut *conn)
-                            .await?;
-                        // WAL mode: concurrent reads, single writer
-                        sqlx::query("PRAGMA journal_mode = WAL")
-                            .execute(&mut *conn)
-                            .await?;
-                        // 5000ms busy timeout before SQLITE_BUSY
-                        sqlx::query("PRAGMA busy_timeout = 5000")
-                            .execute(&mut *conn)
-                            .await?;
-                        // NORMAL sync: fsync on WAL checkpoint only (safe with WAL)
-                        sqlx::query("PRAGMA synchronous = NORMAL")
-                            .execute(&mut *conn)
-                            .await?;
                         // 16MB page cache per connection (negative = KB, -16384 = 16MB)
                         sqlx::query("PRAGMA cache_size = -16384")
                             .execute(&mut *conn)
@@ -210,14 +202,10 @@ impl Store {
                         sqlx::query("PRAGMA temp_store = MEMORY")
                             .execute(&mut *conn)
                             .await?;
-                        // 256MB memory-mapped I/O for faster reads
-                        sqlx::query("PRAGMA mmap_size = 268435456")
-                            .execute(&mut *conn)
-                            .await?;
                         Ok(())
                     })
                 })
-                .connect(&db_url)
+                .connect_with(connect_opts)
                 .await
         })?;
 
@@ -282,8 +270,16 @@ impl Store {
             .build()
             .map_err(|e| StoreError::Runtime(e.to_string()))?;
 
-        let path_str = path.to_string_lossy().replace('\\', "/");
-        let db_url = format!("sqlite://{}?mode=ro", path_str);
+        // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
+        // special characters in paths (spaces, #, ?, %, unicode).
+        let connect_opts = SqliteConnectOptions::new()
+            .filename(path)
+            .read_only(true)
+            .foreign_keys(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .synchronous(SqliteSynchronous::Normal)
+            .pragma("mmap_size", "67108864"); // 64MB mmap (reduced from 256MB)
 
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
@@ -291,33 +287,18 @@ impl Store {
                 .idle_timeout(std::time::Duration::from_secs(300))
                 .after_connect(|conn, _meta| {
                     Box::pin(async move {
-                        sqlx::query("PRAGMA foreign_keys = ON")
-                            .execute(&mut *conn)
-                            .await?;
-                        sqlx::query("PRAGMA journal_mode = WAL")
-                            .execute(&mut *conn)
-                            .await?;
-                        sqlx::query("PRAGMA busy_timeout = 5000")
-                            .execute(&mut *conn)
-                            .await?;
-                        sqlx::query("PRAGMA synchronous = NORMAL")
-                            .execute(&mut *conn)
-                            .await?;
                         // 4MB page cache (reduced from 16MB)
                         sqlx::query("PRAGMA cache_size = -4096")
                             .execute(&mut *conn)
                             .await?;
+                        // Keep temp tables in memory
                         sqlx::query("PRAGMA temp_store = MEMORY")
-                            .execute(&mut *conn)
-                            .await?;
-                        // 64MB mmap (reduced from 256MB)
-                        sqlx::query("PRAGMA mmap_size = 67108864")
                             .execute(&mut *conn)
                             .await?;
                         Ok(())
                     })
                 })
-                .connect(&db_url)
+                .connect_with(connect_opts)
                 .await
         })?;
 
@@ -331,6 +312,17 @@ impl Store {
         // Skip permissions setting (read-only, no file creation)
 
         tracing::info!(path = %path.display(), "Database connected (read-only)");
+
+        // Quick integrity check — catches B-tree corruption early
+        store.rt.block_on(async {
+            let result: (String,) = sqlx::query_as("PRAGMA quick_check")
+                .fetch_one(&store.pool)
+                .await?;
+            if result.0 != "ok" {
+                return Err(StoreError::Corruption(result.0));
+            }
+            Ok::<_, StoreError>(())
+        })?;
 
         store.check_schema_version(path)?;
         store.check_model_version()?;

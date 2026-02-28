@@ -111,7 +111,11 @@ pub fn onboard(
     let query_embedding = embedder
         .embed_query(concept)
         .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
-    let filter = crate::store::SearchFilter::default();
+    let filter = crate::store::SearchFilter {
+        query_text: concept.to_string(),
+        enable_rrf: true,
+        ..crate::store::SearchFilter::default()
+    };
     let results = store.search_filtered(&query_embedding, &filter, 10, 0.0)?;
 
     if results.is_empty() {
@@ -178,8 +182,14 @@ pub fn onboard(
     //    BFS may discover 100 callees, but we only load content for the top N.
     let callee_scores = cap_scores(callee_scores, MAX_CALLEE_FETCH, |(_s, d)| *d);
     let caller_scores = cap_scores(caller_scores, MAX_CALLER_FETCH, |(score, _)| {
-        // Invert score for ascending sort (highest score = lowest key)
-        u64::MAX - ((*score * 1e6) as u64)
+        // Invert score for ascending sort (highest score = lowest key).
+        // Clamp NaN/negative to 0 before conversion to prevent garbage ordering.
+        let safe = if score.is_finite() && *score > 0.0 {
+            *score
+        } else {
+            0.0
+        };
+        u64::MAX - ((safe * 1e6) as u64)
     });
 
     // 7. Fetch entry point — use search_by_name with exact match filter

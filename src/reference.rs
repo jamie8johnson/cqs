@@ -185,6 +185,8 @@ pub fn merge_results(
 
     // Deduplicate code results by content hash (keeps highest-scoring occurrence).
     // Notes are never deduplicated — they're project-local and unique.
+    // NOTE: Dedup must happen before truncation for correctness — otherwise duplicates
+    // from different sources could occupy result slots, pushing out unique results.
     let mut seen_hashes = std::collections::HashSet::new();
     tagged.retain(|t| match &t.result {
         UnifiedResult::Code(r) => {

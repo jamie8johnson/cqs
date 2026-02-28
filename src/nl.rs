@@ -334,24 +334,14 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     // Shared: tokenized name
     let name_words = tokenize_identifier(&chunk.name).join(" ");
 
-    // Shared: type word
-    let type_word = match chunk.chunk_type {
-        ChunkType::Function => "function",
-        ChunkType::Method => "method",
-        ChunkType::Class => "class",
-        ChunkType::Struct => "struct",
-        ChunkType::Enum => "enum",
-        ChunkType::Trait => "trait",
-        ChunkType::Interface => "interface",
-        ChunkType::Constant => "constant",
-        ChunkType::Section => "section", // unreachable — early return above
-        ChunkType::Property => "property",
-        ChunkType::Delegate => "delegate",
-        ChunkType::Event => "event",
-        ChunkType::Module => "module",
-        ChunkType::Macro => "macro",
-        ChunkType::Object => "object",
-        ChunkType::TypeAlias => "type alias",
+    // Shared: type word — derived from ChunkType::Display, with "typealias" → "type alias"
+    let type_display = chunk.chunk_type.to_string();
+    let type_word = if type_display == "typealias" {
+        "type alias"
+    } else {
+        // SAFETY: type_display lives long enough — we only borrow within this function scope.
+        // Using leak-free approach: store the String, borrow from it.
+        &type_display
     };
 
     // DocFirst: minimal metadata when doc exists

@@ -37,19 +37,22 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
         }
     };
 
-    // Count chunks to prune before deleting HNSW
+    // Prune in order: chunks first, then orphan references.
+    // Each operation is individually transactional. If a crash interrupts between
+    // operations, orphan call/type edges remain harmless and are cleaned on next GC.
+    // prune_stale_calls/prune_stale_type_edges are idempotent (DELETE WHERE NOT IN chunks).
     let pruned_chunks = store
         .prune_missing(&file_set)
         .context("Failed to prune deleted files from index")?;
     tracing::debug!(pruned_chunks, "Chunks pruned");
 
-    // Prune orphan call graph entries
+    // Prune orphan call graph entries (references chunks that no longer exist)
     let pruned_calls = store
         .prune_stale_calls()
         .context("Failed to prune orphan call graph entries")?;
     tracing::debug!(pruned_calls, "Calls pruned");
 
-    // Prune orphan type edges
+    // Prune orphan type edges (references chunks that no longer exist)
     let pruned_type_edges = store
         .prune_stale_type_edges()
         .context("Failed to prune orphan type edges")?;
@@ -61,10 +64,23 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let hnsw_vectors = if pruned_chunks > 0 {
         let hnsw_path = cqs_dir.join("index.hnsw.graph");
         if hnsw_path.exists() {
-            let _ = std::fs::remove_file(&hnsw_path);
-            let _ = std::fs::remove_file(cqs_dir.join("index.hnsw.data"));
-            let _ = std::fs::remove_file(cqs_dir.join("index.hnsw.checksum"));
-            let _ = std::fs::remove_file(cqs_dir.join("index.hnsw.id_map.json"));
+            for file_name in &[
+                "index.hnsw.graph",
+                "index.hnsw.data",
+                "index.hnsw.checksum",
+                "index.hnsw.id_map.json",
+            ] {
+                let path = cqs_dir.join(file_name);
+                if let Err(e) = std::fs::remove_file(&path) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "Failed to delete stale HNSW file during GC"
+                        );
+                    }
+                }
+            }
             tracing::debug!("Deleted stale HNSW before rebuild");
         }
         build_hnsw_index(&store, &cqs_dir)?
