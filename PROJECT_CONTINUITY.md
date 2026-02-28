@@ -2,17 +2,17 @@
 
 ## Right Now
 
-**v0.19.2 P1+P2+P3 audit fixes complete.** 2026-02-27.
+**v0.19.2 full audit complete.** 2026-02-28.
 
 Second 14-category audit completed (117 findings across 3 batches). All priority tiers fixed:
 - P1 (46 items) → PR #501
 - P2 (29 of 31 items) → PR #502
 - P3 (29 items) → PR #504
+- P4 (3 items) → PR #506
 
-Total: 104 of 109 actionable findings fixed. 1247 tests pass.
+Total: 107 of 109 actionable findings fixed. 1261 tests pass.
 
 Deferred P2: PB-3 (normalize_path centralization, 15+ files), PF-5 (lightweight HNSW fetch).
-P4 (3 items) remain in docs/audit-triage.md — hard/low-impact, deferred by design.
 
 ## Pending Changes
 
