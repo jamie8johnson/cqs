@@ -2,13 +2,13 @@
 
 ## Right Now
 
-**v0.19.2 released.** 2026-02-27.
+**v0.19.2 P1 audit fixes complete.** 2026-02-27.
 
-Full 14-category audit completed (123 findings across 3 batches). 12 P1 + 19 P2 fixes shipped in three PRs (#497, #498, #499). v0.19.1 published to crates.io.
+Second 14-category audit completed (117 findings across 3 batches). All 46 P1 fixes shipped in PR #501. 38 files changed, +646/-368 lines. 1217 tests pass.
 
-Key fixes: NaN-safe sorting (11 sites), UTF-8 panic, predictable temp files, SQLite param batching, HealthReport Serialize, semantic_diff memory batching (240MB→9MB), CLI/batch dedup (-284 lines), watch mode locking, multi-row INSERT batching, adaptive HNSW ef_search, BFS visited set, parallel ref loading, typed batch output structs, .context() sweep.
+Key P1 fixes: SQLite URL injection eliminated (SqliteConnectOptions), open_readonly quick_check, NaN-safe batch serialization (6 sites), onboard hybrid RRF, NoteBoostIndex O(1) lookup, NOT EXISTS anti-join, find_reference() helper (6 sites deduped), GatheredChunk::from_search (4 sites), GatherDirection/AuditModeState enums, HNSW_ALL_EXTENSIONS constant, ChunkType::ALL, backslash normalization, WSL inotify warning, rel_display tests.
 
-Only AD-1 (String vs PathBuf) remains deferred — pure type refactor, no functional value.
+P2 (31 items), P3 (29), P4 (3) remain in docs/audit-triage.md.
 
 ## Pending Changes
 
@@ -47,7 +47,7 @@ None — clean working tree on main.
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 20 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1212 pass, 0 failures
+- Tests: 1217 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
