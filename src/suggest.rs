@@ -9,7 +9,7 @@ use std::path::Path;
 use anyhow::Result;
 
 use crate::impact::find_hotspots;
-use crate::{compute_risk_batch, RiskLevel, Store};
+use crate::{compute_risk_batch, normalize_slashes, RiskLevel, Store};
 
 /// Minimum dead functions in a single file to flag as a dead code cluster.
 const DEAD_CLUSTER_MIN_SIZE: usize = 5;
@@ -218,7 +218,7 @@ fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String
             match classify_mention(mention) {
                 MentionKind::File => {
                     // Normalize backslashes to forward slashes for cross-platform path joining
-                    let normalized = mention.replace('\\', "/");
+                    let normalized = normalize_slashes(mention);
                     if !project_root.join(&normalized).exists() {
                         stale.push(mention.clone());
                     }

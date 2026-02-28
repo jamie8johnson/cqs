@@ -5,6 +5,8 @@
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
+use cqs::normalize_path;
+
 /// Find functions that call the specified function
 pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name).entered();
@@ -29,7 +31,7 @@ pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
             .map(|c| {
                 serde_json::json!({
                     "name": c.name,
-                    "file": c.file.to_string_lossy().replace('\\', "/"),
+                    "file": normalize_path(&c.file),
                     "line": c.line,
                 })
             })

@@ -129,7 +129,7 @@ impl Source for FileSystemSource {
             let rel_path = path.strip_prefix(&self.root).unwrap_or(&path).to_path_buf();
 
             items.push(SourceItem {
-                origin: rel_path.to_string_lossy().replace('\\', "/"),
+                origin: crate::normalize_path(&rel_path),
                 source_type: "file",
                 content,
                 language,

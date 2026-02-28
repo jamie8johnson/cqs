@@ -9,6 +9,7 @@ use std::path::Path;
 
 use colored::Colorize;
 
+use cqs::normalize_slashes;
 use cqs::Store;
 
 /// Check result origins for staleness and print warning to stderr.
@@ -28,7 +29,7 @@ pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashS
                     if count == 1 { "" } else { "s" }
                 );
                 for file in &stale {
-                    eprintln!("  {}", file.replace('\\', "/").dimmed());
+                    eprintln!("  {}", normalize_slashes(file).dimmed());
                 }
             }
             stale

@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 
 use super::commands::BatchInput;
-use super::types::{normalize_path, ChunkOutput};
+use super::types::ChunkOutput;
 use super::BatchContext;
 use crate::cli::{validate_finite_f32, DeadConfidenceLevel};
+use cqs::normalize_path;
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 

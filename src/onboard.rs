@@ -32,13 +32,6 @@ const MAX_CALLEE_FETCH: usize = 30;
 /// Maximum callers to fetch content for.
 const MAX_CALLER_FETCH: usize = 15;
 
-fn serialize_path_forward_slash<S>(path: &std::path::Path, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    serializer.serialize_str(&path.to_string_lossy().replace('\\', "/"))
-}
-
 // Uses crate::COMMON_TYPES (from focused_read.rs) for type filtering — single source of truth.
 
 /// Result of an onboard analysis — ordered reading list for understanding a concept.
@@ -57,7 +50,7 @@ pub struct OnboardResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct OnboardEntry {
     pub name: String,
-    #[serde(serialize_with = "serialize_path_forward_slash")]
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
@@ -79,7 +72,7 @@ pub struct TypeInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct TestEntry {
     pub name: String,
-    #[serde(serialize_with = "serialize_path_forward_slash")]
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub call_depth: usize,

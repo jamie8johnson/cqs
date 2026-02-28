@@ -12,6 +12,8 @@ use super::types::{
 };
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
+use crate::normalize_slashes;
+
 /// Map diff hunks to function names using the index.
 ///
 /// For each hunk, finds chunks whose line range overlaps the hunk's range.
@@ -31,7 +33,7 @@ pub fn map_hunks_to_functions(
     }
 
     for (file, file_hunks) in &by_file {
-        let normalized = file.replace('\\', "/");
+        let normalized = normalize_slashes(file);
         let chunks = match store.get_chunks_by_origin(&normalized) {
             Ok(c) => c,
             Err(e) => {

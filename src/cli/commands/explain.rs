@@ -10,7 +10,7 @@ use anyhow::Result;
 
 use cqs::index::VectorIndex;
 use cqs::store::{CallerInfo, ChunkSummary, SearchResult, Store};
-use cqs::{compute_hints, FunctionHints, HnswIndex, SearchFilter};
+use cqs::{compute_hints, normalize_path, FunctionHints, HnswIndex, SearchFilter};
 
 use crate::cli::staleness;
 
@@ -185,7 +185,7 @@ pub(crate) fn explain_to_json(data: &ExplainData, root: &Path) -> serde_json::Va
         .map(|c| {
             serde_json::json!({
                 "name": c.name,
-                "file": c.file.to_string_lossy().replace('\\', "/"),
+                "file": normalize_path(&c.file),
                 "line": c.line,
             })
         })
@@ -208,7 +208,7 @@ pub(crate) fn explain_to_json(data: &ExplainData, root: &Path) -> serde_json::Va
         .map(|r| {
             let mut obj = serde_json::json!({
                 "name": r.chunk.name,
-                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                "file": normalize_path(&r.chunk.file),
                 "score": r.score,
             });
             if let Some(ref set) = data.similar_content_ids {

@@ -222,19 +222,41 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
         || file.ends_with("_test.py")
 }
 
+use std::path::Path;
+
+/// Normalize a path to a string with forward slashes.
+///
+/// Converts `Path`/`PathBuf` to `String`, replacing backslashes with forward slashes
+/// for cross-platform consistency (WSL, Windows paths in JSON output).
+pub fn normalize_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+/// Normalize backslashes to forward slashes in a string path.
+///
+/// For already-stringified paths. Returns the input unchanged on Unix.
+pub fn normalize_slashes(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+/// Serde serializer for `PathBuf` fields: forward-slash normalized.
+///
+/// Use as `#[serde(serialize_with = "crate::serialize_path_normalized")]`
+pub fn serialize_path_normalized<S>(path: &Path, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(&normalize_path(path))
+}
+
 /// Relativize a path against a root and normalize separators for display.
 ///
 /// Strips `root` prefix if present, converts backslashes to forward slashes.
-pub fn rel_display(path: &std::path::Path, root: &std::path::Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .to_string_lossy()
-        .replace('\\', "/")
+pub fn rel_display(path: &Path, root: &Path) -> String {
+    normalize_path(path.strip_prefix(root).unwrap_or(path))
 }
 
 // ============ Note Indexing Helper ============
-
-use std::path::Path;
 
 /// Index notes into the database (embed and store)
 ///

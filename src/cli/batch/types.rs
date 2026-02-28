@@ -3,14 +3,9 @@
 //! Replaces manual `serde_json::json!` assembly with `#[derive(Serialize)]` structs
 //! for chunk-shaped output. Ensures consistent field names and path normalization.
 
-use std::path::Path;
-
 use serde::Serialize;
 
-/// Normalize a path for JSON output: forward slashes, no backslashes.
-pub(super) fn normalize_path(p: &Path) -> String {
-    p.to_string_lossy().replace('\\', "/")
-}
+use cqs::normalize_path;
 
 /// Common chunk output shape used by search, similar, and other handlers.
 ///

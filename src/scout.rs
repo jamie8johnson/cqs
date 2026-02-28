@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::impact::compute_hints_with_graph;
 use crate::store::{ChunkSummary, NoteSummary, SearchFilter};
-use crate::{AnalysisError, Embedder, Store};
+use crate::{normalize_slashes, AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -440,8 +440,8 @@ fn find_relevant_notes(store: &Store, result_files: &HashSet<String>) -> Vec<Not
 /// Match requires the file path to end with the mention at a path-component
 /// boundary (preceded by '/' or at start of string).
 fn note_mention_matches_file(mention: &str, file: &str) -> bool {
-    let mention = mention.replace('\\', "/");
-    let file = file.replace('\\', "/");
+    let mention = normalize_slashes(mention);
+    let file = normalize_slashes(file);
     if !mention.contains('.') && !mention.contains('/') {
         return false;
     }

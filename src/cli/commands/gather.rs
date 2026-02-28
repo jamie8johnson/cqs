@@ -4,7 +4,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use cqs::Embedder;
-use cqs::{gather, gather_cross_index, GatherDirection, GatherOptions};
+use cqs::{gather, gather_cross_index, normalize_path, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
 
@@ -117,7 +117,7 @@ pub(crate) fn cmd_gather(
             .map(|c| {
                 let mut chunk_json = serde_json::json!({
                     "name": c.name,
-                    "file": c.file.to_string_lossy().replace('\\', "/"),
+                    "file": normalize_path(&c.file),
                     "line_start": c.line_start,
                     "line_end": c.line_end,
                     "language": c.language.to_string(),
@@ -194,7 +194,7 @@ pub(crate) fn cmd_gather(
                 }
             }
 
-            let file_str = chunk.file.to_string_lossy().replace('\\', "/");
+            let file_str = normalize_path(&chunk.file);
             if file_str != current_file {
                 if !current_file.is_empty() {
                     println!();

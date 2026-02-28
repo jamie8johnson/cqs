@@ -112,7 +112,7 @@ impl Store {
             return Ok(());
         }
 
-        let file_str = file.to_string_lossy().replace('\\', "/");
+        let file_str = crate::normalize_path(file);
         let total_refs: usize = chunk_type_refs.iter().map(|c| c.type_refs.len()).sum();
         tracing::trace!(
             file = %file_str,

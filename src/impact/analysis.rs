@@ -11,6 +11,8 @@ use super::types::{
 };
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
+use crate::{normalize_path, normalize_slashes};
+
 /// Run impact analysis: find callers, affected tests, and transitive callers.
 ///
 /// When `include_types` is true, also performs one-hop type expansion: finds
@@ -338,7 +340,7 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
         };
 
         // Suggest file location
-        let caller_file_str = caller.file.to_string_lossy().replace('\\', "/");
+        let caller_file_str = normalize_path(&caller.file);
 
         let suggested_file = if has_inline_tests {
             caller_file_str.to_string()
@@ -369,11 +371,7 @@ fn suggest_test_file(source: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or("unknown");
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("rs");
-    let parent = path
-        .parent()
-        .and_then(|p| p.to_str())
-        .unwrap_or("tests")
-        .replace('\\', "/");
+    let parent = normalize_slashes(path.parent().and_then(|p| p.to_str()).unwrap_or("tests"));
 
     // Look up language-specific convention via registry
     if let Some(lang_def) = crate::language::REGISTRY.from_extension(ext) {

@@ -6,6 +6,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+use cqs::normalize_path;
 use cqs::reference::TaggedResult;
 use cqs::store::{ParentContext, UnifiedResult};
 
@@ -222,7 +223,7 @@ pub fn display_unified_results_json(
                 let mut obj = serde_json::json!({
                     "type": "code",
                     // Normalize to forward slashes for consistent JSON output across platforms
-                    "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                    "file": normalize_path(&r.chunk.file),
                     "line_start": r.chunk.line_start,
                     "line_end": r.chunk.line_end,
                     "name": r.chunk.name,
@@ -416,7 +417,7 @@ pub fn display_similar_results_json(
         .iter()
         .map(|r| {
             serde_json::json!({
-                "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                "file": normalize_path(&r.chunk.file),
                 "line_start": r.chunk.line_start,
                 "line_end": r.chunk.line_end,
                 "name": r.chunk.name,
@@ -453,7 +454,7 @@ pub fn display_tagged_results_json(
                 UnifiedResult::Code(r) => {
                     let mut obj = serde_json::json!({
                         "type": "code",
-                        "file": r.chunk.file.to_string_lossy().replace('\\', "/"),
+                        "file": normalize_path(&r.chunk.file),
                         "line_start": r.chunk.line_start,
                         "line_end": r.chunk.line_end,
                         "name": r.chunk.name,
