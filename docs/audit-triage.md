@@ -129,9 +129,9 @@ Informational/well-designed: 3 (RM-7, RM-9, RM-10) — no action needed
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | **CQ-2**: `run_index_pipeline` 458 lines — 6 concerns, 5 threads | Code Quality | pipeline.rs:238 | |
-| 2 | **CQ-8**: `search_filtered` 219 lines mixing SQL, scoring, RRF, fetch | Code Quality | search.rs:414 | |
-| 3 | **RM-4**: Store mmap 256MB×4 = 1GB virtual — benign, needs doc | Resource Mgmt | store/mod.rs:214 | |
+| 1 | **CQ-2**: `run_index_pipeline` 458 lines — 6 concerns, 5 threads | Code Quality | pipeline.rs:238 | ✅ PR #506 |
+| 2 | **CQ-8**: `search_filtered` 219 lines mixing SQL, scoring, RRF, fetch | Code Quality | search.rs:414 | ✅ PR #506 |
+| 3 | **RM-4**: Store mmap 256MB×4 = 1GB virtual — benign, needs doc | Resource Mgmt | store/mod.rs:214 | ✅ PR #506 |
 
 ## Cross-References
 
