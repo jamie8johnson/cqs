@@ -2,6 +2,7 @@
 
 use std::cell::UnsafeCell;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use hnsw_rs::anndists::dist::distances::DistCosine;
 use hnsw_rs::api::AnnT;
@@ -10,6 +11,21 @@ use hnsw_rs::hnswio::HnswIo;
 use crate::index::VectorIndex;
 
 use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
+
+/// Whether the WSL advisory locking warning has been emitted (once per process)
+static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// Emit a one-time warning about advisory-only file locking on WSL/NTFS mounts.
+fn warn_wsl_advisory_locking(dir: &Path) {
+    if crate::config::is_wsl()
+        && dir.to_str().is_some_and(|p| p.starts_with("/mnt/"))
+        && !WSL_LOCK_WARNED.swap(true, Ordering::Relaxed)
+    {
+        tracing::warn!(
+            "HNSW file locking is advisory-only on WSL/NTFS — avoid concurrent index operations"
+        );
+    }
+}
 
 /// Valid HNSW file extensions (prevents path traversal via malicious checksum file)
 const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
@@ -126,6 +142,7 @@ impl HnswIndex {
         let lock_path = dir.join(format!("{}.hnsw.lock", basename));
         let lock_file = std::fs::File::create(&lock_path)?;
         lock_file.lock().map_err(HnswError::Io)?;
+        warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW save lock");
 
         // Use a temporary directory for atomic writes
@@ -227,13 +244,26 @@ impl HnswIndex {
             if temp_path.exists() {
                 if let Err(rename_err) = std::fs::rename(&temp_path, &final_path) {
                     // Cross-device fallback (Docker overlayfs, NFS, etc.)
-                    std::fs::copy(&temp_path, &final_path).map_err(|copy_err| {
+                    // Copy to a temp file in the TARGET directory first, then rename.
+                    // Since the temp and final are on the same device, the rename is atomic.
+                    let target_tmp = dir.join(format!(".{}.{}.tmp", basename, ext));
+                    std::fs::copy(&temp_path, &target_tmp).map_err(|copy_err| {
                         HnswError::Internal(format!(
                             "Failed to rename {} → {} ({}), copy fallback also failed: {}",
                             temp_path.display(),
                             final_path.display(),
                             rename_err,
                             copy_err
+                        ))
+                    })?;
+                    std::fs::rename(&target_tmp, &final_path).map_err(|e| {
+                        // Clean up the temp file on rename failure
+                        let _ = std::fs::remove_file(&target_tmp);
+                        HnswError::Internal(format!(
+                            "Failed to rename {} → {} after cross-device copy: {}",
+                            target_tmp.display(),
+                            final_path.display(),
+                            e
                         ))
                     })?;
                     let _ = std::fs::remove_file(&temp_path);
@@ -284,6 +314,7 @@ impl HnswIndex {
             .truncate(false)
             .open(&lock_path)?;
         lock_file.lock_shared().map_err(HnswError::Io)?;
+        warn_wsl_advisory_locking(dir);
         tracing::debug!(lock_path = %lock_path.display(), "Acquired HNSW load lock (shared)");
 
         tracing::info!("Loading HNSW index from {}/{}", dir.display(), basename);

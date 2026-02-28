@@ -165,6 +165,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: Some(extract_container_name_rust),
     extract_qualified_method: None,
     post_process_chunk: None,
+    test_markers: &["#[test]", "#[cfg(test)]"],
+    test_path_patterns: &["%/tests/%", "%\\_test.rs"],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

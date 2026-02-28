@@ -55,6 +55,22 @@ const ENTRY_POINT_NAMES: &[&str] = &[
     "middleware",
 ];
 
+/// Lightweight chunk metadata for dead code analysis.
+///
+/// Used by `find_dead_code` Phase 1 to avoid loading full content/doc
+/// until candidates pass name/test/path filters.
+#[derive(Debug, Clone)]
+pub(crate) struct LightChunk {
+    pub id: String,
+    pub file: PathBuf,
+    pub language: Language,
+    pub chunk_type: ChunkType,
+    pub name: String,
+    pub signature: String,
+    pub line_start: u32,
+    pub line_end: u32,
+}
+
 /// Statistics about call graph entries (chunk-level calls table)
 #[derive(Debug, Clone, Default)]
 pub struct CallStats {
@@ -84,13 +100,13 @@ static TRAIT_IMPL_RE: LazyLock<Regex> =
 /// Matches naming conventions: `test_*` (Rust/Python), `Test*` (Go).
 const TEST_NAME_PATTERNS: &[&str] = &["test_%", "Test%"];
 
-/// Test content markers — language-specific annotations/decorators.
-/// Detected via `content LIKE '%marker%'` in SQL.
-const TEST_CONTENT_MARKERS: &[&str] = &["#[test]", "@Test"];
+/// Fallback test content markers — used when language definitions don't provide any.
+/// These are superseded by `LanguageDef::test_markers` via `build_test_content_markers()`.
+const FALLBACK_TEST_CONTENT_MARKERS: &[&str] = &["#[test]", "@Test"];
 
-/// Test path patterns — directories and file suffixes (SQL LIKE syntax).
-/// Uses ESCAPE '\\' for literal underscores.
-const TEST_PATH_PATTERNS: &[&str] = &[
+/// Fallback test path patterns — used when language definitions don't provide any.
+/// These are superseded by `LanguageDef::test_path_patterns` via `build_test_path_patterns()`.
+const FALLBACK_TEST_PATH_PATTERNS: &[&str] = &[
     "%/tests/%",
     "%\\_test.%",
     "%.test.%",
@@ -98,6 +114,28 @@ const TEST_PATH_PATTERNS: &[&str] = &[
     "%_test.go",
     "%_test.py",
 ];
+
+/// Build unified test content markers from all enabled language definitions.
+/// Falls back to `FALLBACK_TEST_CONTENT_MARKERS` if no language provides any.
+fn build_test_content_markers() -> Vec<&'static str> {
+    let markers = crate::language::REGISTRY.all_test_markers();
+    if markers.is_empty() {
+        FALLBACK_TEST_CONTENT_MARKERS.to_vec()
+    } else {
+        markers
+    }
+}
+
+/// Build unified test path patterns from all enabled language definitions.
+/// Falls back to `FALLBACK_TEST_PATH_PATTERNS` if no language provides any.
+fn build_test_path_patterns() -> Vec<&'static str> {
+    let patterns = crate::language::REGISTRY.all_test_path_patterns();
+    if patterns.is_empty() {
+        FALLBACK_TEST_PATH_PATTERNS.to_vec()
+    } else {
+        patterns
+    }
+}
 
 /// Well-known trait method names across languages.
 ///
@@ -466,7 +504,12 @@ impl Store {
     /// Single SQL scan of `function_calls`, capped at 500K edges to prevent OOM
     /// on adversarial databases. Typical projects have ~2000 edges.
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
+    ///
+    // TODO(PF-7): Add OnceLock<CallGraph> cache field to Store (requires store/mod.rs change).
+    // Called 15 times across codebase — each call scans entire function_calls table.
+    // Cache should invalidate on upsert_function_calls / prune_stale_calls.
     pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
+        let _span = tracing::info_span!("get_call_graph").entered();
         self.rt.block_on(async {
             const MAX_CALL_GRAPH_EDGES: i64 = 500_000;
             let rows: Vec<(String, String)> = sqlx::query_as(
@@ -721,59 +764,8 @@ impl Store {
     ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
         let _span = tracing::info_span!("find_dead_code", include_pub).entered();
         self.rt.block_on(async {
-            // Phase 1: Lightweight query without content/doc
-            let callable = ChunkType::callable_sql_list();
-            let sql = format!(
-                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
-                        c.line_start, c.line_end, c.parent_id
-                 FROM chunks c
-                 WHERE c.chunk_type IN ({callable})
-                   AND NOT EXISTS (SELECT 1 FROM function_calls fc WHERE fc.callee_name = c.name LIMIT 1)
-                   AND c.parent_id IS NULL
-                 ORDER BY c.origin, c.line_start"
-            );
-            let rows: Vec<_> = sqlx::query(&sql)
-                .fetch_all(&self.pool)
-                .await?;
-
-            // Build lightweight summaries (no content/doc yet)
-            struct LightChunk {
-                id: String,
-                file: PathBuf,
-                language: Language,
-                chunk_type: ChunkType,
-                name: String,
-                signature: String,
-                line_start: u32,
-                line_end: u32,
-            }
-
-            let all_uncalled: Vec<LightChunk> = rows
-                .into_iter()
-                .map(|row| LightChunk {
-                    id: row.get(0),
-                    file: PathBuf::from(row.get::<String, _>(1)),
-                    language: {
-                        let raw: String = row.get(2);
-                        raw.parse().unwrap_or_else(|_| {
-                            tracing::warn!(raw = %raw, "Unknown language in DB, defaulting to Rust");
-                            Language::Rust
-                        })
-                    },
-                    chunk_type: {
-                        let raw: String = row.get(3);
-                        raw.parse().unwrap_or_else(|_| {
-                            tracing::warn!(raw = %raw, "Unknown chunk_type in DB, defaulting to Function");
-                            ChunkType::Function
-                        })
-                    },
-                    name: row.get(4),
-                    signature: row.get(5),
-                    line_start: clamp_line_number(row.get::<i64, _>(6)),
-                    line_end: clamp_line_number(row.get::<i64, _>(7)),
-                })
-                .collect();
-
+            // Phase 1: Fetch all uncalled functions (lightweight, no content/doc)
+            let all_uncalled = self.fetch_uncalled_functions().await?;
             let total_uncalled = all_uncalled.len();
 
             // Build test name set for exclusion
@@ -784,156 +776,14 @@ impl Store {
                 .map(|c| c.name)
                 .collect();
 
-            // Build set of files that have at least one function with callers
-            // (used for confidence scoring: "active file" = has called functions)
-            let files_with_callers: std::collections::HashSet<String> = {
-                let rows: Vec<(String,)> = sqlx::query_as(
-                    "SELECT DISTINCT c.origin
-                     FROM chunks c
-                     WHERE c.name IN (SELECT DISTINCT callee_name FROM function_calls)",
-                )
-                .fetch_all(&self.pool)
+            // Phase 1 filtering: name/test/path/trait checks (don't need content)
+            let candidates = Self::filter_candidates(all_uncalled, &test_names);
+
+            // Phase 2: Batch-fetch content and score confidence
+            let active_files = self.fetch_active_files().await?;
+            let (confident, possibly_dead_pub) = self
+                .score_confidence(candidates, &active_files, include_pub)
                 .await?;
-                rows.into_iter().map(|(f,)| f).collect()
-            };
-
-            // Files with type-edge activity (functions that reference types)
-            let files_with_type_activity: std::collections::HashSet<String> = {
-                let rows: Vec<(String,)> = sqlx::query_as(
-                    "SELECT DISTINCT c.origin FROM chunks c
-                     JOIN type_edges te ON c.id = te.source_chunk_id",
-                )
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!(error = %e, "Failed to query files with type activity");
-                    Vec::new()
-                });
-                rows.into_iter().map(|(f,)| f).collect()
-            };
-
-            // Phase 1 filtering: name/test/path checks (don't need content)
-            let mut candidates: Vec<LightChunk> = Vec::new();
-
-            for chunk in all_uncalled {
-                // Skip entry points (main, init, handler, etc.)
-                if ENTRY_POINT_NAMES.contains(&chunk.name.as_str()) {
-                    continue;
-                }
-                if test_names.contains(&chunk.name) {
-                    continue;
-                }
-                let path_str = chunk.file.to_string_lossy();
-                if crate::is_test_chunk(&chunk.name, &path_str) {
-                    continue;
-                }
-
-                // Methods with well-known trait names can be skipped without content
-                if chunk.chunk_type == ChunkType::Method && TRAIT_METHOD_NAMES.contains(&chunk.name.as_str())
-                {
-                    continue;
-                }
-
-                // Signature-only trait impl check
-                if chunk.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&chunk.signature) {
-                    continue;
-                }
-
-                candidates.push(chunk);
-            }
-
-            // Phase 2: Batch-fetch content for remaining candidates
-            let candidate_ids: Vec<String> = candidates.iter().map(|c| c.id.clone()).collect();
-            let mut content_map: std::collections::HashMap<String, (String, Option<String>)> =
-                std::collections::HashMap::new();
-
-            const BATCH_SIZE: usize = 500;
-            for batch in candidate_ids.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let sql = format!(
-                    "SELECT id, content, doc FROM chunks WHERE id IN ({})",
-                    placeholders
-                );
-                let mut q = sqlx::query(&sql);
-                for id in batch {
-                    q = q.bind(id);
-                }
-                let rows: Vec<_> = q.fetch_all(&self.pool).await?;
-                for row in rows {
-                    let id: String = row.get(0);
-                    let content: String = row.get(1);
-                    let doc: Option<String> = row.get(2);
-                    content_map.insert(id, (content, doc));
-                }
-            }
-
-            // Phase 2 filtering with content + confidence scoring
-            let mut confident = Vec::new();
-            let mut possibly_dead_pub = Vec::new();
-
-            for light in candidates {
-                let (content, doc) = content_map
-                    .remove(&light.id)
-                    .unwrap_or_else(|| (String::new(), None));
-
-                // Content-based trait impl check for methods
-                if light.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&content) {
-                    continue;
-                }
-
-                // Skip #[no_mangle] FFI functions
-                if content.contains("no_mangle") {
-                    continue;
-                }
-
-                // Check if public
-                let is_pub = content.starts_with("pub ")
-                    || content.starts_with("pub(")
-                    || light.signature.starts_with("pub ")
-                    || light.signature.starts_with("pub(");
-
-                // Confidence scoring
-                let is_method = light.chunk_type == ChunkType::Method;
-                let file_str = light.file.to_string_lossy();
-                let file_is_active = files_with_callers.contains(file_str.as_ref())
-                    || files_with_type_activity.contains(file_str.as_ref());
-
-                let confidence = if is_method {
-                    // Methods are more likely trait impls or interface implementations
-                    DeadConfidence::Low
-                } else if !file_is_active {
-                    // File has no functions with callers — likely entirely unused
-                    DeadConfidence::High
-                } else {
-                    // Function in an active file — could be a helper
-                    DeadConfidence::Medium
-                };
-
-                let chunk = ChunkSummary::from(ChunkRow {
-                    id: light.id,
-                    origin: light.file.to_string_lossy().into_owned(),
-                    language: light.language.to_string(),
-                    chunk_type: light.chunk_type.to_string(),
-                    name: light.name,
-                    signature: light.signature,
-                    content,
-                    doc,
-                    line_start: light.line_start,
-                    line_end: light.line_end,
-                    parent_id: None,
-                });
-
-                let dead_fn = DeadFunction { chunk, confidence };
-
-                if is_pub && !include_pub {
-                    possibly_dead_pub.push(dead_fn);
-                } else {
-                    confident.push(dead_fn);
-                }
-            }
 
             tracing::info!(
                 total_uncalled,
@@ -946,21 +796,252 @@ impl Store {
         })
     }
 
+    /// Phase 1: Query all callable chunks with no callers in the call graph.
+    ///
+    /// Returns lightweight metadata without content/doc to minimize memory.
+    async fn fetch_uncalled_functions(&self) -> Result<Vec<LightChunk>, StoreError> {
+        let callable = ChunkType::callable_sql_list();
+        let sql = format!(
+            "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
+                    c.line_start, c.line_end, c.parent_id
+             FROM chunks c
+             WHERE c.chunk_type IN ({callable})
+               AND NOT EXISTS (SELECT 1 FROM function_calls fc WHERE fc.callee_name = c.name LIMIT 1)
+               AND c.parent_id IS NULL
+             ORDER BY c.origin, c.line_start"
+        );
+        let rows: Vec<_> = sqlx::query(&sql).fetch_all(&self.pool).await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| LightChunk {
+                id: row.get(0),
+                file: PathBuf::from(row.get::<String, _>(1)),
+                language: {
+                    let raw: String = row.get(2);
+                    raw.parse().unwrap_or_else(|_| {
+                        tracing::warn!(raw = %raw, "Unknown language in DB, defaulting to Rust");
+                        Language::Rust
+                    })
+                },
+                chunk_type: {
+                    let raw: String = row.get(3);
+                    raw.parse().unwrap_or_else(|_| {
+                        tracing::warn!(raw = %raw, "Unknown chunk_type in DB, defaulting to Function");
+                        ChunkType::Function
+                    })
+                },
+                name: row.get(4),
+                signature: row.get(5),
+                line_start: clamp_line_number(row.get::<i64, _>(6)),
+                line_end: clamp_line_number(row.get::<i64, _>(7)),
+            })
+            .collect())
+    }
+
+    /// Phase 1 filter: exclude entry points, tests, trait methods from uncalled functions.
+    ///
+    /// Operates on lightweight metadata only — no content needed.
+    fn filter_candidates(
+        uncalled: Vec<LightChunk>,
+        test_names: &std::collections::HashSet<String>,
+    ) -> Vec<LightChunk> {
+        let mut candidates = Vec::new();
+
+        for chunk in uncalled {
+            // Skip entry points (main, init, handler, etc.)
+            if ENTRY_POINT_NAMES.contains(&chunk.name.as_str()) {
+                continue;
+            }
+            if test_names.contains(&chunk.name) {
+                continue;
+            }
+            let path_str = chunk.file.to_string_lossy();
+            if crate::is_test_chunk(&chunk.name, &path_str) {
+                continue;
+            }
+
+            // Methods with well-known trait names can be skipped without content
+            if chunk.chunk_type == ChunkType::Method
+                && TRAIT_METHOD_NAMES.contains(&chunk.name.as_str())
+            {
+                continue;
+            }
+
+            // Signature-only trait impl check
+            if chunk.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&chunk.signature) {
+                continue;
+            }
+
+            candidates.push(chunk);
+        }
+
+        candidates
+    }
+
+    /// Fetch sets of files with call graph or type-edge activity.
+    ///
+    /// Used for confidence scoring: files with active functions are "active".
+    async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
+        // Files with at least one function that has callers
+        let files_with_callers: std::collections::HashSet<String> = {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT c.origin
+                 FROM chunks c
+                 WHERE c.name IN (SELECT DISTINCT callee_name FROM function_calls)",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            rows.into_iter().map(|(f,)| f).collect()
+        };
+
+        // Files with type-edge activity (functions that reference types)
+        let files_with_type_activity: std::collections::HashSet<String> = {
+            let rows: Vec<(String,)> = sqlx::query_as(
+                "SELECT DISTINCT c.origin FROM chunks c
+                 JOIN type_edges te ON c.id = te.source_chunk_id",
+            )
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "Failed to query files with type activity");
+                Vec::new()
+            });
+            rows.into_iter().map(|(f,)| f).collect()
+        };
+
+        // Union both sets
+        let mut active = files_with_callers;
+        active.extend(files_with_type_activity);
+        Ok(active)
+    }
+
+    /// Phase 2: Batch-fetch content for candidates and assign confidence scores.
+    ///
+    /// Splits results into confident dead code and possibly-dead public functions.
+    async fn score_confidence(
+        &self,
+        candidates: Vec<LightChunk>,
+        active_files: &std::collections::HashSet<String>,
+        include_pub: bool,
+    ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
+        // Batch-fetch content for remaining candidates
+        let candidate_ids: Vec<String> = candidates.iter().map(|c| c.id.clone()).collect();
+        let mut content_map: std::collections::HashMap<String, (String, Option<String>)> =
+            std::collections::HashMap::new();
+
+        const BATCH_SIZE: usize = 500;
+        for batch in candidate_ids.chunks(BATCH_SIZE) {
+            let placeholders: String = (1..=batch.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, content, doc FROM chunks WHERE id IN ({})",
+                placeholders
+            );
+            let mut q = sqlx::query(&sql);
+            for id in batch {
+                q = q.bind(id);
+            }
+            let rows: Vec<_> = q.fetch_all(&self.pool).await?;
+            for row in rows {
+                let id: String = row.get(0);
+                let content: String = row.get(1);
+                let doc: Option<String> = row.get(2);
+                content_map.insert(id, (content, doc));
+            }
+        }
+
+        let mut confident = Vec::new();
+        let mut possibly_dead_pub = Vec::new();
+
+        for light in candidates {
+            let (content, doc) = content_map
+                .remove(&light.id)
+                .unwrap_or_else(|| (String::new(), None));
+
+            // Content-based trait impl check for methods
+            if light.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&content) {
+                continue;
+            }
+
+            // Skip #[no_mangle] FFI functions
+            if content.contains("no_mangle") {
+                continue;
+            }
+
+            // Check if public
+            let is_pub = content.starts_with("pub ")
+                || content.starts_with("pub(")
+                || light.signature.starts_with("pub ")
+                || light.signature.starts_with("pub(");
+
+            // Confidence scoring
+            let is_method = light.chunk_type == ChunkType::Method;
+            let file_str = light.file.to_string_lossy();
+            let file_is_active = active_files.contains(file_str.as_ref());
+
+            let confidence = if is_method {
+                // Methods are more likely trait impls or interface implementations
+                DeadConfidence::Low
+            } else if !file_is_active {
+                // File has no functions with callers — likely entirely unused
+                DeadConfidence::High
+            } else {
+                // Function in an active file — could be a helper
+                DeadConfidence::Medium
+            };
+
+            let chunk = ChunkSummary::from(ChunkRow {
+                id: light.id,
+                origin: light.file.to_string_lossy().into_owned(),
+                language: light.language.to_string(),
+                chunk_type: light.chunk_type.to_string(),
+                name: light.name,
+                signature: light.signature,
+                content,
+                doc,
+                line_start: light.line_start,
+                line_end: light.line_end,
+                parent_id: None,
+            });
+
+            let dead_fn = DeadFunction { chunk, confidence };
+
+            if is_pub && !include_pub {
+                possibly_dead_pub.push(dead_fn);
+            } else {
+                confident.push(dead_fn);
+            }
+        }
+
+        Ok((confident, possibly_dead_pub))
+    }
+
     /// Async helper for find_test_chunks (reused by find_dead_code)
     ///
     /// Loads only lightweight columns (no content/doc) since callers only need
     /// name, file, and line_start. The SQL WHERE clause still filters on content
     /// (for test markers like `#[test]`) but avoids returning it.
+    ///
+    /// Test markers and path patterns are sourced from `LanguageDef` fields
+    /// (`test_markers`, `test_path_patterns`) across all enabled languages,
+    /// falling back to hardcoded defaults when no language provides any.
+    //
+    // TODO(PF-10): Add OnceLock<Vec<ChunkSummary>> cache to Store (requires store/mod.rs).
+    // Called 13 times across codebase — test chunk set rarely changes during a session.
+    // Cache should invalidate on chunk upsert.
     async fn find_test_chunks_async(&self) -> Result<Vec<ChunkSummary>, StoreError> {
-        // Build OR clauses from centralized test pattern constants
+        // Build OR clauses from language-sourced test patterns
         let mut clauses: Vec<String> = Vec::new();
         for pat in TEST_NAME_PATTERNS {
             clauses.push(format!("name LIKE '{pat}'"));
         }
-        for marker in TEST_CONTENT_MARKERS {
+        for marker in build_test_content_markers() {
             clauses.push(format!("content LIKE '%{marker}%'"));
         }
-        for pat in TEST_PATH_PATTERNS {
+        for pat in build_test_path_patterns() {
             if pat.contains("\\_") {
                 clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
             } else {
@@ -1025,13 +1106,14 @@ impl Store {
 
     /// Find test chunks using language-specific heuristics.
     ///
-    /// Identifies test functions across all 7 supported languages by:
+    /// Identifies test functions across all supported languages by:
     /// - Name patterns: `test_*` (Rust/Python), `Test*` (Go)
-    /// - Content patterns: `#[test]` (Rust), `@Test` (Java)
-    /// - Path patterns: `/tests/`, `_test.rs`, `.test.ts`, `.spec.js`, `_test.go`
+    /// - Content patterns: sourced from `LanguageDef::test_markers` per language
+    /// - Path patterns: sourced from `LanguageDef::test_path_patterns` per language
     ///
     /// Uses a broad SQL filter then Rust post-filter for precision.
     pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
+        let _span = tracing::info_span!("find_test_chunks").entered();
         self.rt.block_on(self.find_test_chunks_async())
     }
 

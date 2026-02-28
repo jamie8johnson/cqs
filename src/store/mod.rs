@@ -25,7 +25,7 @@ pub(crate) mod helpers;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::RwLock;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
@@ -168,7 +168,7 @@ pub struct Store {
     pub(crate) rt: Runtime,
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
-    notes_summaries_cache: OnceLock<Vec<NoteSummary>>,
+    notes_summaries_cache: RwLock<Option<Vec<NoteSummary>>>,
 }
 
 impl Store {
@@ -213,7 +213,7 @@ impl Store {
             pool,
             rt,
             closed: AtomicBool::new(false),
-            notes_summaries_cache: OnceLock::new(),
+            notes_summaries_cache: RwLock::new(None),
         };
 
         // Set restrictive permissions on database files (Unix only)
@@ -306,7 +306,7 @@ impl Store {
             pool,
             rt,
             closed: AtomicBool::new(false),
-            notes_summaries_cache: OnceLock::new(),
+            notes_summaries_cache: RwLock::new(None),
         };
 
         // Skip permissions setting (read-only, no file creation)
@@ -548,6 +548,7 @@ impl Store {
     ///   HNSW/CAGRA vector index for O(log n) candidate retrieval instead of brute force.
     ///   Best for: Large indexes (>5k chunks) where brute force is slow.
     pub fn search_fts(&self, query: &str, limit: usize) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::info_span!("search_fts", limit).entered();
         let normalized_query = sanitize_fts_query(&normalize_for_fts(query));
         if normalized_query.is_empty() {
             tracing::debug!(
@@ -579,6 +580,7 @@ impl Store {
         name: &str,
         limit: usize,
     ) -> Result<Vec<SearchResult>, StoreError> {
+        let _span = tracing::info_span!("search_by_name", %name, limit).entered();
         let limit = limit.min(100);
         let normalized = sanitize_fts_query(&normalize_for_fts(name));
         if normalized.is_empty() {
@@ -693,14 +695,41 @@ impl Store {
         })
     }
 
-    /// Get cached notes summaries (loaded once, reused for subsequent search operations).
-    pub fn cached_notes_summaries(&self) -> Result<&[NoteSummary], StoreError> {
-        if let Some(ns) = self.notes_summaries_cache.get() {
-            return Ok(ns);
+    /// Get cached notes summaries (loaded on first call, invalidated on mutation).
+    ///
+    /// Returns a cloned Vec rather than a slice reference to avoid holding the
+    /// RwLock read guard across caller code. The clone cost is negligible — notes
+    /// are typically <100 entries with small strings.
+    pub fn cached_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
+        {
+            let guard = self
+                .notes_summaries_cache
+                .read()
+                .map_err(|e| StoreError::Runtime(format!("notes cache lock poisoned: {e}")))?;
+            if let Some(ref ns) = *guard {
+                return Ok(ns.clone());
+            }
         }
+        // Cache miss — load from DB and populate
         let ns = self.list_notes_summaries()?;
-        let _ = self.notes_summaries_cache.set(ns);
-        Ok(self.notes_summaries_cache.get().unwrap())
+        {
+            let mut guard = self
+                .notes_summaries_cache
+                .write()
+                .map_err(|e| StoreError::Runtime(format!("notes cache lock poisoned: {e}")))?;
+            *guard = Some(ns.clone());
+        }
+        Ok(ns)
+    }
+
+    /// Invalidate the cached notes summaries.
+    ///
+    /// Must be called after any operation that modifies notes (upsert, replace, delete)
+    /// so subsequent reads see fresh data.
+    pub(crate) fn invalidate_notes_cache(&self) {
+        if let Ok(mut guard) = self.notes_summaries_cache.write() {
+            *guard = None;
+        }
     }
 
     /// Gracefully close the store, performing WAL checkpoint.

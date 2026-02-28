@@ -181,6 +181,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: None,
     extract_qualified_method: None,
     post_process_chunk: Some(post_process_hcl),
+    test_markers: &[],
+    test_path_patterns: &[],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

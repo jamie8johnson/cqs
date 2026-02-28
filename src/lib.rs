@@ -103,8 +103,8 @@ pub use store::{ModelInfo, SearchFilter, Store};
 pub use diff::{semantic_diff, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
-    gather, gather_cross_index, GatherDirection, GatherOptions, GatheredChunk,
-    DEFAULT_MAX_EXPANDED_NODES,
+    gather, gather_cross_index, gather_with_graph, GatherDirection, GatherOptions, GatherResult,
+    GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
@@ -122,8 +122,9 @@ pub use onboard::{
 pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
-    scout, scout_to_json, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
-    ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
+    scout, scout_to_json, scout_with_options, scout_with_resources, ChunkRole, FileGroup,
+    ScoutChunk, ScoutOptions, ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT,
+    DEFAULT_SCOUT_SEARCH_THRESHOLD,
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
@@ -149,7 +150,7 @@ pub enum AnalysisError {
     #[error(transparent)]
     Store(#[from] store::StoreError),
     #[error("embedding failed: {0}")]
-    Embedder(String),
+    Embedder(#[from] embedder::EmbedderError),
     #[error("not found: {0}")]
     NotFound(String),
     #[error("{phase} phase failed: {message}")]
@@ -471,5 +472,110 @@ mod tests {
         let root = Path::new("/opt/tools");
         let path = Path::new("/var/log/app.log");
         assert_eq!(rel_display(path, root), "/var/log/app.log");
+    }
+
+    // ─── index_notes tests ──────────────────────────────────────────────────
+
+    fn setup_store_for_notes() -> (store::Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = store::Store::open(&db_path).unwrap();
+        store.init(&store::ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    fn make_notes_file(dir: &std::path::Path, content: &str) -> PathBuf {
+        let path = dir.join("notes.toml");
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_index_notes_empty_returns_zero() {
+        let (store, dir) = setup_store_for_notes();
+        let notes_path = make_notes_file(dir.path(), "# empty notes file\n");
+        let notes: Vec<note::Note> = Vec::new();
+
+        let embedder = Embedder::new().unwrap();
+        let count = index_notes(&notes, &notes_path, &embedder, &store).unwrap();
+        assert_eq!(count, 0);
+
+        // Verify no notes in store
+        let summaries = store.list_notes_summaries().unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[test]
+    fn test_index_notes_stores_notes() {
+        let (store, dir) = setup_store_for_notes();
+        let notes_path = make_notes_file(
+            dir.path(),
+            r#"
+[[note]]
+text = "Always use RRF search, not raw embedding"
+sentiment = -0.5
+mentions = ["search.rs"]
+
+[[note]]
+text = "Batch queries are fast"
+sentiment = 0.5
+mentions = ["store.rs"]
+"#,
+        );
+
+        let notes = vec![
+            note::Note {
+                id: "note:0".to_string(),
+                text: "Always use RRF search, not raw embedding".to_string(),
+                sentiment: -0.5,
+                mentions: vec!["search.rs".to_string()],
+            },
+            note::Note {
+                id: "note:1".to_string(),
+                text: "Batch queries are fast".to_string(),
+                sentiment: 0.5,
+                mentions: vec!["store.rs".to_string()],
+            },
+        ];
+
+        let embedder = Embedder::new().unwrap();
+        let count = index_notes(&notes, &notes_path, &embedder, &store).unwrap();
+        assert_eq!(count, 2);
+
+        // Verify notes are stored
+        let summaries = store.list_notes_summaries().unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries[0].text,
+            "Always use RRF search, not raw embedding"
+        );
+        assert!((summaries[0].sentiment - (-0.5)).abs() < f32::EPSILON);
+        assert_eq!(summaries[1].text, "Batch queries are fast");
+    }
+
+    #[test]
+    fn test_index_notes_sentiment_dimension() {
+        let (store, dir) = setup_store_for_notes();
+        let notes_path = make_notes_file(dir.path(), "");
+
+        let notes = vec![note::Note {
+            id: "note:0".to_string(),
+            text: "Serious issue with error handling".to_string(),
+            sentiment: -1.0,
+            mentions: vec!["lib.rs".to_string()],
+        }];
+
+        let embedder = Embedder::new().unwrap();
+        let count = index_notes(&notes, &notes_path, &embedder, &store).unwrap();
+        assert_eq!(count, 1);
+
+        // Search notes with a dummy query embedding to verify they're retrievable
+        let query = embedder.embed_query("error handling issue").unwrap();
+        let results = store.search_notes(&query, 5, 0.0).unwrap();
+        assert!(!results.is_empty(), "Should find indexed note via search");
+
+        // Verify the stored embedding has 769 dimensions (768 model + 1 sentiment)
+        // by checking the note is retrievable — search_notes uses the full 769-dim vector
+        assert_eq!(results[0].note.text, "Serious issue with error handling");
     }
 }

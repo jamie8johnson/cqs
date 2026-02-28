@@ -12,7 +12,7 @@ use crate::store::{ChunkSummary, NoteSummary, SearchFilter};
 use crate::{AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum ChunkRole {
     /// High-relevance function likely needing modification (score >= 0.5)
     ModifyTarget,
@@ -34,7 +34,7 @@ impl ChunkRole {
 }
 
 /// A chunk in the scout result with hints
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ScoutChunk {
     /// Function/class/etc. name
     pub name: String,
@@ -55,7 +55,7 @@ pub struct ScoutChunk {
 }
 
 /// A file group in the scout result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FileGroup {
     /// File path
     pub file: PathBuf,
@@ -68,7 +68,7 @@ pub struct FileGroup {
 }
 
 /// Summary counts
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ScoutSummary {
     pub total_files: usize,
     pub total_functions: usize,
@@ -77,9 +77,10 @@ pub struct ScoutSummary {
 }
 
 /// Complete scout result
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ScoutResult {
     pub file_groups: Vec<FileGroup>,
+    #[serde(skip)]
     pub relevant_notes: Vec<NoteSummary>,
     pub summary: ScoutSummary,
 }
@@ -140,9 +141,7 @@ pub fn scout_with_options(
     opts: &ScoutOptions,
 ) -> Result<ScoutResult, AnalysisError> {
     let _span = tracing::info_span!("scout", task_len = task.len(), limit).entered();
-    let query_embedding = embedder
-        .embed_query(task)
-        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    let query_embedding = embedder.embed_query(task)?;
     let graph = store.get_call_graph()?;
     let test_chunks = match store.find_test_chunks() {
         Ok(tc) => tc,
@@ -160,6 +159,35 @@ pub fn scout_with_options(
         opts,
         &graph,
         &test_chunks,
+    )
+}
+
+/// Like [`scout_with_options`] but accepts pre-loaded call graph and test chunks.
+///
+/// Use when the caller already has these resources (e.g., batch mode where
+/// `BatchContext` caches them across commands).
+#[allow(clippy::too_many_arguments)]
+pub fn scout_with_resources(
+    store: &Store,
+    embedder: &Embedder,
+    task: &str,
+    root: &Path,
+    limit: usize,
+    opts: &ScoutOptions,
+    graph: &crate::store::CallGraph,
+    test_chunks: &[crate::store::ChunkSummary],
+) -> Result<ScoutResult, AnalysisError> {
+    let _span = tracing::info_span!("scout_with_resources", task_len = task.len(), limit).entered();
+    let query_embedding = embedder.embed_query(task)?;
+    scout_core(
+        store,
+        &query_embedding,
+        task,
+        root,
+        limit,
+        opts,
+        graph,
+        test_chunks,
     )
 }
 

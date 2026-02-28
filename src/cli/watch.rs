@@ -31,10 +31,25 @@ use cqs::note::parse_notes;
 use cqs::parser::Parser as CqParser;
 use cqs::store::Store;
 
-use super::{check_interrupted, find_project_root, Cli};
+use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
 
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
+
+/// Try to initialize the embedder, returning a reference from the OnceCell.
+/// Deduplicates the 7-line pattern that appeared twice in cmd_watch.
+fn try_init_embedder(embedder: &OnceCell<Embedder>) -> Option<&Embedder> {
+    match embedder.get() {
+        Some(e) => Some(e),
+        None => match Embedder::new() {
+            Ok(e) => Some(embedder.get_or_init(|| e)),
+            Err(e) => {
+                warn!(error = %e, "Failed to initialize embedder");
+                None
+            }
+        },
+    }
+}
 
 pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     if no_ignore {
@@ -106,161 +121,62 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
-                for path in event.paths {
-                    let path = dunce::canonicalize(&path).unwrap_or_else(|e| {
-                        tracing::debug!(path = %path.display(), error = %e, "canonicalize failed, using original");
-                        path
-                    });
-                    // Skip .cqs directory
-                    if path.starts_with(&cqs_dir) {
-                        continue;
-                    }
-
-                    // Check if it's notes.toml
-                    if path == notes_path {
-                        pending_notes = true;
-                        last_event = std::time::Instant::now();
-                        continue;
-                    }
-
-                    // Skip if not a supported extension
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if !supported_ext.contains(ext) {
-                        continue;
-                    }
-
-                    // Convert to relative path
-                    if let Ok(rel) = path.strip_prefix(&root) {
-                        // Skip if mtime unchanged since last index (dedup WSL/NTFS events)
-                        if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
-                            if last_indexed_mtime
-                                .get(rel)
-                                .is_some_and(|last| mtime <= *last)
-                            {
-                                continue;
-                            }
-                        }
-                        if pending_files.len() < MAX_PENDING_FILES {
-                            pending_files.insert(rel.to_path_buf());
-                        }
-                        last_event = std::time::Instant::now();
-                    }
-                }
+                collect_events(
+                    &event,
+                    &root,
+                    &cqs_dir,
+                    &notes_path,
+                    &supported_ext,
+                    &mut pending_files,
+                    &mut pending_notes,
+                    &mut last_event,
+                    &last_indexed_mtime,
+                );
             }
             Ok(Err(e)) => {
                 warn!(error = %e, "Watch error");
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Check if we should process pending changes
                 let should_process = (!pending_files.is_empty() || pending_notes)
                     && last_event.elapsed() >= debounce;
 
                 if should_process {
                     cycles_since_clear = 0;
 
-                    // Reindex code files if any changed
+                    // DS-1: Acquire index lock before reindexing. If another process
+                    // (cqs index, cqs gc) holds it, skip this cycle.
+                    let lock = match try_acquire_index_lock(&cqs_dir) {
+                        Ok(Some(lock)) => lock,
+                        Ok(None) => {
+                            info!("Index lock held by another process, skipping reindex cycle");
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to create index lock file");
+                            continue;
+                        }
+                    };
+
                     if !pending_files.is_empty() {
-                        let files: Vec<PathBuf> = pending_files.drain().collect();
-                        pending_files.shrink_to(64);
-                        if !cli.quiet {
-                            println!("\n{} file(s) changed, reindexing...", files.len());
-                            for f in &files {
-                                println!("  {}", f.display());
-                            }
-                        }
-
-                        // Initialize embedder on first use (lazy ~500ms init)
-                        let emb = match embedder.get() {
-                            Some(e) => e,
-                            None => match Embedder::new() {
-                                Ok(e) => embedder.get_or_init(|| e),
-                                Err(e) => {
-                                    warn!(error = %e, "Failed to initialize embedder");
-                                    continue;
-                                }
-                            },
-                        };
-
-                        // Capture mtimes BEFORE reindexing to avoid race condition
-                        let pre_mtimes: HashMap<PathBuf, SystemTime> = files
-                            .iter()
-                            .filter_map(|f| {
-                                std::fs::metadata(root.join(f))
-                                    .and_then(|m| m.modified())
-                                    .ok()
-                                    .map(|t| (f.clone(), t))
-                            })
-                            .collect();
-
-                        // Note: concurrent searches during this window may see partial
-                        // results (RT-DATA-3). Per-file transactions are atomic but the
-                        // batch is not — files indexed so far are visible, remaining are
-                        // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
-                        match reindex_files(&root, &store, &files, &parser, emb, cli.quiet) {
-                            Ok((count, _content_hashes)) => {
-                                // Record mtimes to skip duplicate events
-                                for (file, mtime) in pre_mtimes {
-                                    last_indexed_mtime.insert(file, mtime);
-                                }
-                                // Prune entries for deleted files to prevent unbounded growth
-                                last_indexed_mtime.retain(|f, _| root.join(f).exists());
-                                if !cli.quiet {
-                                    println!("Indexed {} chunk(s)", count);
-                                }
-                                // Rebuild HNSW so index is fresh
-                                match super::commands::build_hnsw_index(&store, &cqs_dir) {
-                                    Ok(Some(n)) => {
-                                        info!(vectors = n, "HNSW index rebuilt");
-                                        if !cli.quiet {
-                                            println!("  HNSW index: {} vectors", n);
-                                        }
-                                    }
-                                    Ok(None) => {} // empty store
-                                    Err(e) => {
-                                        warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
-                                        // Delete stale HNSW files so search doesn't use an outdated index
-                                        for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
-                                            let path = cqs_dir.join(format!("index.{}", ext));
-                                            if path.exists() {
-                                                let _ = std::fs::remove_file(&path);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Reindex error");
-                            }
-                        }
+                        process_file_changes(
+                            &root,
+                            &cqs_dir,
+                            &store,
+                            &parser,
+                            &embedder,
+                            &mut pending_files,
+                            &mut last_indexed_mtime,
+                            cli.quiet,
+                        );
                     }
 
-                    // Reindex notes if notes.toml changed
                     if pending_notes {
                         pending_notes = false;
-                        if !cli.quiet {
-                            println!("\nNotes changed, reindexing...");
-                        }
-                        let emb = match embedder.get() {
-                            Some(e) => e,
-                            None => match Embedder::new() {
-                                Ok(e) => embedder.get_or_init(|| e),
-                                Err(e) => {
-                                    warn!(error = %e, "Failed to initialize embedder");
-                                    continue;
-                                }
-                            },
-                        };
-                        match reindex_notes(&root, &store, emb, cli.quiet) {
-                            Ok(count) => {
-                                if !cli.quiet {
-                                    println!("Indexed {} note(s)", count);
-                                }
-                            }
-                            Err(e) => {
-                                warn!(error = %e, "Notes reindex error");
-                            }
-                        }
+                        process_note_changes(&root, &store, &embedder, cli.quiet);
                     }
+
+                    // DS-1: Release lock after all reindex work (including HNSW rebuild)
+                    drop(lock);
                 } else {
                     cycles_since_clear += 1;
                     // Clear embedder session after ~5 minutes idle (3000 cycles at 100ms)
@@ -287,6 +203,161 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Collect file system events into pending sets, filtering by extension and deduplicating.
+#[allow(clippy::too_many_arguments)]
+fn collect_events(
+    event: &notify::Event,
+    root: &Path,
+    cqs_dir: &Path,
+    notes_path: &Path,
+    supported_ext: &HashSet<&str>,
+    pending_files: &mut HashSet<PathBuf>,
+    pending_notes: &mut bool,
+    last_event: &mut std::time::Instant,
+    last_indexed_mtime: &HashMap<PathBuf, SystemTime>,
+) {
+    for path in &event.paths {
+        let path = dunce::canonicalize(path).unwrap_or_else(|e| {
+            tracing::debug!(path = %path.display(), error = %e, "canonicalize failed, using original");
+            path.clone()
+        });
+        // Skip .cqs directory
+        if path.starts_with(cqs_dir) {
+            continue;
+        }
+
+        // Check if it's notes.toml
+        if path == notes_path {
+            *pending_notes = true;
+            *last_event = std::time::Instant::now();
+            continue;
+        }
+
+        // Skip if not a supported extension
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !supported_ext.contains(ext) {
+            continue;
+        }
+
+        // Convert to relative path
+        if let Ok(rel) = path.strip_prefix(root) {
+            // Skip if mtime unchanged since last index (dedup WSL/NTFS events)
+            if let Ok(mtime) = std::fs::metadata(&path).and_then(|m| m.modified()) {
+                if last_indexed_mtime
+                    .get(rel)
+                    .is_some_and(|last| mtime <= *last)
+                {
+                    continue;
+                }
+            }
+            if pending_files.len() < MAX_PENDING_FILES {
+                pending_files.insert(rel.to_path_buf());
+            }
+            *last_event = std::time::Instant::now();
+        }
+    }
+}
+
+/// Process pending file changes: parse, embed, and store atomically, then rebuild HNSW.
+#[allow(clippy::too_many_arguments)]
+fn process_file_changes(
+    root: &Path,
+    cqs_dir: &Path,
+    store: &Store,
+    parser: &CqParser,
+    embedder: &OnceCell<Embedder>,
+    pending_files: &mut HashSet<PathBuf>,
+    last_indexed_mtime: &mut HashMap<PathBuf, SystemTime>,
+    quiet: bool,
+) {
+    let files: Vec<PathBuf> = pending_files.drain().collect();
+    pending_files.shrink_to(64);
+    if !quiet {
+        println!("\n{} file(s) changed, reindexing...", files.len());
+        for f in &files {
+            println!("  {}", f.display());
+        }
+    }
+
+    let emb = match try_init_embedder(embedder) {
+        Some(e) => e,
+        None => return,
+    };
+
+    // Capture mtimes BEFORE reindexing to avoid race condition
+    let pre_mtimes: HashMap<PathBuf, SystemTime> = files
+        .iter()
+        .filter_map(|f| {
+            std::fs::metadata(root.join(f))
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| (f.clone(), t))
+        })
+        .collect();
+
+    // Note: concurrent searches during this window may see partial
+    // results (RT-DATA-3). Per-file transactions are atomic but the
+    // batch is not — files indexed so far are visible, remaining are
+    // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
+    match reindex_files(root, store, &files, parser, emb, quiet) {
+        Ok((count, _content_hashes)) => {
+            // Record mtimes to skip duplicate events
+            for (file, mtime) in pre_mtimes {
+                last_indexed_mtime.insert(file, mtime);
+            }
+            // Prune entries for deleted files to prevent unbounded growth
+            last_indexed_mtime.retain(|f, _| root.join(f).exists());
+            if !quiet {
+                println!("Indexed {} chunk(s)", count);
+            }
+            // Rebuild HNSW so index is fresh
+            match super::commands::build_hnsw_index(store, cqs_dir) {
+                Ok(Some(n)) => {
+                    info!(vectors = n, "HNSW index rebuilt");
+                    if !quiet {
+                        println!("  HNSW index: {} vectors", n);
+                    }
+                }
+                Ok(None) => {} // empty store
+                Err(e) => {
+                    warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
+                    // Delete stale HNSW files so search doesn't use an outdated index
+                    for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
+                        let path = cqs_dir.join(format!("index.{}", ext));
+                        if path.exists() {
+                            let _ = std::fs::remove_file(&path);
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Reindex error");
+        }
+    }
+}
+
+/// Process notes.toml changes: parse and re-embed notes.
+fn process_note_changes(root: &Path, store: &Store, embedder: &OnceCell<Embedder>, quiet: bool) {
+    if !quiet {
+        println!("\nNotes changed, reindexing...");
+    }
+    let emb = match try_init_embedder(embedder) {
+        Some(e) => e,
+        None => return,
+    };
+    match reindex_notes(root, store, emb, quiet) {
+        Ok(count) => {
+            if !quiet {
+                println!("Indexed {} note(s)", count);
+            }
+        }
+        Err(e) => {
+            warn!(error = %e, "Notes reindex error");
+        }
+    }
 }
 
 /// Reindex specific files.
@@ -380,8 +451,21 @@ fn reindex_files(
         embeddings[i] = emb;
     }
 
-    // Group chunks by file and atomically replace (delete + insert in single transaction)
-    // Uses into_iter() to move ownership instead of cloning each chunk/embedding.
+    // DS-2: Extract call graph from chunks (same loop), then use atomic upsert.
+    // This mirrors the pipeline's approach: extract_calls_from_chunk per chunk,
+    // then upsert_chunks_and_calls in a single transaction per file.
+    let all_calls: Vec<(String, cqs::parser::CallSite)> = chunks
+        .iter()
+        .flat_map(|chunk| {
+            let calls = parser.extract_calls_from_chunk(chunk);
+            calls
+                .into_iter()
+                .map(|c| (chunk.id.clone(), c))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    // Group chunks by file and atomically upsert chunks + calls in a single transaction
     let mut mtime_cache: HashMap<PathBuf, Option<i64>> = HashMap::new();
     let mut by_file: HashMap<PathBuf, Vec<(cqs::Chunk, Embedding)>> = HashMap::new();
     for (chunk, embedding) in chunks.into_iter().zip(embeddings.into_iter()) {
@@ -401,20 +485,25 @@ fn reindex_files(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
         });
-        store.replace_file_chunks(file, pairs, mtime)?;
+        // Filter calls to only those belonging to chunks in this file
+        let chunk_ids: HashSet<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
+        let file_calls: Vec<_> = all_calls
+            .iter()
+            .filter(|(id, _)| chunk_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
     }
 
-    // Extract call graph + type edges for changed files
+    // Extract type edges for changed files (separate from chunk+call atomicity,
+    // since type edges are not part of the core data consistency concern)
     for rel_path in files {
         let abs_path = root.join(rel_path);
         if !abs_path.exists() {
             continue;
         }
         match parser.parse_file_relationships(&abs_path) {
-            Ok((function_calls, chunk_type_refs)) => {
-                if let Err(e) = store.upsert_function_calls(rel_path, &function_calls) {
-                    tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update call graph");
-                }
+            Ok((_function_calls, chunk_type_refs)) => {
                 if !chunk_type_refs.is_empty() {
                     if let Err(e) = store.upsert_type_edges_for_file(rel_path, &chunk_type_refs) {
                         tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update type edges");
@@ -422,7 +511,7 @@ fn reindex_files(
                 }
             }
             Err(e) => {
-                tracing::warn!(file = %abs_path.display(), error = %e, "Failed to extract relationships");
+                tracing::warn!(file = %abs_path.display(), error = %e, "Failed to extract type edges");
             }
         }
     }

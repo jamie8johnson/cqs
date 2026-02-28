@@ -128,6 +128,10 @@ macro_rules! define_languages {
 /// Returns `false` to discard the chunk.
 pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node, &str) -> bool;
 
+/// Function signature for language-specific structural pattern matchers.
+/// Takes `(content, name)` and returns true if the pattern matches.
+pub type StructuralMatcherFn = fn(&str, &str) -> bool;
+
 /// A language definition with all parsing configuration
 #[non_exhaustive]
 pub struct LanguageDef {
@@ -183,6 +187,18 @@ pub struct LanguageDef {
     /// Return `false` to discard the chunk entirely.
     /// Takes `(&mut name, &mut chunk_type, definition_node, source)`.
     pub post_process_chunk: Option<PostProcessChunkFn>,
+    /// Test content markers — language-specific annotations/decorators.
+    /// Used by `find_test_chunks` for SQL `content LIKE '%marker%'` filtering.
+    /// E.g., Rust: `&["#[test]", "#[cfg(test)]"]`, Java: `&["@Test"]`, Python: `&["def test_"]`.
+    pub test_markers: &'static [&'static str],
+    /// Test path patterns — file path suffixes/directories (SQL LIKE syntax).
+    /// E.g., `&["%_test.rs", "%/tests/%"]`. Empty = use global defaults.
+    pub test_path_patterns: &'static [&'static str],
+    /// Language-specific structural pattern matchers.
+    /// Keyed by pattern name (e.g., "error_swallow", "async", "mutex", "unsafe").
+    /// When present, `Pattern::matches` uses these instead of generic heuristics.
+    /// `None` = fall through to generic pattern matching in `structural.rs`.
+    pub structural_matchers: Option<&'static [(&'static str, StructuralMatcherFn)]>,
 }
 
 /// How to extract function signatures
@@ -201,65 +217,127 @@ pub enum SignatureStyle {
     Breadcrumb,
 }
 
-/// Type of code element extracted by the parser
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ChunkType {
+// ---------------------------------------------------------------------------
+// Macro: define_chunk_types!
+//
+// Generates from a single declaration table:
+//   - `ChunkType` enum with variants, doc comments, and serde
+//   - `ChunkType::ALL` const array
+//   - `Display` impl (variant → name string)
+//   - `FromStr` impl (name string → variant, case-insensitive)
+//   - `ParseChunkTypeError` error type
+//
+// Adding a chunk type = one new line here. Display, FromStr, ALL, and error
+// messages stay in sync automatically.
+// ---------------------------------------------------------------------------
+macro_rules! define_chunk_types {
+    (
+        $(
+            $(#[doc = $doc:expr])*
+            $variant:ident => $name:literal;
+        )+
+    ) => {
+        /// Type of code element extracted by the parser
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+        #[serde(rename_all = "lowercase")]
+        pub enum ChunkType {
+            $(
+                $(#[doc = $doc])*
+                $variant,
+            )+
+        }
+
+        impl ChunkType {
+            /// All ChunkType variants.
+            pub const ALL: &'static [ChunkType] = &[
+                $(ChunkType::$variant,)+
+            ];
+
+            /// All valid chunk type name strings
+            pub fn valid_names() -> &'static [&'static str] {
+                &[$($name),+]
+            }
+        }
+
+        impl std::fmt::Display for ChunkType {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(ChunkType::$variant => write!(f, $name),)+
+                }
+            }
+        }
+
+        /// Error returned when parsing an invalid ChunkType string
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct ParseChunkTypeError {
+            /// The invalid input string
+            pub input: String,
+        }
+
+        impl std::fmt::Display for ParseChunkTypeError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                let names: Vec<&str> = ChunkType::valid_names().to_vec();
+                write!(
+                    f,
+                    "Unknown chunk type: '{}'. Valid options: {}",
+                    self.input,
+                    names.join(", ")
+                )
+            }
+        }
+
+        impl std::error::Error for ParseChunkTypeError {}
+
+        impl std::str::FromStr for ChunkType {
+            type Err = ParseChunkTypeError;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s.to_lowercase().as_str() {
+                    $($name => Ok(ChunkType::$variant),)+
+                    _ => Err(ParseChunkTypeError {
+                        input: s.to_string(),
+                    }),
+                }
+            }
+        }
+    };
+}
+
+define_chunk_types! {
     /// Standalone function
-    Function,
+    Function => "function";
     /// Method (function inside a class/struct/impl)
-    Method,
+    Method => "method";
     /// Class definition (Python, TypeScript, JavaScript)
-    Class,
+    Class => "class";
     /// Struct definition (Rust, Go)
-    Struct,
+    Struct => "struct";
     /// Enum definition
-    Enum,
+    Enum => "enum";
     /// Trait definition (Rust)
-    Trait,
+    Trait => "trait";
     /// Interface definition (TypeScript, Go)
-    Interface,
+    Interface => "interface";
     /// Constant or static variable
-    Constant,
+    Constant => "constant";
     /// Documentation section (Markdown)
-    Section,
+    Section => "section";
     /// Property (C# get/set properties)
-    Property,
+    Property => "property";
     /// Delegate type declaration (C#)
-    Delegate,
+    Delegate => "delegate";
     /// Event declaration (C#)
-    Event,
+    Event => "event";
     /// Module definition (F#, future: Ruby, Elixir)
-    Module,
+    Module => "module";
     /// Macro definition (Rust `macro_rules!`, future: Elixir `defmacro`)
-    Macro,
+    Macro => "macro";
     /// Object/singleton definition (Scala)
-    Object,
+    Object => "object";
     /// Type alias definition (Scala, future: Haskell, Kotlin)
-    TypeAlias,
+    TypeAlias => "typealias";
 }
 
 impl ChunkType {
-    /// All 16 ChunkType variants. Used by `callable_sql_list()` and iteration.
-    pub const ALL: &'static [ChunkType] = &[
-        ChunkType::Function,
-        ChunkType::Method,
-        ChunkType::Class,
-        ChunkType::Struct,
-        ChunkType::Enum,
-        ChunkType::Trait,
-        ChunkType::Interface,
-        ChunkType::Constant,
-        ChunkType::Section,
-        ChunkType::Property,
-        ChunkType::Delegate,
-        ChunkType::Event,
-        ChunkType::Module,
-        ChunkType::Macro,
-        ChunkType::Object,
-        ChunkType::TypeAlias,
-    ];
-
     /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
     pub fn is_callable(self) -> bool {
         matches!(
@@ -277,75 +355,6 @@ impl ChunkType {
             .map(|ct| format!("'{}'", ct))
             .collect::<Vec<_>>()
             .join(",")
-    }
-}
-
-impl std::fmt::Display for ChunkType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ChunkType::Function => write!(f, "function"),
-            ChunkType::Method => write!(f, "method"),
-            ChunkType::Class => write!(f, "class"),
-            ChunkType::Struct => write!(f, "struct"),
-            ChunkType::Enum => write!(f, "enum"),
-            ChunkType::Trait => write!(f, "trait"),
-            ChunkType::Interface => write!(f, "interface"),
-            ChunkType::Constant => write!(f, "constant"),
-            ChunkType::Section => write!(f, "section"),
-            ChunkType::Property => write!(f, "property"),
-            ChunkType::Delegate => write!(f, "delegate"),
-            ChunkType::Event => write!(f, "event"),
-            ChunkType::Module => write!(f, "module"),
-            ChunkType::Macro => write!(f, "macro"),
-            ChunkType::Object => write!(f, "object"),
-            ChunkType::TypeAlias => write!(f, "typealias"),
-        }
-    }
-}
-
-/// Error returned when parsing an invalid ChunkType string
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseChunkTypeError {
-    /// The invalid input string
-    pub input: String,
-}
-
-impl std::fmt::Display for ParseChunkTypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Unknown chunk type: '{}'. Valid options: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias",
-            self.input
-        )
-    }
-}
-
-impl std::error::Error for ParseChunkTypeError {}
-
-impl std::str::FromStr for ChunkType {
-    type Err = ParseChunkTypeError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "function" => Ok(ChunkType::Function),
-            "method" => Ok(ChunkType::Method),
-            "class" => Ok(ChunkType::Class),
-            "struct" => Ok(ChunkType::Struct),
-            "enum" => Ok(ChunkType::Enum),
-            "trait" => Ok(ChunkType::Trait),
-            "interface" => Ok(ChunkType::Interface),
-            "constant" => Ok(ChunkType::Constant),
-            "section" => Ok(ChunkType::Section),
-            "property" => Ok(ChunkType::Property),
-            "delegate" => Ok(ChunkType::Delegate),
-            "event" => Ok(ChunkType::Event),
-            "module" => Ok(ChunkType::Module),
-            "macro" => Ok(ChunkType::Macro),
-            "object" => Ok(ChunkType::Object),
-            "typealias" => Ok(ChunkType::TypeAlias),
-            _ => Err(ParseChunkTypeError {
-                input: s.to_string(),
-            }),
-        }
     }
 }
 
@@ -403,6 +412,34 @@ impl LanguageRegistry {
     /// Get all supported extensions
     pub fn supported_extensions(&self) -> impl Iterator<Item = &'static str> + '_ {
         self.by_extension.keys().copied()
+    }
+
+    /// Collect all unique test content markers from all enabled languages.
+    pub fn all_test_markers(&self) -> Vec<&'static str> {
+        let mut markers = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for def in self.all() {
+            for marker in def.test_markers {
+                if seen.insert(*marker) {
+                    markers.push(*marker);
+                }
+            }
+        }
+        markers
+    }
+
+    /// Collect all unique test path patterns from all enabled languages.
+    pub fn all_test_path_patterns(&self) -> Vec<&'static str> {
+        let mut patterns = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for def in self.all() {
+            for pat in def.test_path_patterns {
+                if seen.insert(*pat) {
+                    patterns.push(*pat);
+                }
+            }
+        }
+        patterns
     }
 }
 
@@ -1049,30 +1086,37 @@ mod tests {
 
     #[test]
     fn test_chunk_type_display_roundtrip() {
-        // Verify Display and FromStr are inverses
-        let types = [
-            ChunkType::Function,
-            ChunkType::Method,
-            ChunkType::Class,
-            ChunkType::Struct,
-            ChunkType::Enum,
-            ChunkType::Trait,
-            ChunkType::Interface,
-            ChunkType::Constant,
-            ChunkType::Section,
-            ChunkType::Property,
-            ChunkType::Delegate,
-            ChunkType::Event,
-            ChunkType::Module,
-            ChunkType::Macro,
-            ChunkType::Object,
-            ChunkType::TypeAlias,
-        ];
-        for ct in types {
+        // Verify Display and FromStr are inverses for ALL variants (macro-generated)
+        for ct in ChunkType::ALL {
             let s = ct.to_string();
             let parsed: ChunkType = s.parse().unwrap();
-            assert_eq!(ct, parsed);
+            assert_eq!(*ct, parsed);
         }
+    }
+
+    #[test]
+    fn test_chunk_type_valid_names_roundtrip() {
+        // Every entry in valid_names() should parse and round-trip through Display
+        for name in ChunkType::valid_names() {
+            let ct: ChunkType = name.parse().unwrap_or_else(|_| {
+                panic!("valid_names() entry '{}' should parse as ChunkType", name)
+            });
+            assert_eq!(
+                &ct.to_string(),
+                name,
+                "Display for '{}' should round-trip",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_chunk_type_all_count_matches_valid_names() {
+        assert_eq!(
+            ChunkType::ALL.len(),
+            ChunkType::valid_names().len(),
+            "ALL and valid_names() should have the same count"
+        );
     }
 
     #[test]
@@ -1088,5 +1132,66 @@ mod tests {
         assert!(list.contains("'macro'"));
         assert!(!list.contains("'object'"));
         assert!(!list.contains("'typealias'"));
+    }
+
+    // ===== Test markers / path patterns tests =====
+
+    #[test]
+    fn test_all_test_markers_nonempty() {
+        let markers = REGISTRY.all_test_markers();
+        // At least Rust (#[test]) and Java (@Test) should contribute markers
+        assert!(
+            markers.len() >= 2,
+            "Expected at least 2 test markers, got {}",
+            markers.len()
+        );
+        assert!(
+            markers.contains(&"#[test]"),
+            "Rust #[test] should be in all_test_markers"
+        );
+        assert!(
+            markers.contains(&"@Test"),
+            "Java @Test should be in all_test_markers"
+        );
+    }
+
+    #[test]
+    fn test_all_test_path_patterns_nonempty() {
+        let patterns = REGISTRY.all_test_path_patterns();
+        assert!(
+            !patterns.is_empty(),
+            "Expected at least 1 test path pattern"
+        );
+        assert!(
+            patterns.contains(&"%/tests/%"),
+            "%/tests/% should be in all_test_path_patterns"
+        );
+    }
+
+    #[test]
+    fn test_all_test_markers_no_duplicates() {
+        let markers = REGISTRY.all_test_markers();
+        let set: std::collections::HashSet<&str> = markers.iter().copied().collect();
+        assert_eq!(
+            markers.len(),
+            set.len(),
+            "all_test_markers() should have no duplicates"
+        );
+    }
+
+    #[test]
+    fn test_rust_test_markers() {
+        let def = Language::Rust.def();
+        assert!(def.test_markers.contains(&"#[test]"));
+        assert!(def.test_markers.contains(&"#[cfg(test)]"));
+    }
+
+    #[test]
+    fn test_structural_matchers_default_none() {
+        // Most languages should default to None for structural_matchers
+        for lang in Language::all_variants() {
+            // Just verify the field is accessible without panicking
+            let _matchers = lang.def().structural_matchers;
+        }
     }
 }

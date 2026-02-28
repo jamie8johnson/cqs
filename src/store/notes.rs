@@ -119,6 +119,7 @@ impl Store {
             }
 
             tx.commit().await?;
+            self.invalidate_notes_cache();
             Ok(notes.len())
         })
     }
@@ -137,6 +138,7 @@ impl Store {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<NoteSearchResult>, StoreError> {
+        let _span = tracing::info_span!("search_notes", limit, threshold).entered();
         // Limit scan to prevent OOM - notes in large collections should use HNSW
         const MAX_NOTES_SCAN: i64 = 1000;
 
@@ -219,6 +221,7 @@ impl Store {
             }
 
             tx.commit().await?;
+            self.invalidate_notes_cache();
             tracing::info!(source = %source_str, count = notes.len(), "Notes replaced successfully");
             Ok(notes.len())
         })

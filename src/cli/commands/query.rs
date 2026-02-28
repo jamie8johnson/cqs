@@ -12,6 +12,29 @@ use cqs::{reference, Embedder, Embedding, HnswIndex, Pattern, SearchFilter, Stor
 
 use crate::cli::{display, signal, staleness, Cli};
 
+/// Compute JSON overhead for token budgeting based on output format.
+fn json_overhead_for(cli: &Cli) -> usize {
+    if cli.json {
+        super::JSON_OVERHEAD_PER_RESULT
+    } else {
+        0
+    }
+}
+
+/// Emit empty results (JSON or text) and exit with NoResults code.
+///
+/// `context` is an optional label for the empty-result message (e.g. reference name).
+fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
+    if json {
+        println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+    } else if let Some(ctx) = context {
+        println!("No results found in reference '{}'.", ctx);
+    } else {
+        println!("No results found.");
+    }
+    std::process::exit(signal::ExitCode::NoResults as i32);
+}
+
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
@@ -198,11 +221,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     };
 
     // Token-budget packing for unified results (no-ref path)
-    let json_overhead = if cli.json {
-        super::JSON_OVERHEAD_PER_RESULT
-    } else {
-        0
-    };
+    let json_overhead = json_overhead_for(cli);
     let (results, token_info) = if let Some(budget) = cli.tokens {
         token_pack_unified(results, budget, json_overhead, &embedder)
     } else {
@@ -236,12 +255,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     // Fast path: no references configured
     if references.is_empty() {
         if results.is_empty() {
-            if cli.json {
-                println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
-            } else {
-                println!("No results found.");
-            }
-            std::process::exit(signal::ExitCode::NoResults as i32);
+            emit_empty_results(query, cli.json, None);
         }
 
         if cli.json {
@@ -298,12 +312,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     };
 
     if tagged.is_empty() {
-        if cli.json {
-            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
-        } else {
-            println!("No results found.");
-        }
-        std::process::exit(signal::ExitCode::NoResults as i32);
+        emit_empty_results(query, cli.json, None);
     }
 
     if cli.json {
@@ -433,23 +442,14 @@ fn cmd_query_name_only(
         .context("Failed to search by name")?;
 
     if results.is_empty() {
-        if cli.json {
-            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
-        } else {
-            println!("No results found.");
-        }
-        std::process::exit(signal::ExitCode::NoResults as i32);
+        emit_empty_results(query, cli.json, None);
     }
 
     // Convert to UnifiedResult for display
     let unified: Vec<UnifiedResult> = results.into_iter().map(UnifiedResult::Code).collect();
 
     // Token-budget packing (lazy embedder — only created when --tokens is set)
-    let json_overhead = if cli.json {
-        super::JSON_OVERHEAD_PER_RESULT
-    } else {
-        0
-    };
+    let json_overhead = json_overhead_for(cli);
     let (unified, token_info) = if let Some(budget) = cli.tokens {
         let embedder = Embedder::new()?;
         token_pack_unified(unified, budget, json_overhead, &embedder)
@@ -520,11 +520,7 @@ fn cmd_query_ref_only(
         .collect();
 
     // Token-budget packing
-    let json_overhead = if cli.json {
-        super::JSON_OVERHEAD_PER_RESULT
-    } else {
-        0
-    };
+    let json_overhead = json_overhead_for(cli);
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
         token_pack_tagged(tagged, budget, json_overhead, embedder)
     } else {
@@ -532,12 +528,7 @@ fn cmd_query_ref_only(
     };
 
     if tagged.is_empty() {
-        if cli.json {
-            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
-        } else {
-            println!("No results found in reference '{}'.", ref_name);
-        }
-        std::process::exit(signal::ExitCode::NoResults as i32);
+        emit_empty_results(query, cli.json, Some(ref_name));
     }
 
     if cli.json {
@@ -572,11 +563,7 @@ fn cmd_query_ref_name_only(
         .collect();
 
     // Token-budget packing (lazy embedder — only created when --tokens is set)
-    let json_overhead = if cli.json {
-        super::JSON_OVERHEAD_PER_RESULT
-    } else {
-        0
-    };
+    let json_overhead = json_overhead_for(cli);
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
         let embedder = Embedder::new()?;
         token_pack_tagged(tagged, budget, json_overhead, &embedder)
@@ -585,12 +572,7 @@ fn cmd_query_ref_name_only(
     };
 
     if tagged.is_empty() {
-        if cli.json {
-            println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
-        } else {
-            println!("No results found in reference '{}'.", ref_name);
-        }
-        std::process::exit(signal::ExitCode::NoResults as i32);
+        emit_empty_results(query, cli.json, Some(ref_name));
     }
 
     if cli.json {

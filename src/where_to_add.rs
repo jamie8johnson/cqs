@@ -18,7 +18,7 @@ use crate::{AnalysisError, Store};
 /// when adding new conventions. Adding a new naming convention or error handling
 /// style is a single function change in `detect_naming_convention()` or
 /// `extract_patterns()`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct LocalPatterns {
     /// Common imports/use statements
     pub imports: Vec<String>,
@@ -33,7 +33,7 @@ pub struct LocalPatterns {
 }
 
 /// Suggestion for where to place new code
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct FileSuggestion {
     /// File path
     pub file: PathBuf,
@@ -63,7 +63,7 @@ impl FileSuggestion {
 }
 
 /// Result from placement analysis
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct PlacementResult {
     pub suggestions: Vec<FileSuggestion>,
 }
@@ -145,9 +145,7 @@ pub fn suggest_placement_with_options(
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
-    let query_embedding = embedder
-        .embed_query(description)
-        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    let query_embedding = embedder.embed_query(description)?;
     suggest_placement_with_embedding_and_options(store, &query_embedding, description, limit, opts)
 }
 

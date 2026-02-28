@@ -142,6 +142,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: None,
     extract_qualified_method: None,
     post_process_chunk: None,
+    test_markers: &["@Test", "\"should", "it should"],
+    test_path_patterns: &["%/test/%", "%/tests/%", "%Spec.scala", "%Test.scala"],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

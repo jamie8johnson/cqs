@@ -60,8 +60,25 @@ impl Pattern {
         ]
     }
 
-    /// Check if a code chunk matches this pattern
+    /// Check if a code chunk matches this pattern.
+    ///
+    /// If the language provides a specific structural matcher for this pattern
+    /// (via `LanguageDef::structural_matchers`), uses that. Otherwise falls
+    /// through to the generic heuristics.
     pub fn matches(&self, content: &str, name: &str, language: Option<Language>) -> bool {
+        // Check for language-specific matcher first
+        if let Some(lang) = language {
+            if let Some(matchers) = lang.def().structural_matchers {
+                let pattern_name = self.to_string();
+                for (matcher_name, matcher_fn) in matchers {
+                    if *matcher_name == pattern_name {
+                        return matcher_fn(content, name);
+                    }
+                }
+            }
+        }
+
+        // Fall through to generic heuristics
         match self {
             Self::Builder => matches_builder(content, name),
             Self::ErrorSwallow => matches_error_swallow(content, language),
@@ -389,5 +406,22 @@ mod tests {
         assert_eq!(filtered.len(), 2);
         assert_eq!(filtered[0].1, "read_ptr");
         assert_eq!(filtered[1].1, "cast");
+    }
+
+    #[test]
+    fn test_structural_matchers_fallback() {
+        // When no language-specific matcher exists, generic heuristics are used
+        let pat = Pattern::Unsafe;
+        // Rust has no structural_matchers set (None), so it falls through
+        assert!(pat.matches("unsafe { ptr::read(p) }", "read_ptr", Some(Language::Rust)));
+        assert!(!pat.matches("fn safe() -> i32 { 42 }", "safe", Some(Language::Rust)));
+    }
+
+    #[test]
+    fn test_pattern_matches_no_language() {
+        // None language should use generic heuristics
+        let pat = Pattern::Async;
+        assert!(pat.matches("async function fetch() {}", "fetch", None));
+        assert!(!pat.matches("function sync() {}", "sync", None));
     }
 }

@@ -109,7 +109,7 @@ impl std::str::FromStr for GatherDirection {
 }
 
 /// A gathered code chunk with context
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GatheredChunk {
     pub name: String,
     pub file: PathBuf,
@@ -172,6 +172,7 @@ impl GatheredChunk {
 }
 
 /// Result of a gather operation
+#[derive(Debug, serde::Serialize)]
 pub struct GatherResult {
     pub chunks: Vec<GatheredChunk>,
     pub expansion_capped: bool,
@@ -228,9 +229,10 @@ pub(crate) fn bfs_expand(
                 name_scores.insert(neighbor.clone(), (new_score, depth + 1));
                 queue.push_back((neighbor, depth + 1));
             } else if let Some(existing) = name_scores.get_mut(&neighbor) {
-                // Already visited — update score if higher (no re-queue)
+                // Already visited — update score if higher, preserve minimum depth
                 if new_score > existing.0 {
-                    *existing = (new_score, depth + 1);
+                    existing.0 = new_score;
+                    existing.1 = existing.1.min(depth + 1);
                 }
             }
         }
@@ -297,13 +299,38 @@ pub(crate) fn sort_and_truncate(chunks: &mut Vec<GatheredChunk>, limit: usize) {
     });
 }
 
-/// Gather relevant code chunks for a query
+/// Gather relevant code chunks for a query.
+///
+/// Loads the call graph internally. For pre-loaded graph, use [`gather_with_graph`].
 pub fn gather(
     store: &Store,
     query_embedding: &crate::Embedding,
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
+) -> Result<GatherResult> {
+    let graph = store.get_call_graph()?;
+    gather_with_graph(
+        store,
+        query_embedding,
+        query_text,
+        opts,
+        project_root,
+        &graph,
+    )
+}
+
+/// Like [`gather`] but accepts a pre-loaded call graph.
+///
+/// Use when the caller already has the graph (e.g., batch mode or `task()`
+/// which shares the graph across phases).
+pub fn gather_with_graph(
+    store: &Store,
+    query_embedding: &crate::Embedding,
+    query_text: &str,
+    opts: &GatherOptions,
+    project_root: &Path,
+    graph: &CallGraph,
 ) -> Result<GatherResult> {
     let _span = tracing::info_span!(
         "gather",
@@ -334,31 +361,24 @@ pub fn gather(
         });
     }
 
-    // 2. Load call graph for expansion
-    // NOTE: This loads the entire function_calls table into memory each call.
-    // Current callers invoke gather() once per request so this is fine.
-    // If gather() is ever called in a loop, accept a pre-loaded &CallGraph parameter
-    // to avoid redundant loads.
-    let graph = store.get_call_graph()?;
-
     // Seed names with their scores
     let mut name_scores: HashMap<String, (f32, usize)> = HashMap::new();
     for r in &seed_results {
         name_scores.insert(r.chunk.name.clone(), (r.score, 0));
     }
 
-    // 3. BFS expand
-    let expansion_capped = bfs_expand(&mut name_scores, &graph, opts);
+    // 2. BFS expand
+    let expansion_capped = bfs_expand(&mut name_scores, graph, opts);
     tracing::debug!(
         expanded_nodes = name_scores.len(),
         expansion_capped,
         "BFS expansion complete"
     );
 
-    // 4. Batch-fetch chunks, deduplicate
+    // 3. Batch-fetch chunks, deduplicate
     let (mut chunks, search_degraded) = fetch_and_assemble(store, &name_scores, project_root);
 
-    // 5. Sort by score desc, truncate to limit, re-sort to reading order
+    // 4. Sort by score desc, truncate to limit, re-sort to reading order
     sort_and_truncate(&mut chunks, opts.limit);
 
     Ok(GatherResult {
@@ -704,5 +724,45 @@ mod tests {
         assert_eq!(opts.seed_limit, 10);
         assert!((opts.seed_threshold - 0.5).abs() < f32::EPSILON);
         assert!((opts.decay_factor - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_bfs_depth_preserves_minimum() {
+        // Graph: A -> B -> D, A -> C -> D (two paths to D)
+        // If A is the seed at depth 0, B and C are discovered at depth 1.
+        // D is first reached via B at depth 2, then via C also at depth 2.
+        // But if B has a higher score, it should update D's score without
+        // overwriting D's depth to a deeper value.
+        let mut forward = HashMap::new();
+        let mut reverse = HashMap::new();
+
+        forward.insert("A".to_string(), vec!["B".to_string(), "C".to_string()]);
+        forward.insert("B".to_string(), vec!["D".to_string()]);
+        forward.insert("C".to_string(), vec!["D".to_string()]);
+
+        reverse.insert("B".to_string(), vec!["A".to_string()]);
+        reverse.insert("C".to_string(), vec!["A".to_string()]);
+        reverse.insert("D".to_string(), vec!["B".to_string(), "C".to_string()]);
+
+        let graph = CallGraph { forward, reverse };
+
+        let mut name_scores = HashMap::new();
+        name_scores.insert("A".to_string(), (1.0, 0));
+
+        let opts = GatherOptions::default()
+            .with_expand_depth(3)
+            .with_direction(GatherDirection::Callees)
+            .with_decay_factor(0.8);
+
+        bfs_expand(&mut name_scores, &graph, &opts);
+
+        // D should be discovered at depth 2 (A->B->D or A->C->D)
+        // and should keep the minimum depth even if score is updated
+        let (_, depth) = name_scores["D"];
+        assert_eq!(depth, 2, "D should preserve minimum depth of 2");
+
+        // B and C should be at depth 1
+        assert_eq!(name_scores["B"].1, 1);
+        assert_eq!(name_scores["C"].1, 1);
     }
 }

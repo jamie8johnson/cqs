@@ -1,6 +1,6 @@
 //! Drift command — semantic change detection between reference snapshots
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use colored::Colorize;
 
 use cqs::Store;
@@ -22,38 +22,13 @@ pub(crate) fn cmd_drift(
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
 
-    // Load config to find reference path
-    let config = cqs::config::Config::load(&root);
-
-    let ref_cfg = config
-        .references
-        .iter()
-        .find(|r| r.name == reference)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                reference
-            )
-        })?;
-
-    let ref_db = ref_cfg.path.join("index.db");
-    if !ref_db.exists() {
-        bail!(
-            "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",
-            reference,
-            ref_db.display(),
-            reference
-        );
-    }
-    let ref_store = Store::open_readonly(&ref_db)
-        .with_context(|| format!("Failed to open reference store at {}", ref_db.display()))?;
+    let ref_store = super::resolve::resolve_reference_store_readonly(&root, reference)?;
 
     let index_path = cqs_dir.join("index.db");
     if !index_path.exists() {
         bail!("Project index not found. Run 'cqs init && cqs index' first.");
     }
-    let project_store = Store::open(&index_path)
-        .with_context(|| format!("Failed to open project store at {}", index_path.display()))?;
+    let project_store = Store::open(&index_path)?;
 
     let result = cqs::drift::detect_drift(
         &ref_store,

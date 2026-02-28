@@ -108,9 +108,7 @@ pub fn onboard(
     let depth = depth.min(10);
 
     // 1. Search for relevant code (direct search, skip full scout overhead)
-    let query_embedding = embedder
-        .embed_query(concept)
-        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    let query_embedding = embedder.embed_query(concept)?;
     let filter = crate::store::SearchFilter {
         query_text: concept.to_string(),
         enable_rrf: true,

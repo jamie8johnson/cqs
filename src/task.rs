@@ -25,7 +25,7 @@ const TASK_GATHER_MAX_NODES: usize = 100;
 const TASK_GATHER_LIMIT_MULTIPLIER: usize = 3;
 
 /// Complete task analysis result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskResult {
     /// Original task description.
     pub description: String,
@@ -44,7 +44,7 @@ pub struct TaskResult {
 }
 
 /// Summary statistics for a task result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskSummary {
     pub total_files: usize,
     pub total_functions: usize,
@@ -100,9 +100,7 @@ pub fn task_with_resources(
     let _span = tracing::info_span!("task", description_len = description.len(), limit).entered();
 
     // 1. Embed query
-    let query_embedding = embedder
-        .embed_query(description)
-        .map_err(|e| AnalysisError::Embedder(e.to_string()))?;
+    let query_embedding = embedder.embed_query(description)?;
 
     // 2. Scout phase
     let scout = scout_core(
