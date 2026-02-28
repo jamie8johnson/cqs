@@ -2,14 +2,17 @@
 
 ## Right Now
 
-**v0.19.2 P1+P2 audit fixes complete.** 2026-02-27.
+**v0.19.2 P1+P2+P3 audit fixes complete.** 2026-02-27.
 
-Second 14-category audit completed (117 findings across 3 batches). P1 (46 items) shipped in PR #501. P2 (29 of 31 items) shipped in PR #502 — 49 files changed, +2395/-1181 lines. 1239 tests pass.
+Second 14-category audit completed (117 findings across 3 batches). All priority tiers fixed:
+- P1 (46 items) → PR #501
+- P2 (29 of 31 items) → PR #502
+- P3 (29 items) → PR #504
 
-Key P2 fixes: index lock before reindex (DS-1), atomic upsert_chunks_and_calls (DS-2), invalidatable notes cache via RwLock (DS-3), atomic HNSW copy (DS-5), single-transaction prune (DS-6), RRF fusion in HNSW path (AC-1), BFS depth minimum (AC-2), define_chunk_types! macro (EX-1), structural_matchers on LanguageDef (EX-2), language-sourced test markers (EX-8), Serialize derives on result types (AD-6), gather_with_graph resource sharing (RM-2), batch idle timeout (RM-6), tracing spans on store operations (OB-1), +12 new tests.
+Total: 104 of 109 actionable findings fixed. 1247 tests pass.
 
 Deferred P2: PB-3 (normalize_path centralization, 15+ files), PF-5 (lightweight HNSW fetch).
-P3 (29 items), P4 (3) remain in docs/audit-triage.md.
+P4 (3 items) remain in docs/audit-triage.md — hard/low-impact, deferred by design.
 
 ## Pending Changes
 
@@ -48,7 +51,7 @@ None — clean working tree on main.
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 20 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1239 pass, 0 failures
+- Tests: 1247 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
