@@ -578,22 +578,26 @@ impl Store {
             // Uses the same cursor pattern as EmbeddingBatchIterator in store/chunks.rs.
             const BRUTE_FORCE_BATCH_SIZE: i64 = 5000;
             let mut last_rowid: i64 = 0;
+
+            // Hoist SQL template out of cursor loop — only last_rowid changes per iteration
+            let rowid_condition = format!("rowid > ?{}", bind_values.len() + 1);
+            let limit_param = format!("?{}", bind_values.len() + 2);
+            let batch_where = if conditions.is_empty() {
+                format!(
+                    " WHERE {} ORDER BY rowid ASC LIMIT {}",
+                    rowid_condition, limit_param
+                )
+            } else {
+                format!(
+                    " WHERE {} AND {} ORDER BY rowid ASC LIMIT {}",
+                    conditions.join(" AND "),
+                    rowid_condition,
+                    limit_param
+                )
+            };
+            let sql = format!("SELECT {} FROM chunks{}", columns, batch_where);
+
             loop {
-                let rowid_condition = format!("rowid > ?{}", bind_values.len() + 1);
-                let limit_param = format!("?{}", bind_values.len() + 2);
-
-                let batch_where = if conditions.is_empty() {
-                    format!(" WHERE {} ORDER BY rowid ASC LIMIT {}", rowid_condition, limit_param)
-                } else {
-                    format!(
-                        " WHERE {} AND {} ORDER BY rowid ASC LIMIT {}",
-                        conditions.join(" AND "),
-                        rowid_condition,
-                        limit_param
-                    )
-                };
-
-                let sql = format!("SELECT {} FROM chunks{}", columns, batch_where);
                 let batch: Vec<_> = {
                     let mut q = sqlx::query(&sql);
                     for val in &bind_values {
@@ -607,7 +611,10 @@ impl Store {
                 if batch.is_empty() {
                     break;
                 }
-                last_rowid = batch.last().unwrap().get::<i64, _>("rowid");
+                last_rowid = batch
+                    .last()
+                    .expect("batch non-empty checked above")
+                    .get::<i64, _>("rowid");
 
                 for row in &batch {
                     let id: String = row.get("id");
@@ -666,20 +673,21 @@ impl Store {
             };
 
             let final_scored: Vec<(String, f32)> = if use_rrf {
-                let fts_ids = {
-                    let normalized_query = normalized_query.as_ref().unwrap();
-                    if normalized_query.is_empty() {
+                let fts_ids = if let Some(nq) = normalized_query.as_ref() {
+                    if nq.is_empty() {
                         vec![]
                     } else {
                         let fts_rows: Vec<(String,)> = sqlx::query_as(
                             "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
                         )
-                        .bind(normalized_query)
+                        .bind(nq)
                         .bind(semantic_limit as i64)
                         .fetch_all(&self.pool)
                         .await?;
                         fts_rows.into_iter().map(|(id,)| id).collect()
                     }
+                } else {
+                    vec![]
                 };
                 let semantic_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
                 // Request extra candidates from RRF to compensate for parent dedup

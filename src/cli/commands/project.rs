@@ -8,8 +8,6 @@ use colored::Colorize;
 use cqs::Embedder;
 use cqs::{search_across_projects, ProjectRegistry};
 
-use crate::cli::Cli;
-
 /// Project subcommands
 #[derive(clap::Subcommand)]
 pub(crate) enum ProjectCommand {
@@ -43,7 +41,7 @@ pub(crate) enum ProjectCommand {
     },
 }
 
-pub(crate) fn cmd_project(_cli: &Cli, subcmd: &ProjectCommand) -> Result<()> {
+pub(crate) fn cmd_project(subcmd: &ProjectCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_project").entered();
     match subcmd {
         ProjectCommand::Register { name, path } => {

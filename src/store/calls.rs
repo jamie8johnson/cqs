@@ -37,23 +37,24 @@ pub enum DeadConfidence {
     High,
 }
 
-/// Well-known entry point names excluded from dead code detection.
-///
-/// These functions are called by the runtime, framework, or build system
-/// rather than by other indexed code.
-const ENTRY_POINT_NAMES: &[&str] = &[
-    "main",
-    "init",
-    "__init__",
-    "setup",
-    "teardown",
-    "beforeEach",
-    "afterEach",
-    "beforeAll",
-    "afterAll",
-    "handler",
-    "middleware",
-];
+/// Fallback entry point names — used when language definitions don't provide any.
+/// Cross-language names that span multiple languages live here.
+/// These are superseded by `LanguageDef::entry_point_names` via `build_entry_point_names()`.
+const FALLBACK_ENTRY_POINT_NAMES: &[&str] = &["main", "new"];
+
+/// Build unified entry point names from all enabled language definitions.
+/// Falls back to `FALLBACK_ENTRY_POINT_NAMES` if no language provides any.
+fn build_entry_point_names() -> Vec<&'static str> {
+    let mut names = crate::language::REGISTRY.all_entry_point_names();
+    // Always include cross-language fallbacks
+    let mut seen: std::collections::HashSet<&str> = names.iter().copied().collect();
+    for name in FALLBACK_ENTRY_POINT_NAMES {
+        if seen.insert(name) {
+            names.push(name);
+        }
+    }
+    names
+}
 
 /// Lightweight chunk metadata for dead code analysis.
 ///
@@ -137,76 +138,22 @@ fn build_test_path_patterns() -> Vec<&'static str> {
     }
 }
 
-/// Well-known trait method names across languages.
-///
-/// Methods with these names inside `impl` blocks are almost always trait implementations
-/// that won't appear in the static call graph (called via dynamic dispatch).
-/// Used as a fallback when `TRAIT_IMPL_RE` can't match (method chunks don't include
-/// the enclosing `impl Trait for Type` header).
-const TRAIT_METHOD_NAMES: &[&str] = &[
-    // std::fmt
-    "fmt",
-    // std::convert
-    "from",
-    "into",
-    "try_from",
-    "try_into",
-    // std::ops
-    "deref",
-    "deref_mut",
-    "drop",
-    "index",
-    "index_mut",
-    "add",
-    "sub",
-    "mul",
-    "div",
-    "rem",
-    "neg",
-    "not",
-    "bitor",
-    "bitand",
-    "bitxor",
-    "shl",
-    "shr",
-    // std::cmp
-    "eq",
-    "ne",
-    "partial_cmp",
-    "cmp",
-    // std::hash
-    "hash",
-    // std::clone
-    "clone",
-    "clone_from",
-    // std::default
-    "default",
-    // std::iter
-    "next",
-    "into_iter",
-    // std::io
-    "read",
-    "write",
-    "flush",
-    // std::str
-    "from_str",
-    // std::convert / std::borrow
-    "as_ref",
-    "as_mut",
-    "borrow",
-    "borrow_mut",
-    // serde
-    "serialize",
-    "deserialize",
-    // std::error
-    "source",
-    // std::future
-    "poll",
-    // Common constructor/builder patterns (often called via type, not name)
-    "new",
-    "build",
-    "builder",
-];
+/// Fallback trait method names — cross-language constructor/builder patterns.
+/// These are superseded by `LanguageDef::trait_method_names` via `build_trait_method_names()`.
+const FALLBACK_TRAIT_METHOD_NAMES: &[&str] = &["new", "build", "builder"];
+
+/// Build unified trait method names from all enabled language definitions.
+/// Always includes cross-language fallbacks.
+fn build_trait_method_names() -> Vec<&'static str> {
+    let mut names = crate::language::REGISTRY.all_trait_method_names();
+    let mut seen: std::collections::HashSet<&str> = names.iter().copied().collect();
+    for name in FALLBACK_TRAIT_METHOD_NAMES {
+        if seen.insert(name) {
+            names.push(name);
+        }
+    }
+    names
+}
 
 impl Store {
     /// Insert or replace call sites for a chunk
@@ -768,12 +715,11 @@ impl Store {
             let all_uncalled = self.fetch_uncalled_functions().await?;
             let total_uncalled = all_uncalled.len();
 
-            // Build test name set for exclusion
+            // Build test name set for exclusion (names-only query avoids ChunkSummary overhead)
             let test_names: std::collections::HashSet<String> = self
-                .find_test_chunks_async()
+                .find_test_chunk_names_async()
                 .await?
                 .into_iter()
-                .map(|c| c.name)
                 .collect();
 
             // Phase 1 filtering: name/test/path/trait checks (don't need content)
@@ -842,15 +788,22 @@ impl Store {
     /// Phase 1 filter: exclude entry points, tests, trait methods from uncalled functions.
     ///
     /// Operates on lightweight metadata only — no content needed.
+    /// Entry point and trait method names are sourced from `LanguageDef` fields
+    /// across all enabled languages, with cross-language fallbacks.
     fn filter_candidates(
         uncalled: Vec<LightChunk>,
         test_names: &std::collections::HashSet<String>,
     ) -> Vec<LightChunk> {
+        let entry_points: std::collections::HashSet<&str> =
+            build_entry_point_names().into_iter().collect();
+        let trait_methods: std::collections::HashSet<&str> =
+            build_trait_method_names().into_iter().collect();
+
         let mut candidates = Vec::new();
 
         for chunk in uncalled {
             // Skip entry points (main, init, handler, etc.)
-            if ENTRY_POINT_NAMES.contains(&chunk.name.as_str()) {
+            if entry_points.contains(chunk.name.as_str()) {
                 continue;
             }
             if test_names.contains(&chunk.name) {
@@ -862,8 +815,7 @@ impl Store {
             }
 
             // Methods with well-known trait names can be skipped without content
-            if chunk.chunk_type == ChunkType::Method
-                && TRAIT_METHOD_NAMES.contains(&chunk.name.as_str())
+            if chunk.chunk_type == ChunkType::Method && trait_methods.contains(chunk.name.as_str())
             {
                 continue;
             }
@@ -1084,6 +1036,40 @@ impl Store {
                 })
             })
             .collect())
+    }
+
+    /// Async helper that returns only test chunk names (no metadata).
+    ///
+    /// Avoids allocating `ChunkSummary` structs when callers only need
+    /// the name set (e.g., `find_dead_code` exclusion filtering).
+    async fn find_test_chunk_names_async(&self) -> Result<Vec<String>, StoreError> {
+        let mut clauses: Vec<String> = Vec::new();
+        for pat in TEST_NAME_PATTERNS {
+            clauses.push(format!("name LIKE '{pat}'"));
+        }
+        for marker in build_test_content_markers() {
+            clauses.push(format!("content LIKE '%{marker}%'"));
+        }
+        for pat in build_test_path_patterns() {
+            if pat.contains("\\_") {
+                clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
+            } else {
+                clauses.push(format!("origin LIKE '{pat}'"));
+            }
+        }
+        let filter = clauses.join("\n                 OR ");
+        let callable = ChunkType::callable_sql_list();
+        let sql = format!(
+            "SELECT DISTINCT name
+             FROM chunks
+             WHERE chunk_type IN ({callable})
+               AND (
+                 {filter}
+               )"
+        );
+
+        let rows: Vec<(String,)> = sqlx::query_as(&sql).fetch_all(&self.pool).await?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
     /// Delete function_calls for files no longer in the chunks table.

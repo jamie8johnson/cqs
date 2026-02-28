@@ -299,6 +299,7 @@ fn test_suggest_tests_empty_impact() {
         tests: Vec::new(),
         transitive_callers: Vec::new(),
         type_impacted: Vec::new(),
+        degraded: false,
     };
     let suggestions = suggest_tests(&store, &impact);
     assert!(suggestions.is_empty(), "No callers means no suggestions");

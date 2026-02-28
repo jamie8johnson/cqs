@@ -292,8 +292,8 @@ enum Commands {
     },
     /// Guided codebase tour: entry point → call chain → types → tests
     Onboard {
-        /// Concept to explore
-        concept: String,
+        /// Concept or query to explore
+        query: String,
         /// Callee expansion depth
         #[arg(short = 'd', long, default_value = "3")]
         depth: usize,
@@ -385,9 +385,6 @@ enum Commands {
         /// Output format: text, json, mermaid
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Output as JSON (alias for --format json)
-        #[arg(long)]
-        json: bool,
         /// Suggest tests for untested callers
         #[arg(long)]
         suggest_tests: bool,
@@ -419,9 +416,6 @@ enum Commands {
         /// Output format: text, json
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Output as JSON (alias for --format json)
-        #[arg(long)]
-        json: bool,
         /// Maximum token budget for output (truncates callers/tests lists)
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -437,9 +431,6 @@ enum Commands {
         /// Output format: text, json
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Output as JSON (alias for --format json)
-        #[arg(long)]
-        json: bool,
         /// Gate threshold: high, medium, off (default: high)
         #[arg(long, default_value = "high")]
         gate: GateLevel,
@@ -459,9 +450,6 @@ enum Commands {
         /// Output format: text, json, mermaid
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Output as JSON (alias for --format json)
-        #[arg(long)]
-        json: bool,
     },
     /// Find tests that exercise a function
     TestMap {
@@ -608,8 +596,8 @@ enum Commands {
     },
     /// Pre-investigation dashboard: search, group, count callers/tests, check staleness
     Scout {
-        /// Task description to investigate
-        task: String,
+        /// Search query to investigate
+        query: String,
         /// Max file groups to return
         #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
@@ -666,7 +654,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Batch) => batch::cmd_batch(&cli),
         Some(Commands::Init) => cmd_init(&cli),
-        Some(Commands::Doctor) => cmd_doctor(&cli),
+        Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::Index {
             force,
             dry_run,
@@ -685,15 +673,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref name,
             reverse,
             json,
-        }) => cmd_deps(&cli, name, reverse, json),
-        Some(Commands::Callers { ref name, json }) => cmd_callers(&cli, name, json),
-        Some(Commands::Callees { ref name, json }) => cmd_callees(&cli, name, json),
+        }) => cmd_deps(name, reverse, json),
+        Some(Commands::Callers { ref name, json }) => cmd_callers(name, json),
+        Some(Commands::Callees { ref name, json }) => cmd_callees(name, json),
         Some(Commands::Onboard {
-            ref concept,
+            ref query,
             depth,
             json,
             tokens,
-        }) => cmd_onboard(&cli, concept, depth, json, tokens),
+        }) => cmd_onboard(&cli, query, depth, json, tokens),
         Some(Commands::Notes { ref subcmd }) => cmd_notes(&cli, subcmd),
         Some(Commands::Ref { ref subcmd }) => cmd_ref(&cli, subcmd),
         Some(Commands::Diff {
@@ -733,13 +721,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref name,
             depth,
             ref format,
-            json,
             suggest_tests,
             include_types,
-        }) => {
-            let fmt = if json { &OutputFormat::Json } else { format };
-            cmd_impact(&cli, name, depth, fmt, suggest_tests, include_types)
-        }
+        }) => cmd_impact(name, depth, format, suggest_tests, include_types),
         Some(Commands::ImpactDiff {
             ref base,
             stdin,
@@ -749,33 +733,21 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref base,
             stdin,
             ref format,
-            json,
             tokens,
-        }) => {
-            let fmt = if json { &OutputFormat::Json } else { format };
-            cmd_review(&cli, base.as_deref(), stdin, fmt, tokens)
-        }
+        }) => cmd_review(base.as_deref(), stdin, format, tokens),
         Some(Commands::Ci {
             ref base,
             stdin,
             ref format,
-            json,
             ref gate,
             tokens,
-        }) => {
-            let fmt = if json { &OutputFormat::Json } else { format };
-            cmd_ci(&cli, base.as_deref(), stdin, fmt, gate, tokens)
-        }
+        }) => cmd_ci(base.as_deref(), stdin, format, gate, tokens),
         Some(Commands::Trace {
             ref source,
             ref target,
             max_depth,
             ref format,
-            json,
-        }) => {
-            let fmt = if json { &OutputFormat::Json } else { format };
-            cmd_trace(&cli, source, target, max_depth as usize, fmt)
-        }
+        }) => cmd_trace(source, target, max_depth as usize, format),
         Some(Commands::TestMap {
             ref name,
             depth,
@@ -811,7 +783,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref_name.as_deref(),
             json,
         ),
-        Some(Commands::Project { ref subcmd }) => cmd_project(&cli, subcmd),
+        Some(Commands::Project { ref subcmd }) => cmd_project(subcmd),
         Some(Commands::Gc { json }) => cmd_gc(json),
         Some(Commands::Health { json }) => cmd_health(json),
         Some(Commands::AuditMode {
@@ -837,11 +809,11 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
         }) => cmd_where(&cli, description, limit, json),
         Some(Commands::Scout {
-            ref task,
+            ref query,
             limit,
             json,
             tokens,
-        }) => cmd_scout(&cli, task, limit, json, tokens),
+        }) => cmd_scout(&cli, query, limit, json, tokens),
         Some(Commands::Task {
             ref description,
             limit,
@@ -1516,13 +1488,11 @@ mod tests {
                 base,
                 stdin,
                 format,
-                json,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
                 assert!(matches!(format, OutputFormat::Text));
-                assert!(!json);
                 assert!(tokens.is_none());
             }
             _ => panic!("Expected Review command"),
@@ -1541,12 +1511,12 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_review_stdin_json() {
-        let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--json"]).unwrap();
+    fn test_cmd_review_stdin_format_json() {
+        let cli = Cli::try_parse_from(["cqs", "review", "--stdin", "--format", "json"]).unwrap();
         match cli.command {
-            Some(Commands::Review { stdin, json, .. }) => {
+            Some(Commands::Review { stdin, format, .. }) => {
                 assert!(stdin);
-                assert!(json);
+                assert!(matches!(format, OutputFormat::Json));
             }
             _ => panic!("Expected Review command"),
         }
@@ -1702,14 +1672,12 @@ mod tests {
                 base,
                 stdin,
                 format,
-                json,
                 gate,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
                 assert!(matches!(format, OutputFormat::Text));
-                assert!(!json);
                 assert!(matches!(gate, GateLevel::High));
                 assert!(tokens.is_none());
             }
@@ -1740,18 +1708,20 @@ mod tests {
     }
 
     #[test]
-    fn test_cmd_ci_stdin_json_tokens() {
-        let cli =
-            Cli::try_parse_from(["cqs", "ci", "--stdin", "--json", "--tokens", "5000"]).unwrap();
+    fn test_cmd_ci_stdin_format_json_tokens() {
+        let cli = Cli::try_parse_from([
+            "cqs", "ci", "--stdin", "--format", "json", "--tokens", "5000",
+        ])
+        .unwrap();
         match cli.command {
             Some(Commands::Ci {
                 stdin,
-                json,
+                format,
                 tokens,
                 ..
             }) => {
                 assert!(stdin);
-                assert!(json);
+                assert!(matches!(format, OutputFormat::Json));
                 assert_eq!(tokens, Some(5000));
             }
             _ => panic!("Expected Ci command"),

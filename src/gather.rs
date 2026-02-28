@@ -369,9 +369,9 @@ pub fn gather_with_graph(
 
     // 2. BFS expand
     let expansion_capped = bfs_expand(&mut name_scores, graph, opts);
-    tracing::debug!(
-        expanded_nodes = name_scores.len(),
-        expansion_capped,
+    tracing::info!(
+        expanded = name_scores.len(),
+        capped = expansion_capped,
         "BFS expansion complete"
     );
 
@@ -380,6 +380,8 @@ pub fn gather_with_graph(
 
     // 4. Sort by score desc, truncate to limit, re-sort to reading order
     sort_and_truncate(&mut chunks, opts.limit);
+
+    tracing::info!(final_chunks = chunks.len(), "Gather complete");
 
     Ok(GatherResult {
         chunks,

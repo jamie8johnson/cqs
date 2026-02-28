@@ -140,6 +140,11 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["@Test", "@ParameterizedTest", "@RepeatedTest"],
     test_path_patterns: &["%/test/%", "%/tests/%", "%Test.java"],
     structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[
+        "equals", "hashCode", "toString", "compareTo", "clone",
+        "iterator", "run", "call", "close", "accept", "apply", "get",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

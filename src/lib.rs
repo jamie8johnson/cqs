@@ -578,4 +578,94 @@ mentions = ["store.rs"]
         // by checking the note is retrievable — search_notes uses the full 769-dim vector
         assert_eq!(results[0].note.text, "Serious issue with error handling");
     }
+
+    // ─── resolve_index_dir tests (TC-4) ──────────────────────────────────
+
+    #[test]
+    fn test_resolve_index_dir_only_legacy_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join(LEGACY_INDEX_DIR);
+        std::fs::create_dir(&legacy).unwrap();
+
+        let result = resolve_index_dir(dir.path());
+
+        // Legacy .cq/ should have been renamed to .cqs/
+        assert!(
+            !legacy.exists(),
+            ".cq/ should no longer exist after migration"
+        );
+        assert_eq!(result, dir.path().join(INDEX_DIR));
+        assert!(result.exists(), ".cqs/ should exist after migration");
+    }
+
+    #[test]
+    fn test_resolve_index_dir_both_exist() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join(LEGACY_INDEX_DIR);
+        let new = dir.path().join(INDEX_DIR);
+        std::fs::create_dir(&legacy).unwrap();
+        std::fs::create_dir(&new).unwrap();
+
+        let result = resolve_index_dir(dir.path());
+
+        // Both exist: should return .cqs/ without renaming (legacy stays)
+        assert_eq!(result, new);
+        assert!(legacy.exists(), ".cq/ should still exist when both present");
+        assert!(new.exists(), ".cqs/ should still exist");
+    }
+
+    #[test]
+    fn test_resolve_index_dir_neither_exists() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let result = resolve_index_dir(dir.path());
+
+        // Neither exists: should return .cqs/ path (not created, just the path)
+        assert_eq!(result, dir.path().join(INDEX_DIR));
+        assert!(
+            !result.exists(),
+            ".cqs/ should not be created, only returned as path"
+        );
+    }
+
+    // ─── enumerate_files tests (TC-9) ────────────────────────────────────
+
+    #[test]
+    fn test_enumerate_files_finds_supported_extensions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+
+        // Create some Rust files
+        std::fs::write(src.join("main.rs"), "fn main() {}").unwrap();
+        std::fs::write(src.join("lib.rs"), "pub fn lib() {}").unwrap();
+        // Create a non-Rust file (should be filtered out)
+        std::fs::write(src.join("readme.txt"), "hello").unwrap();
+
+        let files = enumerate_files(dir.path(), &["rs"], false).unwrap();
+
+        assert_eq!(files.len(), 2, "Should find exactly 2 .rs files");
+        let names: Vec<String> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"main.rs".to_string()));
+        assert!(names.contains(&"lib.rs".to_string()));
+    }
+
+    #[test]
+    fn test_enumerate_files_empty_for_unsupported() {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        // Create files with unsupported extensions only
+        std::fs::write(dir.path().join("notes.txt"), "some text").unwrap();
+        std::fs::write(dir.path().join("data.csv"), "a,b,c").unwrap();
+
+        let files = enumerate_files(dir.path(), &["rs", "py"], false).unwrap();
+
+        assert!(
+            files.is_empty(),
+            "Should return empty for directory with no supported files"
+        );
+    }
 }

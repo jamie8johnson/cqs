@@ -1198,9 +1198,18 @@ impl Store {
             const BATCH_SIZE: usize = 20;
             for batch in normalized_names.chunks(BATCH_SIZE) {
                 // Build combined FTS query with OR
+                // SAFETY: sanitize_fts_query independently strips all FTS5-significant
+                // characters including double quotes, so format!-constructed FTS5
+                // queries are safe even without normalize_for_fts().
                 let fts_terms: Vec<String> = batch
                     .iter()
-                    .map(|(_, norm)| format!("name:\"{}\" OR name:\"{}\"*", norm, norm))
+                    .map(|(_, norm)| {
+                        debug_assert!(
+                            !norm.contains('"'),
+                            "sanitized query must not contain double quotes"
+                        );
+                        format!("name:\"{}\" OR name:\"{}\"*", norm, norm)
+                    })
                     .collect();
                 let combined_fts = fts_terms.join(" OR ");
 

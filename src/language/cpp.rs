@@ -258,6 +258,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["TEST(", "TEST_F(", "EXPECT_", "ASSERT_"],
     test_path_patterns: &["%/tests/%", "%\\_test.cpp", "%\\_test.cc"],
     structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

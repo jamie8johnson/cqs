@@ -211,6 +211,11 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &[],
     test_path_patterns: &["%\\_test.go"],
     structural_matchers: None,
+    entry_point_names: &["main", "init"],
+    trait_method_names: &[
+        "String", "Error", "Close", "Read", "Write", "ServeHTTP",
+        "Len", "Less", "Swap", "MarshalJSON", "UnmarshalJSON",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

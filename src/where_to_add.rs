@@ -83,6 +83,10 @@ pub struct PlacementOptions {
     pub search_threshold: f32,
     /// Maximum number of imports to extract per file (default: 5)
     pub max_imports: usize,
+    /// Pre-computed query embedding (avoids redundant ONNX inference when the
+    /// caller already embedded the query, e.g. `task()` embeds once and reuses).
+    /// When `None`, the embedding is computed from the description.
+    pub query_embedding: Option<crate::Embedding>,
 }
 
 impl Default for PlacementOptions {
@@ -91,6 +95,7 @@ impl Default for PlacementOptions {
             search_limit: DEFAULT_PLACEMENT_SEARCH_LIMIT,
             search_threshold: DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
             max_imports: MAX_IMPORT_COUNT,
+            query_embedding: None,
         }
     }
 }
@@ -123,16 +128,17 @@ pub fn suggest_placement_with_embedding(
     description: &str,
     limit: usize,
 ) -> Result<PlacementResult, AnalysisError> {
-    suggest_placement_with_embedding_and_options(
-        store,
-        query_embedding,
-        description,
-        limit,
-        &PlacementOptions::default(),
-    )
+    let opts = PlacementOptions {
+        query_embedding: Some(query_embedding.clone()),
+        ..Default::default()
+    };
+    suggest_placement_with_options_core(store, description, limit, &opts)
 }
 
 /// Suggest where to place new code matching a description with configurable search parameters.
+///
+/// If `opts.query_embedding` is set, reuses it (avoids redundant ONNX inference).
+/// Otherwise, computes the embedding from `description` using `embedder`.
 ///
 /// 1. Searches for semantically similar code
 /// 2. Groups results by file, ranks by aggregate score
@@ -145,18 +151,25 @@ pub fn suggest_placement_with_options(
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
+    if opts.query_embedding.is_some() {
+        return suggest_placement_with_options_core(store, description, limit, opts);
+    }
     let query_embedding = embedder.embed_query(description)?;
-    suggest_placement_with_embedding_and_options(store, &query_embedding, description, limit, opts)
+    let mut owned_opts = opts.clone();
+    owned_opts.query_embedding = Some(query_embedding);
+    suggest_placement_with_options_core(store, description, limit, &owned_opts)
 }
 
-/// Core placement logic using a pre-computed embedding and custom options.
-fn suggest_placement_with_embedding_and_options(
+/// Core placement logic. Requires `opts.query_embedding` to be set.
+fn suggest_placement_with_options_core(
     store: &Store,
-    query_embedding: &crate::Embedding,
     description: &str,
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
+    let query_embedding = opts.query_embedding.as_ref().expect(
+        "suggest_placement_with_options_core called without query_embedding in PlacementOptions",
+    );
     let _span =
         tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
 

@@ -255,6 +255,28 @@ pub(crate) enum BatchCmd {
     Help,
 }
 
+impl BatchCmd {
+    /// Whether this command accepts a piped function name as its first positional arg.
+    ///
+    /// Used by pipeline execution to validate downstream segments. Commands that
+    /// take a function name as their primary input are pipeable; commands that
+    /// take queries, paths, or no arguments are not.
+    pub(crate) fn is_pipeable(&self) -> bool {
+        matches!(
+            self,
+            BatchCmd::Callers { .. }
+                | BatchCmd::Callees { .. }
+                | BatchCmd::Deps { .. }
+                | BatchCmd::Explain { .. }
+                | BatchCmd::Similar { .. }
+                | BatchCmd::Impact { .. }
+                | BatchCmd::TestMap { .. }
+                | BatchCmd::Related { .. }
+                | BatchCmd::Scout { .. }
+        )
+    }
+}
+
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
 /// Execute a batch command and return a JSON value.

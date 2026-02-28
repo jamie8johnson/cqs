@@ -188,7 +188,7 @@ fn convert_file(path: &Path, opts: &ConvertOptions) -> anyhow::Result<ConvertRes
     let entry = FORMAT_TABLE
         .iter()
         .find(|e| e.variant == format)
-        .expect("FORMAT_TABLE must cover all DocFormat variants");
+        .unwrap_or_else(|| panic!("FORMAT_TABLE missing entry for {:?}", format));
 
     let raw_markdown = match entry.converter {
         Some(convert_fn) => convert_fn(path)?,

@@ -137,6 +137,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["describe(", "it(", "test("],
     test_path_patterns: &["%.test.%", "%.spec.%", "%/tests/%"],
     structural_matchers: None,
+    entry_point_names: &["handler", "middleware", "beforeEach", "afterEach", "beforeAll", "afterAll"],
+    trait_method_names: &["toString", "valueOf", "toJSON"],
 };
 
 pub fn definition() -> &'static LanguageDef {

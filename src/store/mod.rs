@@ -130,6 +130,13 @@ use crate::nl::normalize_for_fts;
 ///
 /// FTS5 special characters: `"`, `*`, `(`, `)`, `+`, `-`, `^`, `:`, `NEAR`
 /// FTS5 boolean operators: `OR`, `AND`, `NOT` (case-sensitive in FTS5)
+///
+/// # Safety (injection)
+///
+/// This function independently strips all FTS5-significant characters including
+/// double quotes. Safe for use in `format!`-constructed FTS5 queries even without
+/// `normalize_for_fts()`. The double-pass pattern (`normalize_for_fts` then
+/// `sanitize_fts_query`) is defense-in-depth — either layer alone prevents injection.
 pub(crate) fn sanitize_fts_query(s: &str) -> String {
     // Remove FTS5 special characters
     let cleaned: String = s
@@ -174,6 +181,7 @@ pub struct Store {
 impl Store {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
+        let _span = tracing::info_span!("store_open", path = %path.display()).entered();
         let rt = Runtime::new().map_err(|e| StoreError::Runtime(e.to_string()))?;
 
         // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
@@ -265,6 +273,7 @@ impl Store {
     /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
     /// Suitable for reference stores and background builds that only read data.
     pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
+        let _span = tracing::info_span!("store_open_readonly", path = %path.display()).entered();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -589,6 +598,10 @@ impl Store {
 
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
+        debug_assert!(
+            !normalized.contains('"'),
+            "sanitized query must not contain double quotes"
+        );
         let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
         self.rt.block_on(async {

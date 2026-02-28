@@ -125,7 +125,9 @@ impl Reranker {
 
         // 3. Run inference
         let mut session_guard = self.session()?;
-        let session = session_guard.as_mut().unwrap(); // Safe: session() guarantees Some
+        let session = session_guard
+            .as_mut()
+            .expect("session() guarantees initialized after Ok return");
         let outputs = session.run(ort::inputs![
             "input_ids" => ids_tensor,
             "attention_mask" => mask_tensor,

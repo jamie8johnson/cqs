@@ -50,6 +50,12 @@ pub fn impact_to_json(result: &ImpactResult, root: &Path) -> serde_json::Value {
         }
     }
 
+    if result.degraded {
+        if let Some(obj) = output.as_object_mut() {
+            obj.insert("degraded".into(), serde_json::json!(true));
+        }
+    }
+
     // Always include type_impacted for consistent JSON structure
     let type_json: Vec<_> = result
         .type_impacted
@@ -280,6 +286,7 @@ mod tests {
             }],
             transitive_callers: Vec::new(),
             type_impacted: Vec::new(),
+            degraded: false,
         };
         let root = Path::new("/project");
         let json = impact_to_json(&result, root);
@@ -313,6 +320,7 @@ mod tests {
                 depth: 2,
             }],
             type_impacted: Vec::new(),
+            degraded: false,
         };
         let root = Path::new("/project");
         let json = impact_to_json(&result, root);
@@ -332,6 +340,7 @@ mod tests {
             tests: Vec::new(),
             transitive_callers: Vec::new(),
             type_impacted: Vec::new(),
+            degraded: false,
         };
         let root = Path::new("/project");
         let json = impact_to_json(&result, root);

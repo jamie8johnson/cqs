@@ -168,6 +168,39 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["#[test]", "#[cfg(test)]"],
     test_path_patterns: &["%/tests/%", "%\\_test.rs"],
     structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[
+        // std::fmt
+        "fmt",
+        // std::convert
+        "from", "into", "try_from", "try_into",
+        // std::ops
+        "deref", "deref_mut", "drop", "index", "index_mut",
+        "add", "sub", "mul", "div", "rem", "neg", "not",
+        "bitor", "bitand", "bitxor", "shl", "shr",
+        // std::cmp
+        "eq", "ne", "partial_cmp", "cmp",
+        // std::hash
+        "hash",
+        // std::clone
+        "clone", "clone_from",
+        // std::default
+        "default",
+        // std::iter
+        "next", "into_iter",
+        // std::io
+        "read", "write", "flush",
+        // std::str
+        "from_str",
+        // std::convert / std::borrow
+        "as_ref", "as_mut", "borrow", "borrow_mut",
+        // serde
+        "serialize", "deserialize",
+        // std::error
+        "source",
+        // std::future
+        "poll",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

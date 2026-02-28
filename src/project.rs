@@ -66,14 +66,13 @@ impl ProjectRegistry {
 
         let content = toml::to_string_pretty(self)?;
         // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
-        let tmp = path.with_extension(format!(
-            "toml.{}.{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        ));
+        let suffix = {
+            use std::hash::{BuildHasher, Hasher};
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        };
+        let tmp = path.with_extension(format!("toml.{:016x}.tmp", suffix));
         std::fs::write(&tmp, &content)
             .with_context(|| format!("Failed to write {}", tmp.display()))?;
         if let Err(rename_err) = std::fs::rename(&tmp, &path) {
@@ -159,6 +158,11 @@ pub fn search_across_projects(
     threshold: f32,
 ) -> Result<Vec<CrossProjectResult>> {
     let registry = ProjectRegistry::load()?;
+    let _span = tracing::info_span!(
+        "search_across_projects",
+        project_count = registry.project.len()
+    )
+    .entered();
     if registry.project.is_empty() {
         bail!("No projects registered. Use 'cqs project register <name> <path>' to add one.");
     }
@@ -226,6 +230,11 @@ pub fn search_across_projects(
     // Sort by score descending, take top N
     all_results.sort_by(|a, b| b.score.total_cmp(&a.score));
     all_results.truncate(limit);
+
+    tracing::info!(
+        result_count = all_results.len(),
+        "Cross-project search complete"
+    );
 
     Ok(all_results)
 }

@@ -11,17 +11,98 @@ use super::BatchContext;
 /// A 3-stage pipeline dispatches at most 1 + 50 + 50 = 101 calls.
 const PIPELINE_FAN_OUT_LIMIT: usize = 50;
 
-/// Commands that accept a piped function name as their first positional arg.
-const PIPEABLE_COMMANDS: &[&str] = &[
-    "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related", "scout",
-];
-
 /// Check if a command (first token) can receive piped names.
+///
+/// Parses the tokens with a dummy name arg to get a `BatchCmd`, then checks
+/// `is_pipeable()`. Falls back to false on parse failure.
 fn is_pipeable_command(tokens: &[String]) -> bool {
-    tokens
-        .first()
-        .map(|cmd| PIPEABLE_COMMANDS.contains(&cmd.as_str()))
+    // Try parsing with a dummy name to see if the command is valid and pipeable
+    let probe_tokens = if tokens.len() == 1 {
+        vec![tokens[0].clone(), "__probe__".to_string()]
+    } else {
+        tokens.to_vec()
+    };
+    BatchInput::try_parse_from(&probe_tokens)
+        .map(|input| input.cmd.is_pipeable())
         .unwrap_or(false)
+}
+
+/// List of pipeable command names for error messages.
+fn pipeable_command_names() -> String {
+    // Derive from BatchCmd variants — kept in sync via is_pipeable()
+    use super::commands::BatchCmd;
+    let all = [
+        (
+            "callers",
+            BatchCmd::Callers {
+                name: String::new(),
+            },
+        ),
+        (
+            "callees",
+            BatchCmd::Callees {
+                name: String::new(),
+            },
+        ),
+        (
+            "deps",
+            BatchCmd::Deps {
+                name: String::new(),
+                reverse: false,
+            },
+        ),
+        (
+            "explain",
+            BatchCmd::Explain {
+                name: String::new(),
+                tokens: None,
+            },
+        ),
+        (
+            "similar",
+            BatchCmd::Similar {
+                target: String::new(),
+                limit: 5,
+                threshold: 0.3,
+            },
+        ),
+        (
+            "impact",
+            BatchCmd::Impact {
+                name: String::new(),
+                depth: 1,
+                suggest_tests: false,
+                include_types: false,
+            },
+        ),
+        (
+            "test-map",
+            BatchCmd::TestMap {
+                name: String::new(),
+                depth: 5,
+            },
+        ),
+        (
+            "related",
+            BatchCmd::Related {
+                name: String::new(),
+                limit: 5,
+            },
+        ),
+        (
+            "scout",
+            BatchCmd::Scout {
+                query: String::new(),
+                limit: 10,
+                tokens: None,
+            },
+        ),
+    ];
+    all.iter()
+        .filter(|(_, cmd)| cmd.is_pipeable())
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Extract function/chunk names from a dispatch result JSON value.
@@ -74,39 +155,33 @@ fn extract_from_bare_array(val: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Extract names from known named array fields in dispatch results.
+/// Extract names from any array fields in a JSON object that contain objects with "name" fields.
 ///
-/// Covers: results (search/similar), chunks (gather/context), callers (impact/explain),
-/// calls (callees), tests (impact/test-map), dead/possibly_dead_pub (dead),
-/// path (trace), shared_callers/shared_callees/shared_types (related),
-/// similar/callees (explain).
+/// Instead of probing a hardcoded list of field names, walks all top-level object
+/// values looking for arrays of objects with a `"name"` string field. This is
+/// key-agnostic: adding a new command with a `"foo": [{"name": ...}]` field
+/// automatically works without updating a constant.
 fn extract_from_standard_fields(val: &serde_json::Value) -> Vec<String> {
-    const NAME_ARRAY_FIELDS: &[&str] = &[
-        "results",           // search, similar
-        "chunks",            // gather, context
-        "callers",           // impact, explain
-        "calls",             // callees
-        "tests",             // impact, test-map
-        "dead",              // dead
-        "possibly_dead_pub", // dead
-        "path",              // trace
-        "shared_callers",    // related
-        "shared_callees",    // related
-        "shared_types",      // related
-        "similar",           // explain
-        "callees",           // explain
-    ];
+    let obj = match val.as_object() {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
 
-    NAME_ARRAY_FIELDS
-        .iter()
-        .flat_map(|field| {
-            val.get(*field)
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|item| item.get("name")?.as_str().map(String::from))
-        })
-        .collect()
+    let mut names = Vec::new();
+    for (key, field_val) in obj {
+        // Skip "name" at top level (handled by caller) and non-array fields
+        if key == "name" {
+            continue;
+        }
+        if let Some(arr) = field_val.as_array() {
+            for item in arr {
+                if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
 }
 
 /// Extract names from scout's nested `file_groups[].chunks[].name` structure.
@@ -170,7 +245,7 @@ pub(super) fn execute_pipeline(
                 "Cannot pipe into '{}' \u{2014} it doesn't accept a function name. \
                  Pipeable commands: {}",
                 cmd,
-                PIPEABLE_COMMANDS.join(", ")
+                pipeable_command_names()
             )});
         }
     }
@@ -562,31 +637,46 @@ mod tests {
         ]));
     }
 
-    /// Verify every PIPEABLE_COMMANDS entry accepts a function name as first arg.
-    /// If you add a new pipeable command, add it to PIPEABLE_COMMANDS.
-    /// If this test fails, update the list.
+    /// Verify every pipeable command accepts a function name as first arg.
+    /// If you add a new command variant, set `is_pipeable()` on BatchCmd accordingly.
     #[test]
     fn test_pipeable_commands_parse_with_name_arg() {
-        for &cmd in PIPEABLE_COMMANDS {
+        let pipeable = [
+            "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related",
+            "scout",
+        ];
+        for cmd in pipeable {
             let result = BatchInput::try_parse_from([cmd, "test_function"]);
             assert!(
                 result.is_ok(),
-                "PIPEABLE_COMMANDS entry '{cmd}' should accept a positional name arg"
+                "Pipeable command '{cmd}' should accept a positional name arg"
+            );
+            let input = result.unwrap();
+            assert!(
+                input.cmd.is_pipeable(),
+                "'{cmd}' should be pipeable via is_pipeable()"
             );
         }
     }
 
-    /// Non-pipeable commands should not be in the list.
+    /// Non-pipeable commands should return false from is_pipeable().
     #[test]
-    fn test_non_pipeable_not_in_list() {
-        let non_pipeable = [
-            "search", "gather", "dead", "stats", "stale", "health", "context",
+    fn test_non_pipeable_not_pipeable() {
+        let non_pipeable_cmds = [
+            ("search", vec!["search", "foo"]),
+            ("gather", vec!["gather", "foo"]),
+            ("dead", vec!["dead"]),
+            ("stats", vec!["stats"]),
+            ("stale", vec!["stale"]),
+            ("health", vec!["health"]),
+            ("context", vec!["context", "path"]),
         ];
-        for cmd in non_pipeable {
-            assert!(
-                !PIPEABLE_COMMANDS.contains(&cmd),
-                "'{cmd}' should not be in PIPEABLE_COMMANDS"
-            );
+        for (label, tokens) in non_pipeable_cmds {
+            let tokens: Vec<String> = tokens.into_iter().map(String::from).collect();
+            let result = BatchInput::try_parse_from(&tokens);
+            if let Ok(input) = result {
+                assert!(!input.cmd.is_pipeable(), "'{label}' should NOT be pipeable");
+            }
         }
     }
 }

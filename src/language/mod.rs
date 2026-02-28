@@ -199,6 +199,18 @@ pub struct LanguageDef {
     /// When present, `Pattern::matches` uses these instead of generic heuristics.
     /// `None` = fall through to generic pattern matching in `structural.rs`.
     pub structural_matchers: Option<&'static [(&'static str, StructuralMatcherFn)]>,
+    /// Entry point names excluded from dead code detection.
+    /// Functions called by the runtime, framework, or build system rather than
+    /// by other indexed code. E.g., Rust: `&["main"]`, Python: `&["__init__"]`,
+    /// Go: `&["init"]`. Cross-language names like `"main"` and `"new"` are in
+    /// the global fallback constant.
+    pub entry_point_names: &'static [&'static str],
+    /// Well-known trait/interface method names excluded from dead code detection.
+    /// Methods with these names are almost always called via dynamic dispatch
+    /// and won't appear in the static call graph. E.g., Rust: `&["fmt", "from",
+    /// "clone", "default"]`, Java: `&["equals", "hashCode", "toString"]`.
+    /// Cross-language names are in the global fallback constant.
+    pub trait_method_names: &'static [&'static str],
 }
 
 /// How to extract function signatures
@@ -426,6 +438,34 @@ impl LanguageRegistry {
             }
         }
         markers
+    }
+
+    /// Collect all unique entry point names from all enabled languages.
+    pub fn all_entry_point_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for def in self.all() {
+            for name in def.entry_point_names {
+                if seen.insert(*name) {
+                    names.push(*name);
+                }
+            }
+        }
+        names
+    }
+
+    /// Collect all unique trait method names from all enabled languages.
+    pub fn all_trait_method_names(&self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for def in self.all() {
+            for name in def.trait_method_names {
+                if seen.insert(*name) {
+                    names.push(*name);
+                }
+            }
+        }
+        names
     }
 
     /// Collect all unique test path patterns from all enabled languages.
