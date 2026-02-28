@@ -108,7 +108,10 @@ impl BatchContext {
         let e = Embedder::new()?;
         // Race is fine — OnceLock ensures only one value is stored
         let _ = self.embedder.set(e);
-        Ok(self.embedder.get().unwrap())
+        Ok(self
+            .embedder
+            .get()
+            .expect("embedder OnceLock populated by set() above"))
     }
 
     /// Get or build the vector index (CAGRA/HNSW/brute-force, cached).
@@ -119,7 +122,11 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_vector_index_init").entered();
         let idx = build_vector_index(&self.store, &self.cqs_dir)?;
         let _ = self.hnsw.set(idx);
-        Ok(self.hnsw.get().unwrap().as_deref())
+        Ok(self
+            .hnsw
+            .get()
+            .expect("hnsw OnceLock populated by set() above")
+            .as_deref())
     }
 
     /// Get a cached reference index by name, loading on first access.
@@ -169,7 +176,10 @@ impl BatchContext {
         let files = cqs::enumerate_files(&self.root, &exts, false)?;
         let set: HashSet<PathBuf> = files.into_iter().collect();
         let _ = self.file_set.set(set);
-        Ok(self.file_set.get().unwrap())
+        Ok(self
+            .file_set
+            .get()
+            .expect("file_set OnceLock populated by set() above"))
     }
 
     /// Get cached audit state (loaded once per session).
@@ -202,7 +212,9 @@ impl BatchContext {
     pub fn borrow_ref(&self, name: &str) -> Option<std::cell::Ref<'_, ReferenceIndex>> {
         let map = self.refs.borrow();
         if map.contains_key(name) {
-            Some(std::cell::Ref::map(map, |m| m.get(name).unwrap()))
+            Some(std::cell::Ref::map(map, |m| {
+                m.get(name).expect("checked contains_key above")
+            }))
         } else {
             None
         }
@@ -216,7 +228,10 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_call_graph_init").entered();
         let g = self.store.get_call_graph()?;
         let _ = self.call_graph.set(g);
-        Ok(self.call_graph.get().unwrap())
+        Ok(self
+            .call_graph
+            .get()
+            .expect("call_graph OnceLock populated by set() above"))
     }
 
     /// Get or load test chunks (cached for session).
@@ -227,7 +242,10 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_test_chunks_init").entered();
         let tc = self.store.find_test_chunks()?;
         let _ = self.test_chunks.set(tc);
-        Ok(self.test_chunks.get().unwrap())
+        Ok(self
+            .test_chunks
+            .get()
+            .expect("test_chunks OnceLock populated by set() above"))
     }
 
     /// Get cached project config (loaded once per session). (RM-21)
@@ -244,7 +262,10 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_reranker_init").entered();
         let r = cqs::Reranker::new().map_err(|e| anyhow::anyhow!("Reranker init failed: {e}"))?;
         let _ = self.reranker.set(r);
-        Ok(self.reranker.get().unwrap())
+        Ok(self
+            .reranker
+            .get()
+            .expect("reranker OnceLock populated by set() above"))
     }
 }
 

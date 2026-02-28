@@ -186,6 +186,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["@Test", "@ParameterizedTest"],
     test_path_patterns: &["%/test/%", "%/tests/%", "%Test.kt"],
     structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[
+        "equals", "hashCode", "toString", "compareTo", "iterator",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -23,7 +23,7 @@ pub fn analyze_impact(
 ) -> anyhow::Result<ImpactResult> {
     let _span =
         tracing::info_span!("analyze_impact", target = target_name, depth, include_types).entered();
-    let callers = build_caller_info(store, target_name)?;
+    let (callers, degraded) = build_caller_info(store, target_name)?;
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     let tests = find_affected_tests_with_chunks(
@@ -56,6 +56,7 @@ pub fn analyze_impact(
         tests,
         transitive_callers,
         type_impacted,
+        degraded,
     })
 }
 
@@ -63,7 +64,13 @@ pub fn analyze_impact(
 ///
 /// Batch-fetches all caller chunks in a single query (via `search_by_names_batch`)
 /// to avoid N+1 per-caller `search_by_name` calls.
-fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<CallerDetail>> {
+///
+/// Returns `(callers, degraded)` — `degraded` is true when the batch name search
+/// failed and caller snippets may be incomplete.
+fn build_caller_info(
+    store: &Store,
+    target_name: &str,
+) -> anyhow::Result<(Vec<CallerDetail>, bool)> {
     let callers_ctx = store.get_callers_with_context(target_name)?;
 
     // Batch-fetch chunk data for all unique caller names
@@ -75,12 +82,13 @@ fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<Cal
             .map(|c| c.name.as_str())
             .collect()
     };
-    let chunks_by_name = store
-        .search_by_names_batch(&unique_names, 5)
-        .unwrap_or_else(|e| {
+    let (chunks_by_name, degraded) = match store.search_by_names_batch(&unique_names, 5) {
+        Ok(map) => (map, false),
+        Err(e) => {
             tracing::warn!(error = %e, "Failed to batch-fetch caller chunks for snippets");
-            HashMap::new()
-        });
+            (HashMap::new(), true)
+        }
+    };
 
     let mut callers = Vec::with_capacity(callers_ctx.len());
     for caller in &callers_ctx {
@@ -94,7 +102,7 @@ fn build_caller_info(store: &Store, target_name: &str) -> anyhow::Result<Vec<Cal
         });
     }
 
-    Ok(callers)
+    Ok((callers, degraded))
 }
 
 /// Extract a snippet around the call site using pre-fetched chunk data.

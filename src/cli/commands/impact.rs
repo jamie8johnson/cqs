@@ -8,7 +8,6 @@ use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_impact(
-    _cli: &crate::cli::Cli,
     name: &str,
     depth: usize,
     format: &OutputFormat,

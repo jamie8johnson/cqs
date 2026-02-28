@@ -302,3 +302,96 @@ diff --git a/src/lib.rs b/src/lib.rs
         "Overall risk level should be a valid variant"
     );
 }
+
+// ===== review_diff with actual notes matching changed files (TC-8) =====
+
+#[test]
+fn test_review_diff_with_relevant_notes() {
+    let store = TestStore::new();
+
+    // Set up chunks and call graph (same pattern as existing tests)
+    let chunks = vec![
+        chunk_at("compute", "src/math.rs", 10, 30),
+        chunk_at("validate", "src/math.rs", 40, 60),
+        test_chunk_at("test_compute", "tests/math_test.rs", 1, 15),
+    ];
+    insert_chunks(&store, &chunks);
+
+    insert_calls(
+        &store,
+        "tests/math_test.rs",
+        &[("test_compute", 1, &[("compute", 5)])],
+    );
+
+    // Insert a note that mentions "math.rs" — should be matched by review_diff
+    let note = cqs::note::Note {
+        id: "note:0".to_string(),
+        text: "math.rs compute function has known precision issues".to_string(),
+        sentiment: -0.5,
+        mentions: vec!["math.rs".to_string()],
+    };
+    let note_embedding = mock_embedding(0.5);
+    store
+        .upsert_notes_batch(
+            &[(note, note_embedding)],
+            std::path::Path::new("notes.toml"),
+            12345,
+        )
+        .unwrap();
+
+    // Verify the note was stored
+    let summaries = store.list_notes_summaries().unwrap();
+    assert_eq!(summaries.len(), 1, "Should have 1 note stored");
+    assert!(
+        summaries[0].mentions.contains(&"math.rs".to_string()),
+        "Note should mention math.rs"
+    );
+
+    // Run review_diff with a diff that touches src/math.rs
+    let diff = "\
+diff --git a/src/math.rs b/src/math.rs
+--- a/src/math.rs
++++ b/src/math.rs
+@@ -15,3 +15,4 @@ fn compute() {
+     let x = 1;
++    let y = 2;
+";
+
+    let root = Path::new("/tmp");
+    let result = review_diff(&store, diff, root).unwrap();
+    let review = result.expect("review_diff should produce a result");
+
+    // relevant_notes should contain our note (it mentions math.rs, which is changed)
+    assert!(
+        !review.relevant_notes.is_empty(),
+        "relevant_notes should be non-empty when notes mention changed files"
+    );
+
+    assert!(
+        review
+            .relevant_notes
+            .iter()
+            .any(|n| n.text.contains("precision issues")),
+        "Should find the note about precision issues, got: {:?}",
+        review
+            .relevant_notes
+            .iter()
+            .map(|n| &n.text)
+            .collect::<Vec<_>>()
+    );
+
+    // Verify the matching_files field includes the changed file
+    let matching_note = review
+        .relevant_notes
+        .iter()
+        .find(|n| n.text.contains("precision issues"))
+        .unwrap();
+    assert!(
+        matching_note
+            .matching_files
+            .iter()
+            .any(|f| f.contains("math.rs")),
+        "matching_files should include math.rs, got: {:?}",
+        matching_note.matching_files
+    );
+}

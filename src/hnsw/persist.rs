@@ -419,11 +419,14 @@ impl HnswIndex {
         graph_path.exists() && data_path.exists() && id_map_path.exists()
     }
 
-    /// Get vector count without loading the full index (fast, for stats)
+    /// Get vector count without loading the full index (fast, for stats).
+    ///
+    /// Uses `BufReader` + `serde_json::from_reader` to avoid reading the entire
+    /// id map file into a String first. The file is a JSON array of chunk ID strings.
     pub fn count_vectors(dir: &Path, basename: &str) -> Option<usize> {
         let id_map_path = dir.join(format!("{}.hnsw.ids", basename));
-        let content = match std::fs::read_to_string(&id_map_path) {
-            Ok(c) => c,
+        let file = match std::fs::File::open(&id_map_path) {
+            Ok(f) => f,
             Err(e) => {
                 tracing::debug!(
                     "Could not read HNSW id map {}: {}",
@@ -434,16 +437,28 @@ impl HnswIndex {
             }
         };
         // Guard against oversized id map files
-        const MAX_ID_MAP_SIZE: usize = 100 * 1024 * 1024; // 100MB
-        if content.len() > MAX_ID_MAP_SIZE {
-            tracing::warn!(
-                "HNSW id map too large ({} bytes): {}",
-                content.len(),
-                id_map_path.display()
-            );
-            return None;
+        const MAX_ID_MAP_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+        match file.metadata() {
+            Ok(meta) if meta.len() > MAX_ID_MAP_SIZE => {
+                tracing::warn!(
+                    "HNSW id map too large ({} bytes): {}",
+                    meta.len(),
+                    id_map_path.display()
+                );
+                return None;
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "Could not stat HNSW id map {}: {}",
+                    id_map_path.display(),
+                    e
+                );
+                return None;
+            }
+            _ => {}
         }
-        let ids: Vec<String> = match serde_json::from_str(&content) {
+        let reader = std::io::BufReader::new(file);
+        let ids: Vec<String> = match serde_json::from_reader(reader) {
             Ok(ids) => ids,
             Err(e) => {
                 tracing::warn!("Corrupted HNSW id map {}: {}", id_map_path.display(), e);

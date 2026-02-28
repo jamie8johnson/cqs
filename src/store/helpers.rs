@@ -99,7 +99,11 @@ impl ChunkRow {
 pub struct ChunkSummary {
     /// Unique identifier
     pub id: String,
-    /// Source file path (typically absolute, as stored during indexing)
+    /// Source file path (always forward-slash normalized, not OS-native).
+    ///
+    /// Paths are normalized by `normalize_origin()` during indexing: backslashes
+    /// are converted to forward slashes for consistent cross-platform storage and
+    /// querying. The path itself is typically absolute.
     pub file: PathBuf,
     /// Programming language
     pub language: Language,

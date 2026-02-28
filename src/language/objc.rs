@@ -91,6 +91,11 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["- (void)test"],
     test_path_patterns: &["%/Tests/%", "%Tests.m"],
     structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[
+        "init", "dealloc", "description", "hash", "isEqual",
+        "copyWithZone", "encodeWithCoder", "initWithCoder",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

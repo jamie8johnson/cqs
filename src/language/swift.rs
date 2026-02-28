@@ -202,6 +202,10 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["func test"],
     test_path_patterns: &["%/Tests/%", "%Tests.swift"],
     structural_matchers: None,
+    entry_point_names: &["main"],
+    trait_method_names: &[
+        "hash", "encode", "init", "deinit", "description",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

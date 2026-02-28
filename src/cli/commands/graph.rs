@@ -5,10 +5,8 @@
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use crate::cli::Cli;
-
 /// Find functions that call the specified function
-pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_callers(name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callers", name).entered();
     let (store, _, _) = crate::cli::open_project_store()?;
     // Use full call graph (includes large functions)
@@ -56,7 +54,7 @@ pub(crate) fn cmd_callers(_cli: &Cli, name: &str, json: bool) -> Result<()> {
 }
 
 /// Find functions called by the specified function
-pub(crate) fn cmd_callees(_cli: &Cli, name: &str, json: bool) -> Result<()> {
+pub(crate) fn cmd_callees(name: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_callees", name).entered();
     let (store, _, _) = crate::cli::open_project_store()?;
     // Use full call graph (includes large functions)

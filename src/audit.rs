@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 
 /// Audit mode state - excludes notes from search/read during audits
@@ -111,14 +112,10 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     let content = serde_json::to_string_pretty(&file).context("Failed to serialize audit mode")?;
 
     // Atomic write: temp file + rename
-    let tmp_path = path.with_extension(format!(
-        "json.tmp.{}.{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
+    let suffix = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    let tmp_path = path.with_extension(format!("json.{:016x}.tmp", suffix));
     std::fs::write(&tmp_path, &content).context("Failed to write temp audit-mode file")?;
     if let Err(rename_err) = std::fs::rename(&tmp_path, &path) {
         if let Err(copy_err) = std::fs::copy(&tmp_path, &path) {

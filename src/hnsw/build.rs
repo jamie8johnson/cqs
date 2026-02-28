@@ -32,6 +32,12 @@ impl HnswIndex {
     /// - Avoids OOM on large indexes
     /// - Has negligible quality difference in practice
     ///
+    /// # Production routing
+    ///
+    /// `build_hnsw_index()` in `cli/commands/index.rs` unconditionally uses
+    /// `build_batched()` with 10k-row batches for all index sizes. This method
+    /// is only used in tests.
+    ///
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
     pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, HnswError> {
@@ -120,6 +126,7 @@ impl HnswIndex {
 
         let mut id_map: Vec<String> = Vec::with_capacity(capacity);
         let mut total_inserted = 0usize;
+        let mut batch_num = 0usize;
 
         for batch_result in batches {
             let batch = batch_result
@@ -154,6 +161,12 @@ impl HnswIndex {
             hnsw.parallel_insert_data(&data_for_insert);
 
             total_inserted += batch.len();
+            batch_num += 1;
+            tracing::debug!(
+                batch = batch_num,
+                vectors_so_far = total_inserted,
+                "HNSW batch inserted"
+            );
             let progress_pct = if capacity > 0 {
                 (total_inserted * 100) / capacity
             } else {

@@ -96,6 +96,13 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["def test_", "pytest"],
     test_path_patterns: &["%/tests/%", "%\\_test.py", "%/test\\_%"],
     structural_matchers: None,
+    entry_point_names: &["__init__", "setup", "teardown"],
+    trait_method_names: &[
+        "__str__", "__repr__", "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__",
+        "__hash__", "__bool__", "__len__", "__iter__", "__next__", "__contains__",
+        "__getitem__", "__setitem__", "__delitem__", "__call__", "__enter__", "__exit__",
+        "__del__", "__new__", "__init_subclass__", "__class_getitem__",
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {

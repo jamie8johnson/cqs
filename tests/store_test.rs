@@ -1089,3 +1089,97 @@ fn test_search_chunks_by_signature_only_functions_and_methods() {
     );
     assert_eq!(results[0].name, "use_config");
 }
+
+// ===== check_origins_stale batch boundary test (TC-3) =====
+
+#[test]
+fn test_check_origins_stale_across_batch_boundary() {
+    use tempfile::TempDir;
+
+    let store = TestStore::new();
+    let project_dir = TempDir::new().unwrap();
+    let root = project_dir.path();
+
+    // Create 950 distinct origin files — this crosses the 900-item batch boundary
+    // in check_origins_stale (BATCH_SIZE = 900).
+    let count = 950;
+    let emb = mock_embedding(1.0);
+
+    for i in 0..count {
+        let filename = format!("file_{:04}.rs", i);
+        let filepath = root.join(&filename);
+
+        // Create the file on disk
+        std::fs::write(&filepath, format!("fn f{}() {{}}", i)).unwrap();
+
+        // Create a chunk with this origin
+        let content = format!("fn f{}() {{ {} }}", i, i);
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = cqs::parser::Chunk {
+            id: format!("{}:1:{}", &filename, &hash[..8]),
+            file: PathBuf::from(&filename),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: format!("f{}", i),
+            signature: format!("fn f{}()", i),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 3,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        // Use a synthetic mtime: first half are old (stale), second half are current
+        let mtime = if i < count / 2 {
+            // Old mtime — file on disk will be newer, so these should be stale
+            1000i64
+        } else {
+            // Future mtime — file on disk will be older, so these should be fresh
+            i64::MAX / 2
+        };
+
+        store
+            .upsert_chunks_batch(&[(chunk, emb.clone())], Some(mtime))
+            .unwrap();
+    }
+
+    // Build the full list of origins
+    let origins: Vec<String> = (0..count).map(|i| format!("file_{:04}.rs", i)).collect();
+    let origin_refs: Vec<&str> = origins.iter().map(|s| s.as_str()).collect();
+
+    // Call check_origins_stale with all 950 origins (crosses 900 batch boundary)
+    let stale = store.check_origins_stale(&origin_refs, root).unwrap();
+
+    // First half (0..475) had mtime=1000, files on disk are newer → stale
+    for i in 0..count / 2 {
+        let origin = format!("file_{:04}.rs", i);
+        assert!(
+            stale.contains(&origin),
+            "Origin {} should be stale (old mtime), batch boundary at 900",
+            origin
+        );
+    }
+
+    // Second half (475..950) had mtime=MAX/2, files on disk are older → fresh
+    for i in count / 2..count {
+        let origin = format!("file_{:04}.rs", i);
+        assert!(
+            !stale.contains(&origin),
+            "Origin {} should be fresh (future mtime)",
+            origin
+        );
+    }
+
+    // Verify counts
+    let expected_stale = count / 2;
+    assert_eq!(
+        stale.len(),
+        expected_stale,
+        "Expected {} stale origins across batch boundary, got {}",
+        expected_stale,
+        stale.len()
+    );
+}

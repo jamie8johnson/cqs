@@ -5,13 +5,11 @@
 use anyhow::{Context as _, Result};
 use colored::Colorize;
 
-use crate::cli::Cli;
-
 /// Show type dependencies.
 ///
 /// Forward (default): `cqs deps Config` — who uses this type?
 /// Reverse: `cqs deps --reverse func_name` — what types does this function use?
-pub(crate) fn cmd_deps(_cli: &Cli, name: &str, reverse: bool, json: bool) -> Result<()> {
+pub(crate) fn cmd_deps(name: &str, reverse: bool, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_deps", name, reverse).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
 

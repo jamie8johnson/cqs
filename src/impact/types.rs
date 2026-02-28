@@ -63,6 +63,10 @@ pub struct ImpactResult {
     pub tests: Vec<TestInfo>,
     pub transitive_callers: Vec<TransitiveCaller>,
     pub type_impacted: Vec<TypeImpacted>,
+    /// True when batch name search failed and caller snippets may be incomplete.
+    /// CLI handlers can display a warning when this is set.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub degraded: bool,
 }
 
 /// Lightweight caller + test coverage hints for a function.

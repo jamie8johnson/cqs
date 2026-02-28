@@ -11,7 +11,6 @@ use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
 pub(crate) fn cmd_trace(
-    _cli: &crate::cli::Cli,
     source: &str,
     target: &str,
     max_depth: usize,

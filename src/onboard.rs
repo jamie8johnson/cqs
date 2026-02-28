@@ -127,7 +127,7 @@ pub fn onboard(
         .iter()
         .find(|r| is_callable_type(r.chunk.chunk_type))
         .or(results.first())
-        .unwrap();
+        .expect("results guaranteed non-empty by early return above");
     let entry_name = entry.chunk.name.clone();
     let entry_file = entry
         .chunk

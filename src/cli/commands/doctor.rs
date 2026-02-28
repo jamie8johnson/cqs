@@ -7,12 +7,12 @@ use colored::Colorize;
 
 use cqs::{Embedder, Parser as CqParser, Store};
 
-use crate::cli::{find_project_root, Cli};
+use crate::cli::find_project_root;
 
 /// Run diagnostic checks on cqs installation and index
 ///
 /// Reports runtime info, embedding provider, model status, and index statistics.
-pub(crate) fn cmd_doctor(_cli: &Cli) -> Result<()> {
+pub(crate) fn cmd_doctor() -> Result<()> {
     let _span = tracing::info_span!("cmd_doctor").entered();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);

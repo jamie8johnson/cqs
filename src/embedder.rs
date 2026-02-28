@@ -520,7 +520,9 @@ impl Embedder {
 
         // Run inference (lazy init session)
         let mut guard = self.session()?;
-        let session = guard.as_mut().unwrap(); // Safe: session() guarantees Some after init
+        let session = guard
+            .as_mut()
+            .expect("session() guarantees initialized after Ok return");
         let _inference = tracing::debug_span!("inference", max_len).entered();
         let outputs = session.run(ort::inputs![
             "input_ids" => input_ids_tensor,

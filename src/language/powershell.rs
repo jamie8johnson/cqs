@@ -98,6 +98,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &["Describe ", "It ", "Context "],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%.Tests.ps1"],
     structural_matchers: None,
+    entry_point_names: &[],
+    trait_method_names: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

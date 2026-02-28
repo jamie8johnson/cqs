@@ -36,6 +36,8 @@ static DEFINITION: LanguageDef = LanguageDef {
     test_markers: &[],
     test_path_patterns: &[],
     structural_matchers: None,
+    entry_point_names: &[],
+    trait_method_names: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {
