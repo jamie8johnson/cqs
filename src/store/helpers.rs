@@ -175,7 +175,7 @@ impl SearchResult {
     /// Includes all chunk metadata plus score.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
-            "file": self.chunk.file.to_string_lossy().replace('\\', "/"),
+            "file": crate::normalize_path(&self.chunk.file),
             "line_start": self.chunk.line_start,
             "line_end": self.chunk.line_end,
             "name": self.chunk.name,

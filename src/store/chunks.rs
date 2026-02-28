@@ -14,14 +14,6 @@ use crate::embedder::Embedding;
 use crate::nl::normalize_for_fts;
 use crate::parser::{Chunk, ChunkType, Language};
 
-/// Normalize a path to forward slashes for consistent origin storage.
-///
-/// On Windows, `Path::to_string_lossy()` produces backslashes which causes
-/// mismatches when querying with forward-slash paths.
-fn normalize_origin(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 impl Store {
     /// Retrieve a single metadata value by key.
     ///
@@ -99,7 +91,7 @@ impl Store {
                     batch.iter().enumerate(),
                     |mut b, (i, (chunk, _))| {
                         b.push_bind(&chunk.id)
-                            .push_bind(normalize_origin(&chunk.file))
+                            .push_bind(crate::normalize_path(&chunk.file))
                             .push_bind("file")
                             .push_bind(chunk.language.to_string())
                             .push_bind(chunk.chunk_type.to_string())
@@ -187,7 +179,7 @@ impl Store {
         self.rt.block_on(async {
             let row: Option<(Option<i64>,)> =
                 sqlx::query_as("SELECT source_mtime FROM chunks WHERE origin = ?1 LIMIT 1")
-                    .bind(normalize_origin(path))
+                    .bind(crate::normalize_path(path))
                     .fetch_optional(&self.pool)
                     .await?;
 
@@ -200,7 +192,7 @@ impl Store {
 
     /// Delete all chunks for an origin (file path or source identifier)
     pub fn delete_by_origin(&self, origin: &Path) -> Result<u32, StoreError> {
-        let origin_str = normalize_origin(origin);
+        let origin_str = crate::normalize_path(origin);
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
@@ -235,7 +227,7 @@ impl Store {
     ) -> Result<usize, StoreError> {
         const CHUNK_INSERT_BATCH: usize = 55;
 
-        let origin_str = normalize_origin(origin);
+        let origin_str = crate::normalize_path(origin);
 
         // Pre-compute embedding bytes (returns Result)
         let embedding_bytes: Vec<Vec<u8>> = chunks
@@ -271,7 +263,7 @@ impl Store {
                     batch.iter().enumerate(),
                     |mut b, (i, (chunk, _))| {
                         b.push_bind(&chunk.id)
-                            .push_bind(normalize_origin(&chunk.file))
+                            .push_bind(crate::normalize_path(&chunk.file))
                             .push_bind("file")
                             .push_bind(chunk.language.to_string())
                             .push_bind(chunk.chunk_type.to_string())
@@ -380,7 +372,7 @@ impl Store {
                     batch.iter().enumerate(),
                     |mut b, (i, (chunk, _))| {
                         b.push_bind(&chunk.id)
-                            .push_bind(normalize_origin(&chunk.file))
+                            .push_bind(crate::normalize_path(&chunk.file))
                             .push_bind("file")
                             .push_bind(chunk.language.to_string())
                             .push_bind(chunk.chunk_type.to_string())

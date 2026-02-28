@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use colored::Colorize;
 
+use cqs::normalize_path;
 use cqs::Embedder;
 use cqs::{search_across_projects, ProjectRegistry};
 
@@ -104,7 +105,7 @@ pub(crate) fn cmd_project(subcmd: &ProjectCommand) -> Result<()> {
                         serde_json::json!({
                             "project": r.project_name,
                             "name": r.name,
-                            "file": r.file.to_string_lossy().replace('\\', "/"),
+                            "file": normalize_path(&r.file),
                             "line": r.line_start,
                             "signature": r.signature,
                             "score": r.score,

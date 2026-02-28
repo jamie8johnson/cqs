@@ -16,7 +16,7 @@ use crossbeam_channel::{bounded, select, Receiver, Sender};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use cqs::{Chunk, Embedder, Embedding, Parser as CqParser, Store};
+use cqs::{normalize_path, Chunk, Embedder, Embedding, Parser as CqParser, Store};
 
 use super::check_interrupted;
 
@@ -266,7 +266,7 @@ fn parser_stage(
                     Ok(mut chunks) => {
                         // Rewrite paths to be relative for storage
                         // Normalize path separators to forward slashes for cross-platform consistency
-                        let path_str = rel_path.to_string_lossy().replace('\\', "/");
+                        let path_str = normalize_path(rel_path);
                         // Build a map of old IDs → new IDs for parent_id fixup
                         let id_map: std::collections::HashMap<String, String> = chunks
                             .iter()

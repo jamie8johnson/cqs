@@ -8,6 +8,8 @@ use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 use thiserror::Error;
 
+use crate::normalize_slashes;
+
 /// Sentiment thresholds for classification
 ///
 /// 0.3 chosen to separate neutral observations from significant notes:
@@ -309,8 +311,8 @@ pub fn parse_notes_str(content: &str) -> Result<Vec<Note>, NoteError> {
 /// "src/store" matches "src/store/chunks.rs" but not "my_src/store.rs"
 pub fn path_matches_mention(path: &str, mention: &str) -> bool {
     // Normalize backslashes to forward slashes for cross-platform matching
-    let path = path.replace('\\', "/");
-    let mention = mention.replace('\\', "/");
+    let path = normalize_slashes(path);
+    let mention = normalize_slashes(mention);
 
     // Check if mention matches as a path suffix (component-aligned)
     if let Some(stripped) = path.strip_suffix(mention.as_str()) {
