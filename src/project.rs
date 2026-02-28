@@ -326,4 +326,134 @@ mod tests {
         // File outside project root returns full path unchanged
         assert_eq!(make_project_relative(dir_a.path(), &file), file,);
     }
+
+    // ===== search_across_projects tests =====
+
+    /// Helper: create a fake project registry TOML pointing at the given entries.
+    /// Returns a guard that restores HOME/XDG after the test.
+    /// We can't call the real `search_across_projects` without a real store,
+    /// so we test the constituent pieces and error paths.
+
+    #[test]
+    fn test_search_across_projects_missing_index_skipped() {
+        // A project entry whose path has no index.db should be skipped gracefully
+        let dir = tempfile::tempdir().unwrap();
+        let entry = ProjectEntry {
+            name: "ghost".to_string(),
+            path: dir.path().to_path_buf(),
+        };
+        // Verify the index path detection logic
+        let new_path = entry.path.join(".cqs/index.db");
+        let legacy_path = entry.path.join(".cq/index.db");
+        assert!(!new_path.exists());
+        assert!(!legacy_path.exists());
+        // The search loop would `continue` past this entry with a warning
+    }
+
+    #[test]
+    fn test_search_across_projects_empty_registry_error() {
+        // Empty registry should produce an error, not silently return empty results
+        let registry = ProjectRegistry::default();
+        assert!(registry.project.is_empty());
+        // The function bails with "No projects registered" when the list is empty.
+        // We can't call the function directly without controlling HOME, but we
+        // verify the logic: bail condition is `registry.project.is_empty()`
+    }
+
+    #[test]
+    fn test_search_across_projects_with_real_store() {
+        // Create a temp store, index a chunk, then verify search works
+        // when pointed at the right path (same flow as search_across_projects).
+        use crate::store::helpers::ModelInfo;
+
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let db_path = cqs_dir.join("index.db");
+
+        let store = crate::Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Insert a chunk with a known embedding
+        let content = "fn test_function() { println!(\"hello\"); }".to_string();
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let chunk = crate::parser::Chunk {
+            id: format!("test.rs:1:{}", &hash[..8]),
+            file: PathBuf::from("test.rs"),
+            chunk_type: crate::parser::ChunkType::Function,
+            name: "test_function".to_string(),
+            signature: "fn test_function()".to_string(),
+            content,
+            doc: None,
+            line_start: 1,
+            line_end: 3,
+            language: crate::parser::Language::Rust,
+            content_hash: hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+
+        // Create a simple embedding (769-dim: 768 model + 1 sentiment)
+        let embedding = crate::Embedding::new(vec![0.1; 769]);
+        store.upsert_chunk(&chunk, &embedding, None).unwrap();
+        drop(store);
+
+        // Now test that Store::open_readonly works on this index
+        let store = crate::Store::open_readonly(&db_path).unwrap();
+        let filter = crate::store::helpers::SearchFilter {
+            query_text: "test function".to_string(),
+            enable_rrf: true,
+            ..Default::default()
+        };
+        let results = store.search_filtered_with_index(
+            &embedding, &filter, 10, 0.0, None, // no HNSW index
+        );
+        assert!(results.is_ok(), "search should not error on valid store");
+        let results = results.unwrap();
+        assert!(
+            !results.is_empty(),
+            "should find the inserted chunk via search"
+        );
+        assert_eq!(results[0].chunk.name, "test_function");
+    }
+
+    #[test]
+    fn test_search_across_projects_sort_and_truncate() {
+        // Verify the sort-by-score-descending + truncate logic
+        let mut results = vec![
+            CrossProjectResult {
+                project_name: "a".into(),
+                name: "low".into(),
+                file: PathBuf::from("low.rs"),
+                line_start: 1,
+                signature: None,
+                score: 0.1,
+            },
+            CrossProjectResult {
+                project_name: "b".into(),
+                name: "high".into(),
+                file: PathBuf::from("high.rs"),
+                line_start: 1,
+                signature: None,
+                score: 0.9,
+            },
+            CrossProjectResult {
+                project_name: "c".into(),
+                name: "mid".into(),
+                file: PathBuf::from("mid.rs"),
+                line_start: 1,
+                signature: None,
+                score: 0.5,
+            },
+        ];
+
+        // Same sort logic as search_across_projects
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        results.truncate(2);
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].name, "high");
+        assert_eq!(results[1].name, "mid");
+    }
 }

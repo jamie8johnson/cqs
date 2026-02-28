@@ -95,6 +95,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: Some(extract_container_name_ps),
     extract_qualified_method: None,
     post_process_chunk: None,
+    test_markers: &["Describe ", "It ", "Context "],
+    test_path_patterns: &["%/Tests/%", "%/tests/%", "%.Tests.ps1"],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -35,7 +35,7 @@ impl Store {
                     .fetch_optional(&self.pool)
                     .await?;
             row.map(|(v,)| v)
-                .ok_or_else(|| StoreError::Runtime(format!("metadata key '{}' not found", key)))
+                .ok_or_else(|| StoreError::NotFound(format!("metadata key '{}'", key)))
         })
     }
 
@@ -48,6 +48,7 @@ impl Store {
         chunks: &[(Chunk, Embedding)],
         source_mtime: Option<i64>,
     ) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("upsert_chunks_batch", count = chunks.len()).entered();
         // 55 rows * 18 bind params = 990 < SQLite's 999 parameter limit
         const CHUNK_INSERT_BATCH: usize = 55;
 
@@ -60,16 +61,29 @@ impl Store {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
-            // Snapshot existing content hashes before batch INSERT overwrites them
+            // Batch-snapshot existing content hashes before INSERT overwrites them.
+            // Batched in groups of 500 to stay within SQLite's 999-param limit.
             let mut old_hashes: HashMap<String, String> = HashMap::new();
-            for (chunk, _) in chunks {
-                let existing: Option<(String,)> =
-                    sqlx::query_as("SELECT content_hash FROM chunks WHERE id = ?1")
-                        .bind(&chunk.id)
-                        .fetch_optional(&mut *tx)
-                        .await?;
-                if let Some((hash,)) = existing {
-                    old_hashes.insert(chunk.id.clone(), hash);
+            {
+                const HASH_BATCH: usize = 500;
+                let chunk_ids: Vec<&str> = chunks.iter().map(|(c, _)| c.id.as_str()).collect();
+                for id_batch in chunk_ids.chunks(HASH_BATCH) {
+                    let placeholders: String = (1..=id_batch.len())
+                        .map(|i| format!("?{}", i))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!(
+                        "SELECT id, content_hash FROM chunks WHERE id IN ({})",
+                        placeholders
+                    );
+                    let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+                    for id in id_batch {
+                        q = q.bind(*id);
+                    }
+                    let rows = q.fetch_all(&mut *tx).await?;
+                    for (id, hash) in rows {
+                        old_hashes.insert(id, hash);
+                    }
                 }
             }
 
@@ -329,16 +343,29 @@ impl Store {
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
-            // Snapshot existing content hashes before batch INSERT overwrites them
+            // Batch-snapshot existing content hashes before INSERT overwrites them.
+            // Batched in groups of 500 to stay within SQLite's 999-param limit.
             let mut old_hashes: HashMap<String, String> = HashMap::new();
-            for (chunk, _) in chunks {
-                let existing: Option<(String,)> =
-                    sqlx::query_as("SELECT content_hash FROM chunks WHERE id = ?1")
-                        .bind(&chunk.id)
-                        .fetch_optional(&mut *tx)
-                        .await?;
-                if let Some((hash,)) = existing {
-                    old_hashes.insert(chunk.id.clone(), hash);
+            {
+                const HASH_BATCH: usize = 500;
+                let chunk_ids: Vec<&str> = chunks.iter().map(|(c, _)| c.id.as_str()).collect();
+                for id_batch in chunk_ids.chunks(HASH_BATCH) {
+                    let placeholders: String = (1..=id_batch.len())
+                        .map(|i| format!("?{}", i))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let sql = format!(
+                        "SELECT id, content_hash FROM chunks WHERE id IN ({})",
+                        placeholders
+                    );
+                    let mut q = sqlx::query_as::<_, (String, String)>(&sql);
+                    for id in id_batch {
+                        q = q.bind(*id);
+                    }
+                    let rows = q.fetch_all(&mut *tx).await?;
+                    for (id, hash) in rows {
+                        old_hashes.insert(id, hash);
+                    }
                 }
             }
 
@@ -452,6 +479,7 @@ impl Store {
     /// - Sending full file list to SQLite would require chunked queries anyway
     /// - HashSet lookup is O(1), and we already have the set from enumerate_files()
     pub fn prune_missing(&self, existing_files: &HashSet<PathBuf>) -> Result<u32, StoreError> {
+        let _span = tracing::info_span!("prune_missing", existing = existing_files.len()).entered();
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT origin FROM chunks WHERE source_type = 'file'",
@@ -470,14 +498,15 @@ impl Store {
                 return Ok(0);
             }
 
-            // Batch delete in chunks of 100 (SQLite has ~999 param limit)
-            // Each batch is wrapped in a transaction for atomicity
+            // Batch delete in chunks of 100 (SQLite has ~999 param limit).
+            // Single transaction wraps ALL batches — partial prune on crash
+            // would leave the index inconsistent with disk.
             const BATCH_SIZE: usize = 100;
             let mut deleted = 0u32;
 
-            for batch in missing.chunks(BATCH_SIZE) {
-                let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin().await?;
 
+            for batch in missing.chunks(BATCH_SIZE) {
                 let placeholders: Vec<String> =
                     (1..=batch.len()).map(|i| format!("?{}", i)).collect();
                 let placeholder_str = placeholders.join(",");
@@ -502,9 +531,9 @@ impl Store {
                 }
                 let result = chunks_stmt.execute(&mut *tx).await?;
                 deleted += result.rows_affected() as u32;
-
-                tx.commit().await?;
             }
+
+            tx.commit().await?;
 
             if deleted > 0 {
                 tracing::info!(deleted, files = missing.len(), "Pruned chunks for missing files");
@@ -640,6 +669,7 @@ impl Store {
         origins: &[&str],
         root: &Path,
     ) -> Result<HashSet<String>, StoreError> {
+        let _span = tracing::info_span!("check_origins_stale", count = origins.len()).entered();
         if origins.is_empty() {
             return Ok(HashSet::new());
         }
@@ -1147,6 +1177,9 @@ impl Store {
         names: &[&str],
         limit_per_name: usize,
     ) -> Result<HashMap<String, Vec<super::SearchResult>>, StoreError> {
+        let _span =
+            tracing::info_span!("search_by_names_batch", count = names.len(), limit_per_name)
+                .entered();
         if names.is_empty() {
             return Ok(HashMap::new());
         }

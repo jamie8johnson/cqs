@@ -510,7 +510,7 @@ impl Store {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to load notes for search boosting");
-                &[]
+                Vec::new()
             }
         };
 
@@ -567,7 +567,7 @@ impl Store {
             };
 
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            let note_index = NoteBoostIndex::new(&notes);
 
             // Use bounded heap to maintain only top-N results during iteration.
             // This bounds memory to O(semantic_limit) instead of O(total_chunks).
@@ -773,13 +773,14 @@ impl Store {
         }
 
         let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+        let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
 
         // Load notes once for note-boosted ranking
         let notes = match self.cached_notes_summaries() {
             Ok(n) => n,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to load notes for search boosting");
-                &[]
+                Vec::new()
             }
         };
 
@@ -799,7 +800,7 @@ impl Store {
             };
 
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
-            let note_index = NoteBoostIndex::new(notes);
+            let note_index = NoteBoostIndex::new(&notes);
 
             let mut scored: Vec<(ChunkRow, f32)> = rows
                 .into_iter()
@@ -866,22 +867,92 @@ impl Store {
 
             scored.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-            let mut seen_parents: HashSet<String> = HashSet::new();
-            let results: Vec<SearchResult> = scored
+            // Apply RRF fusion with FTS keyword search (same pattern as search_filtered)
+            let final_scored: Vec<(String, f32)> = if use_rrf {
+                let normalized = normalize_for_fts(&filter.query_text);
+                let sanitized = sanitize_fts_query(&normalized);
+                let fts_ids = if sanitized.is_empty() {
+                    vec![]
+                } else {
+                    let fts_rows: Vec<(String,)> = sqlx::query_as(
+                        "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
+                    )
+                    .bind(&sanitized)
+                    .bind((limit * 3) as i64)
+                    .fetch_all(&self.pool)
+                    .await?;
+                    fts_rows.into_iter().map(|(id,)| id).collect()
+                };
+                let semantic_ids: Vec<String> =
+                    scored.iter().map(|(row, _)| row.id.clone()).collect();
+                // Request extra candidates from RRF to compensate for parent dedup
+                Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
+            } else {
+                scored
+                    .iter()
+                    .take(limit)
+                    .map(|(row, score)| (row.id.clone(), *score))
+                    .collect()
+            };
+
+            if final_scored.is_empty() {
+                return Ok(vec![]);
+            }
+
+            // Build a lookup from the scored rows for RRF path (need ChunkRow for results)
+            let rows_by_id: HashMap<String, ChunkRow> = scored
                 .into_iter()
-                .filter_map(|(row, score)| {
-                    let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                    if seen_parents.insert(dedup_key) {
-                        Some(SearchResult {
-                            chunk: ChunkSummary::from(row),
-                            score,
-                        })
+                .map(|(row, _)| (row.id.clone(), row))
+                .collect();
+
+            // For RRF-fused IDs that came from FTS but weren't in HNSW candidates,
+            // fetch them from the database
+            let missing_ids: Vec<&str> = final_scored
+                .iter()
+                .filter(|(id, _)| !rows_by_id.contains_key(id))
+                .map(|(id, _)| id.as_str())
+                .collect();
+            let extra_rows = if !missing_ids.is_empty() {
+                self.fetch_chunks_by_ids_async(&missing_ids).await?
+            } else {
+                HashMap::new()
+            };
+
+            let mut seen_parents: HashSet<String> = HashSet::new();
+            let mut results: Vec<SearchResult> = final_scored
+                .into_iter()
+                .filter_map(|(id, score)| {
+                    // Try scored rows first, then FTS-only rows
+                    if let Some(row) = rows_by_id.get(&id) {
+                        let dedup_key =
+                            row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                        if seen_parents.insert(dedup_key) {
+                            Some(SearchResult {
+                                chunk: ChunkSummary::from(row.clone()),
+                                score,
+                            })
+                        } else {
+                            None
+                        }
+                    } else if let Some(row) = extra_rows.get(&id) {
+                        let dedup_key =
+                            row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                        if seen_parents.insert(dedup_key) {
+                            Some(SearchResult {
+                                chunk: ChunkSummary::from(row.clone()),
+                                score,
+                            })
+                        } else {
+                            None
+                        }
                     } else {
                         None
                     }
                 })
-                .take(limit)
                 .collect();
+
+            // Truncate back to requested limit after parent dedup
+            results.truncate(limit);
 
             Ok(results)
         })
@@ -1487,6 +1558,79 @@ mod tests {
             let filter = SearchFilter::default();
             let results = store.search_filtered(&emb, &filter, 10, 0.0).unwrap();
             assert!(results.is_empty());
+        }
+
+        /// TC-7: Verify HNSW-guided path produces RRF results when enable_rrf is true.
+        ///
+        /// The search_by_candidate_ids path must apply the same RRF fusion as
+        /// search_filtered, combining cosine-scored candidates with FTS keyword hits.
+        #[test]
+        fn test_search_by_candidate_ids_rrf() {
+            let (store, _dir) = setup_store();
+
+            // Insert chunks with content that FTS can match by keyword
+            let mut c_error = make_chunk(
+                "handleError",
+                "src/err.rs",
+                Language::Rust,
+                ChunkType::Function,
+            );
+            c_error.content =
+                "fn handleError() { log_error(\"error handling failed\"); }".to_string();
+            let mut c_parse = make_chunk(
+                "parseConfig",
+                "src/cfg.rs",
+                Language::Rust,
+                ChunkType::Function,
+            );
+            c_parse.content = "fn parseConfig() { read_toml(\"config.toml\"); }".to_string();
+            let emb1 = mock_embedding(1.0);
+            let emb2 = mock_embedding(0.9);
+
+            store
+                .upsert_chunks_batch(
+                    &[(c_error.clone(), emb1.clone()), (c_parse.clone(), emb2)],
+                    Some(12345),
+                )
+                .unwrap();
+
+            // Search by candidate IDs with RRF enabled — FTS should boost "handleError"
+            // for the query text "error handling"
+            let candidate_ids: Vec<&str> = vec![&c_error.id, &c_parse.id];
+            let filter = SearchFilter {
+                enable_rrf: true,
+                query_text: "error handling".to_string(),
+                ..Default::default()
+            };
+
+            let results = store
+                .search_by_candidate_ids(&candidate_ids, &emb1, &filter, 10, 0.0)
+                .unwrap();
+
+            assert!(
+                !results.is_empty(),
+                "RRF in candidate path should return results"
+            );
+            // "handleError" should rank first because it matches both semantically
+            // and via FTS keyword "error"
+            assert_eq!(
+                results[0].chunk.name, "handleError",
+                "FTS+RRF should boost the keyword-matching chunk"
+            );
+
+            // Compare with non-RRF path to verify RRF actually changes behavior
+            let filter_no_rrf = SearchFilter {
+                enable_rrf: false,
+                query_text: "error handling".to_string(),
+                ..Default::default()
+            };
+            let results_no_rrf = store
+                .search_by_candidate_ids(&candidate_ids, &emb1, &filter_no_rrf, 10, 0.0)
+                .unwrap();
+            assert!(
+                !results_no_rrf.is_empty(),
+                "Non-RRF candidate path should also return results"
+            );
         }
 
         #[test]

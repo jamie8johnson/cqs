@@ -60,6 +60,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: None,
     extract_qualified_method: None,
     post_process_chunk: None,
+    test_markers: &["describe ", "it ", "context "],
+    test_path_patterns: &["%/spec/%", "%/test/%", "%\\_spec.rb", "%\\_test.rb"],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

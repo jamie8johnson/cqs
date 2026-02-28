@@ -8,52 +8,52 @@ Informational/well-designed: 3 (RM-7, RM-9, RM-10) — no action needed
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | **AC-5**: Stale `partial_cmp` in drift test — missed by v0.19.1 sweep | Algorithm | drift.rs:167 | |
-| 2 | **DOC-1**: lib.rs quick start example uses invalid SearchFilter (fails at runtime) | Documentation | src/lib.rs:35 | |
-| 3 | **DOC-2**: CONTRIBUTING lists C++/Kotlin/Swift as future work — already implemented | Documentation | CONTRIBUTING.md:70 | |
-| 4 | **DOC-3**: CONTRIBUTING lists phantom `src/deps.rs` — file doesn't exist | Documentation | CONTRIBUTING.md:172 | |
-| 5 | **DOC-4**: README says `cqs project add` — actual command is `register` | Documentation | README.md:402 | |
-| 6 | **DOC-5**: README HNSW ef_search listed as fixed 100 — adaptive since v0.19.2 | Documentation | README.md:463 | |
-| 7 | **DOC-6/SEC-3**: `open_readonly` skips `PRAGMA quick_check` — SECURITY.md claims every open | Security/Doc | store/mod.rs:279, SECURITY.md:20 | |
-| 8 | **DOC-7**: CONTRIBUTING lists `source/` as active — it's dead code | Documentation | CONTRIBUTING.md:108 | |
-| 9 | **RB-1/EH-1**: `serde_json::to_string().unwrap()` in batch REPL — 6 NaN panic sites | Robustness | batch/mod.rs:288+ | |
-| 10 | **RB-5**: `ChunkOutput` serialization `.expect()` panics on NaN scores | Robustness | batch/handlers.rs:34,152 | |
-| 11 | **RB-7**: `diff_parse.rs` unwrap after starts_with on external input | Robustness | diff_parse.rs:50 | |
-| 12 | **RB-8**: `onboard.rs` NaN score-to-u64 cast produces garbage ordering | Robustness | onboard.rs:182 | |
-| 13 | **SEC-1**: SQLite URL constructed from unescaped path — `?`/`#` injection | Security | store/mod.rs:180,286 | |
-| 14 | **OB-2**: `parse_notes()` errors swallowed in read command (2 sites) | Observability | read.rs:280,312 | |
-| 15 | **OB-3**: `search_by_names_batch()` error swallowed in read --focus | Observability | read.rs:223 | |
-| 16 | **EH-3**: gc.rs HNSW file deletion silently ignores failures | Error Handling | gc.rs:64-67 | |
-| 17 | **EH-4**: `cmd_ref_add` bare `?` on Store::open — no path context | Error Handling | reference.rs:104-105 | |
-| 18 | **EH-5**: `cmd_diff` bare `?` on Store::open for 3 stores — no context | Error Handling | diff.rs:46,55,75 | |
-| 19 | **PB-1**: `path_matches_mention` no backslash normalization — notes lose boost | Platform | note.rs:311 | |
-| 20 | **PB-2**: `find_dead_code` inline path filter diverges from `is_test_chunk` | Platform | calls.rs:814-819 | |
-| 21 | **PB-7**: `find_stale_mentions` backslash paths cause false-positive staleness | Platform | suggest.rs:192 | |
-| 22 | **AD-1**: `GatherDirection` raw string instead of clap `ValueEnum` | API Design | cli/mod.rs:506 | |
-| 23 | **AD-2**: `audit-mode` state is `Option<String>` not enum | API Design | cli/mod.rs:541 | |
-| 24 | **AD-9**: `SearchFilter::new()` duplicates `Default::default()` | API Design | helpers.rs:406 | |
-| 25 | **CQ-3**: HNSW extension list duplicated with mismatch (3 vs 4 files) | Code Quality | persist.rs:15, watch.rs:217 | |
-| 26 | **CQ-5**: Reference lookup boilerplate duplicated 6 times | Code Quality | 6 sites | |
-| 27 | **CQ-7**: `GatheredChunk` 11-field construction repeated 4 times — no From impl | Code Quality | gather.rs:244+ | |
-| 28 | **AC-3**: `onboard` uses embedding-only search — missing RRF | Algorithm | onboard.rs:114 | |
-| 29 | **AC-4**: Parent dedup reduces results below limit after RRF | Algorithm | search.rs:598 | |
-| 30 | **PF-3**: `score_name_match` redundant `to_lowercase()` in inner loop | Performance | helpers.rs:594 | |
-| 31 | **PF-8**: `NOT IN (subquery)` anti-pattern in dead code Phase 1 | Performance | calls.rs:714 | |
-| 32 | **EX-4**: `callable_sql_list()` duplicates `is_callable()` — manual sync | Extensibility | language/mod.rs:244 | |
-| 33 | **EX-7**: NL `type_word` duplicates ChunkType::Display | Extensibility | nl.rs:338 | |
-| 34 | **SEC-4**: `convert_directory` walk doesn't filter symlinks | Security | convert/mod.rs:345 | |
-| 35 | **SEC-6**: `CQS_PDF_SCRIPT` override only warns at tracing level | Security | convert/pdf.rs:57 | |
-| 36 | **PB-5**: `is_wsl()` private to config.rs — not reusable | Platform | config.rs:14 | |
-| 37 | **PB-6**: Watch mode no WSL inotify unreliability warning | Platform | watch.rs:69 | |
-| 38 | **OB-4**: `get_call_graph()` silent truncation at 500K edges | Observability | calls.rs:469 | |
-| 39 | **OB-9**: `find_dead_code()` no span or result count logging | Observability | calls.rs:707 | |
-| 40 | **RB-6**: `Parser::new()` expect doesn't identify offending language | Robustness | parser/mod.rs:62 | |
-| 41 | **TC-5**: `rel_display` pure utility — zero tests | Test Coverage | lib.rs:223 | |
-| 42 | **DS-4**: GC prune operations not atomic — crash leaves orphans | Data Safety | gc.rs:41-56 | |
-| 43 | **RM-5**: `merge_results()` hashes all before truncating | Resource Mgmt | reference.rs:186 | |
-| 44 | **PF-2**: Pipeline `needs_reindex` per-chunk not per-file | Performance | pipeline.rs:362 | |
-| 45 | **PF-4**: `note_boost` O(notes×mentions) per chunk in inner loop | Performance | search.rs:266 | |
-| 46 | **PF-6**: `analyze_impact` loads test chunks redundantly | Performance | analysis.rs:27 | |
+| 1 | **AC-5**: Stale `partial_cmp` in drift test — missed by v0.19.1 sweep | Algorithm | drift.rs:167 | ✅ PR #501 |
+| 2 | **DOC-1**: lib.rs quick start example uses invalid SearchFilter (fails at runtime) | Documentation | src/lib.rs:35 | ✅ PR #501 |
+| 3 | **DOC-2**: CONTRIBUTING lists C++/Kotlin/Swift as future work — already implemented | Documentation | CONTRIBUTING.md:70 | ✅ PR #501 |
+| 4 | **DOC-3**: CONTRIBUTING lists phantom `src/deps.rs` — file doesn't exist | Documentation | CONTRIBUTING.md:172 | ✅ PR #501 |
+| 5 | **DOC-4**: README says `cqs project add` — actual command is `register` | Documentation | README.md:402 | ✅ PR #501 |
+| 6 | **DOC-5**: README HNSW ef_search listed as fixed 100 — adaptive since v0.19.2 | Documentation | README.md:463 | ✅ PR #501 |
+| 7 | **DOC-6/SEC-3**: `open_readonly` skips `PRAGMA quick_check` — SECURITY.md claims every open | Security/Doc | store/mod.rs:279, SECURITY.md:20 | ✅ PR #501 |
+| 8 | **DOC-7**: CONTRIBUTING lists `source/` as active — it's dead code | Documentation | CONTRIBUTING.md:108 | ✅ PR #501 |
+| 9 | **RB-1/EH-1**: `serde_json::to_string().unwrap()` in batch REPL — 6 NaN panic sites | Robustness | batch/mod.rs:288+ | ✅ PR #501 |
+| 10 | **RB-5**: `ChunkOutput` serialization `.expect()` panics on NaN scores | Robustness | batch/handlers.rs:34,152 | ✅ PR #501 |
+| 11 | **RB-7**: `diff_parse.rs` unwrap after starts_with on external input | Robustness | diff_parse.rs:50 | ✅ PR #501 |
+| 12 | **RB-8**: `onboard.rs` NaN score-to-u64 cast produces garbage ordering | Robustness | onboard.rs:182 | ✅ PR #501 |
+| 13 | **SEC-1**: SQLite URL constructed from unescaped path — `?`/`#` injection | Security | store/mod.rs:180,286 | ✅ PR #501 |
+| 14 | **OB-2**: `parse_notes()` errors swallowed in read command (2 sites) | Observability | read.rs:280,312 | ✅ PR #501 |
+| 15 | **OB-3**: `search_by_names_batch()` error swallowed in read --focus | Observability | read.rs:223 | ✅ PR #501 |
+| 16 | **EH-3**: gc.rs HNSW file deletion silently ignores failures | Error Handling | gc.rs:64-67 | ✅ PR #501 |
+| 17 | **EH-4**: `cmd_ref_add` bare `?` on Store::open — no path context | Error Handling | reference.rs:104-105 | ✅ PR #501 |
+| 18 | **EH-5**: `cmd_diff` bare `?` on Store::open for 3 stores — no context | Error Handling | diff.rs:46,55,75 | ✅ PR #501 |
+| 19 | **PB-1**: `path_matches_mention` no backslash normalization — notes lose boost | Platform | note.rs:311 | ✅ PR #501 |
+| 20 | **PB-2**: `find_dead_code` inline path filter diverges from `is_test_chunk` | Platform | calls.rs:814-819 | ✅ PR #501 |
+| 21 | **PB-7**: `find_stale_mentions` backslash paths cause false-positive staleness | Platform | suggest.rs:192 | ✅ PR #501 |
+| 22 | **AD-1**: `GatherDirection` raw string instead of clap `ValueEnum` | API Design | cli/mod.rs:506 | ✅ PR #501 |
+| 23 | **AD-2**: `audit-mode` state is `Option<String>` not enum | API Design | cli/mod.rs:541 | ✅ PR #501 |
+| 24 | **AD-9**: `SearchFilter::new()` duplicates `Default::default()` | API Design | helpers.rs:406 | ✅ PR #501 |
+| 25 | **CQ-3**: HNSW extension list duplicated with mismatch (3 vs 4 files) | Code Quality | persist.rs:15, watch.rs:217 | ✅ PR #501 |
+| 26 | **CQ-5**: Reference lookup boilerplate duplicated 6 times | Code Quality | 6 sites | ✅ PR #501 |
+| 27 | **CQ-7**: `GatheredChunk` 11-field construction repeated 4 times — no From impl | Code Quality | gather.rs:244+ | ✅ PR #501 |
+| 28 | **AC-3**: `onboard` uses embedding-only search — missing RRF | Algorithm | onboard.rs:114 | ✅ PR #501 |
+| 29 | **AC-4**: Parent dedup reduces results below limit after RRF | Algorithm | search.rs:598 | ✅ PR #501 |
+| 30 | **PF-3**: `score_name_match` redundant `to_lowercase()` in inner loop | Performance | helpers.rs:594 | ✅ PR #501 |
+| 31 | **PF-8**: `NOT IN (subquery)` anti-pattern in dead code Phase 1 | Performance | calls.rs:714 | ✅ PR #501 |
+| 32 | **EX-4**: `callable_sql_list()` duplicates `is_callable()` — manual sync | Extensibility | language/mod.rs:244 | ✅ PR #501 |
+| 33 | **EX-7**: NL `type_word` duplicates ChunkType::Display | Extensibility | nl.rs:338 | ✅ PR #501 |
+| 34 | **SEC-4**: `convert_directory` walk doesn't filter symlinks | Security | convert/mod.rs:345 | ✅ PR #501 |
+| 35 | **SEC-6**: `CQS_PDF_SCRIPT` override only warns at tracing level | Security | convert/pdf.rs:57 | ✅ PR #501 |
+| 36 | **PB-5**: `is_wsl()` private to config.rs — not reusable | Platform | config.rs:14 | ✅ PR #501 |
+| 37 | **PB-6**: Watch mode no WSL inotify unreliability warning | Platform | watch.rs:69 | ✅ PR #501 |
+| 38 | **OB-4**: `get_call_graph()` silent truncation at 500K edges | Observability | calls.rs:469 | ✅ PR #501 |
+| 39 | **OB-9**: `find_dead_code()` no span or result count logging | Observability | calls.rs:707 | ✅ PR #501 |
+| 40 | **RB-6**: `Parser::new()` expect doesn't identify offending language | Robustness | parser/mod.rs:62 | ✅ PR #501 |
+| 41 | **TC-5**: `rel_display` pure utility — zero tests | Test Coverage | lib.rs:223 | ✅ PR #501 |
+| 42 | **DS-4**: GC prune operations not atomic — crash leaves orphans | Data Safety | gc.rs:41-56 | ✅ PR #501 |
+| 43 | **RM-5**: `merge_results()` hashes all before truncating | Resource Mgmt | reference.rs:186 | ✅ PR #501 |
+| 44 | **PF-2**: Pipeline `needs_reindex` per-chunk not per-file | Performance | pipeline.rs:362 | ✅ PR #501 |
+| 45 | **PF-4**: `note_boost` O(notes×mentions) per chunk in inner loop | Performance | search.rs:266 | ✅ PR #501 |
+| 46 | **PF-6**: `analyze_impact` loads test chunks redundantly | Performance | analysis.rs:27 | ✅ PR #501 |
 
 ## P2: Medium Effort + High Impact — Fix in Batch
 

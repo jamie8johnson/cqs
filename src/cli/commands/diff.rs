@@ -1,6 +1,6 @@
 //! Diff command — semantic diff between indexed snapshots
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use colored::Colorize;
 
 use cqs::Store;
@@ -19,32 +19,8 @@ pub(crate) fn cmd_diff(
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
 
-    // Load config to find reference paths
-    let config = cqs::config::Config::load(&root);
-
     // Resolve source store (must be a reference)
-    let source_cfg = config
-        .references
-        .iter()
-        .find(|r| r.name == source)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                source
-            )
-        })?;
-
-    let source_db = source_cfg.path.join("index.db");
-    if !source_db.exists() {
-        bail!(
-            "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",
-            source,
-            source_db.display(),
-            source
-        );
-    }
-    let source_store = Store::open(&source_db)
-        .with_context(|| format!("Failed to open source store at {}", source_db.display()))?;
+    let source_store = super::resolve::resolve_reference_store(&root, source)?;
 
     // Resolve target store
     let target_label = target.unwrap_or("project");
@@ -53,29 +29,9 @@ pub(crate) fn cmd_diff(
         if !index_path.exists() {
             bail!("Project index not found. Run 'cqs init && cqs index' first.");
         }
-        Store::open(&index_path)
-            .with_context(|| format!("Failed to open project store at {}", index_path.display()))?
+        Store::open(&index_path)?
     } else {
-        let target_cfg = config
-            .references
-            .iter()
-            .find(|r| r.name == target_label)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Reference '{}' not found. Run 'cqs ref list' to see available references.",
-                    target_label
-                )
-            })?;
-        let target_db = target_cfg.path.join("index.db");
-        if !target_db.exists() {
-            bail!(
-                "Reference '{}' has no index at {}.",
-                target_label,
-                target_db.display()
-            );
-        }
-        Store::open(&target_db)
-            .with_context(|| format!("Failed to open target store at {}", target_db.display()))?
+        super::resolve::resolve_reference_store(&root, target_label)?
     };
 
     let result = semantic_diff(

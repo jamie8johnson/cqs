@@ -203,6 +203,16 @@ impl Reranker {
         Ok(guard)
     }
 
+    /// Clear the ONNX session to free memory (~91MB model).
+    ///
+    /// Session re-initializes lazily on next `rerank()` call.
+    /// Use this during idle periods in long-running processes.
+    pub fn clear_session(&self) {
+        let mut guard = self.session.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = None;
+        tracing::info!("Reranker session cleared");
+    }
+
     /// Get or initialize the tokenizer
     fn tokenizer(&self) -> Result<&tokenizers::Tokenizer, RerankerError> {
         let (_, tokenizer_path) = self.model_paths()?;

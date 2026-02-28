@@ -12,12 +12,13 @@ mod handlers;
 mod pipeline;
 mod types;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
+use std::time::Instant;
 
 use anyhow::Result;
 use clap::Parser;
@@ -32,6 +33,11 @@ use super::open_project_store;
 /// Maximum batch stdin line length (1MB). Lines exceeding this are rejected
 /// to prevent unbounded memory allocation from malicious input.
 const MAX_BATCH_LINE_LEN: usize = 1_048_576;
+
+/// Idle timeout for ONNX sessions (embedder, reranker) in minutes.
+/// After this many minutes without a command, sessions are cleared to free memory.
+/// Matches watch mode's ~5-minute idle clear pattern.
+const IDLE_TIMEOUT_MINUTES: u64 = 5;
 
 // ─── BatchContext ────────────────────────────────────────────────────────────
 
@@ -60,9 +66,39 @@ pub(crate) struct BatchContext {
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
     error_count: AtomicU64,
+    /// Tracks when the last command was processed.
+    /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
+    last_command_time: Cell<Instant>,
 }
 
 impl BatchContext {
+    /// Check idle timeout and clear ONNX sessions if enough time has passed.
+    ///
+    /// Call this at the start of each command. Clears embedder and reranker
+    /// sessions after IDLE_TIMEOUT_MINUTES of no commands, freeing ~500MB+.
+    /// Sessions re-initialize lazily on next use.
+    fn check_idle_timeout(&self) {
+        let elapsed = self.last_command_time.get().elapsed();
+        let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_MINUTES * 60);
+        if elapsed >= timeout {
+            if let Some(emb) = self.embedder.get() {
+                emb.clear_session();
+                tracing::info!(
+                    idle_minutes = elapsed.as_secs() / 60,
+                    "Cleared embedder session after idle timeout"
+                );
+            }
+            if let Some(rr) = self.reranker.get() {
+                rr.clear_session();
+                tracing::info!(
+                    idle_minutes = elapsed.as_secs() / 60,
+                    "Cleared reranker session after idle timeout"
+                );
+            }
+        }
+        self.last_command_time.set(Instant::now());
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
@@ -318,6 +354,7 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         config: OnceLock::new(),
         reranker: OnceLock::new(),
         error_count: AtomicU64::new(0),
+        last_command_time: Cell::new(Instant::now()),
     };
 
     let stdin = std::io::stdin();
@@ -386,6 +423,9 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         if tokens.is_empty() {
             continue;
         }
+
+        // Check idle timeout — clear ONNX sessions if idle too long
+        ctx.check_idle_timeout();
 
         // Pipeline detection: if tokens contain a standalone `|`, route to pipeline
         if pipeline::has_pipe_token(&tokens) {

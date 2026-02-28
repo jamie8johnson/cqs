@@ -39,6 +39,48 @@ fn process_exists(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// Try to acquire the index lock non-blockingly.
+///
+/// Returns `Some(file)` if the lock was acquired, `None` if another process holds it.
+/// Unlike [`acquire_index_lock`], this does NOT bail — callers can skip work when locked.
+pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::File>> {
+    use std::io::Write;
+
+    let lock_path = cqs_dir.join("index.lock");
+
+    #[cfg(unix)]
+    let lock_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(&lock_path)
+            .context("Failed to create lock file")?
+    };
+
+    #[cfg(not(unix))]
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .context("Failed to create lock file")?;
+
+    match lock_file.try_lock() {
+        Ok(()) => {
+            let mut file = lock_file;
+            writeln!(file, "{}", std::process::id())?;
+            file.sync_all()?;
+            Ok(Some(file))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
 /// Acquire file lock to prevent concurrent indexing
 /// Writes PID to lock file for stale lock detection
 pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {

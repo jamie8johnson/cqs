@@ -8,7 +8,7 @@ use crate::store::helpers::StoreError;
 use crate::store::Store;
 
 /// A function related to the target with overlap count.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RelatedFunction {
     pub name: String,
     pub file: PathBuf,
@@ -17,7 +17,7 @@ pub struct RelatedFunction {
 }
 
 /// Result of co-occurrence analysis for a target function.
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct RelatedResult {
     pub target: String,
     pub shared_callers: Vec<RelatedFunction>,

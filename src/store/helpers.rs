@@ -30,9 +30,13 @@ pub enum StoreError {
     SystemTime,
     #[error("Runtime error: {0}")]
     /// Catch-all for errors that don't fit other variants: tokio runtime init,
-    /// JSON serialization failures, and query resolution errors.
-    /// No caller currently matches on this variant specifically.
+    /// JSON serialization failures, and embedding dimension mismatches.
     Runtime(String),
+    #[error("Not found: {0}")]
+    /// Lookup failures: missing metadata keys, unresolved function targets,
+    /// file-scoped resolution misses. Lets callers distinguish "doesn't exist"
+    /// from other runtime errors for retry/suggest logic.
+    NotFound(String),
     #[error("Schema version mismatch in {0}: index is v{1}, cqs expects v{2}. Run 'cqs index --force' to rebuild.")]
     SchemaMismatch(String, i32, i32),
     #[error("Index created by newer cqs version (schema v{0}). Please upgrade cqs.")]

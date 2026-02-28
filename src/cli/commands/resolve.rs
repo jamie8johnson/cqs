@@ -36,3 +36,64 @@ pub(crate) fn find_reference(root: &Path, name: &str) -> Result<ReferenceIndex> 
             )
         })
 }
+
+/// Resolve a reference name to an opened Store.
+///
+/// Loads config, finds the reference, checks that index.db exists, and opens the store.
+/// Shared logic for `cmd_diff` and `cmd_drift` (and any future commands needing a reference store).
+pub(crate) fn resolve_reference_store(root: &Path, ref_name: &str) -> Result<Store> {
+    use anyhow::{bail, Context};
+
+    let config = Config::load(root);
+    let ref_cfg = config
+        .references
+        .iter()
+        .find(|r| r.name == ref_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                ref_name
+            )
+        })?;
+
+    let ref_db = ref_cfg.path.join("index.db");
+    if !ref_db.exists() {
+        bail!(
+            "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",
+            ref_name,
+            ref_db.display(),
+            ref_name
+        );
+    }
+    Store::open(&ref_db)
+        .with_context(|| format!("Failed to open reference store at {}", ref_db.display()))
+}
+
+/// Like [`resolve_reference_store`] but opens the store in read-only mode.
+pub(crate) fn resolve_reference_store_readonly(root: &Path, ref_name: &str) -> Result<Store> {
+    use anyhow::{bail, Context};
+
+    let config = Config::load(root);
+    let ref_cfg = config
+        .references
+        .iter()
+        .find(|r| r.name == ref_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Reference '{}' not found. Run 'cqs ref list' to see available references.",
+                ref_name
+            )
+        })?;
+
+    let ref_db = ref_cfg.path.join("index.db");
+    if !ref_db.exists() {
+        bail!(
+            "Reference '{}' has no index at {}. Run 'cqs ref update {}' first.",
+            ref_name,
+            ref_db.display(),
+            ref_name
+        );
+    }
+    Store::open_readonly(&ref_db)
+        .with_context(|| format!("Failed to open reference store at {}", ref_db.display()))
+}

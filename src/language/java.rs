@@ -137,6 +137,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: None,
     extract_qualified_method: None,
     post_process_chunk: None,
+    test_markers: &["@Test", "@ParameterizedTest", "@RepeatedTest"],
+    test_path_patterns: &["%/test/%", "%/tests/%", "%Test.java"],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {

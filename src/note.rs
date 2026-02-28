@@ -181,9 +181,11 @@ pub fn rewrite_notes_file(
     notes_path: &Path,
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
-    // Acquire exclusive lock before the read-modify-write cycle
+    // Acquire exclusive lock before the read-modify-write cycle.
+    // Open with read+write so the exclusive lock covers both operations across all platforms.
     let mut lock_file = std::fs::OpenOptions::new()
         .read(true)
+        .write(true)
         .open(notes_path)
         .map_err(|e| {
             NoteError::Io(std::io::Error::new(

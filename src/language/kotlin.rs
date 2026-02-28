@@ -183,6 +183,9 @@ static DEFINITION: LanguageDef = LanguageDef {
     extract_container_name: None,
     extract_qualified_method: None,
     post_process_chunk: Some(post_process_kotlin),
+    test_markers: &["@Test", "@ParameterizedTest"],
+    test_path_patterns: &["%/test/%", "%/tests/%", "%Test.kt"],
+    structural_matchers: None,
 };
 
 pub fn definition() -> &'static LanguageDef {
