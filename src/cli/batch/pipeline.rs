@@ -33,6 +33,14 @@ fn pipeable_command_names() -> String {
     use super::commands::BatchCmd;
     let all = [
         (
+            "blame",
+            BatchCmd::Blame {
+                name: String::new(),
+                depth: 10,
+                callers: false,
+            },
+        ),
+        (
             "callers",
             BatchCmd::Callers {
                 name: String::new(),
@@ -218,7 +226,7 @@ fn split_tokens_by_pipe(tokens: &[String]) -> Vec<Vec<String>> {
 }
 
 /// Execute a pipeline: chain commands where upstream names feed downstream.
-pub(super) fn execute_pipeline(
+pub(crate) fn execute_pipeline(
     ctx: &BatchContext,
     tokens: &[String],
     raw_line: &str,
@@ -416,7 +424,7 @@ fn build_pipeline_result(
 }
 
 /// Check if a token list contains a pipeline (standalone `|` token).
-pub(super) fn has_pipe_token(tokens: &[String]) -> bool {
+pub(crate) fn has_pipe_token(tokens: &[String]) -> bool {
     tokens.iter().any(|t| t == "|")
 }
 
@@ -642,8 +650,8 @@ mod tests {
     #[test]
     fn test_pipeable_commands_parse_with_name_arg() {
         let pipeable = [
-            "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related",
-            "scout",
+            "blame", "callers", "callees", "deps", "explain", "similar", "impact", "test-map",
+            "related", "scout",
         ];
         for cmd in pipeable {
             let result = BatchInput::try_parse_from([cmd, "test_function"]);

@@ -91,6 +91,8 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs notes list --check` — verify note mentions still exist (files on disk, symbols in index).
 - `cqs gc` — report/clean stale index entries.
 - `cqs notes add/update/remove` — manage project notes.
+- `cqs blame <function>` — semantic git blame: who changed a function, when, and why. `--callers` for affected callers.
+- `cqs chat` — interactive REPL with readline, history, tab completion. Same commands and pipelines as batch.
 - `cqs audit-mode on/off` — toggle audit mode.
 - `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
 

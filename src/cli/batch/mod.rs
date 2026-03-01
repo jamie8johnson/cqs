@@ -12,6 +12,9 @@ mod handlers;
 mod pipeline;
 mod types;
 
+pub(crate) use commands::{dispatch, BatchInput};
+pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, Write};
@@ -77,7 +80,7 @@ impl BatchContext {
     /// Call this at the start of each command. Clears embedder and reranker
     /// sessions after IDLE_TIMEOUT_MINUTES of no commands, freeing ~500MB+.
     /// Sessions re-initialize lazily on next use.
-    fn check_idle_timeout(&self) {
+    pub(crate) fn check_idle_timeout(&self) {
         let elapsed = self.last_command_time.get().elapsed();
         let timeout = std::time::Duration::from_secs(IDLE_TIMEOUT_MINUTES * 60);
         if elapsed >= timeout {
@@ -355,12 +358,12 @@ fn write_json_line(
 
 // ─── Main loop ───────────────────────────────────────────────────────────────
 
-/// Entry point for `cqs batch`.
-pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
-    let _span = tracing::info_span!("cmd_batch").entered();
-
+/// Create a shared batch context: open store, prepare lazy caches.
+///
+/// Used by both `cmd_batch` and `cmd_chat`.
+pub(crate) fn create_context() -> Result<BatchContext> {
     let (store, root, cqs_dir) = open_project_store()?;
-    let ctx = BatchContext {
+    Ok(BatchContext {
         store,
         embedder: OnceLock::new(),
         hnsw: OnceLock::new(),
@@ -376,7 +379,14 @@ pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
         reranker: OnceLock::new(),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
-    };
+    })
+}
+
+/// Entry point for `cqs batch`.
+pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
+    let _span = tracing::info_span!("cmd_batch").entered();
+
+    let ctx = create_context()?;
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();

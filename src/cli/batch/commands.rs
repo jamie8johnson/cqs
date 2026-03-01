@@ -49,6 +49,17 @@ pub(crate) enum BatchCmd {
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
+    /// Semantic git blame: who changed a function, when, and why
+    Blame {
+        /// Function name or file:function
+        name: String,
+        /// Max commits to show
+        #[arg(short = 'n', long, default_value = "10")]
+        depth: usize,
+        /// Also show callers of the function
+        #[arg(long)]
+        callers: bool,
+    },
     /// Type dependencies: who uses a type, or what types a function uses
     Deps {
         /// Type name or function name
@@ -264,7 +275,8 @@ impl BatchCmd {
     pub(crate) fn is_pipeable(&self) -> bool {
         matches!(
             self,
-            BatchCmd::Callers { .. }
+            BatchCmd::Blame { .. }
+                | BatchCmd::Callers { .. }
                 | BatchCmd::Callees { .. }
                 | BatchCmd::Deps { .. }
                 | BatchCmd::Explain { .. }
@@ -285,6 +297,11 @@ impl BatchCmd {
 /// with readline.
 pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::Value> {
     match cmd {
+        BatchCmd::Blame {
+            name,
+            depth,
+            callers,
+        } => handlers::dispatch_blame(ctx, &name, depth, callers),
         BatchCmd::Search {
             query,
             limit,
@@ -676,6 +693,41 @@ mod tests {
                 assert!(patterns);
             }
             _ => panic!("Expected Notes command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_blame() {
+        let input = BatchInput::try_parse_from(["blame", "my_func"]).unwrap();
+        match input.cmd {
+            BatchCmd::Blame {
+                ref name,
+                depth,
+                callers,
+            } => {
+                assert_eq!(name, "my_func");
+                assert_eq!(depth, 10); // default
+                assert!(!callers);
+            }
+            _ => panic!("Expected Blame command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_blame_with_flags() {
+        let input =
+            BatchInput::try_parse_from(["blame", "my_func", "-n", "5", "--callers"]).unwrap();
+        match input.cmd {
+            BatchCmd::Blame {
+                ref name,
+                depth,
+                callers,
+            } => {
+                assert_eq!(name, "my_func");
+                assert_eq!(depth, 5);
+                assert!(callers);
+            }
+            _ => panic!("Expected Blame command"),
         }
     }
 }

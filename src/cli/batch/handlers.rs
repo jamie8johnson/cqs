@@ -12,6 +12,23 @@ use cqs::normalize_path;
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
+pub(super) fn dispatch_blame(
+    ctx: &BatchContext,
+    target: &str,
+    depth: usize,
+    show_callers: bool,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_blame", target).entered();
+    let data = crate::cli::commands::blame::build_blame_data(
+        &ctx.store,
+        &ctx.root,
+        target,
+        depth,
+        show_callers,
+    )?;
+    Ok(crate::cli::commands::blame::blame_to_json(&data, &ctx.root))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_search(
     ctx: &BatchContext,
