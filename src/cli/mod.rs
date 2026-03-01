@@ -1,6 +1,7 @@
 //! CLI implementation for cq
 
 pub(crate) mod batch;
+mod chat;
 mod commands;
 mod config;
 mod display;
@@ -37,8 +38,8 @@ pub(crate) fn open_project_store(
 #[cfg(feature = "convert")]
 use commands::cmd_convert;
 use commands::{
-    cmd_audit_mode, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps, cmd_diff,
-    cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
+    cmd_audit_mode, cmd_blame, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps,
+    cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
     cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_project, cmd_query, cmd_read,
     cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
     cmd_task, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
@@ -257,6 +258,22 @@ enum Commands {
     },
     /// Batch mode: read commands from stdin, output JSONL
     Batch,
+    /// Semantic git blame: who changed a function, when, and why
+    Blame {
+        /// Function name or file:function
+        name: String,
+        /// Max commits to show
+        #[arg(short = 'n', long, default_value = "10")]
+        depth: usize,
+        /// Also show callers of the function
+        #[arg(long)]
+        callers: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Interactive REPL for cqs commands
+    Chat,
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -653,6 +670,13 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
 
     match cli.command {
         Some(Commands::Batch) => batch::cmd_batch(&cli),
+        Some(Commands::Blame {
+            ref name,
+            depth,
+            callers,
+            json,
+        }) => cmd_blame(&cli, name, json, depth, callers),
+        Some(Commands::Chat) => chat::cmd_chat(&cli),
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::Index {

@@ -6,8 +6,8 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 20 lan
 
 ### Next — Commands
 
-- [ ] `cqs blame` — semantic git blame. Given a function, show who last changed it, when, and the commit message. Combines call graph with git log.
-- [ ] `cqs chat` — interactive REPL for chained queries. Batch mode + pipeline syntax done; REPL deferred (agents use batch).
+- [x] `cqs blame` — semantic git blame. Given a function, show who last changed it, when, and the commit message. Combines call graph with git log.
+- [x] `cqs chat` — interactive REPL for chained queries. Readline, history, tab completion. Wraps batch mode.
 
 ### Next — Performance
 

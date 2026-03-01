@@ -391,6 +391,8 @@ Key commands (all support `--json`):
 - `cqs onboard "concept"` - guided tour: entry point, call chain, callers, key types, tests
 - `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
 - `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--json`
+- `cqs blame <function>` - semantic git blame: who changed a function, when, and why. `--callers` for affected callers
+- `cqs chat` - interactive REPL with readline, history, tab completion. Same commands as batch
 - `cqs batch` - batch mode: stdin commands, JSONL output. Pipeline syntax: `search "error" | callers | test-map`
 - `cqs dead` - find functions/methods never called by indexed code
 - `cqs health` - codebase quality snapshot: dead code, staleness, hotspots, untested functions
