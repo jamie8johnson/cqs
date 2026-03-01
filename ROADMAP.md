@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v0.19.3
+## Current: v0.19.4
 
 All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 20 languages. Two full audits complete (v0.12.3 + v0.19.2).
 

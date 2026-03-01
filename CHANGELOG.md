@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.4] - 2026-02-28
+
+### Added
+- **`cqs blame <function>`** — semantic git blame via `git log -L` on a function's line range. Shows who changed it, when, and why. Supports `--callers`, `--json`, `-n <depth>`. Works in CLI, batch, and pipeline modes.
+- **`cqs chat`** — interactive REPL wrapping batch mode with rustyline. Tab completion, history persistence, meta-commands (help/exit/clear). Same commands and pipeline syntax as `cqs batch`.
+
+### Fixed
+- **normalize_path centralization** — consolidated 31 inline `normalize_path` call sites into a single `cqs::normalize_path()` in lib.rs (PB-3 audit item).
+
 ## [0.19.3] - 2026-02-28
 
 Second 14-category audit completed (117 findings). 107 of 109 actionable findings fixed across 4 priority tiers.
