@@ -124,7 +124,7 @@ impl ChunkRow {
 /// Chunk metadata returned from search results
 ///
 /// Contains all chunk information except the embedding vector.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ChunkSummary {
     /// Unique identifier
     pub id: String,
@@ -133,6 +133,7 @@ pub struct ChunkSummary {
     /// Paths are normalized by `normalize_origin()` during indexing: backslashes
     /// are converted to forward slashes for consistent cross-platform storage and
     /// querying. The path itself is typically absolute.
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Programming language
     pub language: Language,
@@ -189,7 +190,7 @@ impl From<ChunkRow> for ChunkSummary {
 }
 
 /// A search result with similarity score
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     /// The matching chunk
     pub chunk: ChunkSummary,
@@ -240,11 +241,12 @@ impl SearchResult {
 ///
 /// Unlike ChunkSummary, this doesn't require a chunk to exist -
 /// it captures callers from large functions that exceed chunk size limits.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CallerInfo {
     /// Function name
     pub name: String,
     /// Source file path
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Line where function starts
     pub line: u32,
@@ -254,11 +256,12 @@ pub struct CallerInfo {
 ///
 /// Enriches CallerInfo with the specific line where the call occurs,
 /// enabling snippet extraction without reading the source file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CallerWithContext {
     /// Function name of the caller
     pub name: String,
     /// Source file path
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Line where the calling function starts
     pub line: u32,
@@ -314,7 +317,7 @@ pub struct NoteStats {
 }
 
 /// Note metadata returned from search results
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct NoteSummary {
     /// Unique identifier
     pub id: String,
@@ -327,7 +330,7 @@ pub struct NoteSummary {
 }
 
 /// A note search result with similarity score
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct NoteSearchResult {
     /// The matching note
     pub note: NoteSummary,

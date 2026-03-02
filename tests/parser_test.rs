@@ -583,3 +583,187 @@ fn test_markdown_language_from_extension() {
     assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
     assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
 }
+
+// ===== Bash tests =====
+
+#[test]
+fn test_bash_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sh");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 Bash functions, got {}",
+        chunks.len()
+    );
+
+    let deploy = chunks.iter().find(|c| c.name == "deploy");
+    assert!(deploy.is_some(), "Should find 'deploy' function");
+    let deploy = deploy.unwrap();
+    assert_eq!(deploy.language, Language::Bash);
+    assert_eq!(deploy.chunk_type, ChunkType::Function);
+    assert!(deploy.content.contains("build_artifacts"));
+}
+
+#[test]
+fn test_bash_call_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sh");
+    let refs = parser.parse_file_calls(&path).unwrap();
+
+    let all_callees: Vec<&str> = refs
+        .iter()
+        .flat_map(|fc| fc.calls.iter().map(|c| c.callee_name.as_str()))
+        .collect();
+
+    assert!(
+        all_callees.contains(&"build_artifacts"),
+        "deploy should call build_artifacts, got: {:?}",
+        all_callees
+    );
+}
+
+// ===== HCL/Terraform tests =====
+
+#[test]
+fn test_hcl_block_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.tf");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 HCL blocks, got {}",
+        chunks.len()
+    );
+
+    // Variables
+    let region = chunks.iter().find(|c| c.name == "region");
+    assert!(region.is_some(), "Should find 'region' variable");
+    let region = region.unwrap();
+    assert_eq!(region.language, Language::Hcl);
+
+    // Resources
+    let web_instance = chunks
+        .iter()
+        .find(|c| c.name.contains("aws_instance") && c.name.contains("web"));
+    assert!(
+        web_instance.is_some(),
+        "Should find aws_instance.web resource"
+    );
+}
+
+// ===== Kotlin tests =====
+
+#[test]
+fn test_kotlin_class_and_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.kt");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 Kotlin chunks, got {}",
+        chunks.len()
+    );
+
+    // Class
+    let stack = chunks
+        .iter()
+        .find(|c| c.name == "Stack" && c.chunk_type == ChunkType::Class);
+    assert!(stack.is_some(), "Should find 'Stack' class");
+    assert_eq!(stack.unwrap().language, Language::Kotlin);
+
+    // Interface
+    let config = chunks
+        .iter()
+        .find(|c| c.name == "Config" && c.chunk_type == ChunkType::Interface);
+    assert!(config.is_some(), "Should find 'Config' interface");
+
+    // Enum
+    let log_level = chunks
+        .iter()
+        .find(|c| c.name == "LogLevel" && c.chunk_type == ChunkType::Enum);
+    assert!(log_level.is_some(), "Should find 'LogLevel' enum");
+
+    // Top-level function
+    let format_fn = chunks.iter().find(|c| c.name == "formatDuration");
+    assert!(format_fn.is_some(), "Should find 'formatDuration' function");
+}
+
+// ===== Swift tests =====
+
+#[test]
+fn test_swift_struct_class_protocol_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.swift");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 Swift chunks, got {}",
+        chunks.len()
+    );
+
+    // Struct
+    let point = chunks
+        .iter()
+        .find(|c| c.name == "Point" && c.chunk_type == ChunkType::Struct);
+    assert!(point.is_some(), "Should find 'Point' struct");
+    assert_eq!(point.unwrap().language, Language::Swift);
+
+    // Protocol (captured as Trait by tree-sitter query)
+    let shape = chunks
+        .iter()
+        .find(|c| c.name == "Shape" && c.chunk_type == ChunkType::Trait);
+    assert!(shape.is_some(), "Should find 'Shape' protocol (as Trait)");
+
+    // Class
+    let circle = chunks
+        .iter()
+        .find(|c| c.name == "Circle" && c.chunk_type == ChunkType::Class);
+    assert!(circle.is_some(), "Should find 'Circle' class");
+
+    // Enum
+    let direction = chunks
+        .iter()
+        .find(|c| c.name == "Direction" && c.chunk_type == ChunkType::Enum);
+    assert!(direction.is_some(), "Should find 'Direction' enum");
+
+    // Top-level function
+    let greet = chunks.iter().find(|c| c.name == "greet");
+    assert!(greet.is_some(), "Should find 'greet' function");
+}
+
+// ===== Objective-C tests =====
+
+#[test]
+fn test_objc_class_and_protocol_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.m");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 3,
+        "Expected at least 3 Objective-C chunks, got {}",
+        chunks.len()
+    );
+
+    // Protocol
+    let drawable = chunks
+        .iter()
+        .find(|c| c.name == "Drawable" && c.chunk_type == ChunkType::Interface);
+    assert!(drawable.is_some(), "Should find 'Drawable' protocol");
+    assert_eq!(drawable.unwrap().language, Language::ObjC);
+
+    // Class
+    let rect = chunks
+        .iter()
+        .find(|c| c.name == "Rectangle" && c.chunk_type == ChunkType::Class);
+    assert!(rect.is_some(), "Should find 'Rectangle' class");
+
+    // Free function
+    let calc = chunks.iter().find(|c| c.name == "calculateDistance");
+    assert!(calc.is_some(), "Should find 'calculateDistance' function");
+}

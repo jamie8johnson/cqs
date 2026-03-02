@@ -2106,4 +2106,125 @@ mod tests {
             "Positive note should boost score"
         );
     }
+
+    // ===== NoteBoostIndex tests (TC-2) =====
+
+    #[test]
+    fn test_note_boost_index_empty_notes() {
+        let notes: Vec<NoteSummary> = vec![];
+        let index = NoteBoostIndex::new(&notes);
+        assert_eq!(index.boost("src/lib.rs", "my_fn"), 1.0);
+    }
+
+    #[test]
+    fn test_note_boost_index_name_mention_positive() {
+        let notes = vec![NoteSummary {
+            id: "1".into(),
+            text: "good pattern".into(),
+            sentiment: 0.5,
+            mentions: vec!["my_fn".into()],
+        }];
+        let index = NoteBoostIndex::new(&notes);
+        let boost = index.boost("src/lib.rs", "my_fn");
+        assert!(
+            boost > 1.0,
+            "Positive sentiment should boost > 1.0, got {boost}"
+        );
+        assert!((boost - (1.0 + 0.5 * NOTE_BOOST_FACTOR)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_note_boost_index_name_mention_negative() {
+        let notes = vec![NoteSummary {
+            id: "1".into(),
+            text: "buggy code".into(),
+            sentiment: -1.0,
+            mentions: vec!["broken_fn".into()],
+        }];
+        let index = NoteBoostIndex::new(&notes);
+        let boost = index.boost("src/lib.rs", "broken_fn");
+        assert!(
+            boost < 1.0,
+            "Negative sentiment should reduce score, got {boost}"
+        );
+        assert!((boost - (1.0 - 1.0 * NOTE_BOOST_FACTOR)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_note_boost_index_path_mention() {
+        let notes = vec![NoteSummary {
+            id: "1".into(),
+            text: "important file".into(),
+            sentiment: 0.5,
+            mentions: vec!["src/search.rs".into()],
+        }];
+        let index = NoteBoostIndex::new(&notes);
+
+        // Path mention should match file containing the path
+        let boost = index.boost("src/search.rs", "unrelated_fn");
+        assert!(
+            boost > 1.0,
+            "Path mention should boost matching file, got {boost}"
+        );
+
+        // Non-matching path should not be boosted
+        let no_boost = index.boost("src/lib.rs", "unrelated_fn");
+        assert_eq!(no_boost, 1.0, "Non-matching path should not be boosted");
+    }
+
+    #[test]
+    fn test_note_boost_index_strongest_absolute_wins() {
+        let notes = vec![
+            NoteSummary {
+                id: "1".into(),
+                text: "mildly good".into(),
+                sentiment: 0.5,
+                mentions: vec!["my_fn".into()],
+            },
+            NoteSummary {
+                id: "2".into(),
+                text: "very bad".into(),
+                sentiment: -1.0,
+                mentions: vec!["my_fn".into()],
+            },
+        ];
+        let index = NoteBoostIndex::new(&notes);
+        let boost = index.boost("src/lib.rs", "my_fn");
+        // -1.0 has stronger absolute value than 0.5, so it should win
+        assert!(
+            boost < 1.0,
+            "Stronger negative should win over weaker positive, got {boost}"
+        );
+        assert!((boost - (1.0 - 1.0 * NOTE_BOOST_FACTOR)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_note_boost_index_name_vs_path_classification() {
+        // "search.rs" contains '.' so it's path-like
+        // "my_fn" has no separators so it's name-like
+        let notes = vec![NoteSummary {
+            id: "1".into(),
+            text: "note".into(),
+            sentiment: 0.5,
+            mentions: vec!["my_fn".into(), "search.rs".into()],
+        }];
+        let index = NoteBoostIndex::new(&notes);
+
+        // Name-like mention should only match chunk name, not file path
+        assert!(index.name_sentiments.contains_key("my_fn"));
+        assert!(!index.name_sentiments.contains_key("search.rs"));
+        assert_eq!(index.path_mentions.len(), 1);
+    }
+
+    #[test]
+    fn test_note_boost_index_no_match() {
+        let notes = vec![NoteSummary {
+            id: "1".into(),
+            text: "specific note".into(),
+            sentiment: 1.0,
+            mentions: vec!["other_fn".into()],
+        }];
+        let index = NoteBoostIndex::new(&notes);
+        assert_eq!(index.boost("src/lib.rs", "my_fn"), 1.0);
+    }
 }

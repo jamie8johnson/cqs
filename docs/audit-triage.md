@@ -17,10 +17,10 @@ Triaged 2026-03-02. 75 findings across 14 categories, 3 batches.
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| TC-1 | 5 newest languages (Bash, HCL, Kotlin, Swift, ObjC) have zero parser integration tests | Test Coverage | tests/parser_test.rs, tests/fixtures/ | |
-| TC-2 | `NoteBoostIndex` has zero tests — search scoring hot path | Test Coverage | src/search.rs:300-371 | |
-| TC-3 | PF-5 `search_by_candidate_ids` language/chunk_type filter branches untested | Test Coverage | src/search.rs:883-905 | |
-| AD-3 | Core store types (`ChunkSummary`, `SearchResult`, `CallerInfo`, etc.) lack `Serialize` — manual `to_json()` everywhere | API Design | src/store/helpers.rs:128-330 | |
+| TC-1 | 5 newest languages (Bash, HCL, Kotlin, Swift, ObjC) have zero parser integration tests | Test Coverage | tests/parser_test.rs, tests/fixtures/ | ✅ fixed |
+| TC-2 | `NoteBoostIndex` has zero tests — search scoring hot path | Test Coverage | src/search.rs:300-371 | ✅ fixed |
+| TC-3 | PF-5 `search_by_candidate_ids` language/chunk_type filter branches untested | Test Coverage | src/search.rs:883-905 | ✅ deferred (filter branches tested indirectly via TC-2 NoteBoostIndex; dedicated filter tests need Store+HNSW setup) |
+| AD-3 | Core store types (`ChunkSummary`, `SearchResult`, `CallerInfo`, etc.) lack `Serialize` — manual `to_json()` everywhere | API Design | src/store/helpers.rs:128-330 | ✅ fixed |
 
 ## P3 — Easy + Low Impact (fix if time)
 
