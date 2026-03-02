@@ -78,7 +78,6 @@ pub(crate) mod related;
 pub mod review;
 pub(crate) mod scout;
 pub(crate) mod search;
-pub(crate) mod source;
 pub(crate) mod structural;
 pub(crate) mod task;
 pub(crate) mod where_to_add;

@@ -2,6 +2,7 @@
 //!
 //! Provides file enumeration and index locking.
 
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -39,42 +40,60 @@ fn process_exists(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// Open or create the lock file without truncating.
+///
+/// Does NOT truncate — another process's PID remains readable until we acquire
+/// the lock and overwrite it. This prevents the race where truncate clears a
+/// live holder's PID before we even attempt the lock.
+fn open_lock_file(lock_path: &Path) -> Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .open(lock_path)
+            .context("Failed to create lock file")
+    }
+
+    #[cfg(not(unix))]
+    {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)
+            .context("Failed to create lock file")
+    }
+}
+
+/// Write our PID to the lock file (truncate + write + sync).
+///
+/// Called only after successfully acquiring the OS lock.
+fn write_pid(file: &mut std::fs::File) -> Result<()> {
+    file.set_len(0)?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    writeln!(file, "{}", std::process::id())?;
+    file.sync_all()?;
+    Ok(())
+}
+
 /// Try to acquire the index lock non-blockingly.
 ///
 /// Returns `Some(file)` if the lock was acquired, `None` if another process holds it.
 /// Unlike [`acquire_index_lock`], this does NOT bail — callers can skip work when locked.
 pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::File>> {
-    use std::io::Write;
-
     let lock_path = cqs_dir.join("index.lock");
-
-    #[cfg(unix)]
-    let lock_file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .open(&lock_path)
-            .context("Failed to create lock file")?
-    };
-
-    #[cfg(not(unix))]
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .context("Failed to create lock file")?;
+    let lock_file = open_lock_file(&lock_path)?;
 
     match lock_file.try_lock() {
         Ok(()) => {
             let mut file = lock_file;
-            writeln!(file, "{}", std::process::id())?;
-            file.sync_all()?;
+            write_pid(&mut file)?;
             Ok(Some(file))
         }
         Err(_) => Ok(None),
@@ -84,42 +103,16 @@ pub(crate) fn try_acquire_index_lock(cqs_dir: &Path) -> Result<Option<std::fs::F
 /// Acquire file lock to prevent concurrent indexing
 /// Writes PID to lock file for stale lock detection
 pub(crate) fn acquire_index_lock(cqs_dir: &Path) -> Result<std::fs::File> {
-    use std::io::Write;
-
     let lock_path = cqs_dir.join("index.lock");
     let mut retried = false;
 
     loop {
-        // Try to open/create the lock file with restrictive permissions (0600 on Unix).
-        // Lock file contains PID which could leak process information.
-        #[cfg(unix)]
-        let lock_file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .read(true)
-                .write(true)
-                .mode(0o600)
-                .open(&lock_path)
-                .context("Failed to create lock file")?
-        };
-
-        #[cfg(not(unix))]
-        let lock_file = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .read(true)
-            .write(true)
-            .open(&lock_path)
-            .context("Failed to create lock file")?;
+        let lock_file = open_lock_file(&lock_path)?;
 
         match lock_file.try_lock() {
             Ok(()) => {
-                // Write our PID to the lock file
                 let mut file = lock_file;
-                writeln!(file, "{}", std::process::id())?;
-                file.sync_all()?;
+                write_pid(&mut file)?;
                 return Ok(file);
             }
             Err(_) => {

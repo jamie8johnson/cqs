@@ -61,14 +61,16 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         return Ok(());
     }
 
-    // Initialize or open store
+    // Initialize or open store.
+    // When --force, back up the old DB instead of deleting it.
+    // If interrupted during rebuild, the backup remains recoverable.
+    let backup_path = cqs_dir.join("index.db.bak");
     let store = if index_path.exists() && !force {
         Store::open(&index_path)?
     } else {
-        // Remove old index if forcing
         if index_path.exists() {
-            std::fs::remove_file(&index_path)
-                .with_context(|| format!("Failed to remove {}", index_path.display()))?;
+            std::fs::rename(&index_path, &backup_path)
+                .with_context(|| format!("Failed to back up {}", index_path.display()))?;
         }
         let store = Store::open(&index_path)?;
         store.init(&ModelInfo::default())?;
@@ -166,6 +168,11 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
                 println!("  HNSW index: {} vectors", total);
             }
         }
+    }
+
+    // Clean up backup from --force (rebuild succeeded)
+    if backup_path.exists() {
+        let _ = std::fs::remove_file(&backup_path);
     }
 
     Ok(())

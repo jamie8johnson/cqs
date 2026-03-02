@@ -1196,7 +1196,7 @@ impl Store {
                 let fts_terms: Vec<String> = batch
                     .iter()
                     .map(|(_, norm)| {
-                        debug_assert!(
+                        assert!(
                             !norm.contains('"'),
                             "sanitized query must not contain double quotes"
                         );
@@ -1323,6 +1323,7 @@ impl Store {
     ///
     /// Returns a map of chunk ID → ChunkRow for the given IDs.
     /// Used by search to hydrate top-N results after scoring.
+    /// Batches in groups of 500 to stay under SQLite's 999-parameter limit.
     pub(crate) async fn fetch_chunks_by_ids_async(
         &self,
         ids: &[&str],
@@ -1331,31 +1332,35 @@ impl Store {
             return Ok(HashMap::new());
         }
 
-        let placeholders: String = (1..=ids.len())
-            .map(|i| format!("?{}", i))
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
-             FROM chunks WHERE id IN ({})",
-            placeholders
-        );
+        const BATCH_SIZE: usize = 500;
+        let mut result = HashMap::with_capacity(ids.len());
 
-        let rows: Vec<_> = {
-            let mut q = sqlx::query(&sql);
-            for id in ids {
-                q = q.bind(*id);
-            }
-            q.fetch_all(&self.pool).await?
-        };
+        for batch in ids.chunks(BATCH_SIZE) {
+            let placeholders: String = (1..=batch.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+                 FROM chunks WHERE id IN ({})",
+                placeholders
+            );
 
-        Ok(rows
-            .iter()
-            .map(|r| {
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for id in batch {
+                    q = q.bind(*id);
+                }
+                q.fetch_all(&self.pool).await?
+            };
+
+            for r in &rows {
                 let chunk = ChunkRow::from_row(r);
-                (chunk.id.clone(), chunk)
-            })
-            .collect())
+                result.insert(chunk.id.clone(), chunk);
+            }
+        }
+
+        Ok(result)
     }
 
     /// Lightweight candidate fetch for scoring (PF-5).
@@ -1363,6 +1368,7 @@ impl Store {
     /// Returns only `(CandidateRow, embedding_bytes)` — excludes heavy `content`,
     /// `doc`, `signature`, `line_start`, `line_end` columns. Full content is
     /// loaded only for top-k survivors via `fetch_chunks_by_ids_async`.
+    /// Batches in groups of 500 to stay under SQLite's 999-parameter limit.
     pub(crate) async fn fetch_candidates_by_ids_async(
         &self,
         ids: &[&str],
@@ -1371,32 +1377,36 @@ impl Store {
             return Ok(vec![]);
         }
 
-        let placeholders: String = (1..=ids.len())
-            .map(|i| format!("?{}", i))
-            .collect::<Vec<_>>()
-            .join(",");
-        let sql = format!(
-            "SELECT id, name, origin, language, chunk_type, embedding
-             FROM chunks WHERE id IN ({})",
-            placeholders
-        );
+        const BATCH_SIZE: usize = 500;
+        let mut result = Vec::with_capacity(ids.len());
 
-        let rows: Vec<_> = {
-            let mut q = sqlx::query(&sql);
-            for id in ids {
-                q = q.bind(*id);
-            }
-            q.fetch_all(&self.pool).await?
-        };
+        for batch in ids.chunks(BATCH_SIZE) {
+            let placeholders: String = (1..=batch.len())
+                .map(|i| format!("?{}", i))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, name, origin, language, chunk_type, embedding
+                 FROM chunks WHERE id IN ({})",
+                placeholders
+            );
 
-        Ok(rows
-            .iter()
-            .map(|r| {
+            let rows: Vec<_> = {
+                let mut q = sqlx::query(&sql);
+                for id in batch {
+                    q = q.bind(*id);
+                }
+                q.fetch_all(&self.pool).await?
+            };
+
+            result.extend(rows.iter().map(|r| {
                 let candidate = CandidateRow::from_row(r);
                 let embedding_bytes: Vec<u8> = r.get("embedding");
                 (candidate, embedding_bytes)
-            })
-            .collect())
+            }));
+        }
+
+        Ok(result)
     }
 
     /// Fetch chunks by IDs with embeddings — async version.

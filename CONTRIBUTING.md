@@ -106,9 +106,6 @@ src/
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
     rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, markdown.rs
-  source/       - Source abstraction layer (reserved — not yet wired into indexing pipeline)
-    mod.rs      - Source trait
-    filesystem.rs - File-based source implementation
   store/        - SQLite storage layer (Schema v11, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
     chunks.rs   - Chunk CRUD, embedding_batches() for streaming

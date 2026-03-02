@@ -96,7 +96,8 @@ pub(crate) fn cmd_similar(
 
     if filtered.is_empty() {
         if json {
-            println!(r#"{{"results":[],"target":"{}","total":0}}"#, chunk_name);
+            let obj = serde_json::json!({"results": [], "target": chunk_name, "total": 0});
+            println!("{}", obj);
         } else {
             println!("No similar functions found for '{}'.", chunk_name);
         }

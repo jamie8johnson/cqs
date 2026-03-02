@@ -606,7 +606,7 @@ impl Store {
 
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
-        debug_assert!(
+        assert!(
             !normalized.contains('"'),
             "sanitized query must not contain double quotes"
         );

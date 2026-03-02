@@ -26,7 +26,8 @@ fn json_overhead_for(cli: &Cli) -> usize {
 /// `context` is an optional label for the empty-result message (e.g. reference name).
 fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
     if json {
-        println!(r#"{{"results":[],"query":"{}","total":0}}"#, query);
+        let obj = serde_json::json!({"results": [], "query": query, "total": 0});
+        println!("{}", obj);
     } else if let Some(ctx) = context {
         println!("No results found in reference '{}'.", ctx);
     } else {
