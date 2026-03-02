@@ -15,7 +15,7 @@ use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
 use crate::note::path_matches_mention;
 use crate::store::helpers::{
-    embedding_slice, ChunkRow, ChunkSummary, NoteSummary, SearchFilter, SearchResult,
+    embedding_slice, CandidateRow, ChunkSummary, NoteSummary, SearchFilter, SearchResult,
 };
 use crate::store::sanitize_fts_query;
 use crate::store::{Store, StoreError, UnifiedResult};
@@ -858,8 +858,10 @@ impl Store {
         };
 
         self.rt.block_on(async {
-            let rows = self
-                .fetch_chunks_with_embeddings_by_ids_async(candidate_ids)
+            // Phase 1: Lightweight candidate fetch — only scoring fields + embedding.
+            // Excludes heavy content/doc/signature columns (PF-5).
+            let candidates = self
+                .fetch_candidates_by_ids_async(candidate_ids)
                 .await?;
 
             // Compile glob pattern once outside the loop (not per-chunk).
@@ -875,12 +877,12 @@ impl Store {
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
             let note_index = NoteBoostIndex::new(&notes);
 
-            let mut scored: Vec<(ChunkRow, f32)> = rows
+            let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
-                .filter_map(|(chunk_row, embedding_bytes)| {
+                .filter_map(|(candidate, embedding_bytes)| {
                     if let Some(ref langs) = filter.languages {
                         let row_lang: Result<crate::parser::Language, _> =
-                            chunk_row.language.parse();
+                            candidate.language.parse();
                         if let Ok(lang) = row_lang {
                             if !langs.contains(&lang) {
                                 return None;
@@ -892,7 +894,7 @@ impl Store {
 
                     if let Some(ref types) = filter.chunk_types {
                         let row_type: Result<crate::parser::ChunkType, _> =
-                            chunk_row.chunk_type.parse();
+                            candidate.chunk_type.parse();
                         if let Ok(ct) = row_type {
                             if !types.contains(&ct) {
                                 return None;
@@ -907,8 +909,8 @@ impl Store {
                     let score = score_candidate(
                         embedding,
                         query.as_slice(),
-                        Some(&chunk_row.name),
-                        &chunk_row.origin,
+                        Some(&candidate.name),
+                        &candidate.origin,
                         filter,
                         name_matcher.as_ref(),
                         glob_matcher.as_ref(),
@@ -916,7 +918,7 @@ impl Store {
                         threshold,
                     )?;
 
-                    Some((chunk_row, score))
+                    Some((candidate, score))
                 })
                 .collect();
 
@@ -939,14 +941,14 @@ impl Store {
                     fts_rows.into_iter().map(|(id,)| id).collect()
                 };
                 let semantic_ids: Vec<String> =
-                    scored.iter().map(|(row, _)| row.id.clone()).collect();
+                    scored.iter().map(|(c, _)| c.id.clone()).collect();
                 // Request extra candidates from RRF to compensate for parent dedup
                 Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
             } else {
                 scored
                     .iter()
                     .take(limit)
-                    .map(|(row, score)| (row.id.clone(), *score))
+                    .map(|(c, score)| (c.id.clone(), *score))
                     .collect()
             };
 
@@ -954,52 +956,26 @@ impl Store {
                 return Ok(vec![]);
             }
 
-            // Build a lookup from the scored rows for RRF path (need ChunkRow for results)
-            let rows_by_id: HashMap<String, ChunkRow> = scored
-                .into_iter()
-                .map(|(row, _)| (row.id.clone(), row))
-                .collect();
-
-            // For RRF-fused IDs that came from FTS but weren't in HNSW candidates,
-            // fetch them from the database
-            let missing_ids: Vec<&str> = final_scored
-                .iter()
-                .filter(|(id, _)| !rows_by_id.contains_key(id))
-                .map(|(id, _)| id.as_str())
-                .collect();
-            let extra_rows = if !missing_ids.is_empty() {
-                self.fetch_chunks_by_ids_async(&missing_ids).await?
-            } else {
-                HashMap::new()
-            };
+            // Phase 2: Fetch full content only for survivors (~limit*2 rows
+            // instead of all candidates). This is the PF-5 payoff — heavy
+            // content/doc/signature columns skipped for the 500+ scoring
+            // candidates, loaded only for the ~20 winners.
+            let fetch_ids: Vec<&str> =
+                final_scored.iter().map(|(id, _)| id.as_str()).collect();
+            let full_rows = self.fetch_chunks_by_ids_async(&fetch_ids).await?;
 
             let mut seen_parents: HashSet<String> = HashSet::new();
             let mut results: Vec<SearchResult> = final_scored
                 .into_iter()
                 .filter_map(|(id, score)| {
-                    // Try scored rows first, then FTS-only rows
-                    if let Some(row) = rows_by_id.get(&id) {
-                        let dedup_key =
-                            row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                        if seen_parents.insert(dedup_key) {
-                            Some(SearchResult {
-                                chunk: ChunkSummary::from(row.clone()),
-                                score,
-                            })
-                        } else {
-                            None
-                        }
-                    } else if let Some(row) = extra_rows.get(&id) {
-                        let dedup_key =
-                            row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                        if seen_parents.insert(dedup_key) {
-                            Some(SearchResult {
-                                chunk: ChunkSummary::from(row.clone()),
-                                score,
-                            })
-                        } else {
-                            None
-                        }
+                    let row = full_rows.get(&id)?;
+                    let dedup_key =
+                        row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                    if seen_parents.insert(dedup_key) {
+                        Some(SearchResult {
+                            chunk: ChunkSummary::from(row.clone()),
+                            score,
+                        })
                     } else {
                         None
                     }
