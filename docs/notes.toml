@@ -861,3 +861,29 @@ mentions = [
     "audit",
     "agents",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "git log %x00 (NUL byte) as field separator avoids ambiguity with | in commit messages. --no-pager must come before 'log' (git-level flag, not log flag). Pattern used in blame.rs for reliable parse_git_log_output."
+mentions = [
+    "src/cli/commands/blame.rs",
+    "git",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Factor create_context() from batch module to share BatchContext between batch and chat REPL. OnceLock + lazy-init amortizes ~600ms Store+Embedder init. Visibility promotion (pub(super) to pub(crate)) for cross-module sharing. Re-export pattern: pub(crate) use commands::{dispatch, BatchInput}."
+mentions = [
+    "src/cli/batch/mod.rs",
+    "src/cli/chat.rs",
+    "BatchContext",
+]
+
+[[note]]
+sentiment = 1.0
+text = "Second 14-category audit (v0.19.2): 117 findings, 107 fixed across 4 priority tiers (P1: 46, P2: 29, P3: 29, P4: 3). Two deferred: PF-5 (HNSW candidate fetch #510) and PB-3 (normalize_path, fixed PR #509). Confirms 14-category / 3-batch structure works at scale. Total across both audits: ~200 findings fixed."
+mentions = [
+    "docs/audit-findings.md",
+    "docs/audit-triage.md",
+    "audit",
+]

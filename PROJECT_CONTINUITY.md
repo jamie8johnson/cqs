@@ -2,10 +2,10 @@
 
 ## Right Now
 
-**v0.19.3 released.** 2026-02-28.
+**v0.19.4 released.** 2026-02-28.
 
-Patch release covering v0.19.2 audit (107/109 findings) + PB-3 fix (PR #509).
-Only deferred item: PF-5 (lightweight HNSW candidate fetch).
+Added `cqs blame` (semantic git blame) and `cqs chat` (interactive REPL).
+Only deferred item: PF-5 (lightweight HNSW candidate fetch, #510).
 
 ## Pending Changes
 
@@ -36,7 +36,7 @@ None — clean working tree on main.
 
 ## Architecture
 
-- Version: 0.19.3
+- Version: 0.19.4
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
@@ -44,7 +44,7 @@ None — clean working tree on main.
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 20 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1261 pass, 0 failures
+- Tests: 1275 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
