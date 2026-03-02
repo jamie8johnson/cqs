@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use sqlx::Row;
 
 use super::helpers::{
-    bytes_to_embedding, clamp_line_number, embedding_to_bytes, ChunkIdentity, ChunkRow,
-    ChunkSummary, IndexStats, StaleFile, StaleReport, StoreError,
+    bytes_to_embedding, clamp_line_number, embedding_to_bytes, CandidateRow, ChunkIdentity,
+    ChunkRow, ChunkSummary, IndexStats, StaleFile, StaleReport, StoreError,
 };
 use super::Store;
 use crate::embedder::Embedding;
@@ -1354,6 +1354,47 @@ impl Store {
             .map(|r| {
                 let chunk = ChunkRow::from_row(r);
                 (chunk.id.clone(), chunk)
+            })
+            .collect())
+    }
+
+    /// Lightweight candidate fetch for scoring (PF-5).
+    ///
+    /// Returns only `(CandidateRow, embedding_bytes)` — excludes heavy `content`,
+    /// `doc`, `signature`, `line_start`, `line_end` columns. Full content is
+    /// loaded only for top-k survivors via `fetch_chunks_by_ids_async`.
+    pub(crate) async fn fetch_candidates_by_ids_async(
+        &self,
+        ids: &[&str],
+    ) -> Result<Vec<(CandidateRow, Vec<u8>)>, StoreError> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let placeholders: String = (1..=ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id, name, origin, language, chunk_type, embedding
+             FROM chunks WHERE id IN ({})",
+            placeholders
+        );
+
+        let rows: Vec<_> = {
+            let mut q = sqlx::query(&sql);
+            for id in ids {
+                q = q.bind(*id);
+            }
+            q.fetch_all(&self.pool).await?
+        };
+
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let candidate = CandidateRow::from_row(r);
+                let embedding_bytes: Vec<u8> = r.get("embedding");
+                (candidate, embedding_bytes)
             })
             .collect())
     }

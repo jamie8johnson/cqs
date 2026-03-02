@@ -55,6 +55,35 @@ pub enum StoreError {
     Corruption(String),
 }
 
+/// Lightweight candidate row for scoring (PF-5).
+///
+/// Contains only the fields needed for candidate scoring and filtering —
+/// excludes heavy `content`, `doc`, `signature`, `line_start`, `line_end`
+/// fields. Full content is loaded only for top-k survivors via `ChunkRow`.
+#[derive(Clone)]
+pub(crate) struct CandidateRow {
+    pub id: String,
+    pub name: String,
+    pub origin: String,
+    pub language: String,
+    pub chunk_type: String,
+}
+
+impl CandidateRow {
+    /// Construct from a SQLite row containing columns:
+    /// id, name, origin, language, chunk_type
+    pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
+        use sqlx::Row;
+        CandidateRow {
+            id: row.get("id"),
+            name: row.get("name"),
+            origin: row.get("origin"),
+            language: row.get("language"),
+            chunk_type: row.get("chunk_type"),
+        }
+    }
+}
+
 /// Raw row from chunks table (crate-internal, used by search module)
 #[derive(Clone)]
 pub(crate) struct ChunkRow {
