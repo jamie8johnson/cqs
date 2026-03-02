@@ -887,3 +887,12 @@ mentions = [
     "docs/audit-triage.md",
     "audit",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "PF-5 two-phase search: CandidateRow (6 cols) for scoring, full ChunkRow (12 cols) only for top-k. Simplifies result assembly too — single fetch_chunks_by_ids_async for all survivors (HNSW + FTS-only) instead of split rows_by_id + extra_rows lookup."
+mentions = [
+    "search.rs",
+    "CandidateRow",
+    "fetch_candidates_by_ids_async",
+]

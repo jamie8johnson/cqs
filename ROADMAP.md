@@ -11,7 +11,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 20 lan
 
 ### Next — Performance
 
-- [ ] PF-5: Lightweight HNSW candidate fetch (#510) — fetch only `(id, embedding)` for scoring, load full content only for top-k survivors.
+- [x] PF-5: Lightweight HNSW candidate fetch (#510) — fetch only `(id, embedding)` for scoring, load full content only for top-k survivors.
 
 ### Next — Expansion
 
@@ -56,7 +56,6 @@ Infrastructure for adding variants is now cheap: per-language LanguageDef fields
 
 ### Open Issues
 
-- #510: PF-5 — lightweight HNSW candidate fetch
 - #389: CAGRA GPU memory — needs disk persistence layer
 - #255: Pre-built reference packages
 - #106: ort stable (currently 2.0.0-rc.11)

@@ -2,10 +2,11 @@
 
 ## Right Now
 
-**v0.19.4 released.** 2026-02-28.
+**PF-5 shipped.** 2026-03-02.
 
-Added `cqs blame` (semantic git blame) and `cqs chat` (interactive REPL).
-Only deferred item: PF-5 (lightweight HNSW candidate fetch, #510).
+Lightweight HNSW candidate fetch (#510, PR #515). Two-phase search:
+score 500+ candidates using `CandidateRow` (6 SQL columns), load full
+content only for ~20 survivors. All roadmap performance items complete.
 
 ## Pending Changes
 
