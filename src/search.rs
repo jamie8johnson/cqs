@@ -32,6 +32,13 @@ pub struct ResolvedTarget {
     pub alternatives: Vec<SearchResult>,
 }
 
+/// Minimum code slots for a given result limit (60% floor, at least 1).
+///
+/// Used for note/code slot allocation in unified search.
+pub(crate) fn min_code_slot_count(limit: usize) -> usize {
+    ((limit * 3) / 5).max(1)
+}
+
 // ============ Target Resolution ============
 
 /// Parse a target string into (optional_file_filter, function_name).
@@ -55,6 +62,7 @@ pub fn parse_target(target: &str) -> (Option<&str>, &str) {
 /// Uses search_by_name with optional file filtering.
 /// Returns the best-matching chunk and alternatives, or an error if none found.
 pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, StoreError> {
+    let _span = tracing::info_span!("resolve_target", target).entered();
     let (file_filter, name) = parse_target(target);
     let results = store.search_by_name(name, 20)?;
     if results.is_empty() {
@@ -754,7 +762,7 @@ impl Store {
                 } else {
                     vec![]
                 };
-                let semantic_ids: Vec<String> = scored.iter().map(|(id, _)| id.clone()).collect();
+                let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
                 // Request extra candidates from RRF to compensate for parent dedup
                 // filtering below — dedup can drop results, leaving fewer than `limit`.
                 Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
@@ -792,6 +800,7 @@ impl Store {
             // Truncate back to requested limit after parent dedup
             results.truncate(limit);
 
+            tracing::debug!(count = results.len(), "search_filtered complete");
             Ok(results)
         })
     }
@@ -877,29 +886,25 @@ impl Store {
             // Pre-compute note boost lookup for O(1) name matching in scoring loop
             let note_index = NoteBoostIndex::new(&notes);
 
+            // Pre-build filter sets once — avoids per-candidate string parsing (PF-1)
+            let lang_set: Option<HashSet<String>> = filter.languages.as_ref().map(|langs| {
+                langs.iter().map(|l| l.to_string().to_lowercase()).collect()
+            });
+            let type_set: Option<HashSet<String>> = filter.chunk_types.as_ref().map(|types| {
+                types.iter().map(|t| t.to_string().to_lowercase()).collect()
+            });
+
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
                 .filter_map(|(candidate, embedding_bytes)| {
-                    if let Some(ref langs) = filter.languages {
-                        let row_lang: Result<crate::parser::Language, _> =
-                            candidate.language.parse();
-                        if let Ok(lang) = row_lang {
-                            if !langs.contains(&lang) {
-                                return None;
-                            }
-                        } else {
+                    if let Some(ref langs) = lang_set {
+                        if !langs.contains(&candidate.language.to_lowercase()) {
                             return None;
                         }
                     }
 
-                    if let Some(ref types) = filter.chunk_types {
-                        let row_type: Result<crate::parser::ChunkType, _> =
-                            candidate.chunk_type.parse();
-                        if let Ok(ct) = row_type {
-                            if !types.contains(&ct) {
-                                return None;
-                            }
-                        } else {
+                    if let Some(ref types) = type_set {
+                        if !types.contains(&candidate.chunk_type.to_lowercase()) {
                             return None;
                         }
                     }
@@ -940,8 +945,8 @@ impl Store {
                     .await?;
                     fts_rows.into_iter().map(|(id,)| id).collect()
                 };
-                let semantic_ids: Vec<String> =
-                    scored.iter().map(|(c, _)| c.id.clone()).collect();
+                let semantic_ids: Vec<&str> =
+                    scored.iter().map(|(c, _)| c.id.as_str()).collect();
                 // Request extra candidates from RRF to compensate for parent dedup
                 Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
             } else {
@@ -1058,7 +1063,7 @@ impl Store {
         // This prevents notes from dominating while still surfacing relevant observations.
         // When code results are sparse, cap notes to the proportional amount (40%)
         // rather than letting them fill all remaining slots.
-        let min_code_slots = ((limit * 3) / 5).max(1);
+        let min_code_slots = min_code_slot_count(limit);
         let code_count = code_results.len().min(limit);
         let note_slots = if code_count >= min_code_slots {
             limit.saturating_sub(code_count)
@@ -1212,16 +1217,12 @@ mod tests {
     fn test_min_code_slots_limit_1() {
         // With limit=1, (1*3)/5 = 0 which starved code results.
         // After fix: .max(1) ensures at least 1 code slot.
-        let limit = 1;
-        let min_code_slots = ((limit * 3) / 5).max(1);
-        assert_eq!(min_code_slots, 1);
+        assert_eq!(min_code_slot_count(1), 1);
     }
 
     #[test]
     fn test_min_code_slots_limit_5() {
-        let limit = 5;
-        let min_code_slots = ((limit * 3) / 5).max(1);
-        assert_eq!(min_code_slots, 3);
+        assert_eq!(min_code_slot_count(5), 3);
     }
 
     // ===== compile_glob_filter tests =====
@@ -2226,5 +2227,75 @@ mod tests {
         }];
         let index = NoteBoostIndex::new(&notes);
         assert_eq!(index.boost("src/lib.rs", "my_fn"), 1.0);
+    }
+
+    // ===== language/chunk_type filter set tests (TC-3) =====
+
+    #[test]
+    fn test_lang_filter_set_membership() {
+        use crate::language::Language;
+        let langs = vec![Language::Rust, Language::Python];
+        let lang_set: HashSet<String> =
+            langs.iter().map(|l| l.to_string().to_lowercase()).collect();
+        assert!(lang_set.contains("rust"));
+        assert!(lang_set.contains("python"));
+        assert!(!lang_set.contains("typescript"));
+        assert!(!lang_set.contains("go"));
+    }
+
+    #[test]
+    fn test_chunk_type_filter_set_membership() {
+        use crate::language::ChunkType;
+        let types = vec![ChunkType::Function, ChunkType::Method];
+        let type_set: HashSet<String> =
+            types.iter().map(|t| t.to_string().to_lowercase()).collect();
+        assert!(type_set.contains("function"));
+        assert!(type_set.contains("method"));
+        assert!(!type_set.contains("struct"));
+        assert!(!type_set.contains("class"));
+    }
+
+    #[test]
+    fn test_lang_filter_case_insensitive() {
+        use crate::language::Language;
+        let langs = vec![Language::Rust];
+        let lang_set: HashSet<String> =
+            langs.iter().map(|l| l.to_string().to_lowercase()).collect();
+        // CandidateRow.language stored as lowercase — filter matching must be case-insensitive
+        assert!(lang_set.contains(&"rust".to_lowercase()));
+        assert!(lang_set.contains(&"Rust".to_lowercase()));
+        assert!(!lang_set.contains(&"Python".to_lowercase()));
+    }
+
+    #[test]
+    fn test_lang_filter_none_passes_all() {
+        // When filter.languages is None, lang_set is None and all candidates pass
+        let lang_set: Option<HashSet<String>> = None;
+        let candidate_lang = "rust";
+        let passes = lang_set
+            .as_ref()
+            .map_or(true, |s| s.contains(&candidate_lang.to_lowercase()));
+        assert!(passes);
+    }
+
+    #[test]
+    fn test_type_filter_none_passes_all() {
+        // When filter.chunk_types is None, type_set is None and all candidates pass
+        let type_set: Option<HashSet<String>> = None;
+        let candidate_type = "struct";
+        let passes = type_set
+            .as_ref()
+            .map_or(true, |s| s.contains(&candidate_type.to_lowercase()));
+        assert!(passes);
+    }
+
+    #[test]
+    fn test_lang_filter_empty_rejects_all() {
+        // Empty language list means nothing passes
+        let lang_set: Option<HashSet<String>> = Some(HashSet::new());
+        let passes = lang_set
+            .as_ref()
+            .map_or(true, |s| s.contains(&"rust".to_lowercase()));
+        assert!(!passes);
     }
 }

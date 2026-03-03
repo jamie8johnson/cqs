@@ -10,7 +10,7 @@
 //! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Markdown (20 languages)
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
-//! - **Document conversion**: PDF, HTML, CHM → cleaned Markdown (optional `convert` feature)
+//! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
 //!
 //! ## Quick Start
 //!

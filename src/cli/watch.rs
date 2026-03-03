@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, info_span, warn};
 
@@ -52,6 +52,7 @@ fn try_init_embedder(embedder: &OnceCell<Embedder>) -> Option<&Embedder> {
 }
 
 pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_watch", debounce_ms).entered();
     if no_ignore {
         tracing::warn!("--no-ignore is not yet implemented for watch mode");
     }
@@ -110,7 +111,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 
     // Open store once and reuse across all reindex operations.
     // Store uses connection pooling internally, so this is efficient.
-    let store = Store::open(&index_path)?;
+    let store = Store::open(&index_path)
+        .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
     // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
     // On WSL, inotify over 9P delivers repeated events for the same file change.

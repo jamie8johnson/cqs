@@ -192,6 +192,7 @@ impl Store {
 
     /// Delete all chunks for an origin (file path or source identifier)
     pub fn delete_by_origin(&self, origin: &Path) -> Result<u32, StoreError> {
+        let _span = tracing::info_span!("delete_by_origin", origin = %origin.display()).entered();
         let origin_str = crate::normalize_path(origin);
 
         self.rt.block_on(async {
@@ -225,6 +226,7 @@ impl Store {
         chunks: &[(Chunk, Embedding)],
         source_mtime: Option<i64>,
     ) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("replace_file_chunks", origin = %origin.display(), count = chunks.len()).entered();
         const CHUNK_INSERT_BATCH: usize = 55;
 
         let origin_str = crate::normalize_path(origin);
@@ -872,7 +874,11 @@ impl Store {
                 .unwrap_or_else(|| created_at.clone());
             let schema_version: i32 = metadata
                 .get("schema_version")
-                .and_then(|s| s.parse().ok())
+                .and_then(|s| {
+                    s.parse().map_err(|e| {
+                        tracing::warn!(raw = %s, error = %e, "Failed to parse schema_version, defaulting to 0");
+                    }).ok()
+                })
                 .unwrap_or(0);
 
             Ok(IndexStats {

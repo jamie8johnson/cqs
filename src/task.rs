@@ -243,7 +243,11 @@ pub(crate) fn compute_summary(
 pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
     let scout_json = crate::scout::scout_to_json(&result.scout, root);
 
-    let code_json: Vec<serde_json::Value> = result.code.iter().map(|c| c.to_json(root)).collect();
+    let code_json: Vec<serde_json::Value> = result
+        .code
+        .iter()
+        .filter_map(|c| serde_json::to_value(c).ok())
+        .collect();
     let risk_json: Vec<serde_json::Value> = result.risk.iter().map(|(n, r)| r.to_json(n)).collect();
     let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json(root)).collect();
     let placement_json: Vec<serde_json::Value> =

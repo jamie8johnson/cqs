@@ -243,6 +243,7 @@ cqs stale --json            # JSON output
 # Find dead code (functions never called by indexed code)
 cqs dead                    # Conservative: excludes main, tests, trait impls
 cqs dead --include-pub      # Include public API functions
+cqs dead --min-confidence high  # Only high-confidence dead code
 cqs dead --json             # JSON output
 
 # Garbage collection (remove stale index entries)

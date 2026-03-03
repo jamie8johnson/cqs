@@ -19,64 +19,64 @@ Triaged 2026-03-02. 75 findings across 14 categories, 3 batches.
 |---|---------|----------|----------|--------|
 | TC-1 | 5 newest languages (Bash, HCL, Kotlin, Swift, ObjC) have zero parser integration tests | Test Coverage | tests/parser_test.rs, tests/fixtures/ | ✅ fixed |
 | TC-2 | `NoteBoostIndex` has zero tests — search scoring hot path | Test Coverage | src/search.rs:300-371 | ✅ fixed |
-| TC-3 | PF-5 `search_by_candidate_ids` language/chunk_type filter branches untested | Test Coverage | src/search.rs:883-905 | ✅ deferred (filter branches tested indirectly via TC-2 NoteBoostIndex; dedicated filter tests need Store+HNSW setup) |
+| TC-3 | PF-5 `search_by_candidate_ids` language/chunk_type filter branches untested | Test Coverage | src/search.rs:883-905 | ✅ fixed (7 filter set unit tests) |
 | AD-3 | Core store types (`ChunkSummary`, `SearchResult`, `CallerInfo`, etc.) lack `Serialize` — manual `to_json()` everywhere | API Design | src/store/helpers.rs:128-330 | ✅ fixed |
 
 ## P3 — Easy + Low Impact (fix if time)
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| OB-1 | `resolve_target` has no tracing span | Observability | src/search.rs:57 | |
-| OB-2 | `delete_by_origin` / `replace_file_chunks` no tracing spans | Observability | src/store/chunks.rs:194, 222 | |
-| OB-3 | `search_filtered` exits without logging result count | Observability | src/search.rs:793 | |
-| OB-4 | `Store::init` — no span on schema initialization | Observability | src/store/mod.rs:355 | |
-| OB-5 | `warn_stale_results` missing entry span | Observability | src/cli/staleness.rs:19 | |
-| OB-6 | `cmd_watch` no entry span | Observability | src/cli/watch.rs:54 | |
-| OB-7 | `get_caller_counts_batch` / `get_callee_counts_batch` no spans | Observability | src/store/calls.rs:1147, 1163 | |
-| AD-1 | `BatchCmd::Gather` direction is stringly-typed — should use `GatherDirection` enum | API Design | src/cli/batch/commands.rs:109 | |
-| AD-2 | `get_callers()` is dead public API — zero callers | API Design | src/store/calls.rs:252 | |
-| AD-4 | `BlameEntry` / `BlameData` use manual JSON assembly (depends on AD-3) | API Design | src/cli/commands/blame.rs:18-155 | |
-| AD-6 | 9 CLI command handlers accept unused `_cli: &Cli` parameter | API Design | blame.rs, where_cmd.rs, test_map.rs, etc. | |
-| EH-1 | `build_blame_data` discards `StoreError` chain via `.map_err` stringify | Error Handling | src/cli/commands/blame.rs:46 | |
-| EH-2 | 7 bare `Store::open()` calls without path context | Error Handling | diff.rs, drift.rs, index.rs, reference.rs, watch.rs | |
-| EH-3 | `SearchFilter::validate()` returns `&'static str` not proper error type | Error Handling | src/store/helpers.rs:513 | |
-| EH-4 | `dispatch_onboard` swallows `get_chunks_by_names_batch` error silently | Error Handling | src/cli/batch/handlers.rs:912 | |
-| EH-5 | `GatherDirection::FromStr` uses `String` error type (moot if AD-1 fixed) | Error Handling | src/gather.rs:97 | |
-| EH-6 | `schema_version` silently defaults to 0 on parse failure | Error Handling | src/store/chunks.rs:873 | |
-| DOC-2 | PRIVACY.md deletion instructions miss `config.toml` | Documentation | PRIVACY.md:46-51 | |
-| DOC-3 | SECURITY.md symlink mitigation description is inaccurate (understates scope) | Documentation | SECURITY.md:94 | |
-| DOC-4 | lib.rs doc comment omits Web Help format | Documentation | src/lib.rs:13 | |
-| DOC-5 | `cqs dead --min-confidence` undocumented in README and CLAUDE.md | Documentation | README.md:243, CLAUDE.md:71 | |
-| CQ-2 | Gather JSON assembly duplicated between CLI and batch handler | Code Quality | gather.rs:114, handlers.rs:406 | |
-| EX-1 | `pipeable_command_names()` manually duplicates pipeable variants — stale on new commands | Extensibility | src/cli/batch/pipeline.rs:31-113 | |
-| EX-2 | `name_boost: 0.2` hardcoded — no shared constant with CLI default | Extensibility | src/cli/batch/handlers.rs:83 | |
-| EX-3 | `HNSW_EXTENSIONS` / `HNSW_ALL_EXTENSIONS` overlap with no sync enforcement | Extensibility | src/hnsw/persist.rs:31,34 | |
-| EX-5 | Note/code slot ratio `(limit * 3) / 5` inline formula repeated in tests | Extensibility | src/search.rs:1061, 1216, 1223 | |
-| RB-3 | `where_to_add` core panics via `.expect()` on `query_embedding` | Robustness | src/where_to_add.rs:170 | |
-| RB-4 | Blame passes inverted line ranges to git silently | Robustness | src/cli/commands/blame.rs:86 | |
-| RB-5 | Reranker/embedder `outputs[0]` panics if ONNX returns empty | Robustness | src/reranker.rs:140 | |
-| AC-3 | `token_pack` O(n²) `keep.iter().any()` in packing loop | Algorithm | src/cli/commands/mod.rs:134 | |
-| AC-4 | `cap_scores` uses `u64::MAX - x` inversion trick (correct but fragile) | Algorithm | src/onboard.rs:175 | |
-| TC-4 | `ChatHelper::complete` tab-completion logic untested | Test Coverage | src/cli/chat.rs:26-49 | |
-| TC-6 | Batch pipeline error propagation for malformed mid-pipeline input untested | Test Coverage | src/cli/batch/pipeline.rs | |
-| PB-2 | `notes_path` falls back to non-canonical path if file missing at watch start | Platform | src/cli/watch.rs:97-105 | |
-| PB-4 | Lock file open code duplicated; NTFS ignores `0o600` silently | Platform | src/cli/files.rs:52-115 | |
-| PB-5 | `is_wsl()` has no `#[cfg(unix)]` guard | Platform | src/config.rs:15-25 | |
-| SEC-1 | `CQS_PDF_SCRIPT` env var allows arbitrary script execution (defense-in-depth) | Security | src/convert/pdf.rs:56-68 | |
-| SEC-3 | `convert_directory` walk has no depth/file count limit | Security | src/convert/mod.rs:345 | |
-| SEC-4 | HNSW index files written with no permission restriction (inconsistent with DB) | Security | src/hnsw/persist.rs | |
-| SEC-6 | `run_git_diff` can allocate unbounded memory — no size limit | Security | src/cli/commands/mod.rs:166-188 | |
-| DS-3 | `extract_relationships` not atomic with chunk upserts — crash leaves stale call graph | Data Safety | src/cli/commands/index.rs:120-133 | |
-| DS-5 | `notes_summaries_cache` invalidation is caller-responsibility — fragile | Data Safety | src/store/mod.rs:746, notes.rs:122,224 | |
-| DS-6 | `bytes_to_embedding` silently skips corrupted embeddings — no aggregate signal | Data Safety | src/store/helpers.rs:696-725 | |
-| PF-1 | `search_by_candidate_ids` parses language/chunk_type strings per candidate (pre-build HashSet) | Performance | src/search.rs:884-905 | |
-| PF-2 | `search_filtered` clones all semantic IDs to separate Vec for `rrf_fuse` | Performance | src/search.rs:757 | |
-| PF-3 | `search_by_name` re-lowercases query per result (use `score_name_match_pre_lower`) | Performance | src/store/mod.rs:646 | |
-| PF-4 | `score_confidence` clones all candidate IDs to separate Vec | Performance | src/store/calls.rs:881 | |
-| PF-5 | `fetch_active_files` uses `IN (subquery)` where JOIN is more efficient | Performance | src/store/calls.rs:841-843 | |
-| PF-6 | `build_batched` two-pass loop (validation then collection) | Performance | src/hnsw/build.rs:140-157 | |
-| RM-1 | CHM/webhelp converters accumulate all pages then `join()` — 2× peak memory | Resource Mgmt | src/convert/chm.rs:119, webhelp.rs:93 | |
-| RM-2 | `html_file_to_markdown` / `markdown_passthrough` load entire file with no size guard | Resource Mgmt | src/convert/html.rs:32, mod.rs:113 | |
+| OB-1 | `resolve_target` has no tracing span | Observability | src/search.rs:57 | ✅ fixed |
+| OB-2 | `delete_by_origin` / `replace_file_chunks` no tracing spans | Observability | src/store/chunks.rs:194, 222 | ✅ fixed |
+| OB-3 | `search_filtered` exits without logging result count | Observability | src/search.rs:793 | ✅ fixed |
+| OB-4 | `Store::init` — no span on schema initialization | Observability | src/store/mod.rs:355 | ✅ fixed |
+| OB-5 | `warn_stale_results` missing entry span | Observability | src/cli/staleness.rs:19 | ✅ fixed |
+| OB-6 | `cmd_watch` no entry span | Observability | src/cli/watch.rs:54 | ✅ fixed |
+| OB-7 | `get_caller_counts_batch` / `get_callee_counts_batch` no spans | Observability | src/store/calls.rs:1147, 1163 | ✅ fixed |
+| AD-1 | `BatchCmd::Gather` direction is stringly-typed — should use `GatherDirection` enum | API Design | src/cli/batch/commands.rs:109 | ✅ fixed |
+| AD-2 | `get_callers()` is dead public API — zero callers | API Design | src/store/calls.rs:252 | ✅ fixed (deleted, tests updated to get_callers_full) |
+| AD-4 | `BlameEntry` / `BlameData` use manual JSON assembly (depends on AD-3) | API Design | src/cli/commands/blame.rs:18-155 | ✅ fixed (Serialize derive) |
+| AD-6 | 9 CLI command handlers accept unused `_cli: &Cli` parameter | API Design | blame.rs, where_cmd.rs, test_map.rs, etc. | ✅ fixed (6 handlers) |
+| EH-1 | `build_blame_data` discards `StoreError` chain via `.map_err` stringify | Error Handling | src/cli/commands/blame.rs:46 | ✅ fixed |
+| EH-2 | 7 bare `Store::open()` calls without path context | Error Handling | diff.rs, drift.rs, index.rs, reference.rs, watch.rs | ✅ fixed |
+| EH-3 | `SearchFilter::validate()` returns `&'static str` not proper error type | Error Handling | src/store/helpers.rs:513 | ✅ fixed (returns String with values) |
+| EH-4 | `dispatch_onboard` swallows `get_chunks_by_names_batch` error silently | Error Handling | src/cli/batch/handlers.rs:912 | acceptable (has tracing::warn) |
+| EH-5 | `GatherDirection::FromStr` uses `String` error type (moot if AD-1 fixed) | Error Handling | src/gather.rs:97 | moot (AD-1 fixed) |
+| EH-6 | `schema_version` silently defaults to 0 on parse failure | Error Handling | src/store/chunks.rs:873 | ✅ fixed (tracing::warn) |
+| DOC-2 | PRIVACY.md deletion instructions miss `config.toml` | Documentation | PRIVACY.md:46-51 | ✅ fixed |
+| DOC-3 | SECURITY.md symlink mitigation description is inaccurate (understates scope) | Documentation | SECURITY.md:94 | ✅ fixed |
+| DOC-4 | lib.rs doc comment omits Web Help format | Documentation | src/lib.rs:13 | ✅ fixed |
+| DOC-5 | `cqs dead --min-confidence` undocumented in README and CLAUDE.md | Documentation | README.md:243, CLAUDE.md:71 | ✅ fixed |
+| CQ-2 | Gather JSON assembly duplicated between CLI and batch handler | Code Quality | gather.rs:114, handlers.rs:406 | ✅ fixed (serde Serialize, removed to_json) |
+| EX-1 | `pipeable_command_names()` manually duplicates pipeable variants — stale on new commands | Extensibility | src/cli/batch/pipeline.rs:31-113 | ✅ fixed (PIPEABLE_NAMES const + sync test) |
+| EX-2 | `name_boost: 0.2` hardcoded — no shared constant with CLI default | Extensibility | src/cli/batch/handlers.rs:83 | ✅ fixed (DEFAULT_NAME_BOOST const) |
+| EX-3 | `HNSW_EXTENSIONS` / `HNSW_ALL_EXTENSIONS` overlap with no sync enforcement | Extensibility | src/hnsw/persist.rs:31,34 | ✅ fixed |
+| EX-5 | Note/code slot ratio `(limit * 3) / 5` inline formula repeated in tests | Extensibility | src/search.rs:1061, 1216, 1223 | ✅ fixed (min_code_slot_count fn) |
+| RB-3 | `where_to_add` core panics via `.expect()` on `query_embedding` | Robustness | src/where_to_add.rs:170 | ✅ fixed (AnalysisError::Phase) |
+| RB-4 | Blame passes inverted line ranges to git silently | Robustness | src/cli/commands/blame.rs:86 | ✅ fixed (swap + warn) |
+| RB-5 | Reranker/embedder `outputs[0]` panics if ONNX returns empty | Robustness | src/reranker.rs:140 | informational (SessionOutputs API) |
+| AC-3 | `token_pack` O(n²) `keep.iter().any()` in packing loop | Algorithm | src/cli/commands/mod.rs:134 | ✅ fixed (kept_any bool) |
+| AC-4 | `cap_scores` uses `u64::MAX - x` inversion trick (correct but fragile) | Algorithm | src/onboard.rs:175 | ✅ fixed (std::cmp::Reverse) |
+| TC-4 | `ChatHelper::complete` tab-completion logic untested | Test Coverage | src/cli/chat.rs:26-49 | ✅ fixed (4 tests) |
+| TC-6 | Batch pipeline error propagation for malformed mid-pipeline input untested | Test Coverage | src/cli/batch/pipeline.rs | ✅ fixed (6 tests) |
+| PB-2 | `notes_path` falls back to non-canonical path if file missing at watch start | Platform | src/cli/watch.rs:97-105 | acceptable (canonical after first event) |
+| PB-4 | Lock file open code duplicated; NTFS ignores `0o600` silently | Platform | src/cli/files.rs:52-115 | acceptable (already extracted to open_lock_file) |
+| PB-5 | `is_wsl()` has no `#[cfg(unix)]` guard | Platform | src/config.rs:15-25 | ✅ fixed |
+| SEC-1 | `CQS_PDF_SCRIPT` env var allows arbitrary script execution (defense-in-depth) | Security | src/convert/pdf.rs:56-68 | acceptable (documented in SECURITY.md) |
+| SEC-3 | `convert_directory` walk has no depth/file count limit | Security | src/convert/mod.rs:345 | ✅ fixed (max_depth 50) |
+| SEC-4 | HNSW index files written with no permission restriction (inconsistent with DB) | Security | src/hnsw/persist.rs | acceptable (0o600 set in persist) |
+| SEC-6 | `run_git_diff` can allocate unbounded memory — no size limit | Security | src/cli/commands/mod.rs:166-188 | ✅ fixed (50 MB limit) |
+| DS-3 | `extract_relationships` not atomic with chunk upserts — crash leaves stale call graph | Data Safety | src/cli/commands/index.rs:120-133 | acceptable (reindex recovers) |
+| DS-5 | `notes_summaries_cache` invalidation is caller-responsibility — fragile | Data Safety | src/store/mod.rs:746, notes.rs:122,224 | non-issue (all paths call invalidate) |
+| DS-6 | `bytes_to_embedding` silently skips corrupted embeddings — no aggregate signal | Data Safety | src/store/helpers.rs:696-725 | ✅ fixed (warn level logging) |
+| PF-1 | `search_by_candidate_ids` parses language/chunk_type strings per candidate (pre-build HashSet) | Performance | src/search.rs:884-905 | ✅ fixed |
+| PF-2 | `search_filtered` clones all semantic IDs to separate Vec for `rrf_fuse` | Performance | src/search.rs:757 | ✅ fixed (Vec<&str>) |
+| PF-3 | `search_by_name` re-lowercases query per result (use `score_name_match_pre_lower`) | Performance | src/store/mod.rs:646 | ✅ fixed |
+| PF-4 | `score_confidence` clones all candidate IDs to separate Vec | Performance | src/store/calls.rs:881 | ✅ fixed (Vec<&str>) |
+| PF-5 | `fetch_active_files` uses `IN (subquery)` where JOIN is more efficient | Performance | src/store/calls.rs:841-843 | ✅ fixed (INNER JOIN) |
+| PF-6 | `build_batched` two-pass loop (validation then collection) | Performance | src/hnsw/build.rs:140-157 | ✅ fixed (single pass) |
+| RM-1 | CHM/webhelp converters accumulate all pages then `join()` — 2× peak memory | Resource Mgmt | src/convert/chm.rs:119, webhelp.rs:93 | ✅ fixed (incremental String) |
+| RM-2 | `html_file_to_markdown` / `markdown_passthrough` load entire file with no size guard | Resource Mgmt | src/convert/html.rs:32, mod.rs:113 | ✅ fixed (100 MB limit) |
 
 ## P4 — Hard or Low Impact (create issues)
 

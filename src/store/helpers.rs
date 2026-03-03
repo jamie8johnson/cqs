@@ -478,6 +478,10 @@ pub struct SearchFilter {
     pub enable_demotion: bool,
 }
 
+/// Default name_boost weight used by CLI commands (0.2 = 20% name match influence).
+/// The struct default is 0.0 (no name boost) for API callers; CLI applies this.
+pub const DEFAULT_NAME_BOOST: f32 = 0.2;
+
 impl Default for SearchFilter {
     fn default() -> Self {
         Self {
@@ -513,38 +517,46 @@ impl SearchFilter {
     /// Validate filter constraints
     ///
     /// Returns Ok(()) if valid, or Err with description of what's wrong.
-    pub fn validate(&self) -> Result<(), &'static str> {
+    pub fn validate(&self) -> Result<(), String> {
         // name_boost must be in [0.0, 1.0] (NaN-safe: NaN is not contained in any range)
         if !(0.0..=1.0).contains(&self.name_boost) {
-            return Err("name_boost must be between 0.0 and 1.0");
+            return Err(format!(
+                "name_boost must be between 0.0 and 1.0, got {}",
+                self.name_boost
+            ));
         }
 
         // note_weight must be in [0.0, 1.0] (NaN-safe)
         if !(0.0..=1.0).contains(&self.note_weight) {
-            return Err("note_weight must be between 0.0 and 1.0");
+            return Err(format!(
+                "note_weight must be between 0.0 and 1.0, got {}",
+                self.note_weight
+            ));
         }
 
         // note_only with note_weight=0 is contradictory
         if self.note_only && self.note_weight == 0.0 {
-            return Err("note_only=true with note_weight=0.0 is contradictory");
+            return Err("note_only=true with note_weight=0.0 is contradictory".to_string());
         }
 
         // query_text required when name_boost > 0 or enable_rrf
         if (self.name_boost > 0.0 || self.enable_rrf) && self.query_text.is_empty() {
-            return Err("query_text required when name_boost > 0 or enable_rrf is true");
+            return Err(
+                "query_text required when name_boost > 0 or enable_rrf is true".to_string(),
+            );
         }
 
         // path_pattern must be valid glob syntax if provided
         if let Some(ref pattern) = self.path_pattern {
             if pattern.len() > 500 {
-                return Err("path_pattern too long (max 500 chars)");
+                return Err("path_pattern too long (max 500 chars)".to_string());
             }
             // Reject control characters (except tab/newline which glob might handle)
             if pattern
                 .chars()
                 .any(|c| c.is_control() && c != '\t' && c != '\n')
             {
-                return Err("path_pattern contains invalid control characters");
+                return Err("path_pattern contains invalid control characters".to_string());
             }
             // Limit brace nesting depth to prevent exponential expansion
             // e.g., "{a,{b,{c,{d,{e,...}}}}}" can cause O(2^n) expansion
@@ -555,7 +567,8 @@ impl SearchFilter {
                     '{' => {
                         depth += 1;
                         if depth > MAX_BRACE_DEPTH {
-                            return Err("path_pattern has too many nested braces (max 10 levels)");
+                            return Err("path_pattern has too many nested braces (max 10 levels)"
+                                .to_string());
                         }
                     }
                     '}' => depth = depth.saturating_sub(1),
@@ -563,7 +576,7 @@ impl SearchFilter {
                 }
             }
             if globset::Glob::new(pattern).is_err() {
-                return Err("path_pattern is not a valid glob pattern");
+                return Err("path_pattern is not a valid glob pattern".to_string());
             }
         }
 
@@ -717,10 +730,10 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {
     const EXPECTED_BYTES: usize = crate::EMBEDDING_DIM * 4;
     if bytes.len() != EXPECTED_BYTES {
-        tracing::trace!(
+        tracing::warn!(
             expected = EXPECTED_BYTES,
             actual = bytes.len(),
-            "Embedding byte length mismatch, skipping"
+            "Embedding byte length mismatch — possible corruption, skipping"
         );
         return None;
     }

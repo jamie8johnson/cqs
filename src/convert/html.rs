@@ -27,8 +27,20 @@ pub fn html_to_markdown(source: &str) -> Result<String> {
 /// Reads the file at `path` and converts its HTML content to Markdown.
 /// This is the path-based wrapper used by `FORMAT_TABLE`; the string-based
 /// [`html_to_markdown`] is still used directly by `chm` and `webhelp`.
+/// Maximum file size for conversion (100 MB)
+const MAX_CONVERT_FILE_SIZE: u64 = 100 * 1024 * 1024;
+
 pub fn html_file_to_markdown(path: &Path) -> Result<String> {
     let _span = tracing::info_span!("html_file_to_markdown", path = %path.display()).entered();
+    let meta = std::fs::metadata(path)
+        .map_err(|e| anyhow::anyhow!("Failed to stat {}: {}", path.display(), e))?;
+    if meta.len() > MAX_CONVERT_FILE_SIZE {
+        anyhow::bail!(
+            "File {} exceeds {} MB size limit",
+            path.display(),
+            MAX_CONVERT_FILE_SIZE / 1024 / 1024,
+        );
+    }
     let source = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
     html_to_markdown(&source)

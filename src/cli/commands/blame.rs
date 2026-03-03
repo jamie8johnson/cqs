@@ -10,11 +10,10 @@ use colored::Colorize;
 use cqs::store::{CallerInfo, ChunkSummary, Store};
 use cqs::{normalize_path, rel_display, resolve_target};
 
-use crate::cli::Cli;
-
 // ─── Data structures ─────────────────────────────────────────────────────────
 
 /// A single git commit that touched the function's line range.
+#[derive(serde::Serialize)]
 pub(crate) struct BlameEntry {
     pub hash: String,
     pub author: String,
@@ -42,9 +41,7 @@ pub(crate) fn build_blame_data(
 ) -> Result<BlameData> {
     let _span = tracing::info_span!("build_blame_data", target, depth).entered();
 
-    let resolved = resolve_target(store, target)
-        .map_err(|e| anyhow::anyhow!("{}", e))
-        .context("Failed to resolve blame target")?;
+    let resolved = resolve_target(store, target).context("Failed to resolve blame target")?;
 
     let chunk = resolved.chunk;
     let rel_file = rel_display(&chunk.file, root);
@@ -82,6 +79,14 @@ fn run_git_log_line_range(
     if rel_file.starts_with('-') {
         anyhow::bail!("Invalid file path '{}': must not start with '-'", rel_file);
     }
+
+    // Ensure valid line range (start <= end); swap if inverted
+    let (start, end) = if start > end {
+        tracing::warn!(start, end, "Inverted line range, swapping");
+        (end, start)
+    } else {
+        (start, end)
+    };
 
     let line_range = format!("{},{}:{}", start, end, rel_file);
     let depth_str = depth.to_string();
@@ -153,26 +158,13 @@ pub(crate) fn parse_git_log_output(output: &str) -> Vec<BlameEntry> {
 
 /// Build JSON output from BlameData.
 pub(crate) fn blame_to_json(data: &BlameData, root: &Path) -> serde_json::Value {
-    let commits: Vec<serde_json::Value> = data
-        .commits
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "hash": c.hash,
-                "author": c.author,
-                "date": c.date,
-                "message": c.message,
-            })
-        })
-        .collect();
-
     let mut result = serde_json::json!({
         "function": data.chunk.name,
         "file": normalize_path(&data.chunk.file),
         "lines": [data.chunk.line_start, data.chunk.line_end],
         "signature": data.chunk.signature,
-        "commits": commits,
-        "total_commits": commits.len(),
+        "commits": data.commits,
+        "total_commits": data.commits.len(),
     });
 
     if !data.callers.is_empty() {
@@ -241,13 +233,7 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 
 // ─── CLI command ─────────────────────────────────────────────────────────────
 
-pub(crate) fn cmd_blame(
-    _cli: &Cli,
-    target: &str,
-    json: bool,
-    depth: usize,
-    show_callers: bool,
-) -> Result<()> {
+pub(crate) fn cmd_blame(target: &str, json: bool, depth: usize, show_callers: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_blame", target).entered();
 
     let (store, root, _cqs_dir) = crate::cli::open_project_store()?;

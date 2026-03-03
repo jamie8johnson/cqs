@@ -4,12 +4,7 @@ use anyhow::Result;
 
 use cqs::{suggest_placement, Embedder};
 
-pub(crate) fn cmd_where(
-    _cli: &crate::cli::Cli,
-    description: &str,
-    limit: usize,
-    json: bool,
-) -> Result<()> {
+pub(crate) fn cmd_where(description: &str, limit: usize, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_where", description).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
     let embedder = Embedder::new()?;

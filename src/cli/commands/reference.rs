@@ -131,7 +131,8 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     }
 
     // Build HNSW index
-    let store = Store::open(&db_path)?;
+    let store = Store::open(&db_path)
+        .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?;
     if let Some(count) = build_hnsw_index(&store, &ref_dir)? {
         if !cli.quiet {
             println!("  HNSW: {} vectors", count);
@@ -311,7 +312,8 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     }
 
     // Prune chunks for deleted files
-    let store = Store::open(&db_path)?;
+    let store = Store::open(&db_path)
+        .with_context(|| format!("Failed to reopen reference store at {}", db_path.display()))?;
     let existing_files: HashSet<_> = files.into_iter().collect();
     let pruned = store.prune_missing(&existing_files)?;
 

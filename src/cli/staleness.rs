@@ -17,6 +17,7 @@ use cqs::Store;
 /// Returns the set of stale origins for callers that want to annotate results.
 /// Errors are logged and swallowed — staleness check should never break a query.
 pub fn warn_stale_results(store: &Store, origins: &[&str], root: &Path) -> HashSet<String> {
+    let _span = tracing::info_span!("warn_stale_results", count = origins.len()).entered();
     match store.check_origins_stale(origins, root) {
         Ok(stale) => {
             if !stale.is_empty() {

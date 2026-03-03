@@ -136,23 +136,18 @@ impl HnswIndex {
                 continue;
             }
 
-            // Validate dimensions for this batch
-            for (id, emb) in &batch {
-                if emb.len() != EMBEDDING_DIM {
-                    return Err(HnswError::DimensionMismatch {
-                        expected: EMBEDDING_DIM,
-                        actual: emb.len(),
-                    });
-                }
-                tracing::trace!("Adding {} to HNSW index", id);
-            }
-
-            // Build insertion data for this batch
-            // IDs are assigned sequentially starting from current id_map length
+            // Validate dimensions and build insertion data in a single pass
             let base_idx = id_map.len();
             let mut data_for_insert: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(batch.len());
 
             for (i, (chunk_id, embedding)) in batch.iter().enumerate() {
+                if embedding.len() != EMBEDDING_DIM {
+                    return Err(HnswError::DimensionMismatch {
+                        expected: EMBEDDING_DIM,
+                        actual: embedding.len(),
+                    });
+                }
+                tracing::trace!("Adding {} to HNSW index", chunk_id);
                 id_map.push(chunk_id.clone());
                 data_for_insert.push((embedding.as_vec(), base_idx + i));
             }

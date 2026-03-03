@@ -106,7 +106,7 @@ pub(crate) enum BatchCmd {
         expand: usize,
         /// Direction: both, callers, callees
         #[arg(long, default_value = "both")]
-        direction: String,
+        direction: cqs::GatherDirection,
         /// Max chunks
         #[arg(short = 'n', long, default_value = "10")]
         limit: usize,
@@ -342,7 +342,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             ctx,
             &query,
             expand,
-            &direction,
+            direction,
             limit,
             tokens,
             ref_name.as_deref(),

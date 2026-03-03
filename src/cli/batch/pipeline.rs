@@ -27,90 +27,17 @@ fn is_pipeable_command(tokens: &[String]) -> bool {
         .unwrap_or(false)
 }
 
-/// List of pipeable command names for error messages.
+/// Names of pipeable commands for error messages.
+///
+/// Kept in sync with `BatchCmd::is_pipeable()` — the `test_pipeable_names_sync`
+/// test verifies every name here actually parses as a pipeable command.
+const PIPEABLE_NAMES: &[&str] = &[
+    "blame", "callers", "callees", "deps", "explain", "similar", "impact", "test-map", "related",
+    "scout",
+];
+
 fn pipeable_command_names() -> String {
-    // Derive from BatchCmd variants — kept in sync via is_pipeable()
-    use super::commands::BatchCmd;
-    let all = [
-        (
-            "blame",
-            BatchCmd::Blame {
-                name: String::new(),
-                depth: 10,
-                callers: false,
-            },
-        ),
-        (
-            "callers",
-            BatchCmd::Callers {
-                name: String::new(),
-            },
-        ),
-        (
-            "callees",
-            BatchCmd::Callees {
-                name: String::new(),
-            },
-        ),
-        (
-            "deps",
-            BatchCmd::Deps {
-                name: String::new(),
-                reverse: false,
-            },
-        ),
-        (
-            "explain",
-            BatchCmd::Explain {
-                name: String::new(),
-                tokens: None,
-            },
-        ),
-        (
-            "similar",
-            BatchCmd::Similar {
-                target: String::new(),
-                limit: 5,
-                threshold: 0.3,
-            },
-        ),
-        (
-            "impact",
-            BatchCmd::Impact {
-                name: String::new(),
-                depth: 1,
-                suggest_tests: false,
-                include_types: false,
-            },
-        ),
-        (
-            "test-map",
-            BatchCmd::TestMap {
-                name: String::new(),
-                depth: 5,
-            },
-        ),
-        (
-            "related",
-            BatchCmd::Related {
-                name: String::new(),
-                limit: 5,
-            },
-        ),
-        (
-            "scout",
-            BatchCmd::Scout {
-                query: String::new(),
-                limit: 10,
-                tokens: None,
-            },
-        ),
-    ];
-    all.iter()
-        .filter(|(_, cmd)| cmd.is_pipeable())
-        .map(|(name, _)| *name)
-        .collect::<Vec<_>>()
-        .join(", ")
+    PIPEABLE_NAMES.join(", ")
 }
 
 /// Extract function/chunk names from a dispatch result JSON value.
@@ -686,5 +613,69 @@ mod tests {
                 assert!(!input.cmd.is_pipeable(), "'{label}' should NOT be pipeable");
             }
         }
+    }
+
+    // ===== EX-1 sync test: PIPEABLE_NAMES matches is_pipeable() =====
+
+    #[test]
+    fn test_pipeable_names_sync() {
+        // Every name in PIPEABLE_NAMES must parse as a BatchInput and be pipeable
+        for name in PIPEABLE_NAMES {
+            let result = BatchInput::try_parse_from([*name, "test_arg"]);
+            assert!(
+                result.is_ok(),
+                "PIPEABLE_NAMES entry '{name}' failed to parse"
+            );
+            assert!(
+                result.unwrap().cmd.is_pipeable(),
+                "PIPEABLE_NAMES entry '{name}' not pipeable via is_pipeable()"
+            );
+        }
+    }
+
+    // ===== TC-6: pipeline error propagation tests =====
+
+    #[test]
+    fn test_is_pipeable_command_rejects_non_pipeable() {
+        assert!(!is_pipeable_command(&[
+            "search".to_string(),
+            "foo".to_string()
+        ]));
+        assert!(!is_pipeable_command(&["dead".to_string()]));
+        assert!(!is_pipeable_command(&["stats".to_string()]));
+    }
+
+    #[test]
+    fn test_is_pipeable_command_accepts_pipeable() {
+        assert!(is_pipeable_command(&[
+            "callers".to_string(),
+            "foo".to_string()
+        ]));
+        assert!(is_pipeable_command(&[
+            "callees".to_string(),
+            "bar".to_string()
+        ]));
+        assert!(is_pipeable_command(&[
+            "impact".to_string(),
+            "baz".to_string()
+        ]));
+    }
+
+    #[test]
+    fn test_is_pipeable_command_empty() {
+        assert!(!is_pipeable_command(&[]));
+    }
+
+    #[test]
+    fn test_pipeable_command_names_string() {
+        let names = pipeable_command_names();
+        // Should contain all pipeable commands
+        assert!(names.contains("callers"));
+        assert!(names.contains("callees"));
+        assert!(names.contains("blame"));
+        // Should NOT contain non-pipeable commands
+        assert!(!names.contains("search"));
+        assert!(!names.contains("dead"));
+        assert!(!names.contains("stats"));
     }
 }

@@ -1,6 +1,6 @@
 //! Diff command — semantic diff between indexed snapshots
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 
 use cqs::Store;
@@ -29,7 +29,8 @@ pub(crate) fn cmd_diff(
         if !index_path.exists() {
             bail!("Project index not found. Run 'cqs init && cqs index' first.");
         }
-        Store::open(&index_path)?
+        Store::open(&index_path)
+            .with_context(|| format!("Failed to open project store at {}", index_path.display()))?
     } else {
         super::resolve::resolve_reference_store(&root, target_label)?
     };

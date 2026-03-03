@@ -4,10 +4,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use super::super::Cli;
-
 pub fn cmd_convert(
-    _cli: &Cli,
     path: &str,
     output: Option<&str>,
     overwrite: bool,

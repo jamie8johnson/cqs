@@ -91,7 +91,7 @@ The convert module spawns external processes for format conversion:
 
 **Mitigations:**
 
-- Symlink filtering: Symlinks in extracted archives are skipped
+- Symlink filtering: Symlinks are skipped during directory walks and archive extraction
 - Zip-slip containment: Extracted paths are validated to stay within the output directory
 - Page count limits: PDF conversion enforces a maximum page count to bound processing time
 

@@ -111,27 +111,10 @@ pub(crate) fn cmd_gather(
     }
 
     if json {
-        let json_chunks: Vec<_> = result
+        let json_chunks: Vec<serde_json::Value> = result
             .chunks
             .iter()
-            .map(|c| {
-                let mut chunk_json = serde_json::json!({
-                    "name": c.name,
-                    "file": normalize_path(&c.file),
-                    "line_start": c.line_start,
-                    "line_end": c.line_end,
-                    "language": c.language.to_string(),
-                    "chunk_type": c.chunk_type.to_string(),
-                    "signature": c.signature,
-                    "score": c.score,
-                    "depth": c.depth,
-                    "content": c.content,
-                });
-                if let Some(ref src) = c.source {
-                    chunk_json["source"] = serde_json::json!(src);
-                }
-                chunk_json
-            })
+            .filter_map(|c| serde_json::to_value(c).ok())
             .collect();
         let mut output = serde_json::json!({
             "query": query,

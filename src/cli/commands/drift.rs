@@ -1,6 +1,6 @@
 //! Drift command — semantic change detection between reference snapshots
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use colored::Colorize;
 
 use cqs::Store;
@@ -28,7 +28,8 @@ pub(crate) fn cmd_drift(
     if !index_path.exists() {
         bail!("Project index not found. Run 'cqs init && cqs index' first.");
     }
-    let project_store = Store::open(&index_path)?;
+    let project_store = Store::open(&index_path)
+        .with_context(|| format!("Failed to open project store at {}", index_path.display()))?;
 
     let result = cqs::drift::detect_drift(
         &ref_store,

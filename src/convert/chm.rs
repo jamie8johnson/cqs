@@ -116,7 +116,7 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
         pages.truncate(MAX_PAGES);
     }
 
-    let mut all_markdown = Vec::new();
+    let mut merged = String::new();
 
     for entry in &pages {
         let bytes = match std::fs::read(entry.path()) {
@@ -135,7 +135,10 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 
         match super::html::html_to_markdown(&html) {
             Ok(md) if !md.trim().is_empty() => {
-                all_markdown.push(md);
+                if !merged.is_empty() {
+                    merged.push_str("\n\n---\n\n");
+                }
+                merged.push_str(&md);
             }
             Ok(_) => {} // skip empty pages
             Err(e) => {
@@ -148,16 +151,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
         }
     }
 
-    if all_markdown.is_empty() {
+    if merged.is_empty() {
         tracing::warn!(path = %path.display(), pages = pages.len(), "CHM produced no content from any page");
         anyhow::bail!("CHM produced no content");
     }
-
-    // Merge all pages with separator
-    let merged = all_markdown.join("\n\n---\n\n");
     tracing::info!(
         path = %path.display(),
-        pages = all_markdown.len(),
+        pages = pages.len(),
         bytes = merged.len(),
         "CHM converted"
     );

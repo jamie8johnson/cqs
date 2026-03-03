@@ -66,13 +66,15 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
     // If interrupted during rebuild, the backup remains recoverable.
     let backup_path = cqs_dir.join("index.db.bak");
     let store = if index_path.exists() && !force {
-        Store::open(&index_path)?
+        Store::open(&index_path)
+            .with_context(|| format!("Failed to open store at {}", index_path.display()))?
     } else {
         if index_path.exists() {
             std::fs::rename(&index_path, &backup_path)
                 .with_context(|| format!("Failed to back up {}", index_path.display()))?;
         }
-        let store = Store::open(&index_path)?;
+        let store = Store::open(&index_path)
+            .with_context(|| format!("Failed to create store at {}", index_path.display()))?;
         store.init(&ModelInfo::default())?;
         store
     };

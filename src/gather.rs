@@ -112,6 +112,7 @@ impl std::str::FromStr for GatherDirection {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct GatheredChunk {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
@@ -122,6 +123,7 @@ pub struct GatheredChunk {
     pub score: f32,
     pub depth: usize,
     /// Source: None = project, Some(name) = reference
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
 
@@ -152,22 +154,6 @@ impl GatheredChunk {
             depth,
             source,
         }
-    }
-
-    /// Serialize to JSON, relativizing file paths against the project root.
-    pub fn to_json(&self, root: &Path) -> serde_json::Value {
-        serde_json::json!({
-            "name": self.name,
-            "file": crate::rel_display(&self.file, root),
-            "line_start": self.line_start,
-            "line_end": self.line_end,
-            "language": self.language.to_string(),
-            "chunk_type": self.chunk_type.to_string(),
-            "signature": self.signature,
-            "content": self.content,
-            "score": self.score,
-            "depth": self.depth,
-        })
     }
 }
 

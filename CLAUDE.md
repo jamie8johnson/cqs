@@ -68,7 +68,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs diff <ref>` — semantic diff between indexed snapshots. Requires references (`cqs ref add`).
 - `cqs drift <ref>` — semantic drift detection: functions that changed most between reference and project. `--min-drift 0.1` to filter noise.
 - `cqs gather "query"` — smart context assembly: seed search + BFS call graph expansion. `--ref name` for cross-index: seeds from reference, bridges into project code.
-- `cqs dead` — find dead code: functions/methods with no callers in the index.
+- `cqs dead` — find dead code: functions/methods with no callers in the index. `--include-pub` for public API, `--min-confidence high|medium|low`.
 - `cqs stale` — check index freshness: files modified since last index.
 - `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.
 - `cqs where "description"` — placement suggestion: where to add new code, with local patterns.

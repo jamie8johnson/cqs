@@ -46,6 +46,7 @@ To remove all cqs data:
 rm -rf .cqs/                          # Project index
 rm -rf ~/.local/share/cqs/refs/       # Reference indexes
 rm -rf ~/.config/cqs/projects.toml    # Project registry
+rm -f ~/.config/cqs/config.toml       # User configuration
 rm -f .cqs.toml                       # Project config
 rm -f docs/notes.toml                 # Project notes
 rm -rf ~/.cache/huggingface/          # Downloaded model

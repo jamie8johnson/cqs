@@ -383,7 +383,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
 }
 
 /// Entry point for `cqs batch`.
-pub(crate) fn cmd_batch(_cli: &super::Cli) -> Result<()> {
+pub(crate) fn cmd_batch() -> Result<()> {
     let _span = tracing::info_span!("cmd_batch").entered();
 
     let ctx = create_context()?;

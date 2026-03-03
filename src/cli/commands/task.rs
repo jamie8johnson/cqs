@@ -367,12 +367,12 @@ fn build_scout_json(
 
 fn build_code_json(
     result: &cqs::TaskResult,
-    root: &std::path::Path,
+    _root: &std::path::Path,
     indices: &[usize],
 ) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .map(|&i| result.code[i].to_json(root))
+        .filter_map(|&i| serde_json::to_value(&result.code[i]).ok())
         .collect()
 }
 

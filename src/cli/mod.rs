@@ -669,14 +669,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
     cli.limit = cli.limit.clamp(1, 100);
 
     match cli.command {
-        Some(Commands::Batch) => batch::cmd_batch(&cli),
+        Some(Commands::Batch) => batch::cmd_batch(),
         Some(Commands::Blame {
             ref name,
             depth,
             callers,
             json,
-        }) => cmd_blame(&cli, name, json, depth, callers),
-        Some(Commands::Chat) => chat::cmd_chat(&cli),
+        }) => cmd_blame(name, json, depth, callers),
+        Some(Commands::Chat) => chat::cmd_chat(),
         Some(Commands::Init) => cmd_init(&cli),
         Some(Commands::Doctor) => cmd_doctor(),
         Some(Commands::Index {
@@ -776,7 +776,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref name,
             depth,
             json,
-        }) => cmd_test_map(&cli, name, depth, json),
+        }) => cmd_test_map(name, depth, json),
         Some(Commands::Context {
             ref path,
             json,
@@ -831,7 +831,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             ref description,
             limit,
             json,
-        }) => cmd_where(&cli, description, limit, json),
+        }) => cmd_where(description, limit, json),
         Some(Commands::Scout {
             ref query,
             limit,
@@ -852,7 +852,6 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             dry_run,
             ref clean_tags,
         }) => cmd_convert(
-            &cli,
             path,
             output.as_deref(),
             overwrite,

@@ -97,7 +97,7 @@ fn command_names() -> Vec<String> {
 
 // ─── REPL ────────────────────────────────────────────────────────────────────
 
-pub(crate) fn cmd_chat(_cli: &super::Cli) -> Result<()> {
+pub(crate) fn cmd_chat() -> Result<()> {
     let _span = tracing::info_span!("cmd_chat").entered();
 
     let ctx = batch::create_context()?;
@@ -251,5 +251,63 @@ mod tests {
         assert_eq!(handle_meta("search foo"), None);
         assert_eq!(handle_meta("callers bar"), None);
         assert_eq!(handle_meta(""), None);
+    }
+
+    // ===== ChatHelper::complete tests (TC-4) =====
+
+    #[test]
+    fn test_complete_empty_prefix() {
+        use rustyline::completion::Completer;
+        let helper = ChatHelper {
+            commands: vec!["search".into(), "callers".into(), "explain".into()],
+        };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let (pos, matches) = helper.complete("", 0, &ctx).unwrap();
+        assert_eq!(pos, 0);
+        assert_eq!(matches.len(), 3);
+    }
+
+    #[test]
+    fn test_complete_partial_prefix() {
+        use rustyline::completion::Completer;
+        let helper = ChatHelper {
+            commands: vec!["search".into(), "similar".into(), "stats".into()],
+        };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let (pos, matches) = helper.complete("s", 1, &ctx).unwrap();
+        assert_eq!(pos, 0);
+        assert_eq!(matches.len(), 3);
+
+        let (pos, matches) = helper.complete("se", 2, &ctx).unwrap();
+        assert_eq!(pos, 0);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].display, "search");
+    }
+
+    #[test]
+    fn test_complete_after_space_returns_empty() {
+        use rustyline::completion::Completer;
+        let helper = ChatHelper {
+            commands: vec!["search".into(), "callers".into()],
+        };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        // After a space (user is typing arguments), no command completion
+        let (_, matches) = helper.complete("search foo", 10, &ctx).unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_complete_no_match() {
+        use rustyline::completion::Completer;
+        let helper = ChatHelper {
+            commands: vec!["search".into(), "callers".into()],
+        };
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = rustyline::Context::new(&history);
+        let (_, matches) = helper.complete("xyz", 3, &ctx).unwrap();
+        assert!(matches.is_empty());
     }
 }

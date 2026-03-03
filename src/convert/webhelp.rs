@@ -90,7 +90,8 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
         "Found web help pages"
     );
 
-    let mut all_markdown = Vec::new();
+    let mut merged = String::new();
+    let mut page_count = 0usize;
 
     for entry in &pages {
         let bytes = match std::fs::read(entry.path()) {
@@ -108,7 +109,11 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
 
         match super::html::html_to_markdown(&html) {
             Ok(md) if !md.trim().is_empty() => {
-                all_markdown.push(md);
+                if !merged.is_empty() {
+                    merged.push_str("\n\n---\n\n");
+                }
+                merged.push_str(&md);
+                page_count += 1;
             }
             Ok(_) => {} // skip empty pages
             Err(e) => {
@@ -121,14 +126,13 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
         }
     }
 
-    if all_markdown.is_empty() {
+    if merged.is_empty() {
         anyhow::bail!("Web help produced no content from {} pages", pages.len());
     }
 
-    let merged = all_markdown.join("\n\n---\n\n");
     tracing::info!(
         dir = %dir.display(),
-        pages = all_markdown.len(),
+        pages = page_count,
         bytes = merged.len(),
         "Web help converted"
     );

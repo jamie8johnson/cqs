@@ -167,9 +167,13 @@ fn suggest_placement_with_options_core(
     limit: usize,
     opts: &PlacementOptions,
 ) -> Result<PlacementResult, AnalysisError> {
-    let query_embedding = opts.query_embedding.as_ref().expect(
-        "suggest_placement_with_options_core called without query_embedding in PlacementOptions",
-    );
+    let query_embedding = opts
+        .query_embedding
+        .as_ref()
+        .ok_or_else(|| AnalysisError::Phase {
+            phase: "placement",
+            message: "query_embedding required in PlacementOptions".to_string(),
+        })?;
     let _span =
         tracing::info_span!("suggest_placement", desc_len = description.len(), limit).entered();
 

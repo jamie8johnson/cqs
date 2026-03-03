@@ -241,59 +241,12 @@ impl Store {
         })
     }
 
-    /// Get all chunks that call the named function.
-    ///
-    /// Takes a function **name** (not ID) because multiple definitions may share
-    /// a name across files. Returns full [`ChunkSummary`] with file, line, and
-    /// signature context for display.
-    ///
-    /// For the reverse direction, see [`get_callees`] which returns callee names
-    /// from a specific chunk ID.
-    pub fn get_callers(&self, callee_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
-        tracing::debug!(callee_name, "querying callers from chunks");
-
-        self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature,
-                        c.content, c.doc, c.line_start, c.line_end, c.parent_id
-                 FROM chunks c
-                 JOIN calls ca ON c.id = ca.caller_id
-                 WHERE ca.callee_name = ?1
-                 ORDER BY c.origin, c.line_start",
-            )
-            .bind(callee_name)
-            .fetch_all(&self.pool)
-            .await?;
-
-            let chunks: Vec<ChunkSummary> = rows
-                .into_iter()
-                .map(|row| {
-                    ChunkSummary::from(ChunkRow {
-                        id: row.get(0),
-                        origin: row.get(1),
-                        language: row.get(2),
-                        chunk_type: row.get(3),
-                        name: row.get(4),
-                        signature: row.get(5),
-                        content: row.get(6),
-                        doc: row.get(7),
-                        line_start: clamp_line_number(row.get::<i64, _>(8)),
-                        line_end: clamp_line_number(row.get::<i64, _>(9)),
-                        parent_id: row.get(10),
-                    })
-                })
-                .collect();
-
-            Ok(chunks)
-        })
-    }
-
     /// Get all function names called by a given chunk.
     ///
     /// Takes a chunk **ID** (unique) rather than a name. Returns only callee
     /// **names** (not full chunks) because:
     /// - Callees may not exist in the index (external functions)
-    /// - Callers typically chain: `get_callees` → `get_callers` for graph traversal
+    /// - Callers typically chain: `get_callees` → `get_callers_full` for graph traversal
     ///
     /// For richer callee data, see [`get_callers_with_context`].
     pub fn get_callees(&self, chunk_id: &str) -> Result<Vec<String>, StoreError> {
@@ -835,12 +788,12 @@ impl Store {
     ///
     /// Used for confidence scoring: files with active functions are "active".
     async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
-        // Files with at least one function that has callers
+        // Files with at least one function that has callers (JOIN is more efficient than IN subquery)
         let files_with_callers: std::collections::HashSet<String> = {
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT c.origin
                  FROM chunks c
-                 WHERE c.name IN (SELECT DISTINCT callee_name FROM function_calls)",
+                 INNER JOIN function_calls fc ON c.name = fc.callee_name",
             )
             .fetch_all(&self.pool)
             .await?;
@@ -877,8 +830,8 @@ impl Store {
         active_files: &std::collections::HashSet<String>,
         include_pub: bool,
     ) -> Result<(Vec<DeadFunction>, Vec<DeadFunction>), StoreError> {
-        // Batch-fetch content for remaining candidates
-        let candidate_ids: Vec<String> = candidates.iter().map(|c| c.id.clone()).collect();
+        // Batch-fetch content for remaining candidates (use references to avoid cloning IDs)
+        let candidate_ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
         let mut content_map: std::collections::HashMap<String, (String, Option<String>)> =
             std::collections::HashMap::new();
 
@@ -1148,6 +1101,7 @@ impl Store {
         &self,
         names: &[&str],
     ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+        let _span = tracing::info_span!("get_caller_counts_batch", count = names.len()).entered();
         if names.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -1164,6 +1118,7 @@ impl Store {
         &self,
         names: &[&str],
     ) -> Result<std::collections::HashMap<String, u64>, StoreError> {
+        let _span = tracing::info_span!("get_callee_counts_batch", count = names.len()).entered();
         if names.is_empty() {
             return Ok(std::collections::HashMap::new());
         }

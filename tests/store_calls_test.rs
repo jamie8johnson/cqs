@@ -1,6 +1,6 @@
 //! Call graph tests (T3, T17)
 //!
-//! Tests for upsert_calls, get_callers, get_callees, and call_stats.
+//! Tests for upsert_calls, get_callers_full, get_callees, and call_stats.
 
 mod common;
 
@@ -106,46 +106,39 @@ fn test_upsert_calls_empty() {
     );
 }
 
-// ===== get_callers tests =====
+// ===== get_callers_full tests =====
 
 #[test]
-fn test_get_callers_found() {
+fn test_get_callers_full_found() {
+    use cqs::parser::FunctionCalls;
+
     let store = TestStore::new();
 
-    // Create two chunks that call the same function
-    let chunk1 = test_chunk("fn1", "fn fn1() { target(); }");
-    let mut chunk2 = test_chunk("fn2", "fn fn2() { target(); }");
-    chunk2.id = format!("test.rs:10:{}", &chunk2.content_hash[..8]);
-
-    store
-        .upsert_chunk(&chunk1, &mock_embedding(1.0), Some(12345))
-        .unwrap();
-    store
-        .upsert_chunk(&chunk2, &mock_embedding(1.0), Some(12345))
-        .unwrap();
-
-    // Both call "target"
-    store
-        .upsert_calls(
-            &chunk1.id,
-            &[CallSite {
+    // Insert function-level calls (the full call graph)
+    let calls = vec![
+        FunctionCalls {
+            name: "fn1".to_string(),
+            line_start: 1,
+            calls: vec![CallSite {
                 callee_name: "target".to_string(),
-                line_number: 1,
+                line_number: 5,
             }],
-        )
-        .unwrap();
-    store
-        .upsert_calls(
-            &chunk2.id,
-            &[CallSite {
+        },
+        FunctionCalls {
+            name: "fn2".to_string(),
+            line_start: 10,
+            calls: vec![CallSite {
                 callee_name: "target".to_string(),
-                line_number: 1,
+                line_number: 15,
             }],
-        )
+        },
+    ];
+    store
+        .upsert_function_calls(std::path::Path::new("test.rs"), &calls)
         .unwrap();
 
     // Get callers of "target"
-    let callers = store.get_callers("target").unwrap();
+    let callers = store.get_callers_full("target").unwrap();
     assert_eq!(callers.len(), 2);
 
     let caller_names: Vec<_> = callers.iter().map(|c| c.name.as_str()).collect();
@@ -154,20 +147,20 @@ fn test_get_callers_found() {
 }
 
 #[test]
-fn test_get_callers_not_found() {
+fn test_get_callers_full_not_found() {
     let store = TestStore::new();
 
     // No calls inserted
-    let callers = store.get_callers("nonexistent").unwrap();
+    let callers = store.get_callers_full("nonexistent").unwrap();
     assert!(callers.is_empty());
 }
 
 #[test]
-fn test_get_callers_empty_string() {
+fn test_get_callers_full_empty_string() {
     let store = TestStore::new();
 
     // Edge case: empty callee name
-    let callers = store.get_callers("").unwrap();
+    let callers = store.get_callers_full("").unwrap();
     assert!(callers.is_empty());
 }
 

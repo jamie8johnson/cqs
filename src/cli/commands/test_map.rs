@@ -5,12 +5,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::resolve::resolve_target;
 
-pub(crate) fn cmd_test_map(
-    _cli: &crate::cli::Cli,
-    name: &str,
-    max_depth: usize,
-    json: bool,
-) -> Result<()> {
+pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_test_map", name).entered();
     let (store, root, _) = crate::cli::open_project_store()?;
     let resolved = resolve_target(&store, name)?;

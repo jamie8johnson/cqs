@@ -110,6 +110,16 @@ static FORMAT_TABLE: &[FormatEntry] = &[
 #[cfg(feature = "convert")]
 fn markdown_passthrough(path: &Path) -> anyhow::Result<String> {
     let _span = tracing::info_span!("markdown_passthrough", path = %path.display()).entered();
+    const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+    let meta = std::fs::metadata(path)
+        .map_err(|e| anyhow::anyhow!("Failed to stat {}: {}", path.display(), e))?;
+    if meta.len() > MAX_FILE_SIZE {
+        anyhow::bail!(
+            "File {} exceeds {} MB size limit",
+            path.display(),
+            MAX_FILE_SIZE / 1024 / 1024,
+        );
+    }
     std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))
 }
@@ -342,7 +352,9 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
     }
 
     // Walk individual files, skipping symlinks and those under web help directories
+    const MAX_WALK_DEPTH: usize = 50;
     for entry in walkdir::WalkDir::new(dir)
+        .max_depth(MAX_WALK_DEPTH)
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
         .filter_map(|e| e.ok())

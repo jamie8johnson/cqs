@@ -128,14 +128,16 @@ pub(crate) fn token_pack<T>(
 
     // Greedy pack in score order, tracking which indices to keep
     let mut used: usize = 0;
+    let mut kept_any = false;
     let mut keep: Vec<bool> = vec![false; items.len()];
     for idx in order {
         let tokens = token_counts[idx] + json_overhead_per_item;
-        if used + tokens > budget && keep.iter().any(|&k| k) {
+        if used + tokens > budget && kept_any {
             break;
         }
         used += tokens;
         keep[idx] = true;
+        kept_any = true;
     }
 
     // Preserve original ordering among kept items (stable extraction)
@@ -182,6 +184,15 @@ pub(crate) fn run_git_diff(base: Option<&str>) -> anyhow::Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("git diff failed: {}", stderr.trim());
+    }
+
+    const MAX_DIFF_SIZE: usize = 50 * 1024 * 1024; // 50 MB
+    if output.stdout.len() > MAX_DIFF_SIZE {
+        anyhow::bail!(
+            "git diff output exceeds {} MB limit ({} bytes)",
+            MAX_DIFF_SIZE / 1024 / 1024,
+            output.stdout.len()
+        );
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())

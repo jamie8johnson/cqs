@@ -93,6 +93,9 @@ pub use helpers::EXPECTED_DIMENSIONS;
 /// Name of the embedding model used.
 pub use helpers::MODEL_NAME;
 
+/// Default name_boost weight for CLI search commands.
+pub use helpers::DEFAULT_NAME_BOOST;
+
 /// Score a chunk name against a query for definition search.
 pub use helpers::score_name_match;
 
@@ -353,6 +356,7 @@ impl Store {
     /// Wraps all DDL and metadata inserts in a single transaction so a
     /// crash mid-init cannot leave a partial schema.
     pub fn init(&self, model_info: &ModelInfo) -> Result<(), StoreError> {
+        let _span = tracing::info_span!("Store::init").entered();
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
 
@@ -604,6 +608,9 @@ impl Store {
             return Ok(vec![]);
         }
 
+        // Pre-lowercase query once for score_name_match_pre_lower (PF-3)
+        let lower_name = name.to_lowercase();
+
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
         assert!(
@@ -643,7 +650,8 @@ impl Store {
                         line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
                     });
-                    let score = score_name_match(&chunk.name, name);
+                    let name_lower = chunk.name.to_lowercase();
+                    let score = helpers::score_name_match_pre_lower(&name_lower, &lower_name);
                     SearchResult { chunk, score }
                 })
                 .collect();
@@ -659,7 +667,7 @@ impl Store {
     /// - HashMap with ~30-100 entries costs ~1KB, negligible vs embedding costs (~3KB)
     /// - Thread-local buffer would add complexity for ~0.1ms savings on typical searches
     pub(crate) fn rrf_fuse(
-        semantic_ids: &[String],
+        semantic_ids: &[&str],
         fts_ids: &[String],
         limit: usize,
     ) -> Vec<(String, f32)> {
@@ -673,7 +681,7 @@ impl Store {
             // RRF formula: 1 / (K + rank). The + 1.0 converts 0-indexed enumerate()
             // to 1-indexed ranks (first result = rank 1, not rank 0).
             let contribution = 1.0 / (K + rank as f32 + 1.0);
-            *scores.entry(id.as_str()).or_insert(0.0) += contribution;
+            *scores.entry(id).or_insert(0.0) += contribution;
         }
 
         for (rank, id) in fts_ids.iter().enumerate() {
@@ -698,7 +706,8 @@ impl Store {
         fts_ids: &[String],
         limit: usize,
     ) -> Vec<(String, f32)> {
-        Self::rrf_fuse(semantic_ids, fts_ids, limit)
+        let refs: Vec<&str> = semantic_ids.iter().map(|s| s.as_str()).collect();
+        Self::rrf_fuse(&refs, fts_ids, limit)
     }
 
     /// Update the `updated_at` metadata timestamp to now.

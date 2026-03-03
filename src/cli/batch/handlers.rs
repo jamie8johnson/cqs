@@ -80,7 +80,7 @@ pub(super) fn dispatch_search(
     let filter = cqs::SearchFilter {
         languages,
         path_pattern: path,
-        name_boost: 0.2,
+        name_boost: cqs::store::DEFAULT_NAME_BOOST,
         query_text: query.to_string(),
         enable_rrf: !semantic_only,
         ..Default::default()
@@ -346,7 +346,7 @@ pub(super) fn dispatch_gather(
     ctx: &BatchContext,
     query: &str,
     expand: usize,
-    direction: &str,
+    direction: cqs::GatherDirection,
     limit: usize,
     tokens: Option<usize>,
     ref_name: Option<&str>,
@@ -358,13 +358,9 @@ pub(super) fn dispatch_gather(
         .embed_query(query)
         .context("Failed to embed query")?;
 
-    let dir: cqs::GatherDirection = direction
-        .parse()
-        .map_err(|e: String| anyhow::anyhow!("{e}"))?;
-
     let opts = cqs::GatherOptions {
         expand_depth: expand.clamp(0, 5),
-        direction: dir,
+        direction,
         limit: limit.clamp(1, 100),
         ..cqs::GatherOptions::default()
     };
@@ -405,24 +401,7 @@ pub(super) fn dispatch_gather(
 
     let json_chunks: Vec<serde_json::Value> = chunks
         .iter()
-        .map(|c| {
-            let mut chunk_json = serde_json::json!({
-                "name": c.name,
-                "file": normalize_path(&c.file),
-                "line_start": c.line_start,
-                "line_end": c.line_end,
-                "language": c.language.to_string(),
-                "chunk_type": c.chunk_type.to_string(),
-                "signature": c.signature,
-                "score": c.score,
-                "depth": c.depth,
-                "content": c.content,
-            });
-            if let Some(ref src) = c.source {
-                chunk_json["source"] = serde_json::json!(src);
-            }
-            chunk_json
-        })
+        .filter_map(|c| serde_json::to_value(c).ok())
         .collect();
 
     let mut response = serde_json::json!({

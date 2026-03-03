@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Detect if running under Windows Subsystem for Linux (cached)
+#[cfg(unix)]
 pub fn is_wsl() -> bool {
     static IS_WSL: OnceLock<bool> = OnceLock::new();
     *IS_WSL.get_or_init(|| {
@@ -22,6 +23,12 @@ pub fn is_wsl() -> bool {
             })
             .unwrap_or(false)
     })
+}
+
+/// Non-Unix platforms are never WSL
+#[cfg(not(unix))]
+pub fn is_wsl() -> bool {
+    false
 }
 
 /// Reference index configuration
