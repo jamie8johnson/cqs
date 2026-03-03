@@ -33,8 +33,10 @@ pub(crate) const WINDOW_OVERLAP_TOKENS: usize = 64;
 const EMBED_BATCH_SIZE: usize = 32;
 /// Files to parse per batch (bounded memory)
 const FILE_BATCH_SIZE: usize = 5_000;
-/// Pipeline buffer depth (larger = smoother GPU/CPU utilization)
-const PIPELINE_CHANNEL_DEPTH: usize = 256;
+/// Parse channel depth — lightweight (chunk metadata only), can be deeper
+const PARSE_CHANNEL_DEPTH: usize = 512;
+/// Embed channel depth — heavy (embedding vectors), smaller to bound memory
+const EMBED_CHANNEL_DEPTH: usize = 64;
 
 /// Apply windowing to chunks that exceed the token limit.
 /// Long chunks are split into overlapping windows; short chunks pass through unchanged.
@@ -650,11 +652,11 @@ pub(crate) fn run_index_pipeline(
 
     // Channels
     let (parse_tx, parse_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
-        bounded(PIPELINE_CHANNEL_DEPTH);
+        bounded(PARSE_CHANNEL_DEPTH);
     let (embed_tx, embed_rx): (Sender<EmbeddedBatch>, Receiver<EmbeddedBatch>) =
-        bounded(PIPELINE_CHANNEL_DEPTH);
+        bounded(EMBED_CHANNEL_DEPTH);
     let (fail_tx, fail_rx): (Sender<ParsedBatch>, Receiver<ParsedBatch>) =
-        bounded(PIPELINE_CHANNEL_DEPTH);
+        bounded(EMBED_CHANNEL_DEPTH);
 
     // Shared state
     let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);

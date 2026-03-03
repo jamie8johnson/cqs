@@ -29,22 +29,28 @@ pub(super) fn dispatch_blame(
     Ok(crate::cli::commands::blame::blame_to_json(&data, &ctx.root))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Parameters for batch search dispatch.
+pub(super) struct SearchParams {
+    pub query: String,
+    pub limit: usize,
+    pub name_only: bool,
+    pub semantic_only: bool,
+    pub rerank: bool,
+    pub lang: Option<String>,
+    pub path: Option<String>,
+    pub tokens: Option<usize>,
+}
+
 pub(super) fn dispatch_search(
     ctx: &BatchContext,
-    query: &str,
-    limit: usize,
-    name_only: bool,
-    semantic_only: bool,
-    rerank: bool,
-    lang: Option<String>,
-    path: Option<String>,
-    tokens: Option<usize>,
+    params: &SearchParams,
 ) -> Result<serde_json::Value> {
-    let _span = tracing::info_span!("batch_search", query).entered();
+    let _span = tracing::info_span!("batch_search", query = %params.query).entered();
 
-    if name_only {
-        let results = ctx.store.search_by_name(query, limit.clamp(1, 100))?;
+    if params.name_only {
+        let results = ctx
+            .store
+            .search_by_name(&params.query, params.limit.clamp(1, 100))?;
         let json_results: Vec<serde_json::Value> = results
             .iter()
             .map(|r| {
@@ -57,32 +63,36 @@ pub(super) fn dispatch_search(
             .collect();
         return Ok(serde_json::json!({
             "results": json_results,
-            "query": query,
+            "query": params.query,
             "total": json_results.len(),
         }));
     }
 
     let embedder = ctx.embedder()?;
     let query_embedding = embedder
-        .embed_query(query)
+        .embed_query(&params.query)
         .context("Failed to embed query")?;
 
-    let languages = match &lang {
+    let languages = match &params.lang {
         Some(l) => Some(vec![l
             .parse()
             .map_err(|_| anyhow::anyhow!("Invalid language '{}'", l))?]),
         None => None,
     };
 
-    let limit = limit.clamp(1, 100);
-    let effective_limit = if rerank { (limit * 4).min(100) } else { limit };
+    let limit = params.limit.clamp(1, 100);
+    let effective_limit = if params.rerank {
+        (limit * 4).min(100)
+    } else {
+        limit
+    };
 
     let filter = cqs::SearchFilter {
         languages,
-        path_pattern: path,
+        path_pattern: params.path.clone(),
         name_boost: cqs::store::DEFAULT_NAME_BOOST,
-        query_text: query.to_string(),
-        enable_rrf: !semantic_only,
+        query_text: params.query.clone(),
+        enable_rrf: !params.semantic_only,
         ..Default::default()
     };
 
@@ -113,7 +123,7 @@ pub(super) fn dispatch_search(
     };
 
     // Re-rank if requested
-    let results = if rerank && results.len() > 1 {
+    let results = if params.rerank && results.len() > 1 {
         let mut code_results = Vec::new();
         let mut note_results = Vec::new();
         for r in results {
@@ -125,7 +135,7 @@ pub(super) fn dispatch_search(
         if code_results.len() > 1 {
             let reranker = ctx.reranker()?;
             reranker
-                .rerank(query, &mut code_results, limit)
+                .rerank(&params.query, &mut code_results, limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         }
         let mut out: Vec<cqs::store::UnifiedResult> = code_results
@@ -140,7 +150,7 @@ pub(super) fn dispatch_search(
     };
 
     // Token-budget packing
-    let (results, token_info) = if let Some(budget) = tokens {
+    let (results, token_info) = if let Some(budget) = params.tokens {
         let embedder = ctx.embedder()?;
         let texts: Vec<&str> = results
             .iter()
@@ -186,7 +196,7 @@ pub(super) fn dispatch_search(
 
     let mut response = serde_json::json!({
         "results": json_results,
-        "query": query,
+        "query": params.query,
         "total": json_results.len(),
     });
     if let Some((used, budget)) = token_info {

@@ -224,7 +224,15 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     // Token-budget packing for unified results (no-ref path)
     let json_overhead = json_overhead_for(cli);
     let (results, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_unified(results, budget, json_overhead, &embedder)
+        token_pack_results(
+            results,
+            budget,
+            json_overhead,
+            &embedder,
+            unified_text,
+            unified_score,
+            "query",
+        )
     } else {
         (results, None)
     };
@@ -307,7 +315,15 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // Token-budget packing for tagged results (multi-ref path)
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_tagged(tagged, budget, json_overhead, &embedder)
+        token_pack_results(
+            tagged,
+            budget,
+            json_overhead,
+            &embedder,
+            |r| unified_text(&r.result),
+            |r| unified_score(&r.result),
+            "tagged",
+        )
     } else {
         (tagged, token_info)
     };
@@ -328,74 +344,47 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 /// Token info for display: (used, budget)
 type TokenInfo = Option<(usize, usize)>;
 
-/// Pack unified results into a token budget, keeping highest-scoring results.
+/// Pack results into a token budget, keeping highest-scoring results.
 ///
-/// Results are already sorted by score from the search engine.
-fn token_pack_unified(
-    results: Vec<UnifiedResult>,
+/// Generic over result type — works for both `UnifiedResult` and `TaggedResult`.
+fn token_pack_results<T>(
+    results: Vec<T>,
     budget: usize,
     json_overhead: usize,
     embedder: &Embedder,
-) -> (Vec<UnifiedResult>, TokenInfo) {
-    let _span = tracing::info_span!("token_pack_unified", budget).entered();
+    text_fn: impl Fn(&T) -> &str,
+    score_fn: impl Fn(&T) -> f32,
+    label: &str,
+) -> (Vec<T>, TokenInfo) {
+    let _span = tracing::info_span!("token_pack_results", budget, label).entered();
 
-    let texts: Vec<&str> = results
-        .iter()
-        .map(|r| match r {
-            UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
-            UnifiedResult::Note(nr) => nr.note.text.as_str(),
-        })
-        .collect();
+    let texts: Vec<&str> = results.iter().map(&text_fn).collect();
     let token_counts = super::count_tokens_batch(embedder, &texts);
-    let (packed, used) =
-        super::token_pack(results, &token_counts, budget, json_overhead, |r| match r {
-            UnifiedResult::Code(sr) => sr.score,
-            UnifiedResult::Note(nr) => nr.score,
-        });
+    let (packed, used) = super::token_pack(results, &token_counts, budget, json_overhead, score_fn);
     tracing::info!(
         chunks = packed.len(),
         tokens = used,
         budget,
+        label,
         "Token-budgeted query"
     );
     (packed, Some((used, budget)))
 }
 
-/// Pack tagged results into a token budget
-fn token_pack_tagged(
-    results: Vec<reference::TaggedResult>,
-    budget: usize,
-    json_overhead: usize,
-    embedder: &Embedder,
-) -> (Vec<reference::TaggedResult>, TokenInfo) {
-    let _span = tracing::info_span!("token_pack_tagged", budget).entered();
+/// Extract text content from a `UnifiedResult`.
+fn unified_text(r: &UnifiedResult) -> &str {
+    match r {
+        UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
+        UnifiedResult::Note(nr) => nr.note.text.as_str(),
+    }
+}
 
-    let texts: Vec<&str> = results
-        .iter()
-        .map(|r| match &r.result {
-            UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
-            UnifiedResult::Note(nr) => nr.note.text.as_str(),
-        })
-        .collect();
-    let token_counts = super::count_tokens_batch(embedder, &texts);
-    let (packed, used) =
-        super::token_pack(
-            results,
-            &token_counts,
-            budget,
-            json_overhead,
-            |r| match &r.result {
-                UnifiedResult::Code(sr) => sr.score,
-                UnifiedResult::Note(nr) => nr.score,
-            },
-        );
-    tracing::info!(
-        chunks = packed.len(),
-        tokens = used,
-        budget,
-        "Token-budgeted query (tagged)"
-    );
-    (packed, Some((used, budget)))
+/// Extract score from a `UnifiedResult`.
+fn unified_score(r: &UnifiedResult) -> f32 {
+    match r {
+        UnifiedResult::Code(sr) => sr.score,
+        UnifiedResult::Note(nr) => nr.score,
+    }
 }
 
 /// Re-rank unified results using cross-encoder scoring
@@ -453,7 +442,15 @@ fn cmd_query_name_only(
     let json_overhead = json_overhead_for(cli);
     let (unified, token_info) = if let Some(budget) = cli.tokens {
         let embedder = Embedder::new()?;
-        token_pack_unified(unified, budget, json_overhead, &embedder)
+        token_pack_results(
+            unified,
+            budget,
+            json_overhead,
+            &embedder,
+            unified_text,
+            unified_score,
+            "name-only",
+        )
     } else {
         (unified, None)
     };
@@ -523,7 +520,15 @@ fn cmd_query_ref_only(
     // Token-budget packing
     let json_overhead = json_overhead_for(cli);
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
-        token_pack_tagged(tagged, budget, json_overhead, embedder)
+        token_pack_results(
+            tagged,
+            budget,
+            json_overhead,
+            embedder,
+            |r| unified_text(&r.result),
+            |r| unified_score(&r.result),
+            "ref-only",
+        )
     } else {
         (tagged, None)
     };
@@ -567,7 +572,15 @@ fn cmd_query_ref_name_only(
     let json_overhead = json_overhead_for(cli);
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
         let embedder = Embedder::new()?;
-        token_pack_tagged(tagged, budget, json_overhead, &embedder)
+        token_pack_results(
+            tagged,
+            budget,
+            json_overhead,
+            &embedder,
+            |r| unified_text(&r.result),
+            |r| unified_score(&r.result),
+            "tagged",
+        )
     } else {
         (tagged, None)
     };

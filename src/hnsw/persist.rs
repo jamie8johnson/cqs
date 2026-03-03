@@ -237,39 +237,54 @@ impl HnswIndex {
             }
         }
 
-        // Atomically rename each file from temp to final location
-        // This ensures each individual file is either fully written or not present
-        for ext in &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"] {
-            let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
-            let final_path = dir.join(format!("{}.{}", basename, ext));
-            if temp_path.exists() {
-                if let Err(rename_err) = std::fs::rename(&temp_path, &final_path) {
-                    // Cross-device fallback (Docker overlayfs, NFS, etc.)
-                    // Copy to a temp file in the TARGET directory first, then rename.
-                    // Since the temp and final are on the same device, the rename is atomic.
-                    let target_tmp = dir.join(format!(".{}.{}.tmp", basename, ext));
-                    std::fs::copy(&temp_path, &target_tmp).map_err(|copy_err| {
-                        HnswError::Internal(format!(
-                            "Failed to rename {} → {} ({}), copy fallback also failed: {}",
-                            temp_path.display(),
-                            final_path.display(),
-                            rename_err,
-                            copy_err
-                        ))
-                    })?;
-                    std::fs::rename(&target_tmp, &final_path).map_err(|e| {
-                        // Clean up the temp file on rename failure
-                        let _ = std::fs::remove_file(&target_tmp);
-                        HnswError::Internal(format!(
-                            "Failed to rename {} → {} after cross-device copy: {}",
-                            target_tmp.display(),
-                            final_path.display(),
-                            e
-                        ))
-                    })?;
-                    let _ = std::fs::remove_file(&temp_path);
+        // Atomically rename each file from temp to final location.
+        // Track which files were successfully moved so we can roll back on failure.
+        let all_exts = ["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+        let mut moved_exts: Vec<&str> = Vec::new();
+
+        let rename_result: Result<(), HnswError> = (|| {
+            for ext in &all_exts {
+                let temp_path = temp_dir.join(format!("{}.{}", basename, ext));
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                if temp_path.exists() {
+                    if let Err(rename_err) = std::fs::rename(&temp_path, &final_path) {
+                        // Cross-device fallback (Docker overlayfs, NFS, etc.)
+                        let target_tmp = dir.join(format!(".{}.{}.tmp", basename, ext));
+                        std::fs::copy(&temp_path, &target_tmp).map_err(|copy_err| {
+                            HnswError::Internal(format!(
+                                "Failed to rename {} → {} ({}), copy fallback also failed: {}",
+                                temp_path.display(),
+                                final_path.display(),
+                                rename_err,
+                                copy_err
+                            ))
+                        })?;
+                        std::fs::rename(&target_tmp, &final_path).map_err(|e| {
+                            let _ = std::fs::remove_file(&target_tmp);
+                            HnswError::Internal(format!(
+                                "Failed to rename {} → {} after cross-device copy: {}",
+                                target_tmp.display(),
+                                final_path.display(),
+                                e
+                            ))
+                        })?;
+                        let _ = std::fs::remove_file(&temp_path);
+                    }
+                    moved_exts.push(ext);
                 }
             }
+            Ok(())
+        })();
+
+        if let Err(e) = rename_result {
+            // Roll back: remove any files already moved to final location
+            for ext in &moved_exts {
+                let final_path = dir.join(format!("{}.{}", basename, ext));
+                let _ = std::fs::remove_file(&final_path);
+            }
+            tracing::warn!(error = %e, "HNSW save failed mid-rename, rolled back partial files");
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(e);
         }
 
         // Clean up temp directory

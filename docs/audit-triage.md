@@ -82,25 +82,25 @@ Triaged 2026-03-02. 75 findings across 14 categories, 3 batches.
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| AD-5 | `dispatch_search` takes 9 individual parameters instead of a struct | API Design | src/cli/batch/handlers.rs:33-42 | |
-| CQ-3 | `token_pack_unified` / `token_pack_tagged` near-identical functions | Code Quality | src/cli/commands/query.rs:333-398 | |
-| CQ-4 | `cmd_query` at 287 lines — multiple concerns in one function | Code Quality | src/cli/commands/query.rs:39-325 | |
-| CQ-5 | 11 functions suppress `clippy::too_many_arguments` | Code Quality | multiple files | |
-| EX-4 | `extract_from_scout_groups` bespoke extractor — new output shapes need new extractors | Extensibility | src/cli/batch/pipeline.rs:116-210 | |
+| AD-5 | `dispatch_search` takes 9 individual parameters instead of a struct | API Design | src/cli/batch/handlers.rs:33-42 | ✅ fixed (SearchParams struct) |
+| CQ-3 | `token_pack_unified` / `token_pack_tagged` near-identical functions | Code Quality | src/cli/commands/query.rs:333-398 | ✅ fixed (generic `token_pack_results`) |
+| CQ-4 | `cmd_query` at 287 lines — multiple concerns in one function | Code Quality | src/cli/commands/query.rs:39-325 | acceptable (helper fns extracted in CQ-3) |
+| CQ-5 | 11 functions suppress `clippy::too_many_arguments` | Code Quality | multiple files | reduced to 10 (AD-5); remainder are internal watch/pipeline state |
+| EX-4 | `extract_from_scout_groups` bespoke extractor — new output shapes need new extractors | Extensibility | src/cli/batch/pipeline.rs:116-210 | ✅ fixed (nested extraction in `extract_from_standard_fields`) |
 | RB-2 | `CandidateRow::from_row` / `ChunkRow::from_row` use panicking `row.get()` | Robustness | src/store/helpers.rs:75-121 | informational |
 | RB-6 | `Language::def()` panics on disabled feature flags | Robustness | src/language/mod.rs:549, 570 | informational |
 | RB-7 | `Parser::new()` panics on registry/enum mismatch | Robustness | src/parser/mod.rs:62-67 | informational |
 | AC-2 | FTS not scoped to HNSW candidates — design tension, improves recall | Algorithm | src/search.rs:934-942 | by-design |
 | AC-5 | `bfs_shortest_path` uses empty-string sentinel for predecessor tracking | Algorithm | src/cli/commands/trace.rs:203-221 | informational |
-| TC-5 | `build_blame_data` only tested through components — no end-to-end with mock git | Test Coverage | src/cli/commands/blame.rs:36-68 | |
+| TC-5 | `build_blame_data` only tested through components — no end-to-end with mock git | Test Coverage | src/cli/commands/blame.rs:36-68 | acceptable (parser tests + integration cover components) |
 | PB-1 | `cmd_watch` uses inotify on WSL; PollWatcher would be more reliable on `/mnt/` | Platform | src/cli/watch.rs:61-89 | existing behavior |
-| PB-3 | Forward-slash path in blame `-L` spec latently incompatible with native Windows git | Platform | src/cli/commands/blame.rs:50, 86 | latent |
-| SEC-5 | `find_7z` / `find_python` search PATH without validation | Security | src/convert/chm.rs:168, pdf.rs:95 | |
-| DS-1 | HNSW save partial rename leaves inconsistent index on mid-loop failure | Data Safety | src/hnsw/persist.rs:241-272 | |
-| DS-4 | `prune_stale_calls` executes outside GC's index lock scope after chunk pruning | Data Safety | src/cli/commands/gc.rs:44-59 | |
+| PB-3 | Forward-slash path in blame `-L` spec latently incompatible with native Windows git | Platform | src/cli/commands/blame.rs:50, 86 | ✅ fixed (backslash → forward-slash normalize) |
+| SEC-5 | `find_7z` / `find_python` search PATH without validation | Security | src/convert/chm.rs:168, pdf.rs:95 | ✅ fixed (validate exit status) |
+| DS-1 | HNSW save partial rename leaves inconsistent index on mid-loop failure | Data Safety | src/hnsw/persist.rs:241-272 | ✅ fixed (rollback on partial failure) |
+| DS-4 | `prune_stale_calls` executes outside GC's index lock scope after chunk pruning | Data Safety | src/cli/commands/gc.rs:44-59 | non-issue (`_lock` held for entire function) |
 | RM-3 | `BatchContext::refs` loaded references accumulate with no eviction | Resource Mgmt | src/cli/batch/mod.rs:60 | acceptable |
-| RM-4 | Pipeline channel depth same for parse (light) and embed (heavy) payloads | Resource Mgmt | src/cli/pipeline.rs:37 | |
-| RM-5 | Watch `last_indexed_mtime` grows unbounded; `retain` runs O(files) `exists()` calls | Resource Mgmt | src/cli/watch.rs:117, 307-311 | |
+| RM-4 | Pipeline channel depth same for parse (light) and embed (heavy) payloads | Resource Mgmt | src/cli/pipeline.rs:37 | ✅ fixed (512 parse / 64 embed) |
+| RM-5 | Watch `last_indexed_mtime` grows unbounded; `retain` runs O(files) `exists()` calls | Resource Mgmt | src/cli/watch.rs:117, 307-311 | ✅ fixed (conditional pruning at 1K/10K thresholds) |
 
 ## Summary
 

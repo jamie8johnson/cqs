@@ -73,11 +73,6 @@ fn extract_names(val: &serde_json::Value) -> Vec<String> {
         push(&n);
     }
 
-    // Scout: nested file_groups[].chunks[].name
-    for n in extract_from_scout_groups(val) {
-        push(&n);
-    }
-
     names
 }
 
@@ -90,12 +85,15 @@ fn extract_from_bare_array(val: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Extract names from any array fields in a JSON object that contain objects with "name" fields.
+/// Extract names from any fields in a JSON object, with one level of nesting.
 ///
-/// Instead of probing a hardcoded list of field names, walks all top-level object
-/// values looking for arrays of objects with a `"name"` string field. This is
-/// key-agnostic: adding a new command with a `"foo": [{"name": ...}]` field
-/// automatically works without updating a constant.
+/// Walks all top-level object values looking for:
+/// 1. Arrays of objects with a `"name"` field (flat: `results[].name`)
+/// 2. Arrays of objects containing nested arrays with `"name"` fields
+///    (nested: `file_groups[].chunks[].name` — scout pattern)
+///
+/// This is key-agnostic: adding a new command with any nesting shape
+/// automatically works without adding bespoke extractors.
 fn extract_from_standard_fields(val: &serde_json::Value) -> Vec<String> {
     let obj = match val.as_object() {
         Some(o) => o,
@@ -110,30 +108,27 @@ fn extract_from_standard_fields(val: &serde_json::Value) -> Vec<String> {
         }
         if let Some(arr) = field_val.as_array() {
             for item in arr {
+                // Direct: item has "name" field
                 if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
                     names.push(name.to_string());
+                }
+                // Nested: item has sub-arrays containing objects with "name"
+                if let Some(inner_obj) = item.as_object() {
+                    for (_, inner_val) in inner_obj {
+                        if let Some(inner_arr) = inner_val.as_array() {
+                            for inner_item in inner_arr {
+                                if let Some(name) = inner_item.get("name").and_then(|v| v.as_str())
+                                {
+                                    names.push(name.to_string());
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
     names
-}
-
-/// Extract names from scout's nested `file_groups[].chunks[].name` structure.
-fn extract_from_scout_groups(val: &serde_json::Value) -> Vec<String> {
-    val.get("file_groups")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .flat_map(|group| {
-            group
-                .get("chunks")
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|chunk| chunk.get("name")?.as_str().map(String::from))
-        })
-        .collect()
 }
 
 /// Split a token list by standalone `|` into pipeline segments.

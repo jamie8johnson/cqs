@@ -91,17 +91,20 @@ fn find_pdf_script() -> Result<String> {
 
 /// Find a working Python interpreter.
 ///
-/// Tries `python3` first, falls back to `python`.
+/// Tries `python3` first, falls back to `python`. Validates that the candidate
+/// exits cleanly with `--version` to avoid running unrelated binaries.
 fn find_python() -> Result<String> {
     for name in &["python3", "python"] {
-        if std::process::Command::new(name)
+        match std::process::Command::new(name)
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok()
         {
-            return Ok(name.to_string());
+            Ok(status) if status.success() => {
+                return Ok(name.to_string());
+            }
+            _ => continue,
         }
     }
     anyhow::bail!(

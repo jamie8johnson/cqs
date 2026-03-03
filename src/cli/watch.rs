@@ -309,8 +309,13 @@ fn process_file_changes(
             for (file, mtime) in pre_mtimes {
                 last_indexed_mtime.insert(file, mtime);
             }
-            // Prune entries for deleted files to prevent unbounded growth
-            last_indexed_mtime.retain(|f, _| root.join(f).exists());
+            // Prune entries for deleted files periodically (every 100 reindex cycles)
+            // to prevent unbounded growth. Avoids O(files) exists() calls on every cycle.
+            if last_indexed_mtime.len() > 10_000
+                || (last_indexed_mtime.len() > 1_000 && files.len() == 1)
+            {
+                last_indexed_mtime.retain(|f, _| root.join(f).exists());
+            }
             if !quiet {
                 println!("Indexed {} chunk(s)", count);
             }

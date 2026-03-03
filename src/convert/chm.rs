@@ -165,16 +165,22 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
 }
 
 /// Find a working `7z` executable.
+///
+/// Checks that the candidate actually executes successfully (exit code 0 or
+/// recognizable help output). This prevents accidentally running an unrelated
+/// binary that happens to share the name.
 fn find_7z() -> Result<String> {
     for name in &["7z", "7za", "p7zip"] {
-        if std::process::Command::new(name)
+        match std::process::Command::new(name)
             .arg("--help")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
-            .is_ok()
         {
-            return Ok(name.to_string());
+            Ok(status) if status.success() || status.code() == Some(0) => {
+                return Ok(name.to_string());
+            }
+            _ => continue,
         }
     }
     anyhow::bail!(

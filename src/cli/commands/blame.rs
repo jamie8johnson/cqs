@@ -88,7 +88,9 @@ fn run_git_log_line_range(
         (start, end)
     };
 
-    let line_range = format!("{},{}:{}", start, end, rel_file);
+    // Normalize backslashes to forward slashes for git (PB-3: Windows compat)
+    let git_file = rel_file.replace('\\', "/");
+    let line_range = format!("{},{}:{}", start, end, git_file);
     let depth_str = depth.to_string();
 
     let output = std::process::Command::new("git")
