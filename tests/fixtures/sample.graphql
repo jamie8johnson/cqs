@@ -1,0 +1,56 @@
+"""
+A user in the system.
+"""
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  posts: [Post!]!
+  address: Address
+}
+
+type Post {
+  id: ID!
+  title: String!
+  body: String!
+  author: User!
+}
+
+input CreateUserInput {
+  name: String!
+  email: String!
+}
+
+interface Node {
+  id: ID!
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+union SearchResult = User | Post
+
+scalar DateTime
+
+directive @auth(requires: Role!) on FIELD_DEFINITION
+
+query GetUser($id: ID!) {
+  user(id: $id) {
+    name
+    email
+    posts {
+      title
+    }
+  }
+}
+
+fragment UserFields on User {
+  name
+  email
+  address {
+    city
+  }
+}

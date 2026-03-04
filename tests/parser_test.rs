@@ -767,3 +767,158 @@ fn test_objc_class_and_protocol_extraction() {
     let calc = chunks.iter().find(|c| c.name == "calculateDistance");
     assert!(calc.is_some(), "Should find 'calculateDistance' function");
 }
+
+// ===== Protobuf tests =====
+
+#[test]
+fn test_protobuf_message_and_service_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.proto");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 4,
+        "Expected at least 4 Protobuf chunks, got {}",
+        chunks.len()
+    );
+
+    // Message → Struct
+    let user = chunks
+        .iter()
+        .find(|c| c.name == "User" && c.chunk_type == ChunkType::Struct);
+    assert!(user.is_some(), "Should find 'User' message (as Struct)");
+    assert_eq!(user.unwrap().language, Language::Protobuf);
+
+    // Service → Interface
+    let svc = chunks
+        .iter()
+        .find(|c| c.name == "UserService" && c.chunk_type == ChunkType::Interface);
+    assert!(
+        svc.is_some(),
+        "Should find 'UserService' service (as Interface)"
+    );
+
+    // Enum
+    let status = chunks
+        .iter()
+        .find(|c| c.name == "Status" && c.chunk_type == ChunkType::Enum);
+    assert!(status.is_some(), "Should find 'Status' enum");
+
+    // RPC → Method (inside service)
+    let rpc = chunks
+        .iter()
+        .find(|c| c.name == "GetUser" && c.chunk_type == ChunkType::Method);
+    assert!(
+        rpc.is_some(),
+        "Should find 'GetUser' RPC (as Method). Types: {:?}",
+        chunks
+            .iter()
+            .map(|c| format!("{}:{}", c.name, c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== GraphQL tests =====
+
+#[test]
+fn test_graphql_type_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.graphql");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 6,
+        "Expected at least 6 GraphQL chunks, got {}",
+        chunks.len()
+    );
+
+    // Object type → Struct
+    let user = chunks
+        .iter()
+        .find(|c| c.name == "User" && c.chunk_type == ChunkType::Struct);
+    assert!(user.is_some(), "Should find 'User' type (as Struct)");
+    assert_eq!(user.unwrap().language, Language::GraphQL);
+
+    // Interface
+    let node = chunks
+        .iter()
+        .find(|c| c.name == "Node" && c.chunk_type == ChunkType::Interface);
+    assert!(node.is_some(), "Should find 'Node' interface");
+
+    // Enum
+    let status = chunks
+        .iter()
+        .find(|c| c.name == "Status" && c.chunk_type == ChunkType::Enum);
+    assert!(status.is_some(), "Should find 'Status' enum");
+
+    // Union → TypeAlias
+    let search = chunks
+        .iter()
+        .find(|c| c.name == "SearchResult" && c.chunk_type == ChunkType::TypeAlias);
+    assert!(
+        search.is_some(),
+        "Should find 'SearchResult' union (as TypeAlias)"
+    );
+
+    // Operation → Function
+    let query = chunks
+        .iter()
+        .find(|c| c.name == "GetUser" && c.chunk_type == ChunkType::Function);
+    assert!(
+        query.is_some(),
+        "Should find 'GetUser' operation (as Function)"
+    );
+
+    // Fragment → Function
+    let frag = chunks
+        .iter()
+        .find(|c| c.name == "UserFields" && c.chunk_type == ChunkType::Function);
+    assert!(
+        frag.is_some(),
+        "Should find 'UserFields' fragment (as Function)"
+    );
+}
+
+// ===== PHP tests =====
+
+#[test]
+fn test_php_class_and_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.php");
+    let chunks = parser.parse_file(&path).unwrap();
+
+    assert!(
+        chunks.len() >= 5,
+        "Expected at least 5 PHP chunks, got {}",
+        chunks.len()
+    );
+
+    // Class
+    let user = chunks
+        .iter()
+        .find(|c| c.name == "User" && c.chunk_type == ChunkType::Class);
+    assert!(user.is_some(), "Should find 'User' class");
+    assert_eq!(user.unwrap().language, Language::Php);
+
+    // Interface
+    let printable = chunks
+        .iter()
+        .find(|c| c.name == "Printable" && c.chunk_type == ChunkType::Interface);
+    assert!(printable.is_some(), "Should find 'Printable' interface");
+
+    // Trait
+    let ts = chunks
+        .iter()
+        .find(|c| c.name == "Timestampable" && c.chunk_type == ChunkType::Trait);
+    assert!(ts.is_some(), "Should find 'Timestampable' trait");
+
+    // Enum
+    let status = chunks
+        .iter()
+        .find(|c| c.name == "Status" && c.chunk_type == ChunkType::Enum);
+    assert!(status.is_some(), "Should find 'Status' enum");
+
+    // Free function
+    let fmt = chunks.iter().find(|c| c.name == "formatDuration");
+    assert!(fmt.is_some(), "Should find 'formatDuration' function");
+}

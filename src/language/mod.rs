@@ -526,6 +526,12 @@ define_languages! {
     ObjC => "objc", feature = "lang-objc", module = objc;
     /// SQL (.sql files)
     Sql => "sql", feature = "lang-sql", module = sql;
+    /// Protobuf (.proto files)
+    Protobuf => "protobuf", feature = "lang-protobuf", module = protobuf;
+    /// GraphQL (.graphql, .gql files)
+    GraphQL => "graphql", feature = "lang-graphql", module = graphql;
+    /// PHP (.php files)
+    Php => "php", feature = "lang-php", module = php;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -673,6 +679,15 @@ mod tests {
         }
         #[cfg(feature = "lang-sql")]
         assert!(REGISTRY.from_extension("sql").is_some());
+        #[cfg(feature = "lang-protobuf")]
+        assert!(REGISTRY.from_extension("proto").is_some());
+        #[cfg(feature = "lang-graphql")]
+        {
+            assert!(REGISTRY.from_extension("graphql").is_some());
+            assert!(REGISTRY.from_extension("gql").is_some());
+        }
+        #[cfg(feature = "lang-php")]
+        assert!(REGISTRY.from_extension("php").is_some());
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -762,6 +777,18 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-protobuf")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-graphql")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-php")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -831,6 +858,10 @@ mod tests {
         assert_eq!(Language::from_extension("m"), Some(Language::ObjC));
         assert_eq!(Language::from_extension("mm"), Some(Language::ObjC));
         assert_eq!(Language::from_extension("sql"), Some(Language::Sql));
+        assert_eq!(Language::from_extension("proto"), Some(Language::Protobuf));
+        assert_eq!(Language::from_extension("graphql"), Some(Language::GraphQL));
+        assert_eq!(Language::from_extension("gql"), Some(Language::GraphQL));
+        assert_eq!(Language::from_extension("php"), Some(Language::Php));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -861,6 +892,9 @@ mod tests {
         assert_eq!("swift".parse::<Language>().unwrap(), Language::Swift);
         assert_eq!("objc".parse::<Language>().unwrap(), Language::ObjC);
         assert_eq!("sql".parse::<Language>().unwrap(), Language::Sql);
+        assert_eq!("protobuf".parse::<Language>().unwrap(), Language::Protobuf);
+        assert_eq!("graphql".parse::<Language>().unwrap(), Language::GraphQL);
+        assert_eq!("php".parse::<Language>().unwrap(), Language::Php);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -886,6 +920,9 @@ mod tests {
         assert_eq!(Language::Swift.to_string(), "swift");
         assert_eq!(Language::ObjC.to_string(), "objc");
         assert_eq!(Language::Sql.to_string(), "sql");
+        assert_eq!(Language::Protobuf.to_string(), "protobuf");
+        assert_eq!(Language::GraphQL.to_string(), "graphql");
+        assert_eq!(Language::Php.to_string(), "php");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1061,6 +1098,22 @@ mod tests {
         );
         assert_eq!(
             (Language::ObjC.def().extract_return_nl)("- (void)greet"),
+            None
+        );
+        assert_eq!(
+            (Language::Protobuf.def().extract_return_nl)("message User {"),
+            None
+        );
+        assert_eq!(
+            (Language::GraphQL.def().extract_return_nl)("type User {"),
+            None
+        );
+        assert_eq!(
+            (Language::Php.def().extract_return_nl)("function add(int $a, int $b): int {"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Php.def().extract_return_nl)("function doSomething(): void {"),
             None
         );
     }

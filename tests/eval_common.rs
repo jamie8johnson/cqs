@@ -48,6 +48,12 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         #[cfg(feature = "lang-objc")]
         Language::ObjC => "m",
         Language::Sql => "sql",
+        #[cfg(feature = "lang-protobuf")]
+        Language::Protobuf => "proto",
+        #[cfg(feature = "lang-graphql")]
+        Language::GraphQL => "graphql",
+        #[cfg(feature = "lang-php")]
+        Language::Php => "php",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -90,6 +96,12 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         #[cfg(feature = "lang-objc")]
         Language::ObjC => "m",
         Language::Sql => "sql",
+        #[cfg(feature = "lang-protobuf")]
+        Language::Protobuf => "proto",
+        #[cfg(feature = "lang-graphql")]
+        Language::GraphQL => "graphql",
+        #[cfg(feature = "lang-php")]
+        Language::Php => "php",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

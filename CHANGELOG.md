@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-03-04
+
+Protobuf, GraphQL, and PHP language support — 20 → 23 languages.
+
+### Added
+- **Protobuf language support** — messages (Struct), services (Interface), RPCs (Method), enums, type references via `message_or_enum_type`
+- **GraphQL language support** — object types, interfaces, enums, unions (TypeAlias), input types, scalars, directives (Macro), operations, fragments, type references via `named_type`
+- **PHP language support** — classes, interfaces, traits, enums, functions, methods, properties, constants, call extraction (function/method/static/constructor), type references (params, returns, fields, extends, implements), return type extraction
+
 ## [0.19.5] - 2026-03-04
 
 Full 75-finding code audit completed (14 categories, 3 batches). All findings addressed — 62 fixed, 13 triaged as acceptable/informational/by-design.
