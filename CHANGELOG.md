@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.5] - 2026-03-04
+
+Full 75-finding code audit completed (14 categories, 3 batches). All findings addressed — 62 fixed, 13 triaged as acceptable/informational/by-design.
+
+### Changed
+- **Lightweight HNSW candidate fetch (PF-5)** — two-phase search: fetch only IDs+scores from HNSW, then batch-load full chunks from SQLite. Reduces memory during search.
+- **Pipeline channel tuning (RM-4)** — separate depths for parse (512, lightweight) vs embed (64, heavy vector data) channels. Was uniform 256.
+- **Watch mtime pruning (RM-5)** — threshold-based pruning (1K/10K entries) instead of per-cycle `exists()` calls on every file.
+- **Generic token packing (CQ-3)** — unified `token_pack_unified`/`token_pack_tagged` into single generic `token_pack_results`.
+- **SearchParams struct (AD-5)** — `dispatch_search` takes a struct instead of 9 individual parameters.
+- **Pipeline name extraction (EX-4)** — `extract_from_scout_groups` folded into `extract_from_standard_fields` with automatic nested extraction.
+
+### Fixed
+- **SQLite 999-param limit (RB-1)** — `fetch_candidates_by_ids_async`/`fetch_chunks_by_ids_async` batched to stay under SQLite bind limit.
+- **JSON injection in empty results (AC-1)** — `emit_empty_results` now uses `serde_json::json!` instead of raw `format!`.
+- **Index lock race (DS-2)** — `acquire_index_lock` truncate+write is now atomic via temp file rename.
+- **Force-index data loss (DS-7)** — `cmd_index --force` now writes new DB before removing old.
+- **FTS debug_assert in release (SEC-2)** — query safety validation promoted from `debug_assert` to runtime check.
+- **Dead source/ module (CQ-1)** — removed ~250 lines of unused code.
+- **HNSW save rollback (DS-1)** — partial rename during save now rolls back already-moved files.
+- **Blame path separators (PB-3)** — backslash paths normalized to forward-slash for Windows git compatibility.
+- **PATH search validation (SEC-5)** — `find_7z`/`find_python` now validate exit status, not just executability.
+- 43 additional P3 fixes: tracing spans, error context, Serialize derives, filter tests, CHM/webhelp memory, file size guards, and more.
+
+### Added
+- Parser integration tests for Bash, HCL, Kotlin, Swift, and Objective-C (TC-1).
+- 7 `NoteBoostIndex` unit tests (TC-2).
+- 7 search filter set tests (TC-3).
+- 4 `ChatHelper::complete` tests (TC-4).
+- 6 pipeline tests (TC-6).
+
+### Dependencies
+- `hnsw_rs` 0.3.3 → 0.3.4
+- `tree-sitter` 0.26.5 → 0.26.6
+- `tree-sitter-bash` 0.23.3 → 0.25.1
+- `serial_test` 3.3.1 → 3.4.0
+
 ## [0.19.4] - 2026-02-28
 
 ### Added

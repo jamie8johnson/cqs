@@ -2,11 +2,14 @@
 
 ## Right Now
 
-**PF-5 shipped.** 2026-03-02.
+**Audit complete.** 2026-03-04.
 
-Lightweight HNSW candidate fetch (#510, PR #515). Two-phase search:
-score 500+ candidates using `CandidateRow` (6 SQL columns), load full
-content only for ~20 survivors. All roadmap performance items complete.
+v0.19.5 release in progress. Full 75-finding audit resolved:
+- P1: 6 fixes (PR #522)
+- P2: 4 fixes (PR #523)
+- P3: 43/50 fixed, 7 acceptable/moot (PR #524)
+- P4: 9/19 fixed, 10 triaged (PR #525)
+- 4 dep bumps merged (#516-#520)
 
 ## Pending Changes
 
@@ -37,7 +40,7 @@ None — clean working tree on main.
 
 ## Architecture
 
-- Version: 0.19.4
+- Version: 0.19.5
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
@@ -45,7 +48,7 @@ None — clean working tree on main.
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 20 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1275 pass, 0 failures
+- Tests: 1296 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
