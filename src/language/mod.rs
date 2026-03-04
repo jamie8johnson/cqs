@@ -23,6 +23,17 @@
 //! - `lang-bash` - Bash support (enabled by default)
 //! - `lang-hcl` - HCL/Terraform support (enabled by default)
 //! - `lang-kotlin` - Kotlin support (enabled by default)
+//! - `lang-swift` - Swift support (enabled by default)
+//! - `lang-objc` - Objective-C support (enabled by default)
+//! - `lang-sql` - SQL support (enabled by default)
+//! - `lang-protobuf` - Protobuf support (enabled by default)
+//! - `lang-graphql` - GraphQL support (enabled by default)
+//! - `lang-php` - PHP support (enabled by default)
+//! - `lang-lua` - Lua support (enabled by default)
+//! - `lang-zig` - Zig support (enabled by default)
+//! - `lang-r` - R support (enabled by default)
+//! - `lang-yaml` - YAML support (enabled by default)
+//! - `lang-toml` - TOML support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -532,6 +543,16 @@ define_languages! {
     GraphQL => "graphql", feature = "lang-graphql", module = graphql;
     /// PHP (.php files)
     Php => "php", feature = "lang-php", module = php;
+    /// Lua (.lua files)
+    Lua => "lua", feature = "lang-lua", module = lua;
+    /// Zig (.zig files)
+    Zig => "zig", feature = "lang-zig", module = zig;
+    /// R (.r, .R files)
+    R => "r", feature = "lang-r", module = r;
+    /// YAML (.yaml, .yml files)
+    Yaml => "yaml", feature = "lang-yaml", module = yaml;
+    /// TOML (.toml files)
+    Toml => "toml", feature = "lang-toml", module = toml_lang;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -688,6 +709,22 @@ mod tests {
         }
         #[cfg(feature = "lang-php")]
         assert!(REGISTRY.from_extension("php").is_some());
+        #[cfg(feature = "lang-lua")]
+        assert!(REGISTRY.from_extension("lua").is_some());
+        #[cfg(feature = "lang-zig")]
+        assert!(REGISTRY.from_extension("zig").is_some());
+        #[cfg(feature = "lang-r")]
+        {
+            assert!(REGISTRY.from_extension("r").is_some());
+            assert!(REGISTRY.from_extension("R").is_some());
+        }
+        #[cfg(feature = "lang-yaml")]
+        {
+            assert!(REGISTRY.from_extension("yaml").is_some());
+            assert!(REGISTRY.from_extension("yml").is_some());
+        }
+        #[cfg(feature = "lang-toml")]
+        assert!(REGISTRY.from_extension("toml").is_some());
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -789,6 +826,26 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-lua")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-zig")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-r")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-yaml")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-toml")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -862,6 +919,13 @@ mod tests {
         assert_eq!(Language::from_extension("graphql"), Some(Language::GraphQL));
         assert_eq!(Language::from_extension("gql"), Some(Language::GraphQL));
         assert_eq!(Language::from_extension("php"), Some(Language::Php));
+        assert_eq!(Language::from_extension("lua"), Some(Language::Lua));
+        assert_eq!(Language::from_extension("zig"), Some(Language::Zig));
+        assert_eq!(Language::from_extension("r"), Some(Language::R));
+        assert_eq!(Language::from_extension("R"), Some(Language::R));
+        assert_eq!(Language::from_extension("yaml"), Some(Language::Yaml));
+        assert_eq!(Language::from_extension("yml"), Some(Language::Yaml));
+        assert_eq!(Language::from_extension("toml"), Some(Language::Toml));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -895,6 +959,11 @@ mod tests {
         assert_eq!("protobuf".parse::<Language>().unwrap(), Language::Protobuf);
         assert_eq!("graphql".parse::<Language>().unwrap(), Language::GraphQL);
         assert_eq!("php".parse::<Language>().unwrap(), Language::Php);
+        assert_eq!("lua".parse::<Language>().unwrap(), Language::Lua);
+        assert_eq!("zig".parse::<Language>().unwrap(), Language::Zig);
+        assert_eq!("r".parse::<Language>().unwrap(), Language::R);
+        assert_eq!("yaml".parse::<Language>().unwrap(), Language::Yaml);
+        assert_eq!("toml".parse::<Language>().unwrap(), Language::Toml);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -923,6 +992,11 @@ mod tests {
         assert_eq!(Language::Protobuf.to_string(), "protobuf");
         assert_eq!(Language::GraphQL.to_string(), "graphql");
         assert_eq!(Language::Php.to_string(), "php");
+        assert_eq!(Language::Lua.to_string(), "lua");
+        assert_eq!(Language::Zig.to_string(), "zig");
+        assert_eq!(Language::R.to_string(), "r");
+        assert_eq!(Language::Yaml.to_string(), "yaml");
+        assert_eq!(Language::Toml.to_string(), "toml");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1116,6 +1190,24 @@ mod tests {
             (Language::Php.def().extract_return_nl)("function doSomething(): void {"),
             None
         );
+        assert_eq!(
+            (Language::Lua.def().extract_return_nl)("function foo(x)"),
+            None
+        );
+        assert_eq!(
+            (Language::Zig.def().extract_return_nl)("pub fn add(a: i32, b: i32) i32 {"),
+            Some("Returns i32".to_string())
+        );
+        assert_eq!(
+            (Language::Zig.def().extract_return_nl)("pub fn main() void {"),
+            None
+        );
+        assert_eq!(
+            (Language::R.def().extract_return_nl)("greet <- function(name) {"),
+            None
+        );
+        assert_eq!((Language::Yaml.def().extract_return_nl)("key: value"), None);
+        assert_eq!((Language::Toml.def().extract_return_nl)("[section]"), None);
     }
 
     // ===== ChunkType tests =====

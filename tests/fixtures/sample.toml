@@ -1,0 +1,17 @@
+# Sample TOML configuration for parser tests
+
+[package]
+name = "my-crate"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+
+[dev-dependencies]
+insta = "1"
+
+[[bin]]
+name = "my-tool"
+path = "src/main.rs"

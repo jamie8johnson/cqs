@@ -54,6 +54,16 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::GraphQL => "graphql",
         #[cfg(feature = "lang-php")]
         Language::Php => "php",
+        #[cfg(feature = "lang-lua")]
+        Language::Lua => "lua",
+        #[cfg(feature = "lang-zig")]
+        Language::Zig => "zig",
+        #[cfg(feature = "lang-r")]
+        Language::R => "r",
+        #[cfg(feature = "lang-yaml")]
+        Language::Yaml => "yaml",
+        #[cfg(feature = "lang-toml")]
+        Language::Toml => "toml",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -102,6 +112,16 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::GraphQL => "graphql",
         #[cfg(feature = "lang-php")]
         Language::Php => "php",
+        #[cfg(feature = "lang-lua")]
+        Language::Lua => "lua",
+        #[cfg(feature = "lang-zig")]
+        Language::Zig => "zig",
+        #[cfg(feature = "lang-r")]
+        Language::R => "r",
+        #[cfg(feature = "lang-yaml")]
+        Language::Yaml => "yaml",
+        #[cfg(feature = "lang-toml")]
+        Language::Toml => "toml",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

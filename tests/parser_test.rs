@@ -922,3 +922,101 @@ fn test_php_class_and_function_extraction() {
     let fmt = chunks.iter().find(|c| c.name == "formatDuration");
     assert!(fmt.is_some(), "Should find 'formatDuration' function");
 }
+
+#[test]
+#[cfg(feature = "lang-lua")]
+fn test_lua_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.lua");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Lua chunks from sample.lua"
+    );
+    let greet = chunks.iter().find(|c| c.name == "greet");
+    assert!(greet.is_some(), "Should find 'greet' function");
+    assert_eq!(greet.unwrap().chunk_type, ChunkType::Function);
+
+    let fibonacci = chunks.iter().find(|c| c.name == "fibonacci");
+    assert!(fibonacci.is_some(), "Should find 'fibonacci' function");
+}
+
+#[test]
+#[cfg(feature = "lang-zig")]
+fn test_zig_function_and_struct_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.zig");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Zig chunks from sample.zig"
+    );
+
+    // Function
+    let add = chunks.iter().find(|c| c.name == "add");
+    assert!(add.is_some(), "Should find 'add' function");
+    assert_eq!(add.unwrap().chunk_type, ChunkType::Function);
+
+    // Struct
+    let point = chunks
+        .iter()
+        .find(|c| c.name == "Point" && c.chunk_type == ChunkType::Struct);
+    assert!(point.is_some(), "Should find 'Point' struct");
+
+    // Enum
+    let color = chunks
+        .iter()
+        .find(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum);
+    assert!(color.is_some(), "Should find 'Color' enum");
+}
+
+#[test]
+#[cfg(feature = "lang-r")]
+fn test_r_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.r");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(!chunks.is_empty(), "Should extract R chunks from sample.r");
+    let calc = chunks.iter().find(|c| c.name == "calculate_mean");
+    assert!(calc.is_some(), "Should find 'calculate_mean' function");
+    assert_eq!(calc.unwrap().chunk_type, ChunkType::Function);
+
+    let filter = chunks.iter().find(|c| c.name == "filter_above");
+    assert!(filter.is_some(), "Should find 'filter_above' function");
+}
+
+#[test]
+#[cfg(feature = "lang-yaml")]
+fn test_yaml_key_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.yaml");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract YAML chunks from sample.yaml"
+    );
+    let names: Vec<_> = chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"name"),
+        "Should find 'name' key, got: {:?}",
+        names
+    );
+}
+
+#[test]
+#[cfg(feature = "lang-toml")]
+fn test_toml_table_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.toml");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract TOML chunks from sample.toml"
+    );
+    let names: Vec<_> = chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"package"),
+        "Should find 'package' table, got: {:?}",
+        names
+    );
+}

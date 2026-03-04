@@ -1013,6 +1013,7 @@ fn another() {
             Language::Scala,
             Language::Cpp,
             Language::Php,
+            Language::Zig,
         ];
         for lang in languages_with_types {
             let result = parser.get_type_query(lang);

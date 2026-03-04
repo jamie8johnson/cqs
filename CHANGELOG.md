@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-03-04
+
+Lua, Zig, R, YAML, and TOML language support — 23 → 28 languages.
+
+### Added
+- **Lua language support** — functions, local functions, method definitions, table constructors, call extraction
+- **Zig language support** — functions, structs, enums, unions, error sets, test declarations
+- **R language support** — functions, S4 classes/generics/methods, R6 classes, formula assignments
+- **YAML language support** — mapping keys, sequences, documents
+- **TOML language support** — tables, arrays of tables, key-value pairs
+
 ## [0.20.0] - 2026-03-04
 
 Protobuf, GraphQL, and PHP language support — 20 → 23 languages.

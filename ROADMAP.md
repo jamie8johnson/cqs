@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v0.20.0
+## Current: v0.21.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 23 languages. Two full audits complete (v0.12.3 + v0.19.2).
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 28 languages. Two full audits complete (v0.12.3 + v0.19.2).
 
 ### Next — Commands
 
@@ -19,17 +19,9 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 23 lan
 
 ### Future Languages — Priority Order
 
-**Structured schemas (better RAG, not just code search):**
-- [ ] **Protobuf** — message → Struct, service → Interface, rpc → Function, enum → Enum. Every microservices shop has `.proto` files.
-- [ ] **GraphQL** — type/input → Struct, query/mutation/subscription → Function, interface → Interface, enum → Enum. Every web API shop has these.
-
-**Programming languages with clean mappings:**
 - [ ] **Elixir** — Module + Macro exist. defprotocol → Trait, defrecord → Struct. Clean mapping.
-- [ ] **Lua** — Function-only. Game dev niche (Roblox, Neovim). Easy.
 - [ ] **Haskell** — TypeAlias exists. data → Enum, class → Trait. Niche but loved.
-- [ ] **PHP** — Property covers properties, trait → Trait
 - [ ] **Dart** — Property covers properties, mixin → Trait
-- [ ] **Zig** — maps cleanly
 
 ### ChunkType Variant Status
 

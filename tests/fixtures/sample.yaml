@@ -1,0 +1,17 @@
+# Sample YAML configuration for parser tests
+name: my-service
+version: 1.0.0
+
+server:
+  host: localhost
+  port: 8080
+  ssl: true
+
+database:
+  host: db.example.com
+  port: 5432
+  name: mydb
+
+logging:
+  level: info
+  format: json

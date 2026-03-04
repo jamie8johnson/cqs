@@ -7,7 +7,7 @@
 //!
 //! - **Semantic search**: Uses E5-base-v2 embeddings (769-dim: 768 model + sentiment)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Markdown (23 languages)
+//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Markdown (28 languages)
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
