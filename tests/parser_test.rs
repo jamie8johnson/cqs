@@ -1366,3 +1366,117 @@ fn test_ini_section_and_setting_extraction() {
         .find(|c| c.name == "host" && c.chunk_type == ChunkType::Property);
     assert!(host.is_some(), "Should find 'host' setting as Property");
 }
+
+// ===== Nix tests =====
+
+#[test]
+#[cfg(feature = "lang-nix")]
+fn test_nix_function_and_attrset_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.nix");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Nix chunks from sample.nix"
+    );
+
+    let func = chunks
+        .iter()
+        .find(|c| c.name == "greet" && c.chunk_type == ChunkType::Function);
+    assert!(
+        func.is_some(),
+        "Should find 'greet' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let attrset = chunks
+        .iter()
+        .find(|c| c.name == "config" && c.chunk_type == ChunkType::Struct);
+    assert!(
+        attrset.is_some(),
+        "Should find 'config' attrset as Struct, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== Make tests =====
+
+#[test]
+#[cfg(feature = "lang-make")]
+fn test_make_rule_and_variable_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.mk");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Make chunks from sample.mk"
+    );
+
+    let rule = chunks
+        .iter()
+        .find(|c| c.name == "clean" && c.chunk_type == ChunkType::Function);
+    assert!(
+        rule.is_some(),
+        "Should find 'clean' rule as Function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let var = chunks
+        .iter()
+        .find(|c| c.name == "CC" && c.chunk_type == ChunkType::Property);
+    assert!(
+        var.is_some(),
+        "Should find 'CC' variable as Property, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== LaTeX tests =====
+
+#[test]
+#[cfg(feature = "lang-latex")]
+fn test_latex_section_and_command_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.tex");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract LaTeX chunks from sample.tex"
+    );
+
+    let section = chunks
+        .iter()
+        .find(|c| c.name == "Introduction" && c.chunk_type == ChunkType::Section);
+    assert!(
+        section.is_some(),
+        "Should find 'Introduction' section, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let cmd = chunks
+        .iter()
+        .find(|c| c.name == "highlight" && c.chunk_type == ChunkType::Function);
+    assert!(
+        cmd.is_some(),
+        "Should find 'highlight' command as Function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}

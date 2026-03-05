@@ -88,6 +88,12 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Xml => "xml",
         #[cfg(feature = "lang-ini")]
         Language::Ini => "ini",
+        #[cfg(feature = "lang-nix")]
+        Language::Nix => "nix",
+        #[cfg(feature = "lang-make")]
+        Language::Make => "mk",
+        #[cfg(feature = "lang-latex")]
+        Language::Latex => "tex",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -170,6 +176,12 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Xml => "xml",
         #[cfg(feature = "lang-ini")]
         Language::Ini => "ini",
+        #[cfg(feature = "lang-nix")]
+        Language::Nix => "nix",
+        #[cfg(feature = "lang-make")]
+        Language::Make => "mk",
+        #[cfg(feature = "lang-latex")]
+        Language::Latex => "tex",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

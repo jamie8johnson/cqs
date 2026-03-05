@@ -2,13 +2,20 @@
 
 ## Right Now
 
-**Phase 2 language expansion — Batch 1.** 2026-03-05.
+**Phase 2 language expansion — Batch 2.** 2026-03-05.
 
-HTML, JSON, XML, INI done. Branch: `feat/lang-batch1-html-json-xml-ini`. v0.24.0.
+Nix, Make, LaTeX done. v0.25.0. Uncommitted — ready for branch + PR.
+
+Batch 1 (HTML, JSON, XML, INI) merged as PR #535.
+
+Key fixes during Batch 2:
+- `tree-sitter-latex` 0.1.0 broken (missing scanner.c) → switched to `codebook-tree-sitter-latex` 0.6.1
+- `@section` capture was missing from `chunk.rs:capture_types` and `mod.rs:DEF_CAPTURES` — no prior tree-sitter language used it (Markdown uses custom parser)
+- Nix needed `apply_expression` pattern for function-application bindings
 
 ## Pending Changes
 
-Batch 1 language files (html.rs, json.rs, xml.rs, ini.rs), fixtures, mod.rs/eval_common/parser_test updates, doc updates. Uncommitted — ready for branch + PR.
+Batch 2 language files (nix.rs, make.rs, latex.rs), fixtures, parser fixes (@section capture), mod.rs/eval_common/parser_test updates, doc updates. All tests pass (1440). Ready for branch + PR.
 
 ## Parked
 
@@ -35,15 +42,15 @@ Batch 1 language files (html.rs, json.rs, xml.rs, ini.rs), fixtures, mod.rs/eval
 
 ## Architecture
 
-- Version: 0.24.0
+- Version: 0.25.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 40 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Markdown)
+- 43 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1425 pass, 0 failures
+- Tests: 1440 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
