@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval. 36 languages, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval. 40 languages, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -422,8 +422,11 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - GraphQL (types, interfaces, enums, unions, inputs, scalars, directives, operations, fragments)
 - Haskell (functions, data types, newtypes, type synonyms, typeclasses, instances)
 - HCL (resources, data sources, variables, outputs, modules, providers with qualified naming)
+- HTML (headings, semantic landmarks, script/style blocks, id'd elements)
+- INI (sections, settings)
 - Java (classes, interfaces, enums, methods)
 - JavaScript (JSDoc `@param`/`@returns` tags improve search quality)
+- JSON (top-level keys)
 - Julia (functions, structs, abstract types, modules, macros)
 - Kotlin (classes, interfaces, enum classes, objects, functions, properties, type aliases)
 - Lua (functions, local functions, method definitions, table constructors, call extraction)
@@ -443,6 +446,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - Swift (classes, structs, enums, actors, protocols, extensions, functions, type aliases)
 - TOML (tables, arrays of tables, key-value pairs)
 - TypeScript (functions, classes, interfaces, types)
+- XML (elements, processing instructions)
 - YAML (mapping keys, sequences, documents)
 - Zig (functions, structs, enums, unions, error sets, test declarations)
 
@@ -461,7 +465,7 @@ cqs index --dry-run    # Show what would be indexed
 
 **Parse → Embed → Index → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 36 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 40 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
 4. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.

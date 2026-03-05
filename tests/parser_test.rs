@@ -1250,3 +1250,119 @@ fn test_haskell_function_and_data_extraction() {
         .find(|c| c.name == "Printable" && c.chunk_type == ChunkType::Trait);
     assert!(printable.is_some(), "Should find 'Printable' typeclass");
 }
+
+// ===== HTML tests =====
+
+#[test]
+#[cfg(feature = "lang-html")]
+fn test_html_heading_and_landmark_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.html");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract HTML chunks from sample.html"
+    );
+
+    // Heading
+    let h1 = chunks
+        .iter()
+        .find(|c| c.name == "Welcome to the Sample" && c.chunk_type == ChunkType::Section);
+    assert!(h1.is_some(), "Should find h1 heading as Section");
+
+    // Script module
+    let script = chunks
+        .iter()
+        .find(|c| c.name.contains("main.js") && c.chunk_type == ChunkType::Module);
+    assert!(
+        script.is_some(),
+        "Should find script as Module, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== JSON tests =====
+
+#[test]
+#[cfg(feature = "lang-json")]
+fn test_json_top_level_key_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.json");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract JSON chunks from sample.json"
+    );
+
+    let names: Vec<_> = chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(
+        names.contains(&"name"),
+        "Should find 'name' key, got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"version"),
+        "Should find 'version' key, got: {:?}",
+        names
+    );
+}
+
+// ===== XML tests =====
+
+#[test]
+#[cfg(feature = "lang-xml")]
+fn test_xml_element_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.xml");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract XML chunks from sample.xml"
+    );
+
+    let catalog = chunks
+        .iter()
+        .find(|c| c.name == "catalog" && c.chunk_type == ChunkType::Struct);
+    assert!(
+        catalog.is_some(),
+        "Should find 'catalog' element as Struct, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== INI tests =====
+
+#[test]
+#[cfg(feature = "lang-ini")]
+fn test_ini_section_and_setting_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.ini");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract INI chunks from sample.ini"
+    );
+
+    let database = chunks
+        .iter()
+        .find(|c| c.name == "database" && c.chunk_type == ChunkType::Module);
+    assert!(
+        database.is_some(),
+        "Should find 'database' section as Module, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let host = chunks
+        .iter()
+        .find(|c| c.name == "host" && c.chunk_type == ChunkType::Property);
+    assert!(host.is_some(), "Should find 'host' setting as Property");
+}

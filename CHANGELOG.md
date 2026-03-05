@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-03-05
+
+Language expansion Phase 2, Batch 1 — HTML, JSON, XML, INI (36 → 40 languages).
+
+### Added
+- **HTML language support** (`.html`, `.htm`, `.xhtml`) — semantic element classification: headings (Section), landmarks (Section), script/style blocks (Module), id'd elements (Property), noise filtering
+- **JSON language support** (`.json`, `.jsonc`) — top-level key-value pairs (Property)
+- **XML language support** (`.xml`, `.xsl`, `.xsd`, `.svg`) — elements (Struct), processing instructions (Function)
+- **INI language support** (`.ini`, `.cfg`) — sections (Module), settings (Property)
+
 ## [0.23.0] - 2026-03-05
 
 Mass language expansion — 20 → 36 languages (+16). Four batches (#527–#531).
