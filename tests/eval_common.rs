@@ -80,6 +80,14 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Css => "css",
         #[cfg(feature = "lang-perl")]
         Language::Perl => "pl",
+        #[cfg(feature = "lang-html")]
+        Language::Html => "html",
+        #[cfg(feature = "lang-json")]
+        Language::Json => "json",
+        #[cfg(feature = "lang-xml")]
+        Language::Xml => "xml",
+        #[cfg(feature = "lang-ini")]
+        Language::Ini => "ini",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -154,6 +162,14 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Css => "css",
         #[cfg(feature = "lang-perl")]
         Language::Perl => "pl",
+        #[cfg(feature = "lang-html")]
+        Language::Html => "html",
+        #[cfg(feature = "lang-json")]
+        Language::Json => "json",
+        #[cfg(feature = "lang-xml")]
+        Language::Xml => "xml",
+        #[cfg(feature = "lang-ini")]
+        Language::Ini => "ini",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

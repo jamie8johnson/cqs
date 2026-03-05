@@ -577,6 +577,14 @@ define_languages! {
     Css => "css", feature = "lang-css", module = css;
     /// Perl (.pl, .pm files)
     Perl => "perl", feature = "lang-perl", module = perl;
+    /// HTML (.html, .htm, .xhtml files)
+    Html => "html", feature = "lang-html", module = html;
+    /// JSON (.json, .jsonc files)
+    Json => "json", feature = "lang-json", module = json;
+    /// XML (.xml, .xsl, .xsd, .svg files)
+    Xml => "xml", feature = "lang-xml", module = xml;
+    /// INI (.ini, .cfg files)
+    Ini => "ini", feature = "lang-ini", module = ini;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -777,6 +785,28 @@ mod tests {
             assert!(REGISTRY.from_extension("pl").is_some());
             assert!(REGISTRY.from_extension("pm").is_some());
         }
+        #[cfg(feature = "lang-html")]
+        {
+            assert!(REGISTRY.from_extension("html").is_some());
+            assert!(REGISTRY.from_extension("htm").is_some());
+            assert!(REGISTRY.from_extension("xhtml").is_some());
+        }
+        #[cfg(feature = "lang-json")]
+        {
+            assert!(REGISTRY.from_extension("json").is_some());
+            assert!(REGISTRY.from_extension("jsonc").is_some());
+        }
+        #[cfg(feature = "lang-xml")]
+        {
+            assert!(REGISTRY.from_extension("xml").is_some());
+            assert!(REGISTRY.from_extension("xsl").is_some());
+            assert!(REGISTRY.from_extension("svg").is_some());
+        }
+        #[cfg(feature = "lang-ini")]
+        {
+            assert!(REGISTRY.from_extension("ini").is_some());
+            assert!(REGISTRY.from_extension("cfg").is_some());
+        }
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -930,6 +960,22 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-html")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-json")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-xml")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-ini")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -1022,6 +1068,17 @@ mod tests {
         assert_eq!(Language::from_extension("css"), Some(Language::Css));
         assert_eq!(Language::from_extension("pl"), Some(Language::Perl));
         assert_eq!(Language::from_extension("pm"), Some(Language::Perl));
+        assert_eq!(Language::from_extension("html"), Some(Language::Html));
+        assert_eq!(Language::from_extension("htm"), Some(Language::Html));
+        assert_eq!(Language::from_extension("xhtml"), Some(Language::Html));
+        assert_eq!(Language::from_extension("json"), Some(Language::Json));
+        assert_eq!(Language::from_extension("jsonc"), Some(Language::Json));
+        assert_eq!(Language::from_extension("xml"), Some(Language::Xml));
+        assert_eq!(Language::from_extension("xsl"), Some(Language::Xml));
+        assert_eq!(Language::from_extension("xsd"), Some(Language::Xml));
+        assert_eq!(Language::from_extension("svg"), Some(Language::Xml));
+        assert_eq!(Language::from_extension("ini"), Some(Language::Ini));
+        assert_eq!(Language::from_extension("cfg"), Some(Language::Ini));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -1068,6 +1125,10 @@ mod tests {
         assert_eq!("gleam".parse::<Language>().unwrap(), Language::Gleam);
         assert_eq!("css".parse::<Language>().unwrap(), Language::Css);
         assert_eq!("perl".parse::<Language>().unwrap(), Language::Perl);
+        assert_eq!("html".parse::<Language>().unwrap(), Language::Html);
+        assert_eq!("json".parse::<Language>().unwrap(), Language::Json);
+        assert_eq!("xml".parse::<Language>().unwrap(), Language::Xml);
+        assert_eq!("ini".parse::<Language>().unwrap(), Language::Ini);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -1109,6 +1170,10 @@ mod tests {
         assert_eq!(Language::Gleam.to_string(), "gleam");
         assert_eq!(Language::Css.to_string(), "css");
         assert_eq!(Language::Perl.to_string(), "perl");
+        assert_eq!(Language::Html.to_string(), "html");
+        assert_eq!(Language::Json.to_string(), "json");
+        assert_eq!(Language::Xml.to_string(), "xml");
+        assert_eq!(Language::Ini.to_string(), "ini");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1367,6 +1432,20 @@ mod tests {
         );
         // Perl — no static return types
         assert_eq!((Language::Perl.def().extract_return_nl)("sub add {"), None);
+        // HTML — no return types
+        assert_eq!(
+            (Language::Html.def().extract_return_nl)("<div>content</div>"),
+            None
+        );
+        // JSON — no return types
+        assert_eq!(
+            (Language::Json.def().extract_return_nl)("\"key\": \"value\""),
+            None
+        );
+        // XML — no return types
+        assert_eq!((Language::Xml.def().extract_return_nl)("<element/>"), None);
+        // INI — no return types
+        assert_eq!((Language::Ini.def().extract_return_nl)("key = value"), None);
     }
 
     // ===== ChunkType tests =====

@@ -2,7 +2,7 @@
 
 ## Current: v0.21.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 31 languages. Two full audits complete (v0.12.3 + v0.19.2).
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 40 languages. Two full audits complete (v0.12.3 + v0.19.2).
 
 ### Next — Commands
 
