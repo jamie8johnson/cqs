@@ -1,9 +1,9 @@
 [package]
 name = "cqs"
-version = "0.25.0"
+version = "0.26.0"
 edition = "2021"
 rust-version = "1.93"
-description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 43 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
+description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 46 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"
@@ -71,6 +71,9 @@ tree-sitter-ini = { version = "1.4", optional = true }
 tree-sitter-nix = { version = "0.3", optional = true }
 tree-sitter-make = { version = "1.1", optional = true }
 tree-sitter-latex = { version = "0.6", package = "codebook-tree-sitter-latex", optional = true }
+tree-sitter-solidity = { version = "1.2", optional = true }
+tree-sitter-cuda = { version = "0.21", optional = true }
+tree-sitter-glsl = { version = "0.2", optional = true }
 
 # ML
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
@@ -136,7 +139,7 @@ rustyline = "17"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-markdown", "convert"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-markdown", "convert"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -181,8 +184,11 @@ lang-ini = ["dep:tree-sitter-ini"]
 lang-nix = ["dep:tree-sitter-nix"]
 lang-make = ["dep:tree-sitter-make"]
 lang-latex = ["dep:tree-sitter-latex"]
+lang-solidity = ["dep:tree-sitter-solidity"]
+lang-cuda = ["dep:tree-sitter-cuda"]
+lang-glsl = ["dep:tree-sitter-glsl"]
 lang-markdown = []  # No external deps — custom parser
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-markdown"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-markdown"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]

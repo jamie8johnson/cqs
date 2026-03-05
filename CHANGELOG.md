@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-03-05
+
+Language expansion Phase 2, Batch 3 — Solidity, CUDA, GLSL (43 → 46 languages).
+
+### Added
+- **Solidity language support** (`.sol`) — contracts (Class), interfaces, libraries (Module), structs, enums, functions, modifiers, events (Property), state variables, call graph
+- **CUDA language support** (`.cu`, `.cuh`) — reuses C++ grammar with CUDA qualifier filtering (__global__, __device__, __host__). Full call graph, out-of-class methods, kernel launches
+- **GLSL language support** (`.glsl`, `.vert`, `.frag`, `.geom`, `.comp`, `.tesc`, `.tese`) — reuses C grammar with GLSL qualifier filtering (uniform, varying, precision). Shader function extraction and call graph
+
+### Fixed
+- Unused variable warning in embedding batch iterator (newer Rust versions)
+
 ## [0.25.0] - 2026-03-05
 
 Language expansion Phase 2, Batch 2 — Nix, Make, LaTeX (40 → 43 languages).

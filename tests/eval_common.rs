@@ -94,6 +94,12 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Make => "mk",
         #[cfg(feature = "lang-latex")]
         Language::Latex => "tex",
+        #[cfg(feature = "lang-solidity")]
+        Language::Solidity => "sol",
+        #[cfg(feature = "lang-cuda")]
+        Language::Cuda => "cu",
+        #[cfg(feature = "lang-glsl")]
+        Language::Glsl => "vert",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -182,6 +188,12 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Make => "mk",
         #[cfg(feature = "lang-latex")]
         Language::Latex => "tex",
+        #[cfg(feature = "lang-solidity")]
+        Language::Solidity => "sol",
+        #[cfg(feature = "lang-cuda")]
+        Language::Cuda => "cu",
+        #[cfg(feature = "lang-glsl")]
+        Language::Glsl => "vert",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

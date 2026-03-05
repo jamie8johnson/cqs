@@ -1480,3 +1480,123 @@ fn test_latex_section_and_command_extraction() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+#[cfg(feature = "lang-solidity")]
+fn test_solidity_contract_and_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.sol");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Solidity chunks from sample.sol"
+    );
+
+    let contract = chunks
+        .iter()
+        .find(|c| c.name == "Token" && c.chunk_type == ChunkType::Class);
+    assert!(
+        contract.is_some(),
+        "Should find 'Token' contract as Class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let iface = chunks
+        .iter()
+        .find(|c| c.name == "IERC20" && c.chunk_type == ChunkType::Interface);
+    assert!(
+        iface.is_some(),
+        "Should find 'IERC20' interface, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let lib = chunks
+        .iter()
+        .find(|c| c.name == "SafeMath" && c.chunk_type == ChunkType::Module);
+    assert!(
+        lib.is_some(),
+        "Should find 'SafeMath' library as Module, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[cfg(feature = "lang-cuda")]
+fn test_cuda_kernel_and_struct_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.cu");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract CUDA chunks from sample.cu"
+    );
+
+    let kernel = chunks
+        .iter()
+        .find(|c| c.name == "vectorAdd" && c.chunk_type == ChunkType::Function);
+    assert!(
+        kernel.is_some(),
+        "Should find 'vectorAdd' kernel as Function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let s = chunks
+        .iter()
+        .find(|c| c.name == "DeviceConfig" && c.chunk_type == ChunkType::Struct);
+    assert!(
+        s.is_some(),
+        "Should find 'DeviceConfig' struct, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+#[cfg(feature = "lang-glsl")]
+fn test_glsl_function_and_struct_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.vert");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract GLSL chunks from sample.vert"
+    );
+
+    let func = chunks
+        .iter()
+        .find(|c| c.name == "transformNormal" && c.chunk_type == ChunkType::Function);
+    assert!(
+        func.is_some(),
+        "Should find 'transformNormal' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let s = chunks
+        .iter()
+        .find(|c| c.name == "Material" && c.chunk_type == ChunkType::Struct);
+    assert!(
+        s.is_some(),
+        "Should find 'Material' struct, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
