@@ -70,6 +70,12 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Erlang => "erl",
         #[cfg(feature = "lang-haskell")]
         Language::Haskell => "hs",
+        #[cfg(feature = "lang-ocaml")]
+        Language::OCaml => "ml",
+        #[cfg(feature = "lang-julia")]
+        Language::Julia => "jl",
+        #[cfg(feature = "lang-gleam")]
+        Language::Gleam => "gleam",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -134,6 +140,12 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Erlang => "erl",
         #[cfg(feature = "lang-haskell")]
         Language::Haskell => "hs",
+        #[cfg(feature = "lang-ocaml")]
+        Language::OCaml => "ml",
+        #[cfg(feature = "lang-julia")]
+        Language::Julia => "jl",
+        #[cfg(feature = "lang-gleam")]
+        Language::Gleam => "gleam",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

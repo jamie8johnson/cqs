@@ -37,6 +37,9 @@
 //! - `lang-elixir` - Elixir support (enabled by default)
 //! - `lang-erlang` - Erlang support (enabled by default)
 //! - `lang-haskell` - Haskell support (enabled by default)
+//! - `lang-ocaml` - OCaml support (enabled by default)
+//! - `lang-julia` - Julia support (enabled by default)
+//! - `lang-gleam` - Gleam support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -562,6 +565,12 @@ define_languages! {
     Erlang => "erlang", feature = "lang-erlang", module = erlang;
     /// Haskell (.hs files)
     Haskell => "haskell", feature = "lang-haskell", module = haskell;
+    /// OCaml (.ml, .mli files)
+    OCaml => "ocaml", feature = "lang-ocaml", module = ocaml;
+    /// Julia (.jl files)
+    Julia => "julia", feature = "lang-julia", module = julia;
+    /// Gleam (.gleam files)
+    Gleam => "gleam", feature = "lang-gleam", module = gleam;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -746,6 +755,15 @@ mod tests {
         }
         #[cfg(feature = "lang-haskell")]
         assert!(REGISTRY.from_extension("hs").is_some());
+        #[cfg(feature = "lang-ocaml")]
+        {
+            assert!(REGISTRY.from_extension("ml").is_some());
+            assert!(REGISTRY.from_extension("mli").is_some());
+        }
+        #[cfg(feature = "lang-julia")]
+        assert!(REGISTRY.from_extension("jl").is_some());
+        #[cfg(feature = "lang-gleam")]
+        assert!(REGISTRY.from_extension("gleam").is_some());
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -879,6 +897,18 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-ocaml")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-julia")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-gleam")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -964,6 +994,10 @@ mod tests {
         assert_eq!(Language::from_extension("erl"), Some(Language::Erlang));
         assert_eq!(Language::from_extension("hrl"), Some(Language::Erlang));
         assert_eq!(Language::from_extension("hs"), Some(Language::Haskell));
+        assert_eq!(Language::from_extension("ml"), Some(Language::OCaml));
+        assert_eq!(Language::from_extension("mli"), Some(Language::OCaml));
+        assert_eq!(Language::from_extension("jl"), Some(Language::Julia));
+        assert_eq!(Language::from_extension("gleam"), Some(Language::Gleam));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -1005,6 +1039,9 @@ mod tests {
         assert_eq!("elixir".parse::<Language>().unwrap(), Language::Elixir);
         assert_eq!("erlang".parse::<Language>().unwrap(), Language::Erlang);
         assert_eq!("haskell".parse::<Language>().unwrap(), Language::Haskell);
+        assert_eq!("ocaml".parse::<Language>().unwrap(), Language::OCaml);
+        assert_eq!("julia".parse::<Language>().unwrap(), Language::Julia);
+        assert_eq!("gleam".parse::<Language>().unwrap(), Language::Gleam);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -1041,6 +1078,9 @@ mod tests {
         assert_eq!(Language::Elixir.to_string(), "elixir");
         assert_eq!(Language::Erlang.to_string(), "erlang");
         assert_eq!(Language::Haskell.to_string(), "haskell");
+        assert_eq!(Language::OCaml.to_string(), "ocaml");
+        assert_eq!(Language::Julia.to_string(), "julia");
+        assert_eq!(Language::Gleam.to_string(), "gleam");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1266,6 +1306,30 @@ mod tests {
         );
         assert_eq!(
             (Language::Haskell.def().extract_return_nl)("main :: IO ()"),
+            None
+        );
+        assert_eq!(
+            (Language::OCaml.def().extract_return_nl)("val add : int -> int -> int"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::OCaml.def().extract_return_nl)("let add x y = x + y"),
+            None
+        );
+        assert_eq!(
+            (Language::Julia.def().extract_return_nl)("function add(x::Int, y::Int)::Int"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Julia.def().extract_return_nl)("function greet(name)"),
+            None
+        );
+        assert_eq!(
+            (Language::Gleam.def().extract_return_nl)("pub fn add(x: Int, y: Int) -> Int {"),
+            Some("Returns int".to_string())
+        );
+        assert_eq!(
+            (Language::Gleam.def().extract_return_nl)("pub fn main() -> Nil {"),
             None
         );
     }
