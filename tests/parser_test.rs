@@ -1067,6 +1067,107 @@ fn test_erlang_function_and_module_extraction() {
     assert!(module.is_some(), "Should find 'calculator' module");
 }
 
+// ===== OCaml tests =====
+
+#[test]
+#[cfg(feature = "lang-ocaml")]
+fn test_ocaml_function_and_type_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.ml");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract OCaml chunks from sample.ml"
+    );
+
+    // Function
+    let add = chunks.iter().find(|c| c.name == "add");
+    assert!(add.is_some(), "Should find 'add' function");
+    assert_eq!(add.unwrap().chunk_type, ChunkType::Function);
+
+    // Variant type (Enum)
+    let color = chunks
+        .iter()
+        .find(|c| c.name == "color" && c.chunk_type == ChunkType::Enum);
+    assert!(color.is_some(), "Should find 'color' variant type as Enum");
+
+    // Module
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
+    assert!(calc.is_some(), "Should find 'Calculator' module");
+}
+
+// ===== Julia tests =====
+
+#[test]
+#[cfg(feature = "lang-julia")]
+fn test_julia_function_and_struct_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.jl");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Julia chunks from sample.jl"
+    );
+
+    // Function (greet is top-level)
+    let greet = chunks.iter().find(|c| c.name == "greet");
+    assert!(greet.is_some(), "Should find 'greet' function");
+    assert_eq!(greet.unwrap().chunk_type, ChunkType::Function);
+
+    // Struct
+    let point = chunks
+        .iter()
+        .find(|c| c.name == "Point" && c.chunk_type == ChunkType::Struct);
+    assert!(point.is_some(), "Should find 'Point' struct");
+
+    // Module
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
+    assert!(calc.is_some(), "Should find 'Calculator' module");
+}
+
+// ===== Gleam tests =====
+
+#[test]
+#[cfg(feature = "lang-gleam")]
+fn test_gleam_function_and_type_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.gleam");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Gleam chunks from sample.gleam"
+    );
+
+    // Function
+    let add = chunks.iter().find(|c| c.name == "add");
+    assert!(add.is_some(), "Should find 'add' function");
+    assert_eq!(add.unwrap().chunk_type, ChunkType::Function);
+
+    // Custom type (Enum)
+    let color = chunks
+        .iter()
+        .find(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum);
+    assert!(color.is_some(), "Should find 'Color' type as Enum");
+
+    // Type alias
+    let user_id = chunks
+        .iter()
+        .find(|c| c.name == "UserId" && c.chunk_type == ChunkType::TypeAlias);
+    assert!(user_id.is_some(), "Should find 'UserId' type alias");
+
+    // Constant
+    let max = chunks
+        .iter()
+        .find(|c| c.name == "max_retries" && c.chunk_type == ChunkType::Constant);
+    assert!(max.is_some(), "Should find 'max_retries' constant");
+}
+
+// ===== Haskell tests =====
+
 #[test]
 #[cfg(feature = "lang-haskell")]
 fn test_haskell_function_and_data_extraction() {

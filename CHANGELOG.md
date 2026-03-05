@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-03-04
+
+OCaml, Julia, and Gleam language support — 31 → 34 languages.
+
+### Added
+- **OCaml language support** (`.ml`, `.mli`) — let bindings, type definitions, modules, function application
+- **Julia language support** (`.jl`) — functions, structs, abstract types, modules, macros
+- **Gleam language support** (`.gleam`) — functions, type definitions, type aliases, constants
+
+## [0.21.0] - 2026-03-04
+
 Elixir, Erlang, and Haskell language support — 28 → 31 languages.
 
 ### Added
