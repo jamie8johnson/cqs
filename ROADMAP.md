@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v0.25.0
+## Current: v0.26.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 43 languages. Two full audits complete (v0.12.3 + v0.19.2).
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 46 languages. Two full audits complete (v0.12.3 + v0.19.2).
 
 ### Next — Commands
 
@@ -22,12 +22,22 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 43 lan
 - [x] **Elixir** — Module + Macro exist. defprotocol → Interface, defimpl → Object. Clean mapping.
 - [x] **Erlang** — FP + modules, behaviour → Interface, record → Struct.
 - [x] **Haskell** — data → Enum, newtype → Struct, type synonym → TypeAlias, class → Trait, instance → Object.
+- [x] **OCaml** — FP + modules. Uses `LANGUAGE_OCAML` export.
+- [x] **Julia** — Scientific + types.
+- [x] **Gleam** — FP + types.
+- [x] **CSS** — Selectors + rules. Rule sets → Section.
+- [x] **Perl** — Subs + packages. OOP via bless.
+- [x] **HTML** — Semantic elements, script/style modules, landmark sections.
+- [x] **JSON** — Top-level key-value pairs as Property.
+- [x] **XML** — Top-level elements as Struct.
+- [x] **INI** — Sections as Module, settings as Property.
+- [x] **Nix** — Bindings with function/attrset expressions. Call graph via apply_expression.
+- [x] **Make** — Targets as Function, variable assignments as Property.
+- [x] **LaTeX** — Sections, commands, environments.
+- [x] **Solidity** — Contracts, interfaces, libraries, call graph. Expression supertype workaround.
+- [x] **CUDA** — Reuses C++ queries. Kernel-specific stopwords.
+- [x] **GLSL** — Reuses C queries. Shader-specific stopwords.
 - [ ] **Clojure** — Blocked: `tree-sitter-clojure` 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26.
-- [ ] **OCaml** — FP + modules. Uses `LANGUAGE_OCAML` export.
-- [ ] **Julia** — Scientific + types.
-- [ ] **Gleam** — FP + types.
-- [ ] **CSS** — Selectors + rules. Rule sets → Section.
-- [ ] **Perl** — Subs + packages. OOP via bless.
 - [ ] **Dart** — Blocked: old tree-sitter API (pre-0.24). Property covers properties, mixin → Trait.
 - [ ] **ArchestrA QuickScript** — No tree-sitter grammar exists. Needs custom grammar from scratch (VB-like syntax).
 
@@ -43,6 +53,30 @@ All 16 variants shipped and used across languages. Only one potential new varian
 | `Object` | v0.17.0 | Scala |
 
 Infrastructure for adding variants is now cheap: per-language LanguageDef fields, data-driven container extraction, dynamic callable SQL. New variant = enum arm + Display/FromStr + is_callable decision + nl.rs + capture_types.
+
+### Multi-Grammar Parsing (Architectural)
+
+Parse files containing multiple embedded languages. Requires:
+- Outer grammar parses document structure, identifies embedded regions
+- Inner grammars re-parse each region with correct byte offsets
+- Merged results preserve original file positions
+
+**Languages it would unlock:**
+- **Svelte** (.svelte) — JS/TS in `<script>`, CSS in `<style>`, HTML template
+- **Vue** (.vue) — same pattern as Svelte
+- **Astro** (.astro) — JS/TS frontmatter + HTML template
+- **ERB** (.erb) — Ruby embedded in HTML
+- **EEx/HEEx** (.eex, .heex) — Elixir embedded in HTML
+- **PHP-in-HTML** — our PHP support parses PHP blocks; multi-grammar adds HTML context
+
+**Embedded language extraction (lower priority):**
+- SQL in string literals (Rust, Python, Go, Java)
+- GraphQL in tagged templates (JS/TS)
+- Regex literals (via tree-sitter-regex, compatible)
+- Shell in Makefile recipes (both grammars compatible)
+- CSS-in-JS (styled-components, emotion)
+
+**Not yet designed.** Requires parser framework changes — current architecture is one grammar per file.
 
 ### Parked
 

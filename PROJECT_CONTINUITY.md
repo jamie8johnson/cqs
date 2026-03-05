@@ -2,20 +2,19 @@
 
 ## Right Now
 
-**Phase 2 language expansion — Batch 2.** 2026-03-05.
+**Phase 2 language expansion — Batch 3.** 2026-03-05.
 
-Nix, Make, LaTeX done. v0.25.0. Uncommitted — ready for branch + PR.
+Solidity, CUDA, GLSL done. v0.26.0. Ready for branch + PR.
 
+Batch 2 (Nix, Make, LaTeX) in PR #537 — waiting for CI + merge.
 Batch 1 (HTML, JSON, XML, INI) merged as PR #535.
 
-Key fixes during Batch 2:
-- `tree-sitter-latex` 0.1.0 broken (missing scanner.c) → switched to `codebook-tree-sitter-latex` 0.6.1
-- `@section` capture was missing from `chunk.rs:capture_types` and `mod.rs:DEF_CAPTURES` — no prior tree-sitter language used it (Markdown uses custom parser)
-- Nix needed `apply_expression` pattern for function-application bindings
+Key fix in Batch 3:
+- Solidity grammar uses `expression` supertype for `call_expression.function` field — tree-sitter queries can't match through supertypes with `function: (identifier)`. Solved with `member_expression property:` for member calls + `function: (_)` wildcard for direct calls.
 
 ## Pending Changes
 
-Batch 2 language files (nix.rs, make.rs, latex.rs), fixtures, parser fixes (@section capture), mod.rs/eval_common/parser_test updates, doc updates. All tests pass (1440). Ready for branch + PR.
+Batch 3 language files (solidity.rs, cuda.rs, glsl.rs), fixtures, mod.rs/eval_common/parser_test updates, doc updates. All tests pass (1456). Ready for branch + PR once Batch 2 merges.
 
 ## Parked
 
@@ -42,15 +41,15 @@ Batch 2 language files (nix.rs, make.rs, latex.rs), fixtures, parser fixes (@sec
 
 ## Architecture
 
-- Version: 0.25.0
+- Version: 0.26.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 43 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Markdown)
+- 46 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1440 pass, 0 failures
+- Tests: 1456 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

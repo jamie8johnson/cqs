@@ -45,6 +45,9 @@
 //! - `lang-nix` - Nix support (enabled by default)
 //! - `lang-make` - Makefile support (enabled by default)
 //! - `lang-latex` - LaTeX support (enabled by default)
+//! - `lang-solidity` - Solidity support (enabled by default)
+//! - `lang-cuda` - CUDA support (enabled by default)
+//! - `lang-glsl` - GLSL support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -594,6 +597,12 @@ define_languages! {
     Make => "make", feature = "lang-make", module = make;
     /// LaTeX (.tex, .sty, .cls files)
     Latex => "latex", feature = "lang-latex", module = latex;
+    /// Solidity (.sol files)
+    Solidity => "solidity", feature = "lang-solidity", module = solidity;
+    /// CUDA (.cu, .cuh files)
+    Cuda => "cuda", feature = "lang-cuda", module = cuda;
+    /// GLSL (.glsl, .vert, .frag, .geom, .comp, .tesc, .tese files)
+    Glsl => "glsl", feature = "lang-glsl", module = glsl;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -829,6 +838,20 @@ mod tests {
             assert!(REGISTRY.from_extension("sty").is_some());
             assert!(REGISTRY.from_extension("cls").is_some());
         }
+        #[cfg(feature = "lang-solidity")]
+        assert!(REGISTRY.from_extension("sol").is_some());
+        #[cfg(feature = "lang-cuda")]
+        {
+            assert!(REGISTRY.from_extension("cu").is_some());
+            assert!(REGISTRY.from_extension("cuh").is_some());
+        }
+        #[cfg(feature = "lang-glsl")]
+        {
+            assert!(REGISTRY.from_extension("glsl").is_some());
+            assert!(REGISTRY.from_extension("vert").is_some());
+            assert!(REGISTRY.from_extension("frag").is_some());
+            assert!(REGISTRY.from_extension("comp").is_some());
+        }
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -1010,6 +1033,18 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-solidity")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-cuda")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-glsl")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -1119,6 +1154,16 @@ mod tests {
         assert_eq!(Language::from_extension("tex"), Some(Language::Latex));
         assert_eq!(Language::from_extension("sty"), Some(Language::Latex));
         assert_eq!(Language::from_extension("cls"), Some(Language::Latex));
+        assert_eq!(Language::from_extension("sol"), Some(Language::Solidity));
+        assert_eq!(Language::from_extension("cu"), Some(Language::Cuda));
+        assert_eq!(Language::from_extension("cuh"), Some(Language::Cuda));
+        assert_eq!(Language::from_extension("glsl"), Some(Language::Glsl));
+        assert_eq!(Language::from_extension("vert"), Some(Language::Glsl));
+        assert_eq!(Language::from_extension("frag"), Some(Language::Glsl));
+        assert_eq!(Language::from_extension("geom"), Some(Language::Glsl));
+        assert_eq!(Language::from_extension("comp"), Some(Language::Glsl));
+        assert_eq!(Language::from_extension("tesc"), Some(Language::Glsl));
+        assert_eq!(Language::from_extension("tese"), Some(Language::Glsl));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -1172,6 +1217,9 @@ mod tests {
         assert_eq!("nix".parse::<Language>().unwrap(), Language::Nix);
         assert_eq!("make".parse::<Language>().unwrap(), Language::Make);
         assert_eq!("latex".parse::<Language>().unwrap(), Language::Latex);
+        assert_eq!("solidity".parse::<Language>().unwrap(), Language::Solidity);
+        assert_eq!("cuda".parse::<Language>().unwrap(), Language::Cuda);
+        assert_eq!("glsl".parse::<Language>().unwrap(), Language::Glsl);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -1220,6 +1268,9 @@ mod tests {
         assert_eq!(Language::Nix.to_string(), "nix");
         assert_eq!(Language::Make.to_string(), "make");
         assert_eq!(Language::Latex.to_string(), "latex");
+        assert_eq!(Language::Solidity.to_string(), "solidity");
+        assert_eq!(Language::Cuda.to_string(), "cuda");
+        assert_eq!(Language::Glsl.to_string(), "glsl");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1502,6 +1553,35 @@ mod tests {
         // LaTeX — no return types
         assert_eq!(
             (Language::Latex.def().extract_return_nl)("\\section{Intro}"),
+            None
+        );
+        // Solidity — returns keyword
+        assert_eq!(
+            (Language::Solidity.def().extract_return_nl)(
+                "function add(uint a, uint b) public pure returns (uint)"
+            ),
+            Some("Returns uint".to_string())
+        );
+        assert_eq!(
+            (Language::Solidity.def().extract_return_nl)("function doSomething() public"),
+            None
+        );
+        // CUDA — C++ style
+        assert_eq!(
+            (Language::Cuda.def().extract_return_nl)("__device__ float compute(float x)"),
+            Some("Returns float".to_string())
+        );
+        assert_eq!(
+            (Language::Cuda.def().extract_return_nl)("__global__ void kernel(int n)"),
+            None
+        );
+        // GLSL — C style
+        assert_eq!(
+            (Language::Glsl.def().extract_return_nl)("vec4 applyLighting(vec3 normal)"),
+            Some("Returns vec4".to_string())
+        );
+        assert_eq!(
+            (Language::Glsl.def().extract_return_nl)("void main()"),
             None
         );
     }
