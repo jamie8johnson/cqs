@@ -7,49 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.23.0] - 2026-03-04
+## [0.23.0] - 2026-03-05
+
+Mass language expansion — 20 → 36 languages (+16). Four batches (#527–#531).
 
 ### Added
-- CSS language support (`.css`) — rule sets, keyframes, media queries
-- Perl language support (`.pl`, `.pm`) — subroutines, packages, method/function calls
-
-## [0.22.0] - 2026-03-04
-
-OCaml, Julia, and Gleam language support — 31 → 34 languages.
-
-### Added
-- **OCaml language support** (`.ml`, `.mli`) — let bindings, type definitions, modules, function application
+- **Protobuf language support** (`.proto`) — messages (Struct), services (Interface), RPCs (Method), enums, type references via `message_or_enum_type`
+- **GraphQL language support** (`.graphql`) — object types, interfaces, enums, unions (TypeAlias), input types, scalars, directives (Macro), operations, fragments, type references via `named_type`
+- **PHP language support** (`.php`) — classes, interfaces, traits, enums, functions, methods, properties, constants, call extraction (function/method/static/constructor), type references, return type extraction
+- **Lua language support** (`.lua`) — functions, local functions, method definitions, table constructors, call extraction
+- **Zig language support** (`.zig`) — functions, structs, enums, unions, error sets, test declarations
+- **R language support** (`.r`, `.R`) — functions, S4 classes/generics/methods, R6 classes, formula assignments
+- **YAML language support** (`.yaml`, `.yml`) — mapping keys, sequences, documents
+- **TOML language support** (`.toml`) — tables, arrays of tables, key-value pairs
+- **Elixir language support** (`.ex`, `.exs`) — functions (def/defp), modules (defmodule), protocols (Interface), implementations (Object), macros, guards, delegates, pipe call extraction
+- **Erlang language support** (`.erl`, `.hrl`) — functions, modules, records (Struct), type aliases, opaque types, behaviours (Interface), callbacks, local and remote call extraction
+- **Haskell language support** (`.hs`) — functions, data types (Enum), newtypes (Struct), type synonyms (TypeAlias), typeclasses (Trait), instances (Object), return type extraction, function application call extraction
+- **OCaml language support** (`.ml`, `.mli`) — let bindings, type definitions (variant/record/alias), modules, function application via value_path
 - **Julia language support** (`.jl`) — functions, structs, abstract types, modules, macros
 - **Gleam language support** (`.gleam`) — functions, type definitions, type aliases, constants
-
-## [0.21.0] - 2026-03-04
-
-Elixir, Erlang, and Haskell language support — 28 → 31 languages.
-
-### Added
-- **Elixir language support** — functions (def/defp), modules (defmodule), protocols (defprotocol → Interface), implementations (defimpl → Object), macros (defmacro), guards, delegates, pipe call extraction
-- **Erlang language support** — functions (fun_decl), modules, records (Struct), type aliases, opaque types, behaviours (Interface), callbacks, local and remote call extraction
-- **Haskell language support** — functions, data types (Enum), newtypes (Struct), type synonyms (TypeAlias), typeclasses (Trait), instances (Object), return type extraction from type signatures, function application call extraction
-
-## [0.21.0] - 2026-03-04
-
-Lua, Zig, R, YAML, and TOML language support — 23 → 28 languages.
-
-### Added
-- **Lua language support** — functions, local functions, method definitions, table constructors, call extraction
-- **Zig language support** — functions, structs, enums, unions, error sets, test declarations
-- **R language support** — functions, S4 classes/generics/methods, R6 classes, formula assignments
-- **YAML language support** — mapping keys, sequences, documents
-- **TOML language support** — tables, arrays of tables, key-value pairs
-
-## [0.20.0] - 2026-03-04
-
-Protobuf, GraphQL, and PHP language support — 20 → 23 languages.
-
-### Added
-- **Protobuf language support** — messages (Struct), services (Interface), RPCs (Method), enums, type references via `message_or_enum_type`
-- **GraphQL language support** — object types, interfaces, enums, unions (TypeAlias), input types, scalars, directives (Macro), operations, fragments, type references via `named_type`
-- **PHP language support** — classes, interfaces, traits, enums, functions, methods, properties, constants, call extraction (function/method/static/constructor), type references (params, returns, fields, extends, implements), return type extraction
+- **CSS language support** (`.css`) — rule sets (Property), keyframes and media queries (Section)
+- **Perl language support** (`.pl`, `.pm`) — subroutines, packages (Module), function/method calls
 
 ## [0.19.5] - 2026-03-04
 

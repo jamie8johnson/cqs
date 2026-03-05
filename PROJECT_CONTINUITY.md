@@ -2,15 +2,19 @@
 
 ## Right Now
 
-**Mass language expansion.** 2026-03-04.
+**Mass language expansion complete.** 2026-03-04.
 
-Batch 2 complete (Elixir, Erlang, Haskell). 28 → 31 languages.
-- Clojure blocked: `tree-sitter-clojure` 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26
-- PR pending for Batch 2 (branch `feat/lang-elixir-erlang-haskell`)
+All 4 batches merged:
+- Batch 1: Lua, Zig, R, YAML, TOML (PR #528, 23→28)
+- Batch 2: Elixir, Erlang, Haskell (PR #529, 28→31) — Clojure blocked (tree-sitter ^0.25)
+- Batch 3: OCaml, Julia, Gleam (PR #530, 31→34)
+- Batch 4: CSS, Perl (PR #531, 34→36)
+
+36 languages total. Plan called for 37 (14 new) but Clojure was blocked.
 
 ## Pending Changes
 
-Batch 2 language files + fixtures + tests ready for commit.
+None.
 
 ## Parked
 
@@ -37,15 +41,15 @@ Batch 2 language files + fixtures + tests ready for commit.
 
 ## Architecture
 
-- Version: 0.21.0
+- Version: 0.23.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 31 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, Markdown)
+- 36 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1371 pass, 0 failures
+- Tests: 1402 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag
