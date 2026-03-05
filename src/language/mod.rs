@@ -40,6 +40,8 @@
 //! - `lang-ocaml` - OCaml support (enabled by default)
 //! - `lang-julia` - Julia support (enabled by default)
 //! - `lang-gleam` - Gleam support (enabled by default)
+//! - `lang-css` - CSS support (enabled by default)
+//! - `lang-perl` - Perl support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -571,6 +573,10 @@ define_languages! {
     Julia => "julia", feature = "lang-julia", module = julia;
     /// Gleam (.gleam files)
     Gleam => "gleam", feature = "lang-gleam", module = gleam;
+    /// CSS (.css files)
+    Css => "css", feature = "lang-css", module = css;
+    /// Perl (.pl, .pm files)
+    Perl => "perl", feature = "lang-perl", module = perl;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -764,6 +770,13 @@ mod tests {
         assert!(REGISTRY.from_extension("jl").is_some());
         #[cfg(feature = "lang-gleam")]
         assert!(REGISTRY.from_extension("gleam").is_some());
+        #[cfg(feature = "lang-css")]
+        assert!(REGISTRY.from_extension("css").is_some());
+        #[cfg(feature = "lang-perl")]
+        {
+            assert!(REGISTRY.from_extension("pl").is_some());
+            assert!(REGISTRY.from_extension("pm").is_some());
+        }
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -909,6 +922,14 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-css")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-perl")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -998,6 +1019,9 @@ mod tests {
         assert_eq!(Language::from_extension("mli"), Some(Language::OCaml));
         assert_eq!(Language::from_extension("jl"), Some(Language::Julia));
         assert_eq!(Language::from_extension("gleam"), Some(Language::Gleam));
+        assert_eq!(Language::from_extension("css"), Some(Language::Css));
+        assert_eq!(Language::from_extension("pl"), Some(Language::Perl));
+        assert_eq!(Language::from_extension("pm"), Some(Language::Perl));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -1042,6 +1066,8 @@ mod tests {
         assert_eq!("ocaml".parse::<Language>().unwrap(), Language::OCaml);
         assert_eq!("julia".parse::<Language>().unwrap(), Language::Julia);
         assert_eq!("gleam".parse::<Language>().unwrap(), Language::Gleam);
+        assert_eq!("css".parse::<Language>().unwrap(), Language::Css);
+        assert_eq!("perl".parse::<Language>().unwrap(), Language::Perl);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -1081,6 +1107,8 @@ mod tests {
         assert_eq!(Language::OCaml.to_string(), "ocaml");
         assert_eq!(Language::Julia.to_string(), "julia");
         assert_eq!(Language::Gleam.to_string(), "gleam");
+        assert_eq!(Language::Css.to_string(), "css");
+        assert_eq!(Language::Perl.to_string(), "perl");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1332,6 +1360,13 @@ mod tests {
             (Language::Gleam.def().extract_return_nl)("pub fn main() -> Nil {"),
             None
         );
+        // CSS — no return types
+        assert_eq!(
+            (Language::Css.def().extract_return_nl)(".class { color: red; }"),
+            None
+        );
+        // Perl — no static return types
+        assert_eq!((Language::Perl.def().extract_return_nl)("sub add {"), None);
     }
 
     // ===== ChunkType tests =====

@@ -1,0 +1,62 @@
+/* Reset styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Main container */
+.container {
+    display: flex;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 16px;
+}
+
+/* Navigation */
+.nav {
+    background-color: #333;
+    color: white;
+}
+
+.nav a {
+    text-decoration: none;
+    color: inherit;
+}
+
+#main-content {
+    flex: 1;
+    padding: 24px;
+}
+
+/* Animations */
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .container {
+        flex-direction: column;
+    }
+}
+
+/* Button styles */
+.btn {
+    display: inline-block;
+    padding: 8px 16px;
+    border-radius: 4px;
+    background-color: rgb(66, 133, 244);
+    color: white;
+    cursor: pointer;
+}
+
+.btn:hover {
+    opacity: 0.9;
+}
