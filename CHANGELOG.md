@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Elixir, Erlang, and Haskell language support — 28 → 31 languages.
+
+### Added
+- **Elixir language support** — functions (def/defp), modules (defmodule), protocols (defprotocol → Interface), implementations (defimpl → Object), macros (defmacro), guards, delegates, pipe call extraction
+- **Erlang language support** — functions (fun_decl), modules, records (Struct), type aliases, opaque types, behaviours (Interface), callbacks, local and remote call extraction
+- **Haskell language support** — functions, data types (Enum), newtypes (Struct), type synonyms (TypeAlias), typeclasses (Trait), instances (Object), return type extraction from type signatures, function application call extraction
+
 ## [0.21.0] - 2026-03-04
 
 Lua, Zig, R, YAML, and TOML language support — 23 → 28 languages.

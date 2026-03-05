@@ -2,7 +2,7 @@
 
 ## Current: v0.21.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 28 languages. Two full audits complete (v0.12.3 + v0.19.2).
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 31 languages. Two full audits complete (v0.12.3 + v0.19.2).
 
 ### Next — Commands
 
@@ -19,9 +19,17 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 28 lan
 
 ### Future Languages — Priority Order
 
-- [ ] **Elixir** — Module + Macro exist. defprotocol → Trait, defrecord → Struct. Clean mapping.
-- [ ] **Haskell** — TypeAlias exists. data → Enum, class → Trait. Niche but loved.
-- [ ] **Dart** — Property covers properties, mixin → Trait
+- [x] **Elixir** — Module + Macro exist. defprotocol → Interface, defimpl → Object. Clean mapping.
+- [x] **Erlang** — FP + modules, behaviour → Interface, record → Struct.
+- [x] **Haskell** — data → Enum, newtype → Struct, type synonym → TypeAlias, class → Trait, instance → Object.
+- [ ] **Clojure** — Blocked: `tree-sitter-clojure` 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26.
+- [ ] **OCaml** — FP + modules. Uses `LANGUAGE_OCAML` export.
+- [ ] **Julia** — Scientific + types.
+- [ ] **Gleam** — FP + types.
+- [ ] **CSS** — Selectors + rules. Rule sets → Section.
+- [ ] **Perl** — Subs + packages. OOP via bless.
+- [ ] **Dart** — Blocked: old tree-sitter API (pre-0.24). Property covers properties, mixin → Trait.
+- [ ] **ArchestrA QuickScript** — No tree-sitter grammar exists. Needs custom grammar from scratch (VB-like syntax).
 
 ### ChunkType Variant Status
 

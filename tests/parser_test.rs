@@ -1020,3 +1020,78 @@ fn test_toml_table_extraction() {
         names
     );
 }
+
+#[test]
+#[cfg(feature = "lang-elixir")]
+fn test_elixir_function_and_module_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.ex");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Elixir chunks from sample.ex"
+    );
+
+    // Function
+    let add = chunks.iter().find(|c| c.name == "add");
+    assert!(add.is_some(), "Should find 'add' function");
+    assert_eq!(add.unwrap().chunk_type, ChunkType::Function);
+
+    // Module
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
+    assert!(calc.is_some(), "Should find 'Calculator' module");
+}
+
+#[test]
+#[cfg(feature = "lang-erlang")]
+fn test_erlang_function_and_module_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.erl");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Erlang chunks from sample.erl"
+    );
+
+    // Function
+    let add = chunks.iter().find(|c| c.name == "add");
+    assert!(add.is_some(), "Should find 'add' function");
+    assert_eq!(add.unwrap().chunk_type, ChunkType::Function);
+
+    // Module
+    let module = chunks
+        .iter()
+        .find(|c| c.name == "calculator" && c.chunk_type == ChunkType::Module);
+    assert!(module.is_some(), "Should find 'calculator' module");
+}
+
+#[test]
+#[cfg(feature = "lang-haskell")]
+fn test_haskell_function_and_data_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.hs");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Haskell chunks from sample.hs"
+    );
+
+    // Function
+    let add = chunks.iter().find(|c| c.name == "add");
+    assert!(add.is_some(), "Should find 'add' function");
+    assert_eq!(add.unwrap().chunk_type, ChunkType::Function);
+
+    // Data type (Enum)
+    let color = chunks
+        .iter()
+        .find(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum);
+    assert!(color.is_some(), "Should find 'Color' data type");
+
+    // Typeclass (Trait)
+    let printable = chunks
+        .iter()
+        .find(|c| c.name == "Printable" && c.chunk_type == ChunkType::Trait);
+    assert!(printable.is_some(), "Should find 'Printable' typeclass");
+}

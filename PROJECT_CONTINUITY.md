@@ -2,18 +2,15 @@
 
 ## Right Now
 
-**Audit complete.** 2026-03-04.
+**Mass language expansion.** 2026-03-04.
 
-v0.19.5 release in progress. Full 75-finding audit resolved:
-- P1: 6 fixes (PR #522)
-- P2: 4 fixes (PR #523)
-- P3: 43/50 fixed, 7 acceptable/moot (PR #524)
-- P4: 9/19 fixed, 10 triaged (PR #525)
-- 4 dep bumps merged (#516-#520)
+Batch 2 complete (Elixir, Erlang, Haskell). 28 → 31 languages.
+- Clojure blocked: `tree-sitter-clojure` 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26
+- PR pending for Batch 2 (branch `feat/lang-elixir-erlang-haskell`)
 
 ## Pending Changes
 
-None — clean working tree on main.
+Batch 2 language files + fixtures + tests ready for commit.
 
 ## Parked
 
@@ -46,9 +43,9 @@ None — clean working tree on main.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 28 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Markdown)
+- 31 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1351 pass, 0 failures
+- Tests: 1371 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

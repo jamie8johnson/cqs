@@ -64,6 +64,12 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Yaml => "yaml",
         #[cfg(feature = "lang-toml")]
         Language::Toml => "toml",
+        #[cfg(feature = "lang-elixir")]
+        Language::Elixir => "ex",
+        #[cfg(feature = "lang-erlang")]
+        Language::Erlang => "erl",
+        #[cfg(feature = "lang-haskell")]
+        Language::Haskell => "hs",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -122,6 +128,12 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Yaml => "yaml",
         #[cfg(feature = "lang-toml")]
         Language::Toml => "toml",
+        #[cfg(feature = "lang-elixir")]
+        Language::Elixir => "ex",
+        #[cfg(feature = "lang-erlang")]
+        Language::Erlang => "erl",
+        #[cfg(feature = "lang-haskell")]
+        Language::Haskell => "hs",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)

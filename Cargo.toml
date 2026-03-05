@@ -3,7 +3,7 @@ name = "cqs"
 version = "0.21.0"
 edition = "2021"
 rust-version = "1.93"
-description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 28 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
+description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 31 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"
@@ -55,6 +55,10 @@ tree-sitter-zig = { version = "1.1", optional = true }
 tree-sitter-r = { version = "1.2", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }
 tree-sitter-toml = { version = "0.7", package = "tree-sitter-toml-ng", optional = true }
+tree-sitter-elixir = { version = "0.3", optional = true }
+tree-sitter-erlang = { version = "0.15", optional = true }
+tree-sitter-haskell = { version = "0.23", optional = true }
+# tree-sitter-clojure blocked: 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26
 
 # ML
 ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
@@ -120,7 +124,7 @@ rustyline = "17"
 libc = "0.2"
 
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-markdown", "convert"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-markdown", "convert"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -150,8 +154,11 @@ lang-zig = ["dep:tree-sitter-zig"]
 lang-r = ["dep:tree-sitter-r"]
 lang-yaml = ["dep:tree-sitter-yaml"]
 lang-toml = ["dep:tree-sitter-toml"]
+lang-elixir = ["dep:tree-sitter-elixir"]
+lang-erlang = ["dep:tree-sitter-erlang"]
+lang-haskell = ["dep:tree-sitter-haskell"]
 lang-markdown = []  # No external deps — custom parser
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-markdown"]
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-markdown"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]

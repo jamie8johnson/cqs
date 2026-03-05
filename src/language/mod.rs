@@ -34,6 +34,9 @@
 //! - `lang-r` - R support (enabled by default)
 //! - `lang-yaml` - YAML support (enabled by default)
 //! - `lang-toml` - TOML support (enabled by default)
+//! - `lang-elixir` - Elixir support (enabled by default)
+//! - `lang-erlang` - Erlang support (enabled by default)
+//! - `lang-haskell` - Haskell support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -553,6 +556,12 @@ define_languages! {
     Yaml => "yaml", feature = "lang-yaml", module = yaml;
     /// TOML (.toml files)
     Toml => "toml", feature = "lang-toml", module = toml_lang;
+    /// Elixir (.ex, .exs files)
+    Elixir => "elixir", feature = "lang-elixir", module = elixir;
+    /// Erlang (.erl, .hrl files)
+    Erlang => "erlang", feature = "lang-erlang", module = erlang;
+    /// Haskell (.hs files)
+    Haskell => "haskell", feature = "lang-haskell", module = haskell;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -725,6 +734,18 @@ mod tests {
         }
         #[cfg(feature = "lang-toml")]
         assert!(REGISTRY.from_extension("toml").is_some());
+        #[cfg(feature = "lang-elixir")]
+        {
+            assert!(REGISTRY.from_extension("ex").is_some());
+            assert!(REGISTRY.from_extension("exs").is_some());
+        }
+        #[cfg(feature = "lang-erlang")]
+        {
+            assert!(REGISTRY.from_extension("erl").is_some());
+            assert!(REGISTRY.from_extension("hrl").is_some());
+        }
+        #[cfg(feature = "lang-haskell")]
+        assert!(REGISTRY.from_extension("hs").is_some());
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -846,6 +867,18 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-elixir")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-erlang")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-haskell")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -926,6 +959,11 @@ mod tests {
         assert_eq!(Language::from_extension("yaml"), Some(Language::Yaml));
         assert_eq!(Language::from_extension("yml"), Some(Language::Yaml));
         assert_eq!(Language::from_extension("toml"), Some(Language::Toml));
+        assert_eq!(Language::from_extension("ex"), Some(Language::Elixir));
+        assert_eq!(Language::from_extension("exs"), Some(Language::Elixir));
+        assert_eq!(Language::from_extension("erl"), Some(Language::Erlang));
+        assert_eq!(Language::from_extension("hrl"), Some(Language::Erlang));
+        assert_eq!(Language::from_extension("hs"), Some(Language::Haskell));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -964,6 +1002,9 @@ mod tests {
         assert_eq!("r".parse::<Language>().unwrap(), Language::R);
         assert_eq!("yaml".parse::<Language>().unwrap(), Language::Yaml);
         assert_eq!("toml".parse::<Language>().unwrap(), Language::Toml);
+        assert_eq!("elixir".parse::<Language>().unwrap(), Language::Elixir);
+        assert_eq!("erlang".parse::<Language>().unwrap(), Language::Erlang);
+        assert_eq!("haskell".parse::<Language>().unwrap(), Language::Haskell);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -997,6 +1038,9 @@ mod tests {
         assert_eq!(Language::R.to_string(), "r");
         assert_eq!(Language::Yaml.to_string(), "yaml");
         assert_eq!(Language::Toml.to_string(), "toml");
+        assert_eq!(Language::Elixir.to_string(), "elixir");
+        assert_eq!(Language::Erlang.to_string(), "erlang");
+        assert_eq!(Language::Haskell.to_string(), "haskell");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1208,6 +1252,22 @@ mod tests {
         );
         assert_eq!((Language::Yaml.def().extract_return_nl)("key: value"), None);
         assert_eq!((Language::Toml.def().extract_return_nl)("[section]"), None);
+        assert_eq!(
+            (Language::Elixir.def().extract_return_nl)("def greet(name) do"),
+            None
+        );
+        assert_eq!(
+            (Language::Erlang.def().extract_return_nl)("greet(Name) ->"),
+            None
+        );
+        assert_eq!(
+            (Language::Haskell.def().extract_return_nl)("greet :: String -> String"),
+            Some("Returns string".to_string())
+        );
+        assert_eq!(
+            (Language::Haskell.def().extract_return_nl)("main :: IO ()"),
+            None
+        );
     }
 
     // ===== ChunkType tests =====
