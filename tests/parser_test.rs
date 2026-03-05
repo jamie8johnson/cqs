@@ -1166,6 +1166,60 @@ fn test_gleam_function_and_type_extraction() {
     assert!(max.is_some(), "Should find 'max_retries' constant");
 }
 
+// ===== CSS tests =====
+
+#[test]
+#[cfg(feature = "lang-css")]
+fn test_css_rule_set_and_keyframes_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.css");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract CSS chunks from sample.css"
+    );
+
+    // Rule set (selector as Property)
+    let container = chunks
+        .iter()
+        .find(|c| c.name.contains("container") && c.chunk_type == ChunkType::Property);
+    assert!(
+        container.is_some(),
+        "Should find '.container' rule set as Property"
+    );
+
+    // Keyframes (Section)
+    let fade = chunks
+        .iter()
+        .find(|c| c.name == "fadeIn" && c.chunk_type == ChunkType::Section);
+    assert!(fade.is_some(), "Should find 'fadeIn' keyframes as Section");
+}
+
+// ===== Perl tests =====
+
+#[test]
+#[cfg(feature = "lang-perl")]
+fn test_perl_subroutine_and_package_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.pl");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Perl chunks from sample.pl"
+    );
+
+    // Subroutine
+    let greet = chunks.iter().find(|c| c.name == "greet");
+    assert!(greet.is_some(), "Should find 'greet' subroutine");
+    assert_eq!(greet.unwrap().chunk_type, ChunkType::Function);
+
+    // Package
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
+    assert!(calc.is_some(), "Should find 'Calculator' package as Module");
+}
+
 // ===== Haskell tests =====
 
 #[test]

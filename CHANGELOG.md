@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-03-04
+
+### Added
+- CSS language support (`.css`) — rule sets, keyframes, media queries
+- Perl language support (`.pl`, `.pm`) — subroutines, packages, method/function calls
+
 ## [0.22.0] - 2026-03-04
 
 OCaml, Julia, and Gleam language support — 31 → 34 languages.

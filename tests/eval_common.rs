@@ -76,6 +76,10 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Julia => "jl",
         #[cfg(feature = "lang-gleam")]
         Language::Gleam => "gleam",
+        #[cfg(feature = "lang-css")]
+        Language::Css => "css",
+        #[cfg(feature = "lang-perl")]
+        Language::Perl => "pl",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
@@ -146,6 +150,10 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Julia => "jl",
         #[cfg(feature = "lang-gleam")]
         Language::Gleam => "gleam",
+        #[cfg(feature = "lang-css")]
+        Language::Css => "css",
+        #[cfg(feature = "lang-perl")]
+        Language::Perl => "pl",
         Language::Markdown => "md",
     };
     PathBuf::from(manifest_dir)
