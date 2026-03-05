@@ -1533,7 +1533,7 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
         });
 
         match result {
-            Ok((batch, rows_fetched, max_rowid)) if batch.is_empty() && rows_fetched == 0 => {
+            Ok((batch, rows_fetched, _max_rowid)) if batch.is_empty() && rows_fetched == 0 => {
                 // No more rows in database
                 self.done = true;
                 None
