@@ -2,19 +2,21 @@
 
 ## Right Now
 
-**Phase 2 language expansion — Batch 3.** 2026-03-05.
+**Phase 2 language expansion — complete.** 2026-03-05.
 
-Solidity, CUDA, GLSL done. v0.26.0. Ready for branch + PR.
-
-Batch 2 (Nix, Make, LaTeX) in PR #537 — waiting for CI + merge.
-Batch 1 (HTML, JSON, XML, INI) merged as PR #535.
+All 3 batches done. 46 languages total.
+- Batch 1 (HTML, JSON, XML, INI) — PR #535 merged
+- Batch 2 (Nix, Make, LaTeX) — PR #537 merged
+- Batch 3 (Solidity, CUDA, GLSL) — PR #538 open, CI running
 
 Key fix in Batch 3:
 - Solidity grammar uses `expression` supertype for `call_expression.function` field — tree-sitter queries can't match through supertypes with `function: (identifier)`. Solved with `member_expression property:` for member calls + `function: (_)` wildcard for direct calls.
 
+Also added Multi-Grammar Parsing section to ROADMAP.md.
+
 ## Pending Changes
 
-Batch 3 language files (solidity.rs, cuda.rs, glsl.rs), fixtures, mod.rs/eval_common/parser_test updates, doc updates. All tests pass (1456). Ready for branch + PR once Batch 2 merges.
+PR #538 waiting for CI. No uncommitted work.
 
 ## Parked
 
