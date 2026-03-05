@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-03-05
+
+Language expansion Phase 2, Batch 2 — Nix, Make, LaTeX (40 → 43 languages).
+
+### Added
+- **Nix language support** (`.nix`) — function bindings, attribute sets, recursive attribute sets, function application call graph
+- **Make language support** (`.mk`, `.mak`) — rules/targets (Function), variable assignments (Property)
+- **LaTeX language support** (`.tex`, `.sty`, `.cls`) — sections/chapters/subsections (Section), command definitions (Function), environments (Struct)
+
+### Fixed
+- Parser now recognizes `@section` capture in tree-sitter queries (was missing from capture type mapping)
+- Switched from broken `tree-sitter-latex` crate (missing scanner.c) to working `codebook-tree-sitter-latex`
+
 ## [0.24.0] - 2026-03-05
 
 Language expansion Phase 2, Batch 1 — HTML, JSON, XML, INI (36 → 40 languages).

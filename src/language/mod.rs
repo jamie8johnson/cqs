@@ -42,6 +42,9 @@
 //! - `lang-gleam` - Gleam support (enabled by default)
 //! - `lang-css` - CSS support (enabled by default)
 //! - `lang-perl` - Perl support (enabled by default)
+//! - `lang-nix` - Nix support (enabled by default)
+//! - `lang-make` - Makefile support (enabled by default)
+//! - `lang-latex` - LaTeX support (enabled by default)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -585,6 +588,12 @@ define_languages! {
     Xml => "xml", feature = "lang-xml", module = xml;
     /// INI (.ini, .cfg files)
     Ini => "ini", feature = "lang-ini", module = ini;
+    /// Nix (.nix files)
+    Nix => "nix", feature = "lang-nix", module = nix;
+    /// Makefile (.mk, .mak files)
+    Make => "make", feature = "lang-make", module = make;
+    /// LaTeX (.tex, .sty, .cls files)
+    Latex => "latex", feature = "lang-latex", module = latex;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -807,6 +816,19 @@ mod tests {
             assert!(REGISTRY.from_extension("ini").is_some());
             assert!(REGISTRY.from_extension("cfg").is_some());
         }
+        #[cfg(feature = "lang-nix")]
+        assert!(REGISTRY.from_extension("nix").is_some());
+        #[cfg(feature = "lang-make")]
+        {
+            assert!(REGISTRY.from_extension("mk").is_some());
+            assert!(REGISTRY.from_extension("mak").is_some());
+        }
+        #[cfg(feature = "lang-latex")]
+        {
+            assert!(REGISTRY.from_extension("tex").is_some());
+            assert!(REGISTRY.from_extension("sty").is_some());
+            assert!(REGISTRY.from_extension("cls").is_some());
+        }
         #[cfg(feature = "lang-markdown")]
         {
             assert!(REGISTRY.from_extension("md").is_some());
@@ -976,6 +998,18 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-nix")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-make")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-latex")]
+        {
+            expected += 1;
+        }
         #[cfg(feature = "lang-markdown")]
         {
             expected += 1;
@@ -1079,6 +1113,12 @@ mod tests {
         assert_eq!(Language::from_extension("svg"), Some(Language::Xml));
         assert_eq!(Language::from_extension("ini"), Some(Language::Ini));
         assert_eq!(Language::from_extension("cfg"), Some(Language::Ini));
+        assert_eq!(Language::from_extension("nix"), Some(Language::Nix));
+        assert_eq!(Language::from_extension("mk"), Some(Language::Make));
+        assert_eq!(Language::from_extension("mak"), Some(Language::Make));
+        assert_eq!(Language::from_extension("tex"), Some(Language::Latex));
+        assert_eq!(Language::from_extension("sty"), Some(Language::Latex));
+        assert_eq!(Language::from_extension("cls"), Some(Language::Latex));
         assert_eq!(Language::from_extension("md"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("mdx"), Some(Language::Markdown));
         assert_eq!(Language::from_extension("unknown"), None);
@@ -1129,6 +1169,9 @@ mod tests {
         assert_eq!("json".parse::<Language>().unwrap(), Language::Json);
         assert_eq!("xml".parse::<Language>().unwrap(), Language::Xml);
         assert_eq!("ini".parse::<Language>().unwrap(), Language::Ini);
+        assert_eq!("nix".parse::<Language>().unwrap(), Language::Nix);
+        assert_eq!("make".parse::<Language>().unwrap(), Language::Make);
+        assert_eq!("latex".parse::<Language>().unwrap(), Language::Latex);
         assert_eq!("markdown".parse::<Language>().unwrap(), Language::Markdown);
         assert!("invalid".parse::<Language>().is_err());
     }
@@ -1174,6 +1217,9 @@ mod tests {
         assert_eq!(Language::Json.to_string(), "json");
         assert_eq!(Language::Xml.to_string(), "xml");
         assert_eq!(Language::Ini.to_string(), "ini");
+        assert_eq!(Language::Nix.to_string(), "nix");
+        assert_eq!(Language::Make.to_string(), "make");
+        assert_eq!(Language::Latex.to_string(), "latex");
         assert_eq!(Language::Markdown.to_string(), "markdown");
     }
 
@@ -1446,6 +1492,18 @@ mod tests {
         assert_eq!((Language::Xml.def().extract_return_nl)("<element/>"), None);
         // INI — no return types
         assert_eq!((Language::Ini.def().extract_return_nl)("key = value"), None);
+        // Nix — no type annotations
+        assert_eq!((Language::Nix.def().extract_return_nl)("x: x * 2"), None);
+        // Make — no return types
+        assert_eq!(
+            (Language::Make.def().extract_return_nl)("all: build test"),
+            None
+        );
+        // LaTeX — no return types
+        assert_eq!(
+            (Language::Latex.def().extract_return_nl)("\\section{Intro}"),
+            None
+        );
     }
 
     // ===== ChunkType tests =====

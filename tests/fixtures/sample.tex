@@ -1,0 +1,59 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{graphicx}
+
+% Custom commands
+\newcommand{\highlight}[1]{\textbf{#1}}
+\newcommand{\todo}[1]{\textcolor{red}{TODO: #1}}
+\newcommand{\R}{\mathbb{R}}
+
+\title{Sample LaTeX Document}
+\author{Test Author}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+\section{Introduction}
+This document demonstrates LaTeX parsing for code intelligence.
+We use \highlight{custom commands} throughout.
+
+\subsection{Background}
+Previous work on code search has focused on keyword matching.
+Semantic search using embeddings provides better recall.
+
+\subsection{Motivation}
+Understanding document structure helps with navigation and search.
+
+\section{Methods}
+
+\subsection{Parsing Strategy}
+We use tree-sitter to parse LaTeX documents into ASTs.
+Each section becomes a searchable chunk.
+
+\subsection{Embedding Generation}
+Section content is embedded using transformer models.
+
+\begin{theorem}
+For any function $f: \R \to \R$ that is continuous on $[a,b]$,
+there exists $c \in (a,b)$ such that $f'(c) = \frac{f(b)-f(a)}{b-a}$.
+\end{theorem}
+
+\begin{proof}
+Apply Rolle's theorem to the auxiliary function
+$g(x) = f(x) - f(a) - \frac{f(b)-f(a)}{b-a}(x-a)$.
+\end{proof}
+
+\section{Results}
+Our approach achieves 90.9\% Recall@1 on code search benchmarks.
+
+\section{Conclusion}
+Semantic code search with local embeddings is effective and practical.
+
+\begin{thebibliography}{9}
+\bibitem{transformer} Vaswani et al. Attention Is All You Need. 2017.
+\end{thebibliography}
+
+\end{document}

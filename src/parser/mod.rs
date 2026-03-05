@@ -252,6 +252,7 @@ pub(crate) fn extract_definition_node<'c, 't>(
         "trait",
         "interface",
         "const",
+        "section",
         "module",
         "macro",
         "object",
