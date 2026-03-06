@@ -117,6 +117,14 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
         .finish();
     let tmp_path = path.with_extension(format!("json.{:016x}.tmp", suffix));
     std::fs::write(&tmp_path, &content).context("Failed to write temp audit-mode file")?;
+
+    // Restrict permissions BEFORE rename so the file is never world-readable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
     if let Err(rename_err) = std::fs::rename(&tmp_path, &path) {
         if let Err(copy_err) = std::fs::copy(&tmp_path, &path) {
             let _ = std::fs::remove_file(&tmp_path);
