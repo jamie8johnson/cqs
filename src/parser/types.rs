@@ -7,6 +7,52 @@ use thiserror::Error;
 // Re-export from language module (source of truth)
 pub use crate::language::{ChunkType, Language, SignatureStyle};
 
+/// Map a tree-sitter capture name to a `ChunkType`.
+///
+/// Single source of truth — used by chunk extraction, call graph, and injection.
+/// Returns `None` for unknown capture names.
+pub fn capture_name_to_chunk_type(name: &str) -> Option<ChunkType> {
+    match name {
+        "function" => Some(ChunkType::Function),
+        "struct" => Some(ChunkType::Struct),
+        "class" => Some(ChunkType::Class),
+        "enum" => Some(ChunkType::Enum),
+        "trait" => Some(ChunkType::Trait),
+        "interface" => Some(ChunkType::Interface),
+        "const" => Some(ChunkType::Constant),
+        "section" => Some(ChunkType::Section),
+        "property" => Some(ChunkType::Property),
+        "delegate" => Some(ChunkType::Delegate),
+        "event" => Some(ChunkType::Event),
+        "module" => Some(ChunkType::Module),
+        "macro" => Some(ChunkType::Macro),
+        "object" => Some(ChunkType::Object),
+        "typealias" => Some(ChunkType::TypeAlias),
+        _ => None,
+    }
+}
+
+/// All tree-sitter capture names that correspond to chunk definitions.
+///
+/// Used for filtering captures in call/type extraction.
+pub const CHUNK_CAPTURE_NAMES: &[&str] = &[
+    "function",
+    "struct",
+    "class",
+    "enum",
+    "trait",
+    "interface",
+    "const",
+    "section",
+    "module",
+    "macro",
+    "object",
+    "typealias",
+    "property",
+    "delegate",
+    "event",
+];
+
 /// Errors that can occur during code parsing
 #[derive(Error, Debug)]
 pub enum ParserError {

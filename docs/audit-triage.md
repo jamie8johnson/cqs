@@ -1,113 +1,88 @@
-# Audit Triage — v0.19.4+
+# Audit Triage — v0.26.0
 
-Triaged 2026-03-02. 75 findings across 14 categories, 3 batches.
+Audit date: 2026-03-06. 14 categories, 3 batches, ~50 unique findings (some overlap across categories).
 
-## P1 — Easy + High Impact (fix immediately)
-
-| # | Finding | Category | Location | Status |
-|---|---------|----------|----------|--------|
-| RB-1 | SQLite 999-param limit on `fetch_candidates_by_ids_async` / `fetch_chunks_by_ids_async` — PF-5 regression | Robustness | src/store/chunks.rs:1366, 1326 | ✅ fixed |
-| AC-1 | `emit_empty_results` JSON injection — query string not escaped via raw `format!` | Algorithm | src/cli/commands/query.rs:29, similar.rs:99 | ✅ fixed |
-| DS-2 | `acquire_index_lock` truncate(true) races with concurrent PID read — stale lock unrecoverable | Data Safety | src/cli/files.rs:57, 99 | ✅ fixed |
-| DS-7 | `cmd_index --force` removes old DB before pipeline completes — interruption loses entire index | Data Safety | src/cli/commands/index.rs:69-76 | ✅ fixed |
-| SEC-2 | FTS query safety depends on `debug_assert` — compiled out in release builds | Security | src/store/mod.rs:609, chunks.rs:1199 | ✅ fixed |
-| CQ-1 | Dead `source/` module (~250 lines, zero callers) + stale CONTRIBUTING.md entry (DOC-1) | Code Quality | src/source/, lib.rs:81, CONTRIBUTING.md:109 | ✅ fixed |
-
-## P2 — Medium Effort + High Impact (fix in batch)
+## P1: Easy + High Impact — Fix Immediately
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| TC-1 | 5 newest languages (Bash, HCL, Kotlin, Swift, ObjC) have zero parser integration tests | Test Coverage | tests/parser_test.rs, tests/fixtures/ | ✅ fixed |
-| TC-2 | `NoteBoostIndex` has zero tests — search scoring hot path | Test Coverage | src/search.rs:300-371 | ✅ fixed |
-| TC-3 | PF-5 `search_by_candidate_ids` language/chunk_type filter branches untested | Test Coverage | src/search.rs:883-905 | ✅ fixed (7 filter set unit tests) |
-| AD-3 | Core store types (`ChunkSummary`, `SearchResult`, `CallerInfo`, etc.) lack `Serialize` — manual `to_json()` everywhere | API Design | src/store/helpers.rs:128-330 | ✅ fixed |
+| 1 | `"section"` capture missing from `calls.rs` and `injection.rs` — LaTeX sections get wrong ChunkType in call graph | API Design, Code Quality | calls.rs:276, injection.rs:363 | ✅ fixed |
+| 2 | Capture-name→ChunkType match duplicated 3x, diverges — extract shared `capture_name_to_chunk_type()` | Code Quality, API Design | calls.rs:314, injection.rs:400, chunk.rs:18 | ✅ fixed |
+| 3 | `parse_file_relationships` doesn't remove outer container call/type entries when injection succeeds — dangling `function_calls` rows | Data Safety | calls.rs:388-407 | ✅ fixed |
+| 4 | CSS injection test has vacuous `if !css_chunks.is_empty()` guard — passes even if CSS injection is broken | Test Coverage | html.rs tests | ✅ fixed |
+| 5 | `detect_script_language` parses non-JS types (application/ld+json, x-shader) as JavaScript — wasted inner parse | Algorithm Correctness | html.rs detect_script_language | ✅ fixed |
+| 6 | Uppercase file extensions (.HTML, .RS) silently rejected — real bug on case-insensitive FS | Platform Behavior | mod.rs:171, calls.rs:236, watch.rs:241 | ✅ fixed |
+| 7 | `find_content_child` / `find_child_by_kind` identical across injection.rs and html.rs — extract shared helper | Code Quality | injection.rs:174, html.rs:127 | ✅ fixed |
+| 8 | `MAX_FILE_SIZE` / `MAX_CHUNK_BYTES` inline constants at 4 sites — hoist to module-level | Code Quality | mod.rs:144, mod.rs:203, calls.rs:210, injection.rs:253 | ✅ fixed |
+| 9 | `parse_injected_chunks` + `parse_injected_relationships` duplicate parser setup boilerplate — extract `build_injection_tree()` | Code Quality, API Design | injection.rs:206-230, 305-330 | ✅ fixed |
+| 10 | `html.rs` module comment claims Svelte/Vue/Astro support that doesn't exist | Documentation | html.rs:4 | ✅ fixed |
+| 11 | `parser/mod.rs` module comment omits `injection` and `markdown` submodules | Documentation | mod.rs:1-7 | ✅ fixed |
+| 12 | CHANGELOG `[Unreleased]` empty — multi-grammar injection not documented | Documentation | CHANGELOG.md:8 | ✅ fixed |
+| 13 | README HTML entry doesn't mention multi-grammar injection | Documentation | README.md:427 | ✅ fixed |
 
-## P3 — Easy + Low Impact (fix if time)
-
-| # | Finding | Category | Location | Status |
-|---|---------|----------|----------|--------|
-| OB-1 | `resolve_target` has no tracing span | Observability | src/search.rs:57 | ✅ fixed |
-| OB-2 | `delete_by_origin` / `replace_file_chunks` no tracing spans | Observability | src/store/chunks.rs:194, 222 | ✅ fixed |
-| OB-3 | `search_filtered` exits without logging result count | Observability | src/search.rs:793 | ✅ fixed |
-| OB-4 | `Store::init` — no span on schema initialization | Observability | src/store/mod.rs:355 | ✅ fixed |
-| OB-5 | `warn_stale_results` missing entry span | Observability | src/cli/staleness.rs:19 | ✅ fixed |
-| OB-6 | `cmd_watch` no entry span | Observability | src/cli/watch.rs:54 | ✅ fixed |
-| OB-7 | `get_caller_counts_batch` / `get_callee_counts_batch` no spans | Observability | src/store/calls.rs:1147, 1163 | ✅ fixed |
-| AD-1 | `BatchCmd::Gather` direction is stringly-typed — should use `GatherDirection` enum | API Design | src/cli/batch/commands.rs:109 | ✅ fixed |
-| AD-2 | `get_callers()` is dead public API — zero callers | API Design | src/store/calls.rs:252 | ✅ fixed (deleted, tests updated to get_callers_full) |
-| AD-4 | `BlameEntry` / `BlameData` use manual JSON assembly (depends on AD-3) | API Design | src/cli/commands/blame.rs:18-155 | ✅ fixed (Serialize derive) |
-| AD-6 | 9 CLI command handlers accept unused `_cli: &Cli` parameter | API Design | blame.rs, where_cmd.rs, test_map.rs, etc. | ✅ fixed (6 handlers) |
-| EH-1 | `build_blame_data` discards `StoreError` chain via `.map_err` stringify | Error Handling | src/cli/commands/blame.rs:46 | ✅ fixed |
-| EH-2 | 7 bare `Store::open()` calls without path context | Error Handling | diff.rs, drift.rs, index.rs, reference.rs, watch.rs | ✅ fixed |
-| EH-3 | `SearchFilter::validate()` returns `&'static str` not proper error type | Error Handling | src/store/helpers.rs:513 | ✅ fixed (returns String with values) |
-| EH-4 | `dispatch_onboard` swallows `get_chunks_by_names_batch` error silently | Error Handling | src/cli/batch/handlers.rs:912 | acceptable (has tracing::warn) |
-| EH-5 | `GatherDirection::FromStr` uses `String` error type (moot if AD-1 fixed) | Error Handling | src/gather.rs:97 | moot (AD-1 fixed) |
-| EH-6 | `schema_version` silently defaults to 0 on parse failure | Error Handling | src/store/chunks.rs:873 | ✅ fixed (tracing::warn) |
-| DOC-2 | PRIVACY.md deletion instructions miss `config.toml` | Documentation | PRIVACY.md:46-51 | ✅ fixed |
-| DOC-3 | SECURITY.md symlink mitigation description is inaccurate (understates scope) | Documentation | SECURITY.md:94 | ✅ fixed |
-| DOC-4 | lib.rs doc comment omits Web Help format | Documentation | src/lib.rs:13 | ✅ fixed |
-| DOC-5 | `cqs dead --min-confidence` undocumented in README and CLAUDE.md | Documentation | README.md:243, CLAUDE.md:71 | ✅ fixed |
-| CQ-2 | Gather JSON assembly duplicated between CLI and batch handler | Code Quality | gather.rs:114, handlers.rs:406 | ✅ fixed (serde Serialize, removed to_json) |
-| EX-1 | `pipeable_command_names()` manually duplicates pipeable variants — stale on new commands | Extensibility | src/cli/batch/pipeline.rs:31-113 | ✅ fixed (PIPEABLE_NAMES const + sync test) |
-| EX-2 | `name_boost: 0.2` hardcoded — no shared constant with CLI default | Extensibility | src/cli/batch/handlers.rs:83 | ✅ fixed (DEFAULT_NAME_BOOST const) |
-| EX-3 | `HNSW_EXTENSIONS` / `HNSW_ALL_EXTENSIONS` overlap with no sync enforcement | Extensibility | src/hnsw/persist.rs:31,34 | ✅ fixed |
-| EX-5 | Note/code slot ratio `(limit * 3) / 5` inline formula repeated in tests | Extensibility | src/search.rs:1061, 1216, 1223 | ✅ fixed (min_code_slot_count fn) |
-| RB-3 | `where_to_add` core panics via `.expect()` on `query_embedding` | Robustness | src/where_to_add.rs:170 | ✅ fixed (AnalysisError::Phase) |
-| RB-4 | Blame passes inverted line ranges to git silently | Robustness | src/cli/commands/blame.rs:86 | ✅ fixed (swap + warn) |
-| RB-5 | Reranker/embedder `outputs[0]` panics if ONNX returns empty | Robustness | src/reranker.rs:140 | informational (SessionOutputs API) |
-| AC-3 | `token_pack` O(n²) `keep.iter().any()` in packing loop | Algorithm | src/cli/commands/mod.rs:134 | ✅ fixed (kept_any bool) |
-| AC-4 | `cap_scores` uses `u64::MAX - x` inversion trick (correct but fragile) | Algorithm | src/onboard.rs:175 | ✅ fixed (std::cmp::Reverse) |
-| TC-4 | `ChatHelper::complete` tab-completion logic untested | Test Coverage | src/cli/chat.rs:26-49 | ✅ fixed (4 tests) |
-| TC-6 | Batch pipeline error propagation for malformed mid-pipeline input untested | Test Coverage | src/cli/batch/pipeline.rs | ✅ fixed (6 tests) |
-| PB-2 | `notes_path` falls back to non-canonical path if file missing at watch start | Platform | src/cli/watch.rs:97-105 | acceptable (canonical after first event) |
-| PB-4 | Lock file open code duplicated; NTFS ignores `0o600` silently | Platform | src/cli/files.rs:52-115 | acceptable (already extracted to open_lock_file) |
-| PB-5 | `is_wsl()` has no `#[cfg(unix)]` guard | Platform | src/config.rs:15-25 | ✅ fixed |
-| SEC-1 | `CQS_PDF_SCRIPT` env var allows arbitrary script execution (defense-in-depth) | Security | src/convert/pdf.rs:56-68 | acceptable (documented in SECURITY.md) |
-| SEC-3 | `convert_directory` walk has no depth/file count limit | Security | src/convert/mod.rs:345 | ✅ fixed (max_depth 50) |
-| SEC-4 | HNSW index files written with no permission restriction (inconsistent with DB) | Security | src/hnsw/persist.rs | acceptable (0o600 set in persist) |
-| SEC-6 | `run_git_diff` can allocate unbounded memory — no size limit | Security | src/cli/commands/mod.rs:166-188 | ✅ fixed (50 MB limit) |
-| DS-3 | `extract_relationships` not atomic with chunk upserts — crash leaves stale call graph | Data Safety | src/cli/commands/index.rs:120-133 | acceptable (reindex recovers) |
-| DS-5 | `notes_summaries_cache` invalidation is caller-responsibility — fragile | Data Safety | src/store/mod.rs:746, notes.rs:122,224 | non-issue (all paths call invalidate) |
-| DS-6 | `bytes_to_embedding` silently skips corrupted embeddings — no aggregate signal | Data Safety | src/store/helpers.rs:696-725 | ✅ fixed (warn level logging) |
-| PF-1 | `search_by_candidate_ids` parses language/chunk_type strings per candidate (pre-build HashSet) | Performance | src/search.rs:884-905 | ✅ fixed |
-| PF-2 | `search_filtered` clones all semantic IDs to separate Vec for `rrf_fuse` | Performance | src/search.rs:757 | ✅ fixed (Vec<&str>) |
-| PF-3 | `search_by_name` re-lowercases query per result (use `score_name_match_pre_lower`) | Performance | src/store/mod.rs:646 | ✅ fixed |
-| PF-4 | `score_confidence` clones all candidate IDs to separate Vec | Performance | src/store/calls.rs:881 | ✅ fixed (Vec<&str>) |
-| PF-5 | `fetch_active_files` uses `IN (subquery)` where JOIN is more efficient | Performance | src/store/calls.rs:841-843 | ✅ fixed (INNER JOIN) |
-| PF-6 | `build_batched` two-pass loop (validation then collection) | Performance | src/hnsw/build.rs:140-157 | ✅ fixed (single pass) |
-| RM-1 | CHM/webhelp converters accumulate all pages then `join()` — 2× peak memory | Resource Mgmt | src/convert/chm.rs:119, webhelp.rs:93 | ✅ fixed (incremental String) |
-| RM-2 | `html_file_to_markdown` / `markdown_passthrough` load entire file with no size guard | Resource Mgmt | src/convert/html.rs:32, mod.rs:113 | ✅ fixed (100 MB limit) |
-
-## P4 — Hard or Low Impact (create issues)
+## P2: Medium Effort + High Impact — Fix in Batch
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| AD-5 | `dispatch_search` takes 9 individual parameters instead of a struct | API Design | src/cli/batch/handlers.rs:33-42 | ✅ fixed (SearchParams struct) |
-| CQ-3 | `token_pack_unified` / `token_pack_tagged` near-identical functions | Code Quality | src/cli/commands/query.rs:333-398 | ✅ fixed (generic `token_pack_results`) |
-| CQ-4 | `cmd_query` at 287 lines — multiple concerns in one function | Code Quality | src/cli/commands/query.rs:39-325 | acceptable (helper fns extracted in CQ-3) |
-| CQ-5 | 11 functions suppress `clippy::too_many_arguments` | Code Quality | multiple files | reduced to 10 (AD-5); remainder are internal watch/pipeline state |
-| EX-4 | `extract_from_scout_groups` bespoke extractor — new output shapes need new extractors | Extensibility | src/cli/batch/pipeline.rs:116-210 | ✅ fixed (nested extraction in `extract_from_standard_fields`) |
-| RB-2 | `CandidateRow::from_row` / `ChunkRow::from_row` use panicking `row.get()` | Robustness | src/store/helpers.rs:75-121 | informational |
-| RB-6 | `Language::def()` panics on disabled feature flags | Robustness | src/language/mod.rs:549, 570 | informational |
-| RB-7 | `Parser::new()` panics on registry/enum mismatch | Robustness | src/parser/mod.rs:62-67 | informational |
-| AC-2 | FTS not scoped to HNSW candidates — design tension, improves recall | Algorithm | src/search.rs:934-942 | by-design |
-| AC-5 | `bfs_shortest_path` uses empty-string sentinel for predecessor tracking | Algorithm | src/cli/commands/trace.rs:203-221 | informational |
-| TC-5 | `build_blame_data` only tested through components — no end-to-end with mock git | Test Coverage | src/cli/commands/blame.rs:36-68 | acceptable (parser tests + integration cover components) |
-| PB-1 | `cmd_watch` uses inotify on WSL; PollWatcher would be more reliable on `/mnt/` | Platform | src/cli/watch.rs:61-89 | existing behavior |
-| PB-3 | Forward-slash path in blame `-L` spec latently incompatible with native Windows git | Platform | src/cli/commands/blame.rs:50, 86 | ✅ fixed (backslash → forward-slash normalize) |
-| SEC-5 | `find_7z` / `find_python` search PATH without validation | Security | src/convert/chm.rs:168, pdf.rs:95 | ✅ fixed (validate exit status) |
-| DS-1 | HNSW save partial rename leaves inconsistent index on mid-loop failure | Data Safety | src/hnsw/persist.rs:241-272 | ✅ fixed (rollback on partial failure) |
-| DS-4 | `prune_stale_calls` executes outside GC's index lock scope after chunk pruning | Data Safety | src/cli/commands/gc.rs:44-59 | non-issue (`_lock` held for entire function) |
-| RM-3 | `BatchContext::refs` loaded references accumulate with no eviction | Resource Mgmt | src/cli/batch/mod.rs:60 | acceptable |
-| RM-4 | Pipeline channel depth same for parse (light) and embed (heavy) payloads | Resource Mgmt | src/cli/pipeline.rs:37 | ✅ fixed (512 parse / 64 embed) |
-| RM-5 | Watch `last_indexed_mtime` grows unbounded; `retain` runs O(files) `exists()` calls | Resource Mgmt | src/cli/watch.rs:117, 307-311 | ✅ fixed (conditional pruning at 1K/10K thresholds) |
+| 14 | Unbounded injection range count — crafted HTML with millions of tiny `<script>` blocks causes OOM | Security | injection.rs:83-94 | |
+| 15 | `parse_injected_relationships` early-returns on call query failure, skipping independent type extraction | Robustness, Error Handling | injection.rs:340-346 | |
+| 16 | `chunk_overlaps_container` is strict containment, not overlap — misnamed and will cause double-coverage for future hosts | Algorithm Correctness, Data Safety | injection.rs:486-494 | |
+| 17 | Chained injection silently ignored — `parse_injected_chunks` never checks inner language's injections (blocks PHP→HTML→JS) | Extensibility | injection.rs | |
+| 18 | `extract_calls` silently discards `set_language` and parse failures without logging | Error Handling | calls.rs:30-37 | |
+| 19 | `get_query`/`get_call_query`/`get_type_query` use `{:?}` instead of `{}` for error formatting | Error Handling | mod.rs:95, 113, 131 | |
+| 20 | `parse_injected_relationships` `get_call_query` Err arm drops real errors with misleading comment | Error Handling | injection.rs:340-346 | |
+| 21 | `parse_file_relationships` relies on undocumented invariant that empty query patterns compile | Error Handling | calls.rs:258 | |
+| 22 | `find_content_child` returns only first matching child — split `raw_text` from error recovery skipped | Algorithm Correctness | injection.rs find_content_child | |
+| 23 | `chunk_overlaps_container` has no unit tests — boundary conditions untested | Test Coverage | injection.rs:486-494 | |
+| 24 | Injected type references (`ChunkTypeRefs`) never asserted in tests | Test Coverage | injection.rs tests | |
+| 25 | `detect_script_language` — `type="text/typescript"` branch untested | Test Coverage | html.rs tests | |
+| 26 | Temp files written with umask-derived permissions before `chmod` applied; `note.rs` never `chmod`s | Security | audit.rs:119, config.rs:332, note.rs:250 | |
 
-## Summary
+## P3: Easy + Low Impact — Fix if Time
 
-| Priority | Count | Action |
-|----------|-------|--------|
-| P1 | 6 | Fix immediately |
-| P2 | 4 | Fix in batch |
-| P3 | 50 | Fix if time |
-| P4 | 19 | Create issues / informational |
-| **Total** | **75** | |
+| # | Finding | Category | Location | Status |
+|---|---------|----------|----------|--------|
+| 27 | `InjectionRule` lacks `Debug` — only pub struct without it | API Design | mod.rs:164 | |
+| 28 | `walk_for_containers` cursor-advance idiom duplicated twice within itself | Code Quality | injection.rs:138-168 | |
+| 29 | `InjectionGroup` grouping uses O(n) linear scan (fine for 2 rules, won't scale) | Code Quality | injection.rs:83-94 | |
+| 30 | `parse_injected_chunks` span missing file path | Observability | injection.rs:199 | |
+| 31 | Silent injection replacement — no log when outer chunks replaced | Observability | mod.rs:241-250 | |
+| 32 | `parse_injected_chunks`/`parse_injected_relationships` don't log chunk/call count on success | Observability | injection.rs:288, 478 | |
+| 33 | `find_injection_ranges` uses `debug_span` while callers use `info_span` | Observability | injection.rs:41 | |
+| 34 | `scout_core` has no entry span | Observability | scout.rs:199 | |
+| 35 | `cmd_read_focused` has no entry span | Observability | read.rs:312 | |
+| 36 | Oversized injected chunks skipped silently — no debug log | Observability | injection.rs:252-256 | |
+| 37 | Outer tree-sitter Parser/Tree not dropped before injection inner-parse | Resource Management | mod.rs:182-266, calls.rs:247-409 | |
+| 38 | Call-dedup `HashSet<String>` should be `HashSet<&str>` — avoids clone per callee | Resource Management, Performance | injection.rs:447, calls.rs:352 | |
+| 39 | `extract_types` builds `HashSet<String>` — can use `HashSet<&str>` | Performance | extract_types | |
+| 40 | `capture_index_for_name("name")` called inside per-match hot loops — hoist out of loop | Performance | calls.rs:301, injection.rs:388, chunk.rs | |
+| 41 | `extract_calls` missing CRLF normalization (all callers pass normalized, but latent) | Platform Behavior | calls.rs:15-78 | |
+| 42 | `InjectionRule::target_language` convention unenforced (no compile/runtime validation) | Platform Behavior, Extensibility | mod.rs:172, injection.rs:63 | |
+| 43 | `source[byte_range()]` direct indexing vs `utf8_text` — inconsistent style | Robustness | injection.rs:391, 434 | |
+| 44 | `walk_for_containers` duplicate range risk if two rules share `container_kind` | Robustness | injection.rs:49-53 | |
+| 45 | Grammar-less languages with non-empty `injections` field would silently produce nothing | Extensibility | mod.rs, injection.rs | |
+| 46 | No contributor docs for adding new injection rules | Extensibility | CONTRIBUTING.md | |
+| 47 | `run_git_log_line_range` doesn't validate colons in file path — git `-L` misparse | Security | blame.rs:79-93 | |
+| 48 | No test for `type="text/typescript"` attribute detection | Test Coverage | html.rs tests | |
+
+## P4: Hard or Low Impact — Defer / Create Issues
+
+| # | Finding | Category | Location | Status |
+|---|---------|----------|----------|--------|
+| 49 | Double-read + double-parse of every file during full index (parse_file + parse_file_relationships) | Performance | mod.rs, calls.rs | |
+| 50 | Per-call Parser allocations in rayon parallel injection stage — memory amplification | Platform Behavior, Performance | injection.rs:206-210, 305-310 | |
+| 51 | Two-pass write architecture (store → relationships) — crash between passes leaves stale edges | Data Safety | store/types.rs:106-184 | |
+| 52 | Chunk ID collision between outer and injected chunks (theoretical, 32-bit hash) | Data Safety | chunk.rs:101 | |
+| 53 | u32 arithmetic overflow in container_lines (theoretical, prevented by 50MB file limit) | Robustness | injection.rs:130-131 | |
+| 54 | No end-to-end integration test (parse → embed → store → search for injected chunks) | Test Coverage | — | |
+| 55 | No tests for malformed/unclosed `<script>` tags | Test Coverage | — | |
+| 56 | Cross-phase line_start dependency between parse_file and parse_file_relationships undocumented | Algorithm Correctness | — | |
+| 57 | `cursor.reset(root)` responsibility in caller, not callee — fragile | Algorithm Correctness | injection.rs walk_for_containers | |
+
+## Overlap Notes
+
+- P1#1 + P1#2 are the same root cause — fix together via shared `capture_name_to_chunk_type()`
+- P2#15 + P2#20 are the same code location — fix together (split call/type error handling + add warning)
+- P2#16 + P2#23 — rename + add tests together
+- P3#38 + P3#39 — same pattern, fix together
+- P3#42 + P3#45 — validation concerns, can add registry test for both

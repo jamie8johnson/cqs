@@ -4,7 +4,8 @@ use std::path::Path;
 use tree_sitter::StreamingIterator;
 
 use super::types::{
-    CallSite, ChunkType, ChunkTypeRefs, FunctionCalls, Language, ParserError, TypeEdgeKind, TypeRef,
+    capture_name_to_chunk_type, CallSite, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
+    ParserError, TypeEdgeKind, TypeRef, CHUNK_CAPTURE_NAMES,
 };
 use super::Parser;
 
@@ -207,9 +208,8 @@ impl Parser {
             tracing::info_span!("parse_file_relationships", path = %path.display()).entered();
 
         // Check file size (matching parse_file limit)
-        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
         match std::fs::metadata(path) {
-            Ok(meta) if meta.len() > MAX_FILE_SIZE => {
+            Ok(meta) if meta.len() > super::MAX_FILE_SIZE => {
                 tracing::warn!(
                     "Skipping large file ({}MB > 50MB limit): {}",
                     meta.len() / (1024 * 1024),
@@ -233,8 +233,9 @@ impl Parser {
         // Normalize line endings (CRLF -> LF) for consistency
         let source = source.replace("\r\n", "\n");
 
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let language = Language::from_extension(ext)
+        let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = ext_raw.to_ascii_lowercase();
+        let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
         // Grammar-less languages (Markdown) use custom reference extraction
@@ -272,23 +273,7 @@ impl Parser {
             // Find chunk node
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                matches!(
-                    name,
-                    "function"
-                        | "struct"
-                        | "class"
-                        | "enum"
-                        | "trait"
-                        | "interface"
-                        | "const"
-                        | "module"
-                        | "macro"
-                        | "object"
-                        | "typealias"
-                        | "property"
-                        | "delegate"
-                        | "event"
-                )
+                CHUNK_CAPTURE_NAMES.contains(&name)
             });
 
             let Some(func_capture) = func_node else {
@@ -311,23 +296,7 @@ impl Parser {
                     .get(func_capture.index as usize)
                     .copied()
                     .unwrap_or("");
-                let mut ct = match cap_name {
-                    "function" => ChunkType::Function,
-                    "struct" => ChunkType::Struct,
-                    "class" => ChunkType::Class,
-                    "enum" => ChunkType::Enum,
-                    "trait" => ChunkType::Trait,
-                    "interface" => ChunkType::Interface,
-                    "const" => ChunkType::Constant,
-                    "module" => ChunkType::Module,
-                    "macro" => ChunkType::Macro,
-                    "object" => ChunkType::Object,
-                    "typealias" => ChunkType::TypeAlias,
-                    "property" => ChunkType::Property,
-                    "delegate" => ChunkType::Delegate,
-                    "event" => ChunkType::Event,
-                    _ => ChunkType::Function,
-                };
+                let mut ct = capture_name_to_chunk_type(cap_name).unwrap_or(ChunkType::Function);
                 if !post_process(&mut name, &mut ct, node, &source) {
                     continue; // Skip discarded chunks
                 }
@@ -391,9 +360,29 @@ impl Parser {
             let groups = super::injection::find_injection_ranges(&tree, &source, injections);
             for group in &groups {
                 match self.parse_injected_relationships(&source, group) {
-                    Ok((inner_calls, inner_types)) => {
+                    Ok((inner_calls, inner_types))
+                        if !inner_calls.is_empty() || !inner_types.is_empty() =>
+                    {
+                        // Remove outer container entries (matching parse_file's chunk removal)
+                        call_results.retain(|fc| {
+                            !super::injection::chunk_overlaps_container(
+                                fc.line_start,
+                                fc.line_start, // calls have no line_end, use start for containment
+                                &group.container_lines,
+                            )
+                        });
+                        type_results.retain(|tr| {
+                            !super::injection::chunk_overlaps_container(
+                                tr.line_start,
+                                tr.line_start,
+                                &group.container_lines,
+                            )
+                        });
                         call_results.extend(inner_calls);
                         type_results.extend(inner_types);
+                    }
+                    Ok(_) => {
+                        // Zero inner results — keep outer
                     }
                     Err(e) => {
                         tracing::warn!(

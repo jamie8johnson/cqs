@@ -11,7 +11,10 @@ use std::path::Path;
 
 use tree_sitter::StreamingIterator;
 
-use super::types::{Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language, ParserError};
+use super::types::{
+    capture_name_to_chunk_type, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
+    ParserError, CHUNK_CAPTURE_NAMES,
+};
 use super::Parser;
 use crate::language::InjectionRule;
 
@@ -119,6 +122,11 @@ fn walk_for_containers(
                         rule.target_language
                     };
 
+                    // Skip non-parseable content (e.g., JSON-LD, shader scripts)
+                    if target == "_skip" {
+                        continue;
+                    }
+
                     let range = tree_sitter::Range {
                         start_byte: byte_range.start,
                         end_byte: byte_range.end,
@@ -170,18 +178,46 @@ fn walk_for_containers(
 }
 
 /// Find a direct child of `node` with the given kind.
-#[allow(clippy::manual_find)]
 fn find_content_child<'a>(
     node: tree_sitter::Node<'a>,
     content_kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == content_kind {
-            return Some(child);
-        }
+    super::find_child_by_kind(node, content_kind)
+}
+
+/// Build an inner tree-sitter parse tree for injection ranges.
+///
+/// Returns `None` on any failure (with warnings logged).
+fn build_injection_tree(
+    language: Language,
+    source: &str,
+    ranges: &[tree_sitter::Range],
+) -> Option<tree_sitter::Tree> {
+    let grammar = language.grammar();
+    let mut parser = tree_sitter::Parser::new();
+    if let Err(e) = parser.set_language(&grammar) {
+        tracing::warn!(
+            error = ?e,
+            %language,
+            "Failed to set language for injection"
+        );
+        return None;
     }
-    None
+
+    if let Err(e) = parser.set_included_ranges(ranges) {
+        tracing::warn!(
+            error = %e,
+            %language,
+            "Failed to set included ranges for injection"
+        );
+        return None;
+    }
+
+    let tree = parser.parse(source, None);
+    if tree.is_none() {
+        tracing::warn!(%language, "Injection parse returned None");
+    }
+    tree
 }
 
 impl Parser {
@@ -203,30 +239,9 @@ impl Parser {
         )
         .entered();
 
-        let grammar = inner_language.grammar();
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&grammar)
-            .map_err(|e| ParserError::ParseFailed(format!("injection set_language: {:?}", e)))?;
-
-        if let Err(e) = parser.set_included_ranges(&group.ranges) {
-            tracing::warn!(
-                error = %e,
-                language = %inner_language,
-                "Failed to set included ranges for injection"
-            );
-            return Ok(vec![]);
-        }
-
-        let tree = match parser.parse(source, None) {
+        let tree = match build_injection_tree(inner_language, source, &group.ranges) {
             Some(t) => t,
-            None => {
-                tracing::warn!(
-                    language = %inner_language,
-                    "Injection parse returned None"
-                );
-                return Ok(vec![]);
-            }
+            None => return Ok(vec![]),
         };
 
         let query = match self.get_query(inner_language) {
@@ -250,8 +265,7 @@ impl Parser {
             match self.extract_chunk(source, m, query, inner_language, path) {
                 Ok(mut chunk) => {
                     // Skip oversized chunks
-                    const MAX_CHUNK_BYTES: usize = 100_000;
-                    if chunk.content.len() > MAX_CHUNK_BYTES {
+                    if chunk.content.len() > super::MAX_CHUNK_BYTES {
                         continue;
                     }
 
@@ -302,30 +316,9 @@ impl Parser {
         )
         .entered();
 
-        let grammar = inner_language.grammar();
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&grammar)
-            .map_err(|e| ParserError::ParseFailed(format!("injection set_language: {:?}", e)))?;
-
-        if let Err(e) = parser.set_included_ranges(&group.ranges) {
-            tracing::warn!(
-                error = %e,
-                language = %inner_language,
-                "Failed to set included ranges for injection relationships"
-            );
-            return Ok((vec![], vec![]));
-        }
-
-        let tree = match parser.parse(source, None) {
+        let tree = match build_injection_tree(inner_language, source, &group.ranges) {
             Some(t) => t,
-            None => {
-                tracing::warn!(
-                    language = %inner_language,
-                    "Injection parse returned None for relationships"
-                );
-                return Ok((vec![], vec![]));
-            }
+            None => return Ok((vec![], vec![])),
         };
 
         // Get queries
@@ -359,23 +352,7 @@ impl Parser {
             // Find chunk node (same logic as parse_file_relationships)
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                matches!(
-                    name,
-                    "function"
-                        | "struct"
-                        | "class"
-                        | "enum"
-                        | "trait"
-                        | "interface"
-                        | "const"
-                        | "module"
-                        | "macro"
-                        | "object"
-                        | "typealias"
-                        | "property"
-                        | "delegate"
-                        | "event"
-                )
+                CHUNK_CAPTURE_NAMES.contains(&name)
             });
 
             let Some(func_capture) = func_node else {
@@ -397,23 +374,7 @@ impl Parser {
                     .get(func_capture.index as usize)
                     .copied()
                     .unwrap_or("");
-                let mut ct = match cap_name {
-                    "function" => ChunkType::Function,
-                    "struct" => ChunkType::Struct,
-                    "class" => ChunkType::Class,
-                    "enum" => ChunkType::Enum,
-                    "trait" => ChunkType::Trait,
-                    "interface" => ChunkType::Interface,
-                    "const" => ChunkType::Constant,
-                    "module" => ChunkType::Module,
-                    "macro" => ChunkType::Macro,
-                    "object" => ChunkType::Object,
-                    "typealias" => ChunkType::TypeAlias,
-                    "property" => ChunkType::Property,
-                    "delegate" => ChunkType::Delegate,
-                    "event" => ChunkType::Event,
-                    _ => ChunkType::Function,
-                };
+                let mut ct = capture_name_to_chunk_type(cap_name).unwrap_or(ChunkType::Function);
                 if !post_process(&mut name, &mut ct, node, source) {
                     continue;
                 }
