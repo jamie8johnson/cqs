@@ -3,7 +3,7 @@
 //! Nix is a functional package-management language. Chunks are attribute bindings
 //! (functions, attribute sets). Call graph via `apply_expression`.
 
-use super::{LanguageDef, SignatureStyle};
+use super::{InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Nix definitions as chunks.
 ///
@@ -51,6 +51,81 @@ const CALL_QUERY: &str = r#"
 /// Doc comment node types — Nix uses `# comments` and `/* block comments */`
 const DOC_NODES: &[&str] = &["comment"];
 
+/// Nix binding names that contain shell scripts.
+///
+/// In Nix derivations, these attribute bindings hold shell code:
+/// build phases, hooks, and script fields. We only inject bash for
+/// indented strings in these contexts to avoid false positives.
+const SHELL_CONTEXTS: &[&str] = &[
+    "buildPhase",
+    "installPhase",
+    "configurePhase",
+    "checkPhase",
+    "unpackPhase",
+    "patchPhase",
+    "fixupPhase",
+    "distPhase",
+    "shellHook",
+    "preBuild",
+    "postBuild",
+    "preInstall",
+    "postInstall",
+    "preCheck",
+    "postCheck",
+    "preConfigure",
+    "postConfigure",
+    "preUnpack",
+    "postUnpack",
+    "prePatch",
+    "postPatch",
+    "preFixup",
+    "postFixup",
+    "script",
+    "buildCommand",
+    "installCommand",
+];
+
+/// Detect whether an `indented_string_expression` contains shell code.
+///
+/// Walks up from the container node to find the parent `binding` and
+/// checks the attribute name against known shell contexts (build phases,
+/// hooks, etc.). Returns `None` (use default bash) for shell contexts,
+/// `Some("_skip")` for everything else.
+fn detect_nix_shell_context(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
+    // Walk up to find the binding parent
+    let parent = match node.parent() {
+        Some(p) if p.kind() == "binding" => p,
+        _ => {
+            tracing::debug!("Nix indented string not in binding context, skipping injection");
+            return Some("_skip");
+        }
+    };
+
+    // Find attrpath child of binding → get last identifier
+    let mut cursor = parent.walk();
+    for child in parent.children(&mut cursor) {
+        if child.kind() == "attrpath" {
+            let mut inner_cursor = child.walk();
+            let mut last_ident = None;
+            for attr_child in child.children(&mut inner_cursor) {
+                if attr_child.kind() == "identifier" {
+                    last_ident = Some(&source[attr_child.byte_range()]);
+                }
+            }
+            if let Some(ident) = last_ident {
+                if SHELL_CONTEXTS.contains(&ident) {
+                    tracing::debug!(binding = ident, "Nix shell context detected, injecting bash");
+                    return None; // Use default target (bash)
+                }
+                tracing::debug!(binding = ident, "Nix binding not a shell context, skipping");
+                return Some("_skip");
+            }
+        }
+    }
+
+    Some("_skip")
+}
+
 const STOPWORDS: &[&str] = &[
     "true", "false", "null", "if", "then", "else", "let", "in", "with", "rec", "inherit",
     "import", "assert", "builtins", "throw", "abort",
@@ -80,7 +155,18 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &[],
     trait_method_names: &[],
-    injections: &[],
+    injections: &[
+        // Indented strings (''...'') in shell-context bindings contain bash.
+        // detect_nix_shell_context checks the parent binding's attrpath name
+        // against known shell contexts (buildPhase, installPhase, etc.).
+        InjectionRule {
+            container_kind: "indented_string_expression",
+            content_kind: "string_fragment",
+            target_language: "bash",
+            detect_language: Some(detect_nix_shell_context),
+            content_scoped_lines: false,
+        },
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {
@@ -176,6 +262,96 @@ mod tests {
             assert!(
                 !callee_names.is_empty(),
                 "Expected some calls in greet function"
+            );
+        }
+    }
+
+    // --- Injection tests ---
+
+    #[test]
+    fn parse_nix_shell_injection() {
+        // buildPhase with bash content should trigger bash injection.
+        // The outer binding `hello = mkDerivation { ... }` produces a Nix chunk.
+        // The inner buildPhase indented string is injected as bash.
+        let content = r#"
+{
+  hello = mkDerivation {
+    name = "hello";
+    buildPhase = ''
+      mkdir -p build
+      gcc -o build/hello src/main.c
+    '';
+    installPhase = ''
+      mkdir -p $out/bin
+      cp build/hello $out/bin/
+    '';
+  };
+}
+"#;
+        let file = write_temp_file(content, "nix");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Nix binding chunk should still exist
+        assert!(
+            chunks.iter().any(|c| c.language == crate::parser::Language::Nix),
+            "Expected Nix chunks to survive injection, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_nix_non_shell_skipped() {
+        // Indented strings NOT in shell contexts should be skipped
+        let content = r#"
+{
+  description = ''
+    This is a multi-line description.
+    It should not be parsed as bash.
+  '';
+  longDescription = ''
+    Another indented string that is just text,
+    not shell code.
+  '';
+}
+"#;
+        let file = write_temp_file(content, "nix");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // No bash chunks should be extracted
+        let bash_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Bash)
+            .collect();
+        assert!(
+            bash_chunks.is_empty(),
+            "Non-shell indented strings should NOT produce bash chunks, got: {:?}",
+            bash_chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_nix_without_strings_unchanged() {
+        // Nix file with no indented strings — injection should not fire
+        let content = r#"
+{
+  add = a: b: a + b;
+  config = {
+    port = 8080;
+  };
+}
+"#;
+        let file = write_temp_file(content, "nix");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // All chunks should be Nix
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.language,
+                crate::parser::Language::Nix,
+                "File without indented strings should only have Nix chunks"
             );
         }
     }

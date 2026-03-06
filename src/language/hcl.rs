@@ -1,6 +1,6 @@
 //! HCL/Terraform language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting HCL blocks.
 ///
@@ -59,6 +59,38 @@ const STOPWORDS: &[&str] = &[
     "local",
     "path",
 ];
+
+/// Heredoc identifiers that suggest shell script content.
+const SHELL_HEREDOC_IDS: &[&str] = &[
+    "BASH", "SHELL", "SH", "SCRIPT", "EOT", "EOF", "USERDATA", "USER_DATA",
+];
+
+/// Detect the language of an HCL heredoc based on its identifier.
+///
+/// Checks `heredoc_identifier` child of the `heredoc_template` node.
+/// Shell-like identifiers (BASH, SHELL, EOT, EOF, etc.) return `None`
+/// (use default bash). `PYTHON` returns `Some("python")`. Unrecognized
+/// identifiers return `Some("_skip")`.
+fn detect_heredoc_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "heredoc_identifier" {
+            let ident = source[child.byte_range()].trim().to_uppercase();
+            if SHELL_HEREDOC_IDS.contains(&ident.as_str()) {
+                tracing::debug!(identifier = %ident, "HCL heredoc identified as shell");
+                return None; // Use default bash
+            }
+            if ident == "PYTHON" || ident == "PY" {
+                tracing::debug!(identifier = %ident, "HCL heredoc identified as python");
+                return Some("python");
+            }
+            tracing::debug!(identifier = %ident, "HCL heredoc identifier not recognized, skipping");
+            return Some("_skip");
+        }
+    }
+    // No heredoc_identifier found — might be a template_literal, skip
+    Some("_skip")
+}
 
 /// Post-process HCL blocks to determine correct name and ChunkType.
 ///
@@ -186,7 +218,18 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &[],
     trait_method_names: &[],
-    injections: &[],
+    injections: &[
+        // Heredoc templates with shell-like identifiers (EOT, BASH, etc.)
+        // contain bash scripts. detect_heredoc_language checks the identifier
+        // and skips non-shell content.
+        InjectionRule {
+            container_kind: "heredoc_template",
+            content_kind: "template_literal",
+            target_language: "bash",
+            detect_language: Some(detect_heredoc_language),
+            content_scoped_lines: false,
+        },
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {
@@ -352,6 +395,87 @@ variable "x" {}
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].name, "x");
         assert_eq!(chunks[0].chunk_type, ChunkType::Constant);
+    }
+
+    // --- Injection tests ---
+
+    #[test]
+    fn parse_hcl_heredoc_bash() {
+        // Heredoc with EOT identifier should be parsed as bash
+        let content = r#"
+resource "null_resource" "setup" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      #!/bin/bash
+      echo "Setting up environment"
+      mkdir -p /tmp/deploy
+    EOT
+  }
+}
+"#;
+        let file = write_temp_file(content, "tf");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // HCL resource should still exist
+        assert!(
+            chunks
+                .iter()
+                .any(|c| c.language == crate::parser::Language::Hcl),
+            "Expected HCL chunks to survive injection"
+        );
+    }
+
+    #[test]
+    fn parse_hcl_heredoc_non_bash_skipped() {
+        // Heredoc with unrecognized identifier should be skipped
+        let content = r#"
+resource "aws_instance" "web" {
+  user_data = <<-CLOUDINIT
+    #cloud-config
+    packages:
+      - nginx
+  CLOUDINIT
+}
+"#;
+        let file = write_temp_file(content, "tf");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // No bash chunks — CLOUDINIT is not a shell identifier
+        let bash_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Bash)
+            .collect();
+        assert!(
+            bash_chunks.is_empty(),
+            "Unrecognized heredoc identifier should NOT produce bash chunks"
+        );
+    }
+
+    #[test]
+    fn parse_hcl_without_heredocs_unchanged() {
+        // HCL file with no heredocs — injection should not fire
+        let content = r#"
+variable "name" {
+  type = string
+}
+
+output "greeting" {
+  value = "Hello, ${var.name}"
+}
+"#;
+        let file = write_temp_file(content, "tf");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.language,
+                crate::parser::Language::Hcl,
+                "File without heredocs should only have HCL chunks"
+            );
+        }
     }
 
     #[test]

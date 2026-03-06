@@ -3,7 +3,7 @@
 //! LaTeX is a document preparation system. Chunks are sections (chapter, section,
 //! subsection), command definitions, and environments. No call graph.
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting LaTeX definitions as chunks.
 ///
@@ -63,6 +63,105 @@ const STOPWORDS: &[&str] = &[
     "item", "hline", "vspace", "hspace", "newline", "newpage", "par",
 ];
 
+/// Map minted/lstlisting language names to cqs language identifiers.
+///
+/// Returns `None` if the language name maps to the default target,
+/// `Some("_skip")` if unrecognized, or `Some(lang)` for a specific language.
+fn map_code_language(lang: &str) -> Option<&'static str> {
+    match lang.to_lowercase().as_str() {
+        "python" | "python3" | "py" => Some("python"),
+        "rust" => Some("rust"),
+        "c" => Some("c"),
+        "cpp" | "c++" => Some("cpp"),
+        "java" => Some("java"),
+        "javascript" | "js" => Some("javascript"),
+        "typescript" | "ts" => Some("typescript"),
+        "go" | "golang" => Some("go"),
+        "bash" | "sh" | "shell" => Some("bash"),
+        "ruby" | "rb" => Some("ruby"),
+        "sql" => Some("sql"),
+        "haskell" | "hs" => Some("haskell"),
+        "lua" => Some("lua"),
+        "scala" => Some("scala"),
+        "r" => Some("r"),
+        _ => {
+            tracing::debug!(language = lang, "Unrecognized code listing language, skipping");
+            Some("_skip")
+        }
+    }
+}
+
+/// Detect code language from a `minted_environment` node.
+///
+/// Checks the `begin` child's `language` field (`\begin{minted}{python}`).
+fn detect_minted_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "begin" {
+            // Look for the language field (curly_group_text)
+            let mut begin_cursor = child.walk();
+            let mut found_name = false;
+            for begin_child in child.children(&mut begin_cursor) {
+                if begin_child.kind() == "curly_group_text" {
+                    if !found_name {
+                        // First curly_group_text is the environment name (minted)
+                        found_name = true;
+                        continue;
+                    }
+                    // Second curly_group_text is the language
+                    let text = source[begin_child.byte_range()].trim();
+                    // Strip braces: {python} → python
+                    let lang = text
+                        .strip_prefix('{')
+                        .and_then(|s| s.strip_suffix('}'))
+                        .unwrap_or(text)
+                        .trim();
+                    if !lang.is_empty() {
+                        tracing::debug!(language = lang, "Minted environment language detected");
+                        return map_code_language(lang);
+                    }
+                }
+            }
+        }
+    }
+    Some("_skip")
+}
+
+/// Detect code language from a `listing_environment` node.
+///
+/// The LaTeX grammar includes `[language=X]` options in the `source_code`
+/// content (not as a parsed `begin` attribute). This function checks the
+/// `source_code` content prefix for `[language=X]`.
+fn detect_listing_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "source_code" {
+            let text = &source[child.byte_range()];
+            let trimmed = text.trim_start();
+            // Check for [language=X] prefix
+            if trimmed.starts_with('[') {
+                let text_lower = trimmed.to_lowercase();
+                if let Some(pos) = text_lower.find("language=") {
+                    let after = &trimmed[pos + 9..];
+                    let lang: String = after
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '+')
+                        .collect();
+                    if !lang.is_empty() {
+                        tracing::debug!(
+                            language = %lang,
+                            "Listing environment language detected"
+                        );
+                        return map_code_language(&lang);
+                    }
+                }
+            }
+        }
+    }
+    // No language option found — skip (don't guess)
+    Some("_skip")
+}
+
 /// Post-process LaTeX chunks: clean up names by stripping braces and backslashes.
 fn post_process_latex(
     name: &mut String,
@@ -106,7 +205,24 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &[],
     trait_method_names: &[],
-    injections: &[],
+    injections: &[
+        // \begin{minted}{python} ... \end{minted} — language from argument
+        InjectionRule {
+            container_kind: "minted_environment",
+            content_kind: "source_code",
+            target_language: "python", // default, overridden by detect_minted_language
+            detect_language: Some(detect_minted_language),
+            content_scoped_lines: false,
+        },
+        // \begin{lstlisting}[language=Python] ... \end{lstlisting}
+        InjectionRule {
+            container_kind: "listing_environment",
+            content_kind: "source_code",
+            target_language: "c", // default, overridden by detect_listing_language
+            detect_language: Some(detect_listing_language),
+            content_scoped_lines: false,
+        },
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {
@@ -227,6 +343,117 @@ This is left as an exercise.
         );
         let thm = chunks.iter().find(|c| c.name == "theorem").unwrap();
         assert_eq!(thm.chunk_type, ChunkType::Struct);
+    }
+
+    // --- Injection tests ---
+
+    #[test]
+    fn parse_latex_minted_extracts_code() {
+        // \begin{minted}{python} should inject Python
+        let content = r#"\documentclass{article}
+\usepackage{minted}
+\begin{document}
+
+\section{Code Example}
+
+\begin{minted}{python}
+def greet(name):
+    return f"Hello, {name}!"
+
+class Calculator:
+    def add(self, a, b):
+        return a + b
+\end{minted}
+
+\end{document}
+"#;
+        let file = write_temp_file(content, "tex");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Python chunks should be extracted
+        let py_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Python)
+            .collect();
+        assert!(
+            py_chunks.iter().any(|c| c.name == "greet"),
+            "Expected Python function 'greet' from minted block, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, &c.language))
+                .collect::<Vec<_>>()
+        );
+
+        // LaTeX section should still exist
+        assert!(
+            chunks.iter().any(|c| c.name == "Code Example"),
+            "Expected LaTeX section 'Code Example'"
+        );
+    }
+
+    #[test]
+    fn parse_latex_listing_extracts_code() {
+        // \begin{lstlisting}[language=Rust] should inject Rust
+        let content = r#"\documentclass{article}
+\usepackage{listings}
+\begin{document}
+
+\section{Rust Example}
+
+\begin{lstlisting}[language=Rust]
+fn main() {
+    println!("Hello, world!");
+}
+
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+\end{lstlisting}
+
+\end{document}
+"#;
+        let file = write_temp_file(content, "tex");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Rust chunks should be extracted
+        let rust_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Rust)
+            .collect();
+        assert!(
+            !rust_chunks.is_empty(),
+            "Expected Rust chunks from lstlisting[language=Rust], got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, &c.language))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_latex_without_listings_unchanged() {
+        // LaTeX file with no code listings — injection should not fire
+        let content = r#"\documentclass{article}
+\begin{document}
+\section{Introduction}
+Hello world.
+\section{Methods}
+Some methods.
+\end{document}
+"#;
+        let file = write_temp_file(content, "tex");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.language,
+                crate::parser::Language::Latex,
+                "File without code listings should only have LaTeX chunks"
+            );
+        }
     }
 
     #[test]
