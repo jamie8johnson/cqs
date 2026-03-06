@@ -42,6 +42,16 @@
     </footer>
 
     <script src="main.js"></script>
+    <script>
+    function handleClick(event) {
+        const el = document.getElementById('target');
+        el.classList.toggle('active');
+    }
+
+    function setupListeners() {
+        document.querySelector('button').addEventListener('click', handleClick);
+    }
+    </script>
     <style>
         body { font-family: sans-serif; }
         .container { max-width: 1200px; }

@@ -201,6 +201,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         // std::future
         "poll",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

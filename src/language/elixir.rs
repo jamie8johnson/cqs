@@ -198,6 +198,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "terminate",
         "code_change",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

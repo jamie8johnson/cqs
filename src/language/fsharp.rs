@@ -209,6 +209,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     trait_method_names: &[
         "Equals", "GetHashCode", "ToString", "CompareTo", "Dispose",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

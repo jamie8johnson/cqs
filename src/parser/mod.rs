@@ -7,6 +7,7 @@
 
 mod calls;
 mod chunk;
+pub(crate) mod injection;
 pub mod markdown;
 pub mod types;
 
@@ -227,6 +228,37 @@ impl Parser {
                 }
                 Err(e) => {
                     tracing::warn!("Failed to extract chunk from {}: {}", path.display(), e);
+                }
+            }
+        }
+
+        // --- Phase 2: Injection parsing (multi-grammar) ---
+        let injections = language.def().injections;
+        if !injections.is_empty() {
+            let groups = injection::find_injection_ranges(&tree, &source, injections);
+            for group in &groups {
+                match self.parse_injected_chunks(&source, path, group) {
+                    Ok(inner_chunks) if !inner_chunks.is_empty() => {
+                        // Remove outer chunks that overlap with injection containers
+                        chunks.retain(|c| {
+                            !injection::chunk_overlaps_container(
+                                c.line_start,
+                                c.line_end,
+                                &group.container_lines,
+                            )
+                        });
+                        chunks.extend(inner_chunks);
+                    }
+                    Ok(_) => {
+                        // Zero inner chunks — keep outer chunks as-is (fallback)
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            language = %group.language,
+                            "Injection parsing failed, keeping outer chunks"
+                        );
+                    }
                 }
             }
         }

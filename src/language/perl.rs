@@ -109,6 +109,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     trait_method_names: &[
         "new", "AUTOLOAD", "DESTROY", "import", "BEGIN", "END",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

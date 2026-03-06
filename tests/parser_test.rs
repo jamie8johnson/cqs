@@ -1270,7 +1270,7 @@ fn test_html_heading_and_landmark_extraction() {
         .find(|c| c.name == "Welcome to the Sample" && c.chunk_type == ChunkType::Section);
     assert!(h1.is_some(), "Should find h1 heading as Section");
 
-    // Script module
+    // Script module (external src — no raw_text, kept as Module)
     let script = chunks
         .iter()
         .find(|c| c.name.contains("main.js") && c.chunk_type == ChunkType::Module);
@@ -1281,6 +1281,22 @@ fn test_html_heading_and_landmark_extraction() {
             .iter()
             .map(|c| (&c.name, &c.chunk_type))
             .collect::<Vec<_>>()
+    );
+
+    // Injected JS functions from inline <script>
+    let js_funcs: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.language == Language::JavaScript)
+        .collect();
+    assert!(
+        js_funcs.iter().any(|c| c.name == "handleClick"),
+        "Should find injected JS function 'handleClick', got: {:?}",
+        js_funcs.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+    assert!(
+        js_funcs.iter().any(|c| c.name == "setupListeners"),
+        "Should find injected JS function 'setupListeners', got: {:?}",
+        js_funcs.iter().map(|c| &c.name).collect::<Vec<_>>()
     );
 }
 

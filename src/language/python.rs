@@ -103,6 +103,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "__getitem__", "__setitem__", "__delitem__", "__call__", "__enter__", "__exit__",
         "__del__", "__new__", "__init_subclass__", "__class_getitem__",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

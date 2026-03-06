@@ -157,6 +157,21 @@ pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node,
 /// Takes `(content, name)` and returns true if the pattern matches.
 pub type StructuralMatcherFn = fn(&str, &str) -> bool;
 
+/// An injection rule for multi-grammar parsing.
+///
+/// Defines how embedded language regions within a host grammar are identified
+/// and parsed. For example, `<script>` within HTML → JavaScript.
+pub struct InjectionRule {
+    /// Node kind of the container element (e.g., "script_element", "style_element")
+    pub container_kind: &'static str,
+    /// Node kind of the content node within the container (e.g., "raw_text")
+    pub content_kind: &'static str,
+    /// Default target language for the embedded content
+    pub target_language: &'static str,
+    /// Optional: detect language from container attributes (e.g., `<script lang="ts">`)
+    pub detect_language: Option<fn(tree_sitter::Node, &str) -> Option<&'static str>>,
+}
+
 /// A language definition with all parsing configuration
 #[non_exhaustive]
 pub struct LanguageDef {
@@ -236,6 +251,10 @@ pub struct LanguageDef {
     /// "clone", "default"]`, Java: `&["equals", "hashCode", "toString"]`.
     /// Cross-language names are in the global fallback constant.
     pub trait_method_names: &'static [&'static str],
+    /// Injection rules for multi-grammar parsing.
+    /// Empty by default. Only languages with embedded content (e.g., HTML with
+    /// `<script>` and `<style>`) define injection rules.
+    pub injections: &'static [InjectionRule],
 }
 
 /// How to extract function signatures

@@ -216,6 +216,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "String", "Error", "Close", "Read", "Write", "ServeHTTP",
         "Len", "Less", "Swap", "MarshalJSON", "UnmarshalJSON",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

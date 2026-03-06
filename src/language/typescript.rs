@@ -139,6 +139,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &["handler", "middleware", "beforeEach", "afterEach", "beforeAll", "afterAll"],
     trait_method_names: &["toString", "valueOf", "toJSON"],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

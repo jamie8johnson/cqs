@@ -206,6 +206,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     trait_method_names: &[
         "hash", "encode", "init", "deinit", "description",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {
