@@ -101,6 +101,8 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         #[cfg(feature = "lang-glsl")]
         Language::Glsl => "vert",
         Language::Markdown => "md",
+        #[cfg(feature = "lang-svelte")]
+        Language::Svelte => "svelte",
     };
     PathBuf::from(manifest_dir)
         .join("tests")
@@ -195,6 +197,8 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         #[cfg(feature = "lang-glsl")]
         Language::Glsl => "vert",
         Language::Markdown => "md",
+        #[cfg(feature = "lang-svelte")]
+        Language::Svelte => "svelte",
     };
     PathBuf::from(manifest_dir)
         .join("tests")

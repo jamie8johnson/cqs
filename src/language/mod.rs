@@ -1076,6 +1076,10 @@ mod tests {
         {
             expected += 1;
         }
+        #[cfg(feature = "lang-svelte")]
+        {
+            expected += 1;
+        }
         assert_eq!(all.len(), expected);
     }
 
