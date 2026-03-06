@@ -28,7 +28,7 @@ use tracing::{info, info_span, warn};
 use cqs::embedder::{Embedder, Embedding};
 use cqs::generate_nl_description;
 use cqs::note::parse_notes;
-use cqs::parser::Parser as CqParser;
+use cqs::parser::{ChunkTypeRefs, Parser as CqParser};
 use cqs::store::Store;
 
 use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
@@ -384,7 +384,9 @@ fn reindex_files(
     let _span = info_span!("reindex_files", file_count = files.len()).entered();
     info!(file_count = files.len(), "Reindexing files");
 
-    // Parse the changed files
+    // Parse changed files once — extract chunks, calls, AND type refs in a single pass.
+    // Avoids the previous double-read + double-parse per file.
+    let mut all_type_refs: Vec<(PathBuf, Vec<ChunkTypeRefs>)> = Vec::new();
     let chunks: Vec<_> = files
         .iter()
         .flat_map(|rel_path| {
@@ -393,11 +395,15 @@ fn reindex_files(
                 // File was deleted, we'll handle this by removing old chunks
                 return vec![];
             }
-            match parser.parse_file(&abs_path) {
-                Ok(mut file_chunks) => {
+            match parser.parse_file_all(&abs_path) {
+                Ok((mut file_chunks, _calls, chunk_type_refs)) => {
                     // Rewrite paths to be relative
                     for chunk in &mut file_chunks {
                         chunk.file = rel_path.clone();
+                    }
+                    // Stash type refs for upsert after chunks are stored
+                    if !chunk_type_refs.is_empty() {
+                        all_type_refs.push((rel_path.clone(), chunk_type_refs));
                     }
                     file_chunks
                 }
@@ -503,24 +509,13 @@ fn reindex_files(
         store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
     }
 
-    // Extract type edges for changed files (separate from chunk+call atomicity,
-    // since type edges are not part of the core data consistency concern)
-    for rel_path in files {
-        let abs_path = root.join(rel_path);
-        if !abs_path.exists() {
-            continue;
-        }
-        match parser.parse_file_relationships(&abs_path) {
-            Ok((_function_calls, chunk_type_refs)) => {
-                if !chunk_type_refs.is_empty() {
-                    if let Err(e) = store.upsert_type_edges_for_file(rel_path, &chunk_type_refs) {
-                        tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update type edges");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(file = %abs_path.display(), error = %e, "Failed to extract type edges");
-            }
+    // Upsert type edges from the earlier parse_file_all() results.
+    // Type edges are soft data — separate from chunk+call atomicity.
+    // They depend on chunk IDs existing in the DB, which is why we upsert
+    // them after chunks are stored above.
+    for (rel_path, chunk_type_refs) in &all_type_refs {
+        if let Err(e) = store.upsert_type_edges_for_file(rel_path, chunk_type_refs) {
+            tracing::warn!(file = %rel_path.display(), error = %e, "Failed to update type edges");
         }
     }
 

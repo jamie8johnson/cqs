@@ -753,6 +753,30 @@ function process(config: Config): StoreError {
     }
 
     #[test]
+    fn parse_html_with_unclosed_script() {
+        // Malformed HTML: unclosed <script> tag — error recovery should still work
+        let content = r#"<html>
+<body>
+<h1>Title</h1>
+<script>
+function broken() { return 1; }
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Should not panic — parser should produce some result
+        // HTML heading should still be present
+        assert!(
+            chunks.iter().any(|c| c.name == "Title" && c.chunk_type == ChunkType::Section),
+            "HTML heading should survive malformed script, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn injection_ranges_empty_for_non_injection_language() {
         // Rust files have no injection rules — should return empty
         let content = "fn main() {}\n";

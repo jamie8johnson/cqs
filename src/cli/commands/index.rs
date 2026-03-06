@@ -184,6 +184,12 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
 ///
 /// Uses `parse_file_relationships()` for a single parse pass that returns
 /// both call sites and type references. Returns (total_calls, total_type_edges).
+///
+/// Note: This re-reads and re-parses files that were already parsed in `parser_stage`.
+/// The streaming pipeline (parse → embed → store → extract_relationships) requires
+/// chunks to be stored before relationships reference them, so `parse_file_all()`
+/// can't be used here without restructuring the pipeline. The incremental watcher
+/// (watch.rs) uses `parse_file_all()` to avoid this double-parse.
 fn extract_relationships(
     parser: &CqParser,
     root: &Path,

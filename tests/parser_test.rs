@@ -1616,3 +1616,116 @@ fn test_glsl_function_and_struct_extraction() {
             .collect::<Vec<_>>()
     );
 }
+
+// ===== End-to-end injection tests =====
+
+/// Full pipeline test: parse HTML with injection → verify chunks + relationships
+#[test]
+fn test_html_injection_end_to_end() {
+    use std::io::Write;
+
+    let content = r#"<html>
+<head>
+<style>
+.container { display: flex; gap: 1rem; }
+@media (max-width: 768px) { .container { flex-direction: column; } }
+</style>
+</head>
+<body>
+<h1>Dashboard</h1>
+<script>
+function loadData(url) {
+    return fetch(url).then(r => r.json());
+}
+
+function renderChart(data) {
+    loadData('/api/stats');
+    console.log(data);
+}
+</script>
+<script src="vendor.js"></script>
+</body>
+</html>
+"#;
+
+    let mut file = tempfile::Builder::new().suffix(".html").tempfile().unwrap();
+    file.write_all(content.as_bytes()).unwrap();
+    file.flush().unwrap();
+
+    let parser = Parser::new().unwrap();
+
+    // 1. Parse chunks
+    let chunks = parser.parse_file(file.path()).unwrap();
+
+    // HTML heading
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.name == "Dashboard" && c.chunk_type == ChunkType::Section),
+        "HTML heading should be extracted"
+    );
+
+    // JS functions from inline script
+    let js_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.language == Language::JavaScript)
+        .collect();
+    assert!(
+        js_chunks.iter().any(|c| c.name == "loadData"),
+        "JS function 'loadData' should be extracted via injection"
+    );
+    assert!(
+        js_chunks.iter().any(|c| c.name == "renderChart"),
+        "JS function 'renderChart' should be extracted via injection"
+    );
+
+    // CSS chunks from style
+    let css_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.language == Language::Css)
+        .collect();
+    assert!(
+        !css_chunks.is_empty(),
+        "CSS chunks should be extracted from <style>"
+    );
+
+    // External script module preserved
+    assert!(
+        chunks
+            .iter()
+            .any(|c| c.chunk_type == ChunkType::Module && c.name.contains("vendor.js")),
+        "External script Module should be preserved"
+    );
+
+    // 2. Parse relationships (calls + types)
+    let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+
+    // JS call graph: renderChart → loadData
+    let render_calls = calls.iter().find(|c| c.name == "renderChart");
+    assert!(
+        render_calls.is_some(),
+        "Call graph should include 'renderChart', got: {:?}",
+        calls.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+    let callees: Vec<_> = render_calls
+        .unwrap()
+        .calls
+        .iter()
+        .map(|c| c.callee_name.as_str())
+        .collect();
+    assert!(
+        callees.contains(&"loadData"),
+        "renderChart should call loadData, got: {:?}",
+        callees
+    );
+
+    // 3. Per-chunk call extraction also works
+    let render_chunk = chunks.iter().find(|c| c.name == "renderChart").unwrap();
+    let chunk_calls = parser.extract_calls_from_chunk(render_chunk);
+    let chunk_callees: Vec<_> = chunk_calls.iter().map(|c| c.callee_name.as_str()).collect();
+    assert!(
+        chunk_callees.contains(&"loadData"),
+        "extract_calls_from_chunk should find loadData, got: {:?}",
+        chunk_callees
+    );
+}

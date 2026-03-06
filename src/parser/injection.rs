@@ -56,12 +56,9 @@ pub(crate) fn find_injection_ranges(
     let mut entries: Vec<(&str, tree_sitter::Range, (u32, u32))> = Vec::new();
 
     let root = tree.root_node();
-    let mut cursor = root.walk();
 
     for rule in rules {
-        // Walk the tree to find container nodes
-        cursor.reset(root);
-        walk_for_containers(&mut cursor, rule, source, &mut entries);
+        walk_for_containers(root, rule, source, &mut entries);
     }
 
     if entries.is_empty() {
@@ -141,12 +138,15 @@ fn advance_cursor(cursor: &mut tree_sitter::TreeCursor) -> bool {
 }
 
 /// Walk the tree using a cursor to find all nodes matching an injection rule's container_kind.
+///
+/// Creates and manages its own cursor — callers don't need to handle cursor state.
 fn walk_for_containers(
-    cursor: &mut tree_sitter::TreeCursor,
+    root: tree_sitter::Node,
     rule: &InjectionRule,
     source: &str,
     entries: &mut Vec<(&str, tree_sitter::Range, (u32, u32))>,
 ) {
+    let mut cursor = root.walk();
     loop {
         let node = cursor.node();
 
@@ -174,6 +174,8 @@ fn walk_for_containers(
                                 end_point: child.end_position(),
                             };
 
+                            // Safe: row count fits u32 because MAX_FILE_SIZE (50MB) limits
+                            // files to ~50M lines at minimum 1 byte/line, well within u32::MAX.
                             let container_lines = (
                                 node.start_position().row as u32 + 1,
                                 node.end_position().row as u32 + 1,
@@ -185,7 +187,7 @@ fn walk_for_containers(
                 }
             }
             // Don't descend into containers — skip to next sibling
-            if !advance_cursor(cursor) {
+            if !advance_cursor(&mut cursor) {
                 return;
             }
             continue;
@@ -196,13 +198,18 @@ fn walk_for_containers(
             continue;
         }
         // Advance to next sibling or walk up
-        if !advance_cursor(cursor) {
+        if !advance_cursor(&mut cursor) {
             return;
         }
     }
 }
 
 /// Build an inner tree-sitter parse tree for injection ranges.
+///
+/// Allocates a fresh `tree_sitter::Parser` per call. This is intentional:
+/// `Parser::new()` is cheap (~32 bytes on stack), and parsers are not `Send`
+/// so they can't be shared across rayon threads. The real allocation cost is
+/// in `parser.parse()` which builds the syntax tree.
 ///
 /// Returns `None` on any failure (with warnings logged).
 fn build_injection_tree(
@@ -481,6 +488,205 @@ impl Parser {
         );
 
         Ok((call_results, type_results))
+    }
+
+    /// Combined injection: extract chunks + calls + types in a single inner parse.
+    ///
+    /// Builds one inner tree-sitter tree and runs two query cursor passes:
+    /// 1. Chunk extraction (same as `parse_injected_chunks`)
+    /// 2. Relationship extraction (same as `parse_injected_relationships`)
+    ///
+    /// Used by `parse_file_all()` to avoid double-parsing injection regions.
+    pub(crate) fn parse_injected_all(
+        &self,
+        source: &str,
+        path: &Path,
+        group: &InjectionGroup,
+    ) -> Result<super::ParseAllResult, ParserError> {
+        let inner_language = group.language;
+        let _span = tracing::info_span!(
+            "parse_injected_all",
+            language = %inner_language,
+            range_count = group.ranges.len(),
+            path = %path.display()
+        )
+        .entered();
+
+        let tree = match build_injection_tree(inner_language, source, &group.ranges) {
+            Some(t) => t,
+            None => return Ok((vec![], vec![], vec![])),
+        };
+
+        let chunk_query = match self.get_query(inner_language) {
+            Ok(q) => q,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    language = %inner_language,
+                    "Failed to get chunk query for injection language"
+                );
+                return Ok((vec![], vec![], vec![]));
+            }
+        };
+
+        // --- Pass 1: Chunk extraction ---
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());
+        let mut chunks = Vec::new();
+
+        while let Some(m) = matches.next() {
+            match self.extract_chunk(source, m, chunk_query, inner_language, path) {
+                Ok(mut chunk) => {
+                    if chunk.content.len() > super::MAX_CHUNK_BYTES {
+                        tracing::debug!(
+                            id = %chunk.id,
+                            bytes = chunk.content.len(),
+                            "Skipping oversized injected chunk"
+                        );
+                        continue;
+                    }
+                    if let Some(post_process) = inner_language.def().post_process_chunk {
+                        if let Some(node) = super::extract_definition_node(m, chunk_query) {
+                            if !post_process(&mut chunk.name, &mut chunk.chunk_type, node, source) {
+                                continue;
+                            }
+                        }
+                    }
+                    chunk.language = inner_language;
+                    chunks.push(chunk);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        language = %inner_language,
+                        "Failed to extract injected chunk"
+                    );
+                }
+            }
+        }
+
+        if chunks.is_empty() {
+            tracing::debug!(
+                language = %inner_language,
+                "Injection produced no chunks, keeping outer"
+            );
+        }
+
+        // --- Pass 2: Relationship extraction (calls + types) ---
+        let call_query = match self.get_call_query(inner_language) {
+            Ok(q) => Some(q),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    language = %inner_language,
+                    "No call query for injection language, skipping call extraction"
+                );
+                None
+            }
+        };
+
+        let mut cursor2 = tree_sitter::QueryCursor::new();
+        let mut matches2 = cursor2.matches(chunk_query, tree.root_node(), source.as_bytes());
+
+        let capture_names = chunk_query.capture_names();
+        let name_idx = chunk_query.capture_index_for_name("name");
+        let mut call_results = Vec::new();
+        let mut type_results = Vec::new();
+        let mut call_cursor = tree_sitter::QueryCursor::new();
+        let mut calls = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        while let Some(m) = matches2.next() {
+            let func_node = m.captures.iter().find(|c| {
+                let name = capture_names.get(c.index as usize).copied().unwrap_or("");
+                CHUNK_CAPTURE_NAMES.contains(&name)
+            });
+
+            let Some(func_capture) = func_node else {
+                continue;
+            };
+
+            let node = func_capture.node;
+
+            let mut name = name_idx
+                .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
+                .map(|c| source[c.node.byte_range()].to_string())
+                .unwrap_or_else(|| "<anonymous>".to_string());
+
+            if let Some(post_process) = inner_language.def().post_process_chunk {
+                let cap_name = capture_names
+                    .get(func_capture.index as usize)
+                    .copied()
+                    .unwrap_or("");
+                let mut ct = capture_name_to_chunk_type(cap_name).unwrap_or(ChunkType::Function);
+                if !post_process(&mut name, &mut ct, node, source) {
+                    continue;
+                }
+            }
+
+            let line_start = node.start_position().row as u32 + 1;
+            let byte_range = node.byte_range();
+
+            if let Some(cq) = call_query {
+                call_cursor.set_byte_range(byte_range.clone());
+                calls.clear();
+
+                let mut call_matches = call_cursor.matches(cq, tree.root_node(), source.as_bytes());
+
+                while let Some(cm) = call_matches.next() {
+                    for cap in cm.captures {
+                        let callee_name = source[cap.node.byte_range()].to_string();
+                        let call_line = cap.node.start_position().row as u32 + 1;
+
+                        if !super::calls::should_skip_callee(&callee_name) {
+                            calls.push(super::types::CallSite {
+                                callee_name,
+                                line_number: call_line,
+                            });
+                        }
+                    }
+                }
+
+                seen.clear();
+                calls.retain(|c| seen.insert(c.callee_name.clone()));
+
+                if !calls.is_empty() {
+                    call_results.push(FunctionCalls {
+                        name: name.clone(),
+                        line_start,
+                        calls: std::mem::take(&mut calls),
+                    });
+                }
+            }
+
+            let mut type_refs = self.extract_types(
+                source,
+                &tree,
+                inner_language,
+                byte_range.start,
+                byte_range.end,
+            );
+
+            type_refs.retain(|t| t.type_name != name);
+
+            if !type_refs.is_empty() {
+                type_results.push(ChunkTypeRefs {
+                    name,
+                    line_start,
+                    type_refs,
+                });
+            }
+        }
+
+        tracing::debug!(
+            language = %inner_language,
+            chunks = chunks.len(),
+            calls = call_results.len(),
+            types = type_results.len(),
+            "Injection extracted all"
+        );
+
+        Ok((chunks, call_results, type_results))
     }
 }
 
