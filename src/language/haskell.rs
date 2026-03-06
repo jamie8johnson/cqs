@@ -159,6 +159,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "return",
         "fromInteger",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

@@ -145,6 +145,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "equals", "hashCode", "toString", "compareTo", "clone",
         "iterator", "run", "call", "close", "accept", "apply", "get",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

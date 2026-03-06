@@ -68,6 +68,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "to_s", "to_i", "to_f", "to_a", "to_h", "inspect",
         "hash", "eql?", "==", "<=>", "each", "initialize",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

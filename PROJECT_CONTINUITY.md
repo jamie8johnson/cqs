@@ -2,21 +2,21 @@
 
 ## Right Now
 
-**Phase 2 language expansion — complete.** 2026-03-05.
+**Multi-grammar parsing — implemented.** 2026-03-05.
 
-All 3 batches done. 46 languages total.
-- Batch 1 (HTML, JSON, XML, INI) — PR #535 merged
-- Batch 2 (Nix, Make, LaTeX) — PR #537 merged
-- Batch 3 (Solidity, CUDA, GLSL) — PR #538 open, CI running
+HTML files now extract real JS/CSS chunks from `<script>` and `<style>` blocks using tree-sitter `set_included_ranges()`. Two-phase parsing: outer HTML grammar, then inner JS/CSS grammars.
 
-Key fix in Batch 3:
-- Solidity grammar uses `expression` supertype for `call_expression.function` field — tree-sitter queries can't match through supertypes with `function: (identifier)`. Solved with `member_expression property:` for member calls + `function: (_)` wildcard for direct calls.
-
-Also added Multi-Grammar Parsing section to ROADMAP.md.
+Key additions:
+- `InjectionRule` struct on `LanguageDef` (all 46 languages default to `&[]`)
+- `src/parser/injection.rs` — find_injection_ranges, parse_injected_chunks, parse_injected_relationships
+- HTML injection rules: script→JS (with TS detection via `lang`/`type` attrs), style→CSS
+- 9 new tests (JS extraction, CSS, TypeScript detection, empty script, multiple scripts, whitespace-only, regression, call graph, non-injection language)
+- `sample.html` fixture enhanced with inline `<script>` functions
+- Total: 1465 tests pass, 0 fail
 
 ## Pending Changes
 
-PR #538 waiting for CI. No uncommitted work.
+Uncommitted multi-grammar changes. Ready for branch + PR.
 
 ## Parked
 

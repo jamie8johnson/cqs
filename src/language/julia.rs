@@ -133,6 +133,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     trait_method_names: &[
         "show", "convert", "promote_rule", "iterate", "length", "getindex", "setindex!",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

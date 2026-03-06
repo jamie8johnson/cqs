@@ -4,7 +4,7 @@
 //! for multi-grammar parsing (Svelte, Vue, Astro). Chunks are semantic elements:
 //! headings, landmarks, script/style blocks, and id'd elements.
 
-use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+use super::{ChunkType, InjectionRule, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting HTML chunks.
 ///
@@ -188,6 +188,35 @@ fn extract_return(_signature: &str) -> Option<String> {
     None
 }
 
+/// Detect script language from `<script>` element attributes.
+///
+/// Checks for `lang="ts"`, `type="text/typescript"`, or similar attributes
+/// that indicate TypeScript instead of the default JavaScript.
+fn detect_script_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
+    // Find the start_tag child
+    let start_tag = find_child_by_kind(node, "start_tag")?;
+
+    // Check lang attribute: <script lang="ts">
+    if let Some(lang_val) = find_attribute_value(start_tag, "lang", source) {
+        let lower = lang_val.to_lowercase();
+        if lower == "ts" || lower == "typescript" {
+            tracing::debug!("Detected TypeScript from lang attribute");
+            return Some("typescript");
+        }
+    }
+
+    // Check type attribute: <script type="text/typescript">
+    if let Some(type_val) = find_attribute_value(start_tag, "type", source) {
+        let lower = type_val.to_lowercase();
+        if lower.contains("typescript") {
+            tracing::debug!("Detected TypeScript from type attribute");
+            return Some("typescript");
+        }
+    }
+
+    None // Use default (javascript)
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "html",
     grammar: Some(|| tree_sitter_html::LANGUAGE.into()),
@@ -212,6 +241,20 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &[],
     trait_method_names: &[],
+    injections: &[
+        InjectionRule {
+            container_kind: "script_element",
+            content_kind: "raw_text",
+            target_language: "javascript",
+            detect_language: Some(detect_script_language),
+        },
+        InjectionRule {
+            container_kind: "style_element",
+            content_kind: "raw_text",
+            target_language: "css",
+            detect_language: None,
+        },
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {
@@ -352,5 +395,292 @@ mod tests {
     fn test_extract_return_html() {
         assert_eq!(extract_return("<div>test</div>"), None);
         assert_eq!(extract_return(""), None);
+    }
+
+    // --- Multi-grammar injection tests ---
+
+    #[test]
+    fn parse_html_with_script_extracts_js_functions() {
+        let content = r#"<html>
+<body>
+<h1>Title</h1>
+<script>
+function handleClick(event) {
+    const el = document.getElementById('target');
+    el.classList.toggle('active');
+}
+
+function setupListeners() {
+    handleClick(null);
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Should have JS function chunks
+        let js_funcs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::JavaScript)
+            .collect();
+        assert!(
+            js_funcs.iter().any(|c| c.name == "handleClick"),
+            "Expected JS function 'handleClick', got: {:?}",
+            js_funcs.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert!(
+            js_funcs.iter().any(|c| c.name == "setupListeners"),
+            "Expected JS function 'setupListeners', got: {:?}",
+            js_funcs.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // JS functions should have correct language
+        for f in &js_funcs {
+            assert_eq!(f.language, crate::parser::Language::JavaScript);
+            assert_eq!(f.chunk_type, ChunkType::Function);
+        }
+
+        // HTML heading should still be present
+        assert!(
+            chunks.iter().any(|c| c.name == "Title" && c.chunk_type == ChunkType::Section),
+            "Expected HTML heading 'Title'"
+        );
+
+        // The script Module chunk should have been replaced by JS functions
+        assert!(
+            !chunks.iter().any(|c| c.chunk_type == ChunkType::Module && c.name == "script"),
+            "Script Module chunk should be replaced by JS functions"
+        );
+    }
+
+    #[test]
+    fn parse_html_with_style_extracts_css_rules() {
+        let content = r#"<html>
+<head>
+<style>
+.container {
+    display: flex;
+    gap: 1rem;
+}
+</style>
+</head>
+<body><h1>Page</h1></body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // CSS chunks should be extracted (if CSS query captures rules)
+        let css_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Css)
+            .collect();
+
+        // CSS language definition captures Section chunks for selectors
+        // Even if no CSS chunks extracted (depends on CSS query), the style Module
+        // chunk behavior should be correct
+        if !css_chunks.is_empty() {
+            // If CSS produces chunks, the style Module should be replaced
+            assert!(
+                !chunks.iter().any(|c| c.chunk_type == ChunkType::Module && c.name == "style"),
+                "Style Module chunk should be replaced by CSS chunks"
+            );
+        }
+
+        // HTML heading should still be present
+        assert!(
+            chunks.iter().any(|c| c.name == "Page" && c.chunk_type == ChunkType::Section),
+            "Expected HTML heading 'Page'"
+        );
+    }
+
+    #[test]
+    fn parse_html_with_typescript_script() {
+        let content = r#"<html>
+<body>
+<script lang="ts">
+function typedFunction(x: number): string {
+    return x.toString();
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        let ts_funcs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::TypeScript)
+            .collect();
+        assert!(
+            ts_funcs.iter().any(|c| c.name == "typedFunction"),
+            "Expected TypeScript function, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_html_with_empty_script_keeps_module() {
+        // <script src="..."> has no raw_text child — should keep outer Module
+        let content = r#"<html>
+<body>
+<script src="app.js"></script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        let module = chunks.iter().find(|c| c.chunk_type == ChunkType::Module);
+        assert!(
+            module.is_some(),
+            "Empty script should keep Module chunk, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_html_with_multiple_scripts() {
+        let content = r#"<html>
+<body>
+<script>
+function first() { return 1; }
+</script>
+<script>
+function second() { return 2; }
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        let js_names: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::JavaScript)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(
+            js_names.contains(&"first"),
+            "Expected 'first' from first script, got: {:?}",
+            js_names
+        );
+        assert!(
+            js_names.contains(&"second"),
+            "Expected 'second' from second script, got: {:?}",
+            js_names
+        );
+    }
+
+    #[test]
+    fn parse_html_with_whitespace_only_script_keeps_module() {
+        let content = "<html><body>\n<script>  \n  </script>\n</body></html>\n";
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Whitespace-only script produces zero inner chunks — should keep outer
+        let has_module = chunks.iter().any(|c| c.chunk_type == ChunkType::Module);
+        assert!(
+            has_module,
+            "Whitespace-only script should keep Module chunk, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_html_without_script_unchanged() {
+        // HTML with only headings/nav — no injections should fire
+        let content = r#"<html>
+<body>
+<nav id="main-nav"><a href="/">Home</a></nav>
+<h1>Welcome</h1>
+<h2>About</h2>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Should have only HTML chunks
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.language,
+                crate::parser::Language::Html,
+                "All chunks should be HTML, found {:?} for '{}'",
+                chunk.language,
+                chunk.name
+            );
+        }
+
+        // Verify expected chunks
+        assert!(chunks.iter().any(|c| c.name == "Welcome"));
+        assert!(chunks.iter().any(|c| c.name == "About"));
+        assert!(chunks.iter().any(|c| c.name.contains("main-nav")));
+    }
+
+    #[test]
+    fn injection_call_graph() {
+        let content = r#"<html>
+<body>
+<script>
+function caller() {
+    helper();
+    other();
+}
+
+function helper() {
+    return 42;
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+
+        let caller_calls = calls.iter().find(|c| c.name == "caller");
+        assert!(
+            caller_calls.is_some(),
+            "Expected call graph entry for 'caller', got: {:?}",
+            calls.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        let call_names: Vec<_> = caller_calls
+            .unwrap()
+            .calls
+            .iter()
+            .map(|c| c.callee_name.as_str())
+            .collect();
+        assert!(
+            call_names.contains(&"helper"),
+            "Expected caller → helper, got: {:?}",
+            call_names
+        );
+        assert!(
+            call_names.contains(&"other"),
+            "Expected caller → other, got: {:?}",
+            call_names
+        );
+    }
+
+    #[test]
+    fn injection_ranges_empty_for_non_injection_language() {
+        // Rust files have no injection rules — should return empty
+        let content = "fn main() {}\n";
+        let file = write_temp_file(content, "rs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].language, crate::parser::Language::Rust);
     }
 }

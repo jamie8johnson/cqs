@@ -119,6 +119,7 @@ src/
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
     chunk.rs    - Chunk extraction, signatures, doc comments, parent type extraction
     calls.rs    - Call graph extraction, callee filtering
+    injection.rs - Multi-grammar injection (HTML→JS/CSS via set_included_ranges)
     markdown.rs - Heading-based markdown parser, cross-reference extraction
   embedder.rs   - ONNX model (E5-base-v2), 769-dim embeddings
   reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)

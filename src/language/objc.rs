@@ -96,6 +96,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "init", "dealloc", "description", "hash", "isEqual",
         "copyWithZone", "encodeWithCoder", "initWithCoder",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

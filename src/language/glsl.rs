@@ -128,6 +128,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &["main"],
     trait_method_names: &[],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {

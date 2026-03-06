@@ -385,6 +385,27 @@ impl Parser {
             }
         }
 
+        // --- Phase 2: Injection relationships (multi-grammar) ---
+        let injections = language.def().injections;
+        if !injections.is_empty() {
+            let groups = super::injection::find_injection_ranges(&tree, &source, injections);
+            for group in &groups {
+                match self.parse_injected_relationships(&source, group) {
+                    Ok((inner_calls, inner_types)) => {
+                        call_results.extend(inner_calls);
+                        type_results.extend(inner_types);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            language = %group.language,
+                            "Injection relationship parsing failed"
+                        );
+                    }
+                }
+            }
+        }
+
         Ok((call_results, type_results))
     }
 }
@@ -397,7 +418,7 @@ impl Parser {
 /// - `toString`, `valueOf`: Ubiquitous JS/TS methods that add noise
 ///
 /// Case-sensitive to avoid false positives (e.g., "This" as a variable name).
-fn should_skip_callee(name: &str) -> bool {
+pub(crate) fn should_skip_callee(name: &str) -> bool {
     matches!(
         name,
         "self" | "this" | "super" | "Self" | "new" | "toString" | "valueOf"

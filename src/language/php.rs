@@ -183,6 +183,7 @@ static DEFINITION: LanguageDef = LanguageDef {
         "__clone",
         "__invoke",
     ],
+    injections: &[],
 };
 
 pub fn definition() -> &'static LanguageDef {
