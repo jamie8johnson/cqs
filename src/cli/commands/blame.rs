@@ -80,6 +80,14 @@ fn run_git_log_line_range(
         anyhow::bail!("Invalid file path '{}': must not start with '-'", rel_file);
     }
 
+    // Reject embedded colons — git `-L start,end:file` would misparse
+    if rel_file.contains(':') {
+        anyhow::bail!(
+            "Invalid file path '{}': colons not supported (conflicts with git -L syntax)",
+            rel_file
+        );
+    }
+
     // Ensure valid line range (start <= end); swap if inverted
     let (start, end) = if start > end {
         tracing::warn!(start, end, "Inverted line range, swapping");

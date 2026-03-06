@@ -26,6 +26,14 @@ impl Parser {
             return vec![];
         }
 
+        // Normalize CRLF → LF for consistency (callers typically pass normalized
+        // source, but standalone callers like extract_calls_from_chunk may not)
+        let source = if source.contains("\r\n") {
+            std::borrow::Cow::Owned(source.replace("\r\n", "\n"))
+        } else {
+            std::borrow::Cow::Borrowed(source)
+        };
+
         let grammar = language.grammar();
         let mut parser = tree_sitter::Parser::new();
         if let Err(e) = parser.set_language(&grammar) {
@@ -33,7 +41,7 @@ impl Parser {
             return vec![];
         }
 
-        let tree = match parser.parse(source, None) {
+        let tree = match parser.parse(source.as_ref(), None) {
             Some(t) => t,
             None => {
                 tracing::warn!(%language, "tree-sitter parse returned None in extract_calls");
@@ -274,6 +282,7 @@ impl Parser {
         let mut calls = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let capture_names = chunk_query.capture_names();
+        let name_idx = chunk_query.capture_index_for_name("name");
 
         while let Some(m) = matches.next() {
             // Find chunk node
@@ -289,7 +298,6 @@ impl Parser {
             let node = func_capture.node;
 
             // Get chunk name
-            let name_idx = chunk_query.capture_index_for_name("name");
             let mut name = name_idx
                 .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
                 .map(|c| source[c.node.byte_range()].to_string())
@@ -363,7 +371,15 @@ impl Parser {
         // --- Phase 2: Injection relationships (multi-grammar) ---
         let injections = language.def().injections;
         if !injections.is_empty() {
+            // Release borrows on the outer tree before injection phase
+            drop(matches);
+            drop(cursor);
+
             let groups = super::injection::find_injection_ranges(&tree, &source, injections);
+
+            // Free outer tree/parser memory before inner parse allocations
+            drop(tree);
+            drop(parser);
             for group in &groups {
                 match self.parse_injected_relationships(&source, group) {
                     Ok((inner_calls, inner_types))

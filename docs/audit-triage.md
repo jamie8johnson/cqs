@@ -42,28 +42,28 @@ Audit date: 2026-03-06. 14 categories, 3 batches, ~50 unique findings (some over
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 27 | `InjectionRule` lacks `Debug` — only pub struct without it | API Design | mod.rs:164 | |
-| 28 | `walk_for_containers` cursor-advance idiom duplicated twice within itself | Code Quality | injection.rs:138-168 | |
-| 29 | `InjectionGroup` grouping uses O(n) linear scan (fine for 2 rules, won't scale) | Code Quality | injection.rs:83-94 | |
-| 30 | `parse_injected_chunks` span missing file path | Observability | injection.rs:199 | |
-| 31 | Silent injection replacement — no log when outer chunks replaced | Observability | mod.rs:241-250 | |
-| 32 | `parse_injected_chunks`/`parse_injected_relationships` don't log chunk/call count on success | Observability | injection.rs:288, 478 | |
-| 33 | `find_injection_ranges` uses `debug_span` while callers use `info_span` | Observability | injection.rs:41 | |
-| 34 | `scout_core` has no entry span | Observability | scout.rs:199 | |
-| 35 | `cmd_read_focused` has no entry span | Observability | read.rs:312 | |
-| 36 | Oversized injected chunks skipped silently — no debug log | Observability | injection.rs:252-256 | |
-| 37 | Outer tree-sitter Parser/Tree not dropped before injection inner-parse | Resource Management | mod.rs:182-266, calls.rs:247-409 | |
-| 38 | Call-dedup `HashSet<String>` should be `HashSet<&str>` — avoids clone per callee | Resource Management, Performance | injection.rs:447, calls.rs:352 | |
-| 39 | `extract_types` builds `HashSet<String>` — can use `HashSet<&str>` | Performance | extract_types | |
-| 40 | `capture_index_for_name("name")` called inside per-match hot loops — hoist out of loop | Performance | calls.rs:301, injection.rs:388, chunk.rs | |
-| 41 | `extract_calls` missing CRLF normalization (all callers pass normalized, but latent) | Platform Behavior | calls.rs:15-78 | |
-| 42 | `InjectionRule::target_language` convention unenforced (no compile/runtime validation) | Platform Behavior, Extensibility | mod.rs:172, injection.rs:63 | |
-| 43 | `source[byte_range()]` direct indexing vs `utf8_text` — inconsistent style | Robustness | injection.rs:391, 434 | |
-| 44 | `walk_for_containers` duplicate range risk if two rules share `container_kind` | Robustness | injection.rs:49-53 | |
-| 45 | Grammar-less languages with non-empty `injections` field would silently produce nothing | Extensibility | mod.rs, injection.rs | |
-| 46 | No contributor docs for adding new injection rules | Extensibility | CONTRIBUTING.md | |
-| 47 | `run_git_log_line_range` doesn't validate colons in file path — git `-L` misparse | Security | blame.rs:79-93 | |
-| 48 | No test for `type="text/typescript"` attribute detection | Test Coverage | html.rs tests | |
+| 27 | `InjectionRule` lacks `Debug` — only pub struct without it | API Design | mod.rs:164 | ✅ fixed |
+| 28 | `walk_for_containers` cursor-advance idiom duplicated twice within itself | Code Quality | injection.rs:138-168 | ✅ fixed |
+| 29 | `InjectionGroup` grouping uses O(n) linear scan (fine for 2 rules, won't scale) | Code Quality | injection.rs:83-94 | ✅ fixed |
+| 30 | `parse_injected_chunks` span missing file path | Observability | injection.rs:199 | ✅ fixed |
+| 31 | Silent injection replacement — no log when outer chunks replaced | Observability | mod.rs:241-250 | ✅ fixed |
+| 32 | `parse_injected_chunks`/`parse_injected_relationships` don't log chunk/call count on success | Observability | injection.rs:288, 478 | ✅ fixed |
+| 33 | `find_injection_ranges` uses `debug_span` while callers use `info_span` | Observability | injection.rs:41 | ✅ fixed |
+| 34 | `scout_core` has no entry span | Observability | scout.rs:199 | ✅ fixed |
+| 35 | `cmd_read_focused` has no entry span | Observability | read.rs:312 | ✅ fixed |
+| 36 | Oversized injected chunks skipped silently — no debug log | Observability | injection.rs:252-256 | ✅ fixed |
+| 37 | Outer tree-sitter Parser/Tree not dropped before injection inner-parse | Resource Management | mod.rs:182-266, calls.rs:247-409 | ✅ fixed |
+| 38 | Call-dedup `HashSet<String>` should be `HashSet<&str>` — avoids clone per callee | Resource Management, Performance | injection.rs:447, calls.rs:352 | non-issue: `retain` borrows `&mut Vec`, can't store `&str` refs into it |
+| 39 | `extract_types` builds `HashSet<String>` — can use `HashSet<&str>` | Performance | extract_types | non-issue: `classified.push()` may reallocate, invalidating `&str` refs |
+| 40 | `capture_index_for_name("name")` called inside per-match hot loops — hoist out of loop | Performance | calls.rs:301, injection.rs:388, chunk.rs | ✅ fixed (calls.rs + injection.rs; chunk.rs requires API change, skipped) |
+| 41 | `extract_calls` missing CRLF normalization (all callers pass normalized, but latent) | Platform Behavior | calls.rs:15-78 | ✅ fixed |
+| 42 | `InjectionRule::target_language` convention unenforced (no compile/runtime validation) | Platform Behavior, Extensibility | mod.rs:172, injection.rs:63 | non-issue: already validated at runtime in `find_injection_ranges` |
+| 43 | `source[byte_range()]` direct indexing vs `utf8_text` — inconsistent style | Robustness | injection.rs:391, 434 | non-issue: `source[byte_range()]` is the consistent pattern across the codebase |
+| 44 | `walk_for_containers` duplicate range risk if two rules share `container_kind` | Robustness | injection.rs:49-53 | ✅ fixed |
+| 45 | Grammar-less languages with non-empty `injections` field would silently produce nothing | Extensibility | mod.rs, injection.rs | ✅ fixed |
+| 46 | No contributor docs for adding new injection rules | Extensibility | CONTRIBUTING.md | ✅ fixed |
+| 47 | `run_git_log_line_range` doesn't validate colons in file path — git `-L` misparse | Security | blame.rs:79-93 | ✅ fixed |
+| 48 | No test for `type="text/typescript"` attribute detection | Test Coverage | html.rs tests | ✅ fixed in P2 |
 
 ## P4: Hard or Low Impact — Defer / Create Issues
 

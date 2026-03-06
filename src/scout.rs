@@ -206,6 +206,8 @@ pub(crate) fn scout_core(
     graph: &crate::store::CallGraph,
     test_chunks: &[ChunkSummary],
 ) -> Result<ScoutResult, AnalysisError> {
+    let _span = tracing::info_span!("scout_core", %task, limit).entered();
+
     // 1. Search
     let filter = SearchFilter {
         enable_rrf: true,

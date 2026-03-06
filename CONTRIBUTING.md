@@ -197,6 +197,36 @@ src/
 - Schema migrations allow upgrading indexes without full rebuild
 - Skills in `.claude/skills/*/SKILL.md` are auto-discovered by Claude Code
 
+## Adding Injection Rules (Multi-Grammar)
+
+Files like HTML contain embedded languages (`<script>` → JS, `<style>` → CSS). cqs handles this via injection rules on `LanguageDef`.
+
+**To add injection rules for a new host language:**
+
+1. Define `InjectionRule` entries in the language's `LanguageDef` (`src/language/<lang>.rs`):
+   ```rust
+   injections: &[
+       InjectionRule {
+           container_kind: "script_element",  // outer tree node kind
+           content_kind: "raw_text",          // child node with embedded content
+           target_language: "javascript",     // must match a Language variant name
+           detect_language: Some(detect_fn),  // optional: inspect attributes for lang override
+       },
+   ],
+   ```
+
+2. `container_kind` / `content_kind` must match the host grammar's node kinds (inspect with `tree-sitter parse`).
+
+3. `target_language` must be a valid `Language` name with a grammar (validated at runtime in `find_injection_ranges`).
+
+4. `detect_language` receives the container node and source — return `Some("typescript")` to override the default, `Some("_skip")` to skip the container entirely, or `None` for the default.
+
+5. Injection is single-level only. Inner languages are not re-scanned for their own injections.
+
+6. The two-phase flow in `parse_file` and `parse_file_relationships` automatically handles injection when `injections` is non-empty. No changes needed outside the language definition.
+
+**Key files:** `src/language/mod.rs` (InjectionRule struct), `src/parser/injection.rs` (parsing logic), `src/language/html.rs` (reference implementation).
+
 ## Questions?
 
 Open an issue for questions or discussions.

@@ -74,6 +74,12 @@ impl Parser {
                     def.name
                 )
             });
+            // Grammar-less languages must not define injections (they'd silently produce nothing)
+            debug_assert!(
+                def.grammar.is_some() || def.injections.is_empty(),
+                "Language '{}' has no grammar but defines injections — injections require tree-sitter",
+                def.name
+            );
             if def.grammar.is_some() {
                 queries.insert(lang, OnceCell::new());
                 call_queries.insert(lang, OnceCell::new());
@@ -242,10 +248,20 @@ impl Parser {
         // --- Phase 2: Injection parsing (multi-grammar) ---
         let injections = language.def().injections;
         if !injections.is_empty() {
+            // Release borrows on the outer tree before injection phase
+            drop(matches);
+            drop(cursor);
+
             let groups = injection::find_injection_ranges(&tree, &source, injections);
+
+            // Free outer tree/parser memory before inner parse allocations
+            drop(tree);
+            drop(parser);
+
             for group in &groups {
                 match self.parse_injected_chunks(&source, path, group) {
                     Ok(inner_chunks) if !inner_chunks.is_empty() => {
+                        let before = chunks.len();
                         // Remove outer chunks that overlap with injection containers
                         chunks.retain(|c| {
                             !injection::chunk_within_container(
@@ -254,6 +270,13 @@ impl Parser {
                                 &group.container_lines,
                             )
                         });
+                        let removed = before - chunks.len();
+                        tracing::debug!(
+                            language = %group.language,
+                            removed,
+                            added = inner_chunks.len(),
+                            "Replaced outer chunks with injection results"
+                        );
                         chunks.extend(inner_chunks);
                     }
                     Ok(_) => {

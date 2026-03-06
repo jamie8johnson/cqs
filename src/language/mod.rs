@@ -161,6 +161,7 @@ pub type StructuralMatcherFn = fn(&str, &str) -> bool;
 ///
 /// Defines how embedded language regions within a host grammar are identified
 /// and parsed. For example, `<script>` within HTML → JavaScript.
+#[derive(Debug)]
 pub struct InjectionRule {
     /// Node kind of the container element (e.g., "script_element", "style_element")
     pub container_kind: &'static str,

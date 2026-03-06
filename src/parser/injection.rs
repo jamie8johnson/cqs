@@ -11,6 +11,7 @@
 //! checked for their own injection rules (e.g., PHP→HTML→JS would require
 //! recursive injection, which is not yet implemented).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use tree_sitter::StreamingIterator;
@@ -49,7 +50,7 @@ pub(crate) fn find_injection_ranges(
     source: &str,
     rules: &[InjectionRule],
 ) -> Vec<InjectionGroup> {
-    let _span = tracing::debug_span!("find_injection_ranges", rules = rules.len()).entered();
+    let _span = tracing::info_span!("find_injection_ranges", rules = rules.len()).entered();
 
     // Collect (language_name, range, container_lines) tuples
     let mut entries: Vec<(&str, tree_sitter::Range, (u32, u32))> = Vec::new();
@@ -77,7 +78,11 @@ pub(crate) fn find_injection_ranges(
         entries.truncate(MAX_INJECTION_RANGES);
     }
 
-    // Group by language name
+    // Deduplicate by byte range (guards against two rules sharing a container_kind)
+    entries.dedup_by(|a, b| a.1.start_byte == b.1.start_byte && a.1.end_byte == b.1.end_byte);
+
+    // Group by resolved language using HashMap for O(1) lookup
+    let mut group_index: HashMap<Language, usize> = HashMap::new();
     let mut groups: Vec<InjectionGroup> = Vec::new();
     for (lang_name, range, lines) in entries {
         // Resolve language
@@ -101,11 +106,12 @@ pub(crate) fn find_injection_ranges(
             }
         };
 
-        // Find existing group or create new one
-        if let Some(group) = groups.iter_mut().find(|g| g.language == language) {
-            group.ranges.push(range);
-            group.container_lines.push(lines);
+        if let Some(&idx) = group_index.get(&language) {
+            groups[idx].ranges.push(range);
+            groups[idx].container_lines.push(lines);
         } else {
+            let idx = groups.len();
+            group_index.insert(language, idx);
             groups.push(InjectionGroup {
                 language,
                 ranges: vec![range],
@@ -115,6 +121,23 @@ pub(crate) fn find_injection_ranges(
     }
 
     groups
+}
+
+/// Advance a tree cursor to the next sibling, walking up parents as needed.
+///
+/// Returns `false` if the entire tree has been exhausted.
+fn advance_cursor(cursor: &mut tree_sitter::TreeCursor) -> bool {
+    if cursor.goto_next_sibling() {
+        return true;
+    }
+    loop {
+        if !cursor.goto_parent() {
+            return false;
+        }
+        if cursor.goto_next_sibling() {
+            return true;
+        }
+    }
 }
 
 /// Walk the tree using a cursor to find all nodes matching an injection rule's container_kind.
@@ -136,9 +159,7 @@ fn walk_for_containers(
             };
 
             // Skip non-parseable content (e.g., JSON-LD, shader scripts)
-            if target == "_skip" {
-                // Fall through to the sibling-advance logic below
-            } else {
+            if target != "_skip" {
                 // Collect ALL matching content children (error recovery may split
                 // raw_text into multiple nodes)
                 let mut child_cursor = node.walk();
@@ -164,16 +185,8 @@ fn walk_for_containers(
                 }
             }
             // Don't descend into containers — skip to next sibling
-            if !cursor.goto_next_sibling() {
-                // Walk back up to find more siblings
-                loop {
-                    if !cursor.goto_parent() {
-                        return;
-                    }
-                    if cursor.goto_next_sibling() {
-                        break;
-                    }
-                }
+            if !advance_cursor(cursor) {
+                return;
             }
             continue;
         }
@@ -182,18 +195,9 @@ fn walk_for_containers(
         if cursor.goto_first_child() {
             continue;
         }
-        // Try next sibling
-        if cursor.goto_next_sibling() {
-            continue;
-        }
-        // Walk back up
-        loop {
-            if !cursor.goto_parent() {
-                return;
-            }
-            if cursor.goto_next_sibling() {
-                break;
-            }
+        // Advance to next sibling or walk up
+        if !advance_cursor(cursor) {
+            return;
         }
     }
 }
@@ -248,7 +252,8 @@ impl Parser {
         let _span = tracing::info_span!(
             "parse_injected_chunks",
             language = %inner_language,
-            range_count = group.ranges.len()
+            range_count = group.ranges.len(),
+            path = %path.display()
         )
         .entered();
 
@@ -279,6 +284,11 @@ impl Parser {
                 Ok(mut chunk) => {
                     // Skip oversized chunks
                     if chunk.content.len() > super::MAX_CHUNK_BYTES {
+                        tracing::debug!(
+                            id = %chunk.id,
+                            bytes = chunk.content.len(),
+                            "Skipping oversized injected chunk"
+                        );
                         continue;
                     }
 
@@ -309,6 +319,12 @@ impl Parser {
             tracing::debug!(
                 language = %inner_language,
                 "Injection produced no chunks, keeping outer"
+            );
+        } else {
+            tracing::debug!(
+                language = %inner_language,
+                count = chunks.len(),
+                "Injection extracted chunks"
             );
         }
 
@@ -361,6 +377,7 @@ impl Parser {
         let mut matches = cursor.matches(chunk_query, tree.root_node(), source.as_bytes());
 
         let capture_names = chunk_query.capture_names();
+        let name_idx = chunk_query.capture_index_for_name("name");
         let mut call_results = Vec::new();
         let mut type_results = Vec::new();
         let mut call_cursor = tree_sitter::QueryCursor::new();
@@ -381,7 +398,6 @@ impl Parser {
             let node = func_capture.node;
 
             // Get chunk name
-            let name_idx = chunk_query.capture_index_for_name("name");
             let mut name = name_idx
                 .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
                 .map(|c| source[c.node.byte_range()].to_string())
@@ -456,6 +472,13 @@ impl Parser {
                 });
             }
         }
+
+        tracing::debug!(
+            language = %inner_language,
+            calls = call_results.len(),
+            types = type_results.len(),
+            "Injection extracted relationships"
+        );
 
         Ok((call_results, type_results))
     }
