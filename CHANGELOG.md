@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Multi-grammar injection parsing** — HTML `<script>` blocks now extract real JS/TS function chunks; `<style>` blocks extract CSS rule chunks. Powered by tree-sitter's `set_included_ranges()`. `InjectionRule` on `LanguageDef` makes this extensible to other host languages (PR #540)
+
 ## [0.26.0] - 2026-03-05
 
 Language expansion Phase 2, Batch 3 — Solidity, CUDA, GLSL (43 → 46 languages).

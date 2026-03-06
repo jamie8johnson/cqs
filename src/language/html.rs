@@ -1,8 +1,9 @@
 //! HTML language definition
 //!
-//! HTML is the foundational markup language for the web and the outer grammar
-//! for multi-grammar parsing (Svelte, Vue, Astro). Chunks are semantic elements:
-//! headings, landmarks, script/style blocks, and id'd elements.
+//! HTML is the foundational markup language for the web. Chunks are semantic
+//! elements: headings, landmarks, and id'd elements. Inline `<script>` blocks
+//! extract JS/TS functions and `<style>` blocks extract CSS rules via
+//! multi-grammar injection.
 
 use super::{ChunkType, InjectionRule, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
@@ -123,15 +124,11 @@ fn post_process_html(
 }
 
 /// Find a direct child node by kind.
-#[allow(clippy::manual_find)]
-fn find_child_by_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == kind {
-            return Some(child);
-        }
-    }
-    None
+fn find_child_by_kind<'a>(
+    node: tree_sitter::Node<'a>,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    crate::parser::find_child_by_kind(node, kind)
 }
 
 /// Find an attribute's value within a start_tag node.
@@ -211,6 +208,20 @@ fn detect_script_language(node: tree_sitter::Node, source: &str) -> Option<&'sta
         if lower.contains("typescript") {
             tracing::debug!("Detected TypeScript from type attribute");
             return Some("typescript");
+        }
+        // Skip non-JS script types (JSON-LD, templates, shaders, etc.)
+        if !lower.is_empty()
+            && !matches!(
+                lower.as_str(),
+                "text/javascript"
+                    | "application/javascript"
+                    | "module"
+                    | "text/ecmascript"
+                    | "application/ecmascript"
+            )
+        {
+            tracing::debug!(r#type = %type_val, "Skipping non-JS script type");
+            return Some("_skip"); // sentinel: caller will skip injection
         }
     }
 
@@ -480,16 +491,16 @@ function setupListeners() {
             .filter(|c| c.language == crate::parser::Language::Css)
             .collect();
 
-        // CSS language definition captures Section chunks for selectors
-        // Even if no CSS chunks extracted (depends on CSS query), the style Module
-        // chunk behavior should be correct
-        if !css_chunks.is_empty() {
-            // If CSS produces chunks, the style Module should be replaced
-            assert!(
-                !chunks.iter().any(|c| c.chunk_type == ChunkType::Module && c.name == "style"),
-                "Style Module chunk should be replaced by CSS chunks"
-            );
-        }
+        // CSS injection must produce chunks — if this fails, CSS injection is broken
+        assert!(
+            !css_chunks.is_empty(),
+            "CSS injection should extract chunks from <style> block"
+        );
+        // Style Module chunk should be replaced by CSS chunks
+        assert!(
+            !chunks.iter().any(|c| c.chunk_type == ChunkType::Module && c.name == "style"),
+            "Style Module chunk should be replaced by CSS chunks"
+        );
 
         // HTML heading should still be present
         assert!(

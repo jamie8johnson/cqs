@@ -4,6 +4,8 @@
 //! - `types` — data structures and error types
 //! - `chunk` — chunk extraction from parse trees
 //! - `calls` — call site extraction for call graph
+//! - `injection` — multi-grammar injection (HTML→JS/CSS via `set_included_ranges()`)
+//! - `markdown` — heading-based Markdown parser with cross-reference extraction
 
 mod calls;
 mod chunk;
@@ -20,6 +22,12 @@ use once_cell::sync::OnceCell;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::StreamingIterator;
+
+/// Maximum file size for parsing (50 MB). Files larger than this are skipped.
+pub(crate) const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+
+/// Maximum chunk content size (100 KB). Larger chunks are skipped.
+pub(crate) const MAX_CHUNK_BYTES: usize = 100_000;
 
 /// Code parser using tree-sitter grammars
 ///
@@ -140,8 +148,7 @@ impl Parser {
     pub fn parse_file(&self, path: &Path) -> Result<Vec<Chunk>, ParserError> {
         let _span = tracing::info_span!("parse_file", path = %path.display()).entered();
 
-        // Check file size to prevent OOM on huge files (limit: 50MB)
-        const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024;
+        // Check file size to prevent OOM on huge files
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > MAX_FILE_SIZE => {
                 tracing::warn!(
@@ -168,9 +175,10 @@ impl Parser {
         // Normalize line endings (CRLF -> LF) for consistent hashing across platforms
         let source = source.replace("\r\n", "\n");
 
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = ext_raw.to_ascii_lowercase();
 
-        let language = Language::from_extension(ext)
+        let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
         // Grammar-less languages (Markdown) use custom parsers
@@ -200,7 +208,6 @@ impl Parser {
             match self.extract_chunk(&source, m, query, language, path) {
                 Ok(mut chunk) => {
                     // Skip chunks over 100KB (large functions are handled by windowing in the pipeline)
-                    const MAX_CHUNK_BYTES: usize = 100_000;
                     if chunk.content.len() > MAX_CHUNK_BYTES {
                         tracing::debug!(
                             "Skipping {} ({} bytes > {} max)",
@@ -269,6 +276,23 @@ impl Parser {
     pub fn supported_extensions(&self) -> Vec<&'static str> {
         crate::language::REGISTRY.supported_extensions().collect()
     }
+}
+
+/// Find a direct child of a tree-sitter node by kind.
+///
+/// Shared helper used by injection parsing and HTML language definition.
+#[allow(clippy::manual_find)]
+pub(crate) fn find_child_by_kind<'a>(
+    node: tree_sitter::Node<'a>,
+    kind: &str,
+) -> Option<tree_sitter::Node<'a>> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == kind {
+            return Some(child);
+        }
+    }
+    None
 }
 
 /// Find the definition node (function/struct/class/etc.) from a query match's captures.

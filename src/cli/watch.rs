@@ -238,8 +238,9 @@ fn collect_events(
         }
 
         // Skip if not a supported extension
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !supported_ext.contains(ext) {
+        let ext_raw = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = ext_raw.to_ascii_lowercase();
+        if !supported_ext.contains(ext.as_str()) {
             continue;
         }
 

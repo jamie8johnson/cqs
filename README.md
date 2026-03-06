@@ -424,7 +424,7 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 - GraphQL (types, interfaces, enums, unions, inputs, scalars, directives, operations, fragments)
 - Haskell (functions, data types, newtypes, type synonyms, typeclasses, instances)
 - HCL (resources, data sources, variables, outputs, modules, providers with qualified naming)
-- HTML (headings, semantic landmarks, script/style blocks, id'd elements)
+- HTML (headings, semantic landmarks, id'd elements; inline `<script>` extracts JS/TS functions, `<style>` extracts CSS rules via multi-grammar injection)
 - INI (sections, settings)
 - Java (classes, interfaces, enums, methods)
 - JavaScript (JSDoc `@param`/`@returns` tags improve search quality)

@@ -54,29 +54,36 @@ All 16 variants shipped and used across languages. Only one potential new varian
 
 Infrastructure for adding variants is now cheap: per-language LanguageDef fields, data-driven container extraction, dynamic callable SQL. New variant = enum arm + Display/FromStr + is_callable decision + nl.rs + capture_types.
 
-### Multi-Grammar Parsing (Architectural)
+### Multi-Grammar Parsing
 
-Parse files containing multiple embedded languages. Requires:
-- Outer grammar parses document structure, identifies embedded regions
-- Inner grammars re-parse each region with correct byte offsets
-- Merged results preserve original file positions
+Injection framework shipped in v0.26.0 (PR #540). `InjectionRule` on `LanguageDef`, two-phase `parse_file`/`parse_file_relationships` via `set_included_ranges()`.
 
-**Languages it would unlock:**
-- **Svelte** (.svelte) — JS/TS in `<script>`, CSS in `<style>`, HTML template
-- **Vue** (.vue) — same pattern as Svelte
-- **Astro** (.astro) — JS/TS frontmatter + HTML template
-- **ERB** (.erb) — Ruby embedded in HTML
-- **EEx/HEEx** (.eex, .heex) — Elixir embedded in HTML
-- **PHP-in-HTML** — our PHP support parses PHP blocks; multi-grammar adds HTML context
+**Done:**
+- [x] HTML → JavaScript (with TypeScript detection via `lang`/`type` attrs)
+- [x] HTML → CSS
 
-**Embedded language extraction (lower priority):**
-- SQL in string literals (Rust, Python, Go, Java)
-- GraphQL in tagged templates (JS/TS)
-- Regex literals (via tree-sitter-regex, compatible)
-- Shell in Makefile recipes (both grammars compatible)
-- CSS-in-JS (styled-components, emotion)
+**Next — High value (both grammars already exist):**
+- [ ] PHP → HTML → JS/CSS — chained injection. PHP `text` nodes contain HTML, then HTML's existing rules extract JS/CSS. Three-layer extraction.
 
-**Not yet designed.** Requires parser framework changes — current architecture is one grammar per file.
+**Next — New grammars required:**
+- [ ] Vue (.vue) → JS/TS, CSS, HTML — needs `tree-sitter-vue` grammar. `<script>`, `<style>`, `<template>` identical to HTML injection pattern.
+- [ ] Svelte (.svelte) → JS/TS, CSS — needs `tree-sitter-svelte` grammar. Same pattern as Vue.
+
+**Medium value (narrower scope):**
+- [ ] Markdown → fenced code blocks — custom parser, not tree-sitter. Needs different approach (parse ` ```lang ` content with target grammar).
+- [ ] LaTeX → code listings — `\begin{lstlisting}` / minted blocks → target language.
+- [ ] Nix → Bash — shell scripts in `writeShellScript`, derivation phase strings.
+- [ ] HCL → Bash — `provisioner "local-exec"` command blocks.
+- [ ] YAML → Bash — GitHub Actions `run:` blocks. Detection fragile (not all strings are scripts).
+
+**Lower priority (niche or fragile):**
+- [ ] Astro (.astro) → JS/TS + HTML — needs grammar
+- [ ] ERB (.erb) → Ruby in HTML — needs grammar
+- [ ] EEx/HEEx (.eex, .heex) → Elixir in HTML — needs grammar
+- [ ] SQL in string literals (Rust, Python, Go, Java) — fragile detection
+- [ ] GraphQL in tagged templates (JS/TS) — fragile detection
+- [ ] Shell in Makefile recipes — both grammars compatible
+- [ ] CSS-in-JS (styled-components, emotion) — template literal detection
 
 ### Parked
 
