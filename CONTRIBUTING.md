@@ -115,7 +115,7 @@ src/
     helpers.rs  - Types, embedding conversion functions
     migrations.rs - Schema migration framework
   parser/       - Code parsing (tree-sitter + custom parsers, delegates to language/ registry)
-    mod.rs      - Parser struct, parse_file(), supported_extensions()
+    mod.rs      - Parser struct, parse_file(), parse_file_all(), supported_extensions()
     types.rs    - Chunk (incl. parent_type_name), CallSite, FunctionCalls, TypeRef, ParserError
     chunk.rs    - Chunk extraction, signatures, doc comments, parent type extraction
     calls.rs    - Call graph extraction, callee filtering

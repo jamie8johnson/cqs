@@ -2,9 +2,9 @@
 
 ## Right Now
 
-**Multi-grammar parsing — merged.** 2026-03-05. PR #540.
-
-HTML files extract real JS/CSS chunks from `<script>` and `<style>` blocks using tree-sitter `set_included_ranges()`. Two-phase parsing: outer HTML grammar, then inner JS/CSS grammars. Extensible via `InjectionRule` on `LanguageDef`.
+**Multi-grammar audit complete.** 2026-03-06. All 57 findings resolved across 4 PRs:
+- P1: #541 (13 fixes), P2: #542 (13 fixes), P3: #543 (18 fixes), P4: #544 (9 fixes)
+- Key P4 deliverable: `parse_file_all()` combined method eliminates double file read/parse in watch.rs
 
 ## Pending Changes
 
@@ -35,7 +35,7 @@ None.
 
 ## Architecture
 
-- Version: 0.26.0
+- Version: 0.27.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
@@ -43,7 +43,7 @@ None.
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 46 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1465 pass, 0 failures
+- Tests: 1480 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

@@ -7,8 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-03-06
+
+Multi-grammar parsing — HTML files extract real JS/CSS chunks from embedded `<script>` and `<style>` blocks. Full 14-category audit with 57 findings resolved.
+
 ### Added
-- **Multi-grammar injection parsing** — HTML `<script>` blocks now extract real JS/TS function chunks; `<style>` blocks extract CSS rule chunks. Powered by tree-sitter's `set_included_ranges()`. `InjectionRule` on `LanguageDef` makes this extensible to other host languages (PR #540)
+- **Multi-grammar injection parsing** — HTML `<script>` blocks extract real JS/TS function chunks; `<style>` blocks extract CSS rule chunks. Powered by tree-sitter's `set_included_ranges()`. `InjectionRule` on `LanguageDef` makes this extensible to other host languages (PR #540)
+- **`parse_file_all()` combined method** — single file read + tree-sitter parse returns chunks, calls, and type refs. Eliminates double-parse in watch mode incremental reindexing (PR #544)
+- **`ParseAllResult` type alias** for combined parse results
+- **`parse_injected_all()`** — combined injection method for chunks + relationships in one inner parse
+- **`detect_script_language()`** — detects TypeScript from `<script lang="ts">` or `<script type="text/typescript">` attributes
+- End-to-end integration test for HTML injection parsing
+- Tests for malformed/unclosed `<script>` tags, `type="text/typescript"` detection
+
+### Fixed
+- 57 audit findings resolved across 4 PRs (#541-#544): deduplication, correctness, security, observability, documentation
+- `capture_name_to_chunk_type()` shared helper eliminates duplicated capture-name-to-type mapping (P1)
+- `walk_for_containers()` now owns its cursor — takes `Node` instead of `&mut TreeCursor` (P4)
+- Injection range deduplication prevents duplicate chunks from shared container kinds (P3)
+- `run_git_log_line_range()` validates colons in file paths to prevent git `-L` misparse (P3)
+- Cross-phase coupling between `parse_file` and `parse_file_relationships` documented (P4)
+
+### Changed
+- Watch mode (`reindex_files`) uses `parse_file_all()` instead of separate `parse_file` + `parse_file_relationships` calls
 
 ## [0.26.0] - 2026-03-05
 

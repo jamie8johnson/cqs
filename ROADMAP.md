@@ -56,7 +56,7 @@ Infrastructure for adding variants is now cheap: per-language LanguageDef fields
 
 ### Multi-Grammar Parsing
 
-Injection framework shipped in v0.26.0 (PR #540). `InjectionRule` on `LanguageDef`, two-phase `parse_file`/`parse_file_relationships` via `set_included_ranges()`.
+Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `LanguageDef`, `parse_file_all()` combined method for single-pass chunk + relationship extraction via `set_included_ranges()`.
 
 **Done:**
 - [x] HTML → JavaScript (with TypeScript detection via `lang`/`type` attrs)
