@@ -628,6 +628,8 @@ define_languages! {
     Cuda => "cuda", feature = "lang-cuda", module = cuda;
     /// GLSL (.glsl, .vert, .frag, .geom, .comp, .tesc, .tese files)
     Glsl => "glsl", feature = "lang-glsl", module = glsl;
+    /// Svelte (.svelte files)
+    Svelte => "svelte", feature = "lang-svelte", module = svelte;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
