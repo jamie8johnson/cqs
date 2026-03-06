@@ -1,6 +1,6 @@
 //! PHP language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{ChunkType, InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting PHP code chunks.
 ///
@@ -183,7 +183,30 @@ static DEFINITION: LanguageDef = LanguageDef {
         "__clone",
         "__invoke",
     ],
-    injections: &[],
+    injections: &[
+        // PHP files contain HTML in `text` nodes. Two patterns exist:
+        //
+        // 1. Leading HTML before first `<?php`: `program` → `text` (direct child)
+        // 2. HTML after `?>` tags: `program` → `text_interpolation` → `text`
+        //
+        // `content_scoped_lines: true` ensures only chunks within each `text`
+        // region are replaced, preserving PHP chunks on adjacent lines.
+        // HTML's own injection rules then extract JS/CSS recursively.
+        InjectionRule {
+            container_kind: "program",
+            content_kind: "text",
+            target_language: "html",
+            detect_language: None,
+            content_scoped_lines: true,
+        },
+        InjectionRule {
+            container_kind: "text_interpolation",
+            content_kind: "text",
+            target_language: "html",
+            detect_language: None,
+            content_scoped_lines: true,
+        },
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {
@@ -360,6 +383,296 @@ class Config {
         let chunks = parser.parse_file(file.path()).unwrap();
         let prop = chunks.iter().find(|c| c.chunk_type == ChunkType::Property).unwrap();
         assert_eq!(prop.name, "name", "Property name should have $ stripped");
+    }
+
+    // --- Multi-grammar injection tests ---
+
+    #[test]
+    fn parse_php_with_html_extracts_html_chunks() {
+        // PHP template with HTML content between <?php blocks
+        let content = r#"<?php
+$title = "My Page";
+?>
+<!DOCTYPE html>
+<html>
+<body>
+<h1><?php echo $title; ?></h1>
+<nav id="main-nav">
+  <a href="/">Home</a>
+</nav>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Should have HTML heading chunk
+        let html_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Html)
+            .collect();
+        assert!(
+            !html_chunks.is_empty(),
+            "Expected HTML chunks from injection, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_php_with_html_script_extracts_js() {
+        // PHP file with <script> in HTML region — 2-level chain: PHP→HTML→JS
+        let content = r#"<?php
+function getData(): array {
+    return ['key' => 'value'];
+}
+?>
+<html>
+<body>
+<script>
+function handleClick(event) {
+    const el = document.getElementById('target');
+    el.classList.toggle('active');
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Should have PHP function
+        let php_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Php)
+            .collect();
+        assert!(
+            php_chunks.iter().any(|c| c.name == "getData"),
+            "Expected PHP function 'getData', got: {:?}",
+            php_chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+
+        // Should have JS function (via recursive injection: PHP→HTML→JS)
+        let js_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::JavaScript)
+            .collect();
+        assert!(
+            js_chunks.iter().any(|c| c.name == "handleClick"),
+            "Expected JS function 'handleClick' from 2-level injection, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_php_keeps_php_chunks() {
+        // PHP functions/classes must survive injection processing
+        let content = r#"<?php
+class UserController {
+    public function index(): string {
+        return 'Hello';
+    }
+}
+?>
+<h1>Page Title</h1>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        assert!(
+            chunks.iter().any(|c| c.name == "UserController" && c.language == crate::parser::Language::Php),
+            "PHP class 'UserController' should survive injection"
+        );
+        assert!(
+            chunks.iter().any(|c| c.name == "index" && c.language == crate::parser::Language::Php),
+            "PHP method 'index' should survive injection"
+        );
+    }
+
+    #[test]
+    fn parse_php_without_html_unchanged() {
+        // Pure PHP file (no text nodes) — injection should not fire
+        let content = r#"<?php
+function purePhp(): int {
+    return 42;
+}
+
+class Standalone {
+    public function method(): void {}
+}
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // All chunks should be PHP
+        for chunk in &chunks {
+            assert_eq!(
+                chunk.language,
+                crate::parser::Language::Php,
+                "Pure PHP file should have only PHP chunks, found {:?} for '{}'",
+                chunk.language,
+                chunk.name
+            );
+        }
+        assert!(chunks.iter().any(|c| c.name == "purePhp"));
+        assert!(chunks.iter().any(|c| c.name == "Standalone"));
+    }
+
+    #[test]
+    fn parse_php_interleaved() {
+        // Interleaved PHP and HTML with embedded JS
+        let content = r#"<?php echo "start"; ?>
+<div>
+<script>
+function jsFunc() { return 1; }
+</script>
+</div>
+<?php echo "end"; ?>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // JS function should be extracted
+        let js_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::JavaScript)
+            .collect();
+        assert!(
+            js_chunks.iter().any(|c| c.name == "jsFunc"),
+            "Expected JS function 'jsFunc' from interleaved PHP, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_php_injection_call_graph() {
+        // JS call graph should be extracted from PHP→HTML→JS
+        let content = r#"<?php $x = 1; ?>
+<script>
+function caller() {
+    helper();
+}
+function helper() {
+    return 42;
+}
+</script>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let (calls, _types) = parser.parse_file_relationships(file.path()).unwrap();
+
+        let caller = calls.iter().find(|c| c.name == "caller");
+        assert!(
+            caller.is_some(),
+            "Expected call graph for 'caller' from PHP→HTML→JS, got: {:?}",
+            calls.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        let callee_names: Vec<_> = caller.unwrap().calls.iter().map(|c| c.callee_name.as_str()).collect();
+        assert!(
+            callee_names.contains(&"helper"),
+            "Expected caller→helper, got: {:?}",
+            callee_names
+        );
+    }
+
+    #[test]
+    fn parse_php_html_first() {
+        // HTML before first <?php tag — `text` is a direct child of `program`
+        let content = r#"<h1>Welcome</h1>
+<nav id="main-nav">
+  <a href="/">Home</a>
+</nav>
+<?php
+function getTitle(): string {
+    return "My Page";
+}
+?>
+<footer>End</footer>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // PHP function should exist
+        assert!(
+            chunks.iter().any(|c| c.name == "getTitle" && c.language == crate::parser::Language::Php),
+            "Expected PHP function 'getTitle'"
+        );
+
+        // HTML chunks should be extracted from both leading and trailing regions
+        let html_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Html)
+            .collect();
+        assert!(
+            !html_chunks.is_empty(),
+            "Expected HTML chunks from file with leading HTML, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_php_injection_depth_limit() {
+        // Verify that injection doesn't crash or produce garbage with normal PHP files.
+        // The depth limit (MAX_INJECTION_DEPTH=3) should never be reached in practice
+        // since PHP→HTML→JS is only depth 2. This test ensures the recursive machinery
+        // handles the deepest real-world chain (PHP→HTML→JS/CSS) without issues.
+        let content = r#"<?php
+class App {
+    public function render(): string {
+        return '<html>';
+    }
+}
+?>
+<html>
+<head>
+<style>
+body { color: red; }
+.container { margin: 0 auto; }
+</style>
+</head>
+<body>
+<script>
+function init() {
+    document.querySelector('.container');
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "php");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        // Should have PHP, JS, and CSS chunks — full 3-level chain
+        let php_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Php)
+            .collect();
+        let js_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::JavaScript)
+            .collect();
+        let css_chunks: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::Css)
+            .collect();
+
+        assert!(!php_chunks.is_empty(), "Expected PHP chunks");
+        assert!(
+            js_chunks.iter().any(|c| c.name == "init"),
+            "Expected JS function 'init' from PHP→HTML→JS chain, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
+        assert!(
+            !css_chunks.is_empty(),
+            "Expected CSS chunks from PHP→HTML→CSS chain, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
+        );
     }
 
     #[test]

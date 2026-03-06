@@ -386,7 +386,7 @@ impl Parser {
             drop(tree);
             drop(parser);
             for group in &groups {
-                match self.parse_injected_relationships(&source, group) {
+                match self.parse_injected_relationships(&source, group, 0) {
                     Ok((inner_calls, inner_types))
                         if !inner_calls.is_empty() || !inner_types.is_empty() =>
                     {

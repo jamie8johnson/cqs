@@ -1,15 +1,13 @@
 //! Multi-grammar injection parsing
 //!
-//! Implements two-phase parsing for files containing embedded languages:
-//! 1. Parse the outer grammar (e.g., HTML)
-//! 2. Find injection regions (e.g., `<script>`, `<style>`)
-//! 3. Re-parse those regions with inner grammars (e.g., JavaScript, CSS)
+//! Implements recursive parsing for files containing embedded languages:
+//! 1. Parse the outer grammar (e.g., PHP)
+//! 2. Find injection regions (e.g., `text` nodes containing HTML)
+//! 3. Re-parse those regions with inner grammars (e.g., HTML)
+//! 4. If the inner language has its own injection rules, recurse (e.g., HTML→JS/CSS)
 //!
 //! Uses tree-sitter's `set_included_ranges()` for byte-accurate inner parsing.
-//!
-//! **Limitation:** Injection is single-level only. Inner languages are not
-//! checked for their own injection rules (e.g., PHP→HTML→JS would require
-//! recursive injection, which is not yet implemented).
+//! Recursion is bounded by `MAX_INJECTION_DEPTH` (default: 3).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,6 +24,10 @@ use crate::language::InjectionRule;
 /// Maximum number of injection ranges per file. Prevents OOM from crafted
 /// files with millions of tiny injection containers (e.g., `<script>` blocks).
 const MAX_INJECTION_RANGES: usize = 1000;
+
+/// Maximum depth for recursive injection. Prevents infinite loops and bounds
+/// the cost of chained injection (e.g., PHP→HTML→JS is depth 2).
+const MAX_INJECTION_DEPTH: usize = 3;
 
 /// Result of scanning an outer tree for injection regions.
 ///
@@ -176,10 +178,22 @@ fn walk_for_containers(
 
                             // Safe: row count fits u32 because MAX_FILE_SIZE (50MB) limits
                             // files to ~50M lines at minimum 1 byte/line, well within u32::MAX.
-                            let container_lines = (
-                                node.start_position().row as u32 + 1,
-                                node.end_position().row as u32 + 1,
-                            );
+                            //
+                            // content_scoped_lines: use the content child's line range instead
+                            // of the container's. Required for PHP where container is `program`
+                            // (entire file) but we only want to replace chunks within each
+                            // individual `text` region.
+                            let container_lines = if rule.content_scoped_lines {
+                                (
+                                    child.start_position().row as u32 + 1,
+                                    child.end_position().row as u32 + 1,
+                                )
+                            } else {
+                                (
+                                    node.start_position().row as u32 + 1,
+                                    node.end_position().row as u32 + 1,
+                                )
+                            };
 
                             entries.push((target, range, container_lines));
                         }
@@ -249,17 +263,23 @@ impl Parser {
     ///
     /// Creates a new tree-sitter parser, sets included ranges, parses the source,
     /// and extracts chunks using the inner language's query.
+    ///
+    /// Supports recursive injection: if the inner language has its own injection
+    /// rules and `depth < MAX_INJECTION_DEPTH`, nested injections are processed.
+    /// For example, PHP→HTML→JS requires depth 2.
     pub(crate) fn parse_injected_chunks(
         &self,
         source: &str,
         path: &Path,
         group: &InjectionGroup,
+        depth: usize,
     ) -> Result<Vec<Chunk>, ParserError> {
         let inner_language = group.language;
         let _span = tracing::info_span!(
             "parse_injected_chunks",
             language = %inner_language,
             range_count = group.ranges.len(),
+            depth = depth,
             path = %path.display()
         )
         .entered();
@@ -335,14 +355,56 @@ impl Parser {
             );
         }
 
+        // --- Recursive injection ---
+        // If the inner language has its own injection rules (e.g., HTML has
+        // script→JS/style→CSS), recurse to extract nested embedded chunks.
+        let inner_rules = inner_language.def().injections;
+        if !inner_rules.is_empty() && depth < MAX_INJECTION_DEPTH {
+            let nested_groups = find_injection_ranges(&tree, source, inner_rules);
+            if !nested_groups.is_empty() {
+                let _nested_span = tracing::debug_span!(
+                    "recursive_injection",
+                    depth = depth + 1,
+                    language = %inner_language,
+                    groups = nested_groups.len()
+                )
+                .entered();
+
+                for nested_group in &nested_groups {
+                    let nested_chunks =
+                        self.parse_injected_chunks(source, path, nested_group, depth + 1)?;
+                    if !nested_chunks.is_empty() {
+                        // Remove inner chunks that fall within nested containers
+                        chunks.retain(|c| {
+                            !chunk_within_container(
+                                c.line_start,
+                                c.line_end,
+                                &nested_group.container_lines,
+                            )
+                        });
+                        chunks.extend(nested_chunks);
+                    }
+                }
+            }
+        } else if !inner_rules.is_empty() {
+            tracing::debug!(
+                depth = depth,
+                language = %inner_language,
+                "Injection depth limit reached, skipping nested rules"
+            );
+        }
+
         Ok(chunks)
     }
 
     /// Parse injected relationships (calls + types) from byte ranges.
+    ///
+    /// Supports recursive injection via `depth` parameter.
     pub(crate) fn parse_injected_relationships(
         &self,
         source: &str,
         group: &InjectionGroup,
+        depth: usize,
     ) -> Result<(Vec<FunctionCalls>, Vec<ChunkTypeRefs>), ParserError> {
         let inner_language = group.language;
         let _span = tracing::info_span!(
@@ -487,6 +549,18 @@ impl Parser {
             "Injection extracted relationships"
         );
 
+        // --- Recursive injection for relationships ---
+        let inner_rules = inner_language.def().injections;
+        if !inner_rules.is_empty() && depth < MAX_INJECTION_DEPTH {
+            let nested_groups = find_injection_ranges(&tree, source, inner_rules);
+            for nested_group in &nested_groups {
+                let (nested_calls, nested_types) =
+                    self.parse_injected_relationships(source, nested_group, depth + 1)?;
+                call_results.extend(nested_calls);
+                type_results.extend(nested_types);
+            }
+        }
+
         Ok((call_results, type_results))
     }
 
@@ -496,12 +570,14 @@ impl Parser {
     /// 1. Chunk extraction (same as `parse_injected_chunks`)
     /// 2. Relationship extraction (same as `parse_injected_relationships`)
     ///
+    /// Supports recursive injection via `depth` parameter.
     /// Used by `parse_file_all()` to avoid double-parsing injection regions.
     pub(crate) fn parse_injected_all(
         &self,
         source: &str,
         path: &Path,
         group: &InjectionGroup,
+        depth: usize,
     ) -> Result<super::ParseAllResult, ParserError> {
         let inner_language = group.language;
         let _span = tracing::info_span!(
@@ -685,6 +761,44 @@ impl Parser {
             types = type_results.len(),
             "Injection extracted all"
         );
+
+        // --- Recursive injection ---
+        let inner_rules = inner_language.def().injections;
+        if !inner_rules.is_empty() && depth < MAX_INJECTION_DEPTH {
+            let nested_groups = find_injection_ranges(&tree, source, inner_rules);
+            if !nested_groups.is_empty() {
+                let _nested_span = tracing::debug_span!(
+                    "recursive_injection_all",
+                    depth = depth + 1,
+                    language = %inner_language,
+                    groups = nested_groups.len()
+                )
+                .entered();
+
+                for nested_group in &nested_groups {
+                    let (nested_chunks, nested_calls, nested_types) =
+                        self.parse_injected_all(source, path, nested_group, depth + 1)?;
+                    if !nested_chunks.is_empty() {
+                        chunks.retain(|c| {
+                            !chunk_within_container(
+                                c.line_start,
+                                c.line_end,
+                                &nested_group.container_lines,
+                            )
+                        });
+                        chunks.extend(nested_chunks);
+                    }
+                    call_results.extend(nested_calls);
+                    type_results.extend(nested_types);
+                }
+            }
+        } else if !inner_rules.is_empty() {
+            tracing::debug!(
+                depth = depth,
+                language = %inner_language,
+                "Injection depth limit reached, skipping nested rules"
+            );
+        }
 
         Ok((chunks, call_results, type_results))
     }

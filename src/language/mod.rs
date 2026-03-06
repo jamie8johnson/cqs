@@ -171,6 +171,11 @@ pub struct InjectionRule {
     pub target_language: &'static str,
     /// Optional: detect language from container attributes (e.g., `<script lang="ts">`)
     pub detect_language: Option<fn(tree_sitter::Node, &str) -> Option<&'static str>>,
+    /// When true, `container_lines` derives from each content child's line range
+    /// instead of the container's line range. Required for languages like PHP where
+    /// the container is `program` (entire file) but content is individual `text`
+    /// nodes between `<?php ... ?>` blocks.
+    pub content_scoped_lines: bool,
 }
 
 /// A language definition with all parsing configuration

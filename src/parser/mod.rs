@@ -265,7 +265,7 @@ impl Parser {
             drop(parser);
 
             for group in &groups {
-                match self.parse_injected_chunks(&source, path, group) {
+                match self.parse_injected_chunks(&source, path, group, 0) {
                     Ok(inner_chunks) if !inner_chunks.is_empty() => {
                         let before = chunks.len();
                         // Remove outer chunks that overlap with injection containers
@@ -517,7 +517,7 @@ impl Parser {
             drop(parser);
 
             for group in &groups {
-                match self.parse_injected_all(&source, path, group) {
+                match self.parse_injected_all(&source, path, group, 0) {
                     Ok((inner_chunks, inner_calls, inner_types))
                         if !inner_chunks.is_empty()
                             || !inner_calls.is_empty()

@@ -124,7 +124,7 @@ fn post_process_html(
 }
 
 /// Find a direct child node by kind.
-fn find_child_by_kind<'a>(
+pub(crate) fn find_child_by_kind<'a>(
     node: tree_sitter::Node<'a>,
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
@@ -132,7 +132,7 @@ fn find_child_by_kind<'a>(
 }
 
 /// Find an attribute's value within a start_tag node.
-fn find_attribute_value(start_tag: tree_sitter::Node, attr_name: &str, source: &str) -> Option<String> {
+pub(crate) fn find_attribute_value(start_tag: tree_sitter::Node, attr_name: &str, source: &str) -> Option<String> {
     let mut cursor = start_tag.walk();
     for child in start_tag.children(&mut cursor) {
         if child.kind() == "attribute" {
@@ -189,7 +189,9 @@ fn extract_return(_signature: &str) -> Option<String> {
 ///
 /// Checks for `lang="ts"`, `type="text/typescript"`, or similar attributes
 /// that indicate TypeScript instead of the default JavaScript.
-fn detect_script_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
+///
+/// Shared between HTML and Svelte — both use `<script lang="ts">` for TypeScript.
+pub(crate) fn detect_script_language(node: tree_sitter::Node, source: &str) -> Option<&'static str> {
     // Find the start_tag child
     let start_tag = find_child_by_kind(node, "start_tag")?;
 
@@ -258,12 +260,14 @@ static DEFINITION: LanguageDef = LanguageDef {
             content_kind: "raw_text",
             target_language: "javascript",
             detect_language: Some(detect_script_language),
+            content_scoped_lines: false,
         },
         InjectionRule {
             container_kind: "style_element",
             content_kind: "raw_text",
             target_language: "css",
             detect_language: None,
+            content_scoped_lines: false,
         },
     ],
 };
