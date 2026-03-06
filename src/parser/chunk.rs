@@ -96,6 +96,9 @@ impl Parser {
         }
 
         // Content hash for deduplication (BLAKE3 produces 64 hex chars)
+        // ID collision requires same path + line_start + 8-hex-char prefix (32 bits).
+        // For injection, outer container chunks at the same line are REMOVED before
+        // inner chunks are added, so no collision between outer/inner at the same line.
         let content_hash = blake3::hash(content.as_bytes()).to_hex().to_string();
         let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
         let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);

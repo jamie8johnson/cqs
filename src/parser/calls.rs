@@ -212,6 +212,11 @@ impl Parser {
     ///
     /// Returns `(calls, type_refs)` for every chunk in the file. Single file read,
     /// single tree-sitter parse, two query cursors on the same tree.
+    ///
+    /// **Coupling note:** This function and `parse_file()` must agree on line numbering
+    /// (`node.start_position().row as u32 + 1`) and chunk identity (same query, same
+    /// post-process hooks). If either changes, the other must be updated to keep
+    /// chunk names and line_start values consistent across phases.
     pub fn parse_file_relationships(
         &self,
         path: &Path,

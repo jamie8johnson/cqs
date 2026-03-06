@@ -69,15 +69,15 @@ Audit date: 2026-03-06. 14 categories, 3 batches, ~50 unique findings (some over
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 49 | Double-read + double-parse of every file during full index (parse_file + parse_file_relationships) | Performance | mod.rs, calls.rs | |
-| 50 | Per-call Parser allocations in rayon parallel injection stage — memory amplification | Platform Behavior, Performance | injection.rs:206-210, 305-310 | |
-| 51 | Two-pass write architecture (store → relationships) — crash between passes leaves stale edges | Data Safety | store/types.rs:106-184 | |
-| 52 | Chunk ID collision between outer and injected chunks (theoretical, 32-bit hash) | Data Safety | chunk.rs:101 | |
-| 53 | u32 arithmetic overflow in container_lines (theoretical, prevented by 50MB file limit) | Robustness | injection.rs:130-131 | |
-| 54 | No end-to-end integration test (parse → embed → store → search for injected chunks) | Test Coverage | — | |
-| 55 | No tests for malformed/unclosed `<script>` tags | Test Coverage | — | |
-| 56 | Cross-phase line_start dependency between parse_file and parse_file_relationships undocumented | Algorithm Correctness | — | |
-| 57 | `cursor.reset(root)` responsibility in caller, not callee — fragile | Algorithm Correctness | injection.rs walk_for_containers | |
+| 49 | Double-read + double-parse of every file during full index (parse_file + parse_file_relationships) | Performance | mod.rs, calls.rs | ✅ fixed — `parse_file_all()` combined method; watch.rs uses it; pipeline documented |
+| 50 | Per-call Parser allocations in rayon parallel injection stage — memory amplification | Platform Behavior, Performance | injection.rs:206-210, 305-310 | ✅ documented — Parser::new() is ~32 bytes, intentional |
+| 51 | Two-pass write architecture (store → relationships) — crash between passes leaves stale edges | Data Safety | store/types.rs:106-184 | ✅ documented — intentional; stale edges overwritten on next reindex |
+| 52 | Chunk ID collision between outer and injected chunks (theoretical, 32-bit hash) | Data Safety | chunk.rs:101 | ✅ documented — outer chunks removed before inner added |
+| 53 | u32 arithmetic overflow in container_lines (theoretical, prevented by 50MB file limit) | Robustness | injection.rs:130-131 | ✅ documented — invariant comment added |
+| 54 | No end-to-end integration test (parse → embed → store → search for injected chunks) | Test Coverage | — | ✅ fixed — test_html_injection_end_to_end in parser_test.rs |
+| 55 | No tests for malformed/unclosed `<script>` tags | Test Coverage | — | ✅ fixed — parse_html_with_unclosed_script in html.rs |
+| 56 | Cross-phase line_start dependency between parse_file and parse_file_relationships undocumented | Algorithm Correctness | — | ✅ fixed — coupling doc comment on parse_file_relationships |
+| 57 | `cursor.reset(root)` responsibility in caller, not callee — fragile | Algorithm Correctness | injection.rs walk_for_containers | ✅ fixed — walk_for_containers now takes Node, owns its cursor |
 
 ## Overlap Notes
 
