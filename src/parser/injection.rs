@@ -6,6 +6,10 @@
 //! 3. Re-parse those regions with inner grammars (e.g., JavaScript, CSS)
 //!
 //! Uses tree-sitter's `set_included_ranges()` for byte-accurate inner parsing.
+//!
+//! **Limitation:** Injection is single-level only. Inner languages are not
+//! checked for their own injection rules (e.g., PHP→HTML→JS would require
+//! recursive injection, which is not yet implemented).
 
 use std::path::Path;
 
@@ -17,6 +21,10 @@ use super::types::{
 };
 use super::Parser;
 use crate::language::InjectionRule;
+
+/// Maximum number of injection ranges per file. Prevents OOM from crafted
+/// files with millions of tiny injection containers (e.g., `<script>` blocks).
+const MAX_INJECTION_RANGES: usize = 1000;
 
 /// Result of scanning an outer tree for injection regions.
 ///
@@ -57,6 +65,16 @@ pub(crate) fn find_injection_ranges(
 
     if entries.is_empty() {
         return vec![];
+    }
+
+    // Cap injection ranges to prevent OOM from crafted files
+    if entries.len() > MAX_INJECTION_RANGES {
+        tracing::warn!(
+            count = entries.len(),
+            limit = MAX_INJECTION_RANGES,
+            "Too many injection ranges, truncating to limit"
+        );
+        entries.truncate(MAX_INJECTION_RANGES);
     }
 
     // Group by language name
@@ -110,36 +128,39 @@ fn walk_for_containers(
         let node = cursor.node();
 
         if node.kind() == rule.container_kind {
-            // Found a container — look for the content child
-            if let Some(content_node) = find_content_child(node, rule.content_kind) {
-                // Skip empty content
-                let byte_range = content_node.byte_range();
-                if byte_range.start < byte_range.end {
-                    // Determine target language
-                    let target = if let Some(detect) = rule.detect_language {
-                        detect(node, source).unwrap_or(rule.target_language)
-                    } else {
-                        rule.target_language
-                    };
+            // Determine target language (once per container)
+            let target = if let Some(detect) = rule.detect_language {
+                detect(node, source).unwrap_or(rule.target_language)
+            } else {
+                rule.target_language
+            };
 
-                    // Skip non-parseable content (e.g., JSON-LD, shader scripts)
-                    if target == "_skip" {
-                        continue;
+            // Skip non-parseable content (e.g., JSON-LD, shader scripts)
+            if target == "_skip" {
+                // Fall through to the sibling-advance logic below
+            } else {
+                // Collect ALL matching content children (error recovery may split
+                // raw_text into multiple nodes)
+                let mut child_cursor = node.walk();
+                for child in node.children(&mut child_cursor) {
+                    if child.kind() == rule.content_kind {
+                        let byte_range = child.byte_range();
+                        if byte_range.start < byte_range.end {
+                            let range = tree_sitter::Range {
+                                start_byte: byte_range.start,
+                                end_byte: byte_range.end,
+                                start_point: child.start_position(),
+                                end_point: child.end_position(),
+                            };
+
+                            let container_lines = (
+                                node.start_position().row as u32 + 1,
+                                node.end_position().row as u32 + 1,
+                            );
+
+                            entries.push((target, range, container_lines));
+                        }
                     }
-
-                    let range = tree_sitter::Range {
-                        start_byte: byte_range.start,
-                        end_byte: byte_range.end,
-                        start_point: content_node.start_position(),
-                        end_point: content_node.end_position(),
-                    };
-
-                    let container_lines = (
-                        node.start_position().row as u32 + 1,
-                        node.end_position().row as u32 + 1,
-                    );
-
-                    entries.push((target, range, container_lines));
                 }
             }
             // Don't descend into containers — skip to next sibling
@@ -175,14 +196,6 @@ fn walk_for_containers(
             }
         }
     }
-}
-
-/// Find a direct child of `node` with the given kind.
-fn find_content_child<'a>(
-    node: tree_sitter::Node<'a>,
-    content_kind: &str,
-) -> Option<tree_sitter::Node<'a>> {
-    super::find_child_by_kind(node, content_kind)
 }
 
 /// Build an inner tree-sitter parse tree for injection ranges.
@@ -330,11 +343,17 @@ impl Parser {
             }
         };
 
+        // Call query is optional — some languages (e.g., CSS) don't define one.
+        // Proceed with type extraction even if call query is unavailable.
         let call_query = match self.get_call_query(inner_language) {
-            Ok(q) => q,
-            Err(_) => {
-                // No call query is not unusual (some languages don't have one)
-                return Ok((vec![], vec![]));
+            Ok(q) => Some(q),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    language = %inner_language,
+                    "No call query for injection language, skipping call extraction"
+                );
+                None
             }
         };
 
@@ -383,37 +402,39 @@ impl Parser {
             let line_start = node.start_position().row as u32 + 1;
             let byte_range = node.byte_range();
 
-            // --- Call extraction ---
-            call_cursor.set_byte_range(byte_range.clone());
-            calls.clear();
+            // --- Call extraction (if query available) ---
+            if let Some(call_query) = call_query {
+                call_cursor.set_byte_range(byte_range.clone());
+                calls.clear();
 
-            let mut call_matches =
-                call_cursor.matches(call_query, tree.root_node(), source.as_bytes());
+                let mut call_matches =
+                    call_cursor.matches(call_query, tree.root_node(), source.as_bytes());
 
-            while let Some(cm) = call_matches.next() {
-                for cap in cm.captures {
-                    let callee_name = source[cap.node.byte_range()].to_string();
-                    let call_line = cap.node.start_position().row as u32 + 1;
+                while let Some(cm) = call_matches.next() {
+                    for cap in cm.captures {
+                        let callee_name = source[cap.node.byte_range()].to_string();
+                        let call_line = cap.node.start_position().row as u32 + 1;
 
-                    if !super::calls::should_skip_callee(&callee_name) {
-                        calls.push(super::types::CallSite {
-                            callee_name,
-                            line_number: call_line,
-                        });
+                        if !super::calls::should_skip_callee(&callee_name) {
+                            calls.push(super::types::CallSite {
+                                callee_name,
+                                line_number: call_line,
+                            });
+                        }
                     }
                 }
-            }
 
-            // Deduplicate calls
-            seen.clear();
-            calls.retain(|c| seen.insert(c.callee_name.clone()));
+                // Deduplicate calls
+                seen.clear();
+                calls.retain(|c| seen.insert(c.callee_name.clone()));
 
-            if !calls.is_empty() {
-                call_results.push(FunctionCalls {
-                    name: name.clone(),
-                    line_start,
-                    calls: std::mem::take(&mut calls),
-                });
+                if !calls.is_empty() {
+                    call_results.push(FunctionCalls {
+                        name: name.clone(),
+                        line_start,
+                        calls: std::mem::take(&mut calls),
+                    });
+                }
             }
 
             // --- Type extraction ---
@@ -440,11 +461,15 @@ impl Parser {
     }
 }
 
-/// Check if an outer chunk overlaps with any injection container line range.
+/// Check if an outer chunk is fully contained within any injection container.
+///
+/// Returns `true` if the chunk's line range `[chunk_start, chunk_end]` is
+/// entirely within some container's `[start, end]`. This is strict containment,
+/// not overlap — a chunk that partially overlaps a container is NOT matched.
 ///
 /// Used to identify outer chunks (e.g., HTML Module chunks for script/style)
 /// that should be replaced by inner chunks when injection parsing succeeds.
-pub(crate) fn chunk_overlaps_container(
+pub(crate) fn chunk_within_container(
     chunk_start: u32,
     chunk_end: u32,
     container_lines: &[(u32, u32)],
@@ -452,4 +477,82 @@ pub(crate) fn chunk_overlaps_container(
     container_lines
         .iter()
         .any(|&(start, end)| chunk_start >= start && chunk_end <= end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod chunk_within_container_tests {
+        use super::*;
+
+        #[test]
+        fn fully_contained() {
+            // Chunk lines 5-10 inside container 3-15
+            assert!(chunk_within_container(5, 10, &[(3, 15)]));
+        }
+
+        #[test]
+        fn exact_match() {
+            // Chunk exactly matches container boundaries
+            assert!(chunk_within_container(3, 15, &[(3, 15)]));
+        }
+
+        #[test]
+        fn start_boundary() {
+            // Chunk starts at container start
+            assert!(chunk_within_container(3, 10, &[(3, 15)]));
+        }
+
+        #[test]
+        fn end_boundary() {
+            // Chunk ends at container end
+            assert!(chunk_within_container(10, 15, &[(3, 15)]));
+        }
+
+        #[test]
+        fn not_contained_before() {
+            // Chunk entirely before container
+            assert!(!chunk_within_container(1, 2, &[(3, 15)]));
+        }
+
+        #[test]
+        fn not_contained_after() {
+            // Chunk entirely after container
+            assert!(!chunk_within_container(16, 20, &[(3, 15)]));
+        }
+
+        #[test]
+        fn partial_overlap_start() {
+            // Chunk starts before container — NOT contained (strict containment)
+            assert!(!chunk_within_container(1, 5, &[(3, 15)]));
+        }
+
+        #[test]
+        fn partial_overlap_end() {
+            // Chunk ends after container — NOT contained
+            assert!(!chunk_within_container(10, 20, &[(3, 15)]));
+        }
+
+        #[test]
+        fn empty_containers() {
+            assert!(!chunk_within_container(5, 10, &[]));
+        }
+
+        #[test]
+        fn multiple_containers() {
+            // Second container matches
+            let containers = vec![(1, 3), (10, 20), (30, 40)];
+            assert!(chunk_within_container(12, 18, &containers));
+            // Not in any container
+            assert!(!chunk_within_container(5, 8, &containers));
+        }
+
+        #[test]
+        fn single_line_chunk() {
+            // start == end (e.g., FunctionCalls with only line_start)
+            assert!(chunk_within_container(5, 5, &[(3, 15)]));
+            assert!(!chunk_within_container(2, 2, &[(3, 15)]));
+        }
+    }
 }

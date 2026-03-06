@@ -100,7 +100,7 @@ impl Parser {
             let grammar = language.grammar();
             let pattern = language.query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
-                ParserError::QueryCompileFailed(language.to_string(), format!("{:?}", e))
+                ParserError::QueryCompileFailed(language.to_string(), format!("{}", e))
             })
         })
     }
@@ -118,7 +118,7 @@ impl Parser {
             let grammar = language.grammar();
             let pattern = language.call_query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
-                ParserError::QueryCompileFailed(format!("{}_calls", language), format!("{:?}", e))
+                ParserError::QueryCompileFailed(format!("{}_calls", language), format!("{}", e))
             })
         })
     }
@@ -136,7 +136,7 @@ impl Parser {
             let grammar = language.grammar();
             let pattern = language.type_query_pattern();
             tree_sitter::Query::new(&grammar, pattern).map_err(|e| {
-                ParserError::QueryCompileFailed(format!("{}_types", language), format!("{:?}", e))
+                ParserError::QueryCompileFailed(format!("{}_types", language), format!("{}", e))
             })
         })
     }
@@ -190,7 +190,7 @@ impl Parser {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar)
-            .map_err(|e| ParserError::ParseFailed(format!("{:?}", e)))?;
+            .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
         let tree = parser
             .parse(&source, None)
@@ -248,7 +248,7 @@ impl Parser {
                     Ok(inner_chunks) if !inner_chunks.is_empty() => {
                         // Remove outer chunks that overlap with injection containers
                         chunks.retain(|c| {
-                            !injection::chunk_overlaps_container(
+                            !injection::chunk_within_container(
                                 c.line_start,
                                 c.line_end,
                                 &group.container_lines,

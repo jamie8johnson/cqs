@@ -330,6 +330,14 @@ pub fn add_reference_to_config(
     let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
     let serialized = toml::to_string_pretty(&table)?;
     std::fs::write(&tmp_path, &serialized)?;
+
+    // Restrict permissions BEFORE rename so the file is never world-readable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
     if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
         if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
             let _ = std::fs::remove_file(&tmp_path);
@@ -340,13 +348,6 @@ pub fn add_reference_to_config(
             );
         }
         let _ = std::fs::remove_file(&tmp_path);
-    }
-
-    // Restrict permissions — config may contain paths revealing project structure
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
     }
 
     // lock_file dropped here, releasing exclusive lock
@@ -399,6 +400,14 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
         let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
         let serialized = toml::to_string_pretty(&table)?;
         std::fs::write(&tmp_path, &serialized)?;
+
+        // Restrict permissions BEFORE rename so the file is never world-readable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        }
+
         if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
             if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
                 let _ = std::fs::remove_file(&tmp_path);
@@ -409,12 +418,6 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
                 );
             }
             let _ = std::fs::remove_file(&tmp_path);
-        }
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600));
         }
     }
     // lock_file dropped here, releasing exclusive lock

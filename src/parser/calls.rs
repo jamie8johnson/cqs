@@ -28,13 +28,17 @@ impl Parser {
 
         let grammar = language.grammar();
         let mut parser = tree_sitter::Parser::new();
-        if parser.set_language(&grammar).is_err() {
+        if let Err(e) = parser.set_language(&grammar) {
+            tracing::warn!(error = ?e, %language, "set_language failed in extract_calls");
             return vec![];
         }
 
         let tree = match parser.parse(source, None) {
             Some(t) => t,
-            None => return vec![],
+            None => {
+                tracing::warn!(%language, "tree-sitter parse returned None in extract_calls");
+                return vec![];
+            }
         };
 
         let query = match self.get_call_query(language) {
@@ -248,13 +252,15 @@ impl Parser {
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar)
-            .map_err(|e| ParserError::ParseFailed(format!("{:?}", e)))?;
+            .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
         let tree = parser
             .parse(&source, None)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
-        // Get or compile queries (lazy initialization)
+        // Get or compile queries (lazy initialization).
+        // Invariant: all grammar-bearing languages have chunk and call query patterns
+        // (may be empty strings, which compile to valid queries matching nothing).
         let chunk_query = self.get_query(language)?;
         let call_query = self.get_call_query(language)?;
 
@@ -365,14 +371,14 @@ impl Parser {
                     {
                         // Remove outer container entries (matching parse_file's chunk removal)
                         call_results.retain(|fc| {
-                            !super::injection::chunk_overlaps_container(
+                            !super::injection::chunk_within_container(
                                 fc.line_start,
                                 fc.line_start, // calls have no line_end, use start for containment
                                 &group.container_lines,
                             )
                         });
                         type_results.retain(|tr| {
-                            !super::injection::chunk_overlaps_container(
+                            !super::injection::chunk_within_container(
                                 tr.line_start,
                                 tr.line_start,
                                 &group.container_lines,

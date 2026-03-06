@@ -253,6 +253,14 @@ pub fn rewrite_notes_file(
             format!("{}: {}", tmp_path.display(), e),
         ))
     })?;
+
+    // Restrict permissions BEFORE rename so the file is never world-readable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+
     if let Err(rename_err) = std::fs::rename(&tmp_path, notes_path) {
         // Rename can fail with EXDEV on cross-device (Docker overlayfs, some CI).
         // Fall back to copy + remove.

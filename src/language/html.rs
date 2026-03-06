@@ -685,6 +685,74 @@ function helper() {
     }
 
     #[test]
+    fn parse_html_with_type_text_typescript() {
+        // type="text/typescript" should also trigger TypeScript parsing
+        let content = r#"<html>
+<body>
+<script type="text/typescript">
+function typedFunc(x: number): string {
+    return String(x);
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+
+        let ts_funcs: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.language == crate::parser::Language::TypeScript)
+            .collect();
+        assert!(
+            ts_funcs.iter().any(|c| c.name == "typedFunc"),
+            "Expected TypeScript function from type=\"text/typescript\", got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, &c.language))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn injection_type_refs_extracted() {
+        // TypeScript inside HTML should produce type references
+        let content = r#"<html>
+<body>
+<script lang="ts">
+function process(config: Config): StoreError {
+    return {} as StoreError;
+}
+</script>
+</body>
+</html>
+"#;
+        let file = write_temp_file(content, "html");
+        let parser = Parser::new().unwrap();
+        let (_calls, types) = parser.parse_file_relationships(file.path()).unwrap();
+
+        // Should have type refs from the injected TypeScript
+        let process_types = types.iter().find(|t| t.name == "process");
+        assert!(
+            process_types.is_some(),
+            "Expected type refs for 'process', got names: {:?}",
+            types.iter().map(|t| &t.name).collect::<Vec<_>>()
+        );
+        let refs = &process_types.unwrap().type_refs;
+        assert!(
+            refs.iter().any(|t| t.type_name == "Config"),
+            "Expected Config type ref, got: {:?}",
+            refs
+        );
+        assert!(
+            refs.iter().any(|t| t.type_name == "StoreError"),
+            "Expected StoreError type ref, got: {:?}",
+            refs
+        );
+    }
+
+    #[test]
     fn injection_ranges_empty_for_non_injection_language() {
         // Rust files have no injection rules — should return empty
         let content = "fn main() {}\n";

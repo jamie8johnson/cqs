@@ -24,19 +24,19 @@ Audit date: 2026-03-06. 14 categories, 3 batches, ~50 unique findings (some over
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 14 | Unbounded injection range count — crafted HTML with millions of tiny `<script>` blocks causes OOM | Security | injection.rs:83-94 | |
-| 15 | `parse_injected_relationships` early-returns on call query failure, skipping independent type extraction | Robustness, Error Handling | injection.rs:340-346 | |
-| 16 | `chunk_overlaps_container` is strict containment, not overlap — misnamed and will cause double-coverage for future hosts | Algorithm Correctness, Data Safety | injection.rs:486-494 | |
-| 17 | Chained injection silently ignored — `parse_injected_chunks` never checks inner language's injections (blocks PHP→HTML→JS) | Extensibility | injection.rs | |
-| 18 | `extract_calls` silently discards `set_language` and parse failures without logging | Error Handling | calls.rs:30-37 | |
-| 19 | `get_query`/`get_call_query`/`get_type_query` use `{:?}` instead of `{}` for error formatting | Error Handling | mod.rs:95, 113, 131 | |
-| 20 | `parse_injected_relationships` `get_call_query` Err arm drops real errors with misleading comment | Error Handling | injection.rs:340-346 | |
-| 21 | `parse_file_relationships` relies on undocumented invariant that empty query patterns compile | Error Handling | calls.rs:258 | |
-| 22 | `find_content_child` returns only first matching child — split `raw_text` from error recovery skipped | Algorithm Correctness | injection.rs find_content_child | |
-| 23 | `chunk_overlaps_container` has no unit tests — boundary conditions untested | Test Coverage | injection.rs:486-494 | |
-| 24 | Injected type references (`ChunkTypeRefs`) never asserted in tests | Test Coverage | injection.rs tests | |
-| 25 | `detect_script_language` — `type="text/typescript"` branch untested | Test Coverage | html.rs tests | |
-| 26 | Temp files written with umask-derived permissions before `chmod` applied; `note.rs` never `chmod`s | Security | audit.rs:119, config.rs:332, note.rs:250 | |
+| 14 | Unbounded injection range count — crafted HTML with millions of tiny `<script>` blocks causes OOM | Security | injection.rs:83-94 | ✅ fixed |
+| 15 | `parse_injected_relationships` early-returns on call query failure, skipping independent type extraction | Robustness, Error Handling | injection.rs:340-346 | ✅ fixed |
+| 16 | `chunk_overlaps_container` is strict containment, not overlap — misnamed and will cause double-coverage for future hosts | Algorithm Correctness, Data Safety | injection.rs:486-494 | ✅ fixed |
+| 17 | Chained injection silently ignored — `parse_injected_chunks` never checks inner language's injections (blocks PHP→HTML→JS) | Extensibility | injection.rs | ✅ fixed |
+| 18 | `extract_calls` silently discards `set_language` and parse failures without logging | Error Handling | calls.rs:30-37 | ✅ fixed |
+| 19 | `get_query`/`get_call_query`/`get_type_query` use `{:?}` instead of `{}` for error formatting | Error Handling | mod.rs:95, 113, 131 | ✅ fixed |
+| 20 | `parse_injected_relationships` `get_call_query` Err arm drops real errors with misleading comment | Error Handling | injection.rs:340-346 | ✅ fixed |
+| 21 | `parse_file_relationships` relies on undocumented invariant that empty query patterns compile | Error Handling | calls.rs:258 | ✅ fixed |
+| 22 | `find_content_child` returns only first matching child — split `raw_text` from error recovery skipped | Algorithm Correctness | injection.rs find_content_child | ✅ fixed |
+| 23 | `chunk_overlaps_container` has no unit tests — boundary conditions untested | Test Coverage | injection.rs:486-494 | ✅ fixed |
+| 24 | Injected type references (`ChunkTypeRefs`) never asserted in tests | Test Coverage | injection.rs tests | ✅ fixed |
+| 25 | `detect_script_language` — `type="text/typescript"` branch untested | Test Coverage | html.rs tests | ✅ fixed |
+| 26 | Temp files written with umask-derived permissions before `chmod` applied; `note.rs` never `chmod`s | Security | audit.rs:119, config.rs:332, note.rs:250 | ✅ fixed |
 
 ## P3: Easy + Low Impact — Fix if Time
 
