@@ -4398,7 +4398,8 @@ dependencies = [
 [[package]]
 name = "tree-sitter-razor"
 version = "0.1.0"
-source = "git+https://github.com/jamie8johnson/tree-sitter-razor#fe46ce5ea7d844e53d59bc96f2175d33691c61c5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c99d14709439f7c7383c8376765219ece638eddb86ccc2b434a4853c64838c5"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -4497,7 +4498,8 @@ dependencies = [
 [[package]]
 name = "tree-sitter-vb-dotnet"
 version = "0.1.0"
-source = "git+https://github.com/jamie8johnson/tree-sitter-vb-dotnet#d38d88cba74b041157efe8b32fa4260d3196eccd"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "180e4a199378505f9305c3d01d6ece8a8d34035f310de1c727693f8a2296025e"
 dependencies = [
  "cc",
  "tree-sitter-language",
