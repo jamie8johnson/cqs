@@ -40,7 +40,8 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 47 lan
 - [x] **Svelte** — `tree-sitter-svelte-next`. Injection: `script_element/raw_text→JS`, `style_element/raw_text→CSS`. Reuses HTML helpers.
 - [ ] **Clojure** — Blocked: `tree-sitter-clojure` 0.1.0 requires tree-sitter ^0.25, incompatible with 0.26.
 - [ ] **Dart** — Blocked: old tree-sitter API (pre-0.24). Property covers properties, mixin → Trait.
-- [ ] **Razor/CSHTML** — Partial: `.cs` files parsed via C# grammar. Full Razor support (`@` syntax, tag helpers) needs `tree-sitter-razor` grammar (doesn't exist).
+- [x] **Razor/CSHTML** — `tris203/tree-sitter-razor` (git dep, forked). Monolithic grammar: C# + HTML + Razor directives. JS/CSS injection via `_inner` content mode.
+- [x] **VB.NET** — `CodeAnt-AI/tree-sitter-vb-dotnet` (git dep, forked). Classes, modules, structures, interfaces, enums, methods, properties, events, delegates.
 - [ ] **ArchestrA QuickScript** — No tree-sitter grammar exists. Needs custom grammar from scratch (VB-like syntax).
 
 ### ChunkType Variant Status
@@ -88,7 +89,6 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 ### Parked
 
 - **MCP server** — re-add as slim read-only wrapper when CLI features are rock solid. Architecture proven clean (removed in v0.10.0 with zero core changes).
-- **VB.NET** — `tree-sitter-vb-dotnet` (git dep). VS2005 project delayed.
 - **Pre-built reference packages** (#255) — `cqs ref install tokio`
 - **Index encryption** — SQLCipher behind cargo feature flag
 - **Query-intent routing** — auto-boost ref weight when query mentions product names

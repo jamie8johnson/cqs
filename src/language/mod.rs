@@ -630,6 +630,10 @@ define_languages! {
     Glsl => "glsl", feature = "lang-glsl", module = glsl;
     /// Svelte (.svelte files)
     Svelte => "svelte", feature = "lang-svelte", module = svelte;
+    /// Razor/CSHTML (.cshtml, .razor files)
+    Razor => "razor", feature = "lang-razor", module = razor;
+    /// VB.NET (.vb files)
+    VbNet => "vbnet", feature = "lang-vbnet", module = vbnet;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -1077,6 +1081,14 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-svelte")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-razor")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-vbnet")]
         {
             expected += 1;
         }

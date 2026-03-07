@@ -139,9 +139,27 @@ fn advance_cursor(cursor: &mut tree_sitter::TreeCursor) -> bool {
     }
 }
 
+/// Calculate a `tree_sitter::Point` (row, column) from a byte offset in source text.
+///
+/// Used by `_inner` content mode where we compute content ranges from source text
+/// rather than from tree-sitter node positions.
+fn byte_offset_to_point(source: &str, byte: usize) -> tree_sitter::Point {
+    let before = &source[..byte];
+    let row = before.as_bytes().iter().filter(|&&b| b == b'\n').count();
+    let col = before.len() - before.rfind('\n').map(|p| p + 1).unwrap_or(0);
+    tree_sitter::Point { row, column: col }
+}
+
 /// Walk the tree using a cursor to find all nodes matching an injection rule's container_kind.
 ///
 /// Creates and manages its own cursor — callers don't need to handle cursor state.
+///
+/// Supports two content extraction modes:
+/// - **Named children** (`content_kind` is a node kind string): finds child nodes matching
+///   the kind, e.g., `raw_text` inside `script_element`.
+/// - **Inner content** (`content_kind == "_inner"`): extracts the bytes between the first `>`
+///   and last `</` in the container's source text. Used when grammars have generic element
+///   nodes without named content children (e.g., Razor's `element` node).
 fn walk_for_containers(
     root: tree_sitter::Node,
     rule: &InjectionRule,
@@ -162,40 +180,68 @@ fn walk_for_containers(
 
             // Skip non-parseable content (e.g., JSON-LD, shader scripts)
             if target != "_skip" {
-                // Collect ALL matching content children (error recovery may split
-                // raw_text into multiple nodes)
-                let mut child_cursor = node.walk();
-                for child in node.children(&mut child_cursor) {
-                    if child.kind() == rule.content_kind {
-                        let byte_range = child.byte_range();
-                        if byte_range.start < byte_range.end {
-                            let range = tree_sitter::Range {
-                                start_byte: byte_range.start,
-                                end_byte: byte_range.end,
-                                start_point: child.start_position(),
-                                end_point: child.end_position(),
-                            };
+                let container_lines = (
+                    node.start_position().row as u32 + 1,
+                    node.end_position().row as u32 + 1,
+                );
 
-                            // Safe: row count fits u32 because MAX_FILE_SIZE (50MB) limits
-                            // files to ~50M lines at minimum 1 byte/line, well within u32::MAX.
-                            //
-                            // content_scoped_lines: use the content child's line range instead
-                            // of the container's. Required for PHP where container is `program`
-                            // (entire file) but we only want to replace chunks within each
-                            // individual `text` region.
-                            let container_lines = if rule.content_scoped_lines {
-                                (
-                                    child.start_position().row as u32 + 1,
-                                    child.end_position().row as u32 + 1,
-                                )
-                            } else {
-                                (
-                                    node.start_position().row as u32 + 1,
-                                    node.end_position().row as u32 + 1,
-                                )
-                            };
+                if rule.content_kind == "_inner" {
+                    // Inner content mode: extract bytes between first '>' and last '</'
+                    // in the container's source text. Used for grammars with generic
+                    // element nodes (e.g., Razor) that lack named content children.
+                    let text = &source[node.byte_range()];
+                    if let Some(tag_close) = text.find('>') {
+                        let content_start = node.start_byte() + tag_close + 1;
+                        if let Some(close_pos) = text.rfind("</") {
+                            let content_end = node.start_byte() + close_pos;
+                            if content_start < content_end {
+                                let start_point = byte_offset_to_point(source, content_start);
+                                let end_point = byte_offset_to_point(source, content_end);
+                                let range = tree_sitter::Range {
+                                    start_byte: content_start,
+                                    end_byte: content_end,
+                                    start_point,
+                                    end_point,
+                                };
+                                entries.push((target, range, container_lines));
+                            }
+                        }
+                    }
+                } else {
+                    // Named children mode: collect ALL matching content children
+                    // (error recovery may split raw_text into multiple nodes)
+                    let mut child_cursor = node.walk();
+                    for child in node.children(&mut child_cursor) {
+                        if child.kind() == rule.content_kind {
+                            let byte_range = child.byte_range();
+                            if byte_range.start < byte_range.end {
+                                let range = tree_sitter::Range {
+                                    start_byte: byte_range.start,
+                                    end_byte: byte_range.end,
+                                    start_point: child.start_position(),
+                                    end_point: child.end_position(),
+                                };
 
-                            entries.push((target, range, container_lines));
+                                // Safe: row count fits u32 because MAX_FILE_SIZE (50MB)
+                                // limits files to ~50M lines at minimum 1 byte/line,
+                                // well within u32::MAX.
+                                //
+                                // content_scoped_lines: use the content child's line
+                                // range instead of the container's. Required for PHP
+                                // where container is `program` (entire file) but we
+                                // only want to replace chunks within each individual
+                                // `text` region.
+                                let child_lines = if rule.content_scoped_lines {
+                                    (
+                                        child.start_position().row as u32 + 1,
+                                        child.end_position().row as u32 + 1,
+                                    )
+                                } else {
+                                    container_lines
+                                };
+
+                                entries.push((target, range, child_lines));
+                            }
                         }
                     }
                 }

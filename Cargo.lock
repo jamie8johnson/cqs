@@ -723,6 +723,7 @@ dependencies = [
  "tree-sitter-proto",
  "tree-sitter-python",
  "tree-sitter-r",
+ "tree-sitter-razor",
  "tree-sitter-ruby",
  "tree-sitter-rust",
  "tree-sitter-scala",
@@ -732,6 +733,7 @@ dependencies = [
  "tree-sitter-swift",
  "tree-sitter-toml-ng",
  "tree-sitter-typescript",
+ "tree-sitter-vb-dotnet",
  "tree-sitter-xml",
  "tree-sitter-yaml",
  "tree-sitter-zig",
@@ -4394,6 +4396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-razor"
+version = "0.1.0"
+source = "git+https://github.com/jamie8johnson/tree-sitter-razor#fe46ce5ea7d844e53d59bc96f2175d33691c61c5"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
 name = "tree-sitter-ruby"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4478,6 +4489,15 @@ name = "tree-sitter-typescript"
 version = "0.23.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-vb-dotnet"
+version = "0.1.0"
+source = "git+https://github.com/jamie8johnson/tree-sitter-vb-dotnet#d38d88cba74b041157efe8b32fa4260d3196eccd"
 dependencies = [
  "cc",
  "tree-sitter-language",
