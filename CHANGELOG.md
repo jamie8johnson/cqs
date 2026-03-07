@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-03-07
+
+Recursive injection framework expansion — Svelte, Razor/CSHTML, VB.NET language support, plus PHP→HTML→JS/CSS recursive injection and Nix/HCL/LaTeX→code injection rules (46 → 49 languages).
+
+### Added
+- **Svelte language support** (`.svelte`) — `tree-sitter-svelte-next` grammar. JS/TS + CSS injection from `<script>` and `<style>` blocks. TypeScript detection via `lang`/`type` attributes. Reuses HTML's `detect_script_language` (PR #546)
+- **Razor/CSHTML language support** (`.cshtml`, `.razor`) — `tris203/tree-sitter-razor` fork. Monolithic grammar parses C#, HTML, and Razor directives in a single tree. C# chunks from `@code`/`@functions` blocks, HTML heading/landmark extraction, JS/CSS injection via `_inner` content mode (PR #546)
+- **VB.NET language support** (`.vb`) — `CodeAnt-AI/tree-sitter-vb-dotnet` fork. Classes, modules, structures, interfaces, enums, methods, properties, events, delegates. Full call graph and type references (PR #546)
+- **`_inner` content mode** — injection framework extension for grammars where container nodes have no named content child (e.g., Razor's generic `element` node). Extracts bytes between first `>` and last `</` in source text (PR #546)
+- **PHP→HTML→JS/CSS recursive injection** — depth limit 3. Two injection rules: `program/text` (leading HTML) + `text_interpolation/text` (HTML after `?>`). `content_scoped_lines` prevents container-spans-file problem (PR #546)
+- **Nix→Bash injection** — `indented_string_expression` in shell contexts (buildPhase, installPhase, shellHook). `detect_nix_shell_context` checks parent binding name (PR #546)
+- **HCL→Bash injection** — `heredoc_template` with shell identifiers (EOT, BASH, SHELL). `detect_heredoc_language` checks heredoc identifier (PR #546)
+- **LaTeX→code injection** — `minted_environment` + `listing_environment`. Language detection from `\begin{minted}{python}` and `[language=Rust]` options (PR #546)
+- `byte_offset_to_point()` helper for `_inner` content mode range calculation
+
 ## [0.27.0] - 2026-03-06
 
 Multi-grammar parsing — HTML files extract real JS/CSS chunks from embedded `<script>` and `<style>` blocks. Full 14-category audit with 57 findings resolved.
