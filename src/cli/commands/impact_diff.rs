@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::diff_parse::parse_unified_diff;
+use cqs::parse_unified_diff;
 use cqs::{analyze_diff_impact, diff_impact_to_json, map_hunks_to_functions};
 
 fn empty_impact_json() -> serde_json::Value {

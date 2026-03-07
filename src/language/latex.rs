@@ -140,7 +140,7 @@ fn detect_listing_language(node: tree_sitter::Node, source: &str) -> Option<&'st
             let trimmed = text.trim_start();
             // Check for [language=X] prefix
             if trimmed.starts_with('[') {
-                let text_lower = trimmed.to_lowercase();
+                let text_lower = trimmed.to_ascii_lowercase();
                 if let Some(pos) = text_lower.find("language=") {
                     let after = &trimmed[pos + 9..];
                     let lang: String = after

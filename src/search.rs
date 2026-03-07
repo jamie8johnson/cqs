@@ -66,7 +66,7 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
     let (file_filter, name) = parse_target(target);
     let results = store.search_by_name(name, 20)?;
     if results.is_empty() {
-        return Err(StoreError::Runtime(format!(
+        return Err(StoreError::NotFound(format!(
             "No function found matching '{}'. Check the name and try again.",
             name
         )));
@@ -85,7 +85,7 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
                     .take(3)
                     .map(|r| r.chunk.file.to_string_lossy().to_string())
                     .collect();
-                return Err(StoreError::Runtime(format!(
+                return Err(StoreError::NotFound(format!(
                     "No function '{}' found in file matching '{}'. Found in: {}",
                     name,
                     file,
@@ -397,12 +397,26 @@ impl<'a> NoteBoostIndex<'a> {
 /// Returns 1.0 (no change) when demotion doesn't apply.
 fn chunk_importance(name: &str, file_path: &str) -> f32 {
     // Name-based: test function → 0.90
-    if name.starts_with("test_") || name.starts_with("Test") {
+    if name.starts_with("test_")
+        || name.starts_with("Test")
+        || name.starts_with("spec_")
+        || name.ends_with("_test")
+        || name.ends_with("_spec")
+    {
         return 0.90;
     }
     // File-based: test file (by filename, not full path) → 0.90
     let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-    if filename.contains("_test.") || filename.starts_with("test_") {
+    if filename.contains("_test.")
+        || filename.contains(".test.")
+        || filename.contains(".spec.")
+        || filename.contains("_spec.")
+        || filename.starts_with("test_")
+    {
+        return 0.90;
+    }
+    // Path-based: tests/ directory → 0.90
+    if file_path.contains("/tests/") || file_path.starts_with("tests/") {
         return 0.90;
     }
     // Underscore-prefixed private (but not dunder like __init__) → 0.95
@@ -1742,9 +1756,9 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_importance_test_dir_no_demote() {
-        // Being in a tests/ directory should NOT demote
-        assert_eq!(chunk_importance("real_fn", "tests/fixtures/eval.rs"), 1.0);
+    fn test_chunk_importance_test_dir_demoted() {
+        // Files in tests/ directory are test infrastructure → demoted
+        assert_eq!(chunk_importance("real_fn", "tests/fixtures/eval.rs"), 0.90);
     }
 
     #[test]

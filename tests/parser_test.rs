@@ -438,14 +438,17 @@ fn test_parse_markdown_fixture() {
 
     assert!(!chunks.is_empty(), "Should find chunks in markdown file");
 
-    // All chunks should be Section type and Markdown language
-    for chunk in &chunks {
+    // Markdown section chunks
+    let md_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.language == Language::Markdown)
+        .collect();
+    for chunk in &md_chunks {
         assert_eq!(chunk.chunk_type, ChunkType::Section);
-        assert_eq!(chunk.language, Language::Markdown);
     }
 
     // Should have sections from the fixture
-    let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+    let names: Vec<&str> = md_chunks.iter().map(|c| c.name.as_str()).collect();
     assert!(
         names.contains(&"Getting Started"),
         "Should find 'Getting Started' section, got: {:?}",
@@ -455,6 +458,20 @@ fn test_parse_markdown_fixture() {
         names.contains(&"Advanced Topics"),
         "Should find 'Advanced Topics' section, got: {:?}",
         names
+    );
+
+    // Fenced code blocks should extract Python function from ```python block
+    let py_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|c| c.language == Language::Python)
+        .collect();
+    assert!(
+        py_chunks.iter().any(|c| c.name == "example"),
+        "Should extract Python function 'example' from fenced block, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.language))
+            .collect::<Vec<_>>()
     );
 }
 

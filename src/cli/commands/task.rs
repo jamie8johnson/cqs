@@ -372,7 +372,13 @@ fn build_code_json(
 ) -> Vec<serde_json::Value> {
     indices
         .iter()
-        .filter_map(|&i| serde_json::to_value(&result.code[i]).ok())
+        .filter_map(|&i| match serde_json::to_value(&result.code[i]) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, chunk = %result.code[i].name, "Failed to serialize chunk");
+                None
+            }
+        })
         .collect()
 }
 

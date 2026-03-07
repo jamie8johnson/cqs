@@ -963,29 +963,6 @@ impl Store {
         })
     }
 
-    /// Get chunks by function name.
-    ///
-    /// Returns all chunks with the given name (may span multiple files).
-    /// Used by `cqs related` to resolve function names to file locations.
-    pub fn get_chunks_by_name(&self, name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
-        self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, parent_id
-                 FROM chunks WHERE name = ?1
-                 ORDER BY origin, line_start",
-            )
-            .bind(name)
-            .fetch_all(&self.pool)
-            .await?;
-
-            Ok(rows
-                .iter()
-                .map(|r| ChunkSummary::from(ChunkRow::from_row(r)))
-                .collect())
-        })
-    }
-
     /// Batch-fetch chunks by multiple function names.
     ///
     /// Returns a map of name -> Vec<ChunkSummary> for all found names.
@@ -1031,43 +1008,6 @@ impl Store {
             }
 
             Ok(result)
-        })
-    }
-
-    /// Find function/method chunks whose signature contains a type name.
-    ///
-    /// Uses `LIKE '%name%'` on the signature column. Used by `cqs related`
-    /// to find functions sharing custom types.
-    pub fn search_chunks_by_signature(
-        &self,
-        type_name: &str,
-    ) -> Result<Vec<ChunkSummary>, StoreError> {
-        self.rt.block_on(async {
-            // Escape LIKE wildcards in user input to prevent unintended pattern matching
-            let escaped = type_name
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            let pattern = format!("%{}%", escaped);
-            let callable = ChunkType::callable_sql_list();
-            let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, parent_id
-                 FROM chunks
-                 WHERE chunk_type IN ({callable})
-                   AND signature LIKE ?1 ESCAPE '\\'
-                 ORDER BY origin, line_start
-                 LIMIT 100"
-            );
-            let rows: Vec<_> = sqlx::query(&sql)
-                .bind(&pattern)
-                .fetch_all(&self.pool)
-                .await?;
-
-            Ok(rows
-                .iter()
-                .map(|r| ChunkSummary::from(ChunkRow::from_row(r)))
-                .collect())
         })
     }
 
@@ -1498,58 +1438,60 @@ impl<'a> Iterator for EmbeddingBatchIterator<'a> {
     type Item = Result<Vec<(String, Embedding)>, StoreError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-
-        let result = self.store.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query(
-                "SELECT rowid, id, embedding FROM chunks WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
-            )
-            .bind(self.last_rowid)
-            .bind(self.batch_size as i64)
-            .fetch_all(&self.store.pool)
-            .await?;
-
-            let rows_fetched = rows.len();
-
-            // Track the max rowid seen in this batch for the next cursor position
-            let mut max_rowid = self.last_rowid;
-
-            let batch: Vec<(String, Embedding)> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let rowid: i64 = row.get(0);
-                    let id: String = row.get(1);
-                    let bytes: Vec<u8> = row.get(2);
-                    if rowid > max_rowid {
-                        max_rowid = rowid;
-                    }
-                    bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
-                })
-                .collect();
-
-            Ok((batch, rows_fetched, max_rowid))
-        });
-
-        match result {
-            Ok((batch, rows_fetched, _max_rowid)) if batch.is_empty() && rows_fetched == 0 => {
-                // No more rows in database
-                self.done = true;
-                None
+        loop {
+            if self.done {
+                return None;
             }
-            Ok((batch, _, max_rowid)) => {
-                self.last_rowid = max_rowid;
-                if batch.is_empty() {
-                    // Had rows but all filtered out - continue to next batch
-                    self.next()
-                } else {
-                    Some(Ok(batch))
+
+            let result = self.store.rt.block_on(async {
+                let rows: Vec<_> = sqlx::query(
+                    "SELECT rowid, id, embedding FROM chunks WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
+                )
+                .bind(self.last_rowid)
+                .bind(self.batch_size as i64)
+                .fetch_all(&self.store.pool)
+                .await?;
+
+                let rows_fetched = rows.len();
+
+                // Track the max rowid seen in this batch for the next cursor position
+                let mut max_rowid = self.last_rowid;
+
+                let batch: Vec<(String, Embedding)> = rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        let rowid: i64 = row.get(0);
+                        let id: String = row.get(1);
+                        let bytes: Vec<u8> = row.get(2);
+                        if rowid > max_rowid {
+                            max_rowid = rowid;
+                        }
+                        bytes_to_embedding(&bytes).map(|emb| (id, Embedding::new(emb)))
+                    })
+                    .collect();
+
+                Ok((batch, rows_fetched, max_rowid))
+            });
+
+            match result {
+                Ok((batch, rows_fetched, _max_rowid)) if batch.is_empty() && rows_fetched == 0 => {
+                    // No more rows in database
+                    self.done = true;
+                    return None;
                 }
-            }
-            Err(e) => {
-                self.done = true;
-                Some(Err(e))
+                Ok((batch, _, max_rowid)) => {
+                    self.last_rowid = max_rowid;
+                    if batch.is_empty() {
+                        // Had rows but all filtered out - continue to next batch
+                        continue;
+                    } else {
+                        return Some(Ok(batch));
+                    }
+                }
+                Err(e) => {
+                    self.done = true;
+                    return Some(Err(e));
+                }
             }
         }
     }

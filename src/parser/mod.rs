@@ -195,7 +195,10 @@ impl Parser {
 
         // Grammar-less languages (Markdown) use custom parsers
         if language.def().grammar.is_none() {
-            return crate::parser::markdown::parse_markdown_chunks(&source, path);
+            let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
+            let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
+            chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
+            return Ok(chunks);
         }
 
         let grammar = language.grammar();
@@ -353,8 +356,10 @@ impl Parser {
 
         // Grammar-less languages (Markdown) use custom parsers
         if language.def().grammar.is_none() {
-            let chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
+            let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
             let calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
+            let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
+            chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
             return Ok((chunks, calls, vec![]));
         }
 
@@ -579,6 +584,106 @@ impl Parser {
 
     pub fn supported_extensions(&self) -> Vec<&'static str> {
         crate::language::REGISTRY.supported_extensions().collect()
+    }
+
+    /// Parse fenced code blocks from markdown into typed chunks.
+    ///
+    /// For each block with a recognized language, parses the content with that
+    /// language's tree-sitter grammar and extracts chunks. Line numbers are
+    /// adjusted to reflect their position in the original markdown file.
+    fn parse_fenced_blocks(
+        &self,
+        blocks: &[markdown::FencedBlock],
+        _source: &str,
+        path: &Path,
+    ) -> Vec<Chunk> {
+        let _span = tracing::info_span!("parse_fenced_blocks", count = blocks.len()).entered();
+        let mut result = Vec::new();
+
+        for block in blocks {
+            let language = match block.lang.parse::<Language>() {
+                Ok(lang) if lang.is_enabled() => lang,
+                _ => continue,
+            };
+
+            // Skip grammar-less languages (avoid recursion for nested markdown)
+            let def = language.def();
+            let grammar_fn = match def.grammar {
+                Some(f) => f,
+                None => continue,
+            };
+
+            let grammar = grammar_fn();
+            let mut parser = tree_sitter::Parser::new();
+            if parser.set_language(&grammar).is_err() {
+                tracing::debug!(lang = %block.lang, "Failed to set tree-sitter language for fenced block");
+                continue;
+            }
+
+            let tree = match parser.parse(&block.content, None) {
+                Some(t) => t,
+                None => {
+                    tracing::debug!(lang = %block.lang, "Tree-sitter parse returned None for fenced block");
+                    continue;
+                }
+            };
+
+            let query = match self.get_query(language) {
+                Ok(q) => q,
+                Err(e) => {
+                    tracing::debug!(lang = %block.lang, error = %e, "Failed to get query for fenced block");
+                    continue;
+                }
+            };
+
+            let mut cursor = tree_sitter::QueryCursor::new();
+            let mut matches = cursor.matches(query, tree.root_node(), block.content.as_bytes());
+
+            // Line offset: fenced block content starts on the line after the opening fence
+            let line_offset = block.line_start; // fence is at line_start, content starts at line_start+1
+
+            while let Some(m) = matches.next() {
+                match self.extract_chunk(&block.content, m, query, language, path) {
+                    Ok(mut chunk) => {
+                        if chunk.content.len() > MAX_CHUNK_BYTES {
+                            continue;
+                        }
+                        // Apply post-process if defined
+                        if let Some(post_process) = def.post_process_chunk {
+                            if let Some(node) = extract_definition_node(m, query) {
+                                if !post_process(
+                                    &mut chunk.name,
+                                    &mut chunk.chunk_type,
+                                    node,
+                                    &block.content,
+                                ) {
+                                    continue;
+                                }
+                            }
+                        }
+                        // Adjust line numbers to markdown file position
+                        chunk.line_start += line_offset;
+                        chunk.line_end += line_offset;
+                        // Rebuild ID with adjusted line numbers
+                        let hash_prefix =
+                            chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
+                        chunk.id =
+                            format!("{}:{}:{}", path.display(), chunk.line_start, hash_prefix);
+                        result.push(chunk);
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            language = %language,
+                            "Failed to extract chunk from fenced block"
+                        );
+                    }
+                }
+            }
+        }
+
+        tracing::debug!(chunks = result.len(), "Extracted chunks from fenced blocks");
+        result
     }
 }
 

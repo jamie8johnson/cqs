@@ -191,8 +191,11 @@ fn matches_recursion(content: &str, name: &str) -> bool {
         return false;
     }
     // Skip first line (function signature) and check for self-reference
-    let body = &lines[1..].join("\n");
-    body.contains(&format!("{}(", name)) || body.contains(&format!("{} (", name))
+    let call_paren = format!("{}(", name);
+    let call_space = format!("{} (", name);
+    lines[1..]
+        .iter()
+        .any(|line| line.contains(&call_paren) || line.contains(&call_space))
 }
 
 /// Filter a list of items by structural pattern

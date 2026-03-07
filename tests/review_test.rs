@@ -7,7 +7,7 @@ mod common;
 
 use common::{mock_embedding, TestStore};
 use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
-use cqs::review::review_diff;
+use cqs::review_diff;
 use cqs::RiskLevel;
 use std::path::{Path, PathBuf};
 

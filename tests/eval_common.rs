@@ -107,6 +107,8 @@ pub fn fixture_path(lang: Language) -> PathBuf {
         Language::Razor => "cshtml",
         #[cfg(feature = "lang-vbnet")]
         Language::VbNet => "vb",
+        #[cfg(feature = "lang-vue")]
+        Language::Vue => "vue",
     };
     PathBuf::from(manifest_dir)
         .join("tests")
@@ -207,6 +209,8 @@ pub fn hard_fixture_path(lang: Language) -> PathBuf {
         Language::Razor => "cshtml",
         #[cfg(feature = "lang-vbnet")]
         Language::VbNet => "vb",
+        #[cfg(feature = "lang-vue")]
+        Language::Vue => "vue",
     };
     PathBuf::from(manifest_dir)
         .join("tests")

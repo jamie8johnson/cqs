@@ -2,9 +2,7 @@
 
 ## Right Now
 
-**Multi-grammar audit complete.** 2026-03-06. All 57 findings resolved across 4 PRs:
-- P1: #541 (13 fixes), P2: #542 (13 fixes), P3: #543 (18 fixes), P4: #544 (9 fixes)
-- Key P4 deliverable: `parse_file_all()` combined method eliminates double file read/parse in watch.rs
+**v0.28.1 released.** 2026-03-07. Recursive injection framework + Svelte, Razor, VB.NET (50 languages). Grammar crates published to crates.io.
 
 ## Pending Changes
 
@@ -14,7 +12,6 @@ None.
 
 - **Pre-built release binaries** (GitHub Actions) — deferred
 - **`cqs plan` templates** — add more task-type templates as patterns emerge
-- **VB.NET language support** — VS2005 project delayed
 - **Post-index name matching** — fuzzy cross-doc references
 - **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
@@ -41,9 +38,9 @@ None.
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 49 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Markdown)
+- 50 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
-- Tests: 1480 pass, 0 failures
+- Tests: 1529 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Source layout: parser/, hnsw/, impact/, batch/ are directories
 - convert/ module (7 files) behind `convert` feature flag

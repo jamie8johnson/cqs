@@ -246,7 +246,13 @@ pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
     let code_json: Vec<serde_json::Value> = result
         .code
         .iter()
-        .filter_map(|c| serde_json::to_value(c).ok())
+        .filter_map(|c| match serde_json::to_value(c) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
+                None
+            }
+        })
         .collect();
     let risk_json: Vec<serde_json::Value> = result.risk.iter().map(|(n, r)| r.to_json(n)).collect();
     let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json(root)).collect();

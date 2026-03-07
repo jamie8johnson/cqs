@@ -131,6 +131,25 @@ pub(crate) fn find_child_by_kind<'a>(
     crate::parser::find_child_by_kind(node, kind)
 }
 
+/// Check if a start_tag has an attribute by name (including boolean/valueless attributes like `setup`).
+pub(crate) fn has_attribute(start_tag: tree_sitter::Node, attr_name: &str, source: &str) -> bool {
+    let mut cursor = start_tag.walk();
+    for child in start_tag.children(&mut cursor) {
+        if child.kind() == "attribute" {
+            let mut attr_cursor = child.walk();
+            for attr_child in child.children(&mut attr_cursor) {
+                if attr_child.kind() == "attribute_name" {
+                    let name_text = attr_child.utf8_text(source.as_bytes()).unwrap_or("");
+                    if name_text == attr_name {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Find an attribute's value within a start_tag node.
 pub(crate) fn find_attribute_value(start_tag: tree_sitter::Node, attr_name: &str, source: &str) -> Option<String> {
     let mut cursor = start_tag.walk();

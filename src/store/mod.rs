@@ -187,13 +187,17 @@ pub struct Store {
     /// Whether close() has already been called (skip WAL checkpoint in Drop)
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Vec<NoteSummary>>>,
+    /// Cached call graph — populated on first access, valid for Store lifetime.
+    call_graph_cache: std::sync::OnceLock<CallGraph>,
+    /// Cached test chunks — populated on first access, valid for Store lifetime.
+    test_chunks_cache: std::sync::OnceLock<Vec<ChunkSummary>>,
 }
 
 impl Store {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         let _span = tracing::info_span!("store_open", path = %path.display()).entered();
-        let rt = Runtime::new().map_err(|e| StoreError::Runtime(e.to_string()))?;
+        let rt = Runtime::new()?;
 
         // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
         // special characters in paths (spaces, #, ?, %, unicode).
@@ -233,6 +237,8 @@ impl Store {
             rt,
             closed: AtomicBool::new(false),
             notes_summaries_cache: RwLock::new(None),
+            call_graph_cache: std::sync::OnceLock::new(),
+            test_chunks_cache: std::sync::OnceLock::new(),
         };
 
         // Set restrictive permissions on database files (Unix only)
@@ -287,8 +293,7 @@ impl Store {
         let _span = tracing::info_span!("store_open_readonly", path = %path.display()).entered();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
-            .build()
-            .map_err(|e| StoreError::Runtime(e.to_string()))?;
+            .build()?;
 
         // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
         // special characters in paths (spaces, #, ?, %, unicode).
@@ -327,6 +332,8 @@ impl Store {
             rt,
             closed: AtomicBool::new(false),
             notes_summaries_cache: RwLock::new(None),
+            call_graph_cache: std::sync::OnceLock::new(),
+            test_chunks_cache: std::sync::OnceLock::new(),
         };
 
         // Skip permissions setting (read-only, no file creation)
@@ -634,7 +641,7 @@ impl Store {
             .await?;
 
             use sqlx::Row;
-            let results = rows
+            let mut results = rows
                 .into_iter()
                 .map(|row| {
                     let chunk = ChunkSummary::from(ChunkRow {
@@ -654,7 +661,10 @@ impl Store {
                     let score = helpers::score_name_match_pre_lower(&name_lower, &lower_name);
                     SearchResult { chunk, score }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+
+            // Re-sort by name-match score (FTS bm25 ordering may differ)
+            results.sort_by(|a, b| b.score.total_cmp(&a.score));
 
             Ok(results)
         })
@@ -735,7 +745,7 @@ impl Store {
             let guard = self
                 .notes_summaries_cache
                 .read()
-                .map_err(|e| StoreError::Runtime(format!("notes cache lock poisoned: {e}")))?;
+                .expect("notes cache lock poisoned");
             if let Some(ref ns) = *guard {
                 return Ok(ns.clone());
             }
@@ -746,7 +756,7 @@ impl Store {
             let mut guard = self
                 .notes_summaries_cache
                 .write()
-                .map_err(|e| StoreError::Runtime(format!("notes cache lock poisoned: {e}")))?;
+                .expect("notes cache lock poisoned");
             *guard = Some(ns.clone());
         }
         Ok(ns)

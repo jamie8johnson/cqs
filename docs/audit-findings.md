@@ -1,415 +1,595 @@
-# Audit Findings — v0.26.0
+# Audit Findings — v0.28.1+uncommitted
 
-## Code Quality
-
-#### `find_content_child` (injection.rs) and `find_child_by_kind` (html.rs) are identical functions in different modules
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:174, src/language/html.rs:127
-- **Description:** Both functions do exactly the same thing — iterate direct children of a tree-sitter node and return the first matching a given kind string. Different names, both with `#[allow(clippy::manual_find)]`, but structurally identical 10-line bodies. Because `html.rs` is a language definition module rather than a parser module, it can't import from `injection.rs` directly with the current structure, but the duplication will drift.
-- **Suggested fix:** Move to `parser/mod.rs` or `parser/types.rs` as `pub(crate) fn find_child_by_kind(node: Node, kind: &str) -> Option<Node>` and have `html.rs` import it via `use crate::parser::find_child_by_kind`.
-
-#### `MAX_FILE_SIZE` and `MAX_CHUNK_BYTES` inline constants defined at multiple sites
-- **Difficulty:** easy
-- **Location:** src/parser/mod.rs:144, src/parser/mod.rs:203, src/parser/calls.rs:210, src/parser/injection.rs:253
-- **Description:** `MAX_FILE_SIZE` (50 MB) is a local `const` inside both `parse_file` (mod.rs:144) and `parse_file_relationships` (calls.rs:210). `MAX_CHUNK_BYTES` (100,000 bytes) is a local `const` inside `parse_file` (mod.rs:203) and `parse_injected_chunks` (injection.rs:253). Changing either limit requires finding and updating all sites manually with no compiler enforcement.
-- **Suggested fix:** Hoist to module-level `pub(crate) const` at the top of `src/parser/mod.rs` and reference from all four sites.
-
-#### Capture-name-to-`ChunkType` `match` arm duplicated between `calls.rs` and `injection.rs`, diverges from `chunk.rs`
-- **Difficulty:** easy
-- **Location:** src/parser/calls.rs:314-329, src/parser/injection.rs:400-415, src/parser/chunk.rs:18-34
-- **Description:** Three sites in the parser module define the mapping from tree-sitter capture name string to `ChunkType`. `chunk.rs` uses a `&[(&str, ChunkType)]` slice (the authoritative table). `calls.rs` and `injection.rs` each have a hand-written `match` arm. All three already diverge: `chunk.rs` includes `("section", ChunkType::Section)` but neither `calls.rs` nor `injection.rs` has `"section"` in their `matches!` filter or their `match` arm — meaning `@section` captures (used by LaTeX) are filtered out of call/type extraction, and the `_` fallback assigns `ChunkType::Function` instead of `ChunkType::Section`. LaTeX is not currently an injection target so there's no user-visible bug today, but the divergence will cause a latent bug when a future host language injects LaTeX (e.g., in a documentation system).
-- **Suggested fix:** Extract `pub(crate) fn capture_name_to_chunk_type(name: &str) -> Option<ChunkType>` in `parser/types.rs` or `parser/mod.rs` using the same table as `chunk.rs`. Replace all three sites. Fixes the `"section"` gap automatically.
-
-#### `parse_injected_chunks` and `parse_injected_relationships` duplicate identical tree-sitter parser setup boilerplate
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:206-230 (chunks), src/parser/injection.rs:305-330 (relationships)
-- **Description:** Both methods execute identical 4-step setup: `tree_sitter::Parser::new()`, `.set_language(&grammar)` with the same error wrapping, `.set_included_ranges(&group.ranges)` with warn-and-empty return, `.parse(source, None)` with warn-and-empty return. The only difference is the `Ok(vec![])` vs `Ok((vec![], vec![]))` on failure. The warn messages diverge slightly ("for injection" vs "for injection relationships"), making them hard to search in logs. Additionally, since `parse_file` and `parse_file_relationships` are separate callers, the inner grammar is parsed **twice** for each injection group per file (once for chunks, once for call graph relationships).
-- **Suggested fix:** Extract `fn build_injection_tree(inner_language: Language, source: &str, ranges: &[tree_sitter::Range]) -> Option<tree_sitter::Tree>` returning `None` on any failure. Both methods call it, handle `None` with their respective empty return. Longer term: consider a combined `parse_injected_all` returning `(Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>)` to eliminate the double parse.
-
-#### `walk_for_containers` duplicates the cursor-advance-or-walk-up idiom twice within itself
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:138-168
-- **Description:** `walk_for_containers` contains two identical 8-line cursor-advancement loops: one at lines 138-148 (after processing a container, skip to next sibling without descending) and one at lines 160-168 (at a leaf, walk back up to find next sibling). Both do `loop { if !cursor.goto_parent() { return; } if cursor.goto_next_sibling() { break; } }`. The duplication makes the traversal logic harder to audit for correctness.
-- **Suggested fix:** Extract an `#[inline]` `fn advance_to_next_sibling(cursor: &mut TreeCursor) -> bool` returning `false` if the tree is exhausted. Reduces each 8-line block to a 1-line call.
-
-#### `InjectionGroup` grouping loop uses O(n) linear scan that will degrade with many injection rules
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:83-94
-- **Description:** The loop collecting `InjectionGroup`s calls `groups.iter_mut().find(|g| g.language == language)` — O(existing_groups) per entry. Currently only HTML is a host language with 2 injection rules, so worst-case is 2 groups. But as Svelte, Vue, or Markdown code-fence injection is added (each potentially having many `<script>`-like blocks all targeting the same language), this becomes O(n × rules) where n is the number of injection entries found.
-- **Suggested fix:** Replace the `Vec<InjectionGroup>` accumulator with a `HashMap<Language, InjectionGroup>` keyed by language, collect into `Vec` at the end. Or add a comment explaining the bound.
-
-## API Design
-
-#### `"section"` capture missing from chunk-node-finder in `calls.rs` and `injection.rs`
-- **Difficulty:** easy
-- **Location:** src/parser/calls.rs:276-291, src/parser/injection.rs:363-378
-- **Description:** Three places in the parser module contain the list of "is this capture a chunk node?" — `DEF_CAPTURES` in `mod.rs` (line 279), the `matches!` filter in `calls.rs` (line 276), and the matching `matches!` in `injection.rs` (line 363). `mod.rs` includes `"section"` (used by LaTeX via `@section` captures in `latex.rs`). Both `calls.rs` and `injection.rs` omit it. Consequence: LaTeX section chunks are silently skipped when building the call graph and when parsing injected relationships — `parse_file_relationships` finds no chunk for LaTeX `@section` captures and emits no `FunctionCalls` or `ChunkTypeRefs` for them.
-- **Suggested fix:** Add `"section"` to both `matches!` patterns, and add `"section" => ChunkType::Section` to both `cap_name`→`ChunkType` match arms (currently the `_` arm maps it to `ChunkType::Function` which is wrong). Longer term: extract `DEF_CAPTURES` into a shared module-level constant and reference it from all three sites.
-
-#### `parse_injected_chunks` and `parse_injected_relationships` duplicate tree-sitter parser setup
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:206-230 and 305-330
-- **Description:** Both methods repeat identical boilerplate: `tree_sitter::Parser::new()`, `set_language(&grammar)` with the same error message, `set_included_ranges(&group.ranges)` with warn-and-return-empty on failure, `parser.parse(source, None)` with warn-and-return-empty on None. The only difference is the `Ok(vec![])` vs `Ok((vec![], vec![]))` return type on failure. This violates DRY and the warn messages diverge slightly ("for injection" vs "for injection relationships"), making it harder to grep logs consistently.
-- **Suggested fix:** Extract `fn build_injection_tree(grammar: tree_sitter::Language, source: &str, group: &InjectionGroup) -> Option<tree_sitter::Tree>` that returns `None` on any failure (with logging). Both methods call it and return their respective empty values on `None`. The error-handling asymmetry disappears.
-
-#### `InjectionRule` lacks `Debug` derive — inconsistent with all other public types
-- **Difficulty:** easy
-- **Location:** src/language/mod.rs:164
-- **Description:** `InjectionRule` is the only `pub` struct in `src/language/mod.rs` without `#[derive(Debug)]`. Every other public type in the file derives `Debug`: `ParseLanguageError` (line 418), `ParseChunkTypeError` (line 327), `SignatureStyle` (line 261), `LanguageRegistry` has no `Debug` either but it's a registry singleton. `LanguageDef` also lacks `Debug` — but that's harder (it contains raw function pointers which don't impl `Debug`). `InjectionRule` contains only `&'static str` and `Option<fn(...)>` — the function pointer field prevents auto-derive, but a manual `Debug` impl showing the `container_kind`, `content_kind`, and `target_language` fields (omitting the function pointer) would be consistent and useful for logging injection rule mismatches.
-- **Suggested fix:** Add a manual `impl Debug for InjectionRule` that shows `container_kind`, `content_kind`, `target_language`, and `detect_language: detect_language.is_some()`. Or at minimum add `#[derive(Debug)]` once Rust stabilizes function pointer debug (it already works for `Option<fn(...)>` in recent versions — check if `Option<fn(tree_sitter::Node, &str) -> Option<&'static str>>` derives `Debug`).
-
-#### `capture_name`→`ChunkType` mapping duplicated three times without shared abstraction
-- **Difficulty:** medium
-- **Location:** src/parser/calls.rs:314-329, src/parser/injection.rs:400-415, src/parser/chunk.rs (implicit via ChunkType)
-- **Description:** The mapping from tree-sitter capture name string (`"function"`, `"struct"`, etc.) to `ChunkType` is written out as a `match` arm in both `calls.rs` and `injection.rs`. `mod.rs` has `DEF_CAPTURES` for filtering, and `language/mod.rs` has `define_chunk_types!` which already encodes the name→variant mapping for `Display`/`FromStr`. The capture name is the same as the `ChunkType` serialization name (lowercase). So `cap_name.parse::<ChunkType>()` would work — but neither site uses it, both use manual match arms instead. The manual arms diverge: `"const" => ChunkType::Constant` (correct) vs the `ChunkType::from_str("const")` path which expects `"constant"` (the display string). This mismatch means a future `FromStr`-based refactor must account for the discrepancy.
-- **Suggested fix:** Either (a) add a separate `from_capture_name(s: &str) -> Option<ChunkType>` method that maps capture names (not display names) to variants, or (b) note the discrepancy in a comment at both match sites so a future refactor doesn't accidentally use `FromStr` which expects different strings. Low priority since the code is correct, but the duplication will cause drift.
-
-## Documentation
-
-#### CHANGELOG missing multi-grammar injection feature
-- **Difficulty:** easy
-- **Location:** CHANGELOG.md:8 (`[Unreleased]` section)
-- **Description:** The multi-grammar injection feature (commit `afcbed8`, PR #540) added `src/parser/injection.rs`, `InjectionRule` on `LanguageDef`, two-phase `parse_file` and `parse_file_relationships`, and HTML→JS/CSS script/style extraction. The `[Unreleased]` section is empty. This is the most significant feature addition since v0.26.0 and is completely undocumented in the CHANGELOG.
-- **Suggested fix:** Add to `[Unreleased]`: "Multi-grammar injection parsing — HTML `<script>` blocks now extract JS/TS function chunks; `<style>` blocks extract CSS chunks. Powered by tree-sitter's `set_included_ranges()`. `InjectionRule` on `LanguageDef` makes this extensible to other host languages."
-
-#### `html.rs` module comment claims Svelte/Vue/Astro support that doesn't exist
-- **Difficulty:** easy
-- **Location:** src/language/html.rs:4
-- **Description:** The module-level doc comment reads "the outer grammar for multi-grammar parsing (Svelte, Vue, Astro)". Svelte (`.svelte`), Vue (`.vue`), and Astro (`.astro`) file extensions are not registered anywhere in the codebase — no `Language` variant, no extensions in the registry, no injection rules. The comment implies these formats work, but they don't.
-- **Suggested fix:** Remove "(Svelte, Vue, Astro)" or replace with "(e.g., HTML with embedded `<script>` and `<style>` blocks)".
-
-#### `parser/mod.rs` module comment omits `injection` and `markdown` submodules
-- **Difficulty:** easy
-- **Location:** src/parser/mod.rs:1-7
-- **Description:** The module-level doc comment lists only three submodules: `types`, `chunk`, `calls`. The module has two additional submodules: `injection` (multi-grammar injection, added in the same PR) and `markdown` (custom heading-based parser). Both are `pub` or `pub(crate)` and important enough to document.
-- **Suggested fix:** Add to the module doc comment: "- `injection` — multi-grammar injection (HTML→JS/CSS via `set_included_ranges()`)" and "- `markdown` — heading-based Markdown parser with cross-reference extraction".
-
-#### README does not mention multi-grammar injection in HTML language description
-- **Difficulty:** easy
-- **Location:** README.md:427
-- **Description:** The Supported Languages section describes HTML as "headings, semantic landmarks, script/style blocks, id'd elements". The script/style description implies only `Module`-type chunks, but the actual behavior is that inline `<script>` blocks extract JavaScript (or TypeScript) function/class chunks, and `<style>` blocks extract CSS rule chunks. The brief description undersells the feature and is technically inaccurate for inline scripts.
-- **Suggested fix:** Change to: "HTML (headings, semantic landmarks, script/style blocks, id'd elements; inline `<script>` blocks extract JS/TS functions, `<style>` blocks extract CSS rules via multi-grammar injection)"
-
-#### CHANGELOG v0.24.0 HTML entry omits multi-grammar injection design (minor)
-- **Difficulty:** easy
-- **Location:** CHANGELOG.md:40
-- **Description:** v0.24.0 added HTML support and lists "script/style blocks (Module)" — which was the initial behavior before injection was added. This entry is not wrong (it was accurate at v0.24.0 time), but once the `[Unreleased]` entry is added, the v0.24.0 entry may confuse readers about when injection was introduced. Low severity since version history is linear.
-- **Suggested fix:** No change needed if `[Unreleased]` is updated correctly; the history is accurate for that version.
-
-## Error Handling
-
-#### EH-1: `extract_calls` silently discards `set_language` and parse failures without logging
-- **Difficulty:** easy
-- **Location:** src/parser/calls.rs:30-37
-- **Description:** `extract_calls` returns an empty `Vec` on two failures with zero observability: (1) `parser.set_language(&grammar).is_err()` at line 30 — no `tracing::warn!`, the caller sees an empty result indistinguishable from "language has no calls"; (2) `parser.parse(source, None)` returning `None` at line 36 — also silent. In both cases a call graph edge is silently dropped. The sibling method `parse_injected_chunks` logs both of these failure modes (`injection.rs:213-229`) — `extract_calls` is inconsistent.
-- **Suggested fix:** Add `tracing::warn!(language = %language, "set_language failed in extract_calls")` and `tracing::warn!(language = %language, "parse returned None in extract_calls")` to the respective arms.
-
-#### EH-2: `get_query` / `get_call_query` / `get_type_query` use `{:?}` (Debug) instead of `{}` (Display) for tree-sitter query compilation errors
-- **Difficulty:** easy
-- **Location:** src/parser/mod.rs:95, 113, 131
-- **Description:** All three query-get functions use `format!("{:?}", e)` when building the `QueryCompileFailed` error message. `tree_sitter::QueryError` implements `Display` with a human-readable message including the erroneous pattern text and byte offset; the `Debug` impl wraps it in a struct prefix that clutters the output. When a query compilation fails (e.g., due to a new language's malformed query string), the error message surfaced to the user or logs will be harder to read than necessary.
-- **Suggested fix:** Change `format!("{:?}", e)` to `format!("{e}")` at lines 95, 113, and 131 in `src/parser/mod.rs`.
-
-#### EH-3: `parse_injected_relationships` `get_call_query` `Err(_)` arm silently discards real errors with a misleading comment
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:340-346
-- **Description:** The `Err(_)` arm drops the error with the comment "No call query is not unusual (some languages don't have one)". However, since injection already guards that the inner language has a grammar (`lang.def().grammar.is_some()` at `injection.rs:64`), and all grammar-having languages are populated into `call_queries` (`mod.rs:71`), the only real `Err` case here is a query compilation failure — a genuine bug, not a legitimately absent query. The comment misidentifies the error class and there is no warning logged. Contrast with the `get_chunk_query` arm directly above (lines 334-337), which correctly logs a warning.
-- **Suggested fix:** Change `Err(_) => { ... }` to `Err(e) => { tracing::warn!(error = %e, language = %inner_language, "Call query compilation failed for injection language"); return Ok((vec![], vec![])); }`.
-
-#### EH-4: `parse_file_relationships` relies on undocumented invariant that empty tree-sitter query patterns compile successfully
-- **Difficulty:** medium
-- **Location:** src/parser/calls.rs:258
-- **Description:** `parse_file_relationships` calls `self.get_call_query(language)?` for all grammar-having languages including those with `call_query: None` (e.g., HTML, `html.rs:225`). This works today because `call_query_pattern()` returns `""` for `None`, and empty tree-sitter patterns happen to compile without error. The invariant is nowhere documented. If a future tree-sitter version changes this behavior, or a new language has `grammar: Some(...)` with `call_query: None` where the empty pattern causes unexpected match behavior, this will silently break call graph extraction. The same implicit dependency exists in `parse_injected_relationships` (injection.rs:340). By contrast, `extract_calls` at line 24-26 explicitly short-circuits for grammar-less languages — the guard pattern was clearly intentional but was not extended to the newer paths.
-- **Suggested fix:** After language detection at line 238, add an explicit guard: `if language.def().call_query.is_none() { /* no call extraction for this language */ }` before the call-matches loop. This makes the skip-on-empty-query intent explicit and eliminates the undocumented invariant.
+Date: 2026-03-06
+Codebase: v0.28.1 + Vue + markdown fenced blocks + flaky CI fix (uncommitted)
 
 ## Observability
 
-#### OB-1: `parse_injected_chunks` span missing file path — can't identify which file's injection failed in logs
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:199-204
-- **Description:** The `parse_injected_chunks` span records `language` and `range_count` but not the file path. When a warning fires inside this function (e.g., "Failed to set included ranges for injection" at line 213, or "Failed to extract injected chunk" at line 272), the log entry has no file context. In a large index run, multiple HTML files may trigger injection parsing in parallel; without the path you can't correlate which file caused the failure. The parent `parse_file` span does record the path, but spans are only useful for correlation when a tracing subscriber that supports nested spans (e.g., `tracing-tree`) is active. Direct log events (via `tracing::warn!`) do not inherit parent span fields automatically.
-- **Suggested fix:** Add `path = %path.display()` to the span at `injection.rs:199`. `parse_injected_chunks` already receives `path: &Path` as a parameter, so this is a one-line change.
+#### OB-1: `store/calls.rs` — 15 public functions missing `info_span!` at entry
+- **Difficulty:** medium
+- **Location:** src/store/calls.rs (multiple: `upsert_calls`:160, `upsert_calls_batch`:201, `get_callees`:252, `call_stats`:266, `upsert_function_calls`:283, `get_callers_full`:346, `get_callees_full`:378, `get_callers_with_context`:459, `get_callers_with_context_batch`:491, `get_callers_full_batch`:542, `get_callees_full_batch`:596, `prune_stale_calls`:1031, `find_shared_callers`:1138, `find_shared_callees`:1169, `function_call_stats`:1197)
+- **Description:** Only 5 of 20 public functions in `store/calls.rs` have `info_span!` entry (`get_call_graph`, `find_dead_code`, `find_test_chunks`, `get_caller_counts_batch`, `get_callee_counts_batch`). The remaining 15 public methods — including write-path functions like `upsert_calls_batch` and `upsert_function_calls`, and frequently-called read-path functions like `get_callers_full_batch` and `get_callees_full_batch` — have zero tracing. This makes it impossible to correlate slow queries or indexing bottlenecks with specific store operations.
+- **Suggested fix:** Add `let _span = tracing::info_span!("function_name", relevant_param).entered();` to each. For write paths, include count; for read paths, include the query key. Use `debug_span!` for simple getters that are called in hot loops (e.g., `get_callees`).
 
-#### OB-2: Silent injection replacement — no log when injection actually substitutes outer chunks
+#### OB-2: `store/types.rs` — All 9 public functions missing `info_span!`
 - **Difficulty:** easy
-- **Location:** src/parser/mod.rs:241-250
-- **Description:** When injection parsing succeeds (`inner_chunks.is_empty()` is false), the code silently removes outer chunks and extends with inner chunks. There is no `tracing::debug!` or `tracing::info!` recording that the replacement happened, how many outer chunks were removed, or how many inner chunks were added. This makes it impossible to diagnose unexpected injection behaviour (e.g., outer HTML chunks disappearing) without adding a debugger or temporarily adding prints. By contrast, the zero-inner-chunks fallback path in `parse_injected_chunks` logs `"Injection produced no chunks, keeping outer"` (line 282-286) — the success path has worse observability than the fallback path.
-- **Suggested fix:** Add inside the `Ok(inner_chunks) if !inner_chunks.is_empty()` arm: `tracing::debug!(language = %group.language, removed = before_count, added = inner_chunks.len(), "Injection replaced outer chunks");` where `before_count` is captured before `chunks.retain(...)`.
+- **Location:** src/store/types.rs (all of: `upsert_type_edges`:54, `upsert_type_edges_for_file`:106, `get_type_users`:227, `get_types_used_by`:254, `get_type_users_batch`:282, `get_types_used_by_batch`:343, `type_edge_stats`:394, `find_shared_type_users`:455, `prune_stale_type_edges`:489)
+- **Description:** Only `get_type_graph` (line 415) has a span. The entire type-edge subsystem — upsert, query, batch, stats, pruning — is invisible to tracing. `get_type_graph` was fixed in v0.26.0 audit but the rest were missed.
+- **Suggested fix:** Add `info_span!` to each function. Batch functions should include count. The `prune_stale_type_edges` and `upsert_type_edges_for_file` write paths are especially important for diagnosing indexing performance.
 
-#### OB-3: `parse_injected_chunks` does not log chunk count on success
+#### OB-3: `store/notes.rs` — 7 of 8 public functions missing `info_span!`
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:288
-- **Description:** `parse_injected_chunks` logs only the empty case (`"Injection produced no chunks, keeping outer"`) but emits nothing when it successfully extracts chunks. The span exits silently with an `Ok(chunks)` where `chunks` may contain 0–N entries. The sibling `parse_injected_relationships` has the same gap (line 478). For debugging "why did my HTML file not produce JS function chunks?", you'd see zero log output even when the function ran successfully and returned chunks. The `gather_with_graph` function provides a useful counter-example with `tracing::info!(final_chunks = chunks.len(), "Gather complete")`.
-- **Suggested fix:** Before `Ok(chunks)` at line 288, add: `tracing::debug!(language = %inner_language, chunk_count = chunks.len(), "Injection chunks extracted");`. Similarly before line 478 add: `tracing::debug!(language = %inner_language, call_count = call_results.len(), type_count = type_results.len(), "Injection relationships extracted");`.
+- **Location:** src/store/notes.rs (`upsert_notes_batch`:99, `replace_notes_for_file`:187, `notes_need_reindex`:234, `note_count`:257, `note_stats`:272, `list_notes_summaries`:297, `note_embeddings`:330)
+- **Description:** Only `search_notes` (line 141) has a span. The write path (`upsert_notes_batch`, `replace_notes_for_file`) and stats functions are untraceable. Note indexing failures are hard to diagnose because there's no span context showing which operation was happening.
+- **Suggested fix:** Add spans with relevant structured fields (count for batch ops, path for file ops).
 
-#### OB-4: `find_injection_ranges` uses `debug_span` while its callers use `info_span` — inconsistent span level for a hot parse path
+#### OB-4: `store/chunks.rs` — 16 public functions missing `info_span!`
+- **Difficulty:** medium
+- **Location:** src/store/chunks.rs (multiple: `needs_reindex`:171, `upsert_chunks_and_calls`:323, `count_stale_files`:546, `list_stale_files`:592, `get_by_content_hash`:727, `get_embeddings_by_hashes`:750, `chunk_count`:793, `stats`:807, `get_chunks_by_origin`:902, `get_chunks_by_origins_batch`:926, `get_chunks_by_name`:970, `get_chunks_by_names_batch`:994, `search_chunks_by_signature`:1041, `get_chunk_with_embedding`:1080, `get_chunks_by_ids`:1104, `get_embeddings_by_ids`:1124, `all_chunk_identities`:1270, `all_chunk_identities_filtered`:1278, `embedding_batches`:1475)
+- **Description:** 6 of 22 public functions have spans. The remaining 16 include critical operations: `upsert_chunks_and_calls` (the combined write path used by `parse_file_all`), `stats` (used by `cmd_stats`), multiple batch getters. The `embedding_batches` iterator is used during HNSW index build and has no visibility.
+- **Suggested fix:** Add spans. Use `debug_span!` for simple getters called in tight loops (`chunk_count`, `get_by_content_hash`), `info_span!` for batch operations and write paths.
+
+#### OB-5: `parse_markdown_chunks` and `parse_markdown_references` missing spans
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:41
-- **Description:** `find_injection_ranges` uses `tracing::debug_span!` while every other parse-path function that's called per-file uses `tracing::info_span!` (e.g., `parse_file` at `mod.rs:141`, `parse_injected_chunks` at `injection.rs:199`, `parse_injected_relationships` at `injection.rs:298`, `parse_file_relationships` at `calls.rs:206`). This inconsistency means that at `RUST_LOG=info`, the span for the tree-scan phase disappears from tracing output even though all surrounding spans are visible. Since `find_injection_ranges` is called once per file with injections (currently all HTML files), it's not a hot-loop function — the debug level provides no performance benefit.
-- **Suggested fix:** Change `tracing::debug_span!("find_injection_ranges", ...)` to `tracing::info_span!(...)` at line 41 for consistency with adjacent parse-path spans.
+- **Location:** src/parser/markdown.rs:39, src/parser/markdown.rs:178
+- **Description:** The markdown parser's two main public functions have no tracing whatsoever (zero `info_span!`, zero `warn!` in the entire 1017-line file). Markdown parsing can be slow for large files with many headings, and failures in heading detection or reference extraction are silent. Compare with `parse_file` in `parser/mod.rs` which has full span coverage.
+- **Suggested fix:** Add `info_span!("parse_markdown_chunks", path = %path.display())` and `info_span!("parse_markdown_references", path = %path.display())`. Add `warn!` for degenerate cases (zero headings on large files, heading hierarchy inversions).
 
-#### OB-5: `scout_core` — the actual scout computation function — has no entry span
+#### OB-6: `parse_notes` and `rewrite_notes_file` missing spans
 - **Difficulty:** easy
-- **Location:** src/scout.rs:199
-- **Description:** `scout_core` is the primary compute function for the `cqs scout` command: it does the search, caller count query, staleness check, and note retrieval. Its wrappers `scout_with_options` (line 135) and `scout_with_resources` (line 170) each have their own `info_span!`. But `scout_core` itself has no span, so when called from batch mode via `dispatch_scout` → `scout` → `scout_with_options` → `scout_core`, the per-result timing is invisible. At `RUST_LOG=cqs=debug`, you'd see the wrapper span but can't isolate which phase inside `scout_core` is slow (search vs. caller counts vs. staleness).
-- **Suggested fix:** Add `let _span = tracing::info_span!("scout_core", task_len = task.len(), limit).entered();` at the start of `scout_core`. The wrapper spans will still appear in the hierarchy; this adds a nested span for the actual computation.
+- **Location:** src/note.rs:133, src/note.rs:183
+- **Description:** Both public note I/O functions (`parse_notes`, `rewrite_notes_file`) lack entry spans. Lock contention, file size guard rejections, and TOML parse failures all happen without span context. The `rewrite_notes_file` function holds an exclusive lock for an entire read-modify-write cycle — tracing would help diagnose lock-wait bottlenecks.
+- **Suggested fix:** Add `info_span!("parse_notes", path = %path.display())` and `info_span!("rewrite_notes_file", path = %notes_path.display())`.
 
-#### OB-6: `cmd_read_focused` has no entry span
+#### OB-7: `HnswIndex::build`, `HnswIndex::save`, `HnswIndex::load` missing spans
 - **Difficulty:** easy
-- **Location:** src/cli/commands/read.rs:312
-- **Description:** `cmd_read_focused` is the implementation of `cqs read --focus <fn>` — a non-trivial operation that opens the project store, parses notes, builds focused output including caller hints and type dependencies. `cmd_read` (line 267) has `let _span = tracing::info_span!("cmd_read", path).entered()`, but `cmd_read_focused` — called from `cmd_read` when `--focus` is given — has no span of its own. All warnings emitted inside `cmd_read_focused` (e.g., "Failed to compute hints" at line 139, "Failed to query type deps" at line 202) are therefore not associated with any named span in tracing output.
-- **Suggested fix:** Add `let _span = tracing::info_span!("cmd_read_focused", focus).entered();` at the start of `cmd_read_focused` (line 312).
+- **Location:** src/hnsw/build.rs:43, src/hnsw/persist.rs:117, src/hnsw/persist.rs:305
+- **Description:** The three core HNSW lifecycle operations — build, save, load — have `tracing::info!` log messages but no `info_span!` entry spans. This means they show up in logs as isolated messages without timing or nesting context. `build_batched` (line 108) also lacks a span. The `HnswIndex::save` and `HnswIndex::load` do disk I/O and checksum verification — timing spans would help diagnose slow index save/load operations.
+- **Suggested fix:** Add `info_span!` at entry to each. Include `n_vectors` for build, `basename` and `dir` for save/load.
 
-#### OB-7: Oversized injected chunks skipped silently — no log matching `parse_file`'s own oversized-chunk debug log
+#### OB-8: `CagraIndex::build` and `CagraIndex::build_from_store` missing spans
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:252-256
-- **Description:** `parse_injected_chunks` silently skips oversized chunks (`> 100_000` bytes) with a bare `continue` at line 255, no log. The regular `parse_file` path logs this at debug level: `tracing::debug!("Skipping {} ({} bytes > {} max)", chunk.id, ...)` (mod.rs:205-212). Users debugging why an injected JS function is missing from their HTML index would see nothing in logs. The inconsistency is especially notable because both paths use the same `MAX_CHUNK_BYTES` constant.
-- **Suggested fix:** Add `tracing::debug!(chunk_id = %chunk.id, size = chunk.content.len(), max = MAX_CHUNK_BYTES, "Skipping oversized injected chunk");` before `continue` at line 255.
+- **Location:** src/cagra.rs:79, src/cagra.rs:406
+- **Description:** Both GPU index build functions use `tracing::info!` messages but no entry span. GPU operations can be slow (cuVS initialization, data transfer, build) — spans would provide timing visibility. The `search` method (line 152) also lacks a span, making GPU search latency invisible to tracing.
+- **Suggested fix:** Add `info_span!("cagra_build", n_vectors)` and `info_span!("cagra_search", k)`.
 
-## Robustness
-
-#### RB-1: `parse_injected_relationships` early-returns on `get_call_query` failure, silently skipping type extraction for the same language
+#### OB-9: `load_references` missing entry span
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:340-346
-- **Description:** When `get_call_query(inner_language)` returns `Err`, the function immediately returns `Ok((vec![], vec![]))` — discarding not just call extraction but also type extraction. Call queries and type queries are independent operations (one uses `call_query_pattern()`, the other `type_query_pattern()`). If the inner language has `type_query: Some(...)` but `call_query: None`, the type extraction at injection.rs:459-475 is never reached. Today this doesn't cause a user-visible regression because CSS (the only injection target without a call_query) also has no type_query — so there is nothing to extract. But for any future injection language with types but no calls (e.g., a CSS preprocessor or DSL), this silently produces no `ChunkTypeRefs` even though the type query would succeed. The finding is distinct from EH-3 (which only requests a warning be added) — the structural bug is that the early return conflates two independent failure modes into one early exit.
-- **Suggested fix:** Split the call query handling from the early return: if `get_call_query` fails, assign an empty call result and continue to type extraction. Structure as:
-  ```rust
-  let has_call_query = match self.get_call_query(inner_language) {
-      Ok(q) => Some(q),
-      Err(e) => { tracing::warn!(...); None }
-  };
-  // ... then proceed to type extraction regardless
-  ```
-  Type extraction (lines 459-475) should run whether or not a call query exists.
+- **Location:** src/reference.rs:42
+- **Description:** `load_references` opens and loads all reference Store+HNSW indexes at startup. It has `warn!` for individual reference failures but no entry span. For projects with multiple large references, this can be a significant startup cost with no timing visibility.
+- **Suggested fix:** Add `info_span!("load_references", count = configs.len())`.
 
-#### RB-2: `walk_for_containers` leaves cursor state undefined if two rules share the same `container_kind` — future injection rules would add duplicate ranges
+#### OB-10: `enumerate_files` missing entry span
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:49-53, 83-94
-- **Description:** `find_injection_ranges` calls `walk_for_containers` once per rule in a loop, resetting the cursor to root before each call (line 51). For two rules with the same `container_kind` but different `content_kind` (e.g., two rules targeting `"script_element"` but looking for different content children), both walks would find the same container nodes. Each walk would push the container's content range to `entries`. The grouping pass (lines 60-96) then groups by resolved language — if both rules resolve to the same language, the same byte range is added twice to one `InjectionGroup.ranges`. Calling `set_included_ranges` with duplicate ranges is not explicitly documented as safe in tree-sitter, and may cause duplicate chunk extraction (same JS function appearing twice in the output). No current HTML injection rule has this property (script and style have different container_kinds), but the constraint is not enforced or documented. The issue is especially subtle because it would be a silent data quality regression, not a crash.
-- **Suggested fix:** Add a deduplication step in the grouping pass: after `group.ranges.push(range)`, check `if group.ranges.iter().filter(|r| r.start_byte == range.start_byte).count() > 1 { tracing::warn!("duplicate injection range"); group.ranges.pop(); }`. Alternatively, document in `InjectionRule` that two rules must not produce overlapping byte ranges for the same language.
+- **Location:** src/cli/files.rs:11
+- **Description:** `enumerate_files` walks the project directory to find indexable files. This is called during `cqs index` and `cqs watch`, and can be slow on large repos or network mounts. No span means slow file enumeration is invisible.
+- **Suggested fix:** Add `info_span!("enumerate_files")` and log the file count on completion.
 
-#### RB-3: `chunk_overlaps_container` does not handle the case where `chunk_start == 0` and `container_start == 0` — works, but relies on u32 arithmetic that wraps silently on empty files
+#### OB-11: `extract_fenced_blocks` missing span — markdown injection is silent
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:486-494
-- **Description:** The containment check `chunk_start >= start && chunk_end <= end` is arithmetically sound for all valid inputs (line numbers are 1-indexed u32, container_start >= 1). However, if tree-sitter ever returns a node with `start_position().row == 0` (which happens for the root node of an empty parse), and `node.end_position().row as u32 + 1` overflows on a file with exactly u32::MAX lines (2^32 - 1 ≈ 4 billion lines), the `+ 1` wraps to 0 in release mode. This would cause `chunk_end(0) <= end(some_valid_u32)` to be true, spuriously removing chunks. This is purely theoretical — no file has 4 billion lines, and the 50 MB file size limit prevents it. However, the code at injection.rs:130-131 computes both `node.start_position().row as u32 + 1` and `node.end_position().row as u32 + 1` without overflow protection, while `parse_file` has an explicit 50 MB guard. The overflow is suppressed by the file size limit, but this is an undocumented dependency between the two limits.
-- **Suggested fix:** Informational — document with a comment at injection.rs:130 that the `+ 1` cannot overflow because `parse_file`'s 50 MB size limit prevents files with enough lines to reach u32::MAX. No code change required.
+- **Location:** src/parser/markdown.rs:1017
+- **Description:** `extract_fenced_blocks` is the entry point for parsing fenced code blocks from markdown (the new multi-grammar injection feature). It has no tracing. The downstream `parse_fenced_blocks` (line 600 in `parser/mod.rs`) has a span, but blocks that fail language detection or are skipped are silent.
+- **Suggested fix:** Add `info_span!("extract_fenced_blocks")` and `debug!` for skipped blocks with unrecognized languages.
 
-#### RB-4: `source[cap.node.byte_range()]` in `parse_injected_relationships` panics on invalid byte boundary — inconsistent with `html.rs` which uses `utf8_text` returning `Result`
+#### OB-12: Inconsistent span levels — `find_injection_ranges` uses `info_span!` but is a hot inner loop
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:391, 434
-- **Description:** Two sites in `parse_injected_relationships` use direct string indexing `source[c.node.byte_range()]` which panics (with an index-out-of-range or invalid-UTF8-boundary message) if tree-sitter reports a byte range that falls on a non-char boundary. By contrast, `html.rs` in `find_attribute_value` and `extract_element_text` uses `node.utf8_text(source.as_bytes()).unwrap_or("")`, which returns a `Result` and handles the error gracefully. The inconsistency is an auditor-visible code smell: the same tree-sitter API is used two different ways in the same PR. In practice, tree-sitter guarantees byte positions are on valid UTF-8 boundaries for valid UTF-8 input (and the source has already been validated by `read_to_string`), so this is not a practical panic risk. But a tree-sitter bug or a non-UTF-8-aligned grammar would cause a panic rather than a graceful fallback. The parallel code in `calls.rs` (lines 56, 152, 304, 348) also uses direct indexing — the pattern is consistent in `calls.rs` but `html.rs` breaks the pattern.
-- **Suggested fix:** Change the two injection.rs sites to use `utf8_text` with a fallback: `cap.node.utf8_text(source.as_bytes()).unwrap_or("<?>")`. Low priority since the panic path is unreachable with valid input, but it makes the injection code consistent with `html.rs` and eliminates a theoretical panic in the production path.
+- **Location:** src/parser/injection.rs:55
+- **Description:** `find_injection_ranges` uses `info_span!` despite being called per-file during parsing (inside the rayon parallel iterator in `parse_file`). For a codebase with 1000 HTML files, this emits 1000 info-level spans. Compare with `extract_types` in `calls.rs:125` which correctly uses `info_span!` because it's called once per file. The issue is that `find_injection_ranges` is called per injection rule per file, not per file.
+- **Suggested fix:** Change to `debug_span!` to reduce noise at info level. Callers already have `info_span!` (e.g., `parse_file`, `parse_file_all`).
+
+## API Design
+
+#### AD-1: CLI vs batch default `--limit` divergence — Scout (5 vs 10), Where (3 vs 5)
+- **Difficulty:** easy
+- **Location:** src/cli/mod.rs:619 (Scout limit=5), src/cli/batch/commands.rs:202 (Scout limit=10), src/cli/mod.rs:608 (Where limit=3), src/cli/batch/commands.rs:213 (Where limit=5)
+- **Description:** The `scout` command defaults to `--limit 5` in CLI mode but `--limit 10` in batch mode. The `where` command defaults to `--limit 3` in CLI and `--limit 5` in batch. Users switching between `cqs scout` and batch `scout` get different result counts with no flag change. This is confusing and makes scripted vs interactive use inconsistent.
+- **Suggested fix:** Align defaults. Use `5` for both Scout and `3` for both Where (CLI values are the more conservative/tested defaults).
+
+#### AD-2: `SearchResult` dual serialization — `#[derive(Serialize)]` nests, `to_json()` flattens
+- **Difficulty:** medium
+- **Location:** src/store/helpers.rs:193 (`#[derive(Serialize)]`), src/store/helpers.rs:206 (`to_json()`)
+- **Description:** `SearchResult` has both `#[derive(serde::Serialize)]` and a manual `to_json()` method that produce different JSON shapes. The derive nests: `{ "chunk": { "file": ..., "name": ... }, "score": ... }`. The manual method flattens: `{ "file": ..., "name": ..., "score": ... }`. All current callers use the manual `to_json()` / `to_json_relative()`, so the `Serialize` derive produces a shape nobody consumes. Same issue on `NoteSearchResult` (line 333).
+- **Suggested fix:** Add `#[serde(flatten)]` on the `chunk` field in `SearchResult` so the `Serialize` output matches the flat shape. Then callers can use `serde_json::to_value()` instead of the manual `to_json()`. Or remove the `Serialize` derive if it's truly unused.
+
+#### AD-3: 5 store types missing `Serialize` — manual JSON assembly required
+- **Difficulty:** easy
+- **Location:** src/store/helpers.rs:310 (`NoteStats`), src/store/helpers.rs:357 (`StaleFile`), src/store/helpers.rs:368 (`StaleReport`), src/store/helpers.rs:379 (`ParentContext`), src/store/calls.rs:77 (`CallStats`)
+- **Description:** The v0.19.4 audit (AD-3) added `Serialize` to core types (`ChunkSummary`, `CallerInfo`, etc.) but missed these 5. `StaleFile` and `StaleReport` force `cmd_stale` to build JSON manually (stale.rs:29-53). `NoteStats` forces `cmd_health` to destructure fields. `CallStats` forces `cmd_stats` to build JSON manually. This was the exact pattern the previous audit sought to eliminate.
+- **Suggested fix:** Add `#[derive(serde::Serialize)]` to all 5 types. For `StaleFile`, add `#[serde(serialize_with = "...")]` to normalize the `origin` path, or rename to `file` with a `#[serde(rename)]`.
+
+#### AD-4: Module visibility inconsistency — `diff_parse`, `drift`, `review` are `pub mod` but peers are `pub(crate)`
+- **Difficulty:** easy
+- **Location:** src/lib.rs:67 (`diff_parse`), src/lib.rs:68 (`drift`), src/lib.rs:78 (`review`)
+- **Description:** `diff_parse`, `drift`, and `review` are declared as `pub mod` while their functional peers (`gather`, `scout`, `onboard`, `related`, `where_to_add`, `task`, `impact`, `diff`) are `pub(crate)`. There's no external consumer (CLAUDE.md: "nobody else is using cqs but us"), so these should be `pub(crate)` with selective re-exports. `drift` already has selective re-exports via `pub use drift::{...}` making the `pub mod` redundant.
+- **Suggested fix:** Change `pub mod diff_parse` → `pub(crate) mod diff_parse`, `pub mod drift` → `pub(crate) mod drift`, `pub mod review` → `pub(crate) mod review`. Add `pub use` re-exports for any items needed by the binary crate.
+
+#### AD-5: 5 command handlers still accept unused `_cli: &Cli` parameter
+- **Difficulty:** easy
+- **Location:** src/cli/commands/task.rs:19, src/cli/commands/impact_diff.rs:18, src/cli/commands/related.rs:24, src/cli/commands/onboard.rs:9, src/cli/commands/scout.rs:9
+- **Description:** Prior audits (v0.19.2 AD-5, v0.19.4 AD-6) fixed 6+ handlers that accepted unused `_cli: &Cli`. 5 remain. These parameters add noise to the API and complicate refactoring (callers must pass `&cli` even though the handler ignores it).
+- **Suggested fix:** Remove the `_cli` parameter from all 5 handlers. Update the dispatch in `cli/mod.rs` to not pass `&cli` to these commands.
+
+#### AD-6: Inconsistent `_with_*` naming across library functions
+- **Difficulty:** medium
+- **Location:** src/gather.rs:313 (`_with_graph`), src/scout.rs:135 (`_with_options`), src/scout.rs:170 (`_with_resources`), src/task.rs:91 (`_with_resources`), src/where_to_add.rs:125 (`_with_embedding`), src/where_to_add.rs:147 (`_with_options`), src/impact/diff.rs:86 (`_with_graph`), src/impact/hints.rs:21 (`_with_graph`), src/impact/hints.rs:37 (`_with_graph_depth`)
+- **Description:** The "bring your own dependency" pattern uses inconsistent suffixes: `_with_graph` (pre-loaded call graph), `_with_resources` (pre-loaded embedder + graph), `_with_options` (configurable parameters), `_with_embedding` (pre-computed embedding), `_with_graph_depth` (graph + depth override). There's no pattern a new contributor can follow. `_with_resources` and `_with_graph` serve different abstraction levels but their names don't indicate this.
+- **Suggested fix:** Standardize on a convention. Suggestion: `_with_graph` when only the call graph is pre-loaded, `_with_context` when multiple shared resources (embedder, graph, etc.) are pre-loaded, `_with_options` when the function accepts a config struct. Document the convention in CONTRIBUTING.md. Not urgent — functional correctness is fine.
+
+#### AD-7: `DiffHunk` missing `Serialize` derive
+- **Difficulty:** easy
+- **Location:** src/diff_parse.rs:14
+- **Description:** `DiffHunk` is a `pub` type in a `pub mod` with no `Serialize`. The `impact-diff` command manually constructs JSON for diff hunks. Since `impact-diff` outputs changed functions (not raw hunks) this is low-impact, but it breaks the pattern established by other output types.
+- **Suggested fix:** Add `#[derive(serde::Serialize)]` to `DiffHunk`.
+
+## Error Handling
+
+#### EH-1: `parse_fenced_blocks` silently skips `set_language`, `parse`, and `get_query` failures
+- **Difficulty:** easy
+- **Location:** src/parser/mod.rs:618-630
+- **Description:** Three `continue` statements silently skip fenced code blocks when `set_language` fails (grammar/ABI mismatch), `parse` returns None (tree-sitter timeout/cancellation), or `get_query` fails (query compilation error). None of these emit a `tracing::warn!` or `debug!`. Compare with `parse_file` at line 252 which logs `warn!` for chunk extraction failures, and `parse_injected_chunks` at line 294 which logs injection failures. Fenced block failures are completely invisible.
+- **Suggested fix:** Add `tracing::debug!` for each `continue` path. Use `debug!` (not `warn!`) because fenced blocks with invalid content are common in documentation.
+
+#### EH-2: `serde_json::to_value(c).ok()` silently drops chunks from JSON output (4 locations)
+- **Difficulty:** easy
+- **Location:** src/task.rs:249, src/cli/batch/handlers.rs:414, src/cli/commands/gather.rs:117, src/cli/commands/task.rs:375
+- **Description:** Four locations use `.filter_map(|c| serde_json::to_value(c).ok())` to serialize chunks for JSON output. If serialization fails, the chunk is silently dropped from results. Since `ChunkSummary` derives `Serialize`, failures are unlikely in practice -- but when they do happen (e.g., NaN float values, invalid UTF-8 in cached data), the user gets fewer results than expected with no diagnostic.
+- **Suggested fix:** Replace `.ok()` with `.map_err(|e| tracing::warn!(error = %e, "Failed to serialize chunk")).ok()` so failures are visible in tracing output.
+
+#### EH-3: `config.rs` uses `map_err(|e| anyhow!(..., e))` instead of `.with_context()` -- loses error chain
+- **Difficulty:** easy
+- **Location:** src/config.rs:294, src/config.rs:315
+- **Description:** `add_reference_to_config` converts TOML parse and serialize errors via `.map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", config_path.display(), e))`. This format-stringifies the source error, losing the `#[source]` chain. `anyhow`'s display already appends source errors, so `.with_context()` would show both the context message AND the source error with proper chain formatting. Compare with `project.rs:44-45` which correctly uses `.with_context(|| format!(...))` for the same pattern.
+- **Suggested fix:** Replace with `.with_context(|| format!("Failed to parse {}", config_path.display()))` and `.with_context(|| "Failed to serialize reference config")`.
+
+#### EH-4: `StoreError::Runtime(String)` catch-all stringifies source errors (8 locations)
+- **Difficulty:** hard
+- **Location:** src/store/mod.rs:196, 291, 738, 749; src/store/notes.rs:27; src/store/helpers.rs:699
+- **Description:** `StoreError::Runtime(String)` is used as a catch-all for heterogeneous error types (tokio `io::Error`, `serde_json::Error`, poisoned lock `PoisonError`, embedding dimension mismatches). Each is converted via `.map_err(|e| StoreError::Runtime(e.to_string()))` or `format!`, losing the source error chain. Callers cannot downcast to determine the root cause. This is a design-level issue -- the variant covers 4+ distinct error types that could benefit from dedicated variants.
+- **Suggested fix:** Wrap as `Runtime(Box<dyn std::error::Error + Send + Sync>)` to preserve the source error chain while remaining backward-compatible. Or add dedicated variants for `io::Error` (already distinct from `Io(sqlx::Error)`) and `serde_json::Error`. Low priority since cqs has no external consumers.
+
+## Code Quality
+
+#### CQ-1: Dead code — `Store::get_chunks_by_name` (singular) superseded by batch version
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:970
+- **Description:** `get_chunks_by_name` has zero callers in production code. It was superseded by `get_chunks_by_names_batch` (line 994), which explicitly documents it exists "to avoid N+1 `get_chunks_by_name` calls." The singular version is only referenced in doc comments. No tests call it either.
+- **Suggested fix:** Delete the method. Update doc comments on `get_chunks_by_names_batch` to remove the reference.
+
+#### CQ-2: Dead code — `Store::search_chunks_by_signature` has no production callers
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:1041
+- **Description:** `search_chunks_by_signature` has zero callers in any CLI command, batch handler, or library function. It exists only as a definition + 3 test functions in `tests/store_test.rs` (lines 991-1084). The method was likely written for the `deps` command but never wired in — `deps` uses type-edge queries instead.
+- **Suggested fix:** Delete the method and its 3 tests. If signature search is needed later, it can be re-added with proper integration.
+
+#### CQ-3: CAGRA/HNSW index selection logic duplicated between `cmd_query` and `batch::build_vector_index`
+- **Difficulty:** easy
+- **Location:** src/cli/commands/query.rs:116-154, src/cli/batch/mod.rs:276-306
+- **Description:** The CAGRA threshold check, GPU availability test, fallback-to-HNSW logic, and associated log messages are duplicated verbatim. Both define `const CAGRA_THRESHOLD: u64 = 5000` locally. The batch module already has this extracted into `build_vector_index()`, but `cmd_query` inlines the same 38-line block. If the threshold or fallback logic changes, both sites must be updated independently.
+- **Suggested fix:** Move `build_vector_index` to a shared location (e.g., `cli/mod.rs` or a new `cli/index_util.rs`) and call it from both `cmd_query` and `cmd_batch`. The function signature `fn build_vector_index(store: &Store, cqs_dir: &Path) -> Result<Option<Box<dyn VectorIndex>>>` already works for both callers.
+
+#### CQ-4: `normalize_lang()` in markdown.rs duplicates language alias knowledge with no sync enforcement
+- **Difficulty:** medium
+- **Location:** src/parser/markdown.rs:957-1009
+- **Description:** `normalize_lang` maps 50+ fenced code block tags (e.g., `"py"` -> `"python"`, `"kt"` -> `"kotlin"`) to cqs language name strings. These output strings must match `Language::from_str` inputs (defined by the `define_languages!` macro in `language/mod.rs`), but there's no compile-time or test-time enforcement. Currently `ini` is missing from `normalize_lang` but present as a Language, meaning ````ini` blocks in markdown are silently skipped. When new languages are added, `normalize_lang` requires a manual update with no failing test to catch the omission.
+- **Suggested fix:** Add a test that verifies every non-`None` output of `normalize_lang` parses successfully via `Language::from_str`. Also add `"ini"` to `normalize_lang`. Optionally, consider deriving `normalize_lang` from `Language` metadata (each `LanguageDef` could include a `fenced_aliases: &[&str]` field), eliminating the parallel map entirely.
+
+#### CQ-5: Markdown `parse_markdown_chunks` — 3 near-identical Chunk constructions (14 fields each)
+- **Difficulty:** easy
+- **Location:** src/parser/markdown.rs:55-70 (no headings), 85-99 (one heading), 144-159 (section loop)
+- **Description:** The three code paths in `parse_markdown_chunks` each construct `Chunk { ... }` with all 14 fields. The structs differ only in `name`, `content`, and line range — `file`, `language`, `chunk_type`, `doc`, `parent_id`, `window_idx`, and `parent_type_name` are always the same values. This pattern is fragile: adding a new field to `Chunk` requires updating all 6 construction sites in `markdown.rs` (3 here + `extract_table_chunks` + `emit_table_window`).
+- **Suggested fix:** Extract a helper like `fn make_markdown_chunk(path: &Path, name: String, signature: String, content: String, line_start: u32, line_end: u32, parent_id: Option<String>) -> Chunk` that fills in the constant fields. This would reduce each construction site to a single function call.
+
+## Documentation
+
+#### DOC-1: `lib.rs` doc comment lists 49 languages but `define_languages!` has 50 (Vue missing from list)
+- **Difficulty:** easy
+- **Location:** src/lib.rs:10
+- **Description:** The `lib.rs` module doc comment lists 49 languages with "(49 languages)" label, but `define_languages!` in `src/language/mod.rs` now has 50 variants (Vue was added as uncommitted work). The doc comment enumerates every language but omits Vue. Similarly, `README.md` line 5 says "49 languages", line 477 says "49 languages", `Cargo.toml` line 6 says "49 languages", and `CONTRIBUTING.md` line 70 says "49 languages supported". The README Supported Languages section lists 49 bullet points without Vue.
+- **Suggested fix:** When Vue is committed, update the count to 50 in: `src/lib.rs:10`, `Cargo.toml:6`, `README.md:5,477`, `CONTRIBUTING.md:70`. Add Vue bullet to README Supported Languages section and `vue.rs` to CONTRIBUTING.md architecture listing.
+
+#### DOC-2: Feature flag doc comment in `language/mod.rs` missing 10 language flags
+- **Difficulty:** easy
+- **Location:** src/language/mod.rs:7-52
+- **Description:** The module doc comment lists feature flags for language support, but omits 10 that exist in the `define_languages!` macro and `Cargo.toml`: `lang-fsharp`, `lang-powershell`, `lang-html`, `lang-json`, `lang-xml`, `lang-ini`, `lang-svelte`, `lang-razor`, `lang-vbnet`, `lang-markdown`. The list covers 39 flags + `lang-all` but 49 languages (soon 50) exist. This makes the doc comment unreliable for determining available feature flags.
+- **Suggested fix:** Add the 10 missing feature flag entries to the doc comment. Keep them in the same order as the `define_languages!` invocation.
+
+#### DOC-3: `lib.rs` comment says "Internal modules — not part of public library API" but 3 modules are `pub`
+- **Difficulty:** easy
+- **Location:** src/lib.rs:63-83
+- **Description:** Line 63 says "Internal modules - not part of public library API" but `diff_parse` (line 67), `drift` (line 68), and `review` (line 78) are declared `pub mod` — making them part of the public API surface. The comment is misleading: a user looking at rustdoc would see these modules. Note: overlaps with AD-4 (API Design finding on visibility).
+- **Suggested fix:** Either change the 3 modules to `pub(crate)` (with selective re-exports), or update the comment to note the exceptions. The former is preferred per CLAUDE.md ("nobody else is using cqs but us").
+
+#### DOC-4: CLAUDE.md skills list incomplete — 9 of 14 skills listed
+- **Difficulty:** easy
+- **Location:** CLAUDE.md:33-41
+- **Description:** The Skills section lists 9 skills (`/update-tears`, `/groom-notes`, `/release`, `/audit`, `/pr`, `/cqs`, `/cqs-bootstrap`, `/cqs-plan`, `/reindex`) but `.claude/skills/` has 14 directories. Missing: `/docs-review`, `/migrate`, `/troubleshoot`, `/cqs-batch`, `/red-team`. These skills are listed in `CONTRIBUTING.md` but not in CLAUDE.md, so Claude agents won't know they exist unless they read CONTRIBUTING.md.
+- **Suggested fix:** Add the 5 missing skills to the CLAUDE.md Skills section:
+  - `/docs-review` -- check project docs for staleness
+  - `/migrate` -- schema version upgrades
+  - `/troubleshoot` -- diagnose common cqs issues
+  - `/cqs-batch` -- batch mode with pipeline syntax
+  - `/red-team` -- adversarial security audit
+
+#### DOC-5: CHANGELOG `[Unreleased]` empty despite uncommitted Vue + markdown fenced block features
+- **Difficulty:** easy
+- **Location:** CHANGELOG.md:8
+- **Description:** Significant uncommitted work (Vue language support, markdown fenced code block injection) is not documented in the `[Unreleased]` section. The CHANGELOG jumps from `[Unreleased]` (empty) to `[0.28.1]`. While not technically wrong (features aren't released), it means the features are invisible to anyone reading the CHANGELOG to understand current work.
+- **Suggested fix:** Add entries under `[Unreleased]` for the uncommitted features: Vue language support, markdown fenced code block extraction/injection.
+
+#### DOC-6: ROADMAP says "49 languages" but will be 50 when Vue commits
+- **Difficulty:** easy
+- **Location:** ROADMAP.md:5
+- **Description:** Line 5 says "49 languages" — correct for committed code, but the same file at line 74 describes Vue as "Next" while the implementation is already in the working tree. Minor inconsistency — when Vue is committed, the count needs updating here too.
+- **Suggested fix:** Update to "50 languages" when Vue is committed.
 
 ## Platform Behavior
 
-#### PB-1: `parse_file` and `parse_file_relationships` don't lowercase file extension before language lookup — uppercase extensions (`.HTML`, `.RS`) silently fail
+#### PB-1: `parse_markdown_chunks` / `parse_markdown_references` don't normalize CRLF — rely on caller invariant
 - **Difficulty:** easy
-- **Location:** src/parser/mod.rs:171-174, src/parser/calls.rs:236-238, src/cli/watch.rs:241-242, src/lib.rs:373-374
-- **Description:** `parse_file` and `parse_file_relationships` extract the file extension via `path.extension().and_then(|e| e.to_str())` and pass it verbatim to `Language::from_extension()`. The registry `by_extension` map is keyed on lowercase `&'static str` keys (e.g., `"html"`, `"rs"`). On case-insensitive filesystems (macOS, Windows, Windows-mounted NTFS in WSL), a file named `index.HTML` or `main.RS` is readable but `Language::from_extension("HTML")` returns `None` and the file is treated as unsupported, producing an `UnsupportedFileType` error. The converter module at `src/convert/mod.rs:165` handles this correctly with `.to_ascii_lowercase()` — the parser paths don't. The same gap exists in the watch path (`watch.rs:241-242`) where `supported_ext.contains(ext)` fails for uppercase extensions, silently skipping the file. The file-walk at `src/lib.rs:373-374` also lacks lowercasing and skips uppercase-extension files during initial index. In practice on Linux (ext4/btrfs) this doesn't trigger since the OS filesystem is case-sensitive and file names are normally lowercase, but on WSL2 with NTFS-backed `/mnt/c/` this is a real user-visible failure for any file with uppercase extension.
-- **Suggested fix:** Add `.map(|s| s.to_ascii_lowercase())` after `.and_then(|e| e.to_str())` in all three parser extraction points (`mod.rs:171`, `calls.rs:236`), adjust `watch.rs:241` similarly, and lowercase `ext` before `extensions.contains` in `lib.rs:373`. The `supported_ext` HashSet in `watch.rs` already contains lowercase strings, so the consumer side is correct — only the producer side needs fixing.
+- **Location:** src/parser/markdown.rs:39, src/parser/markdown.rs:178
+- **Description:** Both markdown parsing entry points accept `&str` source and immediately split on `.lines()`. While `.lines()` handles both `\n` and `\r\n`, the line count arithmetic for `line_start`/`line_end` uses `lines.len()` — if a caller passes un-normalized source, the line numbers are correct (Rust's `.lines()` strips both), but the `content` reconstructed via `lines[start..end].join("\n")` discards `\r` characters, causing `content_hash` to differ from a re-read of the same file with different line endings. In practice, all current callers (`parse_file`, `parse_file_all`) normalize CRLF before calling, but this invariant is undocumented and fragile — `parse_markdown_chunks` is `pub` and could be called directly (e.g., from tests or future callers). Compare with `extract_calls` in `calls.rs:29-32` which defensively normalizes CRLF at entry.
+- **Suggested fix:** Add a defensive CRLF check at entry: `let source = if source.contains("\r\n") { Cow::Owned(source.replace("\r\n", "\n")) } else { Cow::Borrowed(source) };`. Or add a doc comment: `/// # Precondition: source must have LF line endings (CRLF pre-normalized by caller)`.
 
-#### PB-2: `detect_script_language` returns lowercase `&'static str` but `InjectionRule::target_language` has no compile-time enforcement that it is lowercase — future mixed-case injection rules are silently accepted by `from_str` but produce inconsistent `Language::Display` output
+#### PB-2: `enumerate_files` extension matching is case-sensitive — `.RS`, `.Py` files skipped on case-preserving FS
 - **Difficulty:** easy
-- **Location:** src/language/mod.rs:172, src/parser/injection.rs:63-81
-- **Description:** `find_injection_ranges` resolves the injection target language with `lang_name.parse::<Language>()` which calls `s.to_lowercase()` (language/mod.rs:103), making it case-insensitive. So `InjectionRule::target_language = "JavaScript"` would resolve to the same `Language::JavaScript` as `"javascript"`. No bug today since all rules use lowercase. The risk is that future injection rules may set `target_language: "TypeScript"` or `"JavaScript"` (as the display name would suggest), relying on the case-insensitive parse. The `detect_script_language` function returns `"typescript"` (lowercase) — if it returned `"TypeScript"`, the parse would still work. The inconsistency means there's no single source of truth for what string format `target_language` expects. If the field were ever compared by string equality rather than going through `Language::from_str`, the bug would be silent.
-- **Suggested fix:** Add a `debug_assert!(rule.target_language == rule.target_language.to_ascii_lowercase(), ...)` in `find_injection_ranges` or in `LanguageDef`'s initialization. Or document in `InjectionRule`'s field doc that `target_language` must be the lowercase language name matching `Language::to_string()`.
+- **Location:** src/lib.rs:371-375
+- **Description:** The extension filter in `enumerate_files` does `ext.to_str().map(|ext| extensions.contains(&ext))` — the extension is NOT lowercased before comparison. The `extensions` list from `supported_extensions()` contains lowercase entries ("rs", "py", "ts"). On case-preserving filesystems (macOS HFS+, NTFS via WSL), files with uppercase extensions like `main.RS` or `script.PY` are silently skipped during indexing. The v0.28.1 audit fixed the analogous issue in `parse_file` (mod.rs:171), `extract_calls` (calls.rs:236), and `collect_events` (watch.rs:241) by lowercasing extensions, but `enumerate_files` was missed — it's the entry point that decides which files even get considered for indexing.
+- **Suggested fix:** Add `.to_ascii_lowercase()` before comparison: `let ext = ext.to_ascii_lowercase(); extensions.contains(&ext.as_str())`. This matches the pattern used in `collect_events` at watch.rs:242.
 
-#### PB-3: `walk_for_containers` and injection parsing create per-call `tree_sitter::Parser` allocations in the rayon parallel stage — on HTML-heavy projects, memory amplification scales with parallelism
+#### PB-3: `find_project_root` walks to filesystem root on Windows drive letters — stops at `C:\` not CWD
 - **Difficulty:** medium
-- **Location:** src/parser/injection.rs:206-210, 305-310, src/cli/pipeline.rs:263-304
-- **Description:** `parse_injected_chunks` and `parse_injected_relationships` each call `tree_sitter::Parser::new()` to create a fresh parser for the inner language. This is correct for thread safety. However, in the rayon parallel map at `pipeline.rs:263`, every HTML file creates two additional `tree_sitter::Parser` instances (one per parse function). Under rayon's default parallelism (num_cpus threads), processing a batch of 5000 HTML files means dozens of live `tree_sitter::Parser` allocations simultaneously, each holding grammar-specific internal state. The outer `Parser` struct uses `OnceCell<tree_sitter::Query>` to amortize query compilation — injection bypasses this entirely and re-creates parsers on every file. On a project with thousands of HTML files (e.g., a documentation site or large web codebase), this is a meaningful memory regression compared to pre-injection behavior. This is particularly relevant on WSL where RAM is shared with Windows and memory pressure from rayon workers is more pronounced.
-- **Suggested fix:** Informational for now; document the tradeoff in `parse_injected_chunks`. If memory pressure is observed, cache injection parsers (not just queries) in `Parser` with `HashMap<Language, Mutex<tree_sitter::Parser>>` or use a per-thread pool. This is a precondition to the combined `parse_injected_all` optimization noted in Code Quality findings.
+- **Location:** src/cli/config.rs:28-65
+- **Description:** `find_project_root` walks up from CWD looking for project markers. The termination condition is `current.parent() == None`. On Unix, this terminates at `/`. On Windows (or WSL with `/mnt/c/`), `Path::new("/mnt/c").parent()` returns `Some("/mnt")`, then `Some("/")`, then `None` — walking through unrelated mount points. While this works correctly (no marker found = returns CWD), it scans `/mnt/c/`, `/mnt/`, and `/` for `Cargo.toml`/`.git` markers. If a user has a `.git` directory at `/mnt/` or `/`, `find_project_root` will return that as the project root instead of CWD. This is a latent issue — no user has `/mnt/.git`, but it's theoretically wrong.
+- **Suggested fix:** Add a stop sentinel: break if current is a filesystem root (`current == Path::new("/")` on Unix, or a drive root on Windows). Or limit walk depth (e.g., max 20 levels).
 
-#### PB-4: `extract_calls` does not normalize CRLF — if called with un-normalized source, byte offsets from call-site captures may be wrong on Windows
+#### PB-4: `ensure_ort_provider_libs` hardcodes `:` as PATH separator — would fail on native Windows
 - **Difficulty:** easy
-- **Location:** src/parser/calls.rs:15-78
-- **Description:** `parse_file` (mod.rs:169) and `parse_file_relationships` (calls.rs:234) both normalize CRLF → LF before parsing. `extract_calls` (calls.rs:15-78) does not normalize. All current callers pass already-normalized content: `extract_calls_from_chunk` passes `chunk.content` (normalized at parse time), and `parse_file_relationships` passes the already-normalized `source`. However, if a future caller passes raw file content (e.g., from `std::fs::read_to_string` on a Windows CRLF file without normalizing), tree-sitter will parse with CRLF and produce byte offsets that are correct for the CRLF string. But any downstream code that strips CRLF before comparing byte ranges would produce mismatches. The three other functions in the module guard against this by normalizing at the top; `extract_calls` is the only one that doesn't.
-- **Suggested fix:** Add `let source = if source.contains('\r') { std::borrow::Cow::Owned(source.replace("\r\n", "\n")) } else { std::borrow::Cow::Borrowed(source) };` at the top of `extract_calls`, matching the pattern in `diff_parse.rs:37-39`. Low priority since no current caller is affected, but defensive against future misuse.
+- **Location:** src/embedder.rs:684
+- **Description:** `ld_path.split(':')` is hardcoded for Unix PATH separator. The function is gated with `#[cfg(unix)]` so this is not currently broken, but the comment "Find target directory from LD_LIBRARY_PATH" and the `#[cfg(not(unix))]` stub suggest this might be extended to Windows in the future. On Windows, PATH uses `;` as separator, and the env var would be `PATH` not `LD_LIBRARY_PATH`. The `#[cfg(unix)]` guard makes this a non-issue today, but the stub comment "Windows/other platforms: CUDA libraries are typically in PATH already" is misleading — it implies the feature works on Windows when it doesn't.
+- **Suggested fix:** No code change needed — the `#[cfg(unix)]` guard is correct. Update the stub comment to clarify: "Windows: GPU provider libraries must be manually placed on PATH. Automatic symlinking is Unix-only."
 
-## Algorithm Correctness
-
-#### AC-1: `chunk_overlaps_container` implements containment, not overlap — misnamed and semantically incomplete
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:486-494
-- **Description:** The function is named "overlaps" but implements strict containment: `chunk_start >= start && chunk_end <= end`. A true overlap (partial intersection) would be `chunk_start <= end && chunk_end >= start`. For the current HTML use case this works because the outer Module chunk for a `<script_element>` always has `line_start == container_start` and `line_end == container_end` (the chunk and container are the same node). But if any future host language produces an outer chunk that starts before the container and ends inside it — e.g., a preamble chunk that spans the injection boundary — the containment check yields `false` and the outer chunk is NOT removed, leaving both the outer and inner chunks for the same code region. The mismatch between name and implementation also makes the logic hard to audit: callers expect "does this chunk intersect a container?" but get "is this chunk fully inside a container?".
-- **Suggested fix:** Either (a) rename to `chunk_contained_by_container` and add a comment explaining why containment suffices for the current HTML case, or (b) change the predicate to a true overlap check: `chunk_start <= end && chunk_end >= start`. Option (b) is safer and handles future host languages without needing to reconsider this function.
-
-#### AC-2: `walk_for_containers` visits the same node multiple times when two injection rules share a container ancestor
+#### PB-5: `ProjectRegistry::save()` lock file opens registry path, not a separate `.lock` file — NTFS advisory lock only
 - **Difficulty:** medium
-- **Location:** src/parser/injection.rs:49-53, 100-170
-- **Description:** `find_injection_ranges` iterates over all `rules` and calls `walk_for_containers` once per rule, resetting the cursor to root each time. For HTML's two rules (script and style), this means the entire tree is walked twice. Nodes that are ancestors of both script and style elements (e.g., `html`, `body`, `head`) are visited and checked against each rule on each pass. In the current implementation the cost is O(tree_nodes × rules), not O(tree_nodes). For HTML with 2 rules and a large file this is a 2× overhead. More importantly, the walk's correctness depends on `cursor.reset(root)` being called before each walk — this is done correctly at line 51. However, the reset shares the cursor object between calls, which means any call to `walk_for_containers` that returns via the inner `loop { if !cursor.goto_parent() { return; } ... }` at line 141 leaves the cursor in an intermediate position — the parent that failed `goto_next_sibling()`. When `reset(root)` is called next iteration, this is correctly overwritten. But if `walk_for_containers` is ever called without a preceding `reset`, the bug would silently skip nodes. The reset is in the calling loop (line 51), so the current code is correct; the fragility is the coupling between caller and callee.
-- **Suggested fix:** Move `cursor.reset(root)` inside `walk_for_containers` (first line of the function), making the function self-contained and eliminating the caller's responsibility. This also makes the code correct if `walk_for_containers` is ever called from a different context.
+- **Location:** src/project.rs:56-65
+- **Description:** `ProjectRegistry::save()` locks the registry file itself (`projects.toml`) using `File::lock()`, then writes to a temp file and renames over it. On NTFS (WSL `/mnt/c/`), `File::lock()` is advisory-only — another process can still write to the file without acquiring the lock. The rename operation then clobbers the other process's writes. This is the same class of issue documented for HNSW files (persist.rs:19-28 warns about advisory locking on WSL), but `ProjectRegistry::save()` has no such warning. The `hnsw/persist.rs` code calls `warn_wsl_advisory_locking()` — `project.rs` doesn't.
+- **Suggested fix:** Add `warn_wsl_advisory_locking`-style warning for registry saves on WSL/NTFS. Low impact because concurrent `cqs ref add` operations are rare, but consistency with HNSW locking warnings would be good.
 
-#### AC-3: Injected call sites have absolute source line numbers but `FunctionCalls::line_start` is used as a relative anchor — callee line numbers may be wrong in store lookup
+#### PB-6: `validate_and_read_file` path traversal check may fail with mixed-case on case-insensitive FS
 - **Difficulty:** medium
-- **Location:** src/parser/injection.rs:422-455
-- **Description:** In `parse_injected_relationships`, `line_start` is computed as `node.start_position().row as u32 + 1` (line 422) — an absolute line number in the full HTML source. `CallSite::line_number` (line 435) is also `cap.node.start_position().row as u32 + 1` — also absolute. Both are consistent. However, the store matches `FunctionCalls` to existing chunks by name and `line_start`. When injected JS function chunks are indexed (from `parse_injected_chunks`), their `line_start` is also absolute (from the same inner tree). So the name+line_start key should match. The potential issue: if `parse_file` and `parse_file_relationships` are called separately (which they are — `parse_file` for indexing, `parse_file_relationships` for relationship extraction), the inner tree is parsed twice with `set_included_ranges`. If the two parses produce different `start_position().row` values for the same node (e.g., due to a different tree-sitter version or grammar update between runs), the `line_start` mismatch would silently orphan call graph edges. This is not a bug today, but it is a fragile assumption: the correctness of cross-phase name+line matching for injected functions depends on both parses producing identical row numbers. By contrast, non-injection languages share the same tree parse across both phases (`parse_file_relationships` uses one tree for everything). The injection path breaks this single-parse invariant.
-- **Suggested fix:** Add a comment at line 422 noting that `line_start` must match the value produced by `parse_injected_chunks` for the same function, and that both depend on tree-sitter's `set_included_ranges` producing deterministic absolute row numbers. No code change needed today; the comment documents the invariant for future maintainers.
+- **Location:** src/cli/commands/read.rs:35-41
+- **Description:** `validate_and_read_file` canonicalizes both the file path and the project root, then checks `canonical.starts_with(&project_canonical)`. On case-insensitive filesystems (macOS HFS+, NTFS), `dunce::canonicalize` returns the filesystem's stored case, not the input case. If the project root was opened as `/mnt/c/Projects/CQS` but the filesystem stores it as `/mnt/c/Projects/cqs`, the `starts_with` check works because `dunce::canonicalize` normalizes to the stored case. However, on case-preserving but case-insensitive filesystems, if two different canonical forms exist (e.g., directory rename race), the check could fail spuriously. In practice, `dunce::canonicalize` resolves to the true filesystem path, so this is more of a documentation gap than a real bug.
+- **Suggested fix:** Document the case-sensitivity assumption in a comment: `// Note: canonicalize resolves to filesystem-stored case, so this is case-correct on case-insensitive FS`.
 
-#### AC-4: `detect_script_language` returns `None` (falls through to JS) for `<script type="text/javascript">` and module scripts — fine — but also for `<script type="application/ld+json">` (JSON, not JS)
-- **Difficulty:** easy
-- **Location:** src/language/html.rs:195-218
-- **Description:** `detect_script_language` only detects TypeScript variants (`lang="ts"`, `type` containing `"typescript"`). All other `<script>` elements fall through to `None`, which means they use the default `target_language = "javascript"`. This includes `<script type="application/ld+json">` (JSON-LD), `<script type="text/template">` (Mustache/Handlebars templates), and `<script type="x-shader/x-vertex">` (GLSL shaders). These are sent to the JavaScript parser, which will produce no function chunks (since JSON/template/GLSL top-level content isn't function declarations), so the practical effect is just a wasted parse — `inner_chunks` will be empty, and the fallback keeps the outer Module chunk. No incorrect chunks are indexed. The issue is: if cqs adds GLSL or JSON injection support later and adds those types to `target_language`, the `detect_script_language` function's ordering could return wrong results. This is a latent bug, not a current one.
-- **Suggested fix:** Add an early return for known non-JS types before the TypeScript detection: if `type_val` contains `"json"`, `"template"`, `"x-shader"`, or similar, return the appropriate language or a sentinel that `find_injection_ranges` can use to skip the entry entirely. The cleanest fix is a return type of `Option<Option<&'static str>>` where `None` means "no injection" and `Some(None)` means "use default". But that requires a signature change to `InjectionRule::detect_language`. Simpler short term: add a comment listing known non-JS types that will be silently passed to the JS parser.
+#### PB-7: `cmd_watch` `RecommendedWatcher` uses inotify on WSL — `PollWatcher` not offered as fallback
+- **Difficulty:** hard
+- **Location:** src/cli/watch.rs:90
+- **Description:** `RecommendedWatcher::new()` selects inotify on Linux (including WSL). On WSL2, inotify works for the Linux filesystem (`/home/...`) but is unreliable for Windows-mounted paths (`/mnt/c/...`) because the 9P filesystem server doesn't fully implement inotify semantics. The code warns at line 62-63 but doesn't offer a workaround. The `notify` crate provides `PollWatcher` as a cross-platform alternative that works reliably on `/mnt/c/`. Already documented in prior triage (PB-1 in v0.19.4 audit) as "existing behavior" — including here for completeness since it's the primary platform pain point.
+- **Suggested fix:** Add a `--poll` flag to `cqs watch` that uses `PollWatcher` instead of `RecommendedWatcher`. On WSL, auto-detect if CWD is under `/mnt/` and suggest `--poll`. This was deferred previously as low priority since `cqs index` works, but it's the #1 WSL usability issue.
 
-#### AC-5: `find_content_child` returns the FIRST matching child by kind — HTML grammar puts `raw_text` as the only content child, but if multiple children match, injection uses the wrong range
+#### PB-8: `is_test_chunk` hardcodes both `/` and `\\` separators but `file` is always forward-slash normalized
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:172-185
-- **Description:** `find_content_child(node, rule.content_kind)` returns the first child of `node` with `child.kind() == content_kind`. For the HTML `script_element` → `raw_text` injection, tree-sitter's HTML grammar always produces exactly one `raw_text` child. But the function searches linearly and returns the first match, silently ignoring any subsequent matches. If a grammar produces multiple children with the same kind (which can happen in error-recovery scenarios — tree-sitter can produce duplicate-kind siblings when parsing malformed input), only the first range is used, and the remaining code regions are not injected. The more common and practical issue: for `<script>` elements with a missing closing `</script>`, tree-sitter may split the content into multiple `raw_text` nodes (one per "paragraph" of content), and only the first would be injected.
-- **Suggested fix:** Change `find_content_child` to return all matching children (iterator or `Vec`), and accumulate all their byte ranges into the `InjectionGroup`. Each `tree_sitter::Range` already handles individual byte ranges independently. This makes injection robust to multi-node content, which also future-proofs for languages where injection content may span multiple sibling nodes.
+- **Location:** src/lib.rs:212-216
+- **Description:** `is_test_chunk` checks for both `file.contains("/tests/")` and `file.contains("\\tests\\")`, and both `file.starts_with("tests/")` and `file.starts_with("tests\\")`. However, by the time `is_test_chunk` is called, the `file` parameter has already been normalized to forward slashes by `normalize_path()` / `normalize_slashes()` during indexing. The backslash checks are dead code — they'll never match. This is harmless but misleading: a reader might think backslash paths are possible at this layer when they're not.
+- **Suggested fix:** Remove the backslash variants and add a comment: `// file paths are forward-slash normalized by this point`. The SQL-level test path patterns in `store/calls.rs` (e.g., `%/tests/%`) correctly use only forward slashes.
 
 ## Extensibility
 
-#### EX-1: `InjectionRule::target_language` strings are never validated — a typo silently fails at every injection parse, not at startup
+#### EX-1: `Pattern` enum has 4 manually-synced representations with no macro or sync test
 - **Difficulty:** easy
-- **Location:** src/language/html.rs:248, 254; src/parser/injection.rs:62-81
-- **Description:** `InjectionRule::target_language` is a `&'static str` that is resolved to a `Language` variant at parse time via `lang_name.parse::<Language>()` in `find_injection_ranges`. If the string is invalid (e.g., `"javscript"` typo, or `"js"` instead of `"javascript"`), the error is silently logged as a `tracing::warn!` per injection entry found — meaning the warn fires for every `<script>` element in every HTML file indexed, but no injection happens and no JS chunks are extracted. There is no startup or test-time validation that injection rule target_language strings resolve to known, enabled languages. The existing registry test `test_registry_by_extension` (language/mod.rs:708) validates extensions, not injection targets. By contrast, the `Language::from_extension` path in `parse_file` returns a hard error (`UnsupportedFileType`) on unknown extensions — the injection path's failure is much softer.
-- **Suggested fix:** Add a test in `src/language/mod.rs` (near `test_registry_by_extension`) that iterates `REGISTRY.all()`, iterates each language's `injections`, and asserts `rule.target_language.parse::<Language>().is_ok()` for each rule. This makes the typo a test failure rather than a runtime warning storm.
+- **Location:** src/structural.rs:10-61
+- **Description:** The `Pattern` enum has 4 parallel representations that must stay in sync: the enum variants (line 10-17), `FromStr` match arms (line 22-28), `Display` match arms (line 39-46), and `all_names()` (line 53-60). Adding a new pattern (e.g., `Callback`, `Singleton`) requires editing all 4 sites plus the `matches` dispatch (line 82-89) and the error message string (line 30). The `test_all_names_covers_all_variants` test (line 259) checks count equality (`== 6`) but would pass if a variant was added to the enum AND all_names without updating FromStr/Display. Compare with `Language` and `ChunkType` which use `define_languages!` / `define_chunk_types!` macros to generate all 4 from a single declaration.
+- **Suggested fix:** Either create a `define_patterns!` macro similar to `define_chunk_types!`, or add a roundtrip test that parses every `all_names()` entry and verifies `Display` produces the same string (the existing `test_pattern_display_roundtrip` does this but doesn't verify the count matches enum variant count via `std::mem::variant_count` or exhaustive matching).
 
-#### EX-2: Adding a new injection host language requires no code changes outside the language module — but CONTRIBUTING.md has no guidance on `InjectionRule` fields
-- **Difficulty:** easy
-- **Location:** CONTRIBUTING.md:107-122; src/language/mod.rs:160-173
-- **Description:** The injection framework is genuinely data-driven: adding injections to a new language (e.g., Svelte `.svelte` → JS/TS/CSS) requires only populating the `injections: &[InjectionRule { ... }]` field in that language's `definition()`. No parser code changes needed. However, CONTRIBUTING.md's Architecture Overview section lists `injection.rs` with a one-line description ("Multi-grammar injection (HTML→JS/CSS via set_included_ranges)") but gives no guidance on how to add injection rules for a new host language. A contributor adding Svelte/Vue/PHP (which embeds JS/CSS/HTML) would have to discover the `InjectionRule` fields by reading the HTML implementation directly. The `container_kind`/`content_kind` values are tree-sitter grammar node names — contributor needs to know to consult the grammar's `node-types.json`, which is undocumented. The optional `detect_language` callback (for attribute-based language detection like `<script lang="ts">`) is particularly non-obvious.
-- **Suggested fix:** Add a short "Adding injection support to a language" section to CONTRIBUTING.md after the Architecture Overview. Cover: (1) the four `InjectionRule` fields and where to find `container_kind`/`content_kind` values (grammar `node-types.json`), (2) `target_language` must be the lowercase `Language::to_string()` value, (3) `detect_language` callback for attribute-based detection, (4) point to `html.rs` as the canonical example. This is a docs-only change but directly enables the "extensible to other host languages" promise.
-
-#### EX-3: Chained injection (inner language with its own `injections` field) is silently ignored — PHP's inline HTML with JS is unindexable by the current design
+#### EX-2: `chunk_importance` test detection hardcoded — not connected to language system's `test_markers`/`test_path_patterns`
 - **Difficulty:** medium
-- **Location:** src/parser/injection.rs:187-289 (`parse_injected_chunks`); src/language/mod.rs:257
-- **Description:** The injection framework currently supports one level of nesting: host language → inner language. `parse_injected_chunks` parses the inner language's tree and extracts chunks, but never checks `inner_language.def().injections`. If an inner language itself has injection rules (e.g., PHP with inline `<script>` blocks — PHP → HTML → JS), those rules are silently ignored. Currently no language has both `grammar.is_some()` and a non-empty `injections` field simultaneously; only HTML uses injections and it is never an injection target. But if PHP support is added with HTML injection (common: PHP templates contain `echo "<script>..."` patterns parsed as raw HTML string content), or if Svelte is added as a host language with both JS and CSS injections, the second level would silently fail. The issue is also relevant for Markdown code fences: if Markdown ever gains a tree-sitter grammar and injection rules for fenced code blocks, the inner language would not be recursively injected. This is a design gap, not a latent bug in current code, but it constrains which future languages can be modeled as injection targets.
-- **Suggested fix:** Document the single-level restriction in `InjectionRule`'s doc comment and in CONTRIBUTING.md: "Chained injection (inner language with its own injection rules) is not supported. If the inner language is also a host language, only its own top-level chunks are extracted." This prevents incorrect expectations. If chained injection is needed later, `parse_injected_chunks` would need to call `find_injection_ranges` on the inner parse tree and recursively call itself — a clear extension point, but currently unimplemented.
+- **Location:** src/search.rs:398-413
+- **Description:** `chunk_importance` hardcodes `test_` and `Test` prefix checks for test function detection, and `_test.` / `test_` for test file detection. These patterns overlap with but don't match the language-driven `LanguageDef::test_markers` and `LanguageDef::test_path_patterns`. For example, Java uses `@Test` annotation (not `test_` prefix), Python has `pytest` conventions that differ from `test_` prefix. The v0.19.4 audit fixed the same issue in `find_dead_code` (EX-8, calls.rs), but `chunk_importance` in `search.rs` was missed. The result: dead code detection correctly uses language-aware test heuristics, but search result scoring uses hardcoded heuristics — a Java test class annotated with `@Test` gets full importance score instead of the 0.90 demotion.
+- **Suggested fix:** Use the language-driven test detection. Since `chunk_importance` doesn't have a `Language` parameter, either add one (requires changing callers in `search_filtered`) or extract the name-based heuristic into a shared function that `find_dead_code` and `chunk_importance` both call. The file-based check should use `REGISTRY.all_test_path_patterns()` for SQL LIKE-style matching, though for scoring purposes the simple heuristic may be acceptable if documented as intentionally conservative.
 
-#### EX-4: Grammar-less languages with non-empty `injections` field would silently produce no injections — no guard or assertion
+#### EX-3: `normalize_lang` has no sync test verifying outputs match `Language::from_str`
 - **Difficulty:** easy
-- **Location:** src/parser/mod.rs:177-179, 235-264; src/parser/calls.rs:241-244, 388-407
-- **Description:** In both `parse_file` and `parse_file_relationships`, grammar-less languages (currently only Markdown) trigger an early return before Phase 2 (the injection phase). This means if a future grammar-less language defines `injections: &[...]`, those rules are silently never applied — no warning, no assertion, no test failure. The early return at `mod.rs:177` routes to `parse_markdown_chunks`, which returns directly without reaching the injection loop at line 235. Markdown code-fence injection (parsing fenced blocks as their respective languages) is a plausible future feature, and the current architecture would silently block it while appearing to support it via `LanguageDef::injections`. The same applies to `calls.rs:241` routing to `parse_markdown_references` before line 388. The `injections: &[]` on `markdown.rs` is currently correct, but there is no compile-time or test-time enforcement that the injection field remains vacuous for grammar-less languages.
-- **Suggested fix:** Add a `debug_assert!(language.def().grammar.is_some() || language.def().injections.is_empty(), "Grammar-less language {} has injection rules that will never fire", language)` before the early return in `parse_file` and `parse_file_relationships`. This turns a silent misconfiguration into an immediate assertion failure during development. Alternatively, add a registry validation test that iterates all languages and asserts grammar-less ones have empty injection lists.
+- **Location:** src/parser/markdown.rs:957-1009
+- **Description:** `normalize_lang` maps 50+ fenced code block tags to language name strings. These output strings must parse via `Language::from_str`, but there's no test enforcing this invariant. The CQ-4 finding (already reported) covers the duplication; this finding specifically flags the missing validation test. If someone adds a new language to `define_languages!` but typos the output in `normalize_lang` (e.g., `"objective-c"` instead of `"objc"`), fenced blocks in markdown silently fail to parse with no test catching the mismatch. Also, `"ini"` and `"markdown"` are valid `Language::from_str` inputs but missing from `normalize_lang`.
+- **Suggested fix:** Add a test: `for (_, output) in normalize_lang_entries() { assert!(Language::from_str(output).is_ok(), "{} not a valid language", output); }`. This requires making `normalize_lang`'s mapping iterable (e.g., a const array of `(&str, &str)` pairs instead of a match).
+
+#### EX-4: `where_to_add::extract_patterns` catch-all silently falls through for 42 of 50 languages
+- **Difficulty:** medium
+- **Location:** src/where_to_add.rs:323-449
+- **Description:** `extract_patterns` has specific pattern extraction for 8 languages (Rust, Python, TypeScript/JavaScript, Go, C, Java, SQL, Markdown) and a `_ =>` catch-all for the remaining 42. The catch-all returns empty imports and "default" visibility. Languages like Kotlin (`import`), Swift (`import`), C# (`using`), PHP (`use`), Ruby (`require`), C++ (`#include`) all have well-known import patterns that would improve placement suggestions. The catch-all means `cqs where` gives significantly worse results for non-core languages — no import context and no visibility analysis. This is a known gap but not tracked.
+- **Suggested fix:** At minimum, add C++ (`#include`), C# (`using`), Ruby (`require`), PHP (`use`), Kotlin (`import`), and Swift (`import`) — these are the most common patterns with minimal logic. A more extensible approach: add an `import_patterns: &[&str]` field to `LanguageDef` so the language system drives import extraction. Low priority since `where` is advisory and the core languages cover most usage.
+
+#### EX-5: HNSW tuning parameters compile-time only — no config file override
+- **Difficulty:** medium
+- **Location:** src/hnsw/mod.rs:57-62
+- **Description:** `MAX_NB_CONNECTION` (M=24), `EF_CONSTRUCTION` (200), and `EF_SEARCH` (100) are compile-time constants with no config file override. The doc comment (lines 52-56) suggests different values for different workloads: M=16 for small codebases, M=32 for large, lower ef_search for batch processing. Users can't tune these without recompiling. This was flagged in the v0.9.1 audit (EX-4: "HNSW tuning parameters compile-time only") and deferred as "by design for now." Since the project now has a config file system (`Config` in config.rs), the infrastructure exists to make at least `ef_search` configurable at runtime. `ef_construction` and `M` affect index build and are reasonably compile-time, but `ef_search` only affects query time and could be overridden per-query.
+- **Suggested fix:** Add `ef_search: Option<usize>` to `Config`. Pass it through `SearchFilter` or as a parameter to `HnswIndex::search`. Keep `EF_SEARCH` as the default. Low priority — the current defaults work well for the 10k-100k chunk range that covers most projects.
+
+#### EX-6: `name_match_score` scoring weights are inline magic numbers without named constants
+- **Difficulty:** easy
+- **Location:** src/search.rs:130-196
+- **Description:** `NameMatcher::score` uses inline float literals for scoring tiers: `1.0` (exact match), `0.8` (name contains query), `0.6` (query contains name), `0.5` (max word overlap score). These thresholds control hybrid search ranking but aren't named constants — tuning requires reading the function to find which number means what. Compare with `NOTE_BOOST_FACTOR` (line 265), `RISK_THRESHOLD_HIGH` (impact/hints.rs:11), and `DEFAULT_NAME_BOOST` (cli/config.rs:20) which are all named constants.
+- **Suggested fix:** Extract to named constants: `const NAME_SCORE_EXACT: f32 = 1.0`, `const NAME_SCORE_CONTAINS: f32 = 0.8`, `const NAME_SCORE_CONTAINED_BY: f32 = 0.6`, `const NAME_SCORE_MAX_OVERLAP: f32 = 0.5`. Low priority — the function is well-documented with comments and the values are unlikely to change frequently.
+
+#### EX-7: `chunk_importance` demotion factors are inline magic numbers without named constants
+- **Difficulty:** easy
+- **Location:** src/search.rs:398-413
+- **Description:** `chunk_importance` returns `0.90` for test functions/files and `0.95` for underscore-prefixed private helpers. These multipliers affect search ranking but aren't named constants. They're documented in the function's doc comment table (lines 389-391), but someone tuning search scoring has to find and modify inline float literals inside the function body. Related to EX-6 — both are in the same scoring pipeline.
+- **Suggested fix:** Extract to named constants: `const IMPORTANCE_TEST: f32 = 0.90`, `const IMPORTANCE_PRIVATE: f32 = 0.95`. Group with the existing `NOTE_BOOST_FACTOR` constant since they're all search scoring parameters.
 
 ## Test Coverage
 
-#### TC-1: `chunk_overlaps_container` has zero unit tests — the sole filter that decides which outer chunks are removed on injection
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:486-494
-- **Description:** `chunk_overlaps_container` is the predicate used in `parse_file` (mod.rs:243-248) to decide which outer HTML chunks to discard when injection succeeds. It implements strict containment (`chunk_start >= container_start && chunk_end <= container_end`), not overlap. No tests exercise the function directly. The boundary conditions — chunk that starts exactly at container start, chunk that ends exactly at container end, chunk that spans the container, chunk one line outside — are all untested. AC-1 (filed by Algorithm Correctness) notes the naming mismatch; the missing tests mean neither the current containment semantics nor the boundary behavior is verified.
-- **Suggested fix:** Add unit tests in `src/parser/injection.rs` covering: (1) exact containment — `assert!(chunk_overlaps_container(10, 20, &[(10, 20)]))`, (2) chunk one line before start — `assert!(!chunk_overlaps_container(9, 20, &[(10, 20)]))`, (3) chunk one line past end — `assert!(!chunk_overlaps_container(10, 21, &[(10, 20)]))`, (4) multiple container ranges with one match, (5) empty container list returns false.
-
-#### TC-2: CSS injection test (`parse_html_with_style_extracts_css_rules`) has a conditional assertion — passes vacuously when CSS produces no chunks
-- **Difficulty:** easy
-- **Location:** src/language/html.rs:459-499
-- **Description:** The test for CSS injection from HTML `<style>` blocks guards all CSS-specific assertions with `if !css_chunks.is_empty() { ... }`. If CSS injection fails silently or the CSS parser produces no chunks, the test exits with no failures. The CSS query (`css.rs:14-25`) has `(rule_set (selectors) @name) @property` which should match `.container { display: flex; gap: 1rem; }` — chunks should be produced. The conditional guard hides a potential regression: a broken CSS injection path would leave this test green. The `parse_html_with_style_extracts_css_rules` test can pass even with completely broken CSS injection.
-- **Suggested fix:** Remove the `if !css_chunks.is_empty()` guard and add an unconditional assertion: `assert!(!css_chunks.is_empty(), "Expected CSS chunks from inline <style>, got: {:?}", chunks...)`. Add a specific assertion for the `.container` selector chunk by name. This makes the test a real regression gate for CSS injection.
-
-#### TC-3: Injected type references (`ChunkTypeRefs`) are never asserted in any test — `_types` is silently discarded
-- **Difficulty:** easy
-- **Location:** src/language/html.rs:650
-- **Description:** The single test for HTML injection call graphs (`injection_call_graph`) calls `parser.parse_file_relationships(...)` and destructures as `(calls, _types)` — the type references return value is discarded. `parse_injected_relationships` extracts both `FunctionCalls` and `ChunkTypeRefs` (injection.rs:459-475). No test in the codebase asserts that injected functions with type usage produce `ChunkTypeRefs` entries. A regression in `extract_types` for injected code (e.g., the byte range scoping at injection.rs:459-465) would be completely invisible in the test suite.
-- **Suggested fix:** Add a test with TypeScript content in a `<script lang="ts">` block that uses a type annotation (e.g., `function foo(x: MyType): void {}`), then assert that `parse_file_relationships` returns a non-empty `types` vec containing a `ChunkTypeRefs` entry for `foo` referencing `MyType`.
-
-#### TC-4: No integration test for the parse_file → index → search roundtrip with HTML injection
+#### TC-1: 9 languages have no parser integration tests in `parser_test.rs` — C#, F#, PowerShell, Scala, Ruby, Vue, Svelte, Razor, VB.NET
 - **Difficulty:** medium
-- **Location:** tests/cli_test.rs
-- **Description:** The existing CLI integration tests index Rust/Python fixtures and search for functions. There is no integration test that: (1) creates an HTML file with inline `<script>`, (2) indexes it, (3) searches for the injected JS function by name or content. The unit tests in `html.rs` verify `parse_file` output, but the full pipeline — `parse_file` → chunk embedding → store upsert → `search_filtered` → result — for injected chunks is untested. A regression in how injected chunk `language` or `line_start` fields are stored/retrieved would not be caught by the existing test suite.
-- **Suggested fix:** Add an integration test in `tests/cli_test.rs` that creates a temp directory with an `index.html` containing `<script>function zq_unique_injection_fn() { return 42; }</script>`, runs `cqs index`, then runs `cqs "zq_unique_injection_fn" --json` and asserts the result contains `"zq_unique_injection_fn"` with language `"javascript"`.
+- **Location:** tests/parser_test.rs, tests/fixtures/
+- **Description:** `parser_test.rs` has integration tests for 41 languages but 9 are missing: C# (has 1 inline unit test only), F# (9 inline tests, no integration), PowerShell (6 inline, no integration), Scala (8 inline, no integration), Ruby (8 inline, no integration), Vue (6 inline, no integration), Svelte (6 inline, no integration), Razor (14 inline, no integration), VB.NET (12 inline, no integration). Integration tests exercise the full `Parser::parse_file()` pipeline including chunk extraction, line numbering, content hashing, and post-process hooks. Inline tests only test the tree-sitter query in isolation. The v0.26.0 audit (TC-1) added integration tests for Bash, HCL, Kotlin, Swift, and Objective-C — these 9 were not included.
+- **Suggested fix:** Create fixture files (`sample.cs`, `sample.fs`, `sample.ps1`, `sample.scala`, `sample.rb`, `sample.vue`, `sample.svelte`, `sample.cshtml`, `sample.vb`) and add integration tests following the established pattern (parse fixture, assert chunk count, names, types, line numbers).
 
-#### TC-5: `detect_script_language` type-attribute branch and None fallback have no test coverage
+#### TC-2: `normalize_lang` has no direct unit tests — missing languages silently skipped
 - **Difficulty:** easy
-- **Location:** src/language/html.rs:195-218
-- **Description:** `detect_script_language` has three branches: (1) `lang` attribute is `"ts"` or `"typescript"` → `Some("typescript")`, (2) `type` attribute contains `"typescript"` → `Some("typescript")`, (3) neither → `None`. Only branch 1 is exercised by `parse_html_with_typescript_script` (via `lang="ts"`). Branch 2 (`type="text/typescript"`) and branch 3 (e.g., `<script type="application/ld+json">`) have no direct test. The `None` path for non-JS/TS types is particularly important: for JSON-LD scripts, the fallback to `"javascript"` means the JavaScript parser tries to parse JSON, produces no function chunks, and keeps the outer Module chunk — but none of this behavior is asserted. If the fallback behavior changes (e.g., a future `detect_script_language` returns `Some("json")` for JSON-LD), no test would catch the difference.
-- **Suggested fix:** Add tests via `parse_file` for: (1) `<script type="text/typescript">` — assert TypeScript language; (2) `<script lang="typescript">` — assert TypeScript language; (3) `<script type="application/ld+json">` — assert outer Module chunk is kept (no JSON-language injection occurs since JSON injection is not registered for HTML). All three are easy to add alongside the existing `parse_html_with_typescript_script` test.
+- **Location:** src/parser/markdown.rs:957-1009
+- **Description:** `normalize_lang()` maps 50+ fenced code block tags to cqs language name strings, but has zero direct unit tests. It is exercised indirectly through `extract_fenced_blocks` tests, but those only test 3 aliases ("js", "py", "ts"). There is no test verifying that every non-None output of `normalize_lang` is a valid `Language::from_str` input. Currently `ini` is missing from the map (reported as CQ-4) — this gap would be caught by a sync test. When new languages are added, `normalize_lang` requires manual updates with no failing test to catch omissions.
+- **Suggested fix:** Add two tests: (1) `test_normalize_lang_outputs_are_valid_languages` — iterate all non-None outputs and verify each parses via `Language::from_str`, (2) `test_normalize_lang_all_languages_have_aliases` — verify each enabled language with a grammar has at least one alias in `normalize_lang`. This catches both stale outputs and missing inputs.
 
-#### TC-6: No test for injection with malformed/unclosed `<script>` — error-recovery behavior unverified
+#### TC-3: `extract_fenced_blocks` missing edge case tests — unclosed fences, nested fences, mixed fence types
+- **Difficulty:** easy
+- **Location:** src/parser/markdown.rs:1017-1083
+- **Description:** The fenced block extractor has 8 tests covering basic cases (single block, aliases, unknown lang, tilde, metadata, empty), but is missing edge cases common in real markdown: (1) unclosed fences (``` with no closing) — silently reads to EOF, (2) nested fences (4-backtick fence containing 3-backtick example), (3) indented fences (spec allows 1-3 spaces), (4) mixed fence types (backtick open + tilde close — should NOT match per spec), (5) case sensitivity in language tag (`Rust` vs `rust`).
+- **Suggested fix:** Add 5 edge case tests: `test_extract_fenced_blocks_unclosed`, `test_extract_fenced_blocks_nested`, `test_extract_fenced_blocks_indented`, `test_extract_fenced_blocks_mixed_fence_types`, `test_extract_fenced_blocks_case_insensitive_lang`.
+
+#### TC-4: `build_risk_summary` never directly tested — only exercised through integration
+- **Difficulty:** easy
+- **Location:** src/review.rs:215-243
+- **Description:** `build_risk_summary()` computes the aggregated risk breakdown (high/medium/low counts + overall level) from reviewed functions. It has zero direct tests — all coverage comes through `review_diff()` integration tests in `tests/review_test.rs`. The function's edge cases are not exercised: empty input (returns all-zero with Low), all-same-level inputs, and the high > medium > low priority logic.
+- **Suggested fix:** Add 4 unit tests in `review.rs::tests`: `test_build_risk_summary_empty`, `test_build_risk_summary_all_high`, `test_build_risk_summary_mixed_levels`, `test_build_risk_summary_overall_priority`.
+
+#### TC-5: `match_notes` in `review.rs` — note-matching logic only tested through one happy path
+- **Difficulty:** easy
+- **Location:** src/review.rs:183-212
+- **Description:** `match_notes()` uses `path_matches_mention()` to correlate notes with changed files. The integration test `test_review_diff_with_relevant_notes` covers exact filename mention, but doesn't test: (1) notes that don't match any changed file, (2) multiple notes matching the same file, (3) notes with empty mentions list. The filtering and aggregation logic in `match_notes` has only one test path.
+- **Suggested fix:** Add 2 test cases in `review_test.rs`: review with non-matching notes (verify empty `relevant_notes`), review with multiple notes matching same file (verify all appear).
+
+#### TC-6: Fenced code block call-graph relationships untested
 - **Difficulty:** medium
-- **Location:** src/parser/injection.rs:99-185, src/language/html.rs
-- **Description:** All injection tests use well-formed HTML. tree-sitter is an error-tolerant parser: for malformed input it produces a parse tree with error nodes, but the structure may differ from the well-formed case. Untested scenarios: (1) `<script>` with no closing `</script>` — tree-sitter may produce a truncated `raw_text` node or no content child; `find_content_child` returning `None` is the graceful path but is never exercised by a test; (2) empty `<style></style>` with no whitespace — the `byte_range.start < byte_range.end` guard at injection.rs:114 should skip it, but this is untested; (3) `<script>` body containing a JS syntax error (e.g., `function incomplete() {`) — JS parser's error recovery should still produce a function node for any well-formed function before the error. A `tree-sitter-html` grammar update could change error-recovery behavior, silently breaking injection for common malformed-HTML patterns.
-- **Suggested fix:** Add tests for: (1) HTML with unclosed `<script>` — assert `parse_file` completes without panic; (2) `<style></style>` (zero-byte content) — assert outer Module chunk is kept; (3) `<script>` with a JS syntax error followed by a valid function — assert the valid function chunk is extracted.
+- **Location:** src/parser/mod.rs:361-363
+- **Description:** `parse_file_all()` extracts fenced blocks from markdown and parses them for chunks AND relationships. The existing tests (`test_fenced_blocks_parsed_as_chunks`, `test_fenced_blocks_multiple_languages`) only check chunk extraction via `parse_file()`. No test verifies that `parse_file_all()` extracts function calls from fenced code blocks. If call extraction silently fails for fenced blocks, the call graph for code examples in markdown documentation will have missing edges.
+- **Suggested fix:** Add `test_fenced_blocks_call_extraction` using `parse_file_all()` on a markdown file containing a fenced Rust block with explicit function calls. Assert the returned `function_calls` vector contains expected callee names.
+
+#### TC-7: `batch/handlers.rs` — 1306-line file with zero inline tests
+- **Difficulty:** hard
+- **Location:** src/cli/batch/handlers.rs
+- **Description:** `batch/handlers.rs` (1306 lines) contains dispatch logic for all 30+ batch commands. It has zero inline tests. All testing is through `cli_batch_test.rs` (17 integration tests) via `assert_cmd`. Handler-level logic — parameter validation, output format construction, edge case handling — is only tested end-to-end. Integration tests are slow and can't test handler internals at the unit level.
+- **Suggested fix:** Extract pure-function helpers from handlers (parameter parsing, output formatting) and add unit tests. Low priority since 17 integration tests provide reasonable common-path coverage.
+
+#### TC-8: `run_ci_analysis` dead code path filtering — path edge cases untested
+- **Difficulty:** easy
+- **Location:** src/ci.rs:100-104
+- **Description:** `run_ci_analysis` filters dead code to diff-touched files using `diff_files.iter().any(|f| d.chunk.file.ends_with(f))`. The `ci_test.rs` tests cover basic scenarios but don't test path edge cases: (1) suffix collision (`bar.rs` matching `foobar.rs` — prevented by `Path::ends_with` component matching, but untested), (2) backslash paths (`src\lib.rs` vs `src/lib.rs`).
+- **Suggested fix:** Add 2 tests: `test_ci_dead_code_path_suffix_collision`, `test_ci_dead_code_cross_platform_path`.
+
+## Robustness
+
+#### RB-1: `extract_attribute_from_text` uses byte offset from lowercased text to slice original — panics on non-ASCII before match
+- **Difficulty:** easy
+- **Location:** src/language/razor.rs:197-209
+- **Description:** `extract_attribute_from_text` calls `text.to_lowercase()` to produce `lower`, finds a byte position via `lower.find(&pattern)`, then uses that position to slice the original `text`: `&text[pos + pattern.len()..]`. The `to_lowercase()` transform can change byte lengths for non-ASCII characters (e.g., `\u{0130}` (Latin capital I with dot above) lowercases to 3 bytes from 2). If non-ASCII characters appear in the text *before* the matched attribute, the byte offset from `lower` won't correspond to the correct position in `text`, causing either an incorrect slice or a panic on a non-char boundary. In practice, HTML/Razor attributes are ASCII, so this is latent rather than active.
+- **Suggested fix:** Use `to_ascii_lowercase()` instead of `to_lowercase()` — it's guaranteed to preserve byte lengths since it only transforms ASCII characters. This is semantically correct for HTML/Razor attribute matching.
+
+#### RB-2: `detect_listing_language` same `to_lowercase()` byte offset bug as RB-1
+- **Difficulty:** easy
+- **Location:** src/language/latex.rs:143-145
+- **Description:** Same pattern as RB-1: `text_lower = trimmed.to_lowercase()`, `pos = text_lower.find("language=")`, then `trimmed[pos + 9..]`. If `trimmed` contains non-ASCII characters before the `language=` attribute, the byte offset from the lowercased version will be incorrect for slicing the original string. LaTeX documents commonly contain non-ASCII characters (accented characters, math symbols) in listing options, making this more likely to trigger than the Razor variant.
+- **Suggested fix:** Use `to_ascii_lowercase()` or find case-insensitively on the original string using byte-level matching.
+
+#### RB-3: `normalize_lang` missing 5+ supported languages — fenced blocks silently skipped in markdown
+- **Difficulty:** easy
+- **Location:** src/parser/markdown.rs:957-1009
+- **Description:** `normalize_lang` maps fenced code block language tags to cqs Language names but omits several supported languages: `"ini"`, `"vb"/"vbnet"/"vb.net"`, `"svelte"`, `"razor"/"cshtml"`, `"vue"`. All are supported languages with grammars, but can't be extracted from markdown fenced blocks. Users writing ` ```ini` or ` ```vue` blocks get zero chunks with no warning. This is the robustness aspect of the CQ-4 finding — the primary concern is silent data loss.
+- **Suggested fix:** Add the missing mappings. At minimum: `"ini" => Some("ini")`, `"vb" | "vbnet" | "vb.net" => Some("vbnet")`, `"svelte" => Some("svelte")`, `"razor" | "cshtml" => Some("razor")`, `"vue" => Some("vue")`.
+
+#### RB-4: `extract_fenced_blocks` unclosed fence silently eats rest of file
+- **Difficulty:** easy
+- **Location:** src/parser/markdown.rs:1047-1079
+- **Description:** When `extract_fenced_blocks` finds an opening fence (e.g., ` ```rust`) but no matching closing fence, the inner `while i < lines.len()` loop at line 1051 consumes all remaining lines. The outer loop ends because `i == lines.len()`. All subsequent fenced blocks after the unclosed fence are lost because the parser is stuck inside the unclosed block. This is correct behavior (don't emit incomplete blocks), but it does so silently — no `tracing::debug!` or `warn!` indicates that blocks were lost. If a large markdown file has an accidental unclosed fence early, every fenced block after it disappears from the index.
+- **Suggested fix:** After the inner while loop, if no close was found, add `tracing::debug!(lang = %lang_tag, open_line, "Unclosed fenced block — remaining blocks in file skipped")`.
+
+#### RB-5: `parse_fenced_blocks` silently skips 3 failure modes with no logging (overlaps EH-1)
+- **Difficulty:** easy
+- **Location:** src/parser/mod.rs:618-630
+- **Description:** Three `continue` statements silently skip fenced code blocks when `set_language` fails (line 618), `parse` returns None (line 622-624), or `get_query` fails (line 627-629). None emit tracing output. Compare with `parse_file` at line 252 which logs `warn!` for extraction failures, and `parse_injected_chunks` at line 294 which logs injection failures. If all fenced blocks in a markdown file fail, the user gets zero chunks with no diagnostic explaining why. Primary concern is silent data loss during parsing.
+- **Suggested fix:** Add `tracing::debug!` for each `continue` path. Use `debug!` (not `warn!`) because fenced blocks with invalid content are common in documentation markdown.
+
+#### RB-6: `store/chunks.rs` `CandidateRow`/`ChunkRow` use panicking `row.get()` — 16+ sites
+- **Difficulty:** medium
+- **Location:** src/store/chunks.rs (~1290-1323, ~1340-1370), src/store/helpers.rs:75-121
+- **Description:** Previously flagged as RB-2 in v0.19.4 audit (informational). `sqlx::Row::get()` panics if the column doesn't exist or the type doesn't match. All call sites use `get::<Type, _>("column_name")` where columns are from hardcoded SELECT queries in the same function, so column mismatches require a code change to the SELECT without updating the `from_row`. The risk is low but a schema migration bug or SQLite corruption could trigger a panic deep in the store layer with no recovery. This is the largest class of latent panics in production code (16+ sites across chunks.rs alone).
+- **Suggested fix:** Previously marked informational. `try_get()` with `?` propagation would convert panics to errors. Not urgent — the current pattern is standard `sqlx` usage.
+
+#### RB-7: `structural.rs` `is_recursive` joins all lines then searches — O(n) allocation for line-by-line check
+- **Difficulty:** easy
+- **Location:** src/structural.rs:189-196
+- **Description:** `is_recursive` collects all lines into a Vec, then joins lines 1+ into a single String via `lines[1..].join("\n")` before doing `body.contains()`. For a 1000-line function, this allocates a ~40KB string to search. The `cqs structural recursion` command runs this for every function in the index. For 10,000 functions averaging 100 lines each, this is ~100MB of allocations. The search itself is fine (linear scan), but the allocation is unnecessary.
+- **Suggested fix:** Search line-by-line instead of joining: `lines[1..].iter().any(|l| l.contains(&pattern1) || l.contains(&pattern2))`. Avoids the allocation entirely and short-circuits on first match.
+
+## Algorithm Correctness
+
+#### AC-1: `search_by_name` results not re-sorted by name-match score — order inconsistent with displayed scores
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:622-661
+- **Description:** `search_by_name` fetches results from FTS5 (ordered by `bm25()`), then assigns each result a `score_name_match_pre_lower` score (1.0 for exact, 0.9 for prefix, 0.7 for substring, 0.0 for no match). However, the results are returned in BM25 order, not in name-match score order. This means a user searching for `parse_config` might see `test_parse_config` (name-match 0.7) ranked above `parse_config` (name-match 1.0) if BM25 prefers the former (e.g., due to content/signature term frequency). The `.score` field on each result reflects name-match precision, but the ordering reflects BM25 relevance — a mismatch between what the user sees (scores) and how results are ordered. Both CLI `--name-only` and batch `name_only` pass results directly to output without re-sorting.
+- **Suggested fix:** Add `results.sort_by(|a, b| b.score.total_cmp(&a.score));` before returning from `search_by_name`. This makes ordering match the score the user sees. Alternatively, rename the score to indicate it's BM25-derived and display BM25 order explicitly.
+
+#### AC-2: `apply_token_budget` can exceed budget due to `.max(1)` guarantee — `used` exceeds `budget` with no cap
+- **Difficulty:** easy
+- **Location:** src/cli/commands/review.rs:97-98, src/cli/commands/ci.rs:96-97
+- **Description:** When `max_callers` computes to 0 (budget exhausted by overhead + changed functions + notes), the `.max(1)` on the truncation forces at least 1 caller and 1 test to be kept, adding `tokens_per_caller + tokens_per_test` (33 tokens) beyond the budget. The returned `used` value can significantly exceed `budget`. The warning message "Output truncated to ~{used} tokens (budget: {budget})" is then misleading — it says output was truncated to a value larger than the budget. While the guarantee of at least 1 item is intentional and useful, the warning text implies the output fits within the budget when it doesn't.
+- **Suggested fix:** Adjust the warning message to say "Output limited to ~{used} tokens (budget: {budget}, minimum 1 caller + 1 test guaranteed)" or clamp `used` to `budget` in the warning. Alternatively, skip the `.max(1)` when the budget has already been exceeded (only guarantee 1 item when the budget allows at least 1 item's worth). Both functions (review.rs and ci.rs) have identical code and should be fixed together.
+
+#### AC-3: `EmbeddingBatchIterator::next()` uses recursion for corrupt-embedding skip — unbounded stack depth
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:1544-1545
+- **Description:** When a batch of rows is fetched but all embeddings fail validation (wrong dimensions or corrupt bytes), `batch.is_empty()` is true but `rows_fetched > 0`. The iterator handles this by calling `self.next()` recursively to fetch the next batch. If a large contiguous range of rows has corrupt embeddings (e.g., a failed migration left thousands of rows with wrong-dimension embeddings), this recursion would create one stack frame per batch. With a batch size of 10,000 and 100,000 corrupt rows, that's 10 recursive calls — fine. But with batch size 1 (allowed by the API) and 10,000 corrupt rows, it's 10,000 frames — potential stack overflow. While the production batch size is 10,000 (safe), the function accepts arbitrary `batch_size` from callers.
+- **Suggested fix:** Replace recursion with a loop:
+  ```rust
+  Ok((batch, _, max_rowid)) => {
+      self.last_rowid = max_rowid;
+      if batch.is_empty() {
+          continue; // loop instead of recurse
+      } else {
+          return Some(Ok(batch));
+      }
+  }
+  ```
+  Wrap the entire `match` in a `loop { ... }` and use `continue`/`return` instead of recursive `self.next()`.
+
+#### AC-4: `index_pack` and `token_pack` always include first item regardless of budget — downstream `used` can exceed budget silently
+- **Difficulty:** easy
+- **Location:** src/cli/commands/task.rs:62-63, src/cli/commands/mod.rs:135-137
+- **Description:** Both greedy knapsack functions guarantee at least one item is included even when it exceeds the budget (`kept.is_empty()` / `!kept_any` check). The returned `used` value can then exceed `budget`. Downstream code like `waterfall_pack` uses `remaining = remaining.saturating_sub(used)` which clamps to 0, so subsequent sections get zero budget. This is correct behavior (one giant code chunk shouldn't starve all other sections), but the surplus calculation `scout_budget.saturating_sub(scout_used)` will produce 0 surplus (correct) while `remaining` could have already been driven to 0 before accounting for subsequent guaranteed-first-items. In the worst case, each of the 5 waterfall sections could exceed its budget by one item, accumulating a multi-hundred-token overrun that's invisible in the final `token_count` field.
+- **Suggested fix:** This is by-design behavior (guarantee at least 1 result per section). Document the "first-item guarantee" contract explicitly in both functions. If exact budget adherence is needed, add a `strict: bool` parameter that skips the first-item guarantee when `true`.
 
 ## Data Safety
 
-#### DS-NEW-1: `parse_file_relationships` does not remove outer relationship entries when injection succeeds — call graph and type edges include both outer and inner entries for the same container region
-- **Difficulty:** medium
-- **Location:** src/parser/calls.rs:388-407, src/parser/mod.rs:235-265
-- **Description:** `parse_file` (mod.rs:242-249) removes outer chunks that overlap with injection containers when inner parsing succeeds: `chunks.retain(|c| !injection::chunk_overlaps_container(...))`. This is the correct behavior — the outer HTML Module chunk that wraps a `<script>` block is replaced by the injected JS functions. But `parse_file_relationships` (calls.rs:388-407) has no analogous removal step: it appends injected `FunctionCalls` and `ChunkTypeRefs` via `.extend(inner_calls)` and `.extend(inner_types)` **without** removing the outer `FunctionCalls`/`ChunkTypeRefs` entries that the outer HTML parser already produced for the same container region. In practice, the HTML parser's chunk query only captures Module-level nodes (whole `<script>` blocks), so the outer call extraction for that node would be empty. But if the outer grammar produces a named chunk that contains the injection region (e.g., the Module chunk for `<script>`), and the outer call query captures any call sites within it (e.g., HTML event attributes), those calls would appear in the call graph alongside the injected JS calls, potentially doubling some entries. More critically, `upsert_function_calls` (calls.rs:300-303) does `DELETE FROM function_calls WHERE file = ?1` and re-inserts everything, so both outer and inner call entries are stored. The outer Module-level chunk is not stored in the chunks table (it was replaced), but its callers/callees may still appear in `function_calls` with a `caller_name` that no longer has a corresponding chunk, creating dangling function_calls entries.
-- **Suggested fix:** Mirror `parse_file`'s retain logic in `parse_file_relationships`: after computing `groups`, for each group that produces non-empty `(inner_calls, inner_types)`, remove from `call_results` and `type_results` any entry whose `name` and `line_start` correspond to an outer chunk that `chunk_overlaps_container` would remove (i.e., an outer chunk fully within the container line range). This requires computing `InjectionGroup.container_lines` in `parse_file_relationships`, which is already available since `find_injection_ranges` returns `InjectionGroup` with `container_lines` populated.
-
-#### DS-NEW-2: `chunk_overlaps_container` uses strict containment (`>=`/`<=`) rather than overlap — outer chunks that straddle injection boundaries are silently kept alongside inner chunks
-- **Difficulty:** medium
-- **Location:** src/parser/injection.rs:486-494, src/parser/mod.rs:243-249
-- **Description:** `chunk_overlaps_container` returns true only when `chunk_start >= container_start && chunk_end <= container_end` — i.e., the outer chunk is fully enclosed by the container. If an outer parser chunk partially overlaps an injection container (e.g., a chunk whose start line is within the container but end line is outside it, or vice versa), it will NOT be removed by the `retain` filter. The result is both the partial outer chunk AND the injected inner chunks from that region are stored, creating duplicate/conflicting index entries for the same source lines. For HTML, the outer grammar captures Module chunks and inline event handlers, and it is plausible for tree-sitter's error recovery (on malformed HTML) to produce a chunk whose line range straddles a `<script>` boundary. The naming is also misleading: "overlaps" typically implies any intersection, but the implementation requires full containment. This was previously noted in the Algorithm Correctness category (naming mismatch), but the data safety consequence — duplicate chunks from the same line range — was not filed.
-- **Suggested fix:** Either (a) rename to `chunk_contained_by_any_container` to document the strict containment semantics, and verify that strict containment is correct for all expected outer grammar chunk kinds; or (b) change to an overlap check (`chunk_start <= container_end && chunk_end >= container_start`) to remove any outer chunk that shares any lines with an injection container, accepting more aggressive removal. Document which semantics are intended and add tests (already filed as TC-1).
-
-#### DS-NEW-3: `upsert_chunks_and_calls` (store_stage) and `upsert_function_calls` (extract_relationships) write to overlapping tables for the same file without coordination — partial failure leaves calls table inconsistent
-- **Difficulty:** medium
-- **Location:** src/cli/pipeline.rs:577-621, src/cli/commands/index.rs:183-234, src/store/chunks.rs:434-464, src/store/calls.rs:283-343
-- **Description:** The index pipeline has two separate write passes: (1) `store_stage` calls `upsert_chunks_and_calls` which writes to both the `chunks` table and the `calls` table (chunk-level calls, extracted via `extract_calls_from_chunk`); (2) `extract_relationships` calls `upsert_function_calls` which writes to `function_calls` table and `upsert_type_edges_for_file` which writes to `type_edges`. These are three different tables updated in two separate transactions at different stages. If the process is interrupted between `store_stage` completing and `extract_relationships` completing, the `chunks` table is up to date but `function_calls` and `type_edges` are stale (still reflecting the previous version of the file). On the next `cqs index` run, files are only reindexed if their mtime changed. If the file was not modified, `needs_reindex` returns `None`, the file is skipped by `store_stage`, and `extract_relationships` is called for all files in `existing_files` regardless of mtime. So `function_calls` would be updated even without a mtime change — but `type_edges` uses the same unconditional loop. The risk is: a crash mid-run leaves `function_calls` stale for already-processed files, but a re-run with unchanged files fixes it. The more serious case is: `upsert_type_edges_for_file` queries `chunks WHERE origin = ?1` inside a transaction to resolve `(name, line_start)` → `chunk_id` (types.rs:129-146). If a chunk was replaced with different ID structure (different hash after a code change), the `name_to_id` lookup at types.rs:152-163 logs a `warn!` and silently skips, leaving no type edges for that chunk. There is no aggregate signal that edges were dropped.
-- **Suggested fix:** Add a counter for skipped type edges in `upsert_type_edges_for_file` and log a `warn!` with the count at the end (similar to how DS-6 was fixed). The skipped-chunks warning is already there (types.rs:158-164) but per-chunk; a summary log at function exit would surface systematic mismatches. Longer term: consider a single-pass write that combines chunk upsert, calls, and type edge updates in one transaction per file.
-
-#### DS-NEW-4: Injected chunk IDs are generated from the outer file path + inner `line_start` + content hash — a collision is possible if two injection groups produce a chunk at the same line with the same first 8 chars of BLAKE3 hash
-- **Difficulty:** hard
-- **Location:** src/parser/chunk.rs:101, src/parser/injection.rs:250
-- **Description:** Chunk IDs are `format!("{}:{}:{}", path, line_start, hash_prefix)` where `hash_prefix` is the first 8 hex chars (4 bytes) of the BLAKE3 hash of the chunk's content (chunk.rs:100-101). Two chunks in the same file at the same starting line with a hash collision in the first 8 hex digits would get the same ID. For non-injection files, two chunks at the same `line_start` would have to overlap substantially, which tree-sitter prevents (it produces non-overlapping captures for disjoint nodes). But with injection, the outer parser and inner parser both capture nodes that may start at the same line (e.g., the `<script>` tag starts at line 5, and the first JS function inside it also starts at line 5 before the outer chunks for line 5 are removed by `chunk_overlaps_container`). The 8-hex-char prefix means a birthday-attack collision requires only ~65,536 chunks, but a natural collision in a realistic codebase is extremely unlikely. If a collision occurs, `INSERT OR REPLACE INTO chunks` (chunks.rs:371) would silently overwrite the first chunk with the second. The real risk is not a random collision but a deterministic collision: if the outer HTML module chunk for a `<script>` block AND the inner JS function both start at line 5, the outer chunk is supposed to be removed by the `retain` filter — but if injection produces zero inner chunks (fallback path), the outer chunk is kept with a valid ID. When injection later succeeds (after a code edit), the injected chunk may get the same line_start as the outer chunk had, and `INSERT OR REPLACE` would silently replace it. This is actually correct behavior (replacement is desired), but there is no test asserting that re-indexing a file where injection transitions from "no inner chunks" to "has inner chunks" correctly replaces the outer chunk entry.
-- **Suggested fix:** Low priority for hash collision — 8 hex chars (32 bits) is sufficient for typical codebases. For the injection transition case: add a test that verifies re-indexing an HTML file after adding a JS function to an empty `<script>` block correctly replaces the outer Module chunk with the inner JS chunk (no duplicate entries in the chunks table).
-
-## Performance
-
-#### PF-NEW-1: `parse_file` + `parse_file_relationships` double-reads and double-parses every file during full index
-- **Difficulty:** hard
-- **Location:** src/cli/commands/index.rs:87,130-131; src/cli/watch.rs:395,512; src/cli/pipeline.rs:267
-- **Description:** The full index pipeline calls `run_index_pipeline` (which calls `parse_file` on every file) and then calls `extract_relationships` (which calls `parse_file_relationships` on every file). Each call reads the file from disk and runs tree-sitter parse. For a project with 1,000 source files, every `cqs index` run reads every file twice and runs two complete tree-sitter parses per file. For HTML files (the only language with injection rules), the outer tree is also built twice, and each injection group triggers an additional inner re-parse in both `parse_file` and `parse_file_relationships`. The watch incremental path (`reindex_files` in watch.rs:395,512) has the same double-parse: `parse_file` then `parse_file_relationships`. Additionally, `reindex_files` calls `extract_calls_from_chunk` for each chunk to build the call graph, which creates **yet another** tree-sitter parser and re-parses the chunk's content — so for the watch path, each file is parsed at least 3 times (once for chunks, once for relationships, once per chunk for calls). `parse_file_relationships` already returns both call sites and type refs in a single pass — the watch path uses it for type edges only and discards the call sites it already computed.
-- **Suggested fix:** Merge `parse_file` and `parse_file_relationships` into a combined `parse_file_all` that returns `(Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>)` in a single read + single parse. The full-index pipeline already separates the two passes by design (pipeline stages), so the short-term fix for watch is to use the `function_calls` returned by `parse_file_relationships` instead of discarding them, eliminating `extract_calls_from_chunk` from the watch path.
-
-#### PF-NEW-2: `capture_index_for_name("name")` called inside per-match hot loops — should be hoisted
+#### DS-8: GC uses wrong HNSW filename — `index.hnsw.id_map.json` instead of `index.hnsw.ids`
 - **Difficulty:** easy
-- **Location:** src/parser/calls.rs:301; src/parser/injection.rs:388; src/parser/chunk.rs:41,50
-- **Description:** `tree_sitter::Query::capture_index_for_name` performs a string search over the query's capture name list. It is called once per query match inside tight loops, but the result is invariant for a given `Query` object — the capture index for `"name"` never changes between matches. In `calls.rs:301` and `injection.rs:388`, `chunk_query.capture_index_for_name("name")` is inside `while let Some(m) = matches.next()`. In `chunk.rs`, `extract_chunk` is called once per match from `parse_file`'s inner loop, and calls `capture_index_for_name` up to 16 times (once per entry in `capture_types` + once for `"name"`). For a file with 100 functions, this is up to 1,700 redundant string lookups per parse.
-- **Suggested fix:** In `parse_file_relationships` (calls.rs) and `parse_injected_relationships` (injection.rs), hoist `let name_idx = chunk_query.capture_index_for_name("name")` outside the `while let Some(m)` loop. In `extract_chunk` (chunk.rs), pre-build a `HashMap<u32, ChunkType>` mapping capture index → `ChunkType` before the match loop and pass it in, or cache it in the `Parser` struct alongside the `OnceCell<Query>`.
+- **Location:** src/cli/commands/gc.rs:71
+- **Description:** The GC command hardcodes a list of HNSW files to delete before rebuild: `["index.hnsw.graph", "index.hnsw.data", "index.hnsw.checksum", "index.hnsw.id_map.json"]`. The last entry `index.hnsw.id_map.json` is a stale filename from a previous version. The actual HNSW ID map file is `index.hnsw.ids` (as defined in `HNSW_ALL_EXTENSIONS` in `src/hnsw/persist.rs:35`). Consequence: GC's pre-rebuild cleanup never deletes the stale HNSW IDs file, so if GC is interrupted between deletion and rebuild, the old `.ids` file remains and a subsequent `HnswIndex::load()` may load outdated IDs paired with missing graph/data files (load will fail on checksum mismatch, so no data corruption, but it's an unnecessary failure mode). The watch code at `watch.rs:335` correctly uses `HNSW_ALL_EXTENSIONS`, making this a GC-only divergence.
+- **Suggested fix:** Replace the hardcoded list at `gc.rs:67-72` with `cqs::hnsw::HNSW_ALL_EXTENSIONS`, matching what `watch.rs` already does. This eliminates the divergence and ensures future filename changes are automatically reflected.
 
-#### PF-NEW-3: `find_injection_groups` uses linear scan to group by language — O(n) per entry with O(groups) comparisons
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:83-93
-- **Description:** After collecting all `(lang_name, range, container_lines)` entries, grouping uses `groups.iter_mut().find(|g| g.language == language)`. For each entry, this linearly scans all existing groups. In practice, HTML has 2 injection rules (script → JavaScript/TypeScript, style → CSS), so at most 2-3 groups — cost is negligible now. But if injection rules expand (e.g., PHP, Vue, Svelte with multiple embedded languages), this becomes O(entries × groups). The entries Vec is also created unnecessarily: the grouping could be done inline during the tree walk without the intermediate allocation.
-- **Suggested fix:** Use a `HashMap<Language, InjectionGroup>` indexed by language during collection, then convert to `Vec<InjectionGroup>` at the end. This also eliminates the intermediate `entries` Vec.
-
-#### PF-NEW-4: `parse_injected_chunks` and `parse_injected_relationships` each create a fresh `tree_sitter::Parser` and re-parse the same byte ranges independently
+#### DS-9: `config.rs` `add_reference_to_config` reads config via separate `read_to_string` after locking config file itself
 - **Difficulty:** medium
-- **Location:** src/parser/injection.rs:207-231, 306-329
-- **Description:** For HTML files with both `<script>` and `<style>` blocks, `parse_file` calls `parse_injected_chunks` once per `InjectionGroup` (one for JS/TS, one for CSS) — each creates a new `tree_sitter::Parser`, sets `set_included_ranges`, and calls `parser.parse(source, None)`. Then `parse_file_relationships` calls `parse_injected_relationships` for the same groups, repeating the same parser creation and `source` re-parse. The parsed `tree_sitter::Tree` from `parse_injected_chunks` cannot currently be reused in `parse_injected_relationships` because they're called in separate functions without sharing state. A tree-sitter `Parser` object itself is reusable (supports `reset_language` / `set_language`) — creating a fresh one per injection group foregoes this optimization.
-- **Suggested fix:** Share a single `tree_sitter::Parser` instance across injection group parses by passing it as `&mut tree_sitter::Parser` into `parse_injected_chunks` and `parse_injected_relationships`. If the combined `parse_file_all` from PF-NEW-1 is implemented, injection chunks and relationships can be extracted from a single shared tree per inner language.
+- **Location:** src/config.rs:276-288
+- **Description:** `add_reference_to_config` opens the config file itself for locking (`OpenOptions::new().read(true).write(true).create(true).truncate(false).open(config_path)`), then acquires an exclusive lock on it. However, it then reads the file content via a separate `std::fs::read_to_string(config_path)` call (line 284) rather than reading from the locked file handle. On platforms where advisory locks don't prevent other processes from reading/writing, this creates a TOCTOU gap — another process could modify the file between the lock acquisition and the read. This is the same anti-pattern that was fixed in `note.rs` (which reads from the locked fd directly). The `remove_reference_from_config` function at line 371 has the identical issue.
+- **Suggested fix:** Read from the locked file handle (`lock_file`) using `std::io::Read::read_to_string()` instead of the separate `std::fs::read_to_string()`, mirroring the pattern already used in `note.rs:222-230`. Also apply the same fix to `remove_reference_from_config`.
 
-#### PF-NEW-5: `extract_types` builds `HashSet<String>` of classified names by cloning all type name strings — avoidable with `&str`
+#### DS-10: `rewrite_notes_file` copy fallback loses exclusive lock protection
+- **Difficulty:** medium
+- **Location:** src/note.rs:264-281
+- **Description:** `rewrite_notes_file` acquires an exclusive lock on the notes file (`lock_file.lock()`) and holds it for the entire read-modify-write cycle. The write path uses `std::fs::rename(&tmp_path, notes_path)` which is atomic. However, when rename fails (EXDEV on cross-device mounts), the fallback uses `std::fs::copy(&tmp_path, notes_path)` which is NOT atomic — it opens the destination, truncates it, and writes. During this non-atomic copy, a concurrent reader acquiring a shared lock would see truncated/partial content. The lock on `lock_file` (the original file descriptor before rename) may no longer protect the same inode after copy overwrites the path. This is a narrow race window but could corrupt a concurrent `parse_notes()` read on cross-device setups (Docker overlayfs, NFS).
+- **Suggested fix:** On the copy fallback path, write to a second temp file in the destination directory (guaranteed same device), then rename that. If both renames fail (shouldn't happen for same-device), then fall back to copy. Alternatively, document the limitation for cross-device mounts.
+
+#### DS-11: `extract_relationships` in `index.rs` is not transactional with chunk upserts
+- **Difficulty:** medium
+- **Location:** src/cli/commands/index.rs:124-137
+- **Description:** In `cmd_index`, chunks are upserted via `run_index_pipeline` (line 87), then relationships are extracted in a separate pass via `extract_relationships` (line 131). If the process is interrupted between these two phases, chunks exist in the database without their call graph or type edges. This was documented in previous audit (DS-3 in v0.19.4 triage) as "acceptable (reindex recovers)". The watch path (`watch.rs`) correctly uses `upsert_chunks_and_calls` for atomic chunk+call transactions and upserts type edges immediately after. The `cmd_index` path still has this gap because the pipeline architecture sends chunks through parse->embed->store stages before relationship extraction. This is a design tension, not a bug — documenting for completeness since the previous finding was "acceptable" but the root cause remains.
+- **Suggested fix:** Already marked acceptable in prior audit. The pipeline would need restructuring to eliminate this gap. Consider adding a metadata flag (`relationships_complete = false`) that gets set to `true` after `extract_relationships` finishes, so `cqs index` can resume from the relationship extraction phase on restart.
+
+#### DS-12: `notes_need_reindex` uses second-precision mtime comparison — sub-second edits missed
 - **Difficulty:** easy
-- **Location:** src/parser/calls.rs:170-178
-- **Description:** After collecting classified and catch-all type refs, the deduplication step at calls.rs:170 builds `classified_names: HashSet<String>` by cloning the `type_name` field from every classified entry. Since `classified` is already a `Vec<TypeRef>` alive for the remainder of the function, the `HashSet` can reference the existing strings as `&str` without allocating new `String` copies.
-- **Suggested fix:** Change to `let classified_names: HashSet<&str> = classified.iter().map(|t| t.type_name.as_str()).collect();` and update the containment check to `classified_names.contains(t.type_name.as_str())`.
+- **Location:** src/store/notes.rs:234-254
+- **Description:** `notes_need_reindex` compares file mtime (as seconds since epoch, via `duration_since(UNIX_EPOCH).as_secs() as i64`) with the stored `file_mtime` column. The `as_secs()` call truncates sub-second precision. If a notes file is modified twice within the same second (e.g., by a script or rapid manual edits), the second modification will have the same truncated mtime as the stored value, and `notes_need_reindex` returns `None` (no reindex needed), causing the update to be silently skipped. The same pattern exists in the chunk staleness check (`needs_reindex` in `chunks.rs`). This is a known limitation of second-precision mtime comparison and is unlikely to cause issues in practice (notes are manually edited, not scripted).
+- **Suggested fix:** Use `as_millis()` or `as_nanos()` for mtime storage and comparison, or accept this as a known limitation. On filesystems with sub-second mtime support (ext4, APFS), this would catch rapid edits. On FAT/NTFS (2-second precision), no change needed.
+
+#### DS-13: HNSW `count_vectors` reads ID map without any file lock
+- **Difficulty:** easy
+- **Location:** src/hnsw/persist.rs:442-485
+- **Description:** `count_vectors` opens and reads the HNSW `.ids` file directly without acquiring any file lock (shared or exclusive). In contrast, `load()` acquires a shared lock and `save()` acquires an exclusive lock. If `count_vectors` is called while a concurrent `save()` is in progress (during the rename from temp to final), it could read a partially-written or inconsistent file. The function handles parse failures gracefully (returns `None` with a warning), so this won't crash, but it could return an incorrect vector count. This is used by `cqs stats` which is a read-only informational command.
+- **Suggested fix:** Add shared lock acquisition before reading, matching the `load()` pattern. Alternatively, accept this as informational — `cqs stats` showing a stale count during a concurrent index build is harmless.
 
 ## Resource Management
 
-#### RM-NEW-1: Outer tree-sitter `Parser` and `Tree` not dropped before injection inner-parse phase in `parse_file`
-- **Difficulty:** easy
-- **Location:** src/parser/mod.rs:182-266, src/parser/calls.rs:247-409
-- **Description:** In `parse_file` (mod.rs), the outer `tree_sitter::Parser` is created at line 182 and last used at line 188 (the `.parse()` call). The outer `tree_sitter::Tree` is last used at line 238 (`find_injection_ranges(&tree, ...)`). Neither is explicitly dropped: both remain live until end of scope at line 266. During the injection inner-parse loop (lines 239–263), each call to `parse_injected_chunks` creates an additional inner `Parser` and `Tree` — so the outer parser's internal reusable buffers (lookahead pool, subtree pool, held since the HTML parse) are retained idle while inner allocations happen. The outer tree for a large HTML file can be several MB. In the rayon parallel parsing stage (`pipeline.rs:263`), `num_cpus` threads may each hold an outer HTML tree + inner JS/CSS tree simultaneously, approximately doubling peak tree memory for HTML-heavy projects compared to what is necessary. The same pattern exists in `parse_file_relationships` (calls.rs:247–409): outer `parser` last used at line 254, outer `tree` last used at line 391, both live until line 409.
-- **Suggested fix:** In `parse_file` (mod.rs), add `drop(parser);` after line 189 and `drop(tree);` after line 238 — four lines total (two per function), each a one-liner. Rust's NLL extends borrows but does not insert early drops for owned values; explicit `drop()` is required to reclaim memory before end of scope. In `parse_file_relationships` (calls.rs), add `drop(parser);` after line 254 and `drop(tree);` after line 391. Note: in `parse_file_relationships`, `tree` is borrowed inside the while loop (passed to `extract_types` at line 357 and `call_cursor.matches(call_query, tree.root_node(), ...)` at line 354) so `drop(tree)` can only follow line 391, not be moved earlier.
+#### RM-1: CAGRA `dataset` field retains full embedding matrix for lifetime of index — no release path
+- **Difficulty:** hard
+- **Location:** src/cagra.rs:64, src/cagra.rs:109-121
+- **Description:** `CagraIndex` stores `dataset: Array2<f32>` containing the full embedding matrix (n_vectors x 769 dims x 4 bytes = ~50MB for 17k vectors) for the lifetime of the index. This is necessary because cuVS `search()` consumes the index and `rebuild_index_with_resources()` needs the dataset to rebuild. However, once the index is built on the GPU, this CPU-side copy is only needed for rebuild after search. In batch mode (`BatchContext`), the CAGRA index is held for the entire session via `OnceLock`, meaning this ~50MB+ stays allocated even during idle periods or non-search commands. Related to existing issue #389 (GPU memory), but this is specifically the CPU-side duplication.
+- **Suggested fix:** Possible approaches: (1) After a configurable number of idle seconds, drop the CAGRA index entirely and rebuild from store on next search — this would free both CPU `dataset` and GPU memory. (2) Accept as designed — the CAGRA threshold is 5000+ chunks, meaning any project using CAGRA already has significant memory overhead from SQLite and HNSW. Document the tradeoff in the batch mode `VRAM cost` comment.
 
-#### RM-NEW-2: Call-deduplication `HashSet` in injection and relationship extractors clones every callee name string unnecessarily
+#### RM-2: `cqs watch` rebuilds full HNSW index on every file change — O(total_chunks) rebuild for O(1) changes
+- **Difficulty:** hard
+- **Location:** src/cli/watch.rs:324, src/cli/commands/index.rs:286-302
+- **Description:** When `cqs watch` detects file changes, it re-parses and re-embeds the changed files (efficient, O(changed)), then calls `build_hnsw_index()` which rebuilds the entire HNSW index from scratch by streaming all embeddings from SQLite. For a 17k-chunk project, this reads ~50MB of embeddings from disk and builds a new HNSW graph on every single file save. The previous HNSW index files on disk are overwritten, so peak memory briefly holds both the old (in-memory if loaded by a concurrent search) and new HNSW data. For a 50k-chunk project, this is ~300MB of embedding I/O per file save.
+- **Suggested fix:** Implement incremental HNSW updates. `hnsw_rs` supports `parallel_insert_data` on existing indexes — new/changed chunks can be inserted without rebuilding. Deleted chunks are harder (HNSW doesn't support removal), but a periodic full rebuild (e.g., every 100 incremental updates) would amortize the cost. The `content_hashes` return value from `reindex_files` is already collected for this purpose but unused.
+
+#### RM-3: `BatchContext` caches call graph, test chunks, file set, and notes in `OnceLock` — never released during long sessions
+- **Difficulty:** medium
+- **Location:** src/cli/batch/mod.rs:55-75
+- **Description:** `BatchContext` caches several data structures in `OnceLock` fields that are never invalidated or released during a session: `call_graph` (all call edges — up to 500K string pairs), `test_chunks` (all test chunk summaries), `file_set` (all file paths as `PathBuf`), `notes_cache` (all parsed notes). For `cqs chat` sessions that run for hours, these caches can become stale AND hold memory that's no longer needed. The embedder and reranker have idle timeout clearing (`check_idle_timeout`), but these data caches do not. For a 50k-chunk project with a large call graph (~10K edges), this is ~5-10MB of string data held indefinitely.
+- **Suggested fix:** Add a `refresh_caches()` method that resets the `OnceLock` fields (or switch to `RwLock<Option<T>>` like `notes_summaries_cache`). Call it after a configurable number of commands or idle timeout. Alternatively, accept as designed — batch/chat sessions are typically short-lived, and the data stays valid unless the index changes (which would require a separate `cqs index` run anyway).
+
+#### RM-4: `index_notes_from_file` creates a separate `Embedder` during `cqs index` — redundant model path resolution
 - **Difficulty:** easy
-- **Location:** src/parser/injection.rs:447-448, src/parser/calls.rs:351-357
-- **Description:** `parse_injected_relationships` (injection.rs:447) and `parse_file_relationships` (calls.rs) deduplicate call sites with `calls.retain(|c| seen.insert(c.callee_name.clone()))`. The `seen: HashSet<String>` takes ownership of a fresh clone of every `callee_name` string, even though the original strings live in the `calls` Vec for the rest of the iteration. Since `seen.clear()` is called per function (injection.rs:447) or a new `seen` is created per iteration (calls.rs:352), these clones are discarded almost immediately. For a function with N distinct call sites, this allocates N `String` heap objects that are freed within the same loop iteration. For JavaScript React components or large generated files with many calls per function (50–100+), this is 50–100 redundant allocations per function during relationship extraction. The allocation pattern is correct (deduplication works) but wasteful.
-- **Suggested fix:** Replace `HashSet<String>` with `HashSet<&str>` referencing into the existing `calls` Vec: `calls.retain(|c| seen.insert(c.callee_name.as_str()));` where `seen: HashSet<&str>`. This avoids all clones for the deduplication check. Apply to both injection.rs:447 and calls.rs (the corresponding `retain` at line 352). The lifetime of `&str` references is valid as long as `calls` is in scope, which it is for both sites.
+- **Location:** src/cli/commands/index.rs:269
+- **Description:** After the main indexing pipeline completes (which created and dropped an `Embedder` in the GPU/CPU embed threads), `index_notes_from_file` creates a brand new `Embedder::new()`. While the ONNX session is lazy (so ~500MB is only allocated if notes need embedding), the constructor still: (1) calls `select_provider()` (cached via static — cheap), (2) allocates an LRU cache, (3) creates `OnceCell` wrappers. More importantly, if notes need embedding, this creates a second ONNX session after the pipeline's session was already dropped. The pipeline's Embedder could have been passed through to avoid this.
+- **Suggested fix:** Pass the `Embedder` from the pipeline thread (or create one in `cmd_index` and share it) to `index_notes_from_file`. The pipeline threads own their Embedder by value and drop it when they exit, so either (1) create the Embedder in `cmd_index` and share via `Arc`, or (2) accept the current approach since the pipeline's session is dropped before notes indexing starts, so there's no double-allocation of the heavy ONNX session.
+
+#### RM-5: `extract_relationships` re-reads and re-parses every source file during `cqs index` — double I/O for call graph
+- **Difficulty:** hard
+- **Location:** src/cli/commands/index.rs:193-241
+- **Description:** The doc comment on `extract_relationships` acknowledges this: "Note: This re-reads and re-parses files that were already parsed in `parser_stage`." During `cqs index`, every source file is read and parsed twice: once in the pipeline (parse -> embed -> store) and again for call graph extraction. For a large project with 1000+ files, this doubles the file I/O and tree-sitter parsing work. The watch path (`watch.rs`) uses `parse_file_all()` which combines parsing and relationship extraction in a single pass — but the pipeline can't do this because chunks must be stored before relationships reference them.
+- **Suggested fix:** Already documented in the code comment. The proper fix is to restructure the pipeline to collect relationships during the parse stage (stage 1) and defer relationship storage to after the write stage (stage 3). The data is available from `parse_file_all()` — the relationships just need to be buffered. This was fixed for watch mode but remains in the bulk indexer. Medium-term, consider adding a "relationship buffer" to `ParsedBatch` that flows through the pipeline alongside chunks.
+
+#### RM-6: `HnswIndex::build` (test-only) creates intermediate `Vec<Vec<f32>>` — 2x peak embedding memory
+- **Difficulty:** easy
+- **Location:** src/hnsw/build.rs:67-73
+- **Description:** The `build` method (soft-deprecated, test-only per its doc comment) calls `prepare_index_data` which flattens embeddings into `Vec<f32>`, then re-chunks this flat buffer into `chunks: Vec<Vec<f32>>` for the `hnsw_rs` API. This doubles the peak memory for embeddings: both `data: Vec<f32>` (N x 769 x 4 bytes) and `chunks: Vec<Vec<f32>>` (same size) exist simultaneously. For 50k vectors, this is ~300MB instead of ~150MB. Production code uses `build_batched` which doesn't have this issue.
+- **Suggested fix:** Accept as-is — `build` is test-only (the doc comment says so, and `build_hnsw_index` unconditionally uses `build_batched`). The test datasets are small (<100 vectors). If anyone removes the "test-only" constraint, add a note about the 2x memory peak. Alternatively, refactor `build` to use slices of the flat buffer instead of copying into Vec<Vec<f32>>.
+
+#### RM-7: `last_indexed_mtime` HashMap in watch mode grows unbounded for projects with file churn
+- **Difficulty:** easy
+- **Location:** src/cli/watch.rs:119, src/cli/watch.rs:315-319
+- **Description:** The `last_indexed_mtime: HashMap<PathBuf, SystemTime>` tracks per-file mtimes to deduplicate WSL/NTFS events. It grows every time a new file is indexed and only prunes when size exceeds 10,000 entries OR when size exceeds 1,000 and only 1 file changed. However, for projects where files are frequently created and deleted (e.g., build artifacts, generated code), entries for deleted files accumulate. The pruning condition (`root.join(f).exists()`) does file I/O for every entry, which is expensive when the map is large. The cap of 10,000 entries means up to 10,000 stale `PathBuf`s (~500KB) are held before cleanup triggers.
+- **Suggested fix:** Change the pruning heuristic to trigger based on a counter (e.g., every 100 reindex cycles) rather than size-based. Or use a bounded data structure like an LRU cache with a fixed capacity. Current behavior is acceptable for typical projects but could surprise users with heavy file churn.
+
+#### RM-8: SQLite `PRAGMA cache_size = -16384` (16MB) per connection x 4 connections = 64MB page cache
+- **Difficulty:** easy
+- **Location:** src/store/mod.rs:217
+- **Description:** Each SQLite connection in the pool gets `PRAGMA cache_size = -16384` (16MB page cache) via `after_connect`. With `max_connections(4)`, the total SQLite page cache can reach 64MB. Combined with `mmap_size = 268435456` (256MB), a single Store can use up to 320MB of memory for SQLite caching alone. For `cqs batch` or `cqs chat` where both the project Store AND reference Stores may be open simultaneously, this multiplies. Two references = 3 Stores = 192MB page cache + 768MB mmap potential. The mmap pages are demand-paged by the OS and share physical pages, so the actual RSS impact depends on access patterns. The page cache, however, is private per-connection.
+- **Suggested fix:** Consider reducing `cache_size` for read-only stores (`open_readonly` uses `max_connections(1)`, so it's already 16MB) and for the pool connections that handle read-only queries. The write path (connections 1-2) benefits from large caches; the search path (connections 3-4) may not need 16MB each. Alternatively, document the expected memory footprint. For most cqs users (single project, ~17k chunks, ~50MB DB), the actual cache utilization is well below 16MB per connection.
 
 ## Security
 
-#### SEC-NEW-1: Unbounded injection range count in HTML parser enables DoS via crafted file
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:83-94, src/parser/injection.rs:212
-- **Description:** `find_injection_ranges` collects one `tree_sitter::Range` per `<script>` or `<style>` block into a single `InjectionGroup.ranges` Vec (groups are per-language, so all JavaScript blocks share one group). There is no cap on how many ranges a group may contain. A crafted 50 MB HTML file with ~2.8 million minimal `<script>x</script>` blocks (18 bytes each) would produce a Vec of ~2.8 M `tree_sitter::Range` structs (~90 MB of range data), which is then passed wholesale to `parser.set_included_ranges(&group.ranges)`. tree-sitter processes this range array before parsing, and the subsequent parse covers all 2.8 M script regions in one pass. On a machine with limited RAM this can cause OOM; at minimum it causes multi-second stalls during indexing. The file-size limit (50 MB, `MAX_FILE_SIZE`) is the only existing guard but does not bound range count because each range can be very small.
-- **Suggested fix:** Add a `MAX_INJECTION_RANGES` constant (e.g. `10_000`) and truncate — with a `tracing::warn!` — if `group.ranges.len()` would exceed it before calling `set_included_ranges`. Since the ranges within a single language group are non-overlapping script blocks, truncation means the tail of the file is treated as plain HTML rather than injected JS/CSS, which is a graceful degradation.
+#### SEC-1: `BufRead::lines()` allocates full line before `MAX_BATCH_LINE_LEN` check — OOM on single huge line
+- **Difficulty:** medium
+- **Location:** src/cli/batch/mod.rs:394-404
+- **Description:** The SEC-12 fix from v0.13.1 added a `MAX_BATCH_LINE_LEN` (1MB) check at line 404, but the check runs *after* `BufRead::lines()` has already read the entire line into a `String`. Rust's `BufReader::lines()` internally calls `read_line()` which grows the `String` buffer without bound until it hits `\n` or EOF. A single line without newlines (e.g., `yes | tr -d '\n' | cqs batch`) will allocate memory until OOM before the 1MB check is reached. The check only protects against processing the line — it doesn't prevent the allocation. This is the residual risk that SEC-12 didn't address. Threat model: local CLI tool, so exploitation requires controlling stdin to `cqs batch` or `cqs chat`, which in practice means either a malicious pipe or a compromised agent.
+- **Suggested fix:** Replace `stdin.lock().lines()` with a bounded line reader. Use `BufRead::read_line()` in a loop with a running length check: read into a buffer, and if it exceeds `MAX_BATCH_LINE_LEN` before hitting `\n`, discard the rest of the line and emit an error. Alternatively, wrap the reader with `.take(MAX_BATCH_LINE_LEN as u64 + 1)` per line, though this requires more restructuring. The `chat` REPL (cli/chat.rs) uses `rustyline` which has its own bounded input handling and is not affected.
 
-#### SEC-NEW-2: Temp files written with umask-derived permissions before `chmod 0o600` is applied
+#### SEC-2: `is_webhelp_dir` detection walk follows symlinks through the initial `content/` join
 - **Difficulty:** easy
-- **Location:** src/audit.rs:119-135, src/config.rs:332-349, src/note.rs:250-273
-- **Description:** All three atomic-write paths share the same pattern: `std::fs::write(&tmp_path, &content)` creates the temp file with the process umask (typically `0o644` = world-readable), then `std::fs::rename(&tmp_path, &final_path)` renames it. `audit.rs` and `config.rs` apply `set_permissions(0o600)` **after** the rename, leaving a window where the renamed file is world-readable. `note.rs` (`rewrite_notes_file`) never applies `chmod` at all. On a multi-user system or shared CI runner the content is transiently readable. `config.toml` is the most sensitive: it contains `[[reference]]` entries with `path` and `source` fields that disclose filesystem layout. `audit-mode.json` contains only timestamps (low sensitivity). `notes.toml` contains user-authored note text (medium sensitivity, no `chmod` ever applied).
-- **Suggested fix:** Replace `std::fs::write` with an `OpenOptions` that sets `mode(0o600)` before writing (Unix only): `OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp_path)` followed by `file.write_all(...)`. This ensures the temp file is created private from the start. The post-rename `chmod` in `audit.rs`/`config.rs` then becomes defense-in-depth rather than the primary guard. For `note.rs`, add the same `chmod` after rename.
+- **Location:** src/convert/webhelp.rs:19-36
+- **Description:** `is_webhelp_dir()` checks if a directory looks like a web help site by joining `dir + "content"` and walking it. The `content_dir.is_dir()` check at line 21 follows symlinks — if `content/` is a symlink pointing to an arbitrary directory, `is_dir()` returns true and the `WalkDir` at line 25 enumerates that target. While `WalkDir` defaults to `follow_links(false)` for entries *within* the walk, the initial root path (`content_dir`) is a symlink that was already resolved by `is_dir()`. The actual `webhelp_to_markdown()` at line 58 correctly uses `filter_entry(|e| !e.path_is_symlink())`, but `is_webhelp_dir()` in `convert_directory()` runs before conversion and probes the symlinked target for HTML files. The impact is limited: an attacker who controls a `content/` symlink inside a directory being converted gets information about whether HTML files exist at the symlink target, but no file content is read in the detection phase. The real conversion path is safe.
+- **Suggested fix:** Add a symlink check before the `is_dir()` call: `if content_dir.symlink_metadata().map(|m| m.is_symlink()).unwrap_or(false) { return false; }`. This is consistent with the symlink filtering in `webhelp_to_markdown()` and `convert_directory()`.
 
-#### SEC-NEW-3: `run_git_log_line_range` does not validate colons in the file path — git `-L` spec misparse
+#### SEC-3: `SECURITY.md` threat model understates "project files" trust level
 - **Difficulty:** easy
-- **Location:** src/cli/commands/blame.rs:79-93
-- **Description:** `run_git_log_line_range` validates that `rel_file` does not start with `'-'` (prevents git option injection), but does not check for embedded colons. The `-L` spec format is `start,end:filepath`. If a file in the index has a relative path containing `:` (legal on Linux, e.g. `src/proto:generated/foo.rs`), `line_range = format!("{},{}", start, end, git_file)` produces `"1,5:src/proto:generated/foo.rs"`. Git parses the first `:` as the end of the line-range expression and attempts to use `src/proto` as the ref and `generated/foo.rs` as the path, silently producing empty output or a git error rather than blame for the intended file. The caller `build_blame_data` returns `Ok(BlameData { commits: [] })` (empty result from `parse_git_log_output("")`) rather than an error, so the user sees an empty blame result with no indication of failure.
-- **Suggested fix:** Before building `line_range`, validate that `git_file` contains no `:`: `if git_file.contains(':') { anyhow::bail!("File path contains ':' which is incompatible with git -L spec: {}", git_file); }`. Colons in source file paths are extremely rare but legal; a clear error is better than silent empty results.
+- **Location:** SECURITY.md:14
+- **Description:** The SECURITY.md threat model table says project files are "Trusted" with the note "Your code, indexed by your choice." However, `cqs convert` operates on external documents (PDFs, CHMs, HTML from third parties) and `cqs ref add` indexes arbitrary external codebases. Both paths handle untrusted data — crafted CHM archives, malicious HTML, attacker-controlled source trees. The codebase has extensive mitigations (symlink filtering, zip-slip containment, path traversal checks), but the documented threat model doesn't acknowledge that some project files may be untrusted. The v0.13.1 audit added several fixes for exactly these scenarios (SEC-9 through SEC-15). The `"What We Don't Protect Against"` section says "Malicious code in your project" won't be stopped, but doesn't mention malicious documents or reference sources.
+- **Suggested fix:** Update the trust boundary table to distinguish between "project source code" (trusted) and "external documents/references" (semi-trusted — sanitized but not sandboxed). Add a row for "External documents (convert input)" with trust level "Semi-trusted" and note "Symlink/path traversal mitigated, format parsing delegated to libraries." This documents the actual threat model that the code already defends against.
+
+## Performance
+
+#### PF-1: `get_call_graph()` uncached — 15 call sites each do a full `function_calls` table scan
+- **Difficulty:** medium
+- **Location:** src/store/calls.rs:411 (TODO at line 408); 15 callers across onboard.rs, suggest.rs, task.rs, review.rs, impact/hints.rs, health.rs, scout.rs, gather.rs (2x), cli/commands/trace.rs, impact/diff.rs, impact/analysis.rs (2x), cli/commands/test_map.rs, cli/batch/mod.rs
+- **Description:** `get_call_graph()` runs `SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT 500000` on every call. With 15 call sites across the codebase, any compound operation (e.g., `cqs task` calls scout which calls both `get_call_graph` and `find_test_chunks`) triggers multiple full table scans of the same data. For a project with ~2000 edges this takes ~5ms per call, but it adds up: a single `cqs health` call triggers `get_call_graph` once then `find_test_chunks` once; `cqs task` chains scout + gather + impact + placement, each independently calling `get_call_graph`. The TODO comment at line 408 acknowledges this (`TODO(PF-7): Add OnceLock<CallGraph> cache field to Store`) but was never implemented. The previous audit (v0.19.4) triaged this as PF-7 and marked it "fixed" in PR #502, but only the TODO comment was added — the actual cache was not built.
+- **Suggested fix:** Add `call_graph_cache: OnceLock<Result<CallGraph, StoreError>>` to `Store`. Invalidate (reset) in `upsert_function_calls`, `prune_stale_calls`, and `replace_calls_for_file`. The `BatchContext` already has this pattern for its own `OnceLock<CallGraph>` (src/cli/batch/mod.rs:60), but only batch mode benefits — all other callers (scout, task, health, impact, review, suggest, onboard) still hit the database directly.
+
+#### PF-2: `find_test_chunks()` uncached — 14 call sites each do a complex SQL scan with LIKE patterns
+- **Difficulty:** medium
+- **Location:** src/store/calls.rs:1054 (TODO around line 937); 14 callers across onboard.rs, task.rs, scout.rs, review.rs, suggest.rs, health.rs, impact/diff.rs, impact/analysis.rs (2x), impact/hints.rs, cli/batch/mod.rs, cli/batch/handlers.rs, cli/commands/test_map.rs
+- **Description:** `find_test_chunks()` runs a broad SQL query combining name patterns (`test_%`, `Test%`), content LIKE patterns from `LanguageDef::test_markers`, and path patterns from `LanguageDef::test_path_patterns`. The SQL uses OR-chains of LIKE clauses which force full table scans (LIKE with leading wildcards can't use indexes). With 14 call sites, compound operations repeatedly scan the entire chunks table for test detection. Same situation as PF-1: previous audit (v0.19.4 PF-10) marked "fixed" but only a TODO comment exists. `BatchContext` has its own `OnceLock<Vec<ChunkSummary>>` but non-batch callers (scout, health, impact, review, etc.) all hit the database independently.
+- **Suggested fix:** Add `test_chunks_cache: OnceLock<Result<Vec<ChunkSummary>, StoreError>>` to `Store`. Invalidate in `replace_file_chunks`, `upsert_chunks_batch`, and `upsert_chunks_and_calls`. This is the same pattern as PF-1 — both caches should be implemented together since they share the invalidation points.
+
+#### PF-3: `analyze_impact` triggers both uncached table scans — double penalty for impact analysis
+- **Difficulty:** easy (fixed by PF-1 + PF-2)
+- **Location:** src/impact/analysis.rs:29-30
+- **Description:** `analyze_impact` calls `store.get_call_graph()` on line 29 and `store.find_test_chunks()` on line 30, back-to-back. Each is a full table scan (PF-1 and PF-2). The `analyze_impact_batch` variant at line 238 does the same. Since `impact` is called from `cqs impact`, `cqs review`, `cqs task`, and `cqs ci`, every impact analysis pays the cost of two full table scans. In compound operations like `cqs task` (which calls scout first, then impact), the call graph is loaded at least twice and test chunks at least twice.
+- **Suggested fix:** Automatically resolved by implementing PF-1 and PF-2 caches at the Store level. No changes needed in `analyze_impact` itself.
+
+#### PF-4: `search_across_projects` serializes project searches — no parallelism
+- **Difficulty:** medium
+- **Location:** src/project.rs:172 (`for entry in &registry.project` loop)
+- **Description:** `search_across_projects` iterates over registered projects sequentially in a `for` loop (line 172). Each iteration: (1) checks index existence on disk, (2) opens a SQLite Store (`Store::open_readonly`), (3) loads HNSW index from disk (`HnswIndex::try_load`), and (4) runs a full `search_filtered_with_index`. For N projects, total latency is the sum of all searches rather than the maximum. Store opening involves SQLite connection setup (~10-50ms), HNSW loading involves mmap setup (~5-20ms), and search itself depends on corpus size. With 3+ registered projects, the serial overhead becomes noticeable.
+- **Suggested fix:** Use rayon `par_iter` over `registry.project` to search projects in parallel. Each project search is independent (separate Store, separate HNSW index). The results are already merged and sorted after the loop. The gather cross-index code (`gather.rs:540`) already demonstrates the pattern: `rayon::scope` with parallel store operations. Care needed: each parallel search creates its own tokio runtime via `Store::open_readonly` — verify that multiple concurrent runtimes don't conflict.
+
+#### PF-5: `replace_file_chunks` FTS INSERT is per-row despite bulk DELETE
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:290-311
+- **Description:** `replace_file_chunks` does a bulk DELETE of all FTS entries for the origin (efficient), then inserts new FTS entries one row at a time in a loop (line 291-311). Each iteration calls `normalize_for_fts` 4 times (name, signature, content, doc) and then issues a separate `INSERT INTO chunks_fts` SQL statement. The chunk data itself is inserted in batches of 55 using `QueryBuilder::push_values` (line 253-287), but the FTS path doesn't batch. For a file with 50 chunks, this is 50 individual INSERT statements plus 200 `normalize_for_fts` calls, vs. potentially 1 batch INSERT. The same per-row pattern exists in `upsert_chunks_batch` (line 119-147) and `upsert_chunks_and_calls` (line 399-427), though those have a hash-based skip optimization for unchanged chunks.
+- **Suggested fix:** Use `QueryBuilder::push_values` for FTS INSERT as well, batching similarly to the chunk INSERT (groups of ~200 rows, since FTS has 5 columns = ~200 rows per 999-param batch). The `normalize_for_fts` calls still need to happen per-row, but eliminating 49 of 50 SQL round trips would reduce SQLite transaction overhead. Alternatively, accept the current approach — FTS INSERT is fast within a transaction and `replace_file_chunks` is only called from watch mode (typically 1-5 files at a time).
+
+#### PF-6: `count_stale_files` and `list_stale_files` run identical SQL queries — callers that need both pay double
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:546-586 (`count_stale_files`), src/store/chunks.rs:592-643 (`list_stale_files`)
+- **Description:** `count_stale_files` and `list_stale_files` both run `SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'` and iterate over all rows checking file existence and mtime. They differ only in return type: `(u64, u64)` counts vs. `StaleReport` with file lists. Currently no single caller invokes both, but `health.rs` calls `count_stale_files` and `gc.rs` calls `count_stale_files` — if either ever needed the full list, they'd have to call both and double the I/O. The doc comment on `list_stale_files` even says "Like `count_stale_files()` but returns full details."
+- **Suggested fix:** Refactor `count_stale_files` to call `list_stale_files` internally and extract counts from the `StaleReport`. The SQL query and file I/O (mtime checks) are the expensive part; computing counts from a `StaleReport` is trivial. This makes `count_stale_files` a thin wrapper and eliminates code duplication. Current impact is low since no caller uses both, but the duplicated logic is a maintenance burden.
+

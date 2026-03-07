@@ -6,6 +6,7 @@
 //!
 //! CLI flags override all config file values.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
@@ -272,8 +273,9 @@ pub fn add_reference_to_config(
     config_path: &Path,
     ref_config: &ReferenceConfig,
 ) -> anyhow::Result<()> {
-    // Acquire exclusive lock for the entire read-modify-write cycle
-    let lock_file = std::fs::OpenOptions::new()
+    // Acquire exclusive lock for the entire read-modify-write cycle.
+    // Read through the locked fd to avoid TOCTOU between lock and read.
+    let mut lock_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
@@ -281,17 +283,15 @@ pub fn add_reference_to_config(
         .open(config_path)?;
     lock_file.lock()?;
 
-    let content = match std::fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e.into()),
-    };
+    let mut content = String::new();
+    use std::io::Read;
+    lock_file.read_to_string(&mut content)?;
     let mut table: toml::Table = if content.is_empty() {
         toml::Table::new()
     } else {
         content
             .parse()
-            .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", config_path.display(), e))?
+            .with_context(|| format!("Failed to parse {}", config_path.display()))?
     };
 
     // Check for duplicate name
@@ -312,7 +312,7 @@ pub fn add_reference_to_config(
     }
 
     let ref_value = toml::Value::try_from(ref_config)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize reference config: {}", e))?;
+        .with_context(|| "Failed to serialize reference config")?;
 
     let refs = table
         .entry("reference")
@@ -356,8 +356,9 @@ pub fn add_reference_to_config(
 
 /// Remove a reference from a config file by name (read-modify-write)
 pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::Result<bool> {
-    // Acquire exclusive lock for the entire read-modify-write cycle
-    let lock_file = match std::fs::OpenOptions::new()
+    // Acquire exclusive lock for the entire read-modify-write cycle.
+    // Read through the locked fd to avoid TOCTOU between lock and read.
+    let mut lock_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(config_path)
@@ -368,11 +369,13 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
     };
     lock_file.lock()?;
 
-    let content = std::fs::read_to_string(config_path)?;
+    let mut content = String::new();
+    use std::io::Read;
+    lock_file.read_to_string(&mut content)?;
 
     let mut table: toml::Table = content
         .parse()
-        .map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", config_path.display(), e))?;
+        .with_context(|| format!("Failed to parse {}", config_path.display()))?;
 
     let removed = if let Some(toml::Value::Array(arr)) = table.get_mut("reference") {
         let before = arr.len();

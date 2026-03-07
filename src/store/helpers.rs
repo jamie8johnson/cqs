@@ -28,9 +28,10 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error("System time error: file mtime before Unix epoch")]
     SystemTime,
+    #[error("JSON serialization: {0}")]
+    Serialization(#[from] serde_json::Error),
     #[error("Runtime error: {0}")]
-    /// Catch-all for errors that don't fit other variants: tokio runtime init,
-    /// JSON serialization failures, and embedding dimension mismatches.
+    /// Catch-all for internal assertions (e.g., embedding dimension validation).
     Runtime(String),
     #[error("Not found: {0}")]
     /// Lookup failures: missing metadata keys, unresolved function targets,
@@ -274,6 +275,7 @@ pub struct CallerWithContext {
 /// Built from a single scan of the `function_calls` table.
 /// Both forward and reverse adjacency lists are included
 /// to support trace (forward BFS) and impact/test-map (reverse BFS).
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CallGraph {
     /// Forward edges: caller_name -> Vec<callee_name>
     pub forward: HashMap<String, Vec<String>>,
@@ -285,7 +287,7 @@ pub struct CallGraph {
 ///
 /// Minimal metadata needed to identify and match chunks across stores.
 /// Does not include content or embeddings.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ChunkIdentity {
     /// Unique chunk identifier
     pub id: String,
@@ -306,7 +308,7 @@ pub struct ChunkIdentity {
 }
 
 /// Note statistics (total count and categorized counts)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct NoteStats {
     /// Total number of notes
     pub total: u64,
@@ -353,7 +355,7 @@ impl NoteSearchResult {
 }
 
 /// A file in the index whose content has changed on disk
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct StaleFile {
     /// Source file path (as stored in the index)
     pub origin: String,
@@ -364,7 +366,7 @@ pub struct StaleFile {
 }
 
 /// Report of index freshness
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct StaleReport {
     /// Files whose disk mtime is newer than stored mtime
     pub stale: Vec<StaleFile>,

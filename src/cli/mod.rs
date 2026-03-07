@@ -35,6 +35,44 @@ pub(crate) fn open_project_store(
     Ok((store, root, cqs_dir))
 }
 
+/// Build the best available vector index for the store.
+///
+/// Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force (None).
+/// CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
+/// Only worth it when search time savings exceed rebuild cost.
+/// Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW).
+pub(crate) fn build_vector_index(
+    store: &cqs::Store,
+    cqs_dir: &std::path::Path,
+) -> anyhow::Result<Option<Box<dyn cqs::index::VectorIndex>>> {
+    let _ = store; // Used only with gpu-index feature
+    #[cfg(feature = "gpu-index")]
+    {
+        const CAGRA_THRESHOLD: u64 = 5000;
+        let chunk_count = store.chunk_count().unwrap_or(0);
+        if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
+            match cqs::cagra::CagraIndex::build_from_store(store) {
+                Ok(idx) => {
+                    tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
+                    return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
+                }
+            }
+        } else if chunk_count < CAGRA_THRESHOLD {
+            tracing::debug!(
+                "Index too small for CAGRA ({} < {}), using HNSW",
+                chunk_count,
+                CAGRA_THRESHOLD
+            );
+        } else {
+            tracing::debug!("GPU not available, using HNSW");
+        }
+    }
+    Ok(cqs::HnswIndex::try_load(cqs_dir))
+}
+
 #[cfg(feature = "convert")]
 use commands::cmd_convert;
 use commands::{
@@ -255,6 +293,9 @@ enum Commands {
         /// Index files ignored by .gitignore
         #[arg(long)]
         no_ignore: bool,
+        /// Use polling instead of inotify (reliable on WSL /mnt/ paths)
+        #[arg(long)]
+        poll: bool,
     },
     /// Batch mode: read commands from stdin, output JSONL
     Batch,
@@ -688,7 +729,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Watch {
             debounce,
             no_ignore,
-        }) => watch::cmd_watch(&cli, debounce, no_ignore),
+            poll,
+        }) => watch::cmd_watch(&cli, debounce, no_ignore, poll),
         Some(Commands::Completions { shell }) => {
             cmd_completions(shell);
             Ok(())
@@ -1008,9 +1050,11 @@ mod tests {
             Some(Commands::Watch {
                 debounce,
                 no_ignore,
+                poll,
             }) => {
                 assert_eq!(debounce, 500); // default
                 assert!(!no_ignore);
+                assert!(!poll);
             }
             _ => panic!("Expected Watch command"),
         }
@@ -1022,6 +1066,17 @@ mod tests {
         match cli.command {
             Some(Commands::Watch { debounce, .. }) => {
                 assert_eq!(debounce, 1000);
+            }
+            _ => panic!("Expected Watch command"),
+        }
+    }
+
+    #[test]
+    fn test_cmd_watch_poll() {
+        let cli = Cli::try_parse_from(["cqs", "watch", "--poll"]).unwrap();
+        match cli.command {
+            Some(Commands::Watch { poll, .. }) => {
+                assert!(poll);
             }
             _ => panic!("Expected Watch command"),
         }

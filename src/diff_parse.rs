@@ -11,7 +11,7 @@ static HUNK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"@@ [^@]* \+(\d+)(?:,(\d+))? @@").expect("hardcoded hunk regex"));
 
 /// A single hunk from a unified diff — one changed region in one file
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffHunk {
     /// Relative file path (from `+++ b/...`)
     pub file: String,

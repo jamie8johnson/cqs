@@ -18,6 +18,8 @@
 //! - `lang-cpp` - C++ support (enabled by default)
 //! - `lang-java` - Java support (enabled by default)
 //! - `lang-csharp` - C# support (enabled by default)
+//! - `lang-fsharp` - F# support (enabled by default)
+//! - `lang-powershell` - PowerShell support (enabled by default)
 //! - `lang-scala` - Scala support (enabled by default)
 //! - `lang-ruby` - Ruby support (enabled by default)
 //! - `lang-bash` - Bash support (enabled by default)
@@ -42,12 +44,21 @@
 //! - `lang-gleam` - Gleam support (enabled by default)
 //! - `lang-css` - CSS support (enabled by default)
 //! - `lang-perl` - Perl support (enabled by default)
+//! - `lang-html` - HTML support (enabled by default)
+//! - `lang-json` - JSON support (enabled by default)
+//! - `lang-xml` - XML support (enabled by default)
+//! - `lang-ini` - INI support (enabled by default)
 //! - `lang-nix` - Nix support (enabled by default)
 //! - `lang-make` - Makefile support (enabled by default)
 //! - `lang-latex` - LaTeX support (enabled by default)
 //! - `lang-solidity` - Solidity support (enabled by default)
 //! - `lang-cuda` - CUDA support (enabled by default)
 //! - `lang-glsl` - GLSL support (enabled by default)
+//! - `lang-svelte` - Svelte support (enabled by default)
+//! - `lang-razor` - Razor/CSHTML support (enabled by default)
+//! - `lang-vbnet` - VB.NET support (enabled by default)
+//! - `lang-vue` - Vue support (enabled by default)
+//! - `lang-markdown` - Markdown support (enabled by default, no external deps)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -634,6 +645,8 @@ define_languages! {
     Razor => "razor", feature = "lang-razor", module = razor;
     /// VB.NET (.vb files)
     VbNet => "vbnet", feature = "lang-vbnet", module = vbnet;
+    /// Vue (.vue files)
+    Vue => "vue", feature = "lang-vue", module = vue;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
 }
@@ -1089,6 +1102,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-vbnet")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-vue")]
         {
             expected += 1;
         }

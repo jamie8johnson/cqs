@@ -7,7 +7,7 @@
 //!
 //! - **Semantic search**: Uses E5-base-v2 embeddings (769-dim: 768 model + sentiment)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Gleam, Haskell, Julia, OCaml, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Markdown (49 languages)
+//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Gleam, Haskell, Julia, OCaml, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, Markdown (50 languages)
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
@@ -64,7 +64,8 @@ pub mod suggest;
 // These are pub(crate) to hide implementation details, but specific items are
 // re-exported below for use by the binary crate (CLI) and integration tests.
 pub(crate) mod diff;
-pub mod diff_parse;
+pub(crate) mod diff_parse;
+pub use diff_parse::{parse_unified_diff, DiffHunk};
 pub mod drift;
 pub use drift::{detect_drift, DriftEntry, DriftResult};
 pub(crate) mod focused_read;
@@ -75,7 +76,8 @@ pub(crate) mod nl;
 pub(crate) mod onboard;
 pub(crate) mod project;
 pub(crate) mod related;
-pub mod review;
+pub(crate) mod review;
+pub use review::{review_diff, ReviewResult};
 pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod structural;
@@ -209,11 +211,8 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
         return true;
     }
     // Path-based patterns (mirrors TEST_PATH_PATTERNS in store/calls.rs)
-    // Check both forward and backslash separators for Windows compatibility
     file.contains("/tests/")
-        || file.contains("\\tests\\")
         || file.starts_with("tests/")
-        || file.starts_with("tests\\")
         || file.contains("_test.")
         || file.contains(".test.")
         || file.contains(".spec.")
@@ -371,7 +370,10 @@ pub fn enumerate_files(
             e.path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| extensions.contains(&ext))
+                .map(|ext| {
+                    let lower = ext.to_ascii_lowercase();
+                    extensions.contains(&lower.as_str())
+                })
                 .unwrap_or(false)
         })
         .filter_map({
@@ -416,6 +418,7 @@ pub fn enumerate_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_is_test_chunk_name_patterns() {
@@ -512,6 +515,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_index_notes_empty_returns_zero() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(dir.path(), "# empty notes file\n");
@@ -527,6 +531,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_index_notes_stores_notes() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(
@@ -575,6 +580,7 @@ mentions = ["store.rs"]
     }
 
     #[test]
+    #[serial]
     fn test_index_notes_sentiment_dimension() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(dir.path(), "");

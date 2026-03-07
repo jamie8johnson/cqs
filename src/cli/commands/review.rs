@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 
-use cqs::review::ReviewResult;
+use cqs::ReviewResult;
 use cqs::RiskLevel;
 
 pub(crate) fn cmd_review(
@@ -28,7 +28,7 @@ pub(crate) fn cmd_review(
     };
 
     // 2. Run review
-    let result = cqs::review::review_diff(&store, &diff_text, &root)?;
+    let result = cqs::review_diff(&store, &diff_text, &root)?;
 
     match result {
         None => {

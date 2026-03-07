@@ -64,12 +64,10 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     let hnsw_vectors = if pruned_chunks > 0 {
         let hnsw_path = cqs_dir.join("index.hnsw.graph");
         if hnsw_path.exists() {
-            for file_name in &[
-                "index.hnsw.graph",
-                "index.hnsw.data",
-                "index.hnsw.checksum",
-                "index.hnsw.id_map.json",
-            ] {
+            for file_name in cqs::hnsw::HNSW_ALL_EXTENSIONS
+                .iter()
+                .map(|ext| format!("index.{ext}"))
+            {
                 let path = cqs_dir.join(file_name);
                 if let Err(e) = std::fs::remove_file(&path) {
                     if e.kind() != std::io::ErrorKind::NotFound {

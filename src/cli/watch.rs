@@ -22,7 +22,7 @@ use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{info, info_span, warn};
 
 use cqs::embedder::{Embedder, Embedding};
@@ -51,16 +51,20 @@ fn try_init_embedder(embedder: &OnceCell<Embedder>) -> Option<&Embedder> {
     }
 }
 
-pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
-    let _span = tracing::info_span!("cmd_watch", debounce_ms).entered();
+pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Result<()> {
+    let _span = tracing::info_span!("cmd_watch", debounce_ms, poll).entered();
     if no_ignore {
         tracing::warn!("--no-ignore is not yet implemented for watch mode");
     }
 
     let root = find_project_root();
 
-    if cqs::config::is_wsl() {
-        tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Consider running 'cqs index' periodically.");
+    // Auto-detect when polling is needed: WSL + /mnt/ path
+    let use_poll =
+        poll || (cqs::config::is_wsl() && root.to_str().is_some_and(|p| p.starts_with("/mnt/")));
+
+    if cqs::config::is_wsl() && !use_poll {
+        tracing::warn!("WSL detected: inotify may be unreliable on Windows filesystem mounts. Use --poll or 'cqs index' periodically.");
     }
 
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -87,7 +91,13 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool) -> Result<()> {
 
     let config = Config::default().with_poll_interval(Duration::from_millis(debounce_ms));
 
-    let mut watcher = RecommendedWatcher::new(tx, config)?;
+    // Box<dyn Watcher> so both watcher types work with the same variable
+    let mut watcher: Box<dyn Watcher> = if use_poll {
+        println!("Using poll watcher (interval: {}ms)", debounce_ms);
+        Box::new(PollWatcher::new(tx, config)?)
+    } else {
+        Box::new(RecommendedWatcher::new(tx, config)?)
+    };
     watcher.watch(&root, RecursiveMode::Recursive)?;
 
     // Track pending changes for debouncing

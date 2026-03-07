@@ -23,8 +23,7 @@ async fn insert_note_with_fts(
     file_mtime: i64,
     now: &str,
 ) -> Result<(), StoreError> {
-    let mentions_json = serde_json::to_string(&note.mentions)
-        .map_err(|e| StoreError::Runtime(format!("JSON serialization: {e}")))?;
+    let mentions_json = serde_json::to_string(&note.mentions)?;
 
     sqlx::query(
         "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)

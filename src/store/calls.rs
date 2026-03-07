@@ -16,7 +16,7 @@ use crate::parser::{ChunkType, Language};
 ///
 /// Wraps a `ChunkSummary` with a confidence level indicating how likely
 /// the function is truly dead (not just invisible to static analysis).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DeadFunction {
     /// The code chunk (function/method metadata + content)
     pub chunk: ChunkSummary,
@@ -27,7 +27,7 @@ pub struct DeadFunction {
 /// Confidence level for dead code detection.
 ///
 /// Ordered from least to most confident, enabling `>=` filtering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub enum DeadConfidence {
     /// Likely a false positive (methods, functions in active files)
     Low,
@@ -73,7 +73,7 @@ pub(crate) struct LightChunk {
 }
 
 /// Statistics about call graph entries (chunk-level calls table)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct CallStats {
     /// Total number of call edges
     pub total_calls: u64,
@@ -82,7 +82,7 @@ pub struct CallStats {
 }
 
 /// Detailed function call statistics (function_calls table)
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct FunctionCallStats {
     /// Total number of call edges
     pub total_calls: u64,
@@ -405,12 +405,15 @@ impl Store {
     /// on adversarial databases. Typical projects have ~2000 edges.
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
     ///
-    // TODO(PF-7): Add OnceLock<CallGraph> cache field to Store (requires store/mod.rs change).
-    // Called 15 times across codebase — each call scans entire function_calls table.
-    // Cache should invalidate on upsert_function_calls / prune_stale_calls.
+    /// Cached call graph — populated on first access, returns clone from OnceLock.
+    /// Each CLI invocation creates a fresh Store, so the cache is valid for the
+    /// invocation's lifetime. ~15 call sites benefit from this caching.
     pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
+        if let Some(cached) = self.call_graph_cache.get() {
+            return Ok(cached.clone());
+        }
         let _span = tracing::info_span!("get_call_graph").entered();
-        self.rt.block_on(async {
+        let graph = self.rt.block_on(async {
             const MAX_CALL_GRAPH_EDGES: i64 = 500_000;
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT ?1",
@@ -435,11 +438,6 @@ impl Store {
             let mut reverse: std::collections::HashMap<String, Vec<String>> =
                 std::collections::HashMap::new();
 
-            // Each string is cloned exactly once: callee is cloned for the reverse
-            // entry key (original moved into forward's Vec), caller is cloned for the
-            // reverse Vec (original moved into forward's entry key). This is optimal
-            // for HashMap<String, Vec<String>> — Arc<str> would add indirection cost
-            // that exceeds the clone savings for typical call graph sizes (~2K edges).
             for (caller, callee) in rows {
                 reverse
                     .entry(callee.clone())
@@ -448,8 +446,10 @@ impl Store {
                 forward.entry(caller).or_default().push(callee);
             }
 
-            Ok(CallGraph { forward, reverse })
-        })
+            Ok::<_, StoreError>(CallGraph { forward, reverse })
+        })?;
+        let _ = self.call_graph_cache.set(graph.clone());
+        Ok(graph)
     }
 
     /// Find callers with call-site line numbers for impact analysis.
@@ -1051,9 +1051,16 @@ impl Store {
     /// - Path patterns: sourced from `LanguageDef::test_path_patterns` per language
     ///
     /// Uses a broad SQL filter then Rust post-filter for precision.
+    /// Cached test chunks — populated on first access, returns clone from OnceLock.
+    /// ~14 call sites benefit from this caching.
     pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
+        if let Some(cached) = self.test_chunks_cache.get() {
+            return Ok(cached.clone());
+        }
         let _span = tracing::info_span!("find_test_chunks").entered();
-        self.rt.block_on(self.find_test_chunks_async())
+        let chunks = self.rt.block_on(self.find_test_chunks_async())?;
+        let _ = self.test_chunks_cache.set(chunks.clone());
+        Ok(chunks)
     }
 
     /// Batch count query for call graph columns.

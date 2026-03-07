@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 
 use cqs::parser::ChunkType;
 use cqs::store::{ParentContext, UnifiedResult};
-use cqs::{reference, Embedder, Embedding, HnswIndex, Pattern, SearchFilter, Store};
+use cqs::{reference, Embedder, Embedding, Pattern, SearchFilter, Store};
 
 use crate::cli::{display, signal, staleness, Cli};
 
@@ -113,45 +113,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     }
 
     // Load vector index for O(log n) search
-    let index: Option<Box<dyn cqs::index::VectorIndex>> = {
-        #[cfg(feature = "gpu-index")]
-        {
-            // Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force
-            //
-            // CAGRA rebuilds index each CLI invocation (~1s for 474 vectors).
-            // Only worth it when search time savings exceed rebuild cost.
-            // Threshold: 5000 vectors (where CAGRA search is ~10x faster than HNSW)
-            const CAGRA_THRESHOLD: u64 = 5000;
-            let chunk_count = store.chunk_count().unwrap_or(0);
-            if chunk_count >= CAGRA_THRESHOLD && cqs::cagra::CagraIndex::gpu_available() {
-                match cqs::cagra::CagraIndex::build_from_store(&store) {
-                    Ok(idx) => {
-                        tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
-                        Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
-                        HnswIndex::try_load(&cqs_dir)
-                    }
-                }
-            } else {
-                if chunk_count < CAGRA_THRESHOLD {
-                    tracing::debug!(
-                        "Index too small for CAGRA ({} < {}), using HNSW",
-                        chunk_count,
-                        CAGRA_THRESHOLD
-                    );
-                } else {
-                    tracing::debug!("GPU not available, using HNSW");
-                }
-                HnswIndex::try_load(&cqs_dir)
-            }
-        }
-        #[cfg(not(feature = "gpu-index"))]
-        {
-            HnswIndex::try_load(&cqs_dir)
-        }
-    };
+    let index = crate::cli::build_vector_index(&store, &cqs_dir)?;
 
     // Check audit mode for note exclusion
     let audit_mode = cqs::audit::load_audit_state(&cqs_dir);

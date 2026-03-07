@@ -52,7 +52,7 @@ pub(crate) fn find_injection_ranges(
     source: &str,
     rules: &[InjectionRule],
 ) -> Vec<InjectionGroup> {
-    let _span = tracing::info_span!("find_injection_ranges", rules = rules.len()).entered();
+    let _span = tracing::debug_span!("find_injection_ranges", rules = rules.len()).entered();
 
     // Collect (language_name, range, container_lines) tuples
     let mut entries: Vec<(&str, tree_sitter::Range, (u32, u32))> = Vec::new();

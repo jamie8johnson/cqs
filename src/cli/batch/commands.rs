@@ -199,7 +199,7 @@ pub(crate) enum BatchCmd {
         /// Task description
         query: String,
         /// Max results
-        #[arg(short = 'n', long, default_value = "10")]
+        #[arg(short = 'n', long, default_value = "5")]
         limit: usize,
         /// Maximum token budget
         #[arg(long, value_parser = parse_nonzero_usize)]
@@ -210,7 +210,7 @@ pub(crate) enum BatchCmd {
         /// Description of what to add
         description: String,
         /// Max suggestions
-        #[arg(short = 'n', long, default_value = "5")]
+        #[arg(short = 'n', long, default_value = "3")]
         limit: usize,
     },
     /// Read file with note injection
@@ -572,7 +572,7 @@ mod tests {
                 ref query, limit, ..
             } => {
                 assert_eq!(query, "error handling");
-                assert_eq!(limit, 10); // default
+                assert_eq!(limit, 5); // default
             }
             _ => panic!("Expected Scout command"),
         }
@@ -612,7 +612,7 @@ mod tests {
                 limit,
             } => {
                 assert_eq!(description, "new CLI command");
-                assert_eq!(limit, 5); // default
+                assert_eq!(limit, 3); // default
             }
             _ => panic!("Expected Where command"),
         }

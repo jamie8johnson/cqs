@@ -195,7 +195,7 @@ fn extract_text_content(node: tree_sitter::Node, source: &str) -> String {
 
 /// Extract an attribute value from an element's opening tag text.
 fn extract_attribute_from_text(text: &str, attr_name: &str) -> Option<String> {
-    let lower = text.to_lowercase();
+    let lower = text.to_ascii_lowercase();
     let pattern = format!("{}=\"", attr_name);
     if let Some(pos) = lower.find(&pattern) {
         let after = &text[pos + pattern.len()..];

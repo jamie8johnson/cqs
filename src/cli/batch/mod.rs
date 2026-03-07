@@ -277,32 +277,7 @@ fn build_vector_index(
     store: &Store,
     cqs_dir: &std::path::Path,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
-    let _ = store; // Used only with gpu-index feature
-    #[cfg(feature = "gpu-index")]
-    {
-        const CAGRA_THRESHOLD: u64 = 5000;
-        let chunk_count = store.chunk_count().unwrap_or(0);
-        if chunk_count >= CAGRA_THRESHOLD && cqs::CagraIndex::gpu_available() {
-            match cqs::CagraIndex::build_from_store(store) {
-                Ok(idx) => {
-                    tracing::info!("Using CAGRA GPU index ({} vectors)", idx.len());
-                    return Ok(Some(Box::new(idx) as Box<dyn VectorIndex>));
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
-                }
-            }
-        } else if chunk_count < CAGRA_THRESHOLD {
-            tracing::debug!(
-                "Index too small for CAGRA ({} < {}), using HNSW",
-                chunk_count,
-                CAGRA_THRESHOLD
-            );
-        } else {
-            tracing::debug!("GPU not available, using HNSW");
-        }
-    }
-    Ok(cqs::HnswIndex::try_load(cqs_dir))
+    crate::cli::build_vector_index(store, cqs_dir)
 }
 
 // ─── JSON serialization helpers ──────────────────────────────────────────────
@@ -390,17 +365,26 @@ pub(crate) fn cmd_batch() -> Result<()> {
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
+    let mut reader = std::io::BufReader::new(stdin.lock());
 
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
+    // SEC-1: Use bounded read_line instead of BufRead::lines() to prevent OOM
+    // on huge single-line input. read_line allocates incrementally (8KB chunks)
+    // but we enforce MAX_BATCH_LINE_LEN before processing.
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break, // EOF
+            Ok(_) => {}
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to read stdin line");
                 break;
             }
         };
 
-        // SEC-12: Reject lines exceeding 1MB to prevent unbounded memory allocation
+        // Reject lines exceeding 1MB to prevent unbounded memory allocation.
+        // read_line may have allocated up to this size already, but further
+        // processing (parsing, cloning) is prevented.
         if line.len() > MAX_BATCH_LINE_LEN {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
             // Hardcoded JSON — no serialization needed, no NaN risk

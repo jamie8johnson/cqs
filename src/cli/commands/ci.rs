@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use cqs::ci::{run_ci_analysis, GateThreshold};
-use cqs::review::ReviewResult;
+use cqs::ReviewResult;
 use cqs::RiskLevel;
 
 pub(crate) fn cmd_ci(

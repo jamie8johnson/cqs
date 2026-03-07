@@ -3,9 +3,9 @@
 mod common;
 
 use common::{mock_embedding, TestStore};
-use cqs::diff_parse::{parse_unified_diff, DiffHunk};
 use cqs::parser::{CallSite, Chunk, ChunkType, FunctionCalls, Language};
 use cqs::{analyze_diff_impact, map_hunks_to_functions, ChangedFunction};
+use cqs::{parse_unified_diff, DiffHunk};
 use std::path::{Path, PathBuf};
 
 /// Create a test chunk with custom file and line range

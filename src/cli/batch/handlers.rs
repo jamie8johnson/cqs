@@ -411,7 +411,13 @@ pub(super) fn dispatch_gather(
 
     let json_chunks: Vec<serde_json::Value> = chunks
         .iter()
-        .filter_map(|c| serde_json::to_value(c).ok())
+        .filter_map(|c| match serde_json::to_value(c) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(error = %e, chunk = %c.name, "Failed to serialize chunk");
+                None
+            }
+        })
         .collect();
 
     let mut response = serde_json::json!({
