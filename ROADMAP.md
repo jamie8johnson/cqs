@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v0.27.0
+## Current: v0.28.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 47 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 49 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
 
 ### Next — Commands
 

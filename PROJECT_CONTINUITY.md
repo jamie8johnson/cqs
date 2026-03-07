@@ -35,7 +35,7 @@ None.
 
 ## Architecture
 
-- Version: 0.27.0
+- Version: 0.28.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
