@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1] - 2026-03-07
+
+### Fixed
+- Switch `tree-sitter-razor` and `tree-sitter-vb-dotnet` from git deps to crates.io v0.1.0 — enables `cargo install cqs` without git access (PR #548)
+
 ## [0.28.0] - 2026-03-07
 
 Recursive injection framework expansion — Svelte, Razor/CSHTML, VB.NET language support, plus PHP→HTML→JS/CSS recursive injection and Nix/HCL/LaTeX→code injection rules (46 → 49 languages).
