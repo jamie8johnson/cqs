@@ -162,6 +162,7 @@ impl Store {
         chunk_id: &str,
         calls: &[crate::parser::CallSite],
     ) -> Result<(), StoreError> {
+        let _span = tracing::info_span!("upsert_calls", count = calls.len()).entered();
         tracing::trace!(chunk_id, call_count = calls.len(), "upserting chunk calls");
 
         self.rt.block_on(async {
@@ -202,6 +203,7 @@ impl Store {
         &self,
         calls: &[(String, crate::parser::CallSite)],
     ) -> Result<(), StoreError> {
+        let _span = tracing::info_span!("upsert_calls_batch", count = calls.len()).entered();
         if calls.is_empty() {
             return Ok(());
         }
@@ -250,6 +252,7 @@ impl Store {
     ///
     /// For richer callee data, see [`get_callers_with_context`].
     pub fn get_callees(&self, chunk_id: &str) -> Result<Vec<String>, StoreError> {
+        let _span = tracing::debug_span!("get_callees", chunk_id = %chunk_id).entered();
         self.rt.block_on(async {
             let rows: Vec<(String,)> = sqlx::query_as(
                 "SELECT DISTINCT callee_name FROM calls WHERE caller_id = ?1 ORDER BY line_number",
@@ -264,6 +267,7 @@ impl Store {
 
     /// Get call graph statistics
     pub fn call_stats(&self) -> Result<CallStats, StoreError> {
+        let _span = tracing::debug_span!("call_stats").entered();
         self.rt.block_on(async {
             let (total_calls, unique_callees): (i64, i64) =
                 sqlx::query_as("SELECT COUNT(*), COUNT(DISTINCT callee_name) FROM calls")
@@ -285,6 +289,8 @@ impl Store {
         file: &Path,
         function_calls: &[crate::parser::FunctionCalls],
     ) -> Result<(), StoreError> {
+        let _span =
+            tracing::info_span!("upsert_function_calls", count = function_calls.len()).entered();
         let file_str = crate::normalize_path(file);
         let total_calls: usize = function_calls.iter().map(|fc| fc.calls.len()).sum();
         tracing::trace!(
@@ -344,6 +350,7 @@ impl Store {
 
     /// Find all callers of a function (from full call graph)
     pub fn get_callers_full(&self, callee_name: &str) -> Result<Vec<CallerInfo>, StoreError> {
+        let _span = tracing::debug_span!("get_callers_full", function = %callee_name).entered();
         tracing::debug!(callee_name, "querying callers from full call graph");
 
         self.rt.block_on(async {
@@ -380,6 +387,7 @@ impl Store {
         caller_name: &str,
         file: Option<&str>,
     ) -> Result<Vec<(String, u32)>, StoreError> {
+        let _span = tracing::debug_span!("get_callees_full", function = %caller_name).entered();
         self.rt.block_on(async {
             let rows: Vec<(String, i64)> = sqlx::query_as(
                 "SELECT DISTINCT callee_name, call_line
@@ -460,6 +468,8 @@ impl Store {
         &self,
         callee_name: &str,
     ) -> Result<Vec<CallerWithContext>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_callers_with_context", function = %callee_name).entered();
         self.rt.block_on(async {
             let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
                 "SELECT file, caller_name, caller_line, call_line
@@ -492,6 +502,9 @@ impl Store {
         &self,
         callee_names: &[&str],
     ) -> Result<std::collections::HashMap<String, Vec<CallerWithContext>>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_callers_with_context_batch", count = callee_names.len())
+                .entered();
         if callee_names.is_empty() {
             return Ok(std::collections::HashMap::new());
         }

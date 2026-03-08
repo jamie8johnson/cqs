@@ -101,6 +101,7 @@ impl Store {
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("upsert_notes_batch", count = notes.len()).entered();
         let source_str = source_file.to_string_lossy().into_owned();
         tracing::debug!(
             source = %source_str,
@@ -189,6 +190,8 @@ impl Store {
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
+        let _span =
+            tracing::info_span!("replace_notes_for_file", path = %source_file.display()).entered();
         let source_str = source_file.to_string_lossy().into_owned();
         tracing::debug!(
             source = %source_str,
@@ -231,6 +234,8 @@ impl Store {
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
     /// or `Ok(None)` if no reindex needed. This avoids reading file metadata twice.
     pub fn notes_need_reindex(&self, source_file: &Path) -> Result<Option<i64>, StoreError> {
+        let _span =
+            tracing::debug_span!("notes_need_reindex", path = %source_file.display()).entered();
         let current_mtime = source_file
             .metadata()?
             .modified()?
@@ -254,6 +259,7 @@ impl Store {
 
     /// Get note count
     pub fn note_count(&self) -> Result<u64, StoreError> {
+        let _span = tracing::debug_span!("note_count").entered();
         self.rt.block_on(async {
             let row: Option<(i64,)> = sqlx::query_as("SELECT COUNT(*) FROM notes")
                 .fetch_optional(&self.pool)
@@ -269,6 +275,7 @@ impl Store {
     /// (-1, -0.5, 0, 0.5, 1) -- negative values (-1, -0.5) count as warnings,
     /// positive values (0.5, 1) count as patterns.
     pub fn note_stats(&self) -> Result<NoteStats, StoreError> {
+        let _span = tracing::debug_span!("note_stats").entered();
         self.rt.block_on(async {
             let (total, warnings, patterns): (i64, i64, i64) = sqlx::query_as(
                 "SELECT COUNT(*),
@@ -294,6 +301,7 @@ impl Store {
     /// Returns `NoteSummary` for each note, useful for mention-based filtering
     /// without the cost of loading embeddings.
     pub fn list_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
+        let _span = tracing::debug_span!("list_notes_summaries").entered();
         self.rt.block_on(async {
             let rows: Vec<_> =
                 sqlx::query("SELECT id, text, sentiment, mentions FROM notes ORDER BY created_at")
@@ -327,6 +335,7 @@ impl Store {
     ///
     /// Returns (id, embedding) pairs with `note:` prefix on IDs to distinguish from chunks.
     pub fn note_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
+        let _span = tracing::debug_span!("note_embeddings").entered();
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM notes")
                 .fetch_all(&self.pool)
