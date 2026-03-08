@@ -1746,3 +1746,49 @@ function renderChart(data) {
         chunk_callees
     );
 }
+
+#[test]
+fn test_fenced_blocks_call_extraction() {
+    // TC-6: Verify whether parse_file_all extracts function calls from fenced code blocks
+    let md_content = r#"# Example
+
+```rust
+fn caller() {
+    helper();
+    another_func();
+}
+
+fn helper() -> i32 {
+    42
+}
+
+fn another_func() {}
+```
+"#;
+    let tmp = std::env::temp_dir().join("test_fenced_calls.md");
+    std::fs::write(&tmp, md_content).unwrap();
+    let parser = Parser::new().unwrap();
+    let (chunks, calls, _type_refs) = parser.parse_file_all(&tmp).unwrap();
+    std::fs::remove_file(&tmp).ok();
+
+    // Should extract chunks from fenced blocks
+    assert!(
+        !chunks.is_empty(),
+        "should extract chunks from fenced Rust block"
+    );
+    let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"caller"), "missing 'caller' function");
+    assert!(names.contains(&"helper"), "missing 'helper' function");
+
+    // TC-6 finding: parse_file_all extracts chunks from fenced code blocks (functions
+    // are correctly parsed) but does NOT extract call graph edges from within those blocks.
+    // The only FunctionCalls entry is the file-level markdown section linkage, not
+    // intra-function calls like caller() -> helper(). This is a known limitation.
+    let caller_calls: Vec<_> = calls.iter().filter(|c| c.name == "caller").collect();
+    assert!(
+        caller_calls.is_empty(),
+        "Known limitation: fenced block call extraction does not produce calls for \
+         inner functions. If this starts passing, the limitation is fixed — \
+         update this test to assert the calls."
+    );
+}
