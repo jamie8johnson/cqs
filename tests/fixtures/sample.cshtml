@@ -1,0 +1,18 @@
+@model SampleApp.PageModel
+
+@functions {
+    public int Add(int a, int b)
+    {
+        return a + b;
+    }
+
+    public string FormatName(string name)
+    {
+        return name.ToUpper();
+    }
+}
+
+<div>
+    <h1>@Model.Title</h1>
+    <p>Result: @Add(1, 2)</p>
+</div>

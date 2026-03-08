@@ -1792,3 +1792,371 @@ fn another_func() {}
          update this test to assert the calls."
     );
 }
+
+// ===== C# tests =====
+
+#[test]
+#[cfg(feature = "lang-csharp")]
+fn test_csharp_class_and_method_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.cs");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract C# chunks from sample.cs"
+    );
+
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Class);
+    assert!(
+        calc.is_some(),
+        "Should find 'Calculator' class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(calc.unwrap().language, Language::CSharp);
+
+    let add = chunks.iter().find(|c| {
+        c.name == "Add" && matches!(c.chunk_type, ChunkType::Method | ChunkType::Function)
+    });
+    assert!(
+        add.is_some(),
+        "Should find 'Add' method, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let op = chunks
+        .iter()
+        .find(|c| c.name == "Operation" && c.chunk_type == ChunkType::Enum);
+    assert!(
+        op.is_some(),
+        "Should find 'Operation' enum, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== F# tests =====
+
+#[test]
+#[cfg(feature = "lang-fsharp")]
+fn test_fsharp_module_and_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.fs");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract F# chunks from sample.fs"
+    );
+
+    let add = chunks.iter().find(|c| {
+        c.name == "add" && matches!(c.chunk_type, ChunkType::Function | ChunkType::Method)
+    });
+    assert!(
+        add.is_some(),
+        "Should find 'add' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(add.unwrap().language, Language::FSharp);
+
+    let area = chunks.iter().find(|c| {
+        c.name == "area" && matches!(c.chunk_type, ChunkType::Function | ChunkType::Method)
+    });
+    assert!(
+        area.is_some(),
+        "Should find 'area' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== PowerShell tests =====
+
+#[test]
+#[cfg(feature = "lang-powershell")]
+fn test_powershell_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.ps1");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract PowerShell chunks from sample.ps1"
+    );
+
+    let get_user = chunks
+        .iter()
+        .find(|c| c.name == "Get-UserInfo" && c.chunk_type == ChunkType::Function);
+    assert!(
+        get_user.is_some(),
+        "Should find 'Get-UserInfo' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(get_user.unwrap().language, Language::PowerShell);
+
+    let set_user = chunks
+        .iter()
+        .find(|c| c.name == "Set-UserStatus" && c.chunk_type == ChunkType::Function);
+    assert!(
+        set_user.is_some(),
+        "Should find 'Set-UserStatus' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== Scala tests =====
+
+#[test]
+#[cfg(feature = "lang-scala")]
+fn test_scala_class_and_trait_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.scala");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Scala chunks from sample.scala"
+    );
+
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Class);
+    assert!(
+        calc.is_some(),
+        "Should find 'Calculator' class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(calc.unwrap().language, Language::Scala);
+
+    let printable = chunks.iter().find(|c| {
+        c.name == "Printable" && matches!(c.chunk_type, ChunkType::Interface | ChunkType::Trait)
+    });
+    assert!(
+        printable.is_some(),
+        "Should find 'Printable' trait, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let math_utils = chunks.iter().find(|c| {
+        c.name == "MathUtils"
+            && matches!(
+                c.chunk_type,
+                ChunkType::Object | ChunkType::Module | ChunkType::Class
+            )
+    });
+    assert!(
+        math_utils.is_some(),
+        "Should find 'MathUtils' object, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== Ruby tests =====
+
+#[test]
+#[cfg(feature = "lang-ruby")]
+fn test_ruby_class_and_module_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.rb");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Ruby chunks from sample.rb"
+    );
+
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Class);
+    assert!(
+        calc.is_some(),
+        "Should find 'Calculator' class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(calc.unwrap().language, Language::Ruby);
+
+    let add = chunks.iter().find(|c| {
+        c.name == "add" && matches!(c.chunk_type, ChunkType::Method | ChunkType::Function)
+    });
+    assert!(
+        add.is_some(),
+        "Should find 'add' method, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let helpers = chunks
+        .iter()
+        .find(|c| c.name == "MathHelpers" && c.chunk_type == ChunkType::Module);
+    assert!(
+        helpers.is_some(),
+        "Should find 'MathHelpers' module, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== Vue tests =====
+
+#[test]
+#[cfg(feature = "lang-vue")]
+fn test_vue_script_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.vue");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Vue chunks from sample.vue"
+    );
+
+    // Vue should extract JS functions from the <script> block via injection
+    let has_js = chunks.iter().any(|c| c.language == Language::JavaScript);
+    assert!(
+        has_js,
+        "Should extract JavaScript chunks from Vue <script>, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type, &c.language))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== Svelte tests =====
+
+#[test]
+#[cfg(feature = "lang-svelte")]
+fn test_svelte_script_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.svelte");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Svelte chunks from sample.svelte"
+    );
+
+    // Svelte should extract JS functions from the <script> block via injection
+    let has_js = chunks.iter().any(|c| c.language == Language::JavaScript);
+    assert!(
+        has_js,
+        "Should extract JavaScript chunks from Svelte <script>, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type, &c.language))
+            .collect::<Vec<_>>()
+    );
+
+    let increment = chunks.iter().find(|c| c.name == "increment");
+    assert!(
+        increment.is_some(),
+        "Should find 'increment' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
+
+// ===== Razor tests =====
+
+#[test]
+#[cfg(feature = "lang-razor")]
+fn test_razor_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.cshtml");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract Razor chunks from sample.cshtml, got empty"
+    );
+
+    // Razor extracts C# from @functions blocks via injection
+    let names: Vec<_> = chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect();
+    assert!(
+        chunks.len() >= 1,
+        "Should extract at least 1 chunk from Razor file, got: {:?}",
+        names
+    );
+}
+
+// ===== VB.NET tests =====
+
+#[test]
+#[cfg(feature = "lang-vbnet")]
+fn test_vbnet_class_and_function_extraction() {
+    let parser = Parser::new().unwrap();
+    let path = fixtures_path().join("sample.vb");
+    let chunks = parser.parse_file(&path).unwrap();
+    assert!(
+        !chunks.is_empty(),
+        "Should extract VB.NET chunks from sample.vb"
+    );
+
+    let calc = chunks
+        .iter()
+        .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Class);
+    assert!(
+        calc.is_some(),
+        "Should find 'Calculator' class, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(calc.unwrap().language, Language::VbNet);
+
+    let add = chunks.iter().find(|c| {
+        c.name == "Add" && matches!(c.chunk_type, ChunkType::Function | ChunkType::Method)
+    });
+    assert!(
+        add.is_some(),
+        "Should find 'Add' function, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+
+    let op = chunks
+        .iter()
+        .find(|c| c.name == "Operation" && c.chunk_type == ChunkType::Enum);
+    assert!(
+        op.is_some(),
+        "Should find 'Operation' enum, got: {:?}",
+        chunks
+            .iter()
+            .map(|c| (&c.name, &c.chunk_type))
+            .collect::<Vec<_>>()
+    );
+}
