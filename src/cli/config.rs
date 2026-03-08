@@ -29,8 +29,17 @@ pub(crate) fn find_project_root() -> PathBuf {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let cwd = dunce::canonicalize(&cwd).unwrap_or(cwd);
     let mut current = cwd.as_path();
+    let mut depth = 0;
+    const MAX_DEPTH: usize = 20;
 
     loop {
+        if depth >= MAX_DEPTH {
+            tracing::warn!(
+                max_depth = MAX_DEPTH,
+                "Exceeded max directory walk depth, using CWD"
+            );
+            break;
+        }
         // Check for project markers (build files and VCS root)
         // Listed in priority order: if multiple exist, first match wins
         let markers = [
@@ -57,6 +66,7 @@ pub(crate) fn find_project_root() -> PathBuf {
         }
 
         // Move up
+        depth += 1;
         match current.parent() {
             Some(parent) => current = parent,
             None => break,
