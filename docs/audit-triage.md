@@ -93,23 +93,23 @@ Date: 2026-03-06
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | OB-1: store/calls.rs 15 functions missing spans | Observability | calls.rs | |
-| 2 | OB-2: store/types.rs 9 functions missing spans | Observability | types.rs | |
-| 3 | OB-3: store/notes.rs 7 functions missing spans | Observability | notes.rs | |
-| 4 | OB-4: store/chunks.rs 16 functions missing spans | Observability | chunks.rs | |
-| 5 | TC-1: 9 languages missing parser integration tests | Test Coverage | parser_test.rs | |
-| 6 | TC-6: Fenced block call-graph untested | Test Coverage | mod.rs:361 | |
-| 7 | TC-7: handlers.rs 1306 lines zero inline tests | Test Coverage | handlers.rs | |
-| 8 | RB-6: store/chunks.rs 16+ panicking `row.get()` | Robustness | chunks.rs | |
-| 9 | EX-4: `where_to_add` catch-all for 42 languages | Extensibility | where_to_add.rs | |
-| 10 | EX-5: HNSW ef_search compile-time only | Extensibility | hnsw/mod.rs | |
-| 11 | AD-6: Inconsistent `_with_*` naming convention | API Design | multiple | |
-| 12 | PB-3: `find_project_root` walks to filesystem root | Platform | config.rs:28 | |
-| 13 | PB-5: `ProjectRegistry::save()` NTFS advisory lock | Platform | project.rs:56 | |
-| 14 | DS-10: `rewrite_notes_file` copy fallback non-atomic | Data Safety | note.rs:264 | |
-| 15 | DS-11: `extract_relationships` not transactional with chunks | Data Safety | index.rs:124 | |
-| 16 | PF-4: `search_across_projects` serial | Performance | project.rs:172 | |
-| 17 | RM-1: CAGRA dataset CPU-side retention (existing #389) | Resource | cagra.rs:64 | |
-| 18 | RM-2: Watch rebuilds full HNSW on every change | Resource | watch.rs:324 | |
-| 19 | RM-3: `BatchContext` caches never released | Resource | batch/mod.rs:55 | |
-| 20 | RM-5: `extract_relationships` double I/O | Resource | index.rs:193 | |
+| 1 | OB-1: store/calls.rs 15 functions missing spans | Observability | calls.rs | fixed |
+| 2 | OB-2: store/types.rs 9 functions missing spans | Observability | types.rs | fixed |
+| 3 | OB-3: store/notes.rs 7 functions missing spans | Observability | notes.rs | fixed |
+| 4 | OB-4: store/chunks.rs 16 functions missing spans | Observability | chunks.rs | fixed |
+| 5 | TC-1: 9 languages missing parser integration tests | Test Coverage | parser_test.rs | fixed |
+| 6 | TC-6: Fenced block call-graph untested | Test Coverage | mod.rs:361 | fixed (documented limitation) |
+| 7 | TC-7: handlers.rs 1306 lines zero inline tests | Test Coverage | handlers.rs | deferred (17 integration tests adequate) |
+| 8 | RB-6: store/chunks.rs 16+ panicking `row.get()` | Robustness | chunks.rs | fixed |
+| 9 | EX-4: `where_to_add` catch-all for 42 languages | Extensibility | where_to_add.rs | deferred (advisory feature, low value) |
+| 10 | EX-5: HNSW ef_search compile-time only | Extensibility | hnsw/mod.rs | deferred (defaults work for 10k-100k range) |
+| 11 | AD-6: Inconsistent `_with_*` naming convention | API Design | multiple | deferred (cosmetic, no functional impact) |
+| 12 | PB-3: `find_project_root` walks to filesystem root | Platform | config.rs:28 | fixed |
+| 13 | PB-5: `ProjectRegistry::save()` NTFS advisory lock | Platform | project.rs:56 | deferred (rare concurrent scenario) |
+| 14 | DS-10: `rewrite_notes_file` copy fallback non-atomic | Data Safety | note.rs:264 | deferred (cross-device edge case) |
+| 15 | DS-11: `extract_relationships` not transactional with chunks | Data Safety | index.rs:124 | deferred (accepted in prior audit) |
+| 16 | PF-4: `search_across_projects` serial | Performance | project.rs:172 | fixed |
+| 17 | RM-1: CAGRA dataset CPU-side retention (existing #389) | Resource | cagra.rs:64 | deferred (existing #389) |
+| 18 | RM-2: Watch rebuilds full HNSW on every change | Resource | watch.rs:324 | deferred (needs incremental HNSW design) |
+| 19 | RM-3: `BatchContext` caches never released | Resource | batch/mod.rs:55 | deferred (short-lived sessions) |
+| 20 | RM-5: `extract_relationships` double I/O | Resource | index.rs:193 | deferred (needs pipeline rework) ||
