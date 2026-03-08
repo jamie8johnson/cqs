@@ -1199,6 +1199,7 @@ impl Store {
     /// Returns minimal metadata needed to match chunks across stores.
     /// Loads all rows but only lightweight columns (no content or embeddings).
     pub fn all_chunk_identities(&self) -> Result<Vec<ChunkIdentity>, StoreError> {
+        let _span = tracing::debug_span!("all_chunk_identities").entered();
         self.all_chunk_identities_filtered(None)
     }
 
@@ -1210,6 +1211,8 @@ impl Store {
         &self,
         language: Option<&str>,
     ) -> Result<Vec<ChunkIdentity>, StoreError> {
+        let _span =
+            tracing::debug_span!("all_chunk_identities_filtered", language = ?language).entered();
         self.rt.block_on(async {
             let rows: Vec<_> = if let Some(lang) = language {
                 sqlx::query(
@@ -1407,6 +1410,7 @@ impl Store {
         &self,
         batch_size: usize,
     ) -> impl Iterator<Item = Result<Vec<(String, Embedding)>, StoreError>> + '_ {
+        let _span = tracing::debug_span!("embedding_batches", batch_size = batch_size).entered();
         EmbeddingBatchIterator {
             store: self,
             batch_size,
