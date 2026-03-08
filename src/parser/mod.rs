@@ -313,11 +313,8 @@ impl Parser {
     ///
     /// Returns `(chunks, function_calls, chunk_type_refs)`.
     ///
-    /// Used by `watch::reindex_files()` where the same files need both chunk
-    /// extraction and relationship extraction. The streaming pipeline
-    /// (pipeline.rs → index.rs) still uses separate calls because its
-    /// parse → embed → store → extract architecture requires chunks to be
-    /// stored before relationships reference them.
+    /// Used by `pipeline::parser_stage()` for single-pass indexing and
+    /// `watch::reindex_files()` for incremental updates.
     pub fn parse_file_all(&self, path: &Path) -> Result<ParseAllResult, ParserError> {
         let _span = tracing::info_span!("parse_file_all", path = %path.display()).entered();
 

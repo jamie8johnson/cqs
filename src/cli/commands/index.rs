@@ -3,7 +3,7 @@
 //! Indexes codebase files for semantic search.
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -121,19 +121,11 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         }
     }
 
-    // Extract call graph + type edges (includes large functions >100 lines)
-    if !check_interrupted() {
-        if !cli.quiet {
-            println!("Extracting relationships...");
-        }
-
-        let (total_calls, total_type_edges) =
-            extract_relationships(&parser, &root, &existing_files, &store)?;
-
-        if !cli.quiet {
-            println!("  Call graph: {} calls", total_calls);
-            println!("  Type edges: {} edges", total_type_edges);
-        }
+    if !cli.quiet && stats.total_calls > 0 {
+        println!("  Call graph: {} calls", stats.total_calls);
+    }
+    if !cli.quiet && stats.total_type_edges > 0 {
+        println!("  Type edges: {} edges", stats.total_type_edges);
     }
 
     // Index notes if notes.toml exists
@@ -178,66 +170,6 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
     }
 
     Ok(())
-}
-
-/// Extract call graph and type edges from source files.
-///
-/// Uses `parse_file_relationships()` for a single parse pass that returns
-/// both call sites and type references. Returns (total_calls, total_type_edges).
-///
-/// Note: This re-reads and re-parses files that were already parsed in `parser_stage`.
-/// The streaming pipeline (parse → embed → store → extract_relationships) requires
-/// chunks to be stored before relationships reference them, so `parse_file_all()`
-/// can't be used here without restructuring the pipeline. The incremental watcher
-/// (watch.rs) uses `parse_file_all()` to avoid this double-parse.
-fn extract_relationships(
-    parser: &CqParser,
-    root: &Path,
-    files: &HashSet<PathBuf>,
-    store: &Store,
-) -> Result<(usize, usize)> {
-    let _span = tracing::info_span!("extract_relationships", file_count = files.len()).entered();
-    let mut total_calls = 0;
-    let mut total_type_edges = 0;
-    for file in files {
-        let abs_path = root.join(file);
-        match parser.parse_file_relationships(&abs_path) {
-            Ok((function_calls, chunk_type_refs)) => {
-                for fc in &function_calls {
-                    total_calls += fc.calls.len();
-                }
-                store
-                    .upsert_function_calls(file, &function_calls)
-                    .context("Failed to store function calls")?;
-
-                if !chunk_type_refs.is_empty() {
-                    for ctr in &chunk_type_refs {
-                        total_type_edges += ctr.type_refs.len();
-                    }
-                    if let Err(e) = store.upsert_type_edges_for_file(file, &chunk_type_refs) {
-                        tracing::warn!(
-                            file = %abs_path.display(),
-                            error = %e,
-                            "Failed to store type edges"
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "Failed to extract relationships from {}: {}",
-                    abs_path.display(),
-                    e
-                );
-            }
-        }
-    }
-    tracing::info!(
-        total_calls,
-        total_type_edges,
-        "Relationship extraction complete"
-    );
-    Ok((total_calls, total_type_edges))
 }
 
 /// Index notes from notes.toml if it exists and needs reindexing

@@ -16,6 +16,7 @@ use crossbeam_channel::{bounded, select, Receiver, Sender};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
+use cqs::parser::{ChunkTypeRefs, FunctionCalls};
 use cqs::{normalize_path, Chunk, Embedder, Embedding, Parser as CqParser, Store};
 
 use super::check_interrupted;
@@ -92,14 +93,24 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
     result
 }
 
+/// Relationship data extracted during parsing, keyed by file path.
+/// Threaded through the pipeline so store_stage can persist without re-reading files.
+#[derive(Clone, Default)]
+struct RelationshipData {
+    type_refs: HashMap<PathBuf, Vec<ChunkTypeRefs>>,
+    function_calls: HashMap<PathBuf, Vec<FunctionCalls>>,
+}
+
 /// Message types for the pipelined indexer
 struct ParsedBatch {
     chunks: Vec<Chunk>,
+    relationships: RelationshipData,
     file_mtimes: std::collections::HashMap<PathBuf, i64>,
 }
 
 struct EmbeddedBatch {
     chunk_embeddings: Vec<(Chunk, Embedding)>,
+    relationships: RelationshipData,
     cached_count: usize,
     file_mtimes: std::collections::HashMap<PathBuf, i64>,
 }
@@ -110,6 +121,8 @@ pub(crate) struct PipelineStats {
     pub total_cached: usize,
     pub gpu_failures: usize,
     pub parse_errors: usize,
+    pub total_type_edges: usize,
+    pub total_calls: usize,
 }
 
 /// Result of preparing a batch for embedding.
@@ -122,6 +135,8 @@ struct PreparedEmbedding {
     to_embed: Vec<Chunk>,
     /// NL descriptions for chunks needing embedding
     texts: Vec<String>,
+    /// Relationships extracted during parsing
+    relationships: RelationshipData,
     /// File modification times (per-file)
     file_mtimes: std::collections::HashMap<PathBuf, i64>,
 }
@@ -175,6 +190,7 @@ fn prepare_for_embedding(
         cached,
         to_embed,
         texts,
+        relationships: batch.relationships,
         file_mtimes: batch.file_mtimes,
     }
 }
@@ -184,6 +200,7 @@ fn create_embedded_batch(
     cached: Vec<(Chunk, Embedding)>,
     to_embed: Vec<Chunk>,
     new_embeddings: Vec<Embedding>,
+    relationships: RelationshipData,
     file_mtimes: std::collections::HashMap<PathBuf, i64>,
 ) -> EmbeddedBatch {
     let cached_count = cached.len();
@@ -191,6 +208,7 @@ fn create_embedded_batch(
     chunk_embeddings.extend(to_embed.into_iter().zip(new_embeddings));
     EmbeddedBatch {
         chunk_embeddings,
+        relationships,
         cached_count,
         file_mtimes,
     }
@@ -210,9 +228,16 @@ fn flush_to_cpu(
     if !prepared.cached.is_empty() {
         let cached_count = prepared.cached.len();
         embedded_count.fetch_add(cached_count, Ordering::Relaxed);
+        // Send relationships with cached batch only if there's nothing to requeue
+        let rels = if prepared.to_embed.is_empty() {
+            prepared.relationships.clone()
+        } else {
+            RelationshipData::default()
+        };
         if embed_tx
             .send(EmbeddedBatch {
                 chunk_embeddings: prepared.cached,
+                relationships: rels,
                 cached_count,
                 file_mtimes: prepared.file_mtimes.clone(),
             })
@@ -221,9 +246,16 @@ fn flush_to_cpu(
             return false;
         }
     }
+    // Send relationships with the requeued batch so they reach store_stage via CPU path
+    let rels = if prepared.to_embed.is_empty() {
+        RelationshipData::default()
+    } else {
+        prepared.relationships
+    };
     if fail_tx
         .send(ParsedBatch {
             chunks: prepared.to_embed,
+            relationships: rels,
             file_mtimes: prepared.file_mtimes,
         })
         .is_err()
@@ -259,49 +291,80 @@ fn parser_stage(
             "Processing file batch"
         );
 
-        // Parse files in parallel
-        let chunks: Vec<Chunk> = file_batch
+        // Parse files in parallel, collecting chunks and relationships
+        let (chunks, batch_rels): (Vec<Chunk>, RelationshipData) = file_batch
             .par_iter()
-            .flat_map(|rel_path| {
-                let abs_path = root.join(rel_path);
-                match parser.parse_file(&abs_path) {
-                    Ok(mut chunks) => {
-                        // Rewrite paths to be relative for storage
-                        // Normalize path separators to forward slashes for cross-platform consistency
-                        let path_str = normalize_path(rel_path);
-                        // Build a map of old IDs → new IDs for parent_id fixup
-                        let id_map: std::collections::HashMap<String, String> = chunks
-                            .iter()
-                            .map(|chunk| {
-                                let hash_prefix =
-                                    chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
-                                let new_id =
-                                    format!("{}:{}:{}", path_str, chunk.line_start, hash_prefix);
-                                (chunk.id.clone(), new_id)
-                            })
-                            .collect();
-                        for chunk in &mut chunks {
-                            chunk.file = rel_path.clone();
-                            if let Some(new_id) = id_map.get(&chunk.id) {
-                                chunk.id = new_id.clone();
-                            }
-                            // Rewrite parent_id to match rewritten chunk IDs
-                            if let Some(ref pid) = chunk.parent_id {
-                                if let Some(new_pid) = id_map.get(pid) {
-                                    chunk.parent_id = Some(new_pid.clone());
+            .fold(
+                || (Vec::new(), RelationshipData::default()),
+                |(mut all_chunks, mut all_rels), rel_path| {
+                    let abs_path = root.join(rel_path);
+                    match parser.parse_file_all(&abs_path) {
+                        Ok((mut chunks, function_calls, chunk_type_refs)) => {
+                            // Rewrite paths to be relative for storage
+                            // Normalize path separators to forward slashes for cross-platform consistency
+                            let path_str = normalize_path(rel_path);
+                            // Build a map of old IDs → new IDs for parent_id fixup
+                            let id_map: std::collections::HashMap<String, String> = chunks
+                                .iter()
+                                .map(|chunk| {
+                                    let hash_prefix =
+                                        chunk.content_hash.get(..8).unwrap_or(&chunk.content_hash);
+                                    let new_id = format!(
+                                        "{}:{}:{}",
+                                        path_str, chunk.line_start, hash_prefix
+                                    );
+                                    (chunk.id.clone(), new_id)
+                                })
+                                .collect();
+                            for chunk in &mut chunks {
+                                chunk.file = rel_path.clone();
+                                if let Some(new_id) = id_map.get(&chunk.id) {
+                                    chunk.id = new_id.clone();
+                                }
+                                // Rewrite parent_id to match rewritten chunk IDs
+                                if let Some(ref pid) = chunk.parent_id {
+                                    if let Some(new_pid) = id_map.get(pid) {
+                                        chunk.parent_id = Some(new_pid.clone());
+                                    }
                                 }
                             }
+                            all_chunks.extend(chunks);
+                            if !chunk_type_refs.is_empty() {
+                                all_rels
+                                    .type_refs
+                                    .entry(rel_path.clone())
+                                    .or_default()
+                                    .extend(chunk_type_refs);
+                            }
+                            if !function_calls.is_empty() {
+                                all_rels
+                                    .function_calls
+                                    .entry(rel_path.clone())
+                                    .or_default()
+                                    .extend(function_calls);
+                            }
                         }
-                        chunks
+                        Err(e) => {
+                            tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                            parse_errors.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
-                        parse_errors.fetch_add(1, Ordering::Relaxed);
-                        vec![]
+                    (all_chunks, all_rels)
+                },
+            )
+            .reduce(
+                || (Vec::new(), RelationshipData::default()),
+                |(mut chunks_a, mut rels_a), (chunks_b, rels_b)| {
+                    chunks_a.extend(chunks_b);
+                    for (file, refs) in rels_b.type_refs {
+                        rels_a.type_refs.entry(file).or_default().extend(refs);
                     }
-                }
-            })
-            .collect();
+                    for (file, calls) in rels_b.function_calls {
+                        rels_a.function_calls.entry(file).or_default().extend(calls);
+                    }
+                    (chunks_a, rels_a)
+                },
+            );
 
         // Filter by needs_reindex unless forced, caching mtime per-file to avoid double reads
         let mut file_mtimes: std::collections::HashMap<PathBuf, i64> =
@@ -356,10 +419,31 @@ fn parser_stage(
                 .collect()
         };
 
+        // Prune relationships to only include files that passed staleness filter
+        let batch_rels = if force {
+            batch_rels
+        } else {
+            RelationshipData {
+                type_refs: batch_rels
+                    .type_refs
+                    .into_iter()
+                    .filter(|(file, _)| file_mtimes.contains_key(file))
+                    .collect(),
+                function_calls: batch_rels
+                    .function_calls
+                    .into_iter()
+                    .filter(|(file, _)| file_mtimes.contains_key(file))
+                    .collect(),
+            }
+        };
+
         parsed_count.fetch_add(file_batch.len(), Ordering::Relaxed);
 
         if !chunks.is_empty() {
-            // Send in embedding-sized batches with per-file mtimes
+            // Send in embedding-sized batches with per-file mtimes and relationships.
+            // Relationships are sent with the first batch only (they're stored per-file,
+            // not per-chunk, so splitting across batches is unnecessary).
+            let mut remaining_rels = Some(batch_rels);
             for chunk_batch in chunks.chunks(batch_size) {
                 let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunk_batch
                     .iter()
@@ -368,6 +452,7 @@ fn parser_stage(
                 if parse_tx
                     .send(ParsedBatch {
                         chunks: chunk_batch.to_vec(),
+                        relationships: remaining_rels.take().unwrap_or_default(),
                         file_mtimes: batch_mtimes,
                     })
                     .is_err()
@@ -408,6 +493,7 @@ fn gpu_embed_stage(
             if embed_tx
                 .send(EmbeddedBatch {
                     chunk_embeddings: prepared.cached,
+                    relationships: prepared.relationships,
                     cached_count,
                     file_mtimes: prepared.file_mtimes,
                 })
@@ -445,8 +531,9 @@ fn gpu_embed_stage(
                 if embed_tx
                     .send(EmbeddedBatch {
                         chunk_embeddings,
+                        relationships: prepared.relationships,
                         cached_count,
-                        file_mtimes: prepared.file_mtimes.clone(),
+                        file_mtimes: prepared.file_mtimes,
                     })
                     .is_err()
                 {
@@ -542,6 +629,7 @@ fn cpu_embed_stage(
             prepared.cached,
             prepared.to_embed,
             new_embeddings,
+            prepared.relationships,
             prepared.file_mtimes,
         );
 
@@ -555,9 +643,9 @@ fn cpu_embed_stage(
     Ok(())
 }
 
-/// Stage 3: Write embedded chunks to SQLite with call graph extraction.
+/// Stage 3: Write embedded chunks to SQLite with call graph, function calls, and type edges.
 ///
-/// Returns `(total_embedded, total_cached)` counts.
+/// Returns `(total_embedded, total_cached, total_type_edges, total_calls)` counts.
 fn store_stage(
     embed_rx: Receiver<EmbeddedBatch>,
     store: &Store,
@@ -565,16 +653,18 @@ fn store_stage(
     parsed_count: &AtomicUsize,
     embedded_count: &AtomicUsize,
     progress: &ProgressBar,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize, usize)> {
     let mut total_embedded = 0;
     let mut total_cached = 0;
+    let mut total_type_edges = 0;
+    let mut total_calls = 0;
 
     for batch in embed_rx {
         if check_interrupted() {
             break;
         }
 
-        // Extract call graph for this batch
+        // Extract call graph for this batch (per-chunk calls for the `calls` table)
         let all_calls: Vec<_> = batch
             .chunk_embeddings
             .iter()
@@ -621,6 +711,34 @@ fn store_stage(
             }
         }
 
+        // Store function calls extracted during parsing (for the `function_calls` table)
+        for (file, function_calls) in &batch.relationships.function_calls {
+            for fc in function_calls {
+                total_calls += fc.calls.len();
+            }
+            if let Err(e) = store.upsert_function_calls(file, function_calls) {
+                tracing::warn!(
+                    file = %file.display(),
+                    error = %e,
+                    "Failed to store function calls"
+                );
+            }
+        }
+
+        // Store type edges extracted during parsing
+        for (file, chunk_type_refs) in &batch.relationships.type_refs {
+            for ctr in chunk_type_refs {
+                total_type_edges += ctr.type_refs.len();
+            }
+            if let Err(e) = store.upsert_type_edges_for_file(file, chunk_type_refs) {
+                tracing::warn!(
+                    file = %file.display(),
+                    error = %e,
+                    "Failed to store type edges"
+                );
+            }
+        }
+
         total_embedded += batch_count;
         total_cached += batch.cached_count;
 
@@ -633,7 +751,7 @@ fn store_stage(
         ));
     }
 
-    Ok((total_embedded, total_cached))
+    Ok((total_embedded, total_cached, total_type_edges, total_calls))
 }
 
 /// Run the indexing pipeline with 3 concurrent stages:
@@ -733,7 +851,7 @@ pub(crate) fn run_index_pipeline(
         pb
     };
 
-    let (total_embedded, total_cached) = store_stage(
+    let (total_embedded, total_cached, total_type_edges, total_calls) = store_stage(
         embed_rx,
         &store,
         &parser,
@@ -765,6 +883,8 @@ pub(crate) fn run_index_pipeline(
         total_cached,
         gpu_failures: gpu_failures.load(Ordering::Relaxed),
         parse_errors: parse_errors.load(Ordering::Relaxed),
+        total_type_edges,
+        total_calls,
     };
 
     tracing::info!(
@@ -772,6 +892,8 @@ pub(crate) fn run_index_pipeline(
         total_cached = stats.total_cached,
         gpu_failures = stats.gpu_failures,
         parse_errors = stats.parse_errors,
+        total_type_edges = stats.total_type_edges,
+        total_calls = stats.total_calls,
         "Pipeline indexing complete"
     );
 
@@ -825,7 +947,13 @@ mod tests {
         let emb = Embedding::new(vec![0.0; 769]);
         let cached = vec![(chunk, emb)];
 
-        let batch = create_embedded_batch(cached, vec![], vec![], test_mtimes(12345));
+        let batch = create_embedded_batch(
+            cached,
+            vec![],
+            vec![],
+            RelationshipData::default(),
+            test_mtimes(12345),
+        );
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 1);
         assert_eq!(batch.file_mtimes[&PathBuf::from("test.rs")], 12345);
@@ -836,7 +964,13 @@ mod tests {
         let chunk = make_test_chunk("c1", "fn foo() {}");
         let emb = Embedding::new(vec![1.0; 769]);
 
-        let batch = create_embedded_batch(vec![], vec![chunk], vec![emb], test_mtimes(99));
+        let batch = create_embedded_batch(
+            vec![],
+            vec![chunk],
+            vec![emb],
+            RelationshipData::default(),
+            test_mtimes(99),
+        );
         assert_eq!(batch.chunk_embeddings.len(), 1);
         assert_eq!(batch.cached_count, 0);
         assert_eq!(batch.file_mtimes[&PathBuf::from("test.rs")], 99);
@@ -853,6 +987,7 @@ mod tests {
             vec![(cached_chunk, cached_emb)],
             vec![new_chunk],
             vec![new_emb],
+            RelationshipData::default(),
             test_mtimes(12345),
         );
         assert_eq!(batch.chunk_embeddings.len(), 2);
@@ -861,7 +996,13 @@ mod tests {
 
     #[test]
     fn test_create_embedded_batch_empty() {
-        let batch = create_embedded_batch(vec![], vec![], vec![], std::collections::HashMap::new());
+        let batch = create_embedded_batch(
+            vec![],
+            vec![],
+            vec![],
+            RelationshipData::default(),
+            std::collections::HashMap::new(),
+        );
         assert_eq!(batch.chunk_embeddings.len(), 0);
         assert_eq!(batch.cached_count, 0);
     }
@@ -875,8 +1016,13 @@ mod tests {
         let c3 = make_test_chunk("c3", "fn third() {}");
         let e3 = Embedding::new(vec![3.0; 769]);
 
-        let batch =
-            create_embedded_batch(vec![(c1, e1)], vec![c2, c3], vec![e2, e3], test_mtimes(0));
+        let batch = create_embedded_batch(
+            vec![(c1, e1)],
+            vec![c2, c3],
+            vec![e2, e3],
+            RelationshipData::default(),
+            test_mtimes(0),
+        );
 
         assert_eq!(batch.chunk_embeddings.len(), 3);
         // Cached come first, then new in order
