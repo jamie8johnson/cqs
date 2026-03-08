@@ -556,6 +556,8 @@ impl Store {
         &self,
         callee_names: &[&str],
     ) -> Result<std::collections::HashMap<String, Vec<CallerInfo>>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_callers_full_batch", count = callee_names.len()).entered();
         if callee_names.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -610,6 +612,8 @@ impl Store {
         &self,
         caller_names: &[&str],
     ) -> Result<std::collections::HashMap<String, Vec<(String, u32)>>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_callees_full_batch", count = caller_names.len()).entered();
         if caller_names.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -1042,6 +1046,7 @@ impl Store {
     ///
     /// Used by GC to clean up orphaned call graph entries after pruning chunks.
     pub fn prune_stale_calls(&self) -> Result<u64, StoreError> {
+        let _span = tracing::info_span!("prune_stale_calls").entered();
         self.rt.block_on(async {
             let result = sqlx::query(
                 "DELETE FROM function_calls WHERE file NOT IN (SELECT DISTINCT origin FROM chunks)",
@@ -1160,6 +1165,7 @@ impl Store {
         target: &str,
         limit: usize,
     ) -> Result<Vec<(String, u32)>, StoreError> {
+        let _span = tracing::debug_span!("find_shared_callers", function = %target).entered();
         self.rt.block_on(async {
             let rows: Vec<(String, i64)> = sqlx::query_as(
                 "SELECT fc2.callee_name, COUNT(DISTINCT fc2.caller_name) AS overlap
@@ -1191,6 +1197,7 @@ impl Store {
         target: &str,
         limit: usize,
     ) -> Result<Vec<(String, u32)>, StoreError> {
+        let _span = tracing::debug_span!("find_shared_callees", function = %target).entered();
         self.rt.block_on(async {
             let rows: Vec<(String, i64)> = sqlx::query_as(
                 "SELECT fc2.caller_name, COUNT(DISTINCT fc2.callee_name) AS overlap
@@ -1215,6 +1222,7 @@ impl Store {
 
     /// Get full call graph statistics
     pub fn function_call_stats(&self) -> Result<FunctionCallStats, StoreError> {
+        let _span = tracing::debug_span!("function_call_stats").entered();
         self.rt.block_on(async {
             let (total_calls, unique_callers, unique_callees): (i64, i64, i64) = sqlx::query_as(
                 "SELECT COUNT(*), COUNT(DISTINCT caller_name), COUNT(DISTINCT callee_name) FROM function_calls",
