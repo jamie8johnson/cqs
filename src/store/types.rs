@@ -56,6 +56,8 @@ impl Store {
         chunk_id: &str,
         type_refs: &[crate::parser::TypeRef],
     ) -> Result<(), StoreError> {
+        let _span =
+            tracing::info_span!("upsert_type_edges", chunk_id, count = type_refs.len()).entered();
         if type_refs.is_empty() {
             return Ok(());
         }
@@ -108,6 +110,8 @@ impl Store {
         file: &Path,
         chunk_type_refs: &[crate::parser::ChunkTypeRefs],
     ) -> Result<(), StoreError> {
+        let file_display = file.display().to_string();
+        let _span = tracing::info_span!("upsert_type_edges_for_file", file = %file_display, chunks = chunk_type_refs.len()).entered();
         if chunk_type_refs.is_empty() {
             return Ok(());
         }
@@ -225,7 +229,8 @@ impl Store {
     /// Forward query: "who uses Config?" Returns chunks that have type edges
     /// pointing to the given type name.
     pub fn get_type_users(&self, type_name: &str) -> Result<Vec<ChunkSummary>, StoreError> {
-        tracing::debug!(type_name, "querying type users");
+        let _span = tracing::debug_span!("get_type_users", type_name).entered();
+        tracing::debug!("querying type users");
 
         self.rt.block_on(async {
             let rows: Vec<ChunkRow> = sqlx::query(
@@ -252,7 +257,8 @@ impl Store {
     /// Reverse query: "what types does parse_config use?" Returns [`TypeUsage`] structs
     /// where edge_kind is "" for catch-all types.
     pub fn get_types_used_by(&self, chunk_name: &str) -> Result<Vec<TypeUsage>, StoreError> {
-        tracing::debug!(chunk_name, "querying types used by chunk");
+        let _span = tracing::debug_span!("get_types_used_by", chunk_name).entered();
+        tracing::debug!("querying types used by chunk");
 
         self.rt.block_on(async {
             let rows: Vec<(String, String)> = sqlx::query_as(
@@ -283,11 +289,13 @@ impl Store {
         &self,
         type_names: &[&str],
     ) -> Result<HashMap<String, Vec<ChunkSummary>>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_type_users_batch", count = type_names.len()).entered();
         if type_names.is_empty() {
             return Ok(HashMap::new());
         }
 
-        tracing::debug!(count = type_names.len(), "batch querying type users");
+        tracing::debug!("batch querying type users");
 
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<ChunkSummary>> = HashMap::new();
@@ -344,11 +352,13 @@ impl Store {
         &self,
         chunk_names: &[&str],
     ) -> Result<HashMap<String, Vec<(String, String)>>, StoreError> {
+        let _span =
+            tracing::debug_span!("get_types_used_by_batch", count = chunk_names.len()).entered();
         if chunk_names.is_empty() {
             return Ok(HashMap::new());
         }
 
-        tracing::debug!(count = chunk_names.len(), "batch querying types used by");
+        tracing::debug!("batch querying types used by");
 
         self.rt.block_on(async {
             let mut result: HashMap<String, Vec<(String, String)>> = HashMap::new();
@@ -392,6 +402,7 @@ impl Store {
 
     /// Get type edge statistics.
     pub fn type_edge_stats(&self) -> Result<TypeEdgeStats, StoreError> {
+        let _span = tracing::debug_span!("type_edge_stats").entered();
         tracing::debug!("querying type edge stats");
 
         self.rt.block_on(async {
@@ -457,7 +468,8 @@ impl Store {
         target_type: &str,
         limit: usize,
     ) -> Result<Vec<(String, u32)>, StoreError> {
-        tracing::debug!(target_type, limit, "finding shared type users");
+        let _span = tracing::debug_span!("find_shared_type_users", target_type, limit).entered();
+        tracing::debug!("finding shared type users");
 
         self.rt.block_on(async {
             let rows: Vec<(String, i64)> = sqlx::query_as(
@@ -487,6 +499,7 @@ impl Store {
     ///
     /// Returns the number of pruned rows.
     pub fn prune_stale_type_edges(&self) -> Result<u64, StoreError> {
+        let _span = tracing::info_span!("prune_stale_type_edges").entered();
         self.rt.block_on(async {
             let result = sqlx::query(
                 "DELETE FROM type_edges WHERE source_chunk_id NOT IN (SELECT id FROM chunks)",
