@@ -1159,19 +1159,7 @@ impl Store {
 
                 // Post-filter: assign each row to matching names
                 for row in rows {
-                    let chunk = ChunkSummary::from(ChunkRow {
-                        id: row.get(0),
-                        origin: row.get(1),
-                        language: row.get(2),
-                        chunk_type: row.get(3),
-                        name: row.get(4),
-                        signature: row.get(5),
-                        content: row.get(6),
-                        doc: row.get(7),
-                        line_start: clamp_line_number(row.get::<i64, _>(8)),
-                        line_end: clamp_line_number(row.get::<i64, _>(9)),
-                        parent_id: row.get(10),
-                    });
+                    let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
 
                     // Find which query names this result matches
                     for (original_name, _normalized) in batch {
