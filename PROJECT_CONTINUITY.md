@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**P4 audit fixes in progress.** 2026-03-08. 9 of 20 P4 findings fixed (OB-1-4, TC-1, TC-6, RB-6, PB-3, PF-4). 11 deferred. Branch: `fix/p4-audit-fixes`.
+**v0.28.2 release in progress.** 2026-03-08. P4 audit fixes merged (#553). 9 of 20 findings fixed, 11 deferred with issues.
 
 ## Pending Changes
 
@@ -32,7 +32,7 @@ None.
 
 ## Architecture
 
-- Version: 0.28.1
+- Version: 0.28.2
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
