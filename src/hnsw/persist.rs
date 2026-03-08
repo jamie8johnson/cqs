@@ -115,6 +115,7 @@ impl HnswIndex {
     /// Note: The underlying library writes graph/data non-atomically. However, the
     /// checksum verification on load ensures we never use a corrupted index.
     pub fn save(&self, dir: &Path, basename: &str) -> Result<(), HnswError> {
+        let _span = tracing::debug_span!("hnsw_save", dir = %dir.display(), basename).entered();
         tracing::info!("Saving HNSW index to {}/{}", dir.display(), basename);
 
         // Verify ID map matches HNSW vector count before saving
@@ -303,6 +304,7 @@ impl HnswIndex {
     /// Verifies blake3 checksums before loading to mitigate bincode deserialization risks.
     /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
+        let _span = tracing::debug_span!("hnsw_load", dir = %dir.display(), basename).entered();
         // Clean up stale temp dir from interrupted save (before anything else)
         let temp_dir = dir.join(format!(".{}.tmp", basename));
         if temp_dir.exists() {
@@ -452,6 +454,11 @@ impl HnswIndex {
                 return None;
             }
         };
+        // Acquire shared lock for consistency with load()
+        if let Err(e) = file.lock_shared() {
+            tracing::debug!("Could not lock HNSW id map: {}", e);
+            return None;
+        }
         // Guard against oversized id map files
         const MAX_ID_MAP_SIZE: u64 = 100 * 1024 * 1024; // 100MB
         match file.metadata() {

@@ -17,6 +17,10 @@ const WEBHELP_CONTENT_DIR: &str = "content";
 ///
 /// Heuristic: has a `content/` subdirectory containing at least one `.html` file.
 pub fn is_webhelp_dir(dir: &Path) -> bool {
+    // Reject symlinks to prevent traversal outside trusted directories
+    if dir.symlink_metadata().is_ok_and(|m| m.is_symlink()) {
+        return false;
+    }
     let content_dir = dir.join(WEBHELP_CONTENT_DIR);
     if !content_dir.is_dir() {
         return false;

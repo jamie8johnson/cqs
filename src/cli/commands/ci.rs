@@ -120,7 +120,7 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
             "Token-budgeted CI review"
         );
         review.warnings.push(format!(
-            "Output truncated to ~{} tokens (budget: {}). {} callers, {} tests omitted.",
+            "Output truncated to ~{} tokens (budget: {}). {} callers, {} tests omitted (min 1 caller + 1 test guaranteed).",
             used, budget, truncated_callers, truncated_tests
         ));
     }

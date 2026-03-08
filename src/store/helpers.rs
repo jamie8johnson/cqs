@@ -194,6 +194,7 @@ impl From<ChunkRow> for ChunkSummary {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SearchResult {
     /// The matching chunk
+    #[serde(flatten)]
     pub chunk: ChunkSummary,
     /// Similarity score (0.0 to 1.0, higher is better)
     pub score: f32,
@@ -335,6 +336,7 @@ pub struct NoteSummary {
 #[derive(Debug, serde::Serialize)]
 pub struct NoteSearchResult {
     /// The matching note
+    #[serde(flatten)]
     pub note: NoteSummary,
     /// Similarity score (0.0 to 1.0)
     pub score: f32,

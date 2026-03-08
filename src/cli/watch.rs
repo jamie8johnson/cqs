@@ -126,7 +126,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 
     // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
     // On WSL, inotify over 9P delivers repeated events for the same file change.
-    let mut last_indexed_mtime: HashMap<PathBuf, SystemTime> = HashMap::new();
+    // Bounded: pruned when >10k entries or >1k entries on single-file reindex.
+    let mut last_indexed_mtime: HashMap<PathBuf, SystemTime> = HashMap::with_capacity(1024);
 
     let mut cycles_since_clear: u32 = 0;
 

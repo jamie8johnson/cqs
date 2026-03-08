@@ -12,6 +12,8 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 |----------|-------------|-------|
 | **Local user** | Trusted | You run cqs, you control it |
 | **Project files** | Trusted | Your code, indexed by your choice |
+| **External documents** | Semi-trusted | PDF/HTML/CHM files converted via `cqs convert` — parsed but not executed |
+| **Reference sources** | Semi-trusted | Indexed via `cqs ref add` — search results blended with project code |
 
 ### What We Protect Against
 

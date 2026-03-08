@@ -54,40 +54,40 @@ Date: 2026-03-06
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | OB-5: `parse_markdown_chunks`/`parse_markdown_references` missing spans | Observability | markdown.rs | |
-| 2 | OB-6: `parse_notes`/`rewrite_notes_file` missing spans | Observability | note.rs | |
-| 3 | OB-7: HNSW build/save/load missing spans | Observability | hnsw/ | |
-| 4 | OB-8: CAGRA build/search missing spans | Observability | cagra.rs | |
-| 5 | OB-9: `load_references` missing span | Observability | reference.rs | |
-| 6 | OB-10: `enumerate_files` missing span | Observability | files.rs | |
-| 7 | OB-11: `extract_fenced_blocks` missing span | Observability | markdown.rs | |
-| 8 | CQ-5: 3 near-identical Chunk constructions in markdown | Code Quality | markdown.rs | |
-| 9 | DOC-4: CLAUDE.md skills list missing 5 skills | Documentation | CLAUDE.md | |
-| 10 | DOC-5: CHANGELOG [Unreleased] empty | Documentation | CHANGELOG.md | |
-| 11 | DOC-6: ROADMAP says 49 languages | Documentation | ROADMAP.md | |
-| 12 | PB-1: Markdown parsers don't normalize CRLF | Platform | markdown.rs | |
-| 13 | EX-6: `name_match_score` magic numbers | Extensibility | search.rs:130 | |
-| 14 | EX-7: `chunk_importance` magic numbers | Extensibility | search.rs:398 | |
-| 15 | EX-1: `Pattern` enum 4 manual-sync representations | Extensibility | structural.rs | |
-| 16 | PB-4: `ensure_ort_provider_libs` misleading stub comment | Platform | embedder.rs | |
-| 17 | SEC-2: `is_webhelp_dir` follows symlinks in detection | Security | webhelp.rs:19 | |
-| 18 | SEC-3: SECURITY.md threat model understates trust levels | Security | SECURITY.md | |
-| 19 | DS-12: Second-precision mtime — sub-second edits missed | Data Safety | notes.rs:234 | |
-| 20 | DS-13: `count_vectors` reads HNSW IDs without lock | Data Safety | persist.rs:442 | |
-| 21 | PF-5: FTS INSERT per-row despite bulk DELETE | Performance | chunks.rs:290 | |
-| 22 | PF-6: `count_stale_files`/`list_stale_files` duplicate SQL | Performance | chunks.rs:546 | |
-| 23 | TC-3: `extract_fenced_blocks` missing edge case tests | Test Coverage | markdown.rs | |
-| 24 | TC-4: `build_risk_summary` never directly tested | Test Coverage | review.rs | |
-| 25 | TC-5: `match_notes` only one happy path test | Test Coverage | review.rs | |
-| 26 | TC-8: `run_ci_analysis` dead code path untested edge cases | Test Coverage | ci.rs | |
-| 27 | AD-2: `SearchResult` dual serialization shapes | API Design | helpers.rs | |
-| 28 | AC-2: `apply_token_budget` `.max(1)` exceeds budget | Algorithm | review.rs:97 | |
-| 29 | AC-4: `index_pack`/`token_pack` first-item guarantee — by design | Algorithm | task.rs:62 | |
-| 30 | PB-6: Path traversal check case-sensitivity — doc gap | Platform | read.rs:35 | |
-| 31 | RM-4: `index_notes_from_file` creates separate Embedder | Resource | index.rs:269 | |
-| 32 | RM-6: `HnswIndex::build` 2x memory (test-only) | Resource | build.rs:67 | |
-| 33 | RM-7: `last_indexed_mtime` unbounded growth | Resource | watch.rs:119 | |
-| 34 | RM-8: SQLite 64MB page cache potential | Resource | mod.rs:217 | |
+| 1 | OB-5: `parse_markdown_chunks`/`parse_markdown_references` missing spans | Observability | markdown.rs | fixed |
+| 2 | OB-6: `parse_notes`/`rewrite_notes_file` missing spans | Observability | note.rs | fixed |
+| 3 | OB-7: HNSW build/save/load missing spans | Observability | hnsw/ | fixed |
+| 4 | OB-8: CAGRA build/search missing spans | Observability | cagra.rs | fixed |
+| 5 | OB-9: `load_references` missing span | Observability | reference.rs | fixed |
+| 6 | OB-10: `enumerate_files` missing span | Observability | files.rs | fixed |
+| 7 | OB-11: `extract_fenced_blocks` missing span | Observability | markdown.rs | fixed |
+| 8 | CQ-5: 3 near-identical Chunk constructions in markdown | Code Quality | markdown.rs | fixed |
+| 9 | DOC-4: CLAUDE.md skills list missing 5 skills | Documentation | CLAUDE.md | fixed |
+| 10 | DOC-5: CHANGELOG [Unreleased] empty | Documentation | CHANGELOG.md | fixed |
+| 11 | DOC-6: ROADMAP says 49 languages | Documentation | ROADMAP.md | non-issue (already says 50) |
+| 12 | PB-1: Markdown parsers don't normalize CRLF | Platform | markdown.rs | fixed (doc comment) |
+| 13 | EX-6: `name_match_score` magic numbers | Extensibility | search.rs:130 | fixed |
+| 14 | EX-7: `chunk_importance` magic numbers | Extensibility | search.rs:398 | fixed |
+| 15 | EX-1: `Pattern` enum 4 manual-sync representations | Extensibility | structural.rs | non-issue (existing tests adequate) |
+| 16 | PB-4: `ensure_ort_provider_libs` misleading stub comment | Platform | embedder.rs | fixed |
+| 17 | SEC-2: `is_webhelp_dir` follows symlinks in detection | Security | webhelp.rs:19 | fixed |
+| 18 | SEC-3: SECURITY.md threat model understates trust levels | Security | SECURITY.md | fixed |
+| 19 | DS-12: Second-precision mtime — sub-second edits missed | Data Safety | notes.rs:234 | non-issue (acceptable limitation) |
+| 20 | DS-13: `count_vectors` reads HNSW IDs without lock | Data Safety | persist.rs:442 | fixed |
+| 21 | PF-5: FTS INSERT per-row despite bulk DELETE | Performance | chunks.rs:290 | fixed |
+| 22 | PF-6: `count_stale_files`/`list_stale_files` duplicate SQL | Performance | chunks.rs:546 | fixed |
+| 23 | TC-3: `extract_fenced_blocks` missing edge case tests | Test Coverage | markdown.rs | fixed (4 tests) |
+| 24 | TC-4: `build_risk_summary` never directly tested | Test Coverage | review.rs | fixed (3 tests) |
+| 25 | TC-5: `match_notes` only one happy path test | Test Coverage | review.rs | deferred (needs Store, integration test exists) |
+| 26 | TC-8: `run_ci_analysis` dead code path untested edge cases | Test Coverage | ci.rs | deferred (CLI handler, low value) |
+| 27 | AD-2: `SearchResult` dual serialization shapes | API Design | helpers.rs | fixed |
+| 28 | AC-2: `apply_token_budget` `.max(1)` exceeds budget | Algorithm | review.rs:97 | fixed (warning message) |
+| 29 | AC-4: `index_pack`/`token_pack` first-item guarantee — by design | Algorithm | task.rs:62 | non-issue (by design) |
+| 30 | PB-6: Path traversal check case-sensitivity — doc gap | Platform | read.rs:35 | fixed (doc comment) |
+| 31 | RM-4: `index_notes_from_file` creates separate Embedder | Resource | index.rs:269 | non-issue (low impact, shared Embedder complicates API) |
+| 32 | RM-6: `HnswIndex::build` 2x memory (test-only) | Resource | build.rs:67 | non-issue (test-only path) |
+| 33 | RM-7: `last_indexed_mtime` unbounded growth | Resource | watch.rs:119 | fixed (comment + with_capacity) |
+| 34 | RM-8: SQLite 64MB page cache potential | Resource | mod.rs:217 | non-issue (typical usage fine) |
 
 ## P4: Hard or Low Impact — Defer / Create Issues
 

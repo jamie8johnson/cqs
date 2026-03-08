@@ -131,6 +131,7 @@ pub const NOTES_HEADER: &str = "\
 
 /// Parse notes from a notes.toml file
 pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
+    let _span = tracing::debug_span!("parse_notes", path = %path.display()).entered();
     // Acquire shared lock and read from the locked handle directly
     use std::io::Read;
     let mut lock_file = std::fs::OpenOptions::new()
@@ -184,6 +185,7 @@ pub fn rewrite_notes_file(
     notes_path: &Path,
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
+    let _span = tracing::debug_span!("rewrite_notes_file", path = %notes_path.display()).entered();
     // Acquire exclusive lock before the read-modify-write cycle.
     // Open with read+write so the exclusive lock covers both operations across all platforms.
     let mut lock_file = std::fs::OpenOptions::new()

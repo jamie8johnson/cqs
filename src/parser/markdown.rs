@@ -19,6 +19,37 @@ static LINK_RE: LazyLock<Regex> =
 static FUNC_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"`([\w.:]+)\([^)]*\)`").expect("valid regex"));
 
+/// Build a markdown Chunk with common fields pre-filled.
+#[allow(clippy::too_many_arguments)]
+fn make_markdown_chunk(
+    path: &Path,
+    id: String,
+    name: String,
+    signature: String,
+    content: String,
+    line_start: u32,
+    line_end: u32,
+    content_hash: String,
+    parent_id: Option<String>,
+) -> Chunk {
+    Chunk {
+        id,
+        file: path.to_path_buf(),
+        language: Language::Markdown,
+        chunk_type: ChunkType::Section,
+        name,
+        signature,
+        content,
+        doc: None,
+        line_start,
+        line_end,
+        content_hash,
+        parent_id,
+        window_idx: None,
+        parent_type_name: None,
+    }
+}
+
 /// Minimum section size (lines) — smaller sections merge with next
 const MIN_SECTION_LINES: usize = 30;
 /// Maximum section size (lines) before attempting overflow split
@@ -36,7 +67,13 @@ struct Heading {
 ///
 /// Adaptive heading detection handles both standard (H1 → H2 → H3) and
 /// inverted (H2 title → H1 chapters → H3 subsections) hierarchies.
+///
+/// **Precondition:** `source` should use LF line endings. CRLF input works
+/// (Rust's `.lines()` handles both), but content hashes will differ from
+/// LF-normalized versions of the same file. The parser pipeline normalizes
+/// line endings before calling this function.
 pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, ParserError> {
+    let _span = tracing::debug_span!("parse_markdown_chunks", path = %path.display()).entered();
     let lines: Vec<&str> = source.lines().collect();
     let headings = extract_headings(&lines);
 
@@ -52,22 +89,17 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
         let hash_prefix = content_hash.get(..8).unwrap_or(&content_hash);
         let id = format!("{}:1:{}", path.display(), hash_prefix);
 
-        let mut chunks = vec![Chunk {
-            id: id.clone(),
-            file: path.to_path_buf(),
-            language: Language::Markdown,
-            chunk_type: ChunkType::Section,
-            name: name.clone(),
-            signature: name.clone(),
+        let mut chunks = vec![make_markdown_chunk(
+            path,
+            id.clone(),
+            name.clone(),
+            name.clone(),
             content,
-            doc: None,
-            line_start: 1,
-            line_end: lines.len() as u32,
+            1,
+            lines.len() as u32,
             content_hash,
-            parent_id: None,
-            window_idx: None,
-            parent_type_name: None,
-        }];
+            None,
+        )];
         extract_table_chunks(&lines, 0, lines.len(), &name, &name, &id, path, &mut chunks);
         return Ok(chunks);
     }
@@ -82,22 +114,17 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
         let line_end = lines.len() as u32;
         let id = format!("{}:{}:{}", path.display(), line_start, hash_prefix);
 
-        let mut chunks = vec![Chunk {
-            id: id.clone(),
-            file: path.to_path_buf(),
-            language: Language::Markdown,
-            chunk_type: ChunkType::Section,
-            name: h.text.clone(),
-            signature: h.text.clone(),
+        let mut chunks = vec![make_markdown_chunk(
+            path,
+            id.clone(),
+            h.text.clone(),
+            h.text.clone(),
             content,
-            doc: None,
             line_start,
             line_end,
             content_hash,
-            parent_id: None,
-            window_idx: None,
-            parent_type_name: None,
-        }];
+            None,
+        )];
         extract_table_chunks(
             &lines,
             0,
@@ -141,22 +168,17 @@ pub fn parse_markdown_chunks(source: &str, path: &Path) -> Result<Vec<Chunk>, Pa
         // Build breadcrumb signature
         let signature = build_breadcrumb(title_text, &section.heading_stack);
 
-        chunks.push(Chunk {
-            id: id.clone(),
-            file: path.to_path_buf(),
-            language: Language::Markdown,
-            chunk_type: ChunkType::Section,
-            name: section.name.clone(),
-            signature: signature.clone(),
+        chunks.push(make_markdown_chunk(
+            path,
+            id.clone(),
+            section.name.clone(),
+            signature.clone(),
             content,
-            doc: None,
             line_start,
             line_end,
             content_hash,
-            parent_id: None,
-            window_idx: None,
-            parent_type_name: None,
-        });
+            None,
+        ));
 
         // Extract tables as additional chunks with parent_id = section chunk
         extract_table_chunks(
@@ -179,6 +201,7 @@ pub fn parse_markdown_references(
     source: &str,
     path: &Path,
 ) -> Result<Vec<FunctionCalls>, ParserError> {
+    let _span = tracing::debug_span!("parse_markdown_references", path = %path.display()).entered();
     let lines: Vec<&str> = source.lines().collect();
     let headings = extract_headings(&lines);
 
@@ -1017,6 +1040,7 @@ fn normalize_lang(lang: &str) -> Option<&'static str> {
 /// recognized language identifiers. Blocks without a language tag or with
 /// unrecognized languages are skipped.
 pub fn extract_fenced_blocks(source: &str) -> Vec<FencedBlock> {
+    let _span = tracing::debug_span!("extract_fenced_blocks").entered();
     let lines: Vec<&str> = source.lines().collect();
     let mut blocks = Vec::new();
     let mut i = 0;
@@ -1816,7 +1840,6 @@ mod tests {
         assert_eq!(blocks[0].line_end, 5); // 1-indexed line of closing fence
     }
 
-    #[test]
     /// Verify normalize_lang covers all Language variants that have grammars.
     /// If this fails after adding a new language, add a mapping in normalize_lang().
     #[test]
@@ -1960,5 +1983,46 @@ mod tests {
             js_chunks.iter().any(|c| c.name == "add"),
             "Expected JavaScript function 'add'"
         );
+    }
+
+    // TC-3: extract_fenced_blocks edge case tests
+
+    #[test]
+    fn test_extract_fenced_blocks_unclosed() {
+        let source = "```rust\nfn foo() {}\n";
+        let blocks = extract_fenced_blocks(source);
+        // Unclosed fences are skipped (no matching closing fence)
+        assert_eq!(blocks.len(), 0);
+    }
+
+    #[test]
+    fn test_extract_fenced_blocks_nested_longer_fence() {
+        // 4-backtick fence containing a 3-backtick fence
+        let source = "````rust\nfn outer() {\n```\ninner\n```\n}\n````\n";
+        let blocks = extract_fenced_blocks(source);
+        assert_eq!(
+            blocks.len(),
+            1,
+            "Nested shorter fence should not close outer"
+        );
+        assert!(blocks[0].content.contains("inner"));
+    }
+
+    #[test]
+    fn test_extract_fenced_blocks_mixed_fence_types() {
+        // Backtick open + tilde close should NOT close
+        let source = "```rust\nfn foo() {}\n~~~\nmore\n```\n";
+        let blocks = extract_fenced_blocks(source);
+        assert_eq!(blocks.len(), 1);
+        // Tilde line should be included in content (doesn't close backtick fence)
+        assert!(blocks[0].content.contains("~~~"));
+    }
+
+    #[test]
+    fn test_extract_fenced_blocks_indented() {
+        let source = "  ```python\n  def foo(): pass\n  ```\n";
+        let blocks = extract_fenced_blocks(source);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].lang, "python");
     }
 }

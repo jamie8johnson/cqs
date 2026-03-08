@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Vue language support (50 languages total)
+- 91 audit fixes across P1-P3 priority tiers
+
+### Changed
+- FTS indexing now uses batch INSERT for better performance
+- `count_stale_files` delegates to `list_stale_files` (dedup)
+- `SearchResult`/`NoteSearchResult` use `#[serde(flatten)]` for consistent serialization
+- Added tracing spans to 12+ hot-path functions (markdown, HNSW, CAGRA, notes, references)
+- Named constants for search scoring thresholds
+
+### Fixed
+- `is_webhelp_dir` now rejects symlinks (security hardening)
+- Token budget warning messages clarify min-1 guarantee
+
 ## [0.28.1] - 2026-03-07
 
 ### Fixed

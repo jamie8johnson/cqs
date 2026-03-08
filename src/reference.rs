@@ -40,6 +40,7 @@ pub struct TaggedResult {
 /// HnswIndex::try_load is independent I/O (10-50ms each). Both Store and
 /// HnswIndex are Send + Sync.
 pub fn load_references(configs: &[ReferenceConfig]) -> Vec<ReferenceIndex> {
+    let _span = tracing::debug_span!("load_references", count = configs.len()).entered();
     let refs: Vec<ReferenceIndex> = configs
         .par_iter()
         .filter_map(|cfg| {

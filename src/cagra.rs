@@ -77,6 +77,7 @@ impl CagraIndex {
 
     /// Build a CAGRA index from embeddings
     pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, CagraError> {
+        let _span = tracing::debug_span!("cagra_build").entered();
         let (id_map, flat_data, n_vectors) = crate::hnsw::prepare_index_data(embeddings)
             .map_err(|e| CagraError::Build(e.to_string()))?;
 
@@ -150,6 +151,7 @@ impl CagraIndex {
 
     /// Search for nearest neighbors
     pub fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
+        let _span = tracing::debug_span!("cagra_search", k).entered();
         if self.id_map.is_empty() {
             return Vec::new();
         }
@@ -404,6 +406,7 @@ impl CagraIndex {
     /// Notes are excluded — they use brute-force search from SQLite so that
     /// notes are immediately searchable without rebuild.
     pub fn build_from_store(store: &crate::Store) -> Result<Self, CagraError> {
+        let _span = tracing::debug_span!("cagra_build_from_store").entered();
         let chunk_count = store
             .chunk_count()
             .map_err(|e| CagraError::Cuvs(format!("Failed to count chunks: {}", e)))?

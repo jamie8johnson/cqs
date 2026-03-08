@@ -241,3 +241,61 @@ fn build_risk_summary(functions: &[ReviewedFunction]) -> RiskSummary {
         overall,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::impact::RiskScore;
+
+    fn mock_reviewed(name: &str, level: RiskLevel) -> ReviewedFunction {
+        ReviewedFunction {
+            name: name.to_string(),
+            file: "src/lib.rs".to_string(),
+            line_start: 1,
+            risk: RiskScore {
+                risk_level: level,
+                blast_radius: level,
+                caller_count: 0,
+                test_count: 0,
+                coverage: 0.0,
+                score: 0.0,
+            },
+        }
+    }
+
+    // TC-4: build_risk_summary tests
+
+    #[test]
+    fn test_risk_summary_empty() {
+        let summary = build_risk_summary(&[]);
+        assert_eq!(summary.high, 0);
+        assert_eq!(summary.medium, 0);
+        assert_eq!(summary.low, 0);
+        assert!(matches!(summary.overall, RiskLevel::Low));
+    }
+
+    #[test]
+    fn test_risk_summary_all_high() {
+        let funcs = vec![
+            mock_reviewed("a", RiskLevel::High),
+            mock_reviewed("b", RiskLevel::High),
+        ];
+        let summary = build_risk_summary(&funcs);
+        assert_eq!(summary.high, 2);
+        assert!(matches!(summary.overall, RiskLevel::High));
+    }
+
+    #[test]
+    fn test_risk_summary_mixed() {
+        let funcs = vec![
+            mock_reviewed("a", RiskLevel::Low),
+            mock_reviewed("b", RiskLevel::Medium),
+            mock_reviewed("c", RiskLevel::Low),
+        ];
+        let summary = build_risk_summary(&funcs);
+        assert_eq!(summary.high, 0);
+        assert_eq!(summary.medium, 1);
+        assert_eq!(summary.low, 2);
+        assert!(matches!(summary.overall, RiskLevel::Medium));
+    }
+}

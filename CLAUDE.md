@@ -39,6 +39,10 @@ Project skills in `.claude/skills/`. Use `/skill-name` to invoke:
 - `/cqs-bootstrap` -- set up tears infrastructure for new projects
 - `/cqs-plan` -- task planning with scout data + task-type templates
 - `/reindex` -- rebuild index with before/after stats
+- `/docs-review` -- check docs for staleness, fix drift
+- `/cqs-batch` -- batch cqs queries in persistent session
+- `/migrate` -- handle schema version upgrades
+- `/troubleshoot` -- diagnose common cqs issues
 
 ## Code Search
 

@@ -287,27 +287,34 @@ impl Store {
                 qb.build().execute(&mut *tx).await?;
             }
 
-            // FTS per-row (bulk DELETE above already cleared all FTS for this origin)
-            for (chunk, _) in chunks {
-                let fts_name = normalize_for_fts(&chunk.name);
-                let fts_sig = normalize_for_fts(&chunk.signature);
-                let fts_content = normalize_for_fts(&chunk.content);
-                let fts_doc = chunk
-                    .doc
-                    .as_ref()
-                    .map(|d| normalize_for_fts(d))
-                    .unwrap_or_default();
-
-                sqlx::query(
-                    "INSERT INTO chunks_fts (id, name, signature, content, doc) VALUES (?1, ?2, ?3, ?4, ?5)",
-                )
-                .bind(&chunk.id)
-                .bind(&fts_name)
-                .bind(&fts_sig)
-                .bind(&fts_content)
-                .bind(&fts_doc)
-                .execute(&mut *tx)
-                .await?;
+            // FTS batch INSERT (bulk DELETE above already cleared all FTS for this origin)
+            // Batch size: 190 rows × 5 columns = 950 params (< SQLite 999 limit)
+            let fts_data: Vec<_> = chunks
+                .iter()
+                .map(|(chunk, _)| {
+                    let fts_name = normalize_for_fts(&chunk.name);
+                    let fts_sig = normalize_for_fts(&chunk.signature);
+                    let fts_content = normalize_for_fts(&chunk.content);
+                    let fts_doc = chunk
+                        .doc
+                        .as_ref()
+                        .map(|d| normalize_for_fts(d))
+                        .unwrap_or_default();
+                    (chunk.id.clone(), fts_name, fts_sig, fts_content, fts_doc)
+                })
+                .collect();
+            for fts_batch in fts_data.chunks(190) {
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT INTO chunks_fts (id, name, signature, content, doc) ",
+                );
+                qb.push_values(fts_batch, |mut b, (id, name, sig, content, doc)| {
+                    b.push_bind(id)
+                        .push_bind(name)
+                        .push_bind(sig)
+                        .push_bind(content)
+                        .push_bind(doc);
+                });
+                qb.build().execute(&mut *tx).await?;
             }
 
             tx.commit().await?;
@@ -547,42 +554,8 @@ impl Store {
         &self,
         existing_files: &HashSet<PathBuf>,
     ) -> Result<(u64, u64), StoreError> {
-        self.rt.block_on(async {
-            let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
-                "SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-
-            let mut stale = 0u64;
-            let mut missing = 0u64;
-
-            for (origin, stored_mtime) in rows {
-                let path = PathBuf::from(&origin);
-                if !existing_files.contains(&path) {
-                    missing += 1;
-                    continue;
-                }
-
-                // Check mtime
-                if let Some(stored) = stored_mtime {
-                    let current_mtime = path
-                        .metadata()
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs() as i64);
-
-                    if let Some(current) = current_mtime {
-                        if current > stored {
-                            stale += 1;
-                        }
-                    }
-                }
-            }
-
-            Ok((stale, missing))
-        })
+        let report = self.list_stale_files(existing_files)?;
+        Ok((report.stale.len() as u64, report.missing.len() as u64))
     }
 
     /// List files that are stale (mtime changed) or missing from disk.

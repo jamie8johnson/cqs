@@ -339,6 +339,7 @@ pub fn enumerate_files(
     extensions: &[&str],
     no_ignore: bool,
 ) -> anyhow::Result<Vec<PathBuf>> {
+    let _span = tracing::debug_span!("enumerate_files", root = %root.display()).entered();
     use anyhow::Context;
     use ignore::WalkBuilder;
 

@@ -41,6 +41,7 @@ impl HnswIndex {
     /// # Arguments
     /// * `embeddings` - Vector of (chunk_id, embedding) pairs
     pub fn build(embeddings: Vec<(String, Embedding)>) -> Result<Self, HnswError> {
+        let _span = tracing::debug_span!("hnsw_build").entered();
         if embeddings.is_empty() {
             // Create empty index
             let hnsw = Hnsw::new(MAX_NB_CONNECTION, 1, MAX_LAYER, EF_CONSTRUCTION, DistCosine);
@@ -110,6 +111,7 @@ impl HnswIndex {
         I: Iterator<Item = Result<Vec<(String, Embedding)>, E>>,
         E: std::fmt::Display,
     {
+        let _span = tracing::debug_span!("hnsw_build_batched", estimated_total).entered();
         let capacity = estimated_total.max(1);
         tracing::info!(
             "Building HNSW index incrementally (estimated {} vectors)",

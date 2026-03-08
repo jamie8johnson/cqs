@@ -126,23 +126,29 @@ impl NameMatcher {
         }
     }
 
+    // Name match score tiers
+    const SCORE_EXACT: f32 = 1.0;
+    const SCORE_CONTAINS: f32 = 0.8;
+    const SCORE_CONTAINED_BY: f32 = 0.6;
+    const SCORE_MAX_OVERLAP: f32 = 0.5;
+
     /// Compute name match score against pre-tokenized query
     pub fn score(&self, name: &str) -> f32 {
         let name_lower = name.to_lowercase();
 
         // Exact match
         if name_lower == self.query_lower {
-            return 1.0;
+            return Self::SCORE_EXACT;
         }
 
         // Name contains query as substring
         if name_lower.contains(&self.query_lower) {
-            return 0.8;
+            return Self::SCORE_CONTAINS;
         }
 
         // Query contains name as substring
         if self.query_lower.contains(&name_lower) {
-            return 0.6;
+            return Self::SCORE_CONTAINED_BY;
         }
 
         // Word overlap scoring
@@ -193,7 +199,7 @@ impl NameMatcher {
             .count() as f32;
         let total = self.query_words.len().max(1) as f32;
 
-        (overlap / total) * 0.5 // Max 0.5 for partial word overlap
+        (overlap / total) * Self::SCORE_MAX_OVERLAP
     }
 }
 
@@ -395,17 +401,20 @@ impl<'a> NoteBoostIndex<'a> {
 /// and monorepo layouts.
 ///
 /// Returns 1.0 (no change) when demotion doesn't apply.
+const IMPORTANCE_TEST: f32 = 0.90;
+const IMPORTANCE_PRIVATE: f32 = 0.95;
+
 fn chunk_importance(name: &str, file_path: &str) -> f32 {
-    // Name-based: test function → 0.90
+    // Name-based: test function
     if name.starts_with("test_")
         || name.starts_with("Test")
         || name.starts_with("spec_")
         || name.ends_with("_test")
         || name.ends_with("_spec")
     {
-        return 0.90;
+        return IMPORTANCE_TEST;
     }
-    // File-based: test file (by filename, not full path) → 0.90
+    // File-based: test file (by filename, not full path)
     let filename = file_path.rsplit('/').next().unwrap_or(file_path);
     if filename.contains("_test.")
         || filename.contains(".test.")
@@ -413,15 +422,15 @@ fn chunk_importance(name: &str, file_path: &str) -> f32 {
         || filename.contains("_spec.")
         || filename.starts_with("test_")
     {
-        return 0.90;
+        return IMPORTANCE_TEST;
     }
-    // Path-based: tests/ directory → 0.90
+    // Path-based: tests/ directory
     if file_path.contains("/tests/") || file_path.starts_with("tests/") {
-        return 0.90;
+        return IMPORTANCE_TEST;
     }
-    // Underscore-prefixed private (but not dunder like __init__) → 0.95
+    // Underscore-prefixed private (but not dunder like __init__)
     if name.starts_with('_') && !name.starts_with("__") {
-        return 0.95;
+        return IMPORTANCE_PRIVATE;
     }
     1.0
 }
@@ -1735,12 +1744,18 @@ mod tests {
     #[test]
     fn test_chunk_importance_test_upper() {
         // Go convention: TestFoo
-        assert_eq!(chunk_importance("TestParseConfig", "src/lib.go"), 0.90);
+        assert_eq!(
+            chunk_importance("TestParseConfig", "src/lib.go"),
+            IMPORTANCE_TEST
+        );
     }
 
     #[test]
     fn test_chunk_importance_underscore() {
-        assert_eq!(chunk_importance("_helper", "src/lib.rs"), 0.95);
+        assert_eq!(
+            chunk_importance("_helper", "src/lib.rs"),
+            IMPORTANCE_PRIVATE
+        );
     }
 
     #[test]
@@ -1752,19 +1767,25 @@ mod tests {
     #[test]
     fn test_chunk_importance_test_file() {
         // File named foo_test.rs → demotion via filename
-        assert_eq!(chunk_importance("helper_fn", "src/foo_test.rs"), 0.90);
+        assert_eq!(
+            chunk_importance("helper_fn", "src/foo_test.rs"),
+            IMPORTANCE_TEST
+        );
     }
 
     #[test]
     fn test_chunk_importance_test_dir_demoted() {
         // Files in tests/ directory are test infrastructure → demoted
-        assert_eq!(chunk_importance("real_fn", "tests/fixtures/eval.rs"), 0.90);
+        assert_eq!(
+            chunk_importance("real_fn", "tests/fixtures/eval.rs"),
+            IMPORTANCE_TEST
+        );
     }
 
     #[test]
     fn test_chunk_importance_test_name_beats_path() {
         // test_ name triggers demotion even in normal directory
-        assert_eq!(chunk_importance("test_foo", "src/lib.rs"), 0.90);
+        assert_eq!(chunk_importance("test_foo", "src/lib.rs"), IMPORTANCE_TEST);
     }
 
     // ===== build_filter_sql tests =====

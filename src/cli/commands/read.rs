@@ -31,7 +31,9 @@ pub(crate) fn validate_and_read_file(root: &Path, path: &str) -> Result<(PathBuf
         bail!("File not found: {}", path);
     }
 
-    // Path traversal protection (dunce strips Windows UNC prefix automatically)
+    // Path traversal protection: canonicalize resolves to filesystem-stored case,
+    // so starts_with is correct even on case-insensitive filesystems (NTFS, APFS).
+    // dunce strips Windows UNC prefix automatically.
     let canonical = dunce::canonicalize(&file_path)
         .with_context(|| format!("Failed to canonicalize path: {}", path))?;
     let project_canonical =

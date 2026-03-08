@@ -734,7 +734,9 @@ fn ensure_ort_provider_libs() {
 /// No-op on non-Unix platforms (CUDA provider libs handled differently)
 #[cfg(not(unix))]
 fn ensure_ort_provider_libs() {
-    // Windows/other platforms: CUDA libraries are typically in PATH already
+    // No-op: Windows and other platforms find CUDA/TensorRT provider libraries
+    // via PATH, so no symlinking is needed. The Unix version symlinks .so files
+    // into ort's search directory because LD_LIBRARY_PATH may not include them.
 }
 
 /// Cached GPU provider detection result
