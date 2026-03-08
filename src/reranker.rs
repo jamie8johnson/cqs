@@ -30,10 +30,12 @@ pub enum RerankerError {
     Inference(String),
 }
 
-impl From<ort::Error> for RerankerError {
-    fn from(e: ort::Error) -> Self {
-        RerankerError::Inference(e.to_string())
-    }
+/// Convert any ort error to [`RerankerError::Inference`] via `.to_string()`.
+///
+/// Function instead of `From` impl — see [`crate::embedder::ort_err`] for rationale
+/// (ort 2.0.0-rc.12+ changed `Error` to `Error<T>`).
+fn ort_err(e: ort::Error) -> RerankerError {
+    RerankerError::Inference(e.to_string())
 }
 
 /// Cross-encoder reranker for second-pass scoring
@@ -119,25 +121,27 @@ impl Reranker {
 
         // Create tensors (ort requires Value, not raw ndarray)
         use ort::value::Tensor;
-        let ids_tensor = Tensor::from_array(ids_arr)?;
-        let mask_tensor = Tensor::from_array(mask_arr)?;
-        let type_tensor = Tensor::from_array(type_arr)?;
+        let ids_tensor = Tensor::from_array(ids_arr).map_err(ort_err)?;
+        let mask_tensor = Tensor::from_array(mask_arr).map_err(ort_err)?;
+        let type_tensor = Tensor::from_array(type_arr).map_err(ort_err)?;
 
         // 3. Run inference
         let mut session_guard = self.session()?;
         let session = session_guard
             .as_mut()
             .expect("session() guarantees initialized after Ok return");
-        let outputs = session.run(ort::inputs![
-            "input_ids" => ids_tensor,
-            "attention_mask" => mask_tensor,
-            "token_type_ids" => type_tensor,
-        ])?;
+        let outputs = session
+            .run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+                "token_type_ids" => type_tensor,
+            ])
+            .map_err(ort_err)?;
 
         // 4. Extract logits, apply sigmoid
         // Cross-encoder output is typically "logits" with shape [batch, 1] or [batch]
         // ort rc.11 try_extract_tensor returns (Vec<i64>, Vec<f32>)
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
+        let (shape, data) = outputs[0].try_extract_tensor::<f32>().map_err(ort_err)?;
         let batch_size = results.len();
 
         // Handle [batch, 1] → stride 1, or [batch] → stride 1

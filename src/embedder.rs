@@ -39,10 +39,14 @@ pub enum EmbedderError {
     HfHubError(String),
 }
 
-impl From<ort::Error> for EmbedderError {
-    fn from(e: ort::Error) -> Self {
-        EmbedderError::InferenceFailed(e.to_string())
-    }
+/// Convert any ort error to [`EmbedderError::InferenceFailed`] via `.to_string()`.
+///
+/// This is a function instead of a `From<ort::Error>` impl because ort 2.0.0-rc.12+
+/// changed `Error` to `Error<T>` (generic over the builder stage). A blanket
+/// `impl<T> From<ort::Error<T>>` isn't possible with rc.11 where `Error` is non-generic,
+/// so call sites use `.map_err(ort_err)` instead of `?` auto-conversion.
+fn ort_err(e: ort::Error) -> EmbedderError {
+    EmbedderError::InferenceFailed(e.to_string())
 }
 
 /// A 769-dimensional L2-normalized embedding vector
@@ -514,9 +518,9 @@ impl Embedder {
         let token_type_ids_arr = Array2::<i64>::zeros((texts.len(), max_len));
 
         // Create tensors
-        let input_ids_tensor = Tensor::from_array(input_ids_arr)?;
-        let attention_mask_tensor = Tensor::from_array(attention_mask_arr)?;
-        let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr)?;
+        let input_ids_tensor = Tensor::from_array(input_ids_arr).map_err(ort_err)?;
+        let attention_mask_tensor = Tensor::from_array(attention_mask_arr).map_err(ort_err)?;
+        let token_type_ids_tensor = Tensor::from_array(token_type_ids_arr).map_err(ort_err)?;
 
         // Run inference (lazy init session)
         let mut guard = self.session()?;
@@ -524,14 +528,18 @@ impl Embedder {
             .as_mut()
             .expect("session() guarantees initialized after Ok return");
         let _inference = tracing::debug_span!("inference", max_len).entered();
-        let outputs = session.run(ort::inputs![
-            "input_ids" => input_ids_tensor,
-            "attention_mask" => attention_mask_tensor,
-            "token_type_ids" => token_type_ids_tensor,
-        ])?;
+        let outputs = session
+            .run(ort::inputs![
+                "input_ids" => input_ids_tensor,
+                "attention_mask" => attention_mask_tensor,
+                "token_type_ids" => token_type_ids_tensor,
+            ])
+            .map_err(ort_err)?;
 
         // Get the last_hidden_state output: shape [batch, seq_len, 768]
-        let (shape, data) = outputs["last_hidden_state"].try_extract_tensor::<f32>()?;
+        let (shape, data) = outputs["last_hidden_state"]
+            .try_extract_tensor::<f32>()
+            .map_err(ort_err)?;
 
         // Validate tensor shape: expect [batch_size, seq_len, 768]
         let batch_size = texts.len();
@@ -779,22 +787,26 @@ pub(crate) fn create_session(
 ) -> Result<Session, EmbedderError> {
     use ort::ep::{TensorRT, CUDA};
 
-    let builder = Session::builder()?;
+    let builder = Session::builder().map_err(ort_err)?;
 
     let session = match provider {
         ExecutionProvider::CUDA { device_id } => builder
-            .with_execution_providers([CUDA::default().with_device_id(device_id).build()])?
-            .commit_from_file(model_path)?,
+            .with_execution_providers([CUDA::default().with_device_id(device_id).build()])
+            .map_err(ort_err)?
+            .commit_from_file(model_path)
+            .map_err(ort_err)?,
         ExecutionProvider::TensorRT { device_id } => {
             builder
                 .with_execution_providers([
                     TensorRT::default().with_device_id(device_id).build(),
                     // Fallback to CUDA for unsupported ops
                     CUDA::default().with_device_id(device_id).build(),
-                ])?
-                .commit_from_file(model_path)?
+                ])
+                .map_err(ort_err)?
+                .commit_from_file(model_path)
+                .map_err(ort_err)?
         }
-        ExecutionProvider::CPU => builder.commit_from_file(model_path)?,
+        ExecutionProvider::CPU => builder.commit_from_file(model_path).map_err(ort_err)?,
     };
 
     Ok(session)
