@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**v0.28.2 release in progress.** 2026-03-08. P4 audit fixes merged (#553). 9 of 20 findings fixed, 11 deferred with issues.
+**v0.28.3 released.** 2026-03-08. ort forward compat (#551), pipeline double I/O eliminated (#563), incremental HNSW in watch mode (#561).
 
 ## Pending Changes
 
