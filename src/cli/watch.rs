@@ -27,11 +27,15 @@ use tracing::{info, info_span, warn};
 
 use cqs::embedder::{Embedder, Embedding};
 use cqs::generate_nl_description;
+use cqs::hnsw::HnswIndex;
 use cqs::note::parse_notes;
 use cqs::parser::{ChunkTypeRefs, Parser as CqParser};
 use cqs::store::Store;
 
 use super::{check_interrupted, find_project_root, try_acquire_index_lock, Cli};
+
+/// Full HNSW rebuild after this many incremental inserts to clean orphaned vectors.
+const HNSW_REBUILD_THRESHOLD: usize = 100;
 
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
@@ -131,6 +135,13 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 
     let mut cycles_since_clear: u32 = 0;
 
+    // Persistent HNSW state for incremental updates.
+    // On first file change, does a full build and keeps the Owned index in memory.
+    // Subsequent changes insert only changed chunks via insert_batch.
+    // Full rebuild every HNSW_REBUILD_THRESHOLD incremental inserts to clean orphans.
+    let mut hnsw_index: Option<HnswIndex> = None;
+    let mut incremental_count: usize = 0;
+
     loop {
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Ok(event)) => {
@@ -179,6 +190,8 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                             &embedder,
                             &mut pending_files,
                             &mut last_indexed_mtime,
+                            &mut hnsw_index,
+                            &mut incremental_count,
                             cli.quiet,
                         );
                     }
@@ -274,7 +287,10 @@ fn collect_events(
     }
 }
 
-/// Process pending file changes: parse, embed, and store atomically, then rebuild HNSW.
+/// Process pending file changes: parse, embed, store atomically, then update HNSW.
+///
+/// Uses incremental HNSW insertion when an Owned index is available in memory.
+/// Falls back to full rebuild on first run or after `HNSW_REBUILD_THRESHOLD` incremental inserts.
 #[allow(clippy::too_many_arguments)]
 fn process_file_changes(
     root: &Path,
@@ -284,6 +300,8 @@ fn process_file_changes(
     embedder: &OnceCell<Embedder>,
     pending_files: &mut HashSet<PathBuf>,
     last_indexed_mtime: &mut HashMap<PathBuf, SystemTime>,
+    hnsw_index: &mut Option<HnswIndex>,
+    incremental_count: &mut usize,
     quiet: bool,
 ) {
     let files: Vec<PathBuf> = pending_files.drain().collect();
@@ -316,7 +334,7 @@ fn process_file_changes(
     // batch is not — files indexed so far are visible, remaining are
     // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
     match reindex_files(root, store, &files, parser, emb, quiet) {
-        Ok((count, _content_hashes)) => {
+        Ok((count, content_hashes)) => {
             // Record mtimes to skip duplicate events
             for (file, mtime) in pre_mtimes {
                 last_indexed_mtime.insert(file, mtime);
@@ -331,23 +349,83 @@ fn process_file_changes(
             if !quiet {
                 println!("Indexed {} chunk(s)", count);
             }
-            // Rebuild HNSW so index is fresh
-            match super::commands::build_hnsw_index(store, cqs_dir) {
-                Ok(Some(n)) => {
-                    info!(vectors = n, "HNSW index rebuilt");
-                    if !quiet {
-                        println!("  HNSW index: {} vectors", n);
+
+            // Incremental HNSW update: insert changed chunks into existing Owned index.
+            // Falls back to full rebuild on first run or after HNSW_REBUILD_THRESHOLD inserts.
+            let needs_full_rebuild =
+                hnsw_index.is_none() || *incremental_count >= HNSW_REBUILD_THRESHOLD;
+
+            if needs_full_rebuild {
+                match super::commands::build_hnsw_index_owned(store, cqs_dir) {
+                    Ok(Some(index)) => {
+                        let n = index.len();
+                        *hnsw_index = Some(index);
+                        *incremental_count = 0;
+                        info!(vectors = n, "HNSW index rebuilt (full)");
+                        if !quiet {
+                            println!("  HNSW index: {} vectors (full rebuild)", n);
+                        }
+                    }
+                    Ok(None) => {
+                        *hnsw_index = None;
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
+                        *hnsw_index = None;
+                        for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
+                            let path = cqs_dir.join(format!("index.{}", ext));
+                            if path.exists() {
+                                let _ = std::fs::remove_file(&path);
+                            }
+                        }
                     }
                 }
-                Ok(None) => {} // empty store
-                Err(e) => {
-                    warn!(error = %e, "HNSW rebuild failed, removing stale HNSW files (search falls back to brute-force)");
-                    // Delete stale HNSW files so search doesn't use an outdated index
-                    for ext in cqs::hnsw::HNSW_ALL_EXTENSIONS {
-                        let path = cqs_dir.join(format!("index.{}", ext));
-                        if path.exists() {
-                            let _ = std::fs::remove_file(&path);
+            } else if !content_hashes.is_empty() {
+                // Incremental path: insert only newly-embedded chunks.
+                // Modified chunks get new IDs, so old vectors become orphans in
+                // the HNSW graph (hnsw_rs has no deletion). Orphans are harmless:
+                // search post-filters against live SQLite chunk IDs. They're
+                // cleaned on the next full rebuild (every HNSW_REBUILD_THRESHOLD).
+                let hash_refs: Vec<&str> = content_hashes.iter().map(|s| s.as_str()).collect();
+                match store.get_chunk_ids_and_embeddings_by_hashes(&hash_refs) {
+                    Ok(pairs) if !pairs.is_empty() => {
+                        let items: Vec<(String, &[f32])> = pairs
+                            .iter()
+                            .map(|(id, emb)| (id.clone(), emb.as_slice()))
+                            .collect();
+                        if let Some(ref mut index) = hnsw_index {
+                            match index.insert_batch(&items) {
+                                Ok(n) => {
+                                    *incremental_count += n;
+                                    // Save updated index to disk for search processes
+                                    if let Err(e) = index.save(cqs_dir, "index") {
+                                        warn!(error = %e, "Failed to save HNSW after incremental insert");
+                                    }
+                                    info!(
+                                        inserted = n,
+                                        total = index.len(),
+                                        incremental_count = *incremental_count,
+                                        "HNSW incremental insert"
+                                    );
+                                    if !quiet {
+                                        println!(
+                                            "  HNSW index: +{} vectors (incremental, {} total)",
+                                            n,
+                                            index.len()
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(error = %e, "HNSW incremental insert failed, will rebuild next cycle");
+                                    // Force full rebuild next cycle
+                                    *hnsw_index = None;
+                                }
+                            }
                         }
+                    }
+                    Ok(_) => {} // no embeddings found for hashes
+                    Err(e) => {
+                        warn!(error = %e, "Failed to fetch embeddings for HNSW incremental insert");
                     }
                 }
             }
@@ -433,9 +511,6 @@ fn reindex_files(
         return Ok((0, Vec::new()));
     }
 
-    // Collect content hashes before chunks are consumed (for incremental HNSW)
-    let content_hashes: Vec<String> = chunks.iter().map(|c| c.content_hash.clone()).collect();
-
     // Check content hash cache to skip re-embedding unchanged chunks
     let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
     let existing = store.get_embeddings_by_hashes(&hashes)?;
@@ -449,6 +524,14 @@ fn reindex_files(
             to_embed.push((i, chunk));
         }
     }
+
+    // Collect content hashes of NEWLY EMBEDDED chunks only (for incremental HNSW).
+    // Unchanged chunks (cache hits) are already in the HNSW index from a prior cycle,
+    // so re-inserting them would create duplicates (hnsw_rs has no dedup).
+    let content_hashes: Vec<String> = to_embed
+        .iter()
+        .map(|(_, c)| c.content_hash.clone())
+        .collect();
 
     // Only embed chunks that don't have cached embeddings
     let new_embeddings: Vec<Embedding> = if to_embed.is_empty() {

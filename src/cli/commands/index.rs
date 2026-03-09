@@ -216,8 +216,17 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
 /// Notes are excluded from HNSW — they use brute-force search from SQLite
 /// so that notes are immediately searchable without rebuild.
 pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<usize>> {
+    Ok(build_hnsw_index_owned(store, cqs_dir)?.map(|h| h.len()))
+}
+
+/// Build HNSW index and return the Owned index for continued incremental use.
+///
+/// Builds from all chunk embeddings in the store, saves to disk, and returns
+/// the `HnswIndex` (Owned variant). Used by watch mode to keep a mutable index
+/// in memory for `insert_batch` calls on subsequent file changes.
+pub(crate) fn build_hnsw_index_owned(store: &Store, cqs_dir: &Path) -> Result<Option<HnswIndex>> {
     let chunk_count = store.chunk_count().context("Failed to read chunk count")? as usize;
-    let _span = tracing::info_span!("build_hnsw_index", chunk_count).entered();
+    let _span = tracing::info_span!("build_hnsw_index_owned", chunk_count).entered();
 
     if chunk_count == 0 {
         return Ok(None);
@@ -230,5 +239,5 @@ pub(crate) fn build_hnsw_index(store: &Store, cqs_dir: &Path) -> Result<Option<u
     let hnsw = HnswIndex::build_batched(chunk_batches, chunk_count)?;
     hnsw.save(cqs_dir, "index")?;
 
-    Ok(Some(hnsw.len()))
+    Ok(Some(hnsw))
 }

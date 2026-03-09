@@ -59,7 +59,7 @@ pub(crate) use graph::{cmd_callees, cmd_callers};
 pub(crate) use health::cmd_health;
 pub(crate) use impact::cmd_impact;
 pub(crate) use impact_diff::cmd_impact_diff;
-pub(crate) use index::{build_hnsw_index, cmd_index};
+pub(crate) use index::{build_hnsw_index, build_hnsw_index_owned, cmd_index};
 pub(crate) use init::cmd_init;
 pub(crate) use notes::{cmd_notes, NotesCommand};
 pub(crate) use onboard::cmd_onboard;
