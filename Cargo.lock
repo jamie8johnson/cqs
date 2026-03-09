@@ -3449,9 +3449,9 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "simsimd"
-version = "6.5.13"
+version = "6.5.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f81af684ca3dc160907f1478d779bdfd8bae52f55f4c58caba0229670a83a0d"
+checksum = "f4fb3bc3cdce07a7d7d4caa4c54f8aa967f6be41690482b54b24100a2253fa70"
 dependencies = [
  "cc",
 ]
