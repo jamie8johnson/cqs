@@ -896,3 +896,27 @@ mentions = [
     "CandidateRow",
     "fetch_candidates_by_ids_async",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Pipeline store_stage already extracts calls via extract_calls_from_chunk — only type edges (ChunkTypeRef) were missing from pipeline flow. The extract_relationships double I/O was 90% redundant."
+mentions = [
+    "pipeline.rs",
+    "index.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "HNSW insert_batch only works on Owned variant — Loaded (from disk via self_cell) is immutable. Watch mode must keep Owned in memory across cycles. content_hashes from reindex_files must be filtered to newly-embedded only, or unchanged chunks create duplicates."
+mentions = [
+    "hnsw",
+    "watch.rs",
+]
+
+[[note]]
+sentiment = 0.0
+text = "ort::Error is non-generic in rc.11 but becomes Error<T> in rc.12. Generic From impl doesn't compile on rc.11. Use .map_err() with a helper fn instead — works across both versions."
+mentions = [
+    "embedder.rs",
+    "reranker.rs",
+]
