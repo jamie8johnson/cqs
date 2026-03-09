@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.3] - 2026-03-08
+
+### Changed
+- Indexing pipeline uses `parse_file_all()` for single-pass extraction of chunks + type edges, eliminating double file I/O (#563)
+- Watch mode uses incremental HNSW `insert_batch` for changed chunks instead of full rebuild, with periodic full rebuild every 100 inserts (#561)
+- `build_hnsw_index` delegates to `build_hnsw_index_owned` (dedup)
+
+### Fixed
+- Forward compatibility with ort 2.0.0-rc.12+ generic `Error<T>` type (#551)
+
 ## [0.28.2] - 2026-03-08
 
 ### Added
