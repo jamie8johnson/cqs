@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            archive: tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package archive
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          STAGING="cqs-${VERSION}-${{ matrix.target }}"
+          mkdir -p "${STAGING}"
+
+          if [ "${{ matrix.runner }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.target }}/release/cqs.exe" "${STAGING}/cqs.exe"
+          else
+            cp "target/${{ matrix.target }}/release/cqs" "${STAGING}/cqs"
+          fi
+
+          for f in README.md LICENSE; do
+            [ -f "$f" ] && cp "$f" "${STAGING}/"
+          done
+
+          ARCHIVE="cqs-${VERSION}-${{ matrix.target }}.${{ matrix.archive }}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "${ARCHIVE}" "${STAGING}"
+          else
+            tar czf "${ARCHIVE}" "${STAGING}"
+          fi
+
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cqs-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cqs-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          sha256sum cqs-${VERSION}-* > "cqs-${VERSION}-checksums-sha256.txt"
+          echo "## SHA256 Checksums"
+          cat "cqs-${VERSION}-checksums-sha256.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: artifacts/*

@@ -15,7 +15,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 50 lan
 
 ### Next — Expansion
 
-- [ ] Pre-built release binaries (GitHub Actions) — adoption friction
+- [x] Pre-built release binaries (GitHub Actions) — adoption friction
 
 ### Future Languages — Priority Order
 
@@ -71,7 +71,7 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [x] HCL → Bash — `heredoc_template` with shell identifiers (EOT, BASH, SHELL, etc.). `detect_heredoc_language` checks heredoc identifier.
 
 **Next — New grammars required:**
-- [ ] Vue (.vue) → JS/TS, CSS, HTML — needs `tree-sitter-vue` grammar. `<script>`, `<style>`, `<template>` identical to HTML injection pattern.
+- [x] Vue (.vue) → JS/TS, CSS, HTML — `tree-sitter-vue-next`. Identical injection pattern to HTML/Svelte. Post-processing: headings, landmarks, setup script detection.
 
 **Next — Medium value (narrower scope):**
 - [ ] Markdown → fenced code blocks — custom parser, not tree-sitter. Needs different approach (parse ` ```lang ` content with target grammar).
