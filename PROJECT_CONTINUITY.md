@@ -10,25 +10,21 @@ None.
 
 ## Parked
 
-- **Pre-built release binaries** (GitHub Actions) — deferred
-- **`cqs plan` templates** — add more task-type templates as patterns emerge
+- **`cqs plan` templates** — 11 templates now; add more as patterns emerge
 - **Post-index name matching** — fuzzy cross-doc references
-- **Phase 8**: Security (index encryption)
 - **ref install** — deferred, tracked in #255
-- **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **resolve_target test bias** — ambiguous names resolve to test functions over production code. Not blocking, but `cqs related foo` may pick `test_foo_bar` instead of `foo`. Fix: prefer non-test chunks in resolve_target.
 
 ## Open Issues
 
 ### External/Waiting
-- #106: ort stable (currently 2.0.0-rc.11)
-- #63: paste dep (via tokenizers)
+- #106: ort stable (currently on rc.12, waiting for 2.0 stable)
+- #63: paste dep unmaintained (RUSTSEC-2024-0436) — transitive via `tokenizers`, waiting on HuggingFace to switch to `pastey`
 
 ### Feature
 - #255: Pre-built reference packages
 
 ### Audit
-- #389: CAGRA GPU memory — needs disk persistence layer
+- #389: CAGRA CPU-side dataset retention (~146MB at 50k chunks) — can't drop because cuVS `search()` consumes the index, requiring rebuild from cached embeddings. Blocked on upstream API change.
 
 ## Architecture
 

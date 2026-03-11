@@ -41,11 +41,9 @@ pub enum EmbedderError {
 
 /// Convert any ort error to [`EmbedderError::InferenceFailed`] via `.to_string()`.
 ///
-/// This is a function instead of a `From<ort::Error>` impl because ort 2.0.0-rc.12+
-/// changed `Error` to `Error<T>` (generic over the builder stage). A blanket
-/// `impl<T> From<ort::Error<T>>` isn't possible with rc.11 where `Error` is non-generic,
-/// so call sites use `.map_err(ort_err)` instead of `?` auto-conversion.
-fn ort_err(e: ort::Error) -> EmbedderError {
+/// Call sites use `.map_err(ort_err)` instead of `?` auto-conversion because
+/// a blanket `From` impl would conflict with other error conversions.
+fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
     EmbedderError::InferenceFailed(e.to_string())
 }
 
@@ -787,7 +785,7 @@ pub(crate) fn create_session(
 ) -> Result<Session, EmbedderError> {
     use ort::ep::{TensorRT, CUDA};
 
-    let builder = Session::builder().map_err(ort_err)?;
+    let mut builder = Session::builder().map_err(ort_err)?;
 
     let session = match provider {
         ExecutionProvider::CUDA { device_id } => builder

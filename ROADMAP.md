@@ -90,17 +90,17 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 
 - **MCP server** — re-add as slim read-only wrapper when CLI features are rock solid. Architecture proven clean (removed in v0.10.0 with zero core changes).
 - **Pre-built reference packages** (#255) — `cqs ref install tokio`
-- **Index encryption** — SQLCipher behind cargo feature flag
-- **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **Pattern mining** (`cqs patterns`) — recurring code conventions. Large effort, defer.
+- ~~**Index encryption**~~ — closed: use OS-level disk encryption (BitLocker/LUKS/FileVault). sqlx doesn't support SQLCipher natively; not worth the complexity.
+- ~~**Query-intent routing**~~ — closed: `--ref` flag covers explicit scoping, and hybrid RRF already boosts keyword matches naturally.
+- ~~**Pattern mining**~~ — closed: manual notes + `cqs suggest` cover practical needs. Automated AST pattern recognition is research-grade effort for uncertain payoff.
 - **Post-index name matching** — fuzzy cross-doc references
 
 ### Open Issues
 
-- #389: CAGRA GPU memory — needs disk persistence layer
+- #389: CAGRA CPU-side dataset retention (~146MB at 50k chunks) — cuVS `search()` consumes the index, so `dataset` is needed for rebuild. Blocked on upstream API change.
 - #255: Pre-built reference packages
 - #106: ort stable (currently 2.0.0-rc.11)
-- #63: paste dep (via tokenizers)
+- #63: paste dep unmaintained (RUSTSEC-2024-0436) — transitive via `tokenizers`, waiting on HuggingFace to switch to `pastey`
 
 ## 1.0 Release Criteria
 

@@ -32,9 +32,8 @@ pub enum RerankerError {
 
 /// Convert any ort error to [`RerankerError::Inference`] via `.to_string()`.
 ///
-/// Function instead of `From` impl — see [`crate::embedder::ort_err`] for rationale
-/// (ort 2.0.0-rc.12+ changed `Error` to `Error<T>`).
-fn ort_err(e: ort::Error) -> RerankerError {
+/// Function instead of `From` impl — see [`crate::embedder::ort_err`] for rationale.
+fn ort_err<T>(e: ort::Error<T>) -> RerankerError {
     RerankerError::Inference(e.to_string())
 }
 

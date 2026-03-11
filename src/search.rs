@@ -94,7 +94,17 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
             }
         }
     } else {
-        0
+        // Prefer non-test chunks when names are ambiguous
+        results
+            .iter()
+            .position(|r| {
+                let path = r.chunk.file.to_string_lossy();
+                let name = &r.chunk.name;
+                !name.starts_with("test_")
+                    && !path.contains("/tests/")
+                    && !path.ends_with("_test.rs")
+            })
+            .unwrap_or(0)
     };
     let chunk = results[idx].chunk.clone();
     Ok(ResolvedTarget {

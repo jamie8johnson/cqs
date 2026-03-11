@@ -80,7 +80,7 @@ tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-vue = { version = "0.1", package = "tree-sitter-vue-next", optional = true }
 
 # ML
-ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
+ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4.3"
 ndarray = "0.17"
