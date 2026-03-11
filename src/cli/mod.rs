@@ -45,6 +45,14 @@ pub(crate) fn build_vector_index(
     store: &cqs::Store,
     cqs_dir: &std::path::Path,
 ) -> anyhow::Result<Option<Box<dyn cqs::index::VectorIndex>>> {
+    build_vector_index_with_config(store, cqs_dir, None)
+}
+
+pub(crate) fn build_vector_index_with_config(
+    store: &cqs::Store,
+    cqs_dir: &std::path::Path,
+    ef_search: Option<usize>,
+) -> anyhow::Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _ = store; // Used only with gpu-index feature
     #[cfg(feature = "gpu-index")]
     {
@@ -70,7 +78,7 @@ pub(crate) fn build_vector_index(
             tracing::debug!("GPU not available, using HNSW");
         }
     }
-    Ok(cqs::HnswIndex::try_load(cqs_dir))
+    Ok(cqs::HnswIndex::try_load_with_ef(cqs_dir, ef_search))
 }
 
 #[cfg(feature = "convert")]
@@ -1662,6 +1670,7 @@ mod tests {
             note_weight: None,
             note_only: None,
             stale_check: None,
+            ef_search: None,
         };
         apply_config_defaults(&mut cli, &config);
 
@@ -1685,6 +1694,7 @@ mod tests {
             note_weight: None,
             note_only: None,
             stale_check: None,
+            ef_search: None,
         };
         apply_config_defaults(&mut cli, &config);
 

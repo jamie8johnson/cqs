@@ -123,7 +123,7 @@ impl BatchContext {
             return Ok(idx.as_deref());
         }
         let _span = tracing::info_span!("batch_vector_index_init").entered();
-        let idx = build_vector_index(&self.store, &self.cqs_dir)?;
+        let idx = build_vector_index(&self.store, &self.cqs_dir, self.config().ef_search)?;
         let _ = self.hnsw.set(idx);
         Ok(self
             .hnsw
@@ -276,8 +276,9 @@ impl BatchContext {
 fn build_vector_index(
     store: &Store,
     cqs_dir: &std::path::Path,
+    ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
-    crate::cli::build_vector_index(store, cqs_dir)
+    crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
 }
 
 // ─── JSON serialization helpers ──────────────────────────────────────────────
