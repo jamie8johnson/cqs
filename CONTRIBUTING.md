@@ -44,6 +44,22 @@ Thank you for your interest in contributing to cqs!
 - Add tests for new features
 - Follow existing code patterns
 
+### `_with_*` Function Naming Convention
+
+Functions that accept pre-loaded resources use a `_with_<resource>` suffix:
+
+| Suffix | Meaning | Example |
+|--------|---------|---------|
+| `_with_graph` | Pre-loaded call graph | `gather_with_graph()` |
+| `_with_options` | Config struct parameter | `scout_with_options()` |
+| `_with_embedding` | Pre-computed embedding | `suggest_placement_with_embedding()` |
+| `_with_resources` | Pre-loaded embedder + graph | `task_with_resources()` |
+
+Rules:
+- The base function loads its own resources. The `_with_*` variant accepts them.
+- Don't stack suffixes (`_with_graph_depth`). Add parameters to the existing `_with_*` function instead.
+- If the `_with_*` variant has no external callers, fold it into the base function.
+
 ## Pull Request Process
 
 1. Fork the repository and create a feature branch
