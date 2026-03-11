@@ -1268,7 +1268,7 @@ fn test_cuda_compatibility() {
         };
 
         // Load session and inspect
-        let session = match Session::builder().and_then(|b| b.commit_from_file(&model_path)) {
+        let session = match Session::builder().and_then(|mut b| b.commit_from_file(&model_path)) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("  SKIP: {}\n", e);
