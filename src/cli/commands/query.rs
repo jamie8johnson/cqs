@@ -80,9 +80,12 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let chunk_types = match &cli.chunk_type {
         Some(types) => {
             let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
-            Some(parsed.context(
-                "Invalid chunk type. Valid: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias",
-            )?)
+            Some(parsed.with_context(|| {
+                format!(
+                    "Invalid chunk type. Valid: {}",
+                    ChunkType::valid_names().join(", ")
+                )
+            })?)
         }
         None => None,
     };

@@ -487,15 +487,37 @@ impl HnswIndex {
             }
             _ => {}
         }
+        // Count array elements by streaming JSON without allocating all strings.
+        // The id map is a JSON array of strings: ["id1","id2",...].
+        // We iterate the stream and count SeqAccess elements rather than
+        // deserializing into a Vec<String>.
+        use serde::de::{Deserializer, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct CountVisitor;
+        impl<'de> Visitor<'de> for CountVisitor {
+            type Value = usize;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "an array")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<usize, A::Error> {
+                let mut count = 0usize;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    count += 1;
+                }
+                Ok(count)
+            }
+        }
+
         let reader = std::io::BufReader::new(file);
-        let ids: Vec<String> = match serde_json::from_reader(reader) {
-            Ok(ids) => ids,
+        let mut de = serde_json::Deserializer::from_reader(reader);
+        match de.deserialize_seq(CountVisitor) {
+            Ok(count) => Some(count),
             Err(e) => {
                 tracing::warn!("Corrupted HNSW id map {}: {}", id_map_path.display(), e);
-                return None;
+                None
             }
-        };
-        Some(ids.len())
+        }
     }
 
     /// Load HNSW index if available, wrapped as VectorIndex trait object.

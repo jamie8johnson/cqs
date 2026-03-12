@@ -133,9 +133,9 @@ pub use task::{
     TaskSummary,
 };
 pub use where_to_add::{
-    suggest_placement, suggest_placement_with_embedding, suggest_placement_with_options,
-    FileSuggestion, LocalPatterns, PlacementOptions, PlacementResult,
-    DEFAULT_PLACEMENT_SEARCH_LIMIT, DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
+    suggest_placement, suggest_placement_with_options, FileSuggestion, LocalPatterns,
+    PlacementOptions, PlacementResult, DEFAULT_PLACEMENT_SEARCH_LIMIT,
+    DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
 };
 
 #[cfg(feature = "gpu-index")]

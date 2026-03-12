@@ -146,19 +146,23 @@ use crate::nl::normalize_for_fts;
 /// `normalize_for_fts()`. The double-pass pattern (`normalize_for_fts` then
 /// `sanitize_fts_query`) is defense-in-depth — either layer alone prevents injection.
 pub(crate) fn sanitize_fts_query(s: &str) -> String {
-    // Remove FTS5 special characters
-    let cleaned: String = s
-        .chars()
-        .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'))
-        .collect();
-
-    // Remove FTS5 boolean operators as standalone words.
-    // Split on whitespace, filter out operators, rejoin.
-    cleaned
+    // Single-pass: split on whitespace (no allocation), filter FTS5 boolean
+    // operators, strip FTS5 special chars from each surviving word, write
+    // directly into one output String — no intermediate allocation.
+    let mut out = String::with_capacity(s.len());
+    for word in s
         .split_whitespace()
-        .filter(|word| !matches!(*word, "OR" | "AND" | "NOT" | "NEAR"))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .filter(|w| !matches!(*w, "OR" | "AND" | "NOT" | "NEAR"))
+    {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.extend(
+            word.chars()
+                .filter(|c| !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':')),
+        );
+    }
+    out
 }
 
 /// Thread-safe SQLite store for chunks and embeddings

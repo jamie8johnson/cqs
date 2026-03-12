@@ -174,11 +174,16 @@ pub fn task_with_resources(
     tracing::debug!(risks = risk.len(), tests = tests.len(), "Impact complete");
 
     // 6. Placement phase — reuse query embedding to avoid redundant ONNX inference
-    let placement = match crate::where_to_add::suggest_placement_with_embedding(
+    let placement_opts = crate::where_to_add::PlacementOptions {
+        query_embedding: Some(query_embedding.clone()),
+        ..Default::default()
+    };
+    let placement = match crate::where_to_add::suggest_placement_with_options(
         store,
-        &query_embedding,
+        embedder,
         description,
         3,
+        &placement_opts,
     ) {
         Ok(result) => result.suggestions,
         Err(e) => {

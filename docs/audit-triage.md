@@ -50,10 +50,10 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | 4 | DOC-5: SECURITY.md Write Access table missing `audit-mode.json` | Documentation | SECURITY.md:63-72 | ✅ fixed |
 | 5 | DOC-6: `cqs completions` command not documented in README | Documentation | README.md | ✅ fixed |
 | 6 | DOC-7: `store/mod.rs` misleading "sync wrappers" comment | Documentation | store/mod.rs:1-4 | ✅ fixed |
-| 7 | CQ-1: `resolve_reference_store` / `_readonly` near-identical | Code Quality | resolve.rs:44-99 | |
+| 7 | CQ-1: `resolve_reference_store` / `_readonly` near-identical | Code Quality | resolve.rs:44-99 | ✅ fixed |
 | 8 | CQ-2: Random temp-file suffix pattern duplicated 5 times | Code Quality | audit.rs, config.rs, note.rs, project.rs | ✅ fixed |
-| 9 | CQ-3: `DeadConfidence` → `&str` mapping repeated in 3 locations | Code Quality | dead.rs, ci.rs, handlers.rs | |
-| 10 | CQ-5: `diff.rs` duplicates `full_cosine_similarity` tests from `math.rs` | Code Quality | diff.rs:206-237 | |
+| 9 | CQ-3: `DeadConfidence` → `&str` mapping repeated in 3 locations | Code Quality | dead.rs, ci.rs, handlers.rs | ✅ fixed |
+| 10 | CQ-5: `diff.rs` duplicates `full_cosine_similarity` tests from `math.rs` | Code Quality | diff.rs:206-237 | ✅ fixed |
 | 11 | EH-4: `reference list` swallows `Store::open` errors, shows `0` chunks | Error Handling | reference.rs:172-196 | ✅ fixed |
 | 12 | EH-5: `convert` module silently skips `walkdir` errors in 6 locations | Error Handling | convert/mod.rs, chm.rs, webhelp.rs | ✅ fixed |
 | 13 | EH-6: `audit.rs` swallows JSON parse error with bare `Err(_)` | Error Handling | audit.rs:75 | ✅ fixed (prior) |
@@ -65,21 +65,21 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | 19 | OB-5: `--rerank` warning uses `eprintln!` instead of `tracing::warn!` | Observability | query.rs:248-251 | ✅ fixed |
 | 20 | OB-6: `convert` module missing bytes/duration metrics | Observability | convert/mod.rs, pdf.rs, html.rs | deferred |
 | 21 | OB-7: `reindex_files` warn uses positional format, not structured fields | Observability | watch.rs:500 | ✅ fixed |
-| 22 | AD-2: `chunk_type` String in `OnboardEntry`/`DriftEntry` when enum exists | API Design | onboard.rs:58, drift.rs:17 | |
-| 23 | AD-3: `ChunkRole` Serialize PascalCase vs `as_str()` snake_case | API Design | scout.rs:15-34 | |
+| 22 | AD-2: `chunk_type` String in `OnboardEntry`/`DriftEntry` when enum exists | API Design | onboard.rs:58, drift.rs:17 | ✅ fixed |
+| 23 | AD-3: `ChunkRole` Serialize PascalCase vs `as_str()` snake_case | API Design | scout.rs:15-34 | ✅ fixed |
 | 24 | AD-4: `DeadInDiff.confidence` is String when `DeadConfidence` has Serialize | API Design | ci.rs:46 | ✅ fixed |
 | 25 | AD-5: `DiffEntry` not re-exported despite being in public `DiffResult` | API Design | lib.rs:104, diff.rs:14 | ✅ fixed |
-| 26 | AD-6: `review::NoteEntry` not exported, name-collides with `note::NoteEntry` | API Design | lib.rs, review.rs:50 | |
+| 26 | AD-6: `review::NoteEntry` not exported, name-collides with `note::NoteEntry` | API Design | lib.rs, review.rs:50 | ✅ fixed |
 | 27 | AD-7: `FileSuggestion::to_json()` silently omits `patterns` field | API Design | where_to_add.rs:54-62 | ✅ fixed |
 | 28 | AD-8: `suggest_placement_with_embedding` redundant | API Design | where_to_add.rs:125-136 | |
-| 29 | AD-9: `TaskResult.risk` anonymous tuple — inconsistent serialization | API Design | task.rs:37 | |
-| 30 | AD-10: `ScoutResult.relevant_notes` `#[serde(skip)]` but in `scout_to_json()` | API Design | scout.rs:83-85 | |
+| 29 | AD-9: `TaskResult.risk` anonymous tuple — inconsistent serialization | API Design | task.rs:37 | ✅ fixed |
+| 30 | AD-10: `ScoutResult.relevant_notes` `#[serde(skip)]` but in `scout_to_json()` | API Design | scout.rs:83-85 | ✅ fixed |
 | 31 | AD-11: `ModelInfo` missing `Debug`, `Clone`, `Serialize` | API Design | store/helpers.rs:591 | ✅ fixed |
 | 32 | AD-12: `score_name_match_pre_lower` not exported despite doc recommending it | API Design | store/helpers.rs:668 | ✅ fixed |
 | 33 | AC-1: `ef_search` cap formula doesn't enforce index-size bound (harmless) | Algorithm | hnsw/search.rs:41-44 | ✅ fixed |
-| 34 | AC-4: Snippet window asymmetry when `call_line == line_start` | Algorithm | impact/analysis.rs:143-145 | |
-| 35 | AC-5: `reverse_bfs` depth-0 invariant undocumented | Algorithm | impact/bfs.rs:15 | |
-| 36 | AC-6: `token_pack` first-item guarantee can exceed budget — no warning | Algorithm | commands/mod.rs:135, task.rs:62 | |
+| 34 | AC-4: Snippet window asymmetry when `call_line == line_start` | Algorithm | impact/analysis.rs:143-145 | ✅ fixed |
+| 35 | AC-5: `reverse_bfs` depth-0 invariant undocumented | Algorithm | impact/bfs.rs:15 | ✅ fixed |
+| 36 | AC-6: `token_pack` first-item guarantee can exceed budget — no warning | Algorithm | commands/mod.rs:135, task.rs:62 | ✅ fixed |
 | 37 | PB-3: `is_wsl()` should check `WSL_DISTRO_NAME` env var first | Platform | config.rs:17-27 | ✅ fixed |
 | 38 | PB-5: WSL poll detection prefix-based, not filesystem-based (doc only) | Platform | watch.rs:67-72 | |
 | 39 | PB-7: `ensure_ort_provider_libs` silently skips GPU when `LD_LIBRARY_PATH` unset | Platform | embedder.rs:685-700 | |

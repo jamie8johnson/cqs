@@ -119,23 +119,6 @@ pub fn suggest_placement(
     )
 }
 
-/// Suggest where to place new code using a pre-computed embedding.
-///
-/// Avoids redundant ONNX inference when the caller already embedded the query
-/// (e.g., `task()` embeds once and reuses across phases).
-pub fn suggest_placement_with_embedding(
-    store: &Store,
-    query_embedding: &crate::Embedding,
-    description: &str,
-    limit: usize,
-) -> Result<PlacementResult, AnalysisError> {
-    let opts = PlacementOptions {
-        query_embedding: Some(query_embedding.clone()),
-        ..Default::default()
-    };
-    suggest_placement_with_options_core(store, description, limit, &opts)
-}
-
 /// Suggest where to place new code matching a description with configurable search parameters.
 ///
 /// If `opts.query_embedding` is set, reuses it (avoids redundant ONNX inference).

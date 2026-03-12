@@ -204,7 +204,7 @@ pub struct Cli {
     #[arg(short = 'l', long)]
     lang: Option<String>,
 
-    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant, property, delegate, event)
+    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias)
     #[arg(long)]
     chunk_type: Option<Vec<String>>,
 

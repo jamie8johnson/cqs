@@ -726,7 +726,16 @@ fn ensure_ort_provider_libs() {
 
     let target_dir = match target_dir {
         Some(d) => d,
-        None => return, // No writable lib dir in path (or only ort cache in path)
+        None => {
+            // LD_LIBRARY_PATH is unset or contains no usable directory outside the ORT cache.
+            // GPU provider libs cannot be symlinked, so GPU acceleration will be unavailable.
+            tracing::warn!(
+                "GPU provider libs skipped: LD_LIBRARY_PATH is unset or has no writable \
+                 directory outside the ORT cache. Set LD_LIBRARY_PATH to a writable lib \
+                 directory (e.g. ~/.local/lib) to enable GPU acceleration."
+            );
+            return;
+        }
     };
 
     // Provider libs to symlink

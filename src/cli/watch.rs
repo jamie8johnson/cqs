@@ -63,7 +63,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 
     let root = find_project_root();
 
-    // Auto-detect when polling is needed: WSL + /mnt/ path
+    // Auto-detect when polling is needed: WSL + /mnt/ path.
+    //
+    // Detection is prefix-based (/mnt/) rather than filesystem-based (statfs NTFS/FAT magic)
+    // because that's pragmatic: paths under /mnt/ in WSL are DrvFs mounts of Windows
+    // filesystems (NTFS, FAT32, exFAT), none of which support inotify. A statfs check would
+    // give the same answer with more syscalls and less portability across WSL versions.
+    // If the project root is on a Linux filesystem inside WSL (e.g. /home/...), inotify works
+    // fine and we leave use_poll false.
     let use_poll =
         poll || (cqs::config::is_wsl() && root.to_str().is_some_and(|p| p.starts_with("/mnt/")));
 
