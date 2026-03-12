@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-03-12
+
+First stable release. Schema v11 stable since 2026-02-15. Tested on 3 codebases (cqs, aveva, rust). 50 languages, 1534 tests, two full audits complete.
+
+### Added
+- Configurable `ef_search` parameter via config file (clamped 10-1000, default 100) (#556)
+- One-time WSL advisory lock warning on NTFS mounts (#558)
+- `_with_*` naming convention documented in CONTRIBUTING.md (#557)
+
+### Fixed
+- Atomic cross-device file writes for notes and project registry (#559)
+- Removed dead `scout_with_resources` function (#557)
+- Inlined dead `compute_hints_with_graph_depth` into `compute_hints_with_graph` (#557)
+
 ## [0.28.3] - 2026-03-08
 
 ### Changed

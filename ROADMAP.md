@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v0.28.1
+## Current: v1.0.0
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 50 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+First stable release. All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 50 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
 
 ### Next — Commands
 
@@ -99,14 +99,14 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 
 - #389: CAGRA CPU-side dataset retention (~146MB at 50k chunks) — cuVS `search()` consumes the index, so `dataset` is needed for rebuild. Blocked on upstream API change.
 - #255: Pre-built reference packages
-- #106: ort stable (currently 2.0.0-rc.11)
+- #106: ort stable (currently 2.0.0-rc.12)
 - #63: paste dep unmaintained (RUSTSEC-2024-0436) — transitive via `tokenizers`, waiting on HuggingFace to switch to `pastey`
 
 ## 1.0 Release Criteria
 
-- [ ] Schema stable for 1+ week of daily use (currently v11)
-- [ ] Used on 2+ different codebases without issues
-- [ ] No known correctness bugs
+- [x] Schema stable for 1+ week of daily use (v11 since 2026-02-15)
+- [x] Used on 2+ different codebases without issues (cqs, aveva, rust)
+- [x] No known correctness bugs
 
 1.0 means: API stable, semver enforced, breaking changes = major bump.
 

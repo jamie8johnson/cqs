@@ -2,7 +2,7 @@
 
 ## Right Now
 
-**v0.28.3 released.** 2026-03-08. Nothing active.
+**Releasing v1.0.0.** All 1.0 criteria met (schema v11 stable since Feb 15, 3 codebases, no correctness bugs).
 
 ## Pending Changes
 
@@ -28,7 +28,7 @@ None.
 
 ## Architecture
 
-- Version: 0.28.3
+- Version: 1.0.0
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
