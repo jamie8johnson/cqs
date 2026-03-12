@@ -36,7 +36,7 @@ cqs runs entirely locally. No telemetry, no external API calls during operation.
 
 The only network activity is:
 
-- **Model download** (`cqs init`): Downloads ~440MB model from HuggingFace Hub
+- **Model download** (`cqs init`): Downloads ~547MB model from HuggingFace Hub
   - Source: `huggingface.co/intfloat/e5-base-v2`
   - One-time download, cached in `~/.cache/huggingface/`
 

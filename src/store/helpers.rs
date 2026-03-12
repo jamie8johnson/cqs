@@ -692,6 +692,30 @@ pub fn clamp_line_number(n: i64) -> u32 {
     n.clamp(1, u32::MAX as i64) as u32
 }
 
+// ============ SQL Helpers ============
+
+/// Build a comma-separated list of numbered SQL placeholders: "?1,?2,...,?N"
+pub(crate) fn make_placeholders(n: usize) -> String {
+    let mut s = String::with_capacity(n * 4);
+    for i in 1..=n {
+        if i > 1 {
+            s.push(',');
+        }
+        s.push('?');
+        // Fast itoa for small numbers (covers all practical batch sizes)
+        if i < 10 {
+            s.push((b'0' + i as u8) as char);
+        } else if i < 100 {
+            s.push((b'0' + (i / 10) as u8) as char);
+            s.push((b'0' + (i % 10) as u8) as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(s, "{}", i);
+        }
+    }
+    s
+}
+
 // ============ Embedding Serialization ============
 
 /// Convert embedding to bytes for storage.

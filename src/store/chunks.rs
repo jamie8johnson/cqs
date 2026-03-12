@@ -61,10 +61,7 @@ impl Store {
                 const HASH_BATCH: usize = 500;
                 let chunk_ids: Vec<&str> = chunks.iter().map(|(c, _)| c.id.as_str()).collect();
                 for id_batch in chunk_ids.chunks(HASH_BATCH) {
-                    let placeholders: String = (1..=id_batch.len())
-                        .map(|i| format!("?{}", i))
-                        .collect::<Vec<_>>()
-                        .join(",");
+                    let placeholders = super::helpers::make_placeholders(id_batch.len());
                     let sql = format!(
                         "SELECT id, content_hash FROM chunks WHERE id IN ({})",
                         placeholders
@@ -354,10 +351,7 @@ impl Store {
                 const HASH_BATCH: usize = 500;
                 let chunk_ids: Vec<&str> = chunks.iter().map(|(c, _)| c.id.as_str()).collect();
                 for id_batch in chunk_ids.chunks(HASH_BATCH) {
-                    let placeholders: String = (1..=id_batch.len())
-                        .map(|i| format!("?{}", i))
-                        .collect::<Vec<_>>()
-                        .join(",");
+                    let placeholders = super::helpers::make_placeholders(id_batch.len());
                     let sql = format!(
                         "SELECT id, content_hash FROM chunks WHERE id IN ({})",
                         placeholders
@@ -511,9 +505,7 @@ impl Store {
             let mut tx = self.pool.begin().await?;
 
             for batch in missing.chunks(BATCH_SIZE) {
-                let placeholders: Vec<String> =
-                    (1..=batch.len()).map(|i| format!("?{}", i)).collect();
-                let placeholder_str = placeholders.join(",");
+                let placeholder_str = super::helpers::make_placeholders(batch.len());
 
                 // Delete from FTS first
                 let fts_query = format!(
@@ -652,10 +644,7 @@ impl Store {
             // Batch in groups of 900 to stay under SQLite's 999-parameter limit
             const BATCH_SIZE: usize = 900;
             for batch in origins.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT origin, source_mtime FROM chunks WHERE origin IN ({}) GROUP BY origin",
                     placeholders
@@ -741,10 +730,7 @@ impl Store {
 
         self.rt.block_on(async {
             for batch in hashes.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT content_hash, embedding FROM chunks WHERE content_hash IN ({})",
                     placeholders
@@ -794,10 +780,7 @@ impl Store {
 
         self.rt.block_on(async {
             for batch in hashes.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, embedding FROM chunks WHERE content_hash IN ({})",
                     placeholders
@@ -975,14 +958,13 @@ impl Store {
 
             const BATCH_SIZE: usize = 500;
             for batch in origins.chunks(BATCH_SIZE) {
-                let placeholders: Vec<String> =
-                    (1..=batch.len()).map(|i| format!("?{}", i)).collect();
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, origin, language, chunk_type, name, signature, content, doc,
                             line_start, line_end, parent_id
                      FROM chunks WHERE origin IN ({})
                      ORDER BY origin, line_start",
-                    placeholders.join(", ")
+                    placeholders
                 );
 
                 let mut query = sqlx::query(&sql);
@@ -1022,10 +1004,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 500;
             for batch in names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, origin, language, chunk_type, name, signature, content, doc,
                             line_start, line_end, parent_id
@@ -1118,10 +1097,7 @@ impl Store {
 
         self.rt.block_on(async {
             for batch in ids.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, embedding FROM chunks WHERE id IN ({})",
                     placeholders
@@ -1320,10 +1296,7 @@ impl Store {
         let mut result = HashMap::with_capacity(ids.len());
 
         for batch in ids.chunks(BATCH_SIZE) {
-            let placeholders: String = (1..=batch.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
                  FROM chunks WHERE id IN ({})",
@@ -1365,10 +1338,7 @@ impl Store {
         let mut result = Vec::with_capacity(ids.len());
 
         for batch in ids.chunks(BATCH_SIZE) {
-            let placeholders: String = (1..=batch.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT id, name, origin, language, chunk_type, embedding
                  FROM chunks WHERE id IN ({})",
@@ -1405,10 +1375,7 @@ impl Store {
             return Ok(vec![]);
         }
 
-        let placeholders: String = (1..=ids.len())
-            .map(|i| format!("?{}", i))
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = super::helpers::make_placeholders(ids.len());
         let sql = format!(
             "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, embedding
              FROM chunks WHERE id IN ({})",

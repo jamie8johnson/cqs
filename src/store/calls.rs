@@ -515,10 +515,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 200; // 200 names * 5 cols = 1000 binds, but we only bind names
             for batch in callee_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT callee_name, file, caller_name, caller_line, call_line
                      FROM function_calls
@@ -568,10 +565,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 250; // 250 * 4 cols = 1000, but only binding names
             for batch in callee_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT DISTINCT callee_name, file, caller_name, caller_line
                      FROM function_calls
@@ -624,10 +618,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 250;
             for batch in caller_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT DISTINCT caller_name, callee_name, call_line
                      FROM function_calls
@@ -854,10 +845,7 @@ impl Store {
 
         const BATCH_SIZE: usize = 500;
         for batch in candidate_ids.chunks(BATCH_SIZE) {
-            let placeholders: String = (1..=batch.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT id, content, doc FROM chunks WHERE id IN ({})",
                 placeholders
@@ -1096,10 +1084,7 @@ impl Store {
 
         const BATCH_SIZE: usize = 500;
         for batch in names.chunks(BATCH_SIZE) {
-            let placeholders: String = (1..=batch.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}) GROUP BY {group_column}",
             );

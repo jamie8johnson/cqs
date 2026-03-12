@@ -24,7 +24,7 @@ This data never leaves your machine.
 The embedding model is downloaded once from HuggingFace:
 
 - Model: `intfloat/e5-base-v2`
-- Size: ~440MB
+- Size: ~547MB
 - Cached in: `~/.cache/huggingface/`
 
 HuggingFace may log download requests per their privacy policy. After download, the model runs offline.

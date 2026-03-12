@@ -395,9 +395,19 @@ impl Embedder {
     }
 
     /// Embed documents (code chunks). Adds "passage: " prefix for E5.
+    ///
+    /// Large inputs are processed in batches of 64 to cap GPU memory usage.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
+        const MAX_BATCH: usize = 64;
         let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
-        self.embed_batch(&prefixed)
+        if prefixed.len() <= MAX_BATCH {
+            return self.embed_batch(&prefixed);
+        }
+        let mut all = Vec::with_capacity(prefixed.len());
+        for chunk in prefixed.chunks(MAX_BATCH) {
+            all.extend(self.embed_batch(chunk)?);
+        }
+        Ok(all)
     }
 
     /// Embed a query. Adds "query: " prefix for E5. Uses LRU cache for repeated queries.
@@ -610,12 +620,27 @@ fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
         .get(TOKENIZER_FILE)
         .map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
 
-    // Verify checksums (skip if not configured)
-    if !MODEL_BLAKE3.is_empty() {
-        verify_checksum(&model_path, MODEL_BLAKE3)?;
-    }
-    if !TOKENIZER_BLAKE3.is_empty() {
-        verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
+    // Verify checksums (skip if already verified via marker file)
+    if !MODEL_BLAKE3.is_empty() || !TOKENIZER_BLAKE3.is_empty() {
+        let marker = model_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(".cqs_verified");
+        let expected_marker = format!("{}\n{}", MODEL_BLAKE3, TOKENIZER_BLAKE3);
+        let already_verified = std::fs::read_to_string(&marker)
+            .map(|s| s == expected_marker)
+            .unwrap_or(false);
+
+        if !already_verified {
+            if !MODEL_BLAKE3.is_empty() {
+                verify_checksum(&model_path, MODEL_BLAKE3)?;
+            }
+            if !TOKENIZER_BLAKE3.is_empty() {
+                verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
+            }
+            // Write marker after successful verification
+            let _ = std::fs::write(&marker, &expected_marker);
+        }
     }
 
     Ok((model_path, tokenizer_path))

@@ -138,7 +138,9 @@ pub(crate) fn waterfall_pack(
         index_pack(&group_counts, scout_budget, overhead_per_item, |i| {
             result.scout.file_groups[i].relevance_score
         });
-    remaining = remaining.saturating_sub(scout_used);
+    // Charge only the budgeted portion to remaining — overshoot from first-item
+    // guarantee doesn't cascade into downstream section budgets
+    remaining = remaining.saturating_sub(scout_used.min(scout_budget));
 
     // 2. Code section (+ surplus) — pack gathered chunks by score
     let code_budget = ((budget as f64 * WATERFALL_CODE) as usize
@@ -149,7 +151,7 @@ pub(crate) fn waterfall_pack(
     let (code_indices, code_used) = index_pack(&code_counts, code_budget, overhead_per_item, |i| {
         result.code[i].score
     });
-    remaining = remaining.saturating_sub(code_used);
+    remaining = remaining.saturating_sub(code_used.min(code_budget));
 
     // 3. Impact section (+ surplus) — risk by score, tests by depth
     let impact_budget = ((budget as f64 * WATERFALL_IMPACT) as usize

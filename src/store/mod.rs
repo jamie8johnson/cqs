@@ -275,10 +275,11 @@ impl Store {
             Ok::<_, StoreError>(())
         })?;
 
-        // Check schema version compatibility
-        store.check_schema_version(path)?;
-        // Check model version compatibility
+        // Check model version BEFORE schema migration — if model mismatches,
+        // we don't want to commit a schema upgrade on a DB we'll reject anyway
         store.check_model_version()?;
+        // Check schema version compatibility (may run migrations)
+        store.check_schema_version(path)?;
         // Warn if index was created by different cqs version
         store.check_cq_version();
 
