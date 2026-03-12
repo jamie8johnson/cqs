@@ -334,15 +334,9 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     // Shared: tokenized name
     let name_words = tokenize_identifier(&chunk.name).join(" ");
 
-    // Shared: type word — derived from ChunkType::Display, with "typealias" → "type alias"
-    let type_display = chunk.chunk_type.to_string();
-    let type_word = if type_display == "typealias" {
-        "type alias"
-    } else {
-        // SAFETY: type_display lives long enough — we only borrow within this function scope.
-        // Using leak-free approach: store the String, borrow from it.
-        &type_display
-    };
+    // Shared: type word — use ChunkType::human_name() which owns the multi-word mapping.
+    // TypeAlias → "type alias"; all other variants return their single-word Display string.
+    let type_word = chunk.chunk_type.human_name();
 
     // DocFirst: minimal metadata when doc exists
     if template == NlTemplate::DocFirst && has_doc {
@@ -501,6 +495,19 @@ static MULTI_NEWLINE_RE: LazyLock<Regex> =
 /// strips bold/italic markers, HTML tags, and collapses whitespace.
 /// Keeps inline code content (strips backticks but preserves text).
 pub fn strip_markdown_noise(content: &str) -> String {
+    // Fast path: skip regex work if the input has no markdown characters.
+    let has_markdown = content.contains('#')
+        || content.contains('[')
+        || content.contains('*')
+        || content.contains('`')
+        || content.contains('<');
+    if !has_markdown {
+        use std::borrow::Cow;
+        let result: Cow<str> = MULTI_WHITESPACE_RE.replace_all(content, " ");
+        let result: Cow<str> = MULTI_NEWLINE_RE.replace_all(&result, "\n\n");
+        return result.trim().to_string();
+    }
+
     use std::borrow::Cow;
     let result: Cow<str> = MD_HEADING_RE.replace_all(content, "");
     let result: Cow<str> = MD_IMAGE_RE.replace_all(&result, "");

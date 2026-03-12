@@ -172,6 +172,58 @@ fn build_trait_method_names() -> Vec<&'static str> {
     names
 }
 
+/// Build the shared SQL WHERE filter clause for test chunks.
+///
+/// Combines name patterns, content markers, and path patterns into a single
+/// OR-joined clause string. Computed once at startup via LazyLock callers.
+fn build_test_chunk_filter() -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    for pat in TEST_NAME_PATTERNS {
+        clauses.push(format!("name LIKE '{pat}'"));
+    }
+    for marker in build_test_content_markers() {
+        clauses.push(format!("content LIKE '%{marker}%'"));
+    }
+    for pat in build_test_path_patterns() {
+        if pat.contains("\\_") {
+            clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
+        } else {
+            clauses.push(format!("origin LIKE '{pat}'"));
+        }
+    }
+    clauses.join("\n                 OR ")
+}
+
+/// Cached SQL for `find_test_chunks_async` — built once at first use, reused on every call.
+static TEST_CHUNKS_SQL: LazyLock<String> = LazyLock::new(|| {
+    let filter = build_test_chunk_filter();
+    let callable = ChunkType::callable_sql_list();
+    format!(
+        "SELECT id, origin, language, chunk_type, name, signature,
+                    line_start, line_end, parent_id
+             FROM chunks
+             WHERE chunk_type IN ({callable})
+               AND (
+                 {filter}
+               )
+             ORDER BY origin, line_start"
+    )
+});
+
+/// Cached SQL for `find_test_chunk_names_async` — built once at first use, reused on every call.
+static TEST_CHUNK_NAMES_SQL: LazyLock<String> = LazyLock::new(|| {
+    let filter = build_test_chunk_filter();
+    let callable = ChunkType::callable_sql_list();
+    format!(
+        "SELECT DISTINCT name
+             FROM chunks
+             WHERE chunk_type IN ({callable})
+               AND (
+                 {filter}
+               )"
+    )
+});
+
 impl Store {
     /// Insert or replace call sites for a chunk
     pub fn upsert_calls(
@@ -431,8 +483,12 @@ impl Store {
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
     ///
     /// Cached call graph — populated on first access, returns clone from OnceLock.
-    /// Each CLI invocation creates a fresh Store, so the cache is valid for the
-    /// invocation's lifetime. ~15 call sites benefit from this caching.
+    ///
+    /// **No invalidation by design.** The cache lives for the `Store` lifetime and is
+    /// never cleared. Normal usage is one `Store` per CLI command, so the index cannot
+    /// change while the cache is live. In long-lived modes (batch, watch), callers must
+    /// re-open the `Store` to pick up index changes — do not add a `clear()` here.
+    /// ~15 call sites benefit from this single-scan caching.
     pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
         if let Some(cached) = self.call_graph_cache.get() {
             return Ok(cached.clone());
@@ -940,43 +996,11 @@ impl Store {
     /// Test markers and path patterns are sourced from `LanguageDef` fields
     /// (`test_markers`, `test_path_patterns`) across all enabled languages,
     /// falling back to hardcoded defaults when no language provides any.
-    //
-    // TODO(PF-10): Add OnceLock<Vec<ChunkSummary>> cache to Store (requires store/mod.rs).
-    // Called 13 times across codebase — test chunk set rarely changes during a session.
-    // Cache should invalidate on chunk upsert.
     async fn find_test_chunks_async(&self) -> Result<Vec<ChunkSummary>, StoreError> {
-        // Build OR clauses from language-sourced test patterns
-        let mut clauses: Vec<String> = Vec::new();
-        for pat in TEST_NAME_PATTERNS {
-            clauses.push(format!("name LIKE '{pat}'"));
-        }
-        for marker in build_test_content_markers() {
-            clauses.push(format!("content LIKE '%{marker}%'"));
-        }
-        for pat in build_test_path_patterns() {
-            if pat.contains("\\_") {
-                clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
-            } else {
-                clauses.push(format!("origin LIKE '{pat}'"));
-            }
-        }
-        let filter = clauses.join("\n                 OR ");
-
+        // SQL is built once and cached in TEST_CHUNKS_SQL (LazyLock).
         // Select only lightweight columns; content/doc filtering happens in WHERE
-        // but we don't need them in the result set
-        let callable = ChunkType::callable_sql_list();
-        let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature,
-                    line_start, line_end, parent_id
-             FROM chunks
-             WHERE chunk_type IN ({callable})
-               AND (
-                 {filter}
-               )
-             ORDER BY origin, line_start"
-        );
-
-        let rows: Vec<_> = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        // but we don't need them in the result set.
+        let rows: Vec<_> = sqlx::query(&*TEST_CHUNKS_SQL).fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -1003,32 +1027,10 @@ impl Store {
     /// Avoids allocating `ChunkSummary` structs when callers only need
     /// the name set (e.g., `find_dead_code` exclusion filtering).
     async fn find_test_chunk_names_async(&self) -> Result<Vec<String>, StoreError> {
-        let mut clauses: Vec<String> = Vec::new();
-        for pat in TEST_NAME_PATTERNS {
-            clauses.push(format!("name LIKE '{pat}'"));
-        }
-        for marker in build_test_content_markers() {
-            clauses.push(format!("content LIKE '%{marker}%'"));
-        }
-        for pat in build_test_path_patterns() {
-            if pat.contains("\\_") {
-                clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
-            } else {
-                clauses.push(format!("origin LIKE '{pat}'"));
-            }
-        }
-        let filter = clauses.join("\n                 OR ");
-        let callable = ChunkType::callable_sql_list();
-        let sql = format!(
-            "SELECT DISTINCT name
-             FROM chunks
-             WHERE chunk_type IN ({callable})
-               AND (
-                 {filter}
-               )"
-        );
-
-        let rows: Vec<(String,)> = sqlx::query_as(&sql).fetch_all(&self.pool).await?;
+        // SQL is built once and cached in TEST_CHUNK_NAMES_SQL (LazyLock).
+        let rows: Vec<(String,)> = sqlx::query_as(&*TEST_CHUNK_NAMES_SQL)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
@@ -1059,8 +1061,13 @@ impl Store {
     /// - Path patterns: sourced from `LanguageDef::test_path_patterns` per language
     ///
     /// Uses a broad SQL filter then Rust post-filter for precision.
+    ///
     /// Cached test chunks — populated on first access, returns clone from OnceLock.
-    /// ~14 call sites benefit from this caching.
+    ///
+    /// **No invalidation by design.** Same contract as `get_call_graph`: the cache is
+    /// intentionally write-once for the `Store` lifetime. Long-lived modes (batch, watch)
+    /// must re-open the `Store` to see updated test discovery — do not add a `clear()`.
+    /// ~14 call sites benefit from this single-scan caching.
     pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
         if let Some(cached) = self.test_chunks_cache.get() {
             return Ok(cached.clone());

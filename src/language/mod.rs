@@ -411,6 +411,19 @@ define_chunk_types! {
 }
 
 impl ChunkType {
+    /// Human-readable display name for use in NL text generation.
+    ///
+    /// Most variants return their canonical `Display` string (always single words), but
+    /// multi-word concepts need a spaced form. Currently `TypeAlias` → `"type alias"`.
+    /// This is the single authoritative place for that mapping — callers (e.g., `nl.rs`)
+    /// must use this method rather than hardcoding `"typealias"` string comparisons.
+    pub fn human_name(self) -> String {
+        match self {
+            ChunkType::TypeAlias => "type alias".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
     pub fn is_callable(self) -> bool {
         matches!(

@@ -197,8 +197,20 @@ pub struct Store {
     closed: AtomicBool,
     notes_summaries_cache: RwLock<Option<Vec<NoteSummary>>>,
     /// Cached call graph — populated on first access, valid for Store lifetime.
+    ///
+    /// **No invalidation mechanism by design.** `OnceLock` is intentionally write-once:
+    /// once populated the cache is never cleared. This is safe because `Store` is opened
+    /// per-command (one `open()` → use → `close()` cycle), so the index cannot change
+    /// while the cache is live. Long-lived `Store` instances (batch mode, watch mode)
+    /// must be re-opened to pick up index changes; the caller is responsible for that
+    /// lifecycle. Do not add invalidation logic here — it would be dead code for the
+    /// normal case and racy for the long-lived case (use a fresh `Store` instead).
     call_graph_cache: std::sync::OnceLock<CallGraph>,
     /// Cached test chunks — populated on first access, valid for Store lifetime.
+    ///
+    /// Same no-invalidation contract as `call_graph_cache` above: intentionally
+    /// write-once for the per-command `Store` lifetime. Re-open the `Store` if the
+    /// underlying index has been updated (e.g., after `cqs index` in watch mode).
     test_chunks_cache: std::sync::OnceLock<Vec<ChunkSummary>>,
 }
 
