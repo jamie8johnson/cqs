@@ -36,7 +36,7 @@ pub(crate) fn cmd_init(cli: &Cli) -> Result<()> {
     let gitignore = cqs_dir.join(".gitignore");
     std::fs::write(
         &gitignore,
-        "index.db\nindex.db-wal\nindex.db-shm\nindex.lock\n",
+        "index.db\nindex.db-wal\nindex.db-shm\nindex.lock\nindex.hnsw.graph\nindex.hnsw.data\nindex.hnsw.ids\nindex.hnsw.checksum\nindex.hnsw.lock\n*.tmp\n",
     )
     .context("Failed to create .gitignore")?;
 

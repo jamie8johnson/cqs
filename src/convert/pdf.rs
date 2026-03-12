@@ -19,7 +19,9 @@ pub fn pdf_to_markdown(path: &Path) -> Result<String> {
     let python = find_python()?;
 
     let output = std::process::Command::new(&python)
-        .args([&script, &path.to_string_lossy().to_string()])
+        .arg("--")
+        .arg(&script)
+        .arg(path)
         .output()
         .with_context(|| format!("Failed to run `{}`. Is Python installed?", python))?;
 

@@ -535,9 +535,13 @@ impl Embedder {
             .map_err(ort_err)?;
 
         // Get the last_hidden_state output: shape [batch, seq_len, 768]
-        let (shape, data) = outputs["last_hidden_state"]
-            .try_extract_tensor::<f32>()
-            .map_err(ort_err)?;
+        let output = outputs.get("last_hidden_state").ok_or_else(|| {
+            EmbedderError::InferenceFailed(format!(
+                "ONNX model has no 'last_hidden_state' output. Available: {:?}",
+                outputs.keys().collect::<Vec<_>>()
+            ))
+        })?;
+        let (shape, data) = output.try_extract_tensor::<f32>().map_err(ort_err)?;
 
         // Validate tensor shape: expect [batch_size, seq_len, 768]
         let batch_size = texts.len();

@@ -1185,12 +1185,15 @@ impl Store {
                 // queries are safe even without normalize_for_fts().
                 let fts_terms: Vec<String> = batch
                     .iter()
-                    .map(|(_, norm)| {
-                        assert!(
+                    .filter_map(|(_, norm)| {
+                        debug_assert!(
                             !norm.contains('"'),
                             "sanitized query must not contain double quotes"
                         );
-                        format!("name:\"{}\" OR name:\"{}\"*", norm, norm)
+                        if norm.contains('"') {
+                            return None;
+                        }
+                        Some(format!("name:\"{}\" OR name:\"{}\"*", norm, norm))
                     })
                     .collect();
                 let combined_fts = fts_terms.join(" OR ");

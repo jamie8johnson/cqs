@@ -439,19 +439,15 @@ impl Store {
                     Err(e) => return Err(e.into()),
                 };
 
-            let version: i32 = row
-                .and_then(|(s,)| {
-                    s.parse()
-                        .map_err(|e| {
-                            tracing::warn!(
-                                stored_value = %s,
-                                error = %e,
-                                "Failed to parse schema_version from metadata, defaulting to 0"
-                            );
-                        })
-                        .ok()
-                })
-                .unwrap_or(0);
+            let version: i32 = match row {
+                Some((s,)) => s.parse().map_err(|e| {
+                    StoreError::Corruption(format!(
+                        "schema_version '{}' is not a valid integer: {}",
+                        s, e
+                    ))
+                })?,
+                None => 0,
+            };
 
             if version > CURRENT_SCHEMA_VERSION {
                 return Err(StoreError::SchemaNewerThanCq(version));
@@ -620,10 +616,13 @@ impl Store {
 
         // Search name column specifically using FTS5 column filter
         // Use * for prefix matching (e.g., "parse" matches "parse_config")
-        assert!(
+        debug_assert!(
             !normalized.contains('"'),
             "sanitized query must not contain double quotes"
         );
+        if normalized.contains('"') {
+            return Ok(vec![]);
+        }
         let fts_query = format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized);
 
         self.rt.block_on(async {
@@ -745,7 +744,10 @@ impl Store {
             let guard = self
                 .notes_summaries_cache
                 .read()
-                .expect("notes cache lock poisoned");
+                .unwrap_or_else(|p| {
+                    tracing::warn!("notes cache read lock poisoned, recovering");
+                    p.into_inner()
+                });
             if let Some(ref ns) = *guard {
                 return Ok(ns.clone());
             }
@@ -756,7 +758,10 @@ impl Store {
             let mut guard = self
                 .notes_summaries_cache
                 .write()
-                .expect("notes cache lock poisoned");
+                .unwrap_or_else(|p| {
+                    tracing::warn!("notes cache write lock poisoned, recovering");
+                    p.into_inner()
+                });
             *guard = Some(ns.clone());
         }
         Ok(ns)
@@ -767,8 +772,12 @@ impl Store {
     /// Must be called after any operation that modifies notes (upsert, replace, delete)
     /// so subsequent reads see fresh data.
     pub(crate) fn invalidate_notes_cache(&self) {
-        if let Ok(mut guard) = self.notes_summaries_cache.write() {
-            *guard = None;
+        match self.notes_summaries_cache.write() {
+            Ok(mut guard) => *guard = None,
+            Err(p) => {
+                tracing::warn!("notes cache write lock poisoned during invalidation, recovering");
+                *p.into_inner() = None;
+            }
         }
     }
 

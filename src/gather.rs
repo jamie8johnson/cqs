@@ -189,8 +189,8 @@ pub(crate) fn bfs_expand(
     let mut visited: HashSet<String> = name_scores.keys().cloned().collect();
 
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    for (name, &(_, depth)) in name_scores.iter() {
-        queue.push_back((name.clone(), depth));
+    for (name, &(_, _depth)) in name_scores.iter() {
+        queue.push_back((name.clone(), 0));
     }
 
     while let Some((name, depth)) = queue.pop_front() {

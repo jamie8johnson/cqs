@@ -26,10 +26,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     let sevenzip = find_7z()?;
     let temp_dir = tempfile::tempdir()?;
 
-    let path_str = path.to_string_lossy();
-    let output_arg = format!("-o{}", temp_dir.path().display());
+    let mut output_arg = std::ffi::OsString::from("-o");
+    output_arg.push(temp_dir.path());
     let output = std::process::Command::new(&sevenzip)
-        .args(["x", path_str.as_ref(), output_arg.as_str(), "-y"])
+        .args(["x", "--"])
+        .arg(path)
+        .arg(&output_arg)
+        .arg("-y")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()

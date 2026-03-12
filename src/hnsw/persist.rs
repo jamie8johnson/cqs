@@ -32,7 +32,8 @@ const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
 
 /// All HNSW file extensions including checksum (for cleanup/deletion).
 /// NOTE: Keep in sync with HNSW_EXTENSIONS above — first 3 elements must match.
-pub const HNSW_ALL_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+pub const HNSW_ALL_EXTENSIONS: &[&str] =
+    &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum", "hnsw.lock"];
 
 /// Verify HNSW index file checksums using blake3.
 ///

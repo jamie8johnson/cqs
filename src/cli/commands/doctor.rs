@@ -17,6 +17,7 @@ pub(crate) fn cmd_doctor() -> Result<()> {
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
+    let mut any_failed = false;
 
     println!("Runtime:");
 
@@ -35,6 +36,7 @@ pub(crate) fn cmd_doctor() -> Result<()> {
         }
         Err(e) => {
             println!("  {} Model: {}", "[✗]".red(), e);
+            any_failed = true;
         }
     }
 
@@ -51,6 +53,7 @@ pub(crate) fn cmd_doctor() -> Result<()> {
         }
         Err(e) => {
             println!("  {} Parser: {}", "[✗]".red(), e);
+            any_failed = true;
         }
     }
 
@@ -78,6 +81,7 @@ pub(crate) fn cmd_doctor() -> Result<()> {
             }
             Err(e) => {
                 println!("  {} Index: {}", "[✗]".red(), e);
+                any_failed = true;
             }
         }
     } else {
@@ -99,6 +103,7 @@ pub(crate) fn cmd_doctor() -> Result<()> {
                     r.name,
                     r.path.display()
                 );
+                any_failed = true;
                 continue;
             }
             match Store::open(&db_path) {
@@ -120,13 +125,18 @@ pub(crate) fn cmd_doctor() -> Result<()> {
                 }
                 Err(e) => {
                     println!("  {} {}: {}", "[✗]".red(), r.name, e);
+                    any_failed = true;
                 }
             }
         }
     }
 
     println!();
-    println!("All checks passed.");
+    if any_failed {
+        println!("Some checks failed — see {} items above.", "[✗]".red());
+    } else {
+        println!("All checks passed.");
+    }
 
     Ok(())
 }

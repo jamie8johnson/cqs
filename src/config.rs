@@ -345,7 +345,9 @@ pub fn add_reference_to_config(
     }
 
     if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
-        if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
+        // Cross-device fallback: copy to a same-dir temp, then rename
+        let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
+        if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
             anyhow::bail!(
                 "rename failed ({}), copy fallback failed: {}",
@@ -354,6 +356,10 @@ pub fn add_reference_to_config(
             );
         }
         let _ = std::fs::remove_file(&tmp_path);
+        if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
+            let _ = std::fs::remove_file(&fallback_tmp);
+            anyhow::bail!("fallback rename failed: {}", e);
+        }
     }
 
     // lock_file dropped here, releasing exclusive lock
@@ -418,7 +424,9 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
         }
 
         if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
-            if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
+            // Cross-device fallback: copy to a same-dir temp, then rename
+            let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
+            if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
                 let _ = std::fs::remove_file(&tmp_path);
                 anyhow::bail!(
                     "rename failed ({}), copy fallback failed: {}",
@@ -427,6 +435,10 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
                 );
             }
             let _ = std::fs::remove_file(&tmp_path);
+            if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
+                let _ = std::fs::remove_file(&fallback_tmp);
+                anyhow::bail!("fallback rename failed: {}", e);
+            }
         }
     }
     // lock_file dropped here, releasing exclusive lock

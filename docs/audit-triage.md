@@ -1,115 +1,120 @@
-# Audit Triage — v0.28.1+uncommitted
+# Audit Triage — v1.0.0
 
-Date: 2026-03-06
-
-## Already Fixed During Audit
-
-| # | Finding | Category | Status |
-|---|---------|----------|--------|
-| 1 | EH-4: `StoreError::Runtime` catch-all (8→1 sites) | Error Handling | fixed |
-| 2 | PB-7: `cmd_watch` no poll fallback on WSL | Platform | fixed |
+Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 
 ## P1: Easy + High Impact — Fix Immediately
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | DS-8: GC uses wrong HNSW filename `id_map.json` → should use `HNSW_ALL_EXTENSIONS` | Data Safety | gc.rs:71 | fixed |
-| 2 | RB-1: `to_lowercase()` byte offset bug in razor.rs — panics on non-ASCII | Robustness | razor.rs:197 | fixed |
-| 3 | RB-2: `to_lowercase()` byte offset bug in latex.rs — same panic | Robustness | latex.rs:143 | fixed |
-| 4 | PB-2: `enumerate_files` case-sensitive extension matching — skips `.RS`, `.Py` | Platform | lib.rs:371 | fixed |
-| 5 | RB-3: `normalize_lang` missing `ini` and `markdown` | Robustness | markdown.rs:957 | fixed |
-| 6 | AC-1: `search_by_name` results not sorted by name-match score | Algorithm | store/mod.rs:622 | fixed |
-| 7 | AC-3: `EmbeddingBatchIterator::next()` recursion — stack overflow risk | Algorithm | chunks.rs:1544 | fixed |
-| 8 | CQ-1: Dead code — `get_chunks_by_name` (singular), zero callers | Code Quality | chunks.rs:970 | fixed |
-| 9 | CQ-2: Dead code — `search_chunks_by_signature`, zero callers | Code Quality | chunks.rs:1041 | fixed |
-| 10 | EH-1/RB-5: `parse_fenced_blocks` silently skips 3 failure modes | Error/Robustness | mod.rs:618 | fixed |
-| 11 | EH-3: `config.rs` loses error chain via `map_err` instead of `with_context` | Error Handling | config.rs:294 | fixed |
-| 12 | OB-12: `find_injection_ranges` uses `info_span!` in hot loop — should be `debug_span!` | Observability | injection.rs:55 | fixed |
-| 13 | RB-4: Unclosed fence silently eats rest of file — no diagnostic | Robustness | markdown.rs:1047 | fixed |
-| 14 | PB-8: Dead backslash path checks in `is_test_chunk` | Platform | lib.rs:212 | fixed |
-| 15 | RB-7: `is_recursive` joins all lines — unnecessary O(n) allocation | Robustness | structural.rs:189 | fixed |
-| 16 | AD-1: CLI vs batch default `--limit` divergence | API Design | mod.rs/commands.rs | fixed |
-| 17 | DOC-1: Language count 49→50 (Vue) across all docs | Documentation | multiple | fixed |
-| 18 | DOC-2: Feature flag doc comment missing 10 language flags | Documentation | mod.rs:7 | fixed |
+| 1 | PB-1: `.cqs/.gitignore` omits HNSW files — users commit 50-500MB binaries | Platform | init.rs:37-41 | ✅ fixed |
+| 2 | RB-1/RB-2: `cached_notes_summaries()` panics on poisoned RwLock; invalidate silently no-ops | Robustness | store/mod.rs:748-770 | ✅ fixed |
+| 3 | SEC-1/RB-5: `assert!` in FTS query path crashes process instead of returning error | Security/Robustness | store/mod.rs:623, chunks.rs:1189 | ✅ fixed |
+| 4 | EH-3: `cmd_doctor` prints "All checks passed." even on failure | Error Handling | doctor.rs:129 | ✅ fixed |
+| 5 | SEC-3: CHM/PDF paths passed to external processes without `--` end-of-options | Security | chm.rs:31, pdf.rs:22 | ✅ fixed |
+| 6 | DS-2: `schema_version` parse failure defaults to 0, bypasses migration guard | Data Safety | store/mod.rs:442-459 | ✅ fixed |
+| 7 | AC-3: `bfs_expand` depth check silently skips expansion for cross-index seeds at depth 1 | Algorithm | gather.rs:197 | ✅ fixed |
+| 8 | RB-3: Reranker stride=0 bypasses bounds check, panics on empty data | Robustness | reranker.rs:147-163 | ✅ fixed |
+| 9 | RB-4: `embedder.rs` panics via `outputs["last_hidden_state"]` if custom ONNX model | Robustness | embedder.rs:538 | ✅ fixed |
+| 10 | RB-6: Zero-vector embeddings produce NaN cosine distances, corrupt HNSW graph | Robustness | hnsw/build.rs | ✅ fixed |
+| 11 | SEC-2: `validate_ref_name` permits dot-prefixed names (`.git`, `.cqs`) | Security | reference.rs:214 | ✅ fixed |
+| 12 | RM-8: `hnsw.lock` not in `HNSW_ALL_EXTENSIONS` — survives `cqs gc --delete` | Resource Mgmt | hnsw/persist.rs | ✅ fixed |
+| 13 | DS-1: `add/remove_reference_to_config` cross-device copy fallback is non-atomic | Data Safety | config.rs:347-357,420-430 | ✅ fixed |
 
 ## P2: Medium Effort + High Impact — Fix in Batch
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | PF-1: `get_call_graph()` uncached — 15 call sites, full table scan each | Performance | calls.rs:411 | fixed |
-| 2 | PF-2: `find_test_chunks()` uncached — 14 call sites, full table scan each | Performance | calls.rs:1054 | fixed |
-| 3 | PF-3: `analyze_impact` double table scan (auto-fixed by PF-1+PF-2) | Performance | analysis.rs:29 | fixed |
-| 4 | DS-9: `config.rs` TOCTOU — reads via separate call after locking | Data Safety | config.rs:276 | fixed |
-| 5 | AD-3: 5 store types missing `Serialize` | API Design | helpers.rs/calls.rs | fixed |
-| 6 | AD-5: 5 command handlers accept unused `_cli: &Cli` | API Design | multiple | non-issue |
-| 7 | CQ-3: CAGRA/HNSW index selection logic duplicated | Code Quality | query.rs/batch | fixed |
-| 8 | AD-7: `DiffHunk` missing `Serialize` | API Design | diff_parse.rs:14 | fixed |
-| 9 | AD-4/DOC-3: `diff_parse`, `drift`, `review` are `pub mod` — should be `pub(crate)` | API/Doc | lib.rs:67 | fixed |
-| 10 | EH-2: `serde_json::to_value().ok()` silently drops chunks (4 locations) | Error Handling | multiple | fixed |
-| 11 | SEC-1: `BufRead::lines()` allocates full line before size check — OOM on huge line | Security | batch/mod.rs:394 | fixed |
-| 12 | EX-2: `chunk_importance` test detection hardcoded — not language-aware | Extensibility | search.rs:398 | fixed |
-| 13 | CQ-4/EX-3/TC-2: `normalize_lang` no sync test, missing languages | Code Quality | markdown.rs:957 | fixed |
+| 1 | DOC-1: Model download size "~440MB" → actual "~547MB" in SECURITY.md + PRIVACY.md | Documentation | SECURITY.md:39, PRIVACY.md:27 | |
+| 2 | DS-5: `cmd_index` + `run_index_pipeline` open two Stores on same DB simultaneously | Data Safety | pipeline.rs:781, index.rs:68-80 | |
+| 3 | DS-6: Migration commits before model-version check — schema upgraded but Store rejected | Data Safety | store/mod.rs:459-476 | |
+| 4 | EH-1/EH-2: `impact/`, `review.rs`, `gather.rs`, `health.rs`, `suggest.rs`, `ci.rs` use `anyhow::Result` in library code | Error Handling | multiple (14 sites) | |
+| 5 | PERF-3: `upsert_chunks_and_calls` duplicates ~120 lines of chunk-upsert logic | Performance | store/chunks.rs | |
+| 6 | PERF-4: `gather_cross_index` fires N brute-force scans instead of HNSW search | Performance | gather.rs | |
+| 7 | AC-2: `waterfall_pack` surplus propagation charges overshoot to downstream sections | Algorithm | task.rs:144-146 | |
+| 8 | CQ-4: SQLite placeholder builder duplicated ~20 times across store/ | Code Quality | store/ (22 sites) | |
+| 9 | RM-6: `verify_checksum` reads full 547MB ONNX model on every startup | Resource Mgmt | embedder.rs | |
+| 10 | RM-9: `embed_documents` has no batch-size cap — unbounded GPU memory | Resource Mgmt | embedder.rs | |
+| 11 | RM-5: `Store::open` creates multi-threaded tokio runtime unnecessarily | Resource Mgmt | store/mod.rs | |
+| 12 | AD-1: `file` field type String vs PathBuf inconsistent across 6+ public types | API Design | impact/types.rs, review.rs, ci.rs, drift.rs, diff.rs | |
+| 13 | PERF-7: `embed_batch` mean-pooling uses scalar loops instead of ndarray SIMD | Performance | embedder.rs | |
+| 14 | SEC-4: FTS5 MATCH sanitizer is sole injection barrier — no fuzz tests | Security | store/mod.rs:627, chunks.rs:1193 | |
+| 15 | CQ-6: `cmd_query` is 270 lines handling 4 dispatch paths | Code Quality | query.rs:40-303 | |
 
 ## P3: Easy + Low Impact — Fix If Time
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | OB-5: `parse_markdown_chunks`/`parse_markdown_references` missing spans | Observability | markdown.rs | fixed |
-| 2 | OB-6: `parse_notes`/`rewrite_notes_file` missing spans | Observability | note.rs | fixed |
-| 3 | OB-7: HNSW build/save/load missing spans | Observability | hnsw/ | fixed |
-| 4 | OB-8: CAGRA build/search missing spans | Observability | cagra.rs | fixed |
-| 5 | OB-9: `load_references` missing span | Observability | reference.rs | fixed |
-| 6 | OB-10: `enumerate_files` missing span | Observability | files.rs | fixed |
-| 7 | OB-11: `extract_fenced_blocks` missing span | Observability | markdown.rs | fixed |
-| 8 | CQ-5: 3 near-identical Chunk constructions in markdown | Code Quality | markdown.rs | fixed |
-| 9 | DOC-4: CLAUDE.md skills list missing 5 skills | Documentation | CLAUDE.md | fixed |
-| 10 | DOC-5: CHANGELOG [Unreleased] empty | Documentation | CHANGELOG.md | fixed |
-| 11 | DOC-6: ROADMAP says 49 languages | Documentation | ROADMAP.md | non-issue (already says 50) |
-| 12 | PB-1: Markdown parsers don't normalize CRLF | Platform | markdown.rs | fixed (doc comment) |
-| 13 | EX-6: `name_match_score` magic numbers | Extensibility | search.rs:130 | fixed |
-| 14 | EX-7: `chunk_importance` magic numbers | Extensibility | search.rs:398 | fixed |
-| 15 | EX-1: `Pattern` enum 4 manual-sync representations | Extensibility | structural.rs | non-issue (existing tests adequate) |
-| 16 | PB-4: `ensure_ort_provider_libs` misleading stub comment | Platform | embedder.rs | fixed |
-| 17 | SEC-2: `is_webhelp_dir` follows symlinks in detection | Security | webhelp.rs:19 | fixed |
-| 18 | SEC-3: SECURITY.md threat model understates trust levels | Security | SECURITY.md | fixed |
-| 19 | DS-12: Second-precision mtime — sub-second edits missed | Data Safety | notes.rs:234 | non-issue (acceptable limitation) |
-| 20 | DS-13: `count_vectors` reads HNSW IDs without lock | Data Safety | persist.rs:442 | fixed |
-| 21 | PF-5: FTS INSERT per-row despite bulk DELETE | Performance | chunks.rs:290 | fixed |
-| 22 | PF-6: `count_stale_files`/`list_stale_files` duplicate SQL | Performance | chunks.rs:546 | fixed |
-| 23 | TC-3: `extract_fenced_blocks` missing edge case tests | Test Coverage | markdown.rs | fixed (4 tests) |
-| 24 | TC-4: `build_risk_summary` never directly tested | Test Coverage | review.rs | fixed (3 tests) |
-| 25 | TC-5: `match_notes` only one happy path test | Test Coverage | review.rs | deferred (needs Store, integration test exists) |
-| 26 | TC-8: `run_ci_analysis` dead code path untested edge cases | Test Coverage | ci.rs | deferred (CLI handler, low value) |
-| 27 | AD-2: `SearchResult` dual serialization shapes | API Design | helpers.rs | fixed |
-| 28 | AC-2: `apply_token_budget` `.max(1)` exceeds budget | Algorithm | review.rs:97 | fixed (warning message) |
-| 29 | AC-4: `index_pack`/`token_pack` first-item guarantee — by design | Algorithm | task.rs:62 | non-issue (by design) |
-| 30 | PB-6: Path traversal check case-sensitivity — doc gap | Platform | read.rs:35 | fixed (doc comment) |
-| 31 | RM-4: `index_notes_from_file` creates separate Embedder | Resource | index.rs:269 | non-issue (low impact, shared Embedder complicates API) |
-| 32 | RM-6: `HnswIndex::build` 2x memory (test-only) | Resource | build.rs:67 | non-issue (test-only path) |
-| 33 | RM-7: `last_indexed_mtime` unbounded growth | Resource | watch.rs:119 | fixed (comment + with_capacity) |
-| 34 | RM-8: SQLite 64MB page cache potential | Resource | mod.rs:217 | non-issue (typical usage fine) |
+| 1 | DOC-2: `store/mod.rs` module comment missing `types` and `migrations` submodules | Documentation | store/mod.rs:6-11 | |
+| 2 | DOC-3: README config example missing `ef_search`, `stale_check`, `note_only` | Documentation | README.md:112-128 | |
+| 3 | DOC-4: `--no-demote` search flag undocumented in README | Documentation | README.md | |
+| 4 | DOC-5: SECURITY.md Write Access table missing `audit-mode.json` | Documentation | SECURITY.md:63-72 | |
+| 5 | DOC-6: `cqs completions` command not documented in README | Documentation | README.md | |
+| 6 | DOC-7: `store/mod.rs` misleading "sync wrappers" comment | Documentation | store/mod.rs:1-4 | |
+| 7 | CQ-1: `resolve_reference_store` / `_readonly` near-identical | Code Quality | resolve.rs:44-99 | |
+| 8 | CQ-2: Random temp-file suffix pattern duplicated 5 times | Code Quality | audit.rs, config.rs, note.rs, project.rs | |
+| 9 | CQ-3: `DeadConfidence` → `&str` mapping repeated in 3 locations | Code Quality | dead.rs, ci.rs, handlers.rs | |
+| 10 | CQ-5: `diff.rs` duplicates `full_cosine_similarity` tests from `math.rs` | Code Quality | diff.rs:206-237 | |
+| 11 | EH-4: `reference list` swallows `Store::open` errors, shows `0` chunks | Error Handling | reference.rs:172-196 | |
+| 12 | EH-5: `convert` module silently skips `walkdir` errors in 6 locations | Error Handling | convert/mod.rs, chm.rs, webhelp.rs | |
+| 13 | EH-6: `audit.rs` swallows JSON parse error with bare `Err(_)` | Error Handling | audit.rs:75 | |
+| 14 | EH-7: `parse_duration` drops `ParseIntError` from `map_err(|_| ...)` | Error Handling | audit.rs:161,177,198 | |
+| 15 | OB-1: `process_file_changes` has no tracing span | Observability | watch.rs:295 | |
+| 16 | OB-2: `find_pdf_script` double-emits to `eprintln!` and `tracing::warn!` | Observability | pdf.rs:57-58 | |
+| 17 | OB-3: `cmd_query` span captures only `query_len`, not query text | Observability | query.rs:41 | |
+| 18 | OB-4: `semantic_diff` span missing source/target/threshold | Observability | diff.rs:79 | |
+| 19 | OB-5: `--rerank` warning uses `eprintln!` instead of `tracing::warn!` | Observability | query.rs:248-251 | |
+| 20 | OB-6: `convert` module missing bytes/duration metrics | Observability | convert/mod.rs, pdf.rs, html.rs | |
+| 21 | OB-7: `reindex_files` warn uses positional format, not structured fields | Observability | watch.rs:500 | |
+| 22 | AD-2: `chunk_type` String in `OnboardEntry`/`DriftEntry` when enum exists | API Design | onboard.rs:58, drift.rs:17 | |
+| 23 | AD-3: `ChunkRole` Serialize PascalCase vs `as_str()` snake_case | API Design | scout.rs:15-34 | |
+| 24 | AD-4: `DeadInDiff.confidence` is String when `DeadConfidence` has Serialize | API Design | ci.rs:46 | |
+| 25 | AD-5: `DiffEntry` not re-exported despite being in public `DiffResult` | API Design | lib.rs:104, diff.rs:14 | |
+| 26 | AD-6: `review::NoteEntry` not exported, name-collides with `note::NoteEntry` | API Design | lib.rs, review.rs:50 | |
+| 27 | AD-7: `FileSuggestion::to_json()` silently omits `patterns` field | API Design | where_to_add.rs:54-62 | |
+| 28 | AD-8: `suggest_placement_with_embedding` redundant | API Design | where_to_add.rs:125-136 | |
+| 29 | AD-9: `TaskResult.risk` anonymous tuple — inconsistent serialization | API Design | task.rs:37 | |
+| 30 | AD-10: `ScoutResult.relevant_notes` `#[serde(skip)]` but in `scout_to_json()` | API Design | scout.rs:83-85 | |
+| 31 | AD-11: `ModelInfo` missing `Debug`, `Clone`, `Serialize` | API Design | store/helpers.rs:591 | |
+| 32 | AD-12: `score_name_match_pre_lower` not exported despite doc recommending it | API Design | store/helpers.rs:668 | |
+| 33 | AC-1: `ef_search` cap formula doesn't enforce index-size bound (harmless) | Algorithm | hnsw/search.rs:41-44 | |
+| 34 | AC-4: Snippet window asymmetry when `call_line == line_start` | Algorithm | impact/analysis.rs:143-145 | |
+| 35 | AC-5: `reverse_bfs` depth-0 invariant undocumented | Algorithm | impact/bfs.rs:15 | |
+| 36 | AC-6: `token_pack` first-item guarantee can exceed budget — no warning | Algorithm | commands/mod.rs:135, task.rs:62 | |
+| 37 | PB-3: `is_wsl()` should check `WSL_DISTRO_NAME` env var first | Platform | config.rs:17-27 | |
+| 38 | PB-5: WSL poll detection prefix-based, not filesystem-based (doc only) | Platform | watch.rs:67-72 | |
+| 39 | PB-7: `ensure_ort_provider_libs` silently skips GPU when `LD_LIBRARY_PATH` unset | Platform | embedder.rs:685-700 | |
+| 40 | PERF-1: SQL placeholder rebuilt on every batch iteration (22 sites) | Performance | chunks.rs, calls.rs, types.rs | |
+| 41 | PERF-2: `search_by_names_batch` post-filter O(results × batch_names) | Performance | store/mod.rs | |
+| 42 | PERF-5: `prune_missing` builds identical placeholder string twice | Performance | store/chunks.rs | |
+| 43 | PERF-6: Test SQL rebuilt dynamically on every cold cache call | Performance | store/calls.rs | |
+| 44 | PERF-8: `sanitize_fts_query` allocates two intermediate strings always | Performance | store/mod.rs | |
+| 45 | PERF-9: `strip_markdown_noise` applies 6 regex replacements unconditionally | Performance | markdown parser | |
+| 46 | PERF-10: `find_dead_code` runs two full-table scans — should UNION | Performance | store/calls.rs | |
+| 47 | DS-3: `ProjectRegistry::load()` TOCTOU — size check and read are separate | Data Safety | project.rs:32-51 | |
+| 48 | DS-4: `call_graph_cache`/`test_chunks_cache` OnceLock — no invalidation | Data Safety | store/mod.rs, calls.rs | |
+| 49 | RM-1: `HnswIndex::build` doubles peak memory (flat buffer + Vec coexist) | Resource Mgmt | hnsw/build.rs:57-79 | |
+| 50 | RM-2: `count_vectors` deserializes full id map to count entries | Resource Mgmt | hnsw/persist.rs | |
+| 51 | RM-4: Watch mode holds old + new HNSW index simultaneously | Resource Mgmt | cli/watch.rs | |
+| 52 | RM-7: `BatchContext` OnceLock caches not cleared during idle | Resource Mgmt | cli/batch/mod.rs | |
+| 53 | RM-10: `reindex_files` O(files × total_calls) in watch mode | Resource Mgmt | cli/watch.rs | |
+| 54 | EX-1: `CHUNK_CAPTURE_NAMES` is third sync point for ChunkType | Extensibility | parser | |
+| 55 | EX-2: `Pattern::FromStr` error hardcodes valid names | Extensibility | parser | |
+| 56 | EX-3: `--chunk-type` CLI help lists 11/16 variants | Extensibility | cli/mod.rs | |
+| 57 | EX-4: `nl.rs` hardcodes `"typealias"` multi-word workaround | Extensibility | nl.rs | |
+| 58 | PB-2: `7z -o` uses `Path::display()` — lossy on non-UTF-8 | Platform | chm.rs:30 | |
+| 59 | PB-4: `find_pdf_script` relative to CWD, not project root | Platform | pdf.rs:72-83 | |
+| 60 | PB-6: `chm_to_markdown` uses `to_string_lossy()` for paths | Platform | chm.rs:29 | |
 
-## P4: Hard or Low Impact — Defer / Create Issues
+## P4: Hard or Test Coverage — Create Issues
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | OB-1: store/calls.rs 15 functions missing spans | Observability | calls.rs | fixed |
-| 2 | OB-2: store/types.rs 9 functions missing spans | Observability | types.rs | fixed |
-| 3 | OB-3: store/notes.rs 7 functions missing spans | Observability | notes.rs | fixed |
-| 4 | OB-4: store/chunks.rs 16 functions missing spans | Observability | chunks.rs | fixed |
-| 5 | TC-1: 9 languages missing parser integration tests | Test Coverage | parser_test.rs | fixed |
-| 6 | TC-6: Fenced block call-graph untested | Test Coverage | mod.rs:361 | fixed (documented limitation) |
-| 7 | TC-7: handlers.rs 1306 lines zero inline tests | Test Coverage | handlers.rs | deferred (17 integration tests adequate) |
-| 8 | RB-6: store/chunks.rs 16+ panicking `row.get()` | Robustness | chunks.rs | fixed |
-| 9 | EX-4: `where_to_add` catch-all for 42 languages | Extensibility | where_to_add.rs | deferred (advisory feature, low value) |
-| 10 | EX-5: HNSW ef_search compile-time only | Extensibility | hnsw/mod.rs | deferred (defaults work for 10k-100k range) |
-| 11 | AD-6: Inconsistent `_with_*` naming convention | API Design | multiple | deferred (cosmetic, no functional impact) |
-| 12 | PB-3: `find_project_root` walks to filesystem root | Platform | config.rs:28 | fixed |
-| 13 | PB-5: `ProjectRegistry::save()` NTFS advisory lock | Platform | project.rs:56 | deferred (rare concurrent scenario) |
-| 14 | DS-10: `rewrite_notes_file` copy fallback non-atomic | Data Safety | note.rs:264 | deferred (cross-device edge case) |
-| 15 | DS-11: `extract_relationships` not transactional with chunks | Data Safety | index.rs:124 | deferred (accepted in prior audit) |
-| 16 | PF-4: `search_across_projects` serial | Performance | project.rs:172 | fixed |
-| 17 | RM-1: CAGRA dataset CPU-side retention (existing #389) | Resource | cagra.rs:64 | deferred (existing #389) |
-| 18 | RM-2: Watch rebuilds full HNSW on every change | Resource | watch.rs:324 | deferred (needs incremental HNSW design) |
-| 19 | RM-3: `BatchContext` caches never released | Resource | batch/mod.rs:55 | deferred (short-lived sessions) |
-| 20 | RM-5: `extract_relationships` double I/O | Resource | index.rs:193 | deferred (needs pipeline rework) ||
+| 1 | RM-3: CAGRA GPU index retains full CPU-side dataset copy (existing #389) | Resource Mgmt | cagra.rs:64 | existing #389 |
+| 2 | TC-1: `convert/html.rs`, `chm.rs`, `webhelp.rs` — zero tests | Test Coverage | convert/ | |
+| 3 | TC-2: `suggest.rs` `high_risk` branch never exercised | Test Coverage | suggest.rs:141-151 | |
+| 4 | TC-3: `health.rs` `untested_hotspots` never asserted | Test Coverage | health.rs:284-346 | |
+| 5 | TC-4: `review.rs` `match_notes` partial-match edge cases | Test Coverage | review.rs:183-211 | |
+| 6 | TC-5: `impact/diff.rs` depth-0 exclusion and BFS anomaly untested | Test Coverage | impact/diff.rs:168,181 | |
+| 7 | TC-6: `related.rs` unit tests only test struct construction | Test Coverage | related.rs:170-234 | |
+| 8 | TC-7: `convert/pdf.rs` `find_pdf_script` logic untested | Test Coverage | convert/pdf.rs | |
+| 9 | EX-5: `find_project_root` hardcodes markers for 5/50 languages | Extensibility | lib.rs | |

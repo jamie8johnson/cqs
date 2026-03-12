@@ -74,8 +74,8 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [x] Vue (.vue) → JS/TS, CSS, HTML — `tree-sitter-vue-next`. Identical injection pattern to HTML/Svelte. Post-processing: headings, landmarks, setup script detection.
 
 **Next — Medium value (narrower scope):**
-- [ ] Markdown → fenced code blocks — custom parser, not tree-sitter. Needs different approach (parse ` ```lang ` content with target grammar).
-- [ ] YAML → Bash — GitHub Actions `run:` blocks. Detection fragile (not all strings are scripts).
+- [x] Markdown → fenced code blocks — custom line scanner + per-block tree-sitter parse. `extract_fenced_blocks()` + `parse_fenced_blocks()` in parser/mod.rs.
+- ~~YAML → Bash~~ — closed: bash chunk query only captures `function_definition` nodes; GHA `run:` blocks are bare commands, so injection would produce zero chunks.
 
 **Lower priority (niche or fragile):**
 - [ ] Astro (.astro) → JS/TS + HTML — needs grammar

@@ -224,6 +224,9 @@ pub fn validate_ref_name(name: &str) -> Result<(), &'static str> {
     if name == "." {
         return Err("Reference name cannot be '.'");
     }
+    if name.starts_with('.') {
+        return Err("Reference name cannot start with '.'");
+    }
     Ok(())
 }
 

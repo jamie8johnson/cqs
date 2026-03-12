@@ -150,6 +150,12 @@ impl Reranker {
             1
         };
 
+        if stride == 0 {
+            return Err(RerankerError::Inference(
+                "Model returned zero-width output tensor".to_string(),
+            ));
+        }
+
         let expected_len = batch_size * stride;
         if data.len() < expected_len {
             return Err(RerankerError::Inference(format!(

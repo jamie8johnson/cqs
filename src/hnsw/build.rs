@@ -153,6 +153,12 @@ impl HnswIndex {
                         actual: embedding.len(),
                     });
                 }
+                // Skip zero-vector embeddings — they produce NaN cosine distances
+                let norm_sq: f32 = embedding.as_vec().iter().map(|x| x * x).sum();
+                if norm_sq == 0.0 {
+                    tracing::warn!(chunk_id = %chunk_id, "Skipping zero-vector embedding");
+                    continue;
+                }
                 tracing::trace!("Adding {} to HNSW index", chunk_id);
                 id_map.push(chunk_id.clone());
                 data_for_insert.push((embedding.as_vec(), base_idx + i));
