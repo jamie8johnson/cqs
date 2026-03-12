@@ -7,7 +7,9 @@ use hnsw_rs::hnsw::Hnsw;
 use crate::embedder::Embedding;
 use crate::EMBEDDING_DIM;
 
-use super::{HnswError, HnswIndex, HnswInner, EF_CONSTRUCTION, MAX_LAYER, MAX_NB_CONNECTION};
+use super::{
+    HnswError, HnswIndex, HnswInner, EF_CONSTRUCTION, EF_SEARCH, MAX_LAYER, MAX_NB_CONNECTION,
+};
 
 impl HnswIndex {
     /// Build a new HNSW index from embeddings (single-pass).
@@ -48,6 +50,7 @@ impl HnswIndex {
             return Ok(Self {
                 inner: HnswInner::Owned(hnsw),
                 id_map: Vec::new(),
+                ef_search: EF_SEARCH,
             });
         }
 
@@ -83,6 +86,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
             id_map,
+            ef_search: EF_SEARCH,
         })
     }
 
@@ -188,6 +192,7 @@ impl HnswIndex {
                     DistCosine,
                 )),
                 id_map: Vec::new(),
+                ef_search: EF_SEARCH,
             });
         }
 
@@ -196,6 +201,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
             id_map,
+            ef_search: EF_SEARCH,
         })
     }
 }

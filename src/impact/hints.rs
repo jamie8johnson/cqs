@@ -16,30 +16,11 @@ pub const RISK_THRESHOLD_MEDIUM: f32 = 2.0;
 ///
 /// Use this when processing multiple functions to avoid loading the graph
 /// N times (e.g., scout, which processes 10+ functions).
-///
-/// `max_test_depth` controls BFS depth for test discovery (default: [`DEFAULT_MAX_TEST_SEARCH_DEPTH`]).
 pub fn compute_hints_with_graph(
     graph: &CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
     function_name: &str,
     prefetched_caller_count: Option<usize>,
-) -> FunctionHints {
-    compute_hints_with_graph_depth(
-        graph,
-        test_chunks,
-        function_name,
-        prefetched_caller_count,
-        DEFAULT_MAX_TEST_SEARCH_DEPTH,
-    )
-}
-
-/// Like [`compute_hints_with_graph`] but with configurable BFS depth.
-pub fn compute_hints_with_graph_depth(
-    graph: &CallGraph,
-    test_chunks: &[crate::store::ChunkSummary],
-    function_name: &str,
-    prefetched_caller_count: Option<usize>,
-    max_test_depth: usize,
 ) -> FunctionHints {
     // Note: prefetched_caller_count (from get_caller_counts_batch / get_callers_full)
     // counts DB rows which may include duplicate caller names from different files.
@@ -54,7 +35,7 @@ pub fn compute_hints_with_graph_depth(
             .map(|v| v.len())
             .unwrap_or(0),
     };
-    let ancestors = reverse_bfs(graph, function_name, max_test_depth);
+    let ancestors = reverse_bfs(graph, function_name, DEFAULT_MAX_TEST_SEARCH_DEPTH);
     let test_count = test_chunks
         .iter()
         .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))

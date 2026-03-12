@@ -109,11 +109,11 @@ pub use gather::{
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
-    compute_hints_with_graph_depth, compute_risk_and_tests, compute_risk_batch,
-    diff_impact_to_json, find_hotspots, impact_to_json, impact_to_mermaid, map_hunks_to_functions,
-    suggest_tests, CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary,
-    DiffTestInfo, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion,
-    TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    compute_risk_and_tests, compute_risk_batch, diff_impact_to_json, find_hotspots, impact_to_json,
+    impact_to_mermaid, map_hunks_to_functions, suggest_tests, CallerDetail, ChangedFunction,
+    DiffImpactResult, DiffImpactSummary, DiffTestInfo, FunctionHints, ImpactResult, RiskLevel,
+    RiskScore, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
+    DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
 pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
 pub use onboard::{
@@ -123,9 +123,8 @@ pub use onboard::{
 pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
-    scout, scout_to_json, scout_with_options, scout_with_resources, ChunkRole, FileGroup,
-    ScoutChunk, ScoutOptions, ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT,
-    DEFAULT_SCOUT_SEARCH_THRESHOLD,
+    scout, scout_to_json, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
+    ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;

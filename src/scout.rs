@@ -162,35 +162,6 @@ pub fn scout_with_options(
     )
 }
 
-/// Like [`scout_with_options`] but accepts pre-loaded call graph and test chunks.
-///
-/// Use when the caller already has these resources (e.g., batch mode where
-/// `BatchContext` caches them across commands).
-#[allow(clippy::too_many_arguments)]
-pub fn scout_with_resources(
-    store: &Store,
-    embedder: &Embedder,
-    task: &str,
-    root: &Path,
-    limit: usize,
-    opts: &ScoutOptions,
-    graph: &crate::store::CallGraph,
-    test_chunks: &[crate::store::ChunkSummary],
-) -> Result<ScoutResult, AnalysisError> {
-    let _span = tracing::info_span!("scout_with_resources", task_len = task.len(), limit).entered();
-    let query_embedding = embedder.embed_query(task)?;
-    scout_core(
-        store,
-        &query_embedding,
-        task,
-        root,
-        limit,
-        opts,
-        graph,
-        test_chunks,
-    )
-}
-
 /// Core scout implementation accepting pre-loaded resources.
 ///
 /// Use this when you already have the call graph and test chunks loaded

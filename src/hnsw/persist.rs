@@ -10,7 +10,7 @@ use hnsw_rs::hnswio::HnswIo;
 
 use crate::index::VectorIndex;
 
-use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
+use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw, EF_SEARCH};
 
 /// Whether the WSL advisory locking warning has been emitted (once per process)
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -425,6 +425,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Loaded(loaded),
             id_map,
+            ef_search: EF_SEARCH,
         })
     }
 
@@ -494,9 +495,21 @@ impl HnswIndex {
     /// Load HNSW index if available, wrapped as VectorIndex trait object.
     /// Shared helper for CLI commands.
     pub fn try_load(cq_dir: &Path) -> Option<Box<dyn VectorIndex>> {
+        Self::try_load_with_ef(cq_dir, None)
+    }
+
+    /// Load HNSW index with optional ef_search override from config.
+    pub fn try_load_with_ef(
+        cq_dir: &Path,
+        ef_search: Option<usize>,
+    ) -> Option<Box<dyn VectorIndex>> {
         if Self::exists(cq_dir, "index") {
             match Self::load(cq_dir, "index") {
-                Ok(index) => {
+                Ok(mut index) => {
+                    if let Some(ef) = ef_search {
+                        index.set_ef_search(ef);
+                        tracing::debug!(ef_search = ef, "Applied config ef_search override");
+                    }
                     tracing::info!("HNSW index loaded ({} vectors)", index.len());
                     Some(Box::new(index))
                 }

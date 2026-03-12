@@ -4,10 +4,14 @@
 //! Enables searching across all registered projects from anywhere.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// Whether the WSL advisory locking warning has been emitted (once per process)
+static WSL_REGISTRY_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Global registry of indexed cqs projects
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -65,6 +69,15 @@ impl ProjectRegistry {
             .lock()
             .with_context(|| format!("Failed to lock {}", path.display()))?;
 
+        if crate::config::is_wsl()
+            && path.to_str().is_some_and(|p| p.starts_with("/mnt/"))
+            && !WSL_REGISTRY_LOCK_WARNED.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                "Registry file locking is advisory-only on WSL/NTFS — avoid concurrent cqs ref add"
+            );
+        }
+
         let content = toml::to_string_pretty(self)?;
         // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
         let suffix = {
@@ -77,9 +90,12 @@ impl ProjectRegistry {
         std::fs::write(&tmp, &content)
             .with_context(|| format!("Failed to write {}", tmp.display()))?;
         if let Err(rename_err) = std::fs::rename(&tmp, &path) {
-            // Cross-device fallback (Docker overlayfs, some CI)
-            if let Err(copy_err) = std::fs::copy(&tmp, &path) {
+            // Cross-device fallback: copy to dest dir temp, then same-device rename (atomic)
+            let dest_dir = path.parent().unwrap_or(Path::new("."));
+            let dest_tmp = dest_dir.join(format!(".projects.{:016x}.tmp", suffix));
+            if let Err(copy_err) = std::fs::copy(&tmp, &dest_tmp) {
                 let _ = std::fs::remove_file(&tmp);
+                let _ = std::fs::remove_file(&dest_tmp);
                 bail!(
                     "rename {} -> {} failed ({}), copy fallback failed: {}",
                     tmp.display(),
@@ -89,6 +105,14 @@ impl ProjectRegistry {
                 );
             }
             let _ = std::fs::remove_file(&tmp);
+            std::fs::rename(&dest_tmp, &path).with_context(|| {
+                let _ = std::fs::remove_file(&dest_tmp);
+                format!(
+                    "Failed to rename {} -> {}",
+                    dest_tmp.display(),
+                    path.display()
+                )
+            })?;
         }
 
         #[cfg(unix)]
