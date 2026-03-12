@@ -7,6 +7,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use std::sync::Arc;
+
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
@@ -78,13 +80,15 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         store.init(&ModelInfo::default())?;
         store
     };
+    let store = Arc::new(store);
 
     if !cli.quiet {
         println!("Indexing {} files (pipelined)...", files.len());
     }
 
     // Run the 3-stage pipeline: parse → embed → write
-    let stats = run_index_pipeline(&root, files.clone(), &index_path, force, cli.quiet)?;
+    // Pipeline shares the same Store via Arc (no duplicate DB connections)
+    let stats = run_index_pipeline(&root, files.clone(), Arc::clone(&store), force, cli.quiet)?;
     let total_embedded = stats.total_embedded;
     let total_cached = stats.total_cached;
     let gpu_failures = stats.gpu_failures;

@@ -1,6 +1,6 @@
 //! Hint computation and risk scoring
 
-use crate::store::CallGraph;
+use crate::store::{CallGraph, StoreError};
 use crate::Store;
 
 use super::bfs::reverse_bfs;
@@ -56,7 +56,7 @@ pub fn compute_hints(
     store: &Store,
     function_name: &str,
     prefetched_caller_count: Option<usize>,
-) -> anyhow::Result<FunctionHints> {
+) -> Result<FunctionHints, StoreError> {
     let _span = tracing::info_span!("compute_hints", function = function_name).entered();
     let caller_count = match prefetched_caller_count {
         Some(n) => n,

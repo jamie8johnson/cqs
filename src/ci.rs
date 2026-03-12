@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::Result;
+use crate::AnalysisError;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::RiskLevel;
@@ -68,7 +68,7 @@ pub fn run_ci_analysis(
     diff_text: &str,
     root: &Path,
     threshold: GateThreshold,
-) -> Result<CiReport> {
+) -> Result<CiReport, AnalysisError> {
     let _span = tracing::info_span!("run_ci_analysis", ?threshold).entered();
 
     // 1. Full review (impact + risk + notes + stale)

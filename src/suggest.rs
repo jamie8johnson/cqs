@@ -6,9 +6,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
-
 use crate::impact::find_hotspots;
+use crate::store::StoreError;
 use crate::{compute_risk_batch, normalize_slashes, RiskLevel, Store};
 
 /// Minimum dead functions in a single file to flag as a dead code cluster.
@@ -35,7 +34,7 @@ pub struct SuggestedNote {
 ///
 /// Takes a store and project root, returns suggested notes or an error.
 /// Errors are non-fatal — other detectors still run.
-type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>>;
+type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>, StoreError>;
 
 /// Registry of all active detectors, run in order by `suggest_notes`.
 ///
@@ -54,7 +53,7 @@ const DETECTORS: &[(&str, Detector)] = &[
 /// Scan the index for anti-patterns and suggest notes.
 ///
 /// Each detector runs independently — if one fails, the others still produce results.
-pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>> {
+pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
 
     let mut suggestions = Vec::new();
@@ -86,7 +85,7 @@ pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<Suggested
 }
 
 /// Detect files with 5+ dead (uncalled) functions.
-fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>> {
+fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>, StoreError> {
     let (confident, _) = store.find_dead_code(true)?;
 
     // Group by file
@@ -109,7 +108,7 @@ fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>> {
 }
 
 /// Detect untested hotspots and high-risk functions.
-fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>> {
+fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>, StoreError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     let hotspots = find_hotspots(&graph, SUGGEST_HOTSPOT_POOL);
@@ -189,7 +188,10 @@ pub(crate) fn is_pascal_case(s: &str) -> bool {
 ///
 /// Returns `(note_text, stale_mentions)` pairs for each note with at least one
 /// stale mention. Shared by `detect_stale_mentions` and `check_note_staleness`.
-fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String, Vec<String>)>> {
+fn find_stale_mentions(
+    store: &Store,
+    project_root: &Path,
+) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let notes = store.list_notes_summaries()?;
 
     // Batch all symbol mentions for one query
@@ -243,7 +245,10 @@ fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String
 }
 
 /// Detect notes with stale mentions (deleted files, removed functions).
-fn detect_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>> {
+fn detect_stale_mentions(
+    store: &Store,
+    project_root: &Path,
+) -> Result<Vec<SuggestedNote>, StoreError> {
     let stale_pairs = find_stale_mentions(store, project_root)?;
 
     Ok(stale_pairs
@@ -275,7 +280,7 @@ fn detect_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<Sugge
 pub fn check_note_staleness(
     store: &Store,
     project_root: &Path,
-) -> Result<Vec<(String, Vec<String>)>> {
+) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let _span = tracing::info_span!("check_note_staleness").entered();
     let result = find_stale_mentions(store, project_root)?;
     tracing::info!(stale_notes = result.len(), "Note staleness check complete");

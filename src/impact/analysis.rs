@@ -2,7 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::store::{CallerWithContext, SearchResult};
+use crate::store::{CallerWithContext, SearchResult, StoreError};
+use crate::AnalysisError;
 use crate::Store;
 
 use super::bfs::reverse_bfs;
@@ -22,7 +23,7 @@ pub fn analyze_impact(
     target_name: &str,
     depth: usize,
     include_types: bool,
-) -> anyhow::Result<ImpactResult> {
+) -> Result<ImpactResult, AnalysisError> {
     let _span =
         tracing::info_span!("analyze_impact", target = target_name, depth, include_types).entered();
     let (callers, degraded) = build_caller_info(store, target_name)?;
@@ -72,7 +73,7 @@ pub fn analyze_impact(
 fn build_caller_info(
     store: &Store,
     target_name: &str,
-) -> anyhow::Result<(Vec<CallerDetail>, bool)> {
+) -> Result<(Vec<CallerDetail>, bool), StoreError> {
     let callers_ctx = store.get_callers_with_context(target_name)?;
 
     // Batch-fetch chunk data for all unique caller names
@@ -189,7 +190,7 @@ fn find_transitive_callers(
     graph: &crate::store::CallGraph,
     target_name: &str,
     depth: usize,
-) -> anyhow::Result<Vec<TransitiveCaller>> {
+) -> Result<Vec<TransitiveCaller>, StoreError> {
     // Single graph traversal to collect all ancestors + depths
     let ancestors = reverse_bfs(graph, target_name, depth);
 
@@ -391,7 +392,7 @@ fn suggest_test_file(source: &str) -> String {
 /// 2. Filter out common types (String, Vec, etc.)
 /// 3. For each remaining type, find other users via `get_type_users_batch`
 /// 4. Aggregate by function name, track which types are shared
-fn find_type_impacted(store: &Store, target_name: &str) -> anyhow::Result<Vec<TypeImpacted>> {
+fn find_type_impacted(store: &Store, target_name: &str) -> Result<Vec<TypeImpacted>, StoreError> {
     let _span = tracing::info_span!("find_type_impacted", target = target_name).entered();
 
     let type_pairs = store.get_types_used_by(target_name)?;

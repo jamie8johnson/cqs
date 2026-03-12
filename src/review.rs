@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use crate::AnalysisError;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::{
@@ -71,7 +71,11 @@ pub struct RiskSummary {
 /// 4. Risk scoring -> per-function risk
 /// 5. Note matching -> relevant notes for changed files (non-fatal)
 /// 6. Staleness check -> warn if changed files are stale (non-fatal)
-pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option<ReviewResult>> {
+pub fn review_diff(
+    store: &Store,
+    diff_text: &str,
+    root: &Path,
+) -> Result<Option<ReviewResult>, AnalysisError> {
     let _span = tracing::info_span!("review_diff").entered();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -180,7 +184,10 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
 /// Match notes to a set of changed file paths.
 ///
 /// Returns an error if notes cannot be loaded (caller decides how to handle).
-fn match_notes(store: &Store, changed_files: &HashSet<&str>) -> Result<Vec<NoteEntry>> {
+fn match_notes(
+    store: &Store,
+    changed_files: &HashSet<&str>,
+) -> Result<Vec<NoteEntry>, AnalysisError> {
     let _span = tracing::info_span!("match_notes").entered();
 
     let notes = store.list_notes_summaries()?;

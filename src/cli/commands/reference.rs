@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 
@@ -99,14 +100,6 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
     }
     let db_path = ref_dir.join("index.db");
 
-    // Initialize store schema
-    {
-        let store = Store::open(&db_path)
-            .with_context(|| format!("Failed to open store at {}", db_path.display()))?;
-        store.init(&ModelInfo::default())?;
-        // Drop store — pipeline opens its own
-    }
-
     // Enumerate files
     let parser = CqParser::new()?;
     let files = enumerate_files(&source, &parser, false)?;
@@ -123,16 +116,19 @@ fn cmd_ref_add(cli: &Cli, name: &str, source: &std::path::Path, weight: f32) -> 
         );
     }
 
-    // Run indexing pipeline
-    let stats = run_index_pipeline(&source, files, &db_path, false, cli.quiet)?;
+    // Open store, initialize schema, and run indexing pipeline (shared Store via Arc)
+    let store = Arc::new(
+        Store::open(&db_path)
+            .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?,
+    );
+    store.init(&ModelInfo::default())?;
+    let stats = run_index_pipeline(&source, files, Arc::clone(&store), false, cli.quiet)?;
 
     if !cli.quiet {
         println!("  Embedded: {} chunks", stats.total_embedded);
     }
 
     // Build HNSW index
-    let store = Store::open(&db_path)
-        .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?;
     if let Some(count) = build_hnsw_index(&store, &ref_dir)? {
         if !cli.quiet {
             println!("  HNSW: {} vectors", count);
@@ -300,8 +296,12 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
         println!("Updating reference '{}' ({} files)...", name, files.len());
     }
 
-    // Run incremental indexing pipeline
-    let stats = run_index_pipeline(source, files.clone(), &db_path, false, cli.quiet)?;
+    // Open store and run incremental indexing pipeline (shared Store via Arc)
+    let store = Arc::new(
+        Store::open(&db_path)
+            .with_context(|| format!("Failed to open reference store at {}", db_path.display()))?,
+    );
+    let stats = run_index_pipeline(source, files.clone(), Arc::clone(&store), false, cli.quiet)?;
 
     if !cli.quiet {
         let newly = stats.total_embedded - stats.total_cached;
@@ -312,8 +312,6 @@ fn cmd_ref_update(cli: &Cli, name: &str) -> Result<()> {
     }
 
     // Prune chunks for deleted files
-    let store = Store::open(&db_path)
-        .with_context(|| format!("Failed to reopen reference store at {}", db_path.display()))?;
     let existing_files: HashSet<_> = files.into_iter().collect();
     let pruned = store.prune_missing(&existing_files)?;
 

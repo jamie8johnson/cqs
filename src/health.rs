@@ -6,10 +6,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-
 use crate::impact::find_hotspots;
 use crate::store::helpers::IndexStats;
+use crate::store::StoreError;
 use crate::suggest::HOTSPOT_MIN_CALLERS;
 use crate::{compute_risk_batch, HnswIndex, RiskLevel, Store};
 
@@ -50,7 +49,7 @@ pub fn health_check(
     store: &Store,
     existing_files: &HashSet<PathBuf>,
     cqs_dir: &Path,
-) -> Result<HealthReport> {
+) -> Result<HealthReport, StoreError> {
     let _span = tracing::info_span!("health_check").entered();
 
     // Fatal: can't report without basic stats

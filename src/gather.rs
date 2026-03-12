@@ -10,10 +10,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
 use rayon::prelude::*;
 
 use crate::parser::{ChunkType, Language};
+use crate::store::StoreError;
 
 use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::store::SearchResult;
@@ -294,7 +294,7 @@ pub fn gather(
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
-) -> Result<GatherResult> {
+) -> Result<GatherResult, StoreError> {
     let graph = store.get_call_graph()?;
     gather_with_graph(
         store,
@@ -317,7 +317,7 @@ pub fn gather_with_graph(
     opts: &GatherOptions,
     project_root: &Path,
     graph: &CallGraph,
-) -> Result<GatherResult> {
+) -> Result<GatherResult, StoreError> {
     let _span = tracing::info_span!(
         "gather",
         query_len = query_text.len(),
@@ -391,7 +391,7 @@ pub fn gather_cross_index(
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
-) -> Result<GatherResult> {
+) -> Result<GatherResult, StoreError> {
     let _span = tracing::info_span!(
         "gather_cross_index",
         ref_name = %ref_idx.name,

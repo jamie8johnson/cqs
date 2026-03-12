@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::store::CallerWithContext;
+use crate::AnalysisError;
 use crate::Store;
 
 use super::analysis::extract_call_snippet_from_cache;
@@ -73,7 +74,7 @@ pub fn map_hunks_to_functions(
 pub fn analyze_diff_impact(
     store: &Store,
     changed: Vec<ChangedFunction>,
-) -> anyhow::Result<DiffImpactResult> {
+) -> Result<DiffImpactResult, AnalysisError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)
@@ -88,7 +89,7 @@ pub fn analyze_diff_impact_with_graph(
     changed: Vec<ChangedFunction>,
     graph: &crate::store::CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
-) -> anyhow::Result<DiffImpactResult> {
+) -> Result<DiffImpactResult, AnalysisError> {
     let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
         return Ok(DiffImpactResult {

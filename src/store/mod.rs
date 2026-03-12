@@ -742,13 +742,10 @@ impl Store {
     /// are typically <100 entries with small strings.
     pub fn cached_notes_summaries(&self) -> Result<Vec<NoteSummary>, StoreError> {
         {
-            let guard = self
-                .notes_summaries_cache
-                .read()
-                .unwrap_or_else(|p| {
-                    tracing::warn!("notes cache read lock poisoned, recovering");
-                    p.into_inner()
-                });
+            let guard = self.notes_summaries_cache.read().unwrap_or_else(|p| {
+                tracing::warn!("notes cache read lock poisoned, recovering");
+                p.into_inner()
+            });
             if let Some(ref ns) = *guard {
                 return Ok(ns.clone());
             }
@@ -756,13 +753,10 @@ impl Store {
         // Cache miss — load from DB and populate
         let ns = self.list_notes_summaries()?;
         {
-            let mut guard = self
-                .notes_summaries_cache
-                .write()
-                .unwrap_or_else(|p| {
-                    tracing::warn!("notes cache write lock poisoned, recovering");
-                    p.into_inner()
-                });
+            let mut guard = self.notes_summaries_cache.write().unwrap_or_else(|p| {
+                tracing::warn!("notes cache write lock poisoned, recovering");
+                p.into_inner()
+            });
             *guard = Some(ns.clone());
         }
         Ok(ns)

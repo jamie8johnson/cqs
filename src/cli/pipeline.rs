@@ -761,7 +761,7 @@ fn store_stage(
 pub(crate) fn run_index_pipeline(
     root: &Path,
     files: Vec<PathBuf>,
-    store_path: &Path,
+    store: Arc<Store>,
     force: bool,
     quiet: bool,
 ) -> Result<PipelineStats> {
@@ -778,7 +778,6 @@ pub(crate) fn run_index_pipeline(
 
     // Shared state
     let parser = Arc::new(CqParser::new().context("Failed to initialize parser")?);
-    let store = Arc::new(Store::open(store_path).context("Failed to open store")?);
     let parsed_count = Arc::new(AtomicUsize::new(0));
     let embedded_count = Arc::new(AtomicUsize::new(0));
     let gpu_failures = Arc::new(AtomicUsize::new(0));
