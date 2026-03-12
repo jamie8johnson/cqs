@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-03-13
+
+### Fixed
+- Release workflow: upgrade macOS Intel runner from macos-13 (deprecated) to macos-14
+
 ## [1.0.1] - 2026-03-13
 
 v1.0.0 audit fixes — 97 findings across 14 categories, all resolved.
