@@ -67,6 +67,8 @@ impl HnswIndex {
             DistCosine,
         );
 
+        // Test-only path: allocates the full Vec<Vec<f32>> double-buffer here.
+        // Production code uses `build_batched` to avoid this peak allocation.
         // Reconstruct Vec<f32> chunks from flat buffer for hnsw_rs API
         let chunks: Vec<Vec<f32>> = (0..nb_elem)
             .map(|i| {

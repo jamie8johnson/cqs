@@ -363,6 +363,9 @@ fn process_file_changes(
             let needs_full_rebuild =
                 hnsw_index.is_none() || *incremental_count >= HNSW_REBUILD_THRESHOLD;
 
+            // During full rebuild the old index and new batch coexist briefly,
+            // but `build_batched` streams one batch at a time so peak memory is
+            // old_index + one_batch, not 2× the full index.
             if needs_full_rebuild {
                 match super::commands::build_hnsw_index_owned(store, cqs_dir) {
                     Ok(Some(index)) => {
@@ -601,6 +604,8 @@ fn reindex_files(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
         });
+        // `all_calls` is scoped to the changed files in this reindex batch, not the full
+        // index, so this filter is O(changed_chunks) rather than O(all_chunks).
         // Filter calls to only those belonging to chunks in this file
         let chunk_ids: HashSet<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
         let file_calls: Vec<_> = all_calls

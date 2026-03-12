@@ -92,11 +92,11 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | 46 | PERF-10: `find_dead_code` runs two full-table scans — should UNION | Performance | store/calls.rs | ✅ fixed |
 | 47 | DS-3: `ProjectRegistry::load()` TOCTOU — size check and read are separate | Data Safety | project.rs:32-51 | ✅ fixed |
 | 48 | DS-4: `call_graph_cache`/`test_chunks_cache` OnceLock — no invalidation | Data Safety | store/mod.rs, calls.rs | ✅ fixed |
-| 49 | RM-1: `HnswIndex::build` doubles peak memory (flat buffer + Vec coexist) | Resource Mgmt | hnsw/build.rs:57-79 | |
+| 49 | RM-1: `HnswIndex::build` doubles peak memory (flat buffer + Vec coexist) | Resource Mgmt | hnsw/build.rs:57-79 | ✅ documented (test-only path) |
 | 50 | RM-2: `count_vectors` deserializes full id map to count entries | Resource Mgmt | hnsw/persist.rs | ✅ fixed |
-| 51 | RM-4: Watch mode holds old + new HNSW index simultaneously | Resource Mgmt | cli/watch.rs | |
+| 51 | RM-4: Watch mode holds old + new HNSW index simultaneously | Resource Mgmt | cli/watch.rs | ✅ documented (old + one batch, not 2×) |
 | 52 | RM-7: `BatchContext` OnceLock caches not cleared during idle | Resource Mgmt | cli/batch/mod.rs | ✅ documented |
-| 53 | RM-10: `reindex_files` O(files × total_calls) in watch mode | Resource Mgmt | cli/watch.rs | |
+| 53 | RM-10: `reindex_files` O(files × total_calls) in watch mode | Resource Mgmt | cli/watch.rs | ✅ documented (scoped to batch) |
 | 54 | EX-1: `CHUNK_CAPTURE_NAMES` is third sync point for ChunkType | Extensibility | parser | ✅ fixed |
 | 55 | EX-2: `Pattern::FromStr` error hardcodes valid names | Extensibility | parser | ✅ fixed |
 | 56 | EX-3: `--chunk-type` CLI help lists 11/16 variants | Extensibility | cli/mod.rs | ✅ fixed |
