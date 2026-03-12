@@ -89,7 +89,7 @@ pub(crate) fn cmd_drift(
                     entry.drift,
                     entry.name,
                     entry.file.display().to_string().dimmed(),
-                    entry.chunk_type.dimmed()
+                    entry.chunk_type.to_string().dimmed()
                 );
             }
         }

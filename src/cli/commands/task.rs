@@ -160,14 +160,14 @@ pub(crate) fn waterfall_pack(
     let risk_texts: Vec<String> = result
         .risk
         .iter()
-        .map(|(name, r)| {
+        .map(|fr| {
             format!(
                 "{}: {:?} score:{:.1} callers:{} cov:{:.0}%",
-                name,
-                r.risk_level,
-                r.score,
-                r.caller_count,
-                r.coverage * 100.0
+                fr.name,
+                fr.risk.risk_level,
+                fr.risk.score,
+                fr.risk.caller_count,
+                fr.risk.coverage * 100.0
             )
         })
         .collect();
@@ -175,7 +175,7 @@ pub(crate) fn waterfall_pack(
     let risk_counts = super::count_tokens_batch(embedder, &risk_text_refs);
     let (risk_indices, risk_used) =
         index_pack(&risk_counts, impact_budget, overhead_per_item, |i| {
-            result.risk[i].1.score
+            result.risk[i].risk.score
         });
 
     let tests_budget = impact_budget.saturating_sub(risk_used);
@@ -388,8 +388,8 @@ fn build_risk_json(result: &cqs::TaskResult, indices: &[usize]) -> Vec<serde_jso
     indices
         .iter()
         .map(|&i| {
-            let (name, r) = &result.risk[i];
-            r.to_json(name)
+            let fr = &result.risk[i];
+            fr.risk.to_json(&fr.name)
         })
         .collect()
 }
@@ -580,7 +580,7 @@ fn print_code_section_idx(
 }
 
 fn print_impact_section_idx(
-    risk: &[(String, cqs::RiskScore)],
+    risk: &[cqs::FunctionRisk],
     tests: &[cqs::TestInfo],
     risk_idx: &[usize],
     test_idx: &[usize],
@@ -592,21 +592,23 @@ fn print_impact_section_idx(
         println!();
         println!("{}", "── Impact ─────────────────────────────".cyan());
         for &i in risk_idx {
-            let (name, r) = &risk[i];
-            let level = match r.risk_level {
-                cqs::RiskLevel::High => format!("{:?}", r.risk_level).red().bold().to_string(),
-                cqs::RiskLevel::Medium => format!("{:?}", r.risk_level).yellow().to_string(),
-                cqs::RiskLevel::Low => format!("{:?}", r.risk_level).green().to_string(),
+            let fr = &risk[i];
+            let level = match fr.risk.risk_level {
+                cqs::RiskLevel::High => {
+                    format!("{:?}", fr.risk.risk_level).red().bold().to_string()
+                }
+                cqs::RiskLevel::Medium => format!("{:?}", fr.risk.risk_level).yellow().to_string(),
+                cqs::RiskLevel::Low => format!("{:?}", fr.risk.risk_level).green().to_string(),
             };
             println!(
                 "  {}: {} {}",
-                name,
+                fr.name,
                 level,
                 format!(
                     "(score: {:.1}, callers: {}, coverage: {:.0}%)",
-                    r.score,
-                    r.caller_count,
-                    r.coverage * 100.0
+                    fr.risk.score,
+                    fr.risk.caller_count,
+                    fr.risk.coverage * 100.0
                 )
                 .dimmed()
             );

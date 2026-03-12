@@ -13,6 +13,7 @@ use crate::{normalize_slashes, AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChunkRole {
     /// High-relevance function likely needing modification (score >= 0.5)
     ModifyTarget,
@@ -80,7 +81,6 @@ pub struct ScoutSummary {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScoutResult {
     pub file_groups: Vec<FileGroup>,
-    #[serde(skip)]
     pub relevant_notes: Vec<NoteSummary>,
     pub summary: ScoutSummary,
 }

@@ -37,13 +37,20 @@ pub enum DeadConfidence {
     High,
 }
 
+impl DeadConfidence {
+    /// Stable string representation for display and JSON serialization.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeadConfidence::Low => "low",
+            DeadConfidence::Medium => "medium",
+            DeadConfidence::High => "high",
+        }
+    }
+}
+
 impl std::fmt::Display for DeadConfidence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DeadConfidence::Low => write!(f, "low"),
-            DeadConfidence::Medium => write!(f, "medium"),
-            DeadConfidence::High => write!(f, "high"),
-        }
+        f.write_str(self.as_str())
     }
 }
 

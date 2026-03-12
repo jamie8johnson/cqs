@@ -696,11 +696,7 @@ pub(super) fn dispatch_dead(
         .collect();
 
     let format_dead = |dead: &cqs::store::DeadFunction| {
-        let confidence = match dead.confidence {
-            cqs::store::DeadConfidence::High => "high",
-            cqs::store::DeadConfidence::Medium => "medium",
-            cqs::store::DeadConfidence::Low => "low",
-        };
+        let confidence = dead.confidence.as_str();
         serde_json::json!({
             "name": dead.chunk.name,
             "file": cqs::rel_display(&dead.chunk.file, &ctx.root),

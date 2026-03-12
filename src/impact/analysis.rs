@@ -142,7 +142,8 @@ pub(super) fn extract_call_snippet_from_cache(
     let offset = caller.call_line.saturating_sub(best.chunk.line_start) as usize;
     if offset < lines.len() {
         let start = offset.saturating_sub(1);
-        let end = (offset + 2).min(lines.len());
+        // Always show 3 lines from start (consistent window regardless of position)
+        let end = (start + 3).min(lines.len());
         Some(lines[start..end].join("\n"))
     } else {
         None

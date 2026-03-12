@@ -41,11 +41,7 @@ pub(crate) fn cmd_dead(
 
 /// Human-readable confidence label
 fn confidence_label(c: DeadConfidence) -> &'static str {
-    match c {
-        DeadConfidence::High => "high",
-        DeadConfidence::Medium => "medium",
-        DeadConfidence::Low => "low",
-    }
+    c.as_str()
 }
 
 fn display_dead_text(

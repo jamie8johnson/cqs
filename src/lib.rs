@@ -77,7 +77,7 @@ pub(crate) mod onboard;
 pub(crate) mod project;
 pub(crate) mod related;
 pub(crate) mod review;
-pub use review::{review_diff, ReviewResult};
+pub use review::{review_diff, ReviewNoteEntry, ReviewResult};
 pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod structural;
@@ -129,7 +129,8 @@ pub use scout::{
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
 pub use task::{
-    extract_modify_targets, task, task_to_json, task_with_resources, TaskResult, TaskSummary,
+    extract_modify_targets, task, task_to_json, task_with_resources, FunctionRisk, TaskResult,
+    TaskSummary,
 };
 pub use where_to_add::{
     suggest_placement, suggest_placement_with_embedding, suggest_placement_with_options,

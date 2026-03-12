@@ -112,9 +112,9 @@ fn test_task_to_json_integration() {
         description: "add fuzzy matching".to_string(),
         scout,
         code: Vec::new(),
-        risk: vec![(
-            "search_filtered".to_string(),
-            RiskScore {
+        risk: vec![cqs::FunctionRisk {
+            name: "search_filtered".to_string(),
+            risk: RiskScore {
                 caller_count: 5,
                 test_count: 2,
                 coverage: 0.4,
@@ -122,7 +122,7 @@ fn test_task_to_json_integration() {
                 blast_radius: RiskLevel::Medium,
                 score: 3.0,
             },
-        )],
+        }],
         tests: vec![TestInfo {
             name: "test_search_basic".to_string(),
             file: PathBuf::from("tests/search.rs"),

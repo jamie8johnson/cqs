@@ -205,38 +205,7 @@ pub fn semantic_diff(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_cosine_similarity_identical() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        assert!((full_cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        assert!(full_cosine_similarity(&a, &b).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_opposite() {
-        let a = vec![1.0, 0.0];
-        let b = vec![-1.0, 0.0];
-        assert!((full_cosine_similarity(&a, &b) + 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_empty() {
-        assert_eq!(full_cosine_similarity(&[], &[]), 0.0);
-    }
-
-    #[test]
-    fn test_cosine_similarity_zero_vector() {
-        let a = vec![0.0, 0.0];
-        let b = vec![1.0, 0.0];
-        assert_eq!(full_cosine_similarity(&a, &b), 0.0);
-    }
+    // full_cosine_similarity tests are in math.rs (canonical location)
 
     #[test]
     fn test_chunk_key_equality() {

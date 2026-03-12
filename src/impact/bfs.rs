@@ -4,7 +4,10 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::store::CallGraph;
 
-/// Reverse BFS from a target node, returning all ancestors with their depths
+/// Reverse BFS from a target node, returning all ancestors with their depths.
+///
+/// The target itself is always included at depth 0. Callers that need only
+/// actual ancestors should filter out depth-0 entries.
 pub(super) fn reverse_bfs(
     graph: &CallGraph,
     target: &str,

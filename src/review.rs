@@ -26,7 +26,7 @@ pub struct ReviewResult {
     /// Tests affected by or suggested for the changes (uses impact's DiffTestInfo directly)
     pub affected_tests: Vec<DiffTestInfo>,
     /// Notes relevant to changed files
-    pub relevant_notes: Vec<NoteEntry>,
+    pub relevant_notes: Vec<ReviewNoteEntry>,
     /// Aggregated risk summary
     pub risk_summary: RiskSummary,
     /// Files that are stale in the index (if any)
@@ -46,8 +46,11 @@ pub struct ReviewedFunction {
 }
 
 /// A note relevant to the review.
+///
+/// Named `ReviewNoteEntry` to avoid collision with `note::NoteEntry`
+/// (parsed note from TOML) which is a different type.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct NoteEntry {
+pub struct ReviewNoteEntry {
     pub text: String,
     pub sentiment: f32,
     pub matching_files: Vec<String>,
@@ -188,7 +191,7 @@ pub fn review_diff(
 fn match_notes(
     store: &Store,
     changed_files: &HashSet<&str>,
-) -> Result<Vec<NoteEntry>, AnalysisError> {
+) -> Result<Vec<ReviewNoteEntry>, AnalysisError> {
     let _span = tracing::info_span!("match_notes").entered();
 
     let notes = store.list_notes_summaries()?;
@@ -209,7 +212,7 @@ fn match_notes(
             if matching.is_empty() {
                 None
             } else {
-                Some(NoteEntry {
+                Some(ReviewNoteEntry {
                     text: note.text,
                     sentiment: note.sentiment,
                     matching_files: matching,

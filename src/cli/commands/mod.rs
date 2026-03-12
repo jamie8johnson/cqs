@@ -135,6 +135,13 @@ pub(crate) fn token_pack<T>(
         if used + tokens > budget && kept_any {
             break;
         }
+        if !kept_any && tokens > budget {
+            tracing::debug!(
+                tokens,
+                budget,
+                "First item exceeds token budget, including anyway"
+            );
+        }
         used += tokens;
         keep[idx] = true;
         kept_any = true;
