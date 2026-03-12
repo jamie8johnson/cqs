@@ -38,7 +38,13 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
-    let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
+    let query_preview = if query.len() > 200 {
+        &query[..200]
+    } else {
+        query
+    };
+    let _span =
+        tracing::info_span!("cmd_query", query_len = query.len(), query = %query_preview).entered();
 
     let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 
@@ -263,9 +269,7 @@ fn cmd_query_project(
     }
 
     if cli.rerank {
-        eprintln!(
-            "Warning: --rerank is not supported with multi-index search. Skipping re-ranking."
-        );
+        tracing::warn!("--rerank is not supported with multi-index search, skipping re-ranking");
     }
 
     // Multi-index search

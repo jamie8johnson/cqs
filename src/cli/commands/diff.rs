@@ -60,7 +60,12 @@ fn display_diff(result: &DiffResult) -> Result<()> {
     if !result.added.is_empty() {
         println!("{} ({}):", "Added".green().bold(), result.added.len());
         for entry in &result.added {
-            println!("  + {} {} ({})", entry.chunk_type, entry.name, entry.file.display());
+            println!(
+                "  + {} {} ({})",
+                entry.chunk_type,
+                entry.name,
+                entry.file.display()
+            );
         }
         println!();
     }
@@ -68,7 +73,12 @@ fn display_diff(result: &DiffResult) -> Result<()> {
     if !result.removed.is_empty() {
         println!("{} ({}):", "Removed".red().bold(), result.removed.len());
         for entry in &result.removed {
-            println!("  - {} {} ({})", entry.chunk_type, entry.name, entry.file.display());
+            println!(
+                "  - {} {} ({})",
+                entry.chunk_type,
+                entry.name,
+                entry.file.display()
+            );
         }
         println!();
     }
@@ -86,7 +96,10 @@ fn display_diff(result: &DiffResult) -> Result<()> {
                 .unwrap_or_else(|| "[?]".to_string());
             println!(
                 "  ~ {} {} ({}) {}",
-                entry.chunk_type, entry.name, entry.file.display(), sim
+                entry.chunk_type,
+                entry.name,
+                entry.file.display(),
+                sim
             );
         }
         println!();

@@ -58,6 +58,7 @@ impl FileSuggestion {
             "insertion_line": self.insertion_line,
             "near_function": self.near_function,
             "reason": self.reason,
+            "patterns": self.patterns,
         })
     }
 }

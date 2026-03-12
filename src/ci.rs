@@ -43,7 +43,7 @@ pub struct DeadInDiff {
     pub name: String,
     pub file: PathBuf,
     pub line_start: u32,
-    pub confidence: String,
+    pub confidence: DeadConfidence,
 }
 
 /// Complete CI analysis report.
@@ -110,12 +110,7 @@ pub fn run_ci_analysis(
                     name: d.chunk.name.clone(),
                     file: PathBuf::from(crate::rel_display(&d.chunk.file, root)),
                     line_start: d.chunk.line_start,
-                    confidence: match d.confidence {
-                        DeadConfidence::High => "high",
-                        DeadConfidence::Medium => "medium",
-                        DeadConfidence::Low => "low",
-                    }
-                    .to_string(),
+                    confidence: d.confidence,
                 })
                 .collect();
             tracing::info!(

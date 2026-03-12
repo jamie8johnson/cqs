@@ -8,7 +8,6 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -17,6 +16,11 @@ use std::sync::OnceLock;
 pub fn is_wsl() -> bool {
     static IS_WSL: OnceLock<bool> = OnceLock::new();
     *IS_WSL.get_or_init(|| {
+        // Fast path: WSL sets this env var
+        if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+            return true;
+        }
+        // Fallback: check /proc/version
         std::fs::read_to_string("/proc/version")
             .map(|v| {
                 let lower = v.to_lowercase();
@@ -330,9 +334,7 @@ pub fn add_reference_to_config(
     }
 
     // Atomic write: temp file + rename (while holding lock)
-    let suffix = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let suffix = crate::temp_suffix();
     let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
     let serialized = toml::to_string_pretty(&table)?;
     std::fs::write(&tmp_path, &serialized)?;
@@ -409,9 +411,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
 
     if removed {
         // Atomic write: temp file + rename (while holding lock)
-        let suffix = std::collections::hash_map::RandomState::new()
-            .build_hasher()
-            .finish();
+        let suffix = crate::temp_suffix();
         let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
         let serialized = toml::to_string_pretty(&table)?;
         std::fs::write(&tmp_path, &serialized)?;

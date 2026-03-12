@@ -63,7 +63,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     })?;
     for entry in walkdir::WalkDir::new(temp_dir.path())
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping entry during zip-slip check due to walkdir error");
+                None
+            }
+        })
     {
         match dunce::canonicalize(entry.path()) {
             Ok(canonical) => {
@@ -92,7 +98,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     let mut pages: Vec<_> = walkdir::WalkDir::new(temp_dir.path())
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping CHM page due to walkdir error");
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
             e.path()

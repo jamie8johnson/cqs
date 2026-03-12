@@ -77,7 +77,8 @@ pub fn semantic_diff(
     threshold: f32,
     language_filter: Option<&str>,
 ) -> Result<DiffResult, StoreError> {
-    let _span = tracing::info_span!("semantic_diff").entered();
+    let _span =
+        tracing::info_span!("semantic_diff", source_label, target_label, threshold).entered();
 
     // Load identities from both stores (push language filter into SQL when present)
     let source_ids = source_store.all_chunk_identities_filtered(language_filter)?;

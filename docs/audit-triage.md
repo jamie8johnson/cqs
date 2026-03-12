@@ -44,52 +44,52 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | DOC-2: `store/mod.rs` module comment missing `types` and `migrations` submodules | Documentation | store/mod.rs:6-11 | |
-| 2 | DOC-3: README config example missing `ef_search`, `stale_check`, `note_only` | Documentation | README.md:112-128 | |
-| 3 | DOC-4: `--no-demote` search flag undocumented in README | Documentation | README.md | |
-| 4 | DOC-5: SECURITY.md Write Access table missing `audit-mode.json` | Documentation | SECURITY.md:63-72 | |
-| 5 | DOC-6: `cqs completions` command not documented in README | Documentation | README.md | |
-| 6 | DOC-7: `store/mod.rs` misleading "sync wrappers" comment | Documentation | store/mod.rs:1-4 | |
+| 1 | DOC-2: `store/mod.rs` module comment missing `types` and `migrations` submodules | Documentation | store/mod.rs:6-11 | ✅ fixed |
+| 2 | DOC-3: README config example missing `ef_search`, `stale_check`, `note_only` | Documentation | README.md:112-128 | ✅ fixed |
+| 3 | DOC-4: `--no-demote` search flag undocumented in README | Documentation | README.md | ✅ fixed |
+| 4 | DOC-5: SECURITY.md Write Access table missing `audit-mode.json` | Documentation | SECURITY.md:63-72 | ✅ fixed |
+| 5 | DOC-6: `cqs completions` command not documented in README | Documentation | README.md | ✅ fixed |
+| 6 | DOC-7: `store/mod.rs` misleading "sync wrappers" comment | Documentation | store/mod.rs:1-4 | ✅ fixed |
 | 7 | CQ-1: `resolve_reference_store` / `_readonly` near-identical | Code Quality | resolve.rs:44-99 | |
-| 8 | CQ-2: Random temp-file suffix pattern duplicated 5 times | Code Quality | audit.rs, config.rs, note.rs, project.rs | |
+| 8 | CQ-2: Random temp-file suffix pattern duplicated 5 times | Code Quality | audit.rs, config.rs, note.rs, project.rs | ✅ fixed |
 | 9 | CQ-3: `DeadConfidence` → `&str` mapping repeated in 3 locations | Code Quality | dead.rs, ci.rs, handlers.rs | |
 | 10 | CQ-5: `diff.rs` duplicates `full_cosine_similarity` tests from `math.rs` | Code Quality | diff.rs:206-237 | |
-| 11 | EH-4: `reference list` swallows `Store::open` errors, shows `0` chunks | Error Handling | reference.rs:172-196 | |
-| 12 | EH-5: `convert` module silently skips `walkdir` errors in 6 locations | Error Handling | convert/mod.rs, chm.rs, webhelp.rs | |
-| 13 | EH-6: `audit.rs` swallows JSON parse error with bare `Err(_)` | Error Handling | audit.rs:75 | |
-| 14 | EH-7: `parse_duration` drops `ParseIntError` from `map_err(|_| ...)` | Error Handling | audit.rs:161,177,198 | |
-| 15 | OB-1: `process_file_changes` has no tracing span | Observability | watch.rs:295 | |
-| 16 | OB-2: `find_pdf_script` double-emits to `eprintln!` and `tracing::warn!` | Observability | pdf.rs:57-58 | |
-| 17 | OB-3: `cmd_query` span captures only `query_len`, not query text | Observability | query.rs:41 | |
-| 18 | OB-4: `semantic_diff` span missing source/target/threshold | Observability | diff.rs:79 | |
-| 19 | OB-5: `--rerank` warning uses `eprintln!` instead of `tracing::warn!` | Observability | query.rs:248-251 | |
-| 20 | OB-6: `convert` module missing bytes/duration metrics | Observability | convert/mod.rs, pdf.rs, html.rs | |
-| 21 | OB-7: `reindex_files` warn uses positional format, not structured fields | Observability | watch.rs:500 | |
+| 11 | EH-4: `reference list` swallows `Store::open` errors, shows `0` chunks | Error Handling | reference.rs:172-196 | ✅ fixed |
+| 12 | EH-5: `convert` module silently skips `walkdir` errors in 6 locations | Error Handling | convert/mod.rs, chm.rs, webhelp.rs | ✅ fixed |
+| 13 | EH-6: `audit.rs` swallows JSON parse error with bare `Err(_)` | Error Handling | audit.rs:75 | ✅ fixed (prior) |
+| 14 | EH-7: `parse_duration` drops `ParseIntError` from `map_err(|_| ...)` | Error Handling | audit.rs:161,177,198 | ✅ fixed |
+| 15 | OB-1: `process_file_changes` has no tracing span | Observability | watch.rs:295 | ✅ fixed |
+| 16 | OB-2: `find_pdf_script` double-emits to `eprintln!` and `tracing::warn!` | Observability | pdf.rs:57-58 | ✅ fixed |
+| 17 | OB-3: `cmd_query` span captures only `query_len`, not query text | Observability | query.rs:41 | ✅ fixed |
+| 18 | OB-4: `semantic_diff` span missing source/target/threshold | Observability | diff.rs:79 | ✅ fixed |
+| 19 | OB-5: `--rerank` warning uses `eprintln!` instead of `tracing::warn!` | Observability | query.rs:248-251 | ✅ fixed |
+| 20 | OB-6: `convert` module missing bytes/duration metrics | Observability | convert/mod.rs, pdf.rs, html.rs | deferred |
+| 21 | OB-7: `reindex_files` warn uses positional format, not structured fields | Observability | watch.rs:500 | ✅ fixed |
 | 22 | AD-2: `chunk_type` String in `OnboardEntry`/`DriftEntry` when enum exists | API Design | onboard.rs:58, drift.rs:17 | |
 | 23 | AD-3: `ChunkRole` Serialize PascalCase vs `as_str()` snake_case | API Design | scout.rs:15-34 | |
-| 24 | AD-4: `DeadInDiff.confidence` is String when `DeadConfidence` has Serialize | API Design | ci.rs:46 | |
-| 25 | AD-5: `DiffEntry` not re-exported despite being in public `DiffResult` | API Design | lib.rs:104, diff.rs:14 | |
+| 24 | AD-4: `DeadInDiff.confidence` is String when `DeadConfidence` has Serialize | API Design | ci.rs:46 | ✅ fixed |
+| 25 | AD-5: `DiffEntry` not re-exported despite being in public `DiffResult` | API Design | lib.rs:104, diff.rs:14 | ✅ fixed |
 | 26 | AD-6: `review::NoteEntry` not exported, name-collides with `note::NoteEntry` | API Design | lib.rs, review.rs:50 | |
-| 27 | AD-7: `FileSuggestion::to_json()` silently omits `patterns` field | API Design | where_to_add.rs:54-62 | |
+| 27 | AD-7: `FileSuggestion::to_json()` silently omits `patterns` field | API Design | where_to_add.rs:54-62 | ✅ fixed |
 | 28 | AD-8: `suggest_placement_with_embedding` redundant | API Design | where_to_add.rs:125-136 | |
 | 29 | AD-9: `TaskResult.risk` anonymous tuple — inconsistent serialization | API Design | task.rs:37 | |
 | 30 | AD-10: `ScoutResult.relevant_notes` `#[serde(skip)]` but in `scout_to_json()` | API Design | scout.rs:83-85 | |
-| 31 | AD-11: `ModelInfo` missing `Debug`, `Clone`, `Serialize` | API Design | store/helpers.rs:591 | |
-| 32 | AD-12: `score_name_match_pre_lower` not exported despite doc recommending it | API Design | store/helpers.rs:668 | |
-| 33 | AC-1: `ef_search` cap formula doesn't enforce index-size bound (harmless) | Algorithm | hnsw/search.rs:41-44 | |
+| 31 | AD-11: `ModelInfo` missing `Debug`, `Clone`, `Serialize` | API Design | store/helpers.rs:591 | ✅ fixed |
+| 32 | AD-12: `score_name_match_pre_lower` not exported despite doc recommending it | API Design | store/helpers.rs:668 | ✅ fixed |
+| 33 | AC-1: `ef_search` cap formula doesn't enforce index-size bound (harmless) | Algorithm | hnsw/search.rs:41-44 | ✅ fixed |
 | 34 | AC-4: Snippet window asymmetry when `call_line == line_start` | Algorithm | impact/analysis.rs:143-145 | |
 | 35 | AC-5: `reverse_bfs` depth-0 invariant undocumented | Algorithm | impact/bfs.rs:15 | |
 | 36 | AC-6: `token_pack` first-item guarantee can exceed budget — no warning | Algorithm | commands/mod.rs:135, task.rs:62 | |
-| 37 | PB-3: `is_wsl()` should check `WSL_DISTRO_NAME` env var first | Platform | config.rs:17-27 | |
+| 37 | PB-3: `is_wsl()` should check `WSL_DISTRO_NAME` env var first | Platform | config.rs:17-27 | ✅ fixed |
 | 38 | PB-5: WSL poll detection prefix-based, not filesystem-based (doc only) | Platform | watch.rs:67-72 | |
 | 39 | PB-7: `ensure_ort_provider_libs` silently skips GPU when `LD_LIBRARY_PATH` unset | Platform | embedder.rs:685-700 | |
 | 40 | PERF-1: SQL placeholder rebuilt on every batch iteration (22 sites) | Performance | chunks.rs, calls.rs, types.rs | |
 | 41 | PERF-2: `search_by_names_batch` post-filter O(results × batch_names) | Performance | store/mod.rs | |
-| 42 | PERF-5: `prune_missing` builds identical placeholder string twice | Performance | store/chunks.rs | |
+| 42 | PERF-5: `prune_missing` builds identical placeholder string twice | Performance | store/chunks.rs | ✅ fixed (prior) |
 | 43 | PERF-6: Test SQL rebuilt dynamically on every cold cache call | Performance | store/calls.rs | |
 | 44 | PERF-8: `sanitize_fts_query` allocates two intermediate strings always | Performance | store/mod.rs | |
 | 45 | PERF-9: `strip_markdown_noise` applies 6 regex replacements unconditionally | Performance | markdown parser | |
-| 46 | PERF-10: `find_dead_code` runs two full-table scans — should UNION | Performance | store/calls.rs | |
+| 46 | PERF-10: `find_dead_code` runs two full-table scans — should UNION | Performance | store/calls.rs | ✅ fixed |
 | 47 | DS-3: `ProjectRegistry::load()` TOCTOU — size check and read are separate | Data Safety | project.rs:32-51 | |
 | 48 | DS-4: `call_graph_cache`/`test_chunks_cache` OnceLock — no invalidation | Data Safety | store/mod.rs, calls.rs | |
 | 49 | RM-1: `HnswIndex::build` doubles peak memory (flat buffer + Vec coexist) | Resource Mgmt | hnsw/build.rs:57-79 | |

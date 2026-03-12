@@ -28,7 +28,13 @@ pub fn is_webhelp_dir(dir: &Path) -> bool {
     // Check for at least one HTML file anywhere under content/
     walkdir::WalkDir::new(&content_dir)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping entry during webhelp detection due to walkdir error");
+                None
+            }
+        })
         .any(|e| {
             e.file_type().is_file()
                 && e.path()
@@ -62,7 +68,13 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     let mut pages: Vec<_> = walkdir::WalkDir::new(&content_dir)
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping web help page due to walkdir error");
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
             e.path()

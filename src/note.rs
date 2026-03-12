@@ -4,7 +4,6 @@
 //! indexed for semantic search.
 
 use serde::{Deserialize, Serialize};
-use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 use thiserror::Error;
 
@@ -235,9 +234,7 @@ pub fn rewrite_notes_file(
     mutate(&mut file.note)?;
 
     // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
-    let suffix = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let suffix = crate::temp_suffix();
     let tmp_path = notes_path.with_extension(format!("toml.{:016x}.tmp", suffix));
 
     let serialized = match toml::to_string_pretty(&file) {

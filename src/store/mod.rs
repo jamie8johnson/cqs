@@ -1,4 +1,4 @@
-//! SQLite storage for chunks and embeddings (sqlx async with sync wrappers)
+//! SQLite storage for chunks, embeddings, and call graph data.
 //!
 //! Provides sync methods that internally use tokio runtime to execute async sqlx operations.
 //! This allows callers to use the Store synchronously while benefiting from sqlx's async features.
@@ -9,6 +9,8 @@
 //! - `chunks` - Chunk CRUD operations
 //! - `notes` - Note CRUD and search
 //! - `calls` - Call graph storage and queries
+//! - `types` - Type dependency storage and queries
+//! - `migrations` - Database schema migrations
 
 mod calls;
 mod chunks;
@@ -98,6 +100,9 @@ pub use helpers::DEFAULT_NAME_BOOST;
 
 /// Score a chunk name against a query for definition search.
 pub use helpers::score_name_match;
+
+/// Score a pre-lowercased chunk name against a pre-lowercased query (loop-optimized variant).
+pub use helpers::score_name_match_pre_lower;
 
 /// Statistics about call graph entries (chunk-level calls table).
 pub use calls::CallStats;

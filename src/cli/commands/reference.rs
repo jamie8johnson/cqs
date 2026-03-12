@@ -166,6 +166,15 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
             .iter()
             .map(|r| {
                 let chunks = Store::open(&r.path.join("index.db"))
+                    .map_err(|e| {
+                        tracing::warn!(
+                            name = %r.name,
+                            path = %r.path.display(),
+                            error = %e,
+                            "Failed to open reference store, showing 0 chunks"
+                        );
+                        e
+                    })
                     .ok()
                     .and_then(|s| s.chunk_count().ok())
                     .unwrap_or(0);
@@ -187,6 +196,15 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
 
     for r in &config.references {
         let chunks = Store::open(&r.path.join("index.db"))
+            .map_err(|e| {
+                tracing::warn!(
+                    name = %r.name,
+                    path = %r.path.display(),
+                    error = %e,
+                    "Failed to open reference store, showing 0 chunks"
+                );
+                e
+            })
             .ok()
             .and_then(|s| s.chunk_count().ok())
             .unwrap_or(0);

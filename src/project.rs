@@ -80,12 +80,7 @@ impl ProjectRegistry {
 
         let content = toml::to_string_pretty(self)?;
         // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
-        let suffix = {
-            use std::hash::{BuildHasher, Hasher};
-            std::collections::hash_map::RandomState::new()
-                .build_hasher()
-                .finish()
-        };
+        let suffix = crate::temp_suffix();
         let tmp = path.with_extension(format!("toml.{:016x}.tmp", suffix));
         std::fs::write(&tmp, &content)
             .with_context(|| format!("Failed to write {}", tmp.display()))?;

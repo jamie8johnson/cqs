@@ -97,6 +97,7 @@ cqs --no-content "query"     # File:line only, no code
 cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
 cqs --no-stale-check "query" # Skip staleness checks (useful on NFS)
+cqs --no-demote "query"      # Disable score demotion for low-quality matches
 ```
 
 ## Configuration
@@ -121,6 +122,15 @@ name_boost = 0.2
 
 # Note weight in search results (0.0-1.0, lower = notes rank below code)
 note_weight = 1.0
+
+# HNSW search width (higher = better recall, slower queries)
+ef_search = 100
+
+# Skip index staleness checks on every query (useful on NFS or slow disks)
+stale_check = true
+
+# Search only notes, skip code results (equivalent to --note-only flag)
+note_only = false
 
 # Output modes
 quiet = false
@@ -403,6 +413,7 @@ Key commands (all support `--json`):
 - `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
+- `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell)
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```

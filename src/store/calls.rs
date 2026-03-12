@@ -37,6 +37,16 @@ pub enum DeadConfidence {
     High,
 }
 
+impl std::fmt::Display for DeadConfidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeadConfidence::Low => write!(f, "low"),
+            DeadConfidence::Medium => write!(f, "medium"),
+            DeadConfidence::High => write!(f, "high"),
+        }
+    }
+}
+
 /// Fallback entry point names — used when language definitions don't provide any.
 /// Cross-language names that span multiple languages live here.
 /// These are superseded by `LanguageDef::entry_point_names` via `build_entry_point_names()`.
@@ -796,37 +806,22 @@ impl Store {
     ///
     /// Used for confidence scoring: files with active functions are "active".
     async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
-        // Files with at least one function that has callers (JOIN is more efficient than IN subquery)
-        let files_with_callers: std::collections::HashSet<String> = {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT c.origin
-                 FROM chunks c
-                 INNER JOIN function_calls fc ON c.name = fc.callee_name",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-            rows.into_iter().map(|(f,)| f).collect()
-        };
-
-        // Files with type-edge activity (functions that reference types)
-        let files_with_type_activity: std::collections::HashSet<String> = {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT c.origin FROM chunks c
-                 JOIN type_edges te ON c.id = te.source_chunk_id",
-            )
-            .fetch_all(&self.pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to query files with type activity");
-                Vec::new()
-            });
-            rows.into_iter().map(|(f,)| f).collect()
-        };
-
-        // Union both sets
-        let mut active = files_with_callers;
-        active.extend(files_with_type_activity);
-        Ok(active)
+        // Single query: UNION of files with callers and files with type-edge activity
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT c.origin
+             FROM chunks c
+             INNER JOIN function_calls fc ON c.name = fc.callee_name
+             UNION
+             SELECT DISTINCT c.origin FROM chunks c
+             JOIN type_edges te ON c.id = te.source_chunk_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to query active files");
+            Vec::new()
+        });
+        Ok(rows.into_iter().map(|(f,)| f).collect())
     }
 
     /// Phase 2: Batch-fetch content for candidates and assign confidence scores.

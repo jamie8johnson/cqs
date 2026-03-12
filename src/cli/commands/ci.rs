@@ -220,9 +220,18 @@ fn display_ci_text(
             report.dead_in_diff.len()
         );
         for d in &report.dead_in_diff {
+            use cqs::store::DeadConfidence;
+            let conf = match d.confidence {
+                DeadConfidence::High => "high",
+                DeadConfidence::Medium => "medium",
+                DeadConfidence::Low => "low",
+            };
             println!(
                 "  {} {}:{} [{}]",
-                d.name, d.file.display(), d.line_start, d.confidence
+                d.name,
+                d.file.display(),
+                d.line_start,
+                conf
             );
         }
     }

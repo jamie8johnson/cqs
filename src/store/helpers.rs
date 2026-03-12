@@ -589,6 +589,7 @@ impl SearchFilter {
 }
 
 /// Model metadata for index initialization
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelInfo {
     pub name: String,
     pub dimensions: u32,

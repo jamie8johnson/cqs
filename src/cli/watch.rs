@@ -305,6 +305,7 @@ fn process_file_changes(
     quiet: bool,
 ) {
     let files: Vec<PathBuf> = pending_files.drain().collect();
+    let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     pending_files.shrink_to(64);
     if !quiet {
         println!("\n{} file(s) changed, reindexing...", files.len());
@@ -497,7 +498,7 @@ fn reindex_files(
                     file_chunks
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                    tracing::warn!(path = %abs_path.display(), error = %e, "Failed to parse file");
                     vec![]
                 }
             }
