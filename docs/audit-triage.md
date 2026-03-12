@@ -83,8 +83,8 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | 37 | PB-3: `is_wsl()` should check `WSL_DISTRO_NAME` env var first | Platform | config.rs:17-27 | ✅ fixed |
 | 38 | PB-5: WSL poll detection prefix-based, not filesystem-based (doc only) | Platform | watch.rs:67-72 | ✅ fixed |
 | 39 | PB-7: `ensure_ort_provider_libs` silently skips GPU when `LD_LIBRARY_PATH` unset | Platform | embedder.rs:685-700 | ✅ fixed |
-| 40 | PERF-1: SQL placeholder rebuilt on every batch iteration (22 sites) | Performance | chunks.rs, calls.rs, types.rs | |
-| 41 | PERF-2: `search_by_names_batch` post-filter O(results × batch_names) | Performance | store/mod.rs | |
+| 40 | PERF-1: SQL placeholder rebuilt on every batch iteration (22 sites) | Performance | chunks.rs, calls.rs, types.rs | ✅ fixed |
+| 41 | PERF-2: `search_by_names_batch` post-filter O(results × batch_names) | Performance | store/mod.rs | ✅ documented (bounded by BATCH_SIZE=20) |
 | 42 | PERF-5: `prune_missing` builds identical placeholder string twice | Performance | store/chunks.rs | ✅ fixed (prior) |
 | 43 | PERF-6: Test SQL rebuilt dynamically on every cold cache call | Performance | store/calls.rs | ✅ fixed |
 | 44 | PERF-8: `sanitize_fts_query` allocates two intermediate strings always | Performance | store/mod.rs | ✅ fixed |
@@ -95,9 +95,9 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | 49 | RM-1: `HnswIndex::build` doubles peak memory (flat buffer + Vec coexist) | Resource Mgmt | hnsw/build.rs:57-79 | |
 | 50 | RM-2: `count_vectors` deserializes full id map to count entries | Resource Mgmt | hnsw/persist.rs | ✅ fixed |
 | 51 | RM-4: Watch mode holds old + new HNSW index simultaneously | Resource Mgmt | cli/watch.rs | |
-| 52 | RM-7: `BatchContext` OnceLock caches not cleared during idle | Resource Mgmt | cli/batch/mod.rs | |
+| 52 | RM-7: `BatchContext` OnceLock caches not cleared during idle | Resource Mgmt | cli/batch/mod.rs | ✅ documented |
 | 53 | RM-10: `reindex_files` O(files × total_calls) in watch mode | Resource Mgmt | cli/watch.rs | |
-| 54 | EX-1: `CHUNK_CAPTURE_NAMES` is third sync point for ChunkType | Extensibility | parser | |
+| 54 | EX-1: `CHUNK_CAPTURE_NAMES` is third sync point for ChunkType | Extensibility | parser | ✅ fixed |
 | 55 | EX-2: `Pattern::FromStr` error hardcodes valid names | Extensibility | parser | ✅ fixed |
 | 56 | EX-3: `--chunk-type` CLI help lists 11/16 variants | Extensibility | cli/mod.rs | ✅ fixed |
 | 57 | EX-4: `nl.rs` hardcodes `"typealias"` multi-word workaround | Extensibility | nl.rs | ✅ fixed |

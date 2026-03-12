@@ -1006,7 +1006,10 @@ impl Store {
                 .fetch_all(&self.pool)
                 .await?;
 
-                // Post-filter: assign each row to matching names
+                // Post-filter: assign each row to matching names.
+                // Complexity: O(results × batch.len()), but batch.len() ≤ BATCH_SIZE = 20
+                // and score_name_match does fuzzy substring/prefix scoring, so a HashMap
+                // on exact name is not applicable here. The bound is acceptable.
                 for row in rows {
                     let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
 

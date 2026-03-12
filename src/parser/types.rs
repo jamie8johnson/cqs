@@ -10,7 +10,11 @@ pub use crate::language::{ChunkType, Language, SignatureStyle};
 /// Map a tree-sitter capture name to a `ChunkType`.
 ///
 /// Single source of truth — used by chunk extraction, call graph, and injection.
-/// Returns `None` for unknown capture names.
+/// Returns `None` for unknown capture names (including non-chunk captures like `"name"`).
+///
+/// To test whether a capture corresponds to a chunk definition, use
+/// `capture_name_to_chunk_type(name).is_some()` instead of maintaining a
+/// separate list of valid names.
 pub fn capture_name_to_chunk_type(name: &str) -> Option<ChunkType> {
     match name {
         "function" => Some(ChunkType::Function),
@@ -31,27 +35,6 @@ pub fn capture_name_to_chunk_type(name: &str) -> Option<ChunkType> {
         _ => None,
     }
 }
-
-/// All tree-sitter capture names that correspond to chunk definitions.
-///
-/// Used for filtering captures in call/type extraction.
-pub const CHUNK_CAPTURE_NAMES: &[&str] = &[
-    "function",
-    "struct",
-    "class",
-    "enum",
-    "trait",
-    "interface",
-    "const",
-    "section",
-    "module",
-    "macro",
-    "object",
-    "typealias",
-    "property",
-    "delegate",
-    "event",
-];
 
 /// Errors that can occur during code parsing
 #[derive(Error, Debug)]

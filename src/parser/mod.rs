@@ -428,7 +428,7 @@ impl Parser {
         while let Some(m) = matches2.next() {
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                types::CHUNK_CAPTURE_NAMES.contains(&name)
+                types::capture_name_to_chunk_type(name).is_some()
             });
 
             let Some(func_capture) = func_node else {

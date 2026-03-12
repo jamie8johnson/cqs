@@ -5,7 +5,7 @@ use tree_sitter::StreamingIterator;
 
 use super::types::{
     capture_name_to_chunk_type, CallSite, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
-    ParserError, TypeEdgeKind, TypeRef, CHUNK_CAPTURE_NAMES,
+    ParserError, TypeEdgeKind, TypeRef,
 };
 use super::Parser;
 
@@ -293,7 +293,7 @@ impl Parser {
             // Find chunk node
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                CHUNK_CAPTURE_NAMES.contains(&name)
+                capture_name_to_chunk_type(name).is_some()
             });
 
             let Some(func_capture) = func_node else {

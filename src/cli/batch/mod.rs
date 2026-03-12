@@ -52,6 +52,25 @@ const IDLE_TIMEOUT_MINUTES: u64 = 5;
 /// The CAGRA/HNSW index is held for the full session lifetime; this is
 /// intentional. Rebuilding between commands would add seconds of latency.
 /// VRAM cost: ~3 KB per vector (769-dim × 4 bytes), so 100k chunks ≈ 300 MB.
+///
+/// # Cache invalidation
+///
+/// ONNX sessions (embedder, reranker) are cleared after `IDLE_TIMEOUT_MINUTES`
+/// of inactivity to free memory, and re-initialized lazily on next use.
+///
+/// The remaining caches (call graph, test chunks, file set, notes, config) are
+/// **never cleared during a session**. This is a deliberate trade-off:
+/// - Batch sessions are typically short-lived (a single pipeline invocation or
+///   a bounded interactive session).
+/// - Re-reading the SQLite call graph or scanning the file system on every
+///   command would add latency with no correctness benefit for the common case.
+/// - If the index changes mid-session (e.g. `cqs index` runs concurrently),
+///   cached data may be stale. The correct remedy is to restart the batch
+///   session, which re-opens the Store and re-initializes all caches.
+///
+/// There is no `clear_caches()` method because `OnceLock` cannot be reset after
+/// it has been set. To force cache invalidation, discard the `BatchContext` and
+/// call `create_context()` again.
 pub(crate) struct BatchContext {
     pub store: Store,
     embedder: OnceLock<Embedder>,
@@ -64,7 +83,9 @@ pub(crate) struct BatchContext {
     // Intentionally never invalidated — notes/audit state fixed for session duration
     audit_state: OnceLock<cqs::audit::AuditMode>,
     notes_cache: OnceLock<Vec<cqs::note::Note>>,
+    // Intentionally never cleared — see struct-level doc comment on cache invalidation
     call_graph: OnceLock<cqs::store::CallGraph>,
+    // Intentionally never cleared — see struct-level doc comment on cache invalidation
     test_chunks: OnceLock<Vec<cqs::store::ChunkSummary>>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
