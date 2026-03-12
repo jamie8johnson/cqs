@@ -1,6 +1,6 @@
 [package]
 name = "cqs"
-version = "1.0.2"
+version = "1.0.3"
 edition = "2021"
 rust-version = "1.93"
 description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 50 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
@@ -79,8 +79,8 @@ tree-sitter-razor = { version = "0.1", optional = true }
 tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-vue = { version = "0.1", package = "tree-sitter-vue-next", optional = true }
 
-# ML
-ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
+# ML (CUDA/TensorRT added for non-macOS targets below)
+ort = "2.0.0-rc.12"
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4.3"
 ndarray = "0.17"
@@ -141,6 +141,10 @@ rustyline = "17"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# CUDA/TensorRT only available on Linux and Windows (no prebuilt binaries for macOS)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
 
 [features]
 default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "convert"]

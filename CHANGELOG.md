@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.2] - 2026-03-13
+## [1.0.3] - 2026-03-13
 
 ### Fixed
+- Release workflow: make ort CUDA/TensorRT features conditional on non-macOS targets (no prebuilt binaries for x86_64-apple-darwin)
 - Release workflow: upgrade macOS Intel runner from macos-13 (deprecated) to macos-14
 
 ## [1.0.1] - 2026-03-13
