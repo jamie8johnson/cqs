@@ -1216,7 +1216,7 @@ pub(super) fn dispatch_drift(
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file,
+                "file": e.file.display().to_string(),
                 "chunk_type": e.chunk_type,
                 "similarity": e.similarity,
                 "drift": e.drift,

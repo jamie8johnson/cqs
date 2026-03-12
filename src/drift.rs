@@ -3,6 +3,8 @@
 //! Thin wrapper over `semantic_diff()` focused on the "modified" entries.
 //! Sorts by drift magnitude (most changed first), supports min-drift filtering.
 
+use std::path::PathBuf;
+
 use crate::diff::semantic_diff;
 use crate::store::{Store, StoreError};
 
@@ -12,7 +14,7 @@ pub struct DriftEntry {
     /// Function/class name
     pub name: String,
     /// Source file path
-    pub file: String,
+    pub file: PathBuf,
     /// Type of code element
     pub chunk_type: String,
     /// Cosine similarity (lower = more drift)

@@ -4,7 +4,7 @@
 //! diff-touched files, and configurable gate thresholds with CI exit codes.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::AnalysisError;
 
@@ -41,7 +41,7 @@ pub struct GateResult {
 #[derive(Debug, serde::Serialize)]
 pub struct DeadInDiff {
     pub name: String,
-    pub file: String,
+    pub file: PathBuf,
     pub line_start: u32,
     pub confidence: String,
 }
@@ -90,7 +90,11 @@ pub fn run_ci_analysis(
 
     // 2. Dead code in diff files
     let hunks = parse_unified_diff(diff_text);
-    let diff_files: HashSet<&str> = hunks.iter().map(|h| h.file.as_str()).collect();
+    let diff_file_strings: Vec<String> = hunks
+        .iter()
+        .map(|h| h.file.to_string_lossy().into_owned())
+        .collect();
+    let diff_files: HashSet<&str> = diff_file_strings.iter().map(|s| s.as_str()).collect();
 
     let dead_in_diff = match store.find_dead_code(true) {
         Ok((confident, possibly_pub)) => {
@@ -104,7 +108,7 @@ pub fn run_ci_analysis(
                 })
                 .map(|d| DeadInDiff {
                     name: d.chunk.name.clone(),
-                    file: crate::rel_display(&d.chunk.file, root),
+                    file: PathBuf::from(crate::rel_display(&d.chunk.file, root)),
                     line_start: d.chunk.line_start,
                     confidence: match d.confidence {
                         DeadConfidence::High => "high",

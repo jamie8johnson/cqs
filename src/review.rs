@@ -40,7 +40,7 @@ pub struct ReviewResult {
 #[derive(Debug, serde::Serialize)]
 pub struct ReviewedFunction {
     pub name: String,
-    pub file: String,
+    pub file: PathBuf,
     pub line_start: u32,
     pub risk: RiskScore,
 }
@@ -120,11 +120,12 @@ pub fn review_diff(
         .collect();
 
     // 7. Match notes to changed files (non-fatal: warning on failure)
-    let changed_files: HashSet<&str> = impact
+    let changed_file_strings: Vec<String> = impact
         .changed_functions
         .iter()
-        .map(|f| f.file.as_str())
+        .map(|f| f.file.to_string_lossy().into_owned())
         .collect();
+    let changed_files: HashSet<&str> = changed_file_strings.iter().map(|s| s.as_str()).collect();
     let relevant_notes = match match_notes(store, &changed_files) {
         Ok(notes) => notes,
         Err(e) => {
@@ -257,7 +258,7 @@ mod tests {
     fn mock_reviewed(name: &str, level: RiskLevel) -> ReviewedFunction {
         ReviewedFunction {
             name: name.to_string(),
-            file: "src/lib.rs".to_string(),
+            file: PathBuf::from("src/lib.rs"),
             line_start: 1,
             risk: RiskScore {
                 risk_level: level,

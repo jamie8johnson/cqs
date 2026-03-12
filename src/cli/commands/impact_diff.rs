@@ -77,7 +77,7 @@ fn display_diff_impact_text(result: &cqs::DiffImpactResult, root: &std::path::Pa
         result.changed_functions.len()
     );
     for f in &result.changed_functions {
-        println!("  {} ({}:{})", f.name, f.file, f.line_start);
+        println!("  {} ({}:{})", f.name, f.file.display(), f.line_start);
     }
 
     // Callers

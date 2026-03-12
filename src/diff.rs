@@ -4,6 +4,7 @@
 //! Reports added, removed, modified, and unchanged functions.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::language::ChunkType;
 use crate::math::full_cosine_similarity;
@@ -15,7 +16,7 @@ pub struct DiffEntry {
     /// Function/class name
     pub name: String,
     /// Source file path
-    pub file: String,
+    pub file: PathBuf,
     /// Type of code element
     pub chunk_type: ChunkType,
     /// Embedding similarity (only for Modified)
@@ -118,7 +119,7 @@ pub fn semantic_diff(
         } else {
             added.push(DiffEntry {
                 name: target_chunk.name.clone(),
-                file: target_chunk.origin.clone(),
+                file: PathBuf::from(&target_chunk.origin),
                 chunk_type: target_chunk.chunk_type,
                 similarity: None,
             });
@@ -130,7 +131,7 @@ pub fn semantic_diff(
         if !target_map.contains_key(key) {
             removed.push(DiffEntry {
                 name: source_chunk.name.clone(),
-                file: source_chunk.origin.clone(),
+                file: PathBuf::from(&source_chunk.origin),
                 chunk_type: source_chunk.chunk_type,
                 similarity: None,
             });
@@ -158,7 +159,7 @@ pub fn semantic_diff(
                     if sim < threshold {
                         modified.push(DiffEntry {
                             name: target_chunk.name.clone(),
-                            file: target_chunk.origin.clone(),
+                            file: PathBuf::from(&target_chunk.origin),
                             chunk_type: target_chunk.chunk_type,
                             similarity: Some(sim),
                         });
@@ -170,7 +171,7 @@ pub fn semantic_diff(
                     // Can't compare — treat as modified
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
-                        file: target_chunk.origin.clone(),
+                        file: PathBuf::from(&target_chunk.origin),
                         chunk_type: target_chunk.chunk_type,
                         similarity: None,
                     });

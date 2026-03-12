@@ -80,7 +80,7 @@ pub struct FunctionHints {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChangedFunction {
     pub name: String,
-    pub file: String,
+    pub file: PathBuf,
     pub line_start: u32,
 }
 

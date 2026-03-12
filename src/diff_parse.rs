@@ -2,6 +2,7 @@
 //!
 //! Extracts changed file paths and line ranges from `git diff` output.
 
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -14,7 +15,7 @@ static HUNK_RE: LazyLock<Regex> =
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffHunk {
     /// Relative file path (from `+++ b/...`)
-    pub file: String,
+    pub file: PathBuf,
     /// Start line in the new version (1-based)
     pub start: u32,
     /// Number of lines in the new version (half-open: covers `start..start+count`)
@@ -94,7 +95,7 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
                     })
                     .unwrap_or(1);
                 hunks.push(DiffHunk {
-                    file: file.clone(),
+                    file: PathBuf::from(file.as_str()),
                     start,
                     count,
                 });
@@ -108,6 +109,7 @@ pub fn parse_unified_diff(input: &str) -> Vec<DiffHunk> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn test_parse_unified_diff_basic() {
@@ -122,7 +124,7 @@ diff --git a/src/main.rs b/src/main.rs
 ";
         let hunks = parse_unified_diff(diff);
         assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks[0].file, "src/main.rs");
+        assert_eq!(hunks[0].file, Path::new("src/main.rs"));
         assert_eq!(hunks[0].start, 10);
         assert_eq!(hunks[0].count, 5);
     }
@@ -139,7 +141,7 @@ new file mode 100644
 ";
         let hunks = parse_unified_diff(diff);
         assert_eq!(hunks.len(), 1);
-        assert_eq!(hunks[0].file, "src/new.rs");
+        assert_eq!(hunks[0].file, Path::new("src/new.rs"));
         assert_eq!(hunks[0].start, 1);
         assert_eq!(hunks[0].count, 15);
     }
@@ -226,7 +228,8 @@ rename to src/new_name.rs
         let hunks = parse_unified_diff(diff);
         assert_eq!(hunks.len(), 1);
         assert_eq!(
-            hunks[0].file, "src/new_name.rs",
+            hunks[0].file,
+            Path::new("src/new_name.rs"),
             "Should use the new file name"
         );
     }
