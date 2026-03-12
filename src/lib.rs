@@ -104,8 +104,8 @@ pub use store::{ModelInfo, SearchFilter, Store};
 pub use diff::{semantic_diff, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
-    gather, gather_cross_index, gather_with_graph, GatherDirection, GatherOptions, GatherResult,
-    GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
+    gather, gather_cross_index, gather_cross_index_with_index, gather_with_graph, GatherDirection,
+    GatherOptions, GatherResult, GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,

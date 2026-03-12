@@ -1,7 +1,7 @@
 //! Embedding generation with ort + tokenizers
 
 use lru::LruCache;
-use ndarray::Array2;
+use ndarray::{Array2, Array3, Axis};
 use once_cell::sync::OnceCell;
 use ort::ep::ExecutionProvider as OrtExecutionProvider;
 use ort::session::Session;
@@ -575,32 +575,33 @@ impl Embedder {
                 batch_size, shape[0]
             )));
         }
-        let mut results = Vec::with_capacity(batch_size);
+        // Mean-pooling via ndarray (vectorized, SIMD-friendly)
+        let hidden = Array3::from_shape_vec((batch_size, seq_len, embedding_dim), data.to_vec())
+            .map_err(|e| EmbedderError::InferenceFailed(format!("tensor reshape failed: {e}")))?;
 
-        for (i, mask_vec) in attention_mask.iter().enumerate().take(batch_size) {
-            let mut sum = vec![0.0f32; embedding_dim];
-            let mut count = 0.0f32;
+        // Build mask: [batch, seq, 1] for broadcasting
+        let mask_2d = Array2::from_shape_fn((batch_size, seq_len), |(i, j)| {
+            attention_mask[i].get(j).copied().unwrap_or(0) as f32
+        });
+        let mask_3d = mask_2d.clone().insert_axis(Axis(2));
 
-            for j in 0..seq_len {
-                let mask = mask_vec.get(j).copied().unwrap_or(0) as f32;
-                if mask > 0.0 {
-                    count += mask;
-                    let offset = i * seq_len * embedding_dim + j * embedding_dim;
-                    for (k, sum_val) in sum.iter_mut().enumerate() {
-                        *sum_val += data[offset + k] * mask;
-                    }
-                }
-            }
+        // Masked sum: (hidden * mask).sum(axis=1) / mask.sum(axis=1)
+        let masked = &hidden * &mask_3d;
+        let summed = masked.sum_axis(Axis(1)); // [batch, dim]
+        let counts = mask_2d.sum_axis(Axis(1)).insert_axis(Axis(1)); // [batch, 1]
 
-            // Avoid division by zero
-            if count > 0.0 {
-                for sum_val in &mut sum {
-                    *sum_val /= count;
-                }
-            }
-
-            results.push(Embedding::new(normalize_l2(sum)));
-        }
+        let results = (0..batch_size)
+            .map(|i| {
+                let count = counts[[i, 0]];
+                let row = summed.row(i);
+                let pooled: Vec<f32> = if count > 0.0 {
+                    row.iter().map(|v| v / count).collect()
+                } else {
+                    vec![0.0f32; embedding_dim]
+                };
+                Embedding::new(normalize_l2(pooled))
+            })
+            .collect();
 
         Ok(results)
     }

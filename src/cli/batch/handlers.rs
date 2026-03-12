@@ -380,13 +380,15 @@ pub(super) fn dispatch_gather(
         let ref_idx = ctx
             .borrow_ref(rn)
             .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", rn))?;
-        cqs::gather_cross_index(
+        let index = ctx.vector_index()?;
+        cqs::gather_cross_index_with_index(
             &ctx.store,
             &ref_idx,
             &query_embedding,
             query,
             &opts,
             &ctx.root,
+            index,
         )?
     } else {
         cqs::gather(&ctx.store, &query_embedding, query, &opts, &ctx.root)?

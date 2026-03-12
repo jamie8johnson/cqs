@@ -392,6 +392,28 @@ pub fn gather_cross_index(
     opts: &GatherOptions,
     project_root: &Path,
 ) -> Result<GatherResult, StoreError> {
+    gather_cross_index_with_index(
+        project_store,
+        ref_idx,
+        query_embedding,
+        query_text,
+        opts,
+        project_root,
+        None,
+    )
+}
+
+/// Like [`gather_cross_index`] but accepts an optional HNSW index for O(log n)
+/// bridge searches instead of brute-force scans per reference seed.
+pub fn gather_cross_index_with_index(
+    project_store: &Store,
+    ref_idx: &crate::reference::ReferenceIndex,
+    query_embedding: &crate::Embedding,
+    query_text: &str,
+    opts: &GatherOptions,
+    project_root: &Path,
+    project_index: Option<&dyn crate::index::VectorIndex>,
+) -> Result<GatherResult, StoreError> {
     let _span = tracing::info_span!(
         "gather_cross_index",
         ref_name = %ref_idx.name,
@@ -483,11 +505,12 @@ pub fn gather_cross_index(
             let search_embedding = ref_embeddings
                 .get(&seed.chunk.id)
                 .unwrap_or(query_embedding);
-            match project_store.search_filtered(
+            match project_store.search_filtered_with_index(
                 search_embedding,
                 &bridge_filter,
                 bridge_limit,
                 opts.seed_threshold,
+                project_index,
             ) {
                 Ok(r) if !r.is_empty() => Some((seed.score, r)),
                 Ok(_) => None,

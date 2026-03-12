@@ -4,7 +4,7 @@ use anyhow::Result;
 use colored::Colorize;
 
 use cqs::Embedder;
-use cqs::{gather, gather_cross_index, normalize_path, GatherDirection, GatherOptions};
+use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
 
@@ -29,7 +29,7 @@ pub(crate) fn cmd_gather(
     )
     .entered();
 
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
     let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
 
@@ -50,8 +50,16 @@ pub(crate) fn cmd_gather(
     // Cross-index gather: seed from reference, bridge into project code
     let mut result = if let Some(rn) = ref_name {
         let ref_idx = super::resolve::find_reference(&root, rn)?;
-
-        gather_cross_index(&store, &ref_idx, &query_embedding, query, &opts, &root)?
+        let index = crate::cli::build_vector_index(&store, &cqs_dir)?;
+        gather_cross_index_with_index(
+            &store,
+            &ref_idx,
+            &query_embedding,
+            query,
+            &opts,
+            &root,
+            index.as_deref(),
+        )?
     } else {
         gather(&store, &query_embedding, query, &opts, &root)?
     };
