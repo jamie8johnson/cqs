@@ -967,5 +967,116 @@ mod tests {
             let result = normalize_for_fts(&input);
             prop_assert!(result.len() <= input.len() * 4);
         }
+
+        // ===== sanitize_fts_query property tests (SEC-4) =====
+
+        /// Output never contains FTS5 special characters
+        #[test]
+        fn prop_sanitize_no_special_chars(input in "\\PC{0,500}") {
+            let result = sanitize_fts_query(&input);
+            for c in result.chars() {
+                prop_assert!(
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    "FTS5 special char '{}' in sanitized output: {}",
+                    c, result
+                );
+            }
+        }
+
+        /// Output never contains standalone boolean operators
+        #[test]
+        fn prop_sanitize_no_operators(input in "\\PC{0,300}") {
+            let result = sanitize_fts_query(&input);
+            for word in result.split_whitespace() {
+                prop_assert!(
+                    !matches!(word, "OR" | "AND" | "NOT" | "NEAR"),
+                    "FTS5 operator '{}' survived sanitization: {}",
+                    word, result
+                );
+            }
+        }
+
+        /// Combined pipeline: normalize + sanitize is safe for arbitrary input
+        #[test]
+        fn prop_pipeline_safe(input in "\\PC{0,300}") {
+            let result = sanitize_fts_query(&normalize_for_fts(&input));
+            // No FTS5 special chars
+            for c in result.chars() {
+                prop_assert!(
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    "Special char '{}' in pipeline output: {}",
+                    c, result
+                );
+            }
+            // No boolean operators
+            for word in result.split_whitespace() {
+                prop_assert!(
+                    !matches!(word, "OR" | "AND" | "NOT" | "NEAR"),
+                    "Operator '{}' in pipeline output: {}",
+                    word, result
+                );
+            }
+        }
+
+        /// Targeted: strings composed entirely of special chars produce empty output
+        #[test]
+        fn prop_sanitize_all_special(
+            chars in prop::collection::vec(
+                prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':']),
+                1..50
+            )
+        ) {
+            let input: String = chars.into_iter().collect();
+            let result = sanitize_fts_query(&input);
+            prop_assert!(
+                result.is_empty(),
+                "All-special input should produce empty output, got: {}",
+                result
+            );
+        }
+
+        /// Targeted: operator words surrounded by normal text are stripped
+        #[test]
+        fn prop_sanitize_operators_removed(
+            pre in "[a-z]{1,10}",
+            op in prop::sample::select(vec!["OR", "AND", "NOT", "NEAR"]),
+            post in "[a-z]{1,10}"
+        ) {
+            let input = format!("{} {} {}", pre, op, post);
+            let result = sanitize_fts_query(&input);
+            prop_assert!(
+                !result.split_whitespace().any(|w| w == op),
+                "Operator '{}' not stripped from: {} -> {}",
+                op, input, result
+            );
+            // Pre and post words should survive
+            prop_assert!(result.contains(&pre), "Pre-text '{}' missing from: {}", pre, result);
+            prop_assert!(result.contains(&post), "Post-text '{}' missing from: {}", post, result);
+        }
+
+        /// Adversarial: mixed special chars + operators + normal text
+        #[test]
+        fn prop_sanitize_adversarial(
+            normal in "[a-z]{1,10}",
+            special in prop::sample::select(vec!['"', '*', '(', ')', '+', '-', '^', ':']),
+            op in prop::sample::select(vec!["OR", "AND", "NOT", "NEAR"]),
+        ) {
+            let input = format!("{}{} {} {}{}", special, normal, op, normal, special);
+            let result = sanitize_fts_query(&input);
+            for c in result.chars() {
+                prop_assert!(
+                    !matches!(c, '"' | '*' | '(' | ')' | '+' | '-' | '^' | ':'),
+                    "Special char '{}' in adversarial output: {}",
+                    c, result
+                );
+            }
+            for word in result.split_whitespace() {
+                prop_assert!(
+                    !matches!(word, "OR" | "AND" | "NOT" | "NEAR"),
+                    "Operator '{}' in adversarial output: {}",
+                    word, result
+                );
+            }
+        }
     }
 }

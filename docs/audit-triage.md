@@ -25,9 +25,9 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
 | 1 | DOC-1: Model download size "~440MB" → actual "~547MB" in SECURITY.md + PRIVACY.md | Documentation | SECURITY.md:39, PRIVACY.md:27 | ✅ fixed |
-| 2 | DS-5: `cmd_index` + `run_index_pipeline` open two Stores on same DB simultaneously | Data Safety | pipeline.rs:781, index.rs:68-80 | deferred |
+| 2 | DS-5: `cmd_index` + `run_index_pipeline` open two Stores on same DB simultaneously | Data Safety | pipeline.rs:781, index.rs:68-80 | ✅ fixed |
 | 3 | DS-6: Migration commits before model-version check — schema upgraded but Store rejected | Data Safety | store/mod.rs:459-476 | ✅ fixed |
-| 4 | EH-1/EH-2: `impact/`, `review.rs`, `gather.rs`, `health.rs`, `suggest.rs`, `ci.rs` use `anyhow::Result` in library code | Error Handling | multiple (14 sites) | deferred |
+| 4 | EH-1/EH-2: `impact/`, `review.rs`, `gather.rs`, `health.rs`, `suggest.rs`, `ci.rs` use `anyhow::Result` in library code | Error Handling | multiple (14 sites) | ✅ fixed |
 | 5 | PERF-3: `upsert_chunks_and_calls` duplicates ~120 lines of chunk-upsert logic | Performance | store/chunks.rs | deferred |
 | 6 | PERF-4: `gather_cross_index` fires N brute-force scans instead of HNSW search | Performance | gather.rs | deferred |
 | 7 | AC-2: `waterfall_pack` surplus propagation charges overshoot to downstream sections | Algorithm | task.rs:144-146 | ✅ fixed |
@@ -35,9 +35,9 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | 9 | RM-6: `verify_checksum` reads full 547MB ONNX model on every startup | Resource Mgmt | embedder.rs | ✅ fixed |
 | 10 | RM-9: `embed_documents` has no batch-size cap — unbounded GPU memory | Resource Mgmt | embedder.rs | ✅ fixed |
 | 11 | RM-5: `Store::open` creates multi-threaded tokio runtime unnecessarily | Resource Mgmt | store/mod.rs | deferred (pipeline needs multi-thread) |
-| 12 | AD-1: `file` field type String vs PathBuf inconsistent across 6+ public types | API Design | impact/types.rs, review.rs, ci.rs, drift.rs, diff.rs | deferred |
+| 12 | AD-1: `file` field type String vs PathBuf inconsistent across 6+ public types | API Design | impact/types.rs, review.rs, ci.rs, drift.rs, diff.rs | ✅ fixed |
 | 13 | PERF-7: `embed_batch` mean-pooling uses scalar loops instead of ndarray SIMD | Performance | embedder.rs | deferred |
-| 14 | SEC-4: FTS5 MATCH sanitizer is sole injection barrier — no fuzz tests | Security | store/mod.rs:627, chunks.rs:1193 | deferred |
+| 14 | SEC-4: FTS5 MATCH sanitizer is sole injection barrier — no fuzz tests | Security | store/mod.rs:627, chunks.rs:1193 | ✅ fixed |
 | 15 | CQ-6: `cmd_query` is 270 lines handling 4 dispatch paths | Code Quality | query.rs:40-303 | deferred |
 
 ## P3: Easy + Low Impact — Fix If Time
