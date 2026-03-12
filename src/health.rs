@@ -343,4 +343,171 @@ mod tests {
             top.caller_count
         );
     }
+
+    /// TC-3: Verify untested_hotspots is populated when a high-caller function has no tests.
+    ///
+    /// The filter (health.rs lines 93-97) requires:
+    ///   caller_count >= HOTSPOT_MIN_CALLERS (5)
+    ///   test_count == 0
+    ///   risk_level == High  (score = callers * 1.0 >= 5.0 with 0 tests)
+    #[test]
+    fn test_health_untested_hotspots() {
+        let (store, dir) = make_store();
+
+        // Insert the target function — will become the hotspot
+        let target = test_chunk("src/core.rs", "untested_hot", 1, "fn untested_hot() { }");
+        store
+            .upsert_chunk(&target, &mock_embedding(), Some(1000))
+            .unwrap();
+
+        // 6 callers, zero test functions → caller_count=6, test_count=0,
+        // score=6.0 >= RISK_THRESHOLD_HIGH (5.0) → High risk → appears in untested_hotspots.
+        for i in 0..6 {
+            let caller_name = format!("caller_{}", i);
+            let file = format!("src/user{}.rs", i);
+            let chunk = test_chunk(
+                &file,
+                &caller_name,
+                1,
+                &format!("fn {}() {{ untested_hot() }}", caller_name),
+            );
+            store
+                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .unwrap();
+
+            store
+                .upsert_function_calls(
+                    Path::new(&file),
+                    &[FunctionCalls {
+                        name: caller_name.clone(),
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: "untested_hot".to_string(),
+                            line_number: 2,
+                        }],
+                    }],
+                )
+                .unwrap();
+        }
+
+        let mut files: HashSet<PathBuf> = (0..6)
+            .map(|i| PathBuf::from(format!("src/user{}.rs", i)))
+            .collect();
+        files.insert(PathBuf::from("src/core.rs"));
+
+        let report = health_check(&store, &files, dir.path()).unwrap();
+
+        // untested_hotspots must contain untested_hot
+        let found = report
+            .untested_hotspots
+            .iter()
+            .any(|h| h.name == "untested_hot");
+        assert!(
+            found,
+            "Expected untested_hot in untested_hotspots (6 callers, 0 tests, score=6.0 → High). \
+             Got: {:?}",
+            report
+                .untested_hotspots
+                .iter()
+                .map(|h| &h.name)
+                .collect::<Vec<_>>()
+        );
+
+        // Sanity: the same function must also appear in hotspots
+        let in_hotspots = report.hotspots.iter().any(|h| h.name == "untested_hot");
+        assert!(
+            in_hotspots,
+            "untested_hot should also appear in hotspots, got: {:?}",
+            report.hotspots.iter().map(|h| &h.name).collect::<Vec<_>>()
+        );
+    }
+
+    /// TC-3b: Verify untested_hotspots is empty when a hotspot has test coverage.
+    ///
+    /// When a high-caller function has at least one test, it should not appear
+    /// in untested_hotspots even if risk is otherwise High.
+    #[test]
+    fn test_health_untested_hotspots_excluded_when_tested() {
+        let (store, dir) = make_store();
+
+        // Insert the target function
+        let target = test_chunk("src/core.rs", "tested_hot", 1, "fn tested_hot() { }");
+        store
+            .upsert_chunk(&target, &mock_embedding(), Some(1000))
+            .unwrap();
+
+        // 6 callers
+        for i in 0..6 {
+            let caller_name = format!("caller_{}", i);
+            let file = format!("src/caller{}.rs", i);
+            let chunk = test_chunk(
+                &file,
+                &caller_name,
+                1,
+                &format!("fn {}() {{ tested_hot() }}", caller_name),
+            );
+            store
+                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .unwrap();
+
+            store
+                .upsert_function_calls(
+                    Path::new(&file),
+                    &[FunctionCalls {
+                        name: caller_name.clone(),
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: "tested_hot".to_string(),
+                            line_number: 2,
+                        }],
+                    }],
+                )
+                .unwrap();
+        }
+
+        // Insert a test function that calls tested_hot — test_count becomes 1
+        let test_name = "test_tested_hot";
+        let test_file = "src/tests.rs";
+        let test_content = format!("#[test] fn {}() {{ tested_hot() }}", test_name);
+        let test_chunk_data = test_chunk(test_file, test_name, 50, &test_content);
+        store
+            .upsert_chunk(&test_chunk_data, &mock_embedding(), Some(1000))
+            .unwrap();
+        store
+            .upsert_function_calls(
+                Path::new(test_file),
+                &[FunctionCalls {
+                    name: test_name.to_string(),
+                    line_start: 50,
+                    calls: vec![CallSite {
+                        callee_name: "tested_hot".to_string(),
+                        line_number: 51,
+                    }],
+                }],
+            )
+            .unwrap();
+
+        let mut files: HashSet<PathBuf> = (0..6)
+            .map(|i| PathBuf::from(format!("src/caller{}.rs", i)))
+            .collect();
+        files.insert(PathBuf::from("src/core.rs"));
+        files.insert(PathBuf::from(test_file));
+
+        let report = health_check(&store, &files, dir.path()).unwrap();
+
+        let in_untested = report
+            .untested_hotspots
+            .iter()
+            .any(|h| h.name == "tested_hot");
+        assert!(
+            !in_untested,
+            "tested_hot should NOT appear in untested_hotspots because it has 1 test. \
+             Got untested_hotspots: {:?}",
+            report
+                .untested_hotspots
+                .iter()
+                .map(|h| &h.name)
+                .collect::<Vec<_>>()
+        );
+    }
 }

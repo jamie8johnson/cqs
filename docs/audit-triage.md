@@ -110,11 +110,11 @@ Date: 2026-03-12. 100 findings across 14 categories, 3 batches.
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
 | 1 | RM-3: CAGRA GPU index retains full CPU-side dataset copy (existing #389) | Resource Mgmt | cagra.rs:64 | existing #389 |
-| 2 | TC-1: `convert/html.rs`, `chm.rs`, `webhelp.rs` — zero tests | Test Coverage | convert/ | |
-| 3 | TC-2: `suggest.rs` `high_risk` branch never exercised | Test Coverage | suggest.rs:141-151 | |
-| 4 | TC-3: `health.rs` `untested_hotspots` never asserted | Test Coverage | health.rs:284-346 | |
-| 5 | TC-4: `review.rs` `match_notes` partial-match edge cases | Test Coverage | review.rs:183-211 | |
-| 6 | TC-5: `impact/diff.rs` depth-0 exclusion and BFS anomaly untested | Test Coverage | impact/diff.rs:168,181 | |
-| 7 | TC-6: `related.rs` unit tests only test struct construction | Test Coverage | related.rs:170-234 | |
-| 8 | TC-7: `convert/pdf.rs` `find_pdf_script` logic untested | Test Coverage | convert/pdf.rs | |
-| 9 | EX-5: `find_project_root` hardcodes markers for 5/50 languages | Extensibility | lib.rs | |
+| 2 | TC-1: `convert/html.rs`, `chm.rs`, `webhelp.rs` — zero tests | Test Coverage | convert/ | ✅ fixed |
+| 3 | TC-2: `suggest.rs` `high_risk` branch never exercised | Test Coverage | suggest.rs:141-151 | ✅ fixed |
+| 4 | TC-3: `health.rs` `untested_hotspots` never asserted | Test Coverage | health.rs:284-346 | ✅ fixed |
+| 5 | TC-4: `review.rs` `match_notes` partial-match edge cases | Test Coverage | review.rs:183-211 | ✅ fixed |
+| 6 | TC-5: `impact/diff.rs` depth-0 exclusion and BFS anomaly untested | Test Coverage | impact/diff.rs:168,181 | ✅ fixed |
+| 7 | TC-6: `related.rs` unit tests only test struct construction | Test Coverage | related.rs:170-234 | ✅ fixed |
+| 8 | TC-7: `convert/pdf.rs` `find_pdf_script` logic untested | Test Coverage | convert/pdf.rs | ✅ fixed |
+| 9 | EX-5: `find_project_root` hardcodes markers for 5/50 languages | Extensibility | lib.rs | ✅ documented |
