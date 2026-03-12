@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-03-13
+
+v1.0.0 audit fixes — 97 findings across 14 categories, all resolved.
+
+### Fixed
+- 13 P1 crashes/security fixes: RwLock panic, FTS assertion crash, reranker stride=0 panic, zero-vector NaN, CHM/PDF command injection, schema migration guard (#576)
+- 12 P2 high-impact fixes: dual-Store race, migration ordering, anyhow-in-library, placeholder dedup, HNSW index search for cross-index gather, waterfall budget overshoot (#576)
+- 60 P3 code quality/API/perf fixes: type safety (ChunkType enums, FunctionRisk struct, ReviewNoteEntry), serde consistency, LazyLock SQL caching, streaming JSON count_vectors, single-pass FTS sanitizer (#576)
+- Release workflow: upgrade Linux runner to ubuntu-24.04 for glibc 2.38+ ort compatibility (#576)
+
+### Added
+- 55+ unit tests covering previously untested branches: suggest high_risk, health untested_hotspots, review match_notes, impact-diff depth-0 exclusion, related find_related, convert module (#577)
+- Property tests for FTS5 MATCH sanitizer (#576)
+
 ## [1.0.0] - 2026-03-12
 
 First stable release. Schema v11 stable since 2026-02-15. Tested on 3 codebases (cqs, aveva, rust). 50 languages, 1534 tests, two full audits complete.
