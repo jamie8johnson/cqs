@@ -40,8 +40,29 @@ pub(crate) fn find_project_root() -> PathBuf {
             );
             break;
         }
-        // Check for project markers (build files and VCS root)
-        // Listed in priority order: if multiple exist, first match wins
+        // Check for project markers (build files and VCS root).
+        // Listed in priority order: if multiple exist, first match wins.
+        //
+        // EX-5: These markers are intentionally NOT derived from LanguageDef.
+        // LanguageDef is a parsing/chunking definition — it knows about grammars,
+        // AST queries, and chunk extraction, but has no concept of "where does a
+        // project of this language live on disk". Project root detection is a
+        // separate concern: it is filesystem-topology knowledge, not parser config.
+        //
+        // Adding project_root_markers to LanguageDef would mix two orthogonal
+        // responsibilities (50+ language parsers would need a field that most of
+        // them would leave empty, because most languages don't have a single
+        // canonical root marker file).
+        //
+        // The current set is sufficient for real-world usage:
+        //   - Cargo.toml  → Rust (with workspace-root detection above)
+        //   - package.json → Node.js / JavaScript / TypeScript
+        //   - pyproject.toml / setup.py → Python (modern and legacy)
+        //   - go.mod       → Go
+        //   - .git         → universal VCS fallback (covers C, C++, Java, Ruby,
+        //                    Scala, Kotlin, Swift, Elixir, Haskell, etc.)
+        // All other supported languages (50+) either live inside one of these
+        // project types or fall through to the .git fallback.
         let markers = [
             "Cargo.toml",     // Rust
             "package.json",   // Node.js

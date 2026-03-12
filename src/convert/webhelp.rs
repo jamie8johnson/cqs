@@ -154,3 +154,42 @@ pub fn webhelp_to_markdown(dir: &Path) -> Result<String> {
     );
     Ok(merged)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_webhelp_dir_returns_false_for_empty_dir() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        assert!(
+            !is_webhelp_dir(dir.path()),
+            "empty directory should not be detected as a webhelp dir"
+        );
+    }
+
+    #[test]
+    fn test_is_webhelp_dir_returns_false_for_dir_without_html() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        // Create a content/ subdir but put no HTML files in it.
+        let content = dir.path().join("content");
+        std::fs::create_dir(&content).expect("should create content dir");
+        std::fs::write(content.join("readme.txt"), "not html").expect("should write file");
+        assert!(
+            !is_webhelp_dir(dir.path()),
+            "directory with content/ but no HTML files should not be detected as webhelp"
+        );
+    }
+
+    #[test]
+    fn test_is_webhelp_dir_returns_true_for_webhelp_layout() {
+        let dir = tempfile::tempdir().expect("should create temp dir");
+        let content = dir.path().join("content");
+        std::fs::create_dir(&content).expect("should create content dir");
+        std::fs::write(content.join("index.html"), "<p>hello</p>").expect("should write html");
+        assert!(
+            is_webhelp_dir(dir.path()),
+            "directory with content/*.html should be detected as webhelp"
+        );
+    }
+}

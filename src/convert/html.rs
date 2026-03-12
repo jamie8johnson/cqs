@@ -45,3 +45,39 @@ pub fn html_file_to_markdown(path: &Path) -> Result<String> {
         .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", path.display(), e))?;
     html_to_markdown(&source)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_html_to_markdown_basic_paragraph() {
+        let html = "<p>Hello, world!</p>";
+        let result = html_to_markdown(html).expect("should convert simple paragraph");
+        assert!(
+            result.contains("Hello, world!"),
+            "converted markdown should contain the paragraph text"
+        );
+    }
+
+    #[test]
+    fn test_html_to_markdown_heading() {
+        let html = "<h1>My Heading</h1><p>Some text.</p>";
+        let result = html_to_markdown(html).expect("should convert heading and paragraph");
+        assert!(
+            result.contains("My Heading"),
+            "converted markdown should contain the heading text"
+        );
+        assert!(
+            result.contains("Some text."),
+            "converted markdown should contain the paragraph text"
+        );
+    }
+
+    #[test]
+    fn test_html_to_markdown_empty_returns_error() {
+        // Completely empty / whitespace-only HTML produces no content.
+        let result = html_to_markdown("   ");
+        assert!(result.is_err(), "empty HTML should return an error");
+    }
+}

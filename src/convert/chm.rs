@@ -202,3 +202,18 @@ fn find_7z() -> Result<String> {
         "7z not found. Install: `sudo apt install p7zip-full` (Linux) or `brew install p7zip` (macOS)"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chm_to_markdown_nonexistent_file_returns_error() {
+        let path = std::path::Path::new("/nonexistent/path/does_not_exist.chm");
+        let result = chm_to_markdown(path);
+        assert!(
+            result.is_err(),
+            "chm_to_markdown should return an error for a nonexistent file"
+        );
+    }
+}
