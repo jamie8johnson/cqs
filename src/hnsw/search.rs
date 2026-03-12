@@ -38,7 +38,10 @@ impl HnswIndex {
         // Adaptive ef_search: baseline self.ef_search or 2*k (whichever is larger),
         // capped at index size (searching more than the index is pointless for small indexes).
         let index_size = self.id_map.len();
-        let ef_search = self.ef_search.max(k * 2).min(index_size.max(self.ef_search));
+        let ef_search = self
+            .ef_search
+            .max(k * 2)
+            .min(index_size.max(self.ef_search));
 
         let neighbors = self
             .inner

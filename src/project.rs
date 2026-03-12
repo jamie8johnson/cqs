@@ -107,7 +107,11 @@ impl ProjectRegistry {
             let _ = std::fs::remove_file(&tmp);
             std::fs::rename(&dest_tmp, &path).with_context(|| {
                 let _ = std::fs::remove_file(&dest_tmp);
-                format!("Failed to rename {} -> {}", dest_tmp.display(), path.display())
+                format!(
+                    "Failed to rename {} -> {}",
+                    dest_tmp.display(),
+                    path.display()
+                )
             })?;
         }
 
