@@ -6,7 +6,9 @@
 //! - `calls` — call site extraction for call graph
 //! - `injection` — multi-grammar injection (HTML→JS/CSS via `set_included_ranges()`)
 //! - `markdown` — heading-based Markdown parser with cross-reference extraction
+//! - `aspx` — ASP.NET Web Forms parser (delegates to C#/VB.NET grammars)
 
+pub mod aspx;
 mod calls;
 mod chunk;
 pub(crate) mod injection;
@@ -193,12 +195,18 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages (Markdown) use custom parsers
+        // Grammar-less languages use custom parsers
         if language.def().grammar.is_none() {
-            let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
-            let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
-            chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
-            return Ok(chunks);
+            return match language {
+                Language::Aspx => crate::parser::aspx::parse_aspx_chunks(&source, path, self),
+                _ => {
+                    // Markdown (and any future grammar-less language)
+                    let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
+                    let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
+                    chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
+                    Ok(chunks)
+                }
+            };
         }
 
         let grammar = language.grammar();
@@ -351,13 +359,19 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages (Markdown) use custom parsers
+        // Grammar-less languages use custom parsers
         if language.def().grammar.is_none() {
-            let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
-            let calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
-            let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
-            chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
-            return Ok((chunks, calls, vec![]));
+            return match language {
+                Language::Aspx => crate::parser::aspx::parse_aspx_all(&source, path, self),
+                _ => {
+                    // Markdown (and any future grammar-less language)
+                    let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
+                    let calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
+                    let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
+                    chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
+                    Ok((chunks, calls, vec![]))
+                }
+            };
         }
 
         // Single tree-sitter parse

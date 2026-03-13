@@ -1030,6 +1030,7 @@ fn normalize_lang(lang: &str) -> Option<&'static str> {
         "vb" | "vbnet" | "vb.net" => Some("vbnet"),
         "ini" => Some("ini"),
         "markdown" | "md" => Some("markdown"),
+        "aspx" | "ascx" | "asmx" | "webforms" => Some("aspx"),
         _ => None,
     }
 }

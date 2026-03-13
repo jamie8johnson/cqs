@@ -59,6 +59,7 @@
 //! - `lang-vbnet` - VB.NET support (enabled by default)
 //! - `lang-vue` - Vue support (enabled by default)
 //! - `lang-markdown` - Markdown support (enabled by default, no external deps)
+//! - `lang-aspx` - ASP.NET Web Forms support (enabled by default, no external deps)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -662,6 +663,8 @@ define_languages! {
     Vue => "vue", feature = "lang-vue", module = vue;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
+    /// ASP.NET Web Forms (.aspx, .ascx, .asmx, .master files)
+    Aspx => "aspx", feature = "lang-aspx", module = aspx;
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1122,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-vue")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-aspx")]
         {
             expected += 1;
         }
