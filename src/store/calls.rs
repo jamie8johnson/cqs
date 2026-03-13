@@ -200,7 +200,7 @@ static TEST_CHUNKS_SQL: LazyLock<String> = LazyLock::new(|| {
     let callable = ChunkType::callable_sql_list();
     format!(
         "SELECT id, origin, language, chunk_type, name, signature,
-                    line_start, line_end, parent_id
+                    line_start, line_end, parent_id, parent_type_name
              FROM chunks
              WHERE chunk_type IN ({callable})
                AND (
@@ -973,6 +973,7 @@ impl Store {
                 line_start: light.line_start,
                 line_end: light.line_end,
                 parent_id: None,
+                parent_type_name: None,
             });
 
             let dead_fn = DeadFunction { chunk, confidence };
@@ -1017,6 +1018,7 @@ impl Store {
                     line_start: clamp_line_number(row.get::<i64, _>(6)),
                     line_end: clamp_line_number(row.get::<i64, _>(7)),
                     parent_id: row.get(8),
+                    parent_type_name: row.get(9),
                 })
             })
             .collect())

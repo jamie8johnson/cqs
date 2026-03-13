@@ -536,6 +536,7 @@ mod tests {
                 content: String::new(),
                 doc: None,
                 parent_id: None,
+                parent_type_name: None,
             },
             ChunkSummary {
                 id: "2".into(),
@@ -549,6 +550,7 @@ mod tests {
                 content: String::new(),
                 doc: None,
                 parent_id: None,
+                parent_type_name: None,
             },
         ];
 

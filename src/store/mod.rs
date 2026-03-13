@@ -651,7 +651,7 @@ impl Store {
 
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
-                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
                  FROM chunks c
                  JOIN chunks_fts f ON c.id = f.id
                  WHERE chunks_fts MATCH ?1
@@ -679,6 +679,7 @@ impl Store {
                         line_start: clamp_line_number(row.get::<i64, _>(8)),
                         line_end: clamp_line_number(row.get::<i64, _>(9)),
                         parent_id: row.get(10),
+                        parent_type_name: row.get(11),
                     });
                     let name_lower = chunk.name.to_lowercase();
                     let score = helpers::score_name_match_pre_lower(&name_lower, &lower_name);

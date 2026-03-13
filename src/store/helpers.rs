@@ -13,9 +13,10 @@ use crate::parser::{ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v11: Current (type_edges table for type-level dependency tracking)
+/// - v12: Current (parent_type_name column for method→class association)
+/// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 11;
+pub const CURRENT_SCHEMA_VERSION: i32 = 12;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
@@ -99,11 +100,12 @@ pub(crate) struct ChunkRow {
     pub line_start: u32,
     pub line_end: u32,
     pub parent_id: Option<String>,
+    pub parent_type_name: Option<String>,
 }
 
 impl ChunkRow {
     /// Construct from a SQLite row containing columns:
-    /// id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+    /// id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name
     pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
         use sqlx::Row;
         ChunkRow {
@@ -118,6 +120,7 @@ impl ChunkRow {
             line_start: clamp_line_number(row.get::<i64, _>("line_start")),
             line_end: clamp_line_number(row.get::<i64, _>("line_end")),
             parent_id: row.get("parent_id"),
+            parent_type_name: row.get("parent_type_name"),
         }
     }
 }
@@ -154,6 +157,8 @@ pub struct ChunkSummary {
     pub line_end: u32,
     /// Parent chunk ID if this is a child chunk (table, windowed)
     pub parent_id: Option<String>,
+    /// For methods: name of enclosing class/struct/impl
+    pub parent_type_name: Option<String>,
 }
 
 impl From<ChunkRow> for ChunkSummary {
@@ -186,6 +191,7 @@ impl From<ChunkRow> for ChunkSummary {
             line_start: row.line_start,
             line_end: row.line_end,
             parent_id: row.parent_id,
+            parent_type_name: row.parent_type_name,
         }
     }
 }
@@ -933,6 +939,7 @@ mod tests {
             line_start: 1,
             line_end: 1,
             parent_id: parent_id.map(|s| s.to_string()),
+            parent_type_name: None,
         }
     }
 

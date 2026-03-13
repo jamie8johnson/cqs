@@ -34,7 +34,7 @@ impl Store {
 
     /// Insert or update chunks in batch using multi-row INSERT.
     ///
-    /// Chunks are inserted in batches of 55 rows (55 * 18 params = 990 < SQLite's 999 limit).
+    /// Chunks are inserted in batches of 52 rows (52 * 19 params = 988 < SQLite's 999 limit).
     /// FTS operations remain per-row because FTS5 doesn't support INSERT OR REPLACE.
     pub fn upsert_chunks_batch(
         &self,
@@ -135,7 +135,7 @@ impl Store {
         source_mtime: Option<i64>,
     ) -> Result<usize, StoreError> {
         let _span = tracing::info_span!("replace_file_chunks", origin = %origin.display(), count = chunks.len()).entered();
-        const CHUNK_INSERT_BATCH: usize = 55;
+        const CHUNK_INSERT_BATCH: usize = 52;
 
         let origin_str = crate::normalize_path(origin);
 
@@ -167,7 +167,7 @@ impl Store {
             for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
                 let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx) ",
+                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name)",
                 );
                 qb.push_values(
                     batch.iter().enumerate(),
@@ -189,7 +189,8 @@ impl Store {
                             .push_bind(&now)
                             .push_bind(&now)
                             .push_bind(&chunk.parent_id)
-                            .push_bind(chunk.window_idx.map(|i| i as i64));
+                            .push_bind(chunk.window_idx.map(|i| i as i64))
+                            .push_bind(&chunk.parent_type_name);
                     },
                 );
                 qb.build().execute(&mut *tx).await?;
@@ -234,7 +235,7 @@ impl Store {
     ///
     /// Combines chunk upsert (with FTS) and call graph upsert into one transaction,
     /// preventing inconsistency from crashes between separate operations.
-    /// Chunks are inserted in batches of 55 rows (55 * 18 = 990 < SQLite's 999 limit).
+    /// Chunks are inserted in batches of 52 rows (52 * 19 = 988 < SQLite's 999 limit).
     pub fn upsert_chunks_and_calls(
         &self,
         chunks: &[(Chunk, Embedding)],
@@ -740,7 +741,7 @@ impl Store {
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
                 "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                        line_start, line_end, parent_id
+                        line_start, line_end, parent_id, parent_type_name
                  FROM chunks WHERE origin = ?1
                  ORDER BY line_start",
             )
@@ -778,7 +779,7 @@ impl Store {
                 let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                            line_start, line_end, parent_id
+                            line_start, line_end, parent_id, parent_type_name
                      FROM chunks WHERE origin IN ({})
                      ORDER BY origin, line_start",
                     placeholders
@@ -824,7 +825,7 @@ impl Store {
                 let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT id, origin, language, chunk_type, name, signature, content, doc,
-                            line_start, line_end, parent_id
+                            line_start, line_end, parent_id, parent_type_name
                      FROM chunks WHERE name IN ({})
                      ORDER BY origin, line_start",
                     placeholders
@@ -994,7 +995,7 @@ impl Store {
                 // Single query for the batch with higher limit
                 let total_limit = limit_per_name * batch.len();
                 let rows: Vec<_> = sqlx::query(
-                    "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                    "SELECT c.id, c.origin, c.language, c.chunk_type, c.name, c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
                      FROM chunks c
                      JOIN chunks_fts f ON c.id = f.id
                      WHERE chunks_fts MATCH ?1
@@ -1118,7 +1119,7 @@ impl Store {
         for batch in ids.chunks(BATCH_SIZE) {
             let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
-                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+                "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name
                  FROM chunks WHERE id IN ({})",
                 placeholders
             );
@@ -1197,7 +1198,7 @@ impl Store {
 
         let placeholders = super::helpers::make_placeholders(ids.len());
         let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, embedding
+            "SELECT id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name, embedding
              FROM chunks WHERE id IN ({})",
             placeholders
         );
@@ -1288,11 +1289,11 @@ async fn batch_insert_chunks(
     source_mtime: Option<i64>,
     now: &str,
 ) -> Result<(), StoreError> {
-    const CHUNK_INSERT_BATCH: usize = 55;
+    const CHUNK_INSERT_BATCH: usize = 52;
     for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
         let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
         let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-            "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx) ",
+            "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name)",
         );
         qb.push_values(batch.iter().enumerate(), |mut b, (i, (chunk, _))| {
             b.push_bind(&chunk.id)
@@ -1312,7 +1313,8 @@ async fn batch_insert_chunks(
                 .push_bind(now)
                 .push_bind(now)
                 .push_bind(&chunk.parent_id)
-                .push_bind(chunk.window_idx.map(|i| i as i64));
+                .push_bind(chunk.window_idx.map(|i| i as i64))
+                .push_bind(&chunk.parent_type_name);
         });
         qb.build().execute(&mut **tx).await?;
     }
