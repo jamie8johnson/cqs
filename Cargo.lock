@@ -663,6 +663,7 @@ dependencies = [
  "insta",
  "keyring",
  "libc",
+ "log",
  "lru",
  "ndarray 0.15.6",
  "ndarray 0.17.2",

@@ -126,6 +126,7 @@ shell-words = "1"
 anyhow = "1"
 thiserror = "2"
 dirs = "6"
+log = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.10"

@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::SqlitePool;
+use sqlx::{ConnectOptions, SqlitePool};
 use tokio::runtime::Runtime;
 
 // Re-export public types with documentation
@@ -229,7 +229,8 @@ impl Store {
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5))
             .synchronous(SqliteSynchronous::Normal)
-            .pragma("mmap_size", "268435456"); // 256MB memory-mapped I/O
+            .pragma("mmap_size", "268435456") // 256MB memory-mapped I/O
+            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
 
         // SQLite connection pool with WAL mode for concurrent reads
         let pool = rt.block_on(async {
@@ -326,7 +327,8 @@ impl Store {
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5))
             .synchronous(SqliteSynchronous::Normal)
-            .pragma("mmap_size", "67108864"); // 64MB mmap (reduced from 256MB)
+            .pragma("mmap_size", "67108864") // 64MB mmap (reduced from 256MB)
+            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
 
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
