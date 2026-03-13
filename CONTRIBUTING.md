@@ -83,7 +83,7 @@ Rules:
 
 ### Feature Ideas
 
-- Additional language support (see `src/language/` for current list — 50 languages supported)
+- Additional language support (see `src/language/` for current list — 51 languages supported)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
@@ -122,7 +122,7 @@ src/
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
     rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, protobuf.rs, graphql.rs, php.rs, lua.rs, zig.rs, r.rs, yaml.rs, toml_lang.rs, elixir.rs, erlang.rs, gleam.rs, haskell.rs, julia.rs, ocaml.rs, css.rs, perl.rs, html.rs, json.rs, xml.rs, ini.rs, nix.rs, make.rs, latex.rs, solidity.rs, cuda.rs, glsl.rs, svelte.rs, razor.rs, vbnet.rs, markdown.rs
-  store/        - SQLite storage layer (Schema v11, WAL mode)
+  store/        - SQLite storage layer (Schema v12, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
     chunks.rs   - Chunk CRUD, embedding_batches() for streaming
     notes.rs    - Note CRUD, note_embeddings(), brute-force search

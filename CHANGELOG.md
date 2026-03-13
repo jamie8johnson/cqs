@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-03-13
+
+### Added
+- ASP.NET Web Forms support — 51st language. Parses C#/VB.NET in server script blocks and `<% %>` expressions (#584)
+- Makefile shell injection — extracts shell commands from recipe bodies via Bash grammar (#584)
+- Class NL enrichment — Class/Struct/Interface chunks include member method names in NL descriptions for better semantic search (#585)
+- `is_name_like_query()` — detects NL vs identifier queries, gates name_boost to prevent harmful re-ranking (#585)
+- `parent_type_name` column in chunks table — methods carry enclosing class/struct/impl name through to search results (#585)
+- Schema v11→v12 migration for `parent_type_name` (#585)
+
+### Changed
+- Test function demotion strengthened: `IMPORTANCE_TEST` 0.90→0.70, `IMPORTANCE_PRIVATE` 0.95→0.80 (#585)
+
+### Fixed
+- CUDA 13 compatibility via `--no-default-features` for ort build (#583)
+- sqlx slow statement threshold raised from 1s to 10s to reduce log noise (#583)
+- Flaky HNSW safety test — assertions now check memory safety, not approximate recall (#586)
+
 ## [1.0.4] - 2026-03-13
 
 ### Fixed

@@ -2,13 +2,7 @@
 
 ## Right Now
 
-**v1.0.4 released (2026-03-13).** Full v1.0.0 audit complete — 100 findings across 14 categories, 97 fixed, 2 documented, 1 existing (#389). Release binaries building successfully for 3 targets (Linux x86_64, macOS ARM64, Windows x86_64).
-
-Release workflow issues resolved across v1.0.1–v1.0.4:
-- ubuntu-22.04 → ubuntu-24.04 (glibc 2.38+ for ort prebuilt binaries)
-- macos-13 → macos-14 (macos-13 deprecated)
-- ort CUDA/TensorRT features made conditional on non-macOS targets
-- x86_64-apple-darwin dropped (ort-sys has no prebuilt binaries for Intel Mac)
+**v1.0.5 releasing (2026-03-13).** ASPX support (51 languages), search quality improvements (demotion, name_boost gating, parent_type_name, class NL), CUDA 13 fix, flaky HNSW test fix.
 
 ## Pending Changes
 
@@ -34,13 +28,13 @@ None.
 
 ## Architecture
 
-- Version: 1.0.4
+- Version: 1.0.5
 - MSRV: 1.93
-- Schema: v11
+- Schema: v12
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only (notes use brute-force SQLite search)
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
-- 50 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, Markdown)
+- 51 languages (Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Haskell, OCaml, Julia, Gleam, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, ASPX, Markdown)
 - 16 ChunkType variants (Function, Method, Struct, Class, Interface, Enum, Trait, Constant, Section, Property, Delegate, Event, Module, Macro, Object, TypeAlias)
 - Tests: 1534 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
@@ -50,5 +44,5 @@ None.
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02 (conda/rapidsai), cuDNN 9.19.0 (conda/conda-forge)
 - Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
 - type_edges: 4567 edges
-- Eval: E5-base-v2 90.9% Recall@1, 0.951 NDCG@10, 0.941 MRR on 55-query hard eval
+- Eval: E5-base-v2 90.9% Recall@1, 0.936 MRR on 55-query hard eval (name_boost no longer harmful)
 - Release targets: Linux x86_64, macOS ARM64, Windows x86_64 (Intel Mac dropped — no ort prebuilt binaries)
