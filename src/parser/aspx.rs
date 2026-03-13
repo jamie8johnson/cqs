@@ -17,6 +17,7 @@ use regex::Regex;
 use tree_sitter::StreamingIterator;
 
 use super::types::{Chunk, ChunkTypeRefs, FunctionCalls, Language, ParserError, TypeRef};
+use super::ParseAllResult;
 use super::Parser;
 
 // ---------------------------------------------------------------------------
@@ -523,7 +524,7 @@ pub fn parse_aspx_all(
     source: &str,
     path: &Path,
     parser: &Parser,
-) -> Result<(Vec<Chunk>, Vec<FunctionCalls>, Vec<ChunkTypeRefs>), ParserError> {
+) -> Result<ParseAllResult, ParserError> {
     let _span = tracing::debug_span!("parse_aspx_all", path = %path.display()).entered();
 
     let language = detect_language(source);
@@ -543,7 +544,7 @@ pub fn parse_aspx_all(
         let mut refs: Vec<TypeRef> = flat_types
             .iter()
             .filter(|t| {
-                let line = t.line_number as u32;
+                let line = t.line_number;
                 line >= chunk.line_start && line <= chunk.line_end
             })
             .cloned()
