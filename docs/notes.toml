@@ -355,15 +355,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = """Tree-sitter query capture names must match extract_chunk's hardcoded capture_types: "function", "struct", "class", "enum", "trait", "interface", "const". Using @constant instead of @const silently drops matches — no error, just missing chunks."""
-mentions = [
-    "src/parser/chunk.rs",
-    "src/language/sql.rs",
-    "extract_chunk",
-]
-
-[[note]]
-sentiment = -0.5
 text = "Git deps in Cargo.toml block cargo publish. For tree-sitter grammar forks, publish the fork to crates.io under a new name (e.g. tree-sitter-sequel-tsql) then use version dep. One-time effort per grammar fork."
 mentions = [
     "Cargo.toml",
@@ -907,16 +898,13 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "HNSW insert_batch only works on Owned variant — Loaded (from disk via self_cell) is immutable. Watch mode must keep Owned in memory across cycles. content_hashes from reindex_files must be filtered to newly-embedded only, or unchanged chunks create duplicates."
+text = "ort-sys 2.0.0-rc.12 has no prebuilt binaries for x86_64-apple-darwin (Intel Mac) at all — not even CPU-only. Only aarch64-apple-darwin is supported. Had to drop Intel Mac from release targets."
 mentions = [
-    "hnsw",
-    "watch.rs",
+    "embedder.rs",
+    "release.yml",
 ]
 
 [[note]]
-sentiment = 0.0
-text = "ort::Error is non-generic in rc.11 but becomes Error<T> in rc.12. Generic From impl doesn't compile on rc.11. Use .map_err() with a helper fn instead — works across both versions."
-mentions = [
-    "embedder.rs",
-    "reranker.rs",
-]
+sentiment = -0.5
+text = "Release workflow: ubuntu-22.04 has glibc 2.35 but ort prebuilt binaries need glibc 2.38+ (__isoc23_strtoll). Must use ubuntu-24.04 (glibc 2.39) for release builds."
+mentions = ["release.yml"]

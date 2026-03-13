@@ -2,7 +2,13 @@
 
 ## Right Now
 
-**Releasing v1.0.0.** All 1.0 criteria met (schema v11 stable since Feb 15, 3 codebases, no correctness bugs).
+**v1.0.4 released (2026-03-13).** Full v1.0.0 audit complete — 100 findings across 14 categories, 97 fixed, 2 documented, 1 existing (#389). Release binaries building successfully for 3 targets (Linux x86_64, macOS ARM64, Windows x86_64).
+
+Release workflow issues resolved across v1.0.1–v1.0.4:
+- ubuntu-22.04 → ubuntu-24.04 (glibc 2.38+ for ort prebuilt binaries)
+- macos-13 → macos-14 (macos-13 deprecated)
+- ort CUDA/TensorRT features made conditional on non-macOS targets
+- x86_64-apple-darwin dropped (ort-sys has no prebuilt binaries for Intel Mac)
 
 ## Pending Changes
 
@@ -28,7 +34,7 @@ None.
 
 ## Architecture
 
-- Version: 1.0.0
+- Version: 1.0.4
 - MSRV: 1.93
 - Schema: v11
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
@@ -45,3 +51,4 @@ None.
 - Reference: `aveva` → `samples/converted/aveva-docs/` (10,482 chunks, 76 files)
 - type_edges: 4567 edges
 - Eval: E5-base-v2 90.9% Recall@1, 0.951 NDCG@10, 0.941 MRR on 55-query hard eval
+- Release targets: Linux x86_64, macOS ARM64, Windows x86_64 (Intel Mac dropped — no ort prebuilt binaries)
