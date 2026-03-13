@@ -65,6 +65,7 @@ async fn run_migration(
 ) -> Result<(), StoreError> {
     match (from, to) {
         (10, 11) => migrate_v10_to_v11(conn).await,
+        (11, 12) => migrate_v11_to_v12(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -106,6 +107,21 @@ async fn migrate_v10_to_v11(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v11 to v12: add parent_type_name column to chunks
+///
+/// Stores the enclosing class/struct/impl name for method chunks.
+/// The column will be NULL after migration — run `cqs index --force` to populate.
+async fn migrate_v11_to_v12(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query("ALTER TABLE chunks ADD COLUMN parent_type_name TEXT")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Added parent_type_name column. Run 'cqs index --force' to populate method→class links."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,7 +139,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 11);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 12);
     }
 
     #[test]
@@ -147,7 +163,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 11, 11).await;
+            let result = migrate(&pool, 12, 12).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }

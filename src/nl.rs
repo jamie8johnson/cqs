@@ -375,6 +375,22 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
+    // Class/struct/interface: extract member method names for richer NL
+    if matches!(
+        chunk.chunk_type,
+        ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+    ) {
+        let methods = extract_member_method_names(&chunk.content, chunk.language);
+        if !methods.is_empty() {
+            let method_words: Vec<String> = methods
+                .iter()
+                .take(10)
+                .map(|m| tokenize_identifier(m).join(" "))
+                .collect();
+            parts.push(format!("Methods: {}", method_words.join(", ")));
+        }
+    }
+
     // Parameters + return type
     let jsdoc_info = if chunk.language == Language::JavaScript {
         chunk.doc.as_ref().map(|d| parse_jsdoc_tags(d))
@@ -620,6 +636,129 @@ fn extract_field_names(content: &str, language: Language) -> Vec<String> {
         }
     }
     fields
+}
+
+/// Extract member method/function names from class/struct/interface content.
+///
+/// Scans lines for common method declaration patterns across languages.
+/// Returns raw method names (not tokenized) — caller tokenizes for NL.
+fn extract_member_method_names(content: &str, language: Language) -> Vec<String> {
+    let mut methods = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = extract_method_name_from_line(trimmed, language) {
+            if !name.is_empty() && name.len() > 1 {
+                methods.push(name);
+            }
+            if methods.len() >= 15 {
+                break;
+            }
+        }
+    }
+    methods
+}
+
+/// Try to extract a method name from a single line of code.
+fn extract_method_name_from_line(line: &str, language: Language) -> Option<String> {
+    // Skip comments, empty, decorators
+    if line.is_empty()
+        || line.starts_with("//")
+        || line.starts_with('#')
+        || line.starts_with("/*")
+        || line.starts_with('*')
+        || line.starts_with('@')
+    {
+        return None;
+    }
+
+    // Rust: fn name(, pub fn name(, pub(crate) fn name(
+    // Go: func (r *T) Name(, func Name(
+    // Python: def name(
+    // JS/TS: methodName(, async methodName(, public methodName(
+    // Java/C#/Kotlin: visibility type methodName(
+    // Ruby: def name
+    let work = line
+        .trim_start_matches("pub(crate) ")
+        .trim_start_matches("pub(super) ")
+        .trim_start_matches("pub ")
+        .trim_start_matches("private ")
+        .trim_start_matches("protected ")
+        .trim_start_matches("public ")
+        .trim_start_matches("internal ")
+        .trim_start_matches("override ")
+        .trim_start_matches("virtual ")
+        .trim_start_matches("abstract ")
+        .trim_start_matches("static ")
+        .trim_start_matches("async ")
+        .trim_start_matches("final ");
+
+    match language {
+        Language::Rust => {
+            if let Some(rest) = work.strip_prefix("fn ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+        }
+        Language::Python | Language::Ruby => {
+            if let Some(rest) = work.strip_prefix("def ") {
+                return rest
+                    .split('(')
+                    .next()
+                    .or_else(|| rest.split_whitespace().next())
+                    .map(|s| s.trim().to_string());
+            }
+        }
+        Language::Go => {
+            if let Some(rest) = work.strip_prefix("func ") {
+                // func (r *T) Name( or func Name(
+                let rest = if rest.starts_with('(') {
+                    // Skip receiver: func (r *T) Name(
+                    rest.find(") ").map(|i| &rest[i + 2..]).unwrap_or(rest)
+                } else {
+                    rest
+                };
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+        }
+        _ => {
+            // Generic: look for fn/def/func prefix, or name( pattern
+            if let Some(rest) = work.strip_prefix("fn ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("def ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("func ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            // JS/TS/Java/C#: word( pattern after stripping modifiers
+            // But need to distinguish from field declarations, so require (
+            if let Some(paren_pos) = work.find('(') {
+                let before = work[..paren_pos].trim();
+                // Could be "returnType methodName" or just "methodName"
+                let name = before.split_whitespace().last().unwrap_or(before);
+                if !name.is_empty()
+                    && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+                    && !name.contains('{')
+                    && !name.contains('}')
+                    && !name.contains('=')
+                    && name != "if"
+                    && name != "for"
+                    && name != "while"
+                    && name != "switch"
+                    && name != "catch"
+                    && name != "return"
+                    && name != "new"
+                    && name != "class"
+                    && name != "interface"
+                    && name != "struct"
+                    && name != "enum"
+                {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Extract meaningful keywords from function body, filtering language noise.

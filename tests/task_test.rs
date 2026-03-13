@@ -247,6 +247,7 @@ fn test_compute_risk_and_tests_integration() {
         line_start: 1,
         line_end: 5,
         parent_id: None,
+        parent_type_name: None,
     }];
 
     let (scores, tests) =

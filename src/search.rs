@@ -115,6 +115,70 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
 
 // ============ Name Matching ============
 
+/// Detect whether a query looks like a code identifier vs natural language.
+///
+/// Name-like: "parseConfig", "handle_error", "CircuitBreaker"
+/// NL-like: "function that handles errors", "how does parsing work"
+///
+/// Used to gate name_boost — boosting by name similarity is harmful for
+/// NL queries because it rewards coincidental substring matches over
+/// semantic relevance.
+fn is_name_like_query(query: &str) -> bool {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    // Single token or two-token queries are likely identifiers
+    if words.len() <= 2 {
+        return true;
+    }
+    // NL indicators: common function words that never appear in identifiers
+    const NL_WORDS: &[&str] = &[
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "that",
+        "which",
+        "how",
+        "what",
+        "where",
+        "when",
+        "does",
+        "do",
+        "can",
+        "should",
+        "would",
+        "could",
+        "for",
+        "with",
+        "from",
+        "into",
+        "this",
+        "these",
+        "those",
+        "function",
+        "method",
+        "code",
+        "implement",
+        "find",
+        "search",
+    ];
+    let lower = query.to_lowercase();
+    let lower_words: Vec<&str> = lower.split_whitespace().collect();
+    for w in &lower_words {
+        if NL_WORDS.contains(w) {
+            return false;
+        }
+    }
+    // 3+ words with no NL indicators — still likely NL if all lowercase
+    // (identifiers are usually camelCase or snake_case)
+    if words.len() >= 3 && lower == query && !query.contains('_') {
+        return false;
+    }
+    true
+}
+
 /// Pre-tokenized query for efficient name matching in loops
 ///
 /// Create once before iterating over search results, then call `score()` for each name.
@@ -402,17 +466,17 @@ impl<'a> NoteBoostIndex<'a> {
 ///
 /// | Signal                   | Detection                                        | Multiplier |
 /// |--------------------------|--------------------------------------------------|------------|
-/// | Test function (name)     | name starts with `test_` or `Test`               | 0.90       |
-/// | Test file (filename)     | filename contains `_test.` or starts with `test_` | 0.90      |
-/// | Underscore-prefixed      | name starts with `_` (not `__`)                  | 0.95       |
+/// | Test function (name)     | name starts with `test_` or `Test`               | 0.70       |
+/// | Test file (filename)     | filename contains `_test.` or starts with `test_` | 0.70      |
+/// | Underscore-prefixed      | name starts with `_` (not `__`)                  | 0.80       |
 ///
 /// File-based detection uses only the filename, not the full path — being inside a
 /// `tests/` directory doesn't demote. This avoids false positives on test fixtures
 /// and monorepo layouts.
 ///
 /// Returns 1.0 (no change) when demotion doesn't apply.
-const IMPORTANCE_TEST: f32 = 0.90;
-const IMPORTANCE_PRIVATE: f32 = 0.95;
+const IMPORTANCE_TEST: f32 = 0.70;
+const IMPORTANCE_PRIVATE: f32 = 0.80;
 
 fn chunk_importance(name: &str, file_path: &str) -> f32 {
     // Name-based: test function
@@ -565,7 +629,9 @@ fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
         }
     }
 
-    let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+    let use_hybrid = filter.name_boost > 0.0
+        && !filter.query_text.is_empty()
+        && is_name_like_query(&filter.query_text);
     let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
 
     // Select columns: always id + embedding, optionally name for hybrid scoring
@@ -887,7 +953,9 @@ impl Store {
             return Ok(vec![]);
         }
 
-        let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+        let use_hybrid = filter.name_boost > 0.0
+            && !filter.query_text.is_empty()
+            && is_name_like_query(&filter.query_text);
         let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
 
         // Load notes once for note-boosted ranking
@@ -1748,7 +1816,7 @@ mod tests {
 
     #[test]
     fn test_chunk_importance_test_prefix() {
-        assert_eq!(chunk_importance("test_parse_config", "src/lib.rs"), 0.90);
+        assert_eq!(chunk_importance("test_parse_config", "src/lib.rs"), 0.70);
     }
 
     #[test]
@@ -1796,6 +1864,40 @@ mod tests {
     fn test_chunk_importance_test_name_beats_path() {
         // test_ name triggers demotion even in normal directory
         assert_eq!(chunk_importance("test_foo", "src/lib.rs"), IMPORTANCE_TEST);
+    }
+
+    // ===== is_name_like_query tests =====
+
+    #[test]
+    fn test_name_like_single_token() {
+        assert!(is_name_like_query("parseConfig"));
+        assert!(is_name_like_query("CircuitBreaker"));
+        assert!(is_name_like_query("handle_error"));
+    }
+
+    #[test]
+    fn test_name_like_two_tokens() {
+        assert!(is_name_like_query("parse config"));
+        assert!(is_name_like_query("error handler"));
+    }
+
+    #[test]
+    fn test_nl_query_with_indicators() {
+        assert!(!is_name_like_query("function that handles errors"));
+        assert!(!is_name_like_query("how does parsing work"));
+        assert!(!is_name_like_query("find error handling code"));
+        assert!(!is_name_like_query("code that implements retry logic"));
+    }
+
+    #[test]
+    fn test_nl_query_all_lowercase_3_plus_words() {
+        assert!(!is_name_like_query("error handling retry"));
+    }
+
+    #[test]
+    fn test_name_like_snake_case_multi() {
+        // snake_case with 3+ words is still name-like
+        assert!(is_name_like_query("handle_error_retry"));
     }
 
     // ===== build_filter_sql tests =====

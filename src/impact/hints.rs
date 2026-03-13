@@ -272,6 +272,7 @@ mod tests {
             line_start: 1,
             line_end: 5,
             parent_id: None,
+            parent_type_name: None,
         }];
         let hints = compute_hints_with_graph(&graph, &test_chunks, "target", None);
         assert_eq!(hints.test_count, 0, "Unreachable test should not count");
@@ -337,6 +338,7 @@ mod tests {
             line_start: 1,
             line_end: 10,
             parent_id: None,
+            parent_type_name: None,
         }];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert_eq!(scores[0].risk_level, RiskLevel::Low);
@@ -387,6 +389,7 @@ mod tests {
                 line_start: 1,
                 line_end: 5,
                 parent_id: None,
+                parent_type_name: None,
             },
             crate::store::ChunkSummary {
                 id: "t2".to_string(),
@@ -400,6 +403,7 @@ mod tests {
                 line_start: 6,
                 line_end: 10,
                 parent_id: None,
+                parent_type_name: None,
             },
             crate::store::ChunkSummary {
                 id: "t3".to_string(),
@@ -413,6 +417,7 @@ mod tests {
                 line_start: 11,
                 line_end: 15,
                 parent_id: None,
+                parent_type_name: None,
             },
         ];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
@@ -494,6 +499,7 @@ mod tests {
             line_start: 1,
             line_end: 5,
             parent_id: None,
+            parent_type_name: None,
         }];
 
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);

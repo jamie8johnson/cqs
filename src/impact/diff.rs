@@ -253,6 +253,7 @@ mod tests {
             line_start,
             line_end: line_start + 5,
             parent_id: None,
+            parent_type_name: None,
         }
     }
 

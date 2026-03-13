@@ -490,6 +490,7 @@ mod tests {
             line_start: 1,
             line_end: 10,
             parent_id: None,
+            parent_type_name: None,
         }
     }
 
