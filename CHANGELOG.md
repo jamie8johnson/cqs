@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-03-14
+
+### Added
+- NL description enrichment (SQ-2): struct/enum/class field names and directory-path context improve embedding discrimination in large corpora (+3.7pp R@1 on hard eval) (#588)
+- Holdout eval infrastructure: 143-query eval set with stress eval against real codebases (3970 chunks) (#588)
+- `rerank_with_passages` method on reranker for scoring against custom passage text (#588)
+
+### Fixed
+- Dead code warning in Make language definition (#588)
+
 ## [1.0.5] - 2026-03-13
 
 ### Added
