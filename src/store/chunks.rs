@@ -71,6 +71,39 @@ impl Store {
         Ok(())
     }
 
+    /// Update only the embedding for existing chunks (by ID).
+    ///
+    /// Used by the call-graph enrichment pass: chunk content hasn't changed,
+    /// only the NL description (and therefore embedding) is different.
+    /// Skips FTS rebuild since content is unchanged.
+    pub fn update_embeddings_batch(
+        &self,
+        updates: &[(String, Embedding)],
+    ) -> Result<usize, StoreError> {
+        let _span = tracing::info_span!("update_embeddings_batch", count = updates.len()).entered();
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let embedding_bytes: Vec<Vec<u8>> = updates
+            .iter()
+            .map(|(_, emb)| embedding_to_bytes(emb))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+            for (i, (id, _)) in updates.iter().enumerate() {
+                sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
+                    .bind(&embedding_bytes[i])
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
+            Ok(updates.len())
+        })
+    }
+
     /// Check if a file needs reindexing based on mtime.
     ///
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
@@ -1042,6 +1075,44 @@ impl Store {
     pub fn all_chunk_identities(&self) -> Result<Vec<ChunkIdentity>, StoreError> {
         let _span = tracing::debug_span!("all_chunk_identities").entered();
         self.all_chunk_identities_filtered(None)
+    }
+
+    /// Fetch a page of full chunks by rowid cursor.
+    ///
+    /// Returns `(chunks, next_cursor)`. When the returned vec is empty, iteration
+    /// is complete. Used by the enrichment pass to iterate all chunks without
+    /// loading everything into memory.
+    pub fn chunks_paged(
+        &self,
+        after_rowid: i64,
+        limit: usize,
+    ) -> Result<(Vec<ChunkSummary>, i64), StoreError> {
+        let _span = tracing::debug_span!("chunks_paged", after_rowid, limit).entered();
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT rowid, id, origin, language, chunk_type, name, signature, content, doc, \
+                 line_start, line_end, parent_id, parent_type_name \
+                 FROM chunks WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
+            )
+            .bind(after_rowid)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await?;
+
+            let mut max_rowid = after_rowid;
+            let chunks: Vec<ChunkSummary> = rows
+                .iter()
+                .map(|row| {
+                    let rowid: i64 = row.get("rowid");
+                    if rowid > max_rowid {
+                        max_rowid = rowid;
+                    }
+                    ChunkSummary::from(ChunkRow::from_row(row))
+                })
+                .collect();
+
+            Ok((chunks, max_rowid))
+        })
     }
 
     /// Like `all_chunk_identities` but with an optional language filter.

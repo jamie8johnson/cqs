@@ -14,7 +14,7 @@ mod watch;
 // Re-export for watch.rs and commands
 pub(crate) use config::find_project_root;
 pub(crate) use files::{acquire_index_lock, enumerate_files, try_acquire_index_lock};
-pub(crate) use pipeline::run_index_pipeline;
+pub(crate) use pipeline::{enrichment_pass, run_index_pipeline};
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 /// Open the project store, returning the store, project root, and index directory.

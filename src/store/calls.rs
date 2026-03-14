@@ -1233,6 +1233,32 @@ impl Store {
             })
         })
     }
+
+    /// Compute document frequency for each callee name.
+    ///
+    /// Returns a map of callee_name → count of distinct callers that call it.
+    /// Used by the enrichment pass to suppress high-frequency utility functions
+    /// (IDF-style filtering).
+    pub fn callee_document_frequencies(&self) -> Result<Vec<(String, usize)>, StoreError> {
+        let _span = tracing::debug_span!("callee_document_frequencies").entered();
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT callee_name, COUNT(DISTINCT caller_name) as caller_count \
+                 FROM function_calls GROUP BY callee_name",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .iter()
+                .map(|row| {
+                    let name: String = row.get("callee_name");
+                    let count: i64 = row.get("caller_count");
+                    (name, count as usize)
+                })
+                .collect())
+        })
+    }
 }
 
 #[cfg(test)]

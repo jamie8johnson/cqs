@@ -256,6 +256,71 @@ pub enum NlTemplate {
     StandardV2TruncDoc,
 }
 
+/// Call graph context for enriching NL descriptions.
+///
+/// Provided during the second indexing pass, after the call graph is built.
+#[derive(Debug, Default)]
+pub struct CallContext {
+    /// Names of functions that call this chunk (most specific discrimination signal).
+    pub callers: Vec<String>,
+    /// Names of functions this chunk calls (less discriminating, often shared utilities).
+    pub callees: Vec<String>,
+}
+
+/// Generate NL description enriched with call graph context.
+///
+/// Used in the second indexing pass. Appends caller/callee names to the base
+/// Compact description, filtered by IDF to suppress high-frequency utilities.
+pub fn generate_nl_with_call_context(
+    chunk: &Chunk,
+    ctx: &CallContext,
+    callee_doc_freq: &std::collections::HashMap<String, f32>,
+    max_callers: usize,
+    max_callees: usize,
+) -> String {
+    let base = generate_nl_description(chunk);
+
+    let mut extras = Vec::new();
+
+    // Callers: most discriminating signal. Tokenize names for embedding.
+    if !ctx.callers.is_empty() {
+        let caller_words: Vec<String> = ctx
+            .callers
+            .iter()
+            .take(max_callers)
+            .map(|c| tokenize_identifier(c).join(" "))
+            .collect();
+        if !caller_words.is_empty() {
+            extras.push(format!("Called by: {}", caller_words.join(", ")));
+        }
+    }
+
+    // Callees: filter high-frequency utilities (IDF threshold).
+    // A callee appearing in >10% of chunks is likely a utility (log, unwrap, etc.).
+    if !ctx.callees.is_empty() {
+        let callee_words: Vec<String> = ctx
+            .callees
+            .iter()
+            .filter(|c| {
+                !callee_doc_freq
+                    .get(c.as_str())
+                    .is_some_and(|&freq| freq >= 0.10)
+            })
+            .take(max_callees)
+            .map(|c| tokenize_identifier(c).join(" "))
+            .collect();
+        if !callee_words.is_empty() {
+            extras.push(format!("Calls: {}", callee_words.join(", ")));
+        }
+    }
+
+    if extras.is_empty() {
+        return base;
+    }
+
+    format!("{}. {}", base, extras.join(". "))
+}
+
 /// Generate natural language description from chunk metadata.
 ///
 /// Produces text like: "parse config. Takes path parameter. Returns config. Keywords: path, config."
