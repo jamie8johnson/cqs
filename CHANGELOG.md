@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.7] - 2026-03-14
+
+### Added
+- Call-graph-enriched embeddings (SQ-4): two-pass indexing re-embeds chunks with caller/callee context after call graph is built (#590)
+- IDF-based callee filtering suppresses high-frequency utility functions (>10% threshold) (#590)
+- `update_embeddings_batch()` for lightweight embedding-only updates (#590)
+- `chunks_paged()` cursor-based chunk iterator (#590)
+- `callee_document_frequencies()` for IDF computation (#590)
+
 ## [1.0.6] - 2026-03-14
 
 ### Added
