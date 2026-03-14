@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-03-15
+
+### Fixed
+- Enrichment pass: assert embedding count mismatch instead of silent truncation (#592)
+- Enrichment pass: drain batch after successful store write, not before (#592)
+- Enrichment pass: skip ambiguous function names (`new`, `parse`, `build`) to prevent caller merging across files (#592)
+- Enrichment pass: progress bar cleanup on error via closure guard (#592)
+- `update_embeddings_batch`: check `rows_affected` and log missing chunk IDs (#592)
+- `ProgressStyle::template().unwrap()` → `.expect()` in enrichment pass (#592)
+
+### Changed
+- Renamed `callee_document_frequencies()` → `callee_caller_counts()` — name now matches return type (#592)
+- `ENRICHMENT_PAGE_SIZE` promoted from `let` to `const` (#592)
+
+### Removed
+- Dead code: `replace_file_chunks` (100 lines, zero production callers) (#592)
+
+### Added
+- 4 unit tests for `generate_nl_with_call_context` (callers, IDF filtering, truncation, empty context) (#592)
+
 ## [1.0.7] - 2026-03-14
 
 ### Added
