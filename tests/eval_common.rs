@@ -891,217 +891,904 @@ pub const HOLDOUT_EVAL_CASES: &[EvalCase] = &[
     // ================================================================
 
     // --- http_post_json ---
-    EvalCase { query: "send data to remote API endpoint as JSON", expected_name: "http_post_json", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "send data to remote API endpoint as JSON", expected_name: "http_post_json", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "send data to remote API endpoint as JSON", expected_name: "httpPostJson", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "send data to remote API endpoint as JSON", expected_name: "httpPostJson", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "send data to remote API endpoint as JSON", expected_name: "HttpPostJson", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "http_post_json",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "http_post_json",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "httpPostJson",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "httpPostJson",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "send data to remote API endpoint as JSON",
+        expected_name: "HttpPostJson",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- read_file_utf8 ---
-    EvalCase { query: "load text content from file on disk", expected_name: "read_file_utf8", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "load text content from file on disk", expected_name: "read_file_utf8", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "load text content from file on disk", expected_name: "readFileUtf8", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "load text content from file on disk", expected_name: "readFileUtf8", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "load text content from file on disk", expected_name: "ReadFileUtf8", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "read_file_utf8",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "read_file_utf8",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "readFileUtf8",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "readFileUtf8",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "load text content from file on disk",
+        expected_name: "ReadFileUtf8",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- write_file_atomic ---
-    EvalCase { query: "safely write data to file without corruption on crash", expected_name: "write_file_atomic", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "safely write data to file without corruption on crash", expected_name: "write_file_atomic", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "safely write data to file without corruption on crash", expected_name: "writeFileAtomic", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "safely write data to file without corruption on crash", expected_name: "writeFileAtomic", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "safely write data to file without corruption on crash", expected_name: "WriteFileAtomic", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "write_file_atomic",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "write_file_atomic",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "writeFileAtomic",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "writeFileAtomic",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "safely write data to file without corruption on crash",
+        expected_name: "WriteFileAtomic",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- calculate_mean ---
-    EvalCase { query: "compute arithmetic average of a list of numbers", expected_name: "calculate_mean", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "compute arithmetic average of a list of numbers", expected_name: "calculate_mean", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "compute arithmetic average of a list of numbers", expected_name: "calculateMean", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "compute arithmetic average of a list of numbers", expected_name: "calculateMean", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "compute arithmetic average of a list of numbers", expected_name: "CalculateMean", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "calculate_mean",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "calculate_mean",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "calculateMean",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "calculateMean",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute arithmetic average of a list of numbers",
+        expected_name: "CalculateMean",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- find_maximum ---
-    EvalCase { query: "find the largest element in an array", expected_name: "find_maximum", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "find the largest element in an array", expected_name: "find_maximum", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "find the largest element in an array", expected_name: "findMaximum", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "find the largest element in an array", expected_name: "findMaximum", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "find the largest element in an array", expected_name: "FindMaximum", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "find_maximum",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "find_maximum",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "findMaximum",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "findMaximum",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "find the largest element in an array",
+        expected_name: "FindMaximum",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- generate_random_id ---
-    EvalCase { query: "create a unique random identifier string", expected_name: "generate_random_id", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "create a unique random identifier string", expected_name: "generate_random_id", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "create a unique random identifier string", expected_name: "generateRandomId", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "create a unique random identifier string", expected_name: "generateRandomId", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "create a unique random identifier string", expected_name: "GenerateRandomId", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "generate_random_id",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "generate_random_id",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "generateRandomId",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "generateRandomId",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "create a unique random identifier string",
+        expected_name: "GenerateRandomId",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- compress_rle ---
-    EvalCase { query: "compress data using run-length encoding", expected_name: "compress_rle", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "compress data using run-length encoding", expected_name: "compress_rle", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "compress data using run-length encoding", expected_name: "compressRle", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "compress data using run-length encoding", expected_name: "compressRle", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "compress data using run-length encoding", expected_name: "CompressRle", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "compress_rle",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "compress_rle",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "compressRle",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "compressRle",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compress data using run-length encoding",
+        expected_name: "CompressRle",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- parse_cli_args ---
-    EvalCase { query: "parse command-line flags and arguments into a map", expected_name: "parse_cli_args", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "parse command-line flags and arguments into a map", expected_name: "parse_cli_args", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "parse command-line flags and arguments into a map", expected_name: "parseCliArgs", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "parse command-line flags and arguments into a map", expected_name: "parseCliArgs", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "parse command-line flags and arguments into a map", expected_name: "ParseCliArgs", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "parse_cli_args",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "parse_cli_args",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "parseCliArgs",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "parseCliArgs",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "parse command-line flags and arguments into a map",
+        expected_name: "ParseCliArgs",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- debounce ---
-    EvalCase { query: "delay function execution until input stops changing", expected_name: "Debouncer", language: Language::Rust, also_accept: &["should_execute"] },
-    EvalCase { query: "delay function execution until input stops changing", expected_name: "debounce", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "delay function execution until input stops changing", expected_name: "debounce", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "delay function execution until input stops changing", expected_name: "debounce", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "delay function execution until input stops changing", expected_name: "NewDebouncer", language: Language::Go, also_accept: &["Debouncer", "ShouldExecute"] },
-
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "Debouncer",
+        language: Language::Rust,
+        also_accept: &["should_execute"],
+    },
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "debounce",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "debounce",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "debounce",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "delay function execution until input stops changing",
+        expected_name: "NewDebouncer",
+        language: Language::Go,
+        also_accept: &["Debouncer", "ShouldExecute"],
+    },
     // --- flatten_nested ---
     // (Rust has no flatten in basic eval fixture — skip Rust)
-    EvalCase { query: "recursively flatten nested lists into a single flat list", expected_name: "flatten_nested_list", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "recursively flatten nested lists into a single flat list", expected_name: "flattenNestedArray", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "recursively flatten nested lists into a single flat list", expected_name: "flattenNestedArray", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "recursively flatten nested lists into a single flat list", expected_name: "FlattenNestedSlice", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "recursively flatten nested lists into a single flat list",
+        expected_name: "flatten_nested_list",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively flatten nested lists into a single flat list",
+        expected_name: "flattenNestedArray",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively flatten nested lists into a single flat list",
+        expected_name: "flattenNestedArray",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively flatten nested lists into a single flat list",
+        expected_name: "FlattenNestedSlice",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- deep_merge ---
     // (Rust has no deep_merge in basic eval fixture — skip Rust)
-    EvalCase { query: "recursively merge two nested dictionaries or config objects", expected_name: "deep_merge_dicts", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "recursively merge two nested dictionaries or config objects", expected_name: "deepMergeObjects", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "recursively merge two nested dictionaries or config objects", expected_name: "deepMergeObjects", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "recursively merge two nested dictionaries or config objects", expected_name: "DeepMergeMaps", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "recursively merge two nested dictionaries or config objects",
+        expected_name: "deep_merge_dicts",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively merge two nested dictionaries or config objects",
+        expected_name: "deepMergeObjects",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively merge two nested dictionaries or config objects",
+        expected_name: "deepMergeObjects",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "recursively merge two nested dictionaries or config objects",
+        expected_name: "DeepMergeMaps",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // ================================================================
     // Category 1b: Uncovered hard eval functions
     // ================================================================
 
     // --- bubble_sort ---
-    EvalCase { query: "sort by repeatedly swapping adjacent out-of-order elements", expected_name: "bubble_sort", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "sort by repeatedly swapping adjacent out-of-order elements", expected_name: "bubble_sort", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "sort by repeatedly swapping adjacent out-of-order elements", expected_name: "bubbleSort", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "sort by repeatedly swapping adjacent out-of-order elements", expected_name: "bubbleSort", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "sort by repeatedly swapping adjacent out-of-order elements", expected_name: "BubbleSort", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "bubble_sort",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "bubble_sort",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "bubbleSort",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "bubbleSort",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "sort by repeatedly swapping adjacent out-of-order elements",
+        expected_name: "BubbleSort",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- reverse_string ---
-    EvalCase { query: "reverse the order of characters in a string", expected_name: "reverse_string", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "reverse the order of characters in a string", expected_name: "reverse_string", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "reverse the order of characters in a string", expected_name: "reverseString", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "reverse the order of characters in a string", expected_name: "reverseString", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "reverse the order of characters in a string", expected_name: "ReverseString", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "reverse_string",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "reverse_string",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "reverseString",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "reverseString",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "reverse the order of characters in a string",
+        expected_name: "ReverseString",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- validate_ip_address ---
-    EvalCase { query: "check if string is a valid IPv4 address with four octets", expected_name: "validate_ip_address", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "check if string is a valid IPv4 address with four octets", expected_name: "validate_ip_address", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "check if string is a valid IPv4 address with four octets", expected_name: "validateIpAddress", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "check if string is a valid IPv4 address with four octets", expected_name: "validateIpAddress", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "check if string is a valid IPv4 address with four octets", expected_name: "ValidateIpAddress", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "validate_ip_address",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "validate_ip_address",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "validateIpAddress",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "validateIpAddress",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if string is a valid IPv4 address with four octets",
+        expected_name: "ValidateIpAddress",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- hash_crc32 ---
-    EvalCase { query: "compute CRC32 checksum of byte data", expected_name: "hash_crc32", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "compute CRC32 checksum of byte data", expected_name: "hash_crc32", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "compute CRC32 checksum of byte data", expected_name: "hashCrc32", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "compute CRC32 checksum of byte data", expected_name: "hashCrc32", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "compute CRC32 checksum of byte data", expected_name: "HashCrc32", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "compute CRC32 checksum of byte data",
+        expected_name: "hash_crc32",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute CRC32 checksum of byte data",
+        expected_name: "hash_crc32",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute CRC32 checksum of byte data",
+        expected_name: "hashCrc32",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute CRC32 checksum of byte data",
+        expected_name: "hashCrc32",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "compute CRC32 checksum of byte data",
+        expected_name: "HashCrc32",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- RateLimiter ---
-    EvalCase { query: "throttle request rate using token bucket algorithm", expected_name: "RateLimiter", language: Language::Rust, also_accept: &["allow"] },
-    EvalCase { query: "throttle request rate using token bucket algorithm", expected_name: "RateLimiter", language: Language::Python, also_accept: &["allow"] },
-    EvalCase { query: "throttle request rate using token bucket algorithm", expected_name: "RateLimiter", language: Language::TypeScript, also_accept: &["allow"] },
-    EvalCase { query: "throttle request rate using token bucket algorithm", expected_name: "RateLimiter", language: Language::JavaScript, also_accept: &["allow"] },
-    EvalCase { query: "throttle request rate using token bucket algorithm", expected_name: "RateLimiterGo", language: Language::Go, also_accept: &["NewRateLimiter", "Allow"] },
-
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiter",
+        language: Language::Rust,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiter",
+        language: Language::Python,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiter",
+        language: Language::TypeScript,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiter",
+        language: Language::JavaScript,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "throttle request rate using token bucket algorithm",
+        expected_name: "RateLimiterGo",
+        language: Language::Go,
+        also_accept: &["NewRateLimiter", "Allow"],
+    },
     // --- record_success ---
-    EvalCase { query: "mark a successful call to reset circuit breaker failure count", expected_name: "record_success", language: Language::Rust, also_accept: &["CircuitBreaker"] },
-    EvalCase { query: "mark a successful call to reset circuit breaker failure count", expected_name: "record_success", language: Language::Python, also_accept: &["CircuitBreaker"] },
-    EvalCase { query: "mark a successful call to reset circuit breaker failure count", expected_name: "recordSuccess", language: Language::TypeScript, also_accept: &["CircuitBreaker"] },
-    EvalCase { query: "mark a successful call to reset circuit breaker failure count", expected_name: "recordSuccess", language: Language::JavaScript, also_accept: &["CircuitBreaker"] },
-    EvalCase { query: "mark a successful call to reset circuit breaker failure count", expected_name: "RecordSuccess", language: Language::Go, also_accept: &["CircuitBreakerGo"] },
-
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "record_success",
+        language: Language::Rust,
+        also_accept: &["CircuitBreaker"],
+    },
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "record_success",
+        language: Language::Python,
+        also_accept: &["CircuitBreaker"],
+    },
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "recordSuccess",
+        language: Language::TypeScript,
+        also_accept: &["CircuitBreaker"],
+    },
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "recordSuccess",
+        language: Language::JavaScript,
+        also_accept: &["CircuitBreaker"],
+    },
+    EvalCase {
+        query: "mark a successful call to reset circuit breaker failure count",
+        expected_name: "RecordSuccess",
+        language: Language::Go,
+        also_accept: &["CircuitBreakerGo"],
+    },
     // ================================================================
     // Category 2: Paraphrase queries (alt phrasing for covered functions)
     // ================================================================
 
     // --- retry_with_backoff (original: "retry HTTP request with exponential backoff") ---
-    EvalCase { query: "automatically retry failed operations with increasing delay between attempts", expected_name: "retry_with_backoff", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "automatically retry failed operations with increasing delay between attempts", expected_name: "retry_with_backoff", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "automatically retry failed operations with increasing delay between attempts", expected_name: "retryWithBackoff", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "automatically retry failed operations with increasing delay between attempts", expected_name: "retryWithBackoff", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "automatically retry failed operations with increasing delay between attempts", expected_name: "RetryWithBackoff", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "retry_with_backoff",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "retry_with_backoff",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "retryWithBackoff",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "retryWithBackoff",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "automatically retry failed operations with increasing delay between attempts",
+        expected_name: "RetryWithBackoff",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- validate_email (original: "validate email address format with regex") ---
-    EvalCase { query: "check if a string looks like a properly formatted email with @ and domain", expected_name: "validate_email", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "check if a string looks like a properly formatted email with @ and domain", expected_name: "validate_email", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "check if a string looks like a properly formatted email with @ and domain", expected_name: "validateEmail", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "check if a string looks like a properly formatted email with @ and domain", expected_name: "validateEmail", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "check if a string looks like a properly formatted email with @ and domain", expected_name: "ValidateEmail", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "validate_email",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "validate_email",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "validateEmail",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "validateEmail",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "check if a string looks like a properly formatted email with @ and domain",
+        expected_name: "ValidateEmail",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- quicksort (original: "partition-based in-place sorting algorithm") ---
-    EvalCase { query: "divide and conquer sort that picks a pivot and partitions around it", expected_name: "quicksort", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "divide and conquer sort that picks a pivot and partitions around it", expected_name: "quicksort", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "divide and conquer sort that picks a pivot and partitions around it", expected_name: "quicksort", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "divide and conquer sort that picks a pivot and partitions around it", expected_name: "quicksort", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "divide and conquer sort that picks a pivot and partitions around it", expected_name: "Quicksort", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "quicksort",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "quicksort",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "quicksort",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "quicksort",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "divide and conquer sort that picks a pivot and partitions around it",
+        expected_name: "Quicksort",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- format_currency (original: "format number as US currency string") ---
-    EvalCase { query: "display a decimal number as money with dollar sign and commas", expected_name: "format_currency", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "display a decimal number as money with dollar sign and commas", expected_name: "format_currency", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "display a decimal number as money with dollar sign and commas", expected_name: "formatCurrency", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "display a decimal number as money with dollar sign and commas", expected_name: "formatCurrency", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "display a decimal number as money with dollar sign and commas", expected_name: "FormatCurrency", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "format_currency",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "format_currency",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "formatCurrency",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "formatCurrency",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "display a decimal number as money with dollar sign and commas",
+        expected_name: "FormatCurrency",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- camel_to_snake (original: "convert camelCase string to snake_case") ---
-    EvalCase { query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase", expected_name: "camel_to_snake", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase", expected_name: "camel_to_snake", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase", expected_name: "camelToSnake", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase", expected_name: "camelToSnake", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase", expected_name: "CamelToSnake", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "camel_to_snake",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "camel_to_snake",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "camelToSnake",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "camelToSnake",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "transform PascalCase or camelCase identifiers to underscore_separated lowercase",
+        expected_name: "CamelToSnake",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- is_valid_uuid (original: "check if string is valid UUID format") ---
-    EvalCase { query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern", expected_name: "is_valid_uuid", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern", expected_name: "is_valid_uuid", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern", expected_name: "isValidUuid", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern", expected_name: "isValidUuid", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern", expected_name: "IsValidUuid", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "is_valid_uuid",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "is_valid_uuid",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "isValidUuid",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "isValidUuid",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "validate that a string matches the 8-4-4-4-12 hexadecimal UUID pattern",
+        expected_name: "IsValidUuid",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- hash_sha256 (original: "compute SHA-256 hash of input data") ---
-    EvalCase { query: "generate a cryptographic digest of data using the SHA-256 algorithm", expected_name: "hash_sha256", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "generate a cryptographic digest of data using the SHA-256 algorithm", expected_name: "hash_sha256", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "generate a cryptographic digest of data using the SHA-256 algorithm", expected_name: "hashSha256", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "generate a cryptographic digest of data using the SHA-256 algorithm", expected_name: "hashSha256", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "generate a cryptographic digest of data using the SHA-256 algorithm", expected_name: "HashSha256", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "hash_sha256",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "hash_sha256",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "hashSha256",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "hashSha256",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "generate a cryptographic digest of data using the SHA-256 algorithm",
+        expected_name: "HashSha256",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- truncate_string (original: "truncate string to maximum length with ellipsis") ---
-    EvalCase { query: "shorten text to a character limit and append ellipsis if trimmed", expected_name: "truncate_string", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "shorten text to a character limit and append ellipsis if trimmed", expected_name: "truncate_string", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "shorten text to a character limit and append ellipsis if trimmed", expected_name: "truncateString", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "shorten text to a character limit and append ellipsis if trimmed", expected_name: "truncateString", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "shorten text to a character limit and append ellipsis if trimmed", expected_name: "TruncateString", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "truncate_string",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "truncate_string",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "truncateString",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "truncateString",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "shorten text to a character limit and append ellipsis if trimmed",
+        expected_name: "TruncateString",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // --- parse_json_config (original: "parse JSON configuration file into structured data") ---
-    EvalCase { query: "deserialize a JSON string into a typed configuration object", expected_name: "parse_json_config", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "deserialize a JSON string into a typed configuration object", expected_name: "parse_json_config", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "deserialize a JSON string into a typed configuration object", expected_name: "parseJsonConfig", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "deserialize a JSON string into a typed configuration object", expected_name: "parseJsonConfig", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "deserialize a JSON string into a typed configuration object", expected_name: "ParseJsonConfig", language: Language::Go, also_accept: &[] },
-
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "parse_json_config",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "parse_json_config",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "parseJsonConfig",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "parseJsonConfig",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "deserialize a JSON string into a typed configuration object",
+        expected_name: "ParseJsonConfig",
+        language: Language::Go,
+        also_accept: &[],
+    },
     // ================================================================
     // Category 3: Behavioral / use-case queries
     // ================================================================
 
     // "I need to prevent API abuse" → RateLimiter
-    EvalCase { query: "prevent API abuse by limiting how many requests a client can make per second", expected_name: "RateLimiter", language: Language::Rust, also_accept: &["allow"] },
-    EvalCase { query: "prevent API abuse by limiting how many requests a client can make per second", expected_name: "RateLimiter", language: Language::Python, also_accept: &["allow"] },
-    EvalCase { query: "prevent API abuse by limiting how many requests a client can make per second", expected_name: "RateLimiter", language: Language::TypeScript, also_accept: &["allow"] },
-    EvalCase { query: "prevent API abuse by limiting how many requests a client can make per second", expected_name: "RateLimiter", language: Language::JavaScript, also_accept: &["allow"] },
-    EvalCase { query: "prevent API abuse by limiting how many requests a client can make per second", expected_name: "RateLimiterGo", language: Language::Go, also_accept: &["NewRateLimiter", "Allow"] },
-
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiter",
+        language: Language::Rust,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiter",
+        language: Language::Python,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiter",
+        language: Language::TypeScript,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiter",
+        language: Language::JavaScript,
+        also_accept: &["allow"],
+    },
+    EvalCase {
+        query: "prevent API abuse by limiting how many requests a client can make per second",
+        expected_name: "RateLimiterGo",
+        language: Language::Go,
+        also_accept: &["NewRateLimiter", "Allow"],
+    },
     // "I need to cache expensive computation results" → memoize/get_or_compute
-    EvalCase { query: "cache the results of expensive function calls to avoid redundant computation", expected_name: "get_or_compute", language: Language::Rust, also_accept: &["Memoizer"] },
-    EvalCase { query: "cache the results of expensive function calls to avoid redundant computation", expected_name: "memoize", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "cache the results of expensive function calls to avoid redundant computation", expected_name: "memoize", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "cache the results of expensive function calls to avoid redundant computation", expected_name: "memoize", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "cache the results of expensive function calls to avoid redundant computation", expected_name: "GetOrCompute", language: Language::Go, also_accept: &["Memoizer", "NewMemoizer"] },
-
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "get_or_compute",
+        language: Language::Rust,
+        also_accept: &["Memoizer"],
+    },
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "memoize",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "memoize",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "memoize",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "cache the results of expensive function calls to avoid redundant computation",
+        expected_name: "GetOrCompute",
+        language: Language::Go,
+        also_accept: &["Memoizer", "NewMemoizer"],
+    },
     // "I need to make sure a file path is a real file" → read_file_utf8
-    EvalCase { query: "read the entire contents of a text file as a UTF-8 encoded string", expected_name: "read_file_utf8", language: Language::Rust, also_accept: &[] },
-    EvalCase { query: "read the entire contents of a text file as a UTF-8 encoded string", expected_name: "read_file_utf8", language: Language::Python, also_accept: &[] },
-    EvalCase { query: "read the entire contents of a text file as a UTF-8 encoded string", expected_name: "readFileUtf8", language: Language::TypeScript, also_accept: &[] },
-    EvalCase { query: "read the entire contents of a text file as a UTF-8 encoded string", expected_name: "readFileUtf8", language: Language::JavaScript, also_accept: &[] },
-    EvalCase { query: "read the entire contents of a text file as a UTF-8 encoded string", expected_name: "ReadFileUtf8", language: Language::Go, also_accept: &[] },
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "read_file_utf8",
+        language: Language::Rust,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "read_file_utf8",
+        language: Language::Python,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "readFileUtf8",
+        language: Language::TypeScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "readFileUtf8",
+        language: Language::JavaScript,
+        also_accept: &[],
+    },
+    EvalCase {
+        query: "read the entire contents of a text file as a UTF-8 encoded string",
+        expected_name: "ReadFileUtf8",
+        language: Language::Go,
+        also_accept: &[],
+    },
 ];

@@ -542,8 +542,6 @@ fn test_pipeline_scoring() {
         });
     }
 
-
-
     // === Print comparison table ===
     eprintln!(
         "\n=== Pipeline Scoring Comparison ({} hard eval queries) ===\n",
@@ -661,7 +659,10 @@ fn test_holdout_eval() {
         .collect();
 
     // Run holdout eval with best config: HNSW + name_boost + demotion
-    eprintln!("--- Holdout Eval: HNSW + boost + demote ({} queries) ---", HOLDOUT_EVAL_CASES.len());
+    eprintln!(
+        "--- Holdout Eval: HNSW + boost + demote ({} queries) ---",
+        HOLDOUT_EVAL_CASES.len()
+    );
     let mut results_per_case = Vec::new();
 
     for (i, case) in HOLDOUT_EVAL_CASES.iter().enumerate() {
@@ -710,7 +711,10 @@ fn test_holdout_eval() {
     let (r1, r5, mrr, per_lang, relaxed_r1) =
         compute_metrics(&results_per_case, HOLDOUT_EVAL_CASES);
 
-    eprintln!("\n=== Holdout Eval Results ({} queries) ===\n", HOLDOUT_EVAL_CASES.len());
+    eprintln!(
+        "\n=== Holdout Eval Results ({} queries) ===\n",
+        HOLDOUT_EVAL_CASES.len()
+    );
     eprintln!("  Recall@1:         {:.1}%", r1 * 100.0);
     eprintln!("  Relaxed R@1:      {:.1}%", relaxed_r1 * 100.0);
     eprintln!("  Recall@5:         {:.1}%", r5 * 100.0);
@@ -816,8 +820,7 @@ fn test_stress_eval() {
 
                     // Embed in batches of 64
                     if batch_texts.len() >= 64 {
-                        let refs: Vec<&str> =
-                            batch_texts.iter().map(|s| s.as_str()).collect();
+                        let refs: Vec<&str> = batch_texts.iter().map(|s| s.as_str()).collect();
                         let embeddings = embedder
                             .embed_documents(&refs)
                             .expect("Failed to embed batch");
@@ -854,9 +857,8 @@ fn test_stress_eval() {
 
     // Build HNSW index
     eprintln!("Building HNSW index...");
-    let hnsw =
-        HnswIndex::build_batched(store.embedding_batches(10_000), total as usize)
-            .expect("Failed to build HNSW index");
+    let hnsw = HnswIndex::build_batched(store.embedding_batches(10_000), total as usize)
+        .expect("Failed to build HNSW index");
     eprintln!("  HNSW: {} vectors\n", hnsw.len());
 
     // Embed queries
