@@ -2,48 +2,40 @@
 
 ## Right Now
 
-**SQ-4: Call-graph-enriched embeddings (2026-03-14).** Branch: `main` (uncommitted).
-
-### Goal
-Two-pass indexing: after the main pipeline builds the call graph, re-embed each chunk with caller/callee context baked into the NL description for better search discrimination.
+**v1.0.7 audit + fixes (2026-03-15).** Branch: `main` (uncommitted).
 
 ### Done this session
-- v1.0.6 released (PR #588 SQ-2 NL enrichment, PR #589 version bump)
-- Published to crates.io, GitHub release with binaries
-- Scouted NL pipeline, embedding flow, index build, call graph storage
-- Implemented SQ-4 two-pass enrichment:
-  - `nl.rs`: `CallContext` struct + `generate_nl_with_call_context()` — appends "Called by: X, Y" and "Calls: A, B" to base Compact NL, with IDF-based callee filtering (>10% = stopword)
-  - `store/chunks.rs`: `update_embeddings_batch()` — lightweight embedding-only UPDATE (no FTS rebuild), `chunks_paged()` — cursor-based full-chunk iterator
-  - `store/calls.rs`: `callee_document_frequencies()` — callee name → distinct caller count for IDF
-  - `pipeline.rs`: `enrichment_pass()` — post-pipeline second pass, pages through all chunks, batch-fetches callers/callees, skips leaf nodes, re-embeds in batches of 64
-  - `commands/index.rs`: wires enrichment pass after main pipeline, before HNSW build
-- Fixed embedding dimension mismatch: `embed_documents()` returns 768-dim, store needs 769. Added `.with_sentiment(0.0)`.
-- Fixed CUDA 12 runtime loading permanently: symlinked pip CUDA 12 libs into conda lib dir (already in binary rpath). Cargo `[env]` LD_LIBRARY_PATH doesn't work for `dlopen`.
-- Tested end-to-end: 7233 chunks → 4584 enriched (63%) with call graph context
+- v1.0.6 released (PR #588 SQ-2, PR #589)
+- v1.0.7 released (PR #590 SQ-4, PR #591)
+- Full 14-category audit running (Batch 1+2 complete, Batch 3 in progress)
+- P1 fixes: EH-9 assert, EH-11 drain-after-write, CQ-12 tests, CQ-7 dead code, CQ-8 doc
+- P2 fixes: AD-14 rename, EH-8 progress guard, EH-10 rows_affected, EH-12 expect, CQ-9 doc
+- RB-B1: skip ambiguous names in enrichment (prevents `new`/`parse` caller merging)
+- AC-B1/B2: comment fix, page_size→const
+- DOC-1: CONTRIBUTING.md + vue.rs/aspx.rs
+- AD-15: update_embeddings_batch doc comment
 
 ### Still needs
-- Run holdout + stress eval to measure search quality impact
-- Sweep: callers-only vs both, max_callers/max_callees tuning
-- Commit and PR
-- Consider shipping as v1.0.7 or v1.1.0
+- Batch 3 findings (running)
+- Commit all audit fixes
+- PR and release as v1.0.8
 
 ## Pending Changes
 
-Uncommitted in working tree:
-- `src/nl.rs` — `CallContext`, `generate_nl_with_call_context()`
-- `src/lib.rs` — export new nl types
-- `src/store/chunks.rs` — `update_embeddings_batch()`, `chunks_paged()`
-- `src/store/calls.rs` — `callee_document_frequencies()`
-- `src/cli/pipeline.rs` — `enrichment_pass()`, `flush_enrichment_batch()`
-- `src/cli/mod.rs` — re-export `enrichment_pass`
-- `src/cli/commands/index.rs` — wire enrichment pass into index command
-- `.cargo/config.toml` — `[env]` LD_LIBRARY_PATH (also CUDA 12 symlinks in conda lib dir, not tracked)
-- `PROJECT_CONTINUITY.md`
+Uncommitted audit fixes:
+- `src/cli/pipeline.rs` — EH-8/9/11, RB-B1, AC-B1/B2, rename callee_caller_counts
+- `src/store/chunks.rs` — CQ-7 dead code removed, EH-10, AD-15 doc
+- `src/store/calls.rs` — AD-14 rename
+- `src/nl.rs` — CQ-8 doc fix, CQ-9 stale comment, CQ-12 tests
+- `src/lib.rs` — export updates
+- `CONTRIBUTING.md` — DOC-1
+- `docs/audit-findings.md`, `docs/audit-triage.md`
 
 ## Parked
 
 - **SQ-1: Adaptive name_boost** — sweep proved ineffective. Dead end.
 - **SQ-3: Code-specific embedding model** — UniXcoder, CodeBERT, fine-tuned E5
+- **SQ-4 tuning** — callers-only vs both, max_callers/max_callees sweep, cqs self-eval
 - **`cqs plan` templates** — 11 templates; add more as patterns emerge
 - **Post-index name matching** — fuzzy cross-doc references
 - **ref install** — deferred, tracked in #255
@@ -62,7 +54,7 @@ Uncommitted in working tree:
 
 ## Architecture
 
-- Version: 1.0.6
+- Version: 1.0.7
 - MSRV: 1.93
 - Schema: v12
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
@@ -72,8 +64,8 @@ Uncommitted in working tree:
 - 16 ChunkType variants
 - Tests: 1562 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
-- Eval: E5-base-v2 87.3% R@1, 0.920 MRR on 55-query hard eval (enriched NL)
-- CUDA: 13 (cuVS/rapidsai) + 12 (ORT CUDA provider) side by side, symlinked into conda lib dir
+- Eval: E5-base-v2 81.8% R@1, 0.904 MRR on 143-query holdout eval
+- CUDA: 13 (cuVS/rapidsai) + 12 (ORT CUDA provider) symlinked into conda lib dir
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02, cuDNN 9.19.0
 - Release targets: Linux x86_64, macOS ARM64, Windows x86_64
-- SQ-4: Two-pass enrichment — 4584/7233 chunks enriched with call context (63%)
+- SQ-4: Two-pass enrichment — 63% of chunks enriched with call context

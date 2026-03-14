@@ -918,10 +918,10 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
         return Ok(0);
     }
 
-    // Step 2: Build callee document frequency map.
-    // A callee appearing in >10% of chunks is a utility — suppress it.
+    // Step 2: Build callee caller-count map for IDF-style filtering.
+    // A callee called by >=10% of unique callers is a utility — suppress it.
     let callee_freq = store
-        .callee_document_frequencies()
+        .callee_caller_counts()
         .context("Failed to compute callee frequencies")?;
     let callee_doc_freq: HashMap<String, f32> = callee_freq
         .into_iter()
@@ -931,12 +931,18 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     // Step 3: Iterate chunks in pages, collect those needing enrichment
     let mut enriched_count = 0usize;
     let mut cursor = 0i64;
-    let page_size = 500;
+    const ENRICHMENT_PAGE_SIZE: usize = 500;
 
-    // Collect all chunk names first for batch caller/callee lookup
+    // Collect all chunk names for batch caller/callee lookup.
+    // Track name frequency — ambiguous names (appearing in multiple files)
+    // are skipped to avoid merging callers from different functions. (RB-B1)
     let identities = store
         .all_chunk_identities()
         .context("Failed to load chunk identities")?;
+    let mut name_file_count: HashMap<String, usize> = HashMap::new();
+    for ci in &identities {
+        *name_file_count.entry(ci.name.clone()).or_insert(0) += 1;
+    }
     let all_names: Vec<&str> = identities.iter().map(|ci| ci.name.as_str()).collect();
 
     // Batch-fetch all callers and callees
@@ -954,7 +960,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
         pb.set_style(
             ProgressStyle::default_bar()
                 .template("{spinner:.green} [{bar:40}] {pos}/{len} enriching ({eta})")
-                .unwrap()
+                .expect("valid progress template")
                 .progress_chars("=>-"),
         );
         pb
@@ -963,62 +969,76 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     let mut embed_batch: Vec<(String, String)> = Vec::new(); // (chunk_id, enriched_nl)
     const ENRICH_EMBED_BATCH: usize = 64;
 
-    loop {
-        let (chunks, next_cursor) = store
-            .chunks_paged(cursor, page_size)
-            .context("Failed to page chunks")?;
-        if chunks.is_empty() {
-            break;
-        }
-        cursor = next_cursor;
-
-        for cs in &chunks {
-            progress.inc(1);
-
-            let callers = callers_map.get(&cs.name);
-            let callees = callees_map.get(&cs.name);
-
-            let has_callers = callers.is_some_and(|v| !v.is_empty());
-            let has_callees = callees.is_some_and(|v| !v.is_empty());
-
-            // Skip leaf nodes — no call context to add
-            if !has_callers && !has_callees {
-                continue;
+    // Wrap loop in closure so progress bar is always cleaned up on error
+    let result: Result<usize> = (|| {
+        loop {
+            let (chunks, next_cursor) = store
+                .chunks_paged(cursor, ENRICHMENT_PAGE_SIZE)
+                .context("Failed to page chunks")?;
+            if chunks.is_empty() {
+                break;
             }
+            cursor = next_cursor;
 
-            let ctx = cqs::CallContext {
-                callers: callers
-                    .map(|v| v.iter().map(|c| c.name.clone()).collect())
-                    .unwrap_or_default(),
-                callees: callees
-                    .map(|v| v.iter().map(|(name, _)| name.clone()).collect())
-                    .unwrap_or_default(),
-            };
+            for cs in &chunks {
+                progress.inc(1);
 
-            let chunk: cqs::parser::Chunk = cs.into();
-            let enriched_nl = cqs::generate_nl_with_call_context(
-                &chunk,
-                &ctx,
-                &callee_doc_freq,
-                5, // max callers
-                5, // max callees
-            );
+                let callers = callers_map.get(&cs.name);
+                let callees = callees_map.get(&cs.name);
 
-            embed_batch.push((cs.id.clone(), enriched_nl));
+                let has_callers = callers.is_some_and(|v| !v.is_empty());
+                let has_callees = callees.is_some_and(|v| !v.is_empty());
 
-            // Flush batch when full
-            if embed_batch.len() >= ENRICH_EMBED_BATCH {
-                enriched_count += flush_enrichment_batch(store, embedder, &mut embed_batch)?;
+                // Skip leaf nodes — no call context to add
+                if !has_callers && !has_callees {
+                    continue;
+                }
+
+                // Skip ambiguous names — functions like `new`, `parse`, `build`
+                // appear in multiple chunks and would get merged callers from
+                // unrelated functions. (RB-B1)
+                if name_file_count.get(&cs.name).copied().unwrap_or(0) > 1 {
+                    continue;
+                }
+
+                let ctx = cqs::CallContext {
+                    callers: callers
+                        .map(|v| v.iter().map(|c| c.name.clone()).collect())
+                        .unwrap_or_default(),
+                    callees: callees
+                        .map(|v| v.iter().map(|(name, _)| name.clone()).collect())
+                        .unwrap_or_default(),
+                };
+
+                let chunk: cqs::parser::Chunk = cs.into();
+                let enriched_nl = cqs::generate_nl_with_call_context(
+                    &chunk,
+                    &ctx,
+                    &callee_doc_freq,
+                    5, // max callers
+                    5, // max callees
+                );
+
+                embed_batch.push((cs.id.clone(), enriched_nl));
+
+                // Flush batch when full
+                if embed_batch.len() >= ENRICH_EMBED_BATCH {
+                    enriched_count += flush_enrichment_batch(store, embedder, &mut embed_batch)?;
+                }
             }
         }
-    }
 
-    // Flush remaining
-    if !embed_batch.is_empty() {
-        enriched_count += flush_enrichment_batch(store, embedder, &mut embed_batch)?;
-    }
+        // Flush remaining
+        if !embed_batch.is_empty() {
+            enriched_count += flush_enrichment_batch(store, embedder, &mut embed_batch)?;
+        }
+
+        Ok(enriched_count)
+    })();
 
     progress.finish_and_clear();
+
+    let enriched_count = result?;
 
     tracing::info!(enriched_count, "Enrichment pass complete");
     if !quiet {
@@ -1035,22 +1055,33 @@ fn flush_enrichment_batch(
     batch: &mut Vec<(String, String)>,
 ) -> Result<usize> {
     let texts: Vec<&str> = batch.iter().map(|(_, nl)| nl.as_str()).collect();
+    let expected = texts.len();
     let embeddings = embedder
         .embed_documents(&texts)
         .context("Failed to embed enriched NL batch")?;
 
+    anyhow::ensure!(
+        embeddings.len() == expected,
+        "Embedding count mismatch: expected {}, got {}",
+        expected,
+        embeddings.len()
+    );
+
     // embed_documents returns 768-dim; add neutral sentiment for 769-dim
+    // Build updates from batch without draining — only clear after successful write
     let updates: Vec<(String, Embedding)> = batch
-        .drain(..)
+        .iter()
         .zip(embeddings)
-        .map(|((id, _), emb)| (id, emb.with_sentiment(0.0)))
+        .map(|((id, _), emb)| (id.clone(), emb.with_sentiment(0.0)))
         .collect();
 
     store
         .update_embeddings_batch(&updates)
         .context("Failed to update enriched embeddings")?;
 
-    Ok(updates.len())
+    let count = updates.len();
+    batch.clear(); // clear only after successful write
+    Ok(count)
 }
 
 /// Extract a human-readable message from a thread panic payload.

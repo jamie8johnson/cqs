@@ -90,10 +90,12 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 
 Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed MRR drops from 0.91 (fixture-only) to 0.46 (3969 chunks). Rust MRR = 0.000. NL descriptions are too generic to discriminate in large corpora.
 
-- [ ] SQ-1: Adaptive name_boost — increase keyword weight as corpus grows. Sweep 0.2→0.8 on stress eval.
-- [ ] SQ-2: Richer NL descriptions — add file path, language, chunk type, field names, typed params to improve embedding discrimination.
+- [x] SQ-1: Adaptive name_boost — sweep proved ineffective at scale. Dead end.
+- [x] SQ-2: Richer NL descriptions — field names, dir-only file context. +3.7pp R@1 on hard eval (v1.0.6).
 - [ ] SQ-3: Code-specific embedding model — evaluate UniXcoder, CodeBERT, or fine-tuned E5 as replacement for general-purpose E5-base-v2.
-- [ ] SQ-4: Call-graph-enriched embeddings — two-pass index: embed → build call graph → re-embed with caller/callee context. Adds usage-pattern discrimination that static metadata can't provide.
+- [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
+- [ ] SQ-5: Module-level context in NL — add filename stem / module name to NL descriptions. Cheap discrimination signal. `nl.rs` → "natural language generation".
+- [ ] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy.
 
 ### Parked
 

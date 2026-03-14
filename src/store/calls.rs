@@ -1234,13 +1234,13 @@ impl Store {
         })
     }
 
-    /// Compute document frequency for each callee name.
+    /// Count distinct callers for each callee name.
     ///
-    /// Returns a map of callee_name → count of distinct callers that call it.
-    /// Used by the enrichment pass to suppress high-frequency utility functions
-    /// (IDF-style filtering).
-    pub fn callee_document_frequencies(&self) -> Result<Vec<(String, usize)>, StoreError> {
-        let _span = tracing::debug_span!("callee_document_frequencies").entered();
+    /// Returns `(callee_name, distinct_caller_count)` pairs. Used by the
+    /// enrichment pass for IDF-style filtering: callees called by many
+    /// distinct callers are likely utilities (log, unwrap, etc.).
+    pub fn callee_caller_counts(&self) -> Result<Vec<(String, usize)>, StoreError> {
+        let _span = tracing::debug_span!("callee_caller_counts").entered();
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
                 "SELECT callee_name, COUNT(DISTINCT caller_name) as caller_count \

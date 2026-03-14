@@ -71,7 +71,11 @@ impl Store {
         Ok(())
     }
 
-    /// Update only the embedding for existing chunks (by ID).
+    /// Update only the embedding for existing chunks by chunk ID.
+    ///
+    /// `updates` is a slice of `(chunk_id, embedding)` pairs. Chunk IDs not
+    /// found in the store are logged and skipped (rows_affected == 0).
+    /// Returns the count of actually updated rows.
     ///
     /// Used by the call-graph enrichment pass: chunk content hasn't changed,
     /// only the NL description (and therefore embedding) is different.
@@ -92,15 +96,21 @@ impl Store {
 
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
+            let mut updated = 0usize;
             for (i, (id, _)) in updates.iter().enumerate() {
-                sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
+                let result = sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
                     .bind(&embedding_bytes[i])
                     .bind(id)
                     .execute(&mut *tx)
                     .await?;
+                if result.rows_affected() > 0 {
+                    updated += 1;
+                } else {
+                    tracing::debug!(chunk_id = %id, "Enrichment update found no row");
+                }
             }
             tx.commit().await?;
-            Ok(updates.len())
+            Ok(updated)
         })
     }
 
@@ -153,114 +163,6 @@ impl Store {
 
             tx.commit().await?;
             Ok(result.rows_affected() as u32)
-        })
-    }
-
-    /// Atomically replace all chunks for a file in a single transaction.
-    ///
-    /// Deletes existing chunks (+ FTS) for the origin, then inserts new chunks
-    /// using multi-row INSERT (batches of 55). FTS always computed here since
-    /// the bulk DELETE already cleared all FTS entries for this origin.
-    pub fn replace_file_chunks(
-        &self,
-        origin: &Path,
-        chunks: &[(Chunk, Embedding)],
-        source_mtime: Option<i64>,
-    ) -> Result<usize, StoreError> {
-        let _span = tracing::info_span!("replace_file_chunks", origin = %origin.display(), count = chunks.len()).entered();
-        const CHUNK_INSERT_BATCH: usize = 52;
-
-        let origin_str = crate::normalize_path(origin);
-
-        // Pre-compute embedding bytes (returns Result)
-        let embedding_bytes: Vec<Vec<u8>> = chunks
-            .iter()
-            .map(|(_, emb)| embedding_to_bytes(emb))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
-
-            // Delete existing FTS entries for this origin
-            sqlx::query(
-                "DELETE FROM chunks_fts WHERE id IN (SELECT id FROM chunks WHERE origin = ?1)",
-            )
-            .bind(&origin_str)
-            .execute(&mut *tx)
-            .await?;
-
-            // Delete existing chunks for this origin
-            sqlx::query("DELETE FROM chunks WHERE origin = ?1")
-                .bind(&origin_str)
-                .execute(&mut *tx)
-                .await?;
-
-            // Batch INSERT new chunks
-            let now = chrono::Utc::now().to_rfc3339();
-            for (batch_idx, batch) in chunks.chunks(CHUNK_INSERT_BATCH).enumerate() {
-                let emb_offset = batch_idx * CHUNK_INSERT_BATCH;
-                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT OR REPLACE INTO chunks (id, origin, source_type, language, chunk_type, name, signature, content, content_hash, doc, line_start, line_end, embedding, source_mtime, created_at, updated_at, parent_id, window_idx, parent_type_name)",
-                );
-                qb.push_values(
-                    batch.iter().enumerate(),
-                    |mut b, (i, (chunk, _))| {
-                        b.push_bind(&chunk.id)
-                            .push_bind(crate::normalize_path(&chunk.file))
-                            .push_bind("file")
-                            .push_bind(chunk.language.to_string())
-                            .push_bind(chunk.chunk_type.to_string())
-                            .push_bind(&chunk.name)
-                            .push_bind(&chunk.signature)
-                            .push_bind(&chunk.content)
-                            .push_bind(&chunk.content_hash)
-                            .push_bind(&chunk.doc)
-                            .push_bind(chunk.line_start as i64)
-                            .push_bind(chunk.line_end as i64)
-                            .push_bind(&embedding_bytes[emb_offset + i])
-                            .push_bind(source_mtime)
-                            .push_bind(&now)
-                            .push_bind(&now)
-                            .push_bind(&chunk.parent_id)
-                            .push_bind(chunk.window_idx.map(|i| i as i64))
-                            .push_bind(&chunk.parent_type_name);
-                    },
-                );
-                qb.build().execute(&mut *tx).await?;
-            }
-
-            // FTS batch INSERT (bulk DELETE above already cleared all FTS for this origin)
-            // Batch size: 190 rows × 5 columns = 950 params (< SQLite 999 limit)
-            let fts_data: Vec<_> = chunks
-                .iter()
-                .map(|(chunk, _)| {
-                    let fts_name = normalize_for_fts(&chunk.name);
-                    let fts_sig = normalize_for_fts(&chunk.signature);
-                    let fts_content = normalize_for_fts(&chunk.content);
-                    let fts_doc = chunk
-                        .doc
-                        .as_ref()
-                        .map(|d| normalize_for_fts(d))
-                        .unwrap_or_default();
-                    (chunk.id.clone(), fts_name, fts_sig, fts_content, fts_doc)
-                })
-                .collect();
-            for fts_batch in fts_data.chunks(190) {
-                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT INTO chunks_fts (id, name, signature, content, doc) ",
-                );
-                qb.push_values(fts_batch, |mut b, (id, name, sig, content, doc)| {
-                    b.push_bind(id)
-                        .push_bind(name)
-                        .push_bind(sig)
-                        .push_bind(content)
-                        .push_bind(doc);
-                });
-                qb.build().execute(&mut *tx).await?;
-            }
-
-            tx.commit().await?;
-            Ok(chunks.len())
         })
     }
 
@@ -1615,84 +1517,6 @@ mod tests {
         let (store, _dir) = setup_store();
         let count = store.upsert_chunks_batch(&[], Some(100)).unwrap();
         assert_eq!(count, 0);
-        assert_eq!(store.chunk_count().unwrap(), 0);
-    }
-
-    // ===== replace_file_chunks tests =====
-
-    #[test]
-    fn test_replace_file_chunks_removes_old() {
-        let (store, _dir) = setup_store();
-
-        // Insert two chunks from same file
-        let c1 = make_chunk("old_fn1", "src/lib.rs");
-        let c2 = make_chunk("old_fn2", "src/lib.rs");
-        let emb = mock_embedding(1.0);
-        store
-            .upsert_chunks_batch(&[(c1, emb.clone()), (c2, emb.clone())], Some(100))
-            .unwrap();
-        assert_eq!(store.chunk_count().unwrap(), 2);
-
-        // Replace with one new chunk
-        let c3 = make_chunk("new_fn", "src/lib.rs");
-        let replaced = store
-            .replace_file_chunks(
-                &PathBuf::from("src/lib.rs"),
-                &[(c3.clone(), emb.clone())],
-                Some(200),
-            )
-            .unwrap();
-        assert_eq!(replaced, 1);
-
-        // Only the new chunk should remain
-        assert_eq!(store.chunk_count().unwrap(), 1);
-        let chunks = store.get_chunks_by_origin("src/lib.rs").unwrap();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(chunks[0].name, "new_fn");
-    }
-
-    #[test]
-    fn test_replace_file_chunks_doesnt_affect_other_files() {
-        let (store, _dir) = setup_store();
-
-        let c_a = make_chunk("fn_a", "src/a.rs");
-        let c_b = make_chunk("fn_b", "src/b.rs");
-        let emb = mock_embedding(1.0);
-        store
-            .upsert_chunks_batch(&[(c_a, emb.clone()), (c_b, emb.clone())], Some(100))
-            .unwrap();
-
-        // Replace only a.rs
-        let c_new = make_chunk("fn_a_new", "src/a.rs");
-        store
-            .replace_file_chunks(
-                &PathBuf::from("src/a.rs"),
-                &[(c_new, emb.clone())],
-                Some(200),
-            )
-            .unwrap();
-
-        // b.rs should be untouched
-        assert_eq!(store.chunk_count().unwrap(), 2);
-        let b_chunks = store.get_chunks_by_origin("src/b.rs").unwrap();
-        assert_eq!(b_chunks.len(), 1);
-        assert_eq!(b_chunks[0].name, "fn_b");
-    }
-
-    #[test]
-    fn test_replace_file_chunks_with_empty_clears_file() {
-        let (store, _dir) = setup_store();
-
-        let c1 = make_chunk("fn1", "src/lib.rs");
-        let emb = mock_embedding(1.0);
-        store.upsert_chunks_batch(&[(c1, emb)], Some(100)).unwrap();
-        assert_eq!(store.chunk_count().unwrap(), 1);
-
-        // Replace with empty list
-        let replaced = store
-            .replace_file_chunks(&PathBuf::from("src/lib.rs"), &[], Some(200))
-            .unwrap();
-        assert_eq!(replaced, 0);
         assert_eq!(store.chunk_count().unwrap(), 0);
     }
 
