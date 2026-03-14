@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::embedder::Embedding;
-use crate::parser::{ChunkType, Language};
+use crate::parser::{Chunk, ChunkType, Language};
 
 /// Schema version for database migrations
 ///
@@ -159,6 +159,27 @@ pub struct ChunkSummary {
     pub parent_id: Option<String>,
     /// For methods: name of enclosing class/struct/impl
     pub parent_type_name: Option<String>,
+}
+
+impl From<&ChunkSummary> for Chunk {
+    fn from(cs: &ChunkSummary) -> Self {
+        Self {
+            id: cs.id.clone(),
+            file: cs.file.clone(),
+            language: cs.language,
+            chunk_type: cs.chunk_type,
+            name: cs.name.clone(),
+            signature: cs.signature.clone(),
+            content: cs.content.clone(),
+            doc: cs.doc.clone(),
+            line_start: cs.line_start,
+            line_end: cs.line_end,
+            content_hash: String::new(),
+            parent_id: cs.parent_id.clone(),
+            window_idx: None,
+            parent_type_name: cs.parent_type_name.clone(),
+        }
+    }
 }
 
 impl From<ChunkRow> for ChunkSummary {

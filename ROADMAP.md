@@ -86,6 +86,15 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [ ] Shell in Makefile recipes — both grammars compatible
 - [ ] CSS-in-JS (styled-components, emotion) — template literal detection
 
+### Next — Search Quality (large corpus)
+
+Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed MRR drops from 0.91 (fixture-only) to 0.46 (3969 chunks). Rust MRR = 0.000. NL descriptions are too generic to discriminate in large corpora.
+
+- [ ] SQ-1: Adaptive name_boost — increase keyword weight as corpus grows. Sweep 0.2→0.8 on stress eval.
+- [ ] SQ-2: Richer NL descriptions — add file path, language, chunk type, field names, typed params to improve embedding discrimination.
+- [ ] SQ-3: Code-specific embedding model — evaluate UniXcoder, CodeBERT, or fine-tuned E5 as replacement for general-purpose E5-base-v2.
+- [ ] SQ-4: Call-graph-enriched embeddings — two-pass index: embed → build call graph → re-embed with caller/callee context. Adds usage-pattern discrimination that static metadata can't provide.
+
 ### Parked
 
 - **MCP server** — re-add as slim read-only wrapper when CLI features are rock solid. Architecture proven clean (removed in v0.10.0 with zero core changes).

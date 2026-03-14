@@ -49,7 +49,7 @@ Release a new version of cqs.
    - Tag: `git tag vX.Y.Z`
    - Push tag via PowerShell: `powershell.exe -Command 'cd C:\Projects\cqs; git push origin vX.Y.Z'`
    - GitHub Release with pre-built binaries is created automatically by `.github/workflows/release.yml`
-   - Publish to crates.io (manual): `cargo publish`
+   - Publish to crates.io: `cargo publish`
 
 7. **Post-release**:
    - Update PROJECT_CONTINUITY.md with new version
