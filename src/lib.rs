@@ -115,7 +115,10 @@ pub use impact::{
     RiskScore, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
     DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
-pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
+pub use nl::{
+    generate_nl_description, generate_nl_with_call_context, generate_nl_with_template,
+    normalize_for_fts, CallContext, NlTemplate,
+};
 pub use onboard::{
     onboard, onboard_to_json, OnboardEntry, OnboardResult, OnboardSummary, TestEntry, TypeInfo,
     DEFAULT_ONBOARD_DEPTH,

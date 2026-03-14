@@ -2,49 +2,48 @@
 
 ## Right Now
 
-**SQ-2 + CUDA fixes (2026-03-14).** Branch: `main` (uncommitted).
+**SQ-4: Call-graph-enriched embeddings (2026-03-14).** Branch: `main` (uncommitted).
+
+### Goal
+Two-pass indexing: after the main pipeline builds the call graph, re-embed each chunk with caller/callee context baked into the NL description for better search discrimination.
 
 ### Done this session
-- Cross-encoder reranking tested → dead end (ms-marco-MiniLM-L-6-v2 useless for code)
-- `rerank_with_passages` method added to reranker
-- 143-query holdout eval set built (eval_common.rs)
-- Stress eval infrastructure (real codebases as noise: cqs, Flask, Express, Chi = 3970 chunks)
-- name_boost sweep → dead end (near-zero effect at scale)
-- NL enrichment: field names for structs/enums/classes + dir-only file context
-  - Hard eval: 83.6→87.3% R@1 (+3.7pp)
-  - Stress: 37.1→37.8% R@1, JS MRR +12.4pp
-- CUDA 12+13 side-by-side: pip `nvidia-cublas-cu12`, `nvidia-cuda-runtime-cu12`, `nvidia-cufft-cu12`
-- `.bashrc` updated with ORT_CUDA12_LIBS paths
-- `.cargo/config.toml`: added `rustdocflags` — fixes doc test linker errors
-- All doc tests pass (8/8), all unit tests pass (190), all integration tests pass
-- SQ-1 through SQ-4 on ROADMAP.md
-- Dead code warning fixed (make.rs `calls` → `_calls`)
+- v1.0.6 released (PR #588 SQ-2 NL enrichment, PR #589 version bump)
+- Published to crates.io, GitHub release with binaries
+- Scouted NL pipeline, embedding flow, index build, call graph storage
+- Implemented SQ-4 two-pass enrichment:
+  - `nl.rs`: `CallContext` struct + `generate_nl_with_call_context()` — appends "Called by: X, Y" and "Calls: A, B" to base Compact NL, with IDF-based callee filtering (>10% = stopword)
+  - `store/chunks.rs`: `update_embeddings_batch()` — lightweight embedding-only UPDATE (no FTS rebuild), `chunks_paged()` — cursor-based full-chunk iterator
+  - `store/calls.rs`: `callee_document_frequencies()` — callee name → distinct caller count for IDF
+  - `pipeline.rs`: `enrichment_pass()` — post-pipeline second pass, pages through all chunks, batch-fetches callers/callees, skips leaf nodes, re-embeds in batches of 64
+  - `commands/index.rs`: wires enrichment pass after main pipeline, before HNSW build
+- Fixed embedding dimension mismatch: `embed_documents()` returns 768-dim, store needs 769. Added `.with_sentiment(0.0)`.
+- Fixed CUDA 12 runtime loading permanently: symlinked pip CUDA 12 libs into conda lib dir (already in binary rpath). Cargo `[env]` LD_LIBRARY_PATH doesn't work for `dlopen`.
+- Tested end-to-end: 7233 chunks → 4584 enriched (63%) with call graph context
 
 ### Still needs
-- Commit all changes
-- Consider shipping as 1.0.6
+- Run holdout + stress eval to measure search quality impact
+- Sweep: callers-only vs both, max_callers/max_callees tuning
+- Commit and PR
+- Consider shipping as v1.0.7 or v1.1.0
 
 ## Pending Changes
 
 Uncommitted in working tree:
-- `src/nl.rs` — field names + file context enrichment for Compact template
-- `src/reranker.rs` — `rerank_with_passages` method
-- `src/store/helpers.rs` — `From<&ChunkSummary> for Chunk`
-- `src/search.rs` — search changes
-- `src/embedder.rs` — reverted CUDA guard (no longer needed)
-- `src/language/make.rs` — dead code warning fix
-- `tests/eval_common.rs` — 143 holdout eval cases
-- `tests/pipeline_eval.rs` — holdout + stress eval tests
-- `tests/model_eval.rs` — model eval additions
-- `.cargo/config.toml` — rustdocflags for doc tests
-- `~/.bashrc` — CUDA 12 lib paths for ORT
-- `ROADMAP.md` — SQ-1 through SQ-4
+- `src/nl.rs` — `CallContext`, `generate_nl_with_call_context()`
+- `src/lib.rs` — export new nl types
+- `src/store/chunks.rs` — `update_embeddings_batch()`, `chunks_paged()`
+- `src/store/calls.rs` — `callee_document_frequencies()`
+- `src/cli/pipeline.rs` — `enrichment_pass()`, `flush_enrichment_batch()`
+- `src/cli/mod.rs` — re-export `enrichment_pass`
+- `src/cli/commands/index.rs` — wire enrichment pass into index command
+- `.cargo/config.toml` — `[env]` LD_LIBRARY_PATH (also CUDA 12 symlinks in conda lib dir, not tracked)
+- `PROJECT_CONTINUITY.md`
 
 ## Parked
 
 - **SQ-1: Adaptive name_boost** — sweep proved ineffective. Dead end.
 - **SQ-3: Code-specific embedding model** — UniXcoder, CodeBERT, fine-tuned E5
-- **SQ-4: Call-graph-enriched embeddings** — two-pass index with caller/callee context
 - **`cqs plan` templates** — 11 templates; add more as patterns emerge
 - **Post-index name matching** — fuzzy cross-doc references
 - **ref install** — deferred, tracked in #255
@@ -63,7 +62,7 @@ Uncommitted in working tree:
 
 ## Architecture
 
-- Version: 1.0.5
+- Version: 1.0.6
 - MSRV: 1.93
 - Schema: v12
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
@@ -71,9 +70,10 @@ Uncommitted in working tree:
 - Multi-index: separate Store+HNSW per reference, parallel rayon search, blake3 dedup
 - 51 languages
 - 16 ChunkType variants
-- Tests: 1534 pass, 0 failures
+- Tests: 1562 pass, 0 failures
 - CLI-only (MCP server removed in PR #352)
 - Eval: E5-base-v2 87.3% R@1, 0.920 MRR on 55-query hard eval (enriched NL)
-- CUDA: 13 (cuVS/rapidsai) + 12 (ORT CUDA provider) side by side
+- CUDA: 13 (cuVS/rapidsai) + 12 (ORT CUDA provider) side by side, symlinked into conda lib dir
 - NVIDIA env: CUDA 13.1, Driver 582.16, libcuvs 26.02, cuDNN 9.19.0
 - Release targets: Linux x86_64, macOS ARM64, Windows x86_64
+- SQ-4: Two-pass enrichment — 4584/7233 chunks enriched with call context (63%)

@@ -132,6 +132,29 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         println!("  Type edges: {} edges", stats.total_type_edges);
     }
 
+    // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee context
+    if !check_interrupted() && stats.total_calls > 0 {
+        use crate::cli::enrichment_pass;
+
+        if !cli.quiet {
+            println!("Enriching embeddings with call graph context...");
+        }
+        let embedder = Embedder::new().context("Failed to create embedder for enrichment pass")?;
+        match enrichment_pass(&store, &embedder, cli.quiet) {
+            Ok(count) => {
+                if !cli.quiet && count > 0 {
+                    println!("  Enriched: {} chunks", count);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Enrichment pass failed, continuing without");
+                if !cli.quiet {
+                    eprintln!("  Warning: enrichment pass failed: {:?}", e);
+                }
+            }
+        }
+    }
+
     // Index notes if notes.toml exists
     if !check_interrupted() {
         if !cli.quiet {
