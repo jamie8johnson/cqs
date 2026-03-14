@@ -236,7 +236,7 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
 /// Template variants for NL description generation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NlTemplate {
-    /// Current production template: doc + "A {type} named {name}" + params + returns
+    /// Baseline eval template (not used in production): doc + "A {type} named {name}" + params + returns
     Standard,
     /// No structural prefix: doc + name + params + returns
     NoPrefix,
@@ -615,9 +615,6 @@ pub fn strip_markdown_noise(content: &str) -> String {
     result.trim().to_string()
 }
 
-/// Truncate a doc comment to its first sentence (or 150 chars, whichever comes first).
-///
-/// Keeps the most informative part of the doc within the embedding token budget.
 /// Extract concise module context from a file path.
 ///
 /// Strips common prefixes (src/, lib/) and file extension, tokenizes remaining
@@ -671,6 +668,9 @@ fn extract_file_context(path: &std::path::Path) -> String {
     result.join(" ")
 }
 
+/// Truncate a doc comment to its first sentence (or 150 chars, whichever comes first).
+///
+/// Keeps the most informative part of the doc within the embedding token budget.
 fn truncate_doc(doc: &str) -> String {
     // Find first sentence boundary: `. ` or `.\n` or just `.` at end
     if let Some(pos) = doc.find(". ") {
@@ -1422,5 +1422,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn test_chunk(name: &str) -> Chunk {
+        Chunk {
+            id: name.to_string(),
+            file: PathBuf::from("src/test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 10,
+            content_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        }
+    }
+
+    #[test]
+    fn test_call_context_callers_only() {
+        let chunk = test_chunk("handle_request");
+        let ctx = CallContext {
+            callers: vec!["main".to_string(), "serve".to_string()],
+            callees: vec![],
+        };
+        let freq = std::collections::HashMap::new();
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        assert!(nl.contains("Called by: main, serve"), "got: {}", nl);
+        assert!(!nl.contains("Calls:"), "got: {}", nl);
+    }
+
+    #[test]
+    fn test_call_context_callees_with_idf_filter() {
+        let chunk = test_chunk("process");
+        let ctx = CallContext {
+            callers: vec![],
+            callees: vec![
+                "validate".to_string(),
+                "log".to_string(),
+                "save".to_string(),
+            ],
+        };
+        let mut freq = std::collections::HashMap::new();
+        freq.insert("log".to_string(), 0.15_f32); // above 10% threshold — filtered
+        freq.insert("validate".to_string(), 0.05_f32); // below — kept
+        freq.insert("save".to_string(), 0.02_f32); // below — kept
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        assert!(nl.contains("Calls: validate, save"), "got: {}", nl);
+        assert!(!nl.contains("log"), "log should be filtered, got: {}", nl);
+    }
+
+    #[test]
+    fn test_call_context_max_callers_truncation() {
+        let chunk = test_chunk("f");
+        let ctx = CallContext {
+            callers: vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+            ],
+            callees: vec![],
+        };
+        let freq = std::collections::HashMap::new();
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 2, 5);
+        assert!(nl.contains("Called by: a, b"), "got: {}", nl);
+        assert!(!nl.contains(", c"), "c should be truncated, got: {}", nl);
+    }
+
+    #[test]
+    fn test_call_context_empty_returns_base() {
+        let chunk = test_chunk("lonely");
+        let ctx = CallContext::default();
+        let freq = std::collections::HashMap::new();
+        let base = generate_nl_description(&chunk);
+        let enriched = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        assert_eq!(base, enriched);
     }
 }
