@@ -373,13 +373,11 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     }
 
     // Struct/enum field names (StandardV2Fields + Compact)
-    if matches!(
-        template,
-        NlTemplate::StandardV2Fields | NlTemplate::Compact
-    ) && matches!(
-        chunk.chunk_type,
-        ChunkType::Struct | ChunkType::Enum | ChunkType::Class
-    )
+    if matches!(template, NlTemplate::StandardV2Fields | NlTemplate::Compact)
+        && matches!(
+            chunk.chunk_type,
+            ChunkType::Struct | ChunkType::Enum | ChunkType::Class
+        )
     {
         let fields = extract_field_names(&chunk.content, chunk.language);
         if !fields.is_empty() {
@@ -564,14 +562,30 @@ fn extract_file_context(path: &std::path::Path) -> String {
     // Normalize separators
     let s = s.replace('\\', "/");
     // Strip leading ./ or common root dirs
-    let s = s
-        .strip_prefix("./")
-        .unwrap_or(&s);
+    let s = s.strip_prefix("./").unwrap_or(&s);
     // Split into components, skip common non-informative segments
     let skip = [
-        "src", "lib", ".", "test", "tests", "spec", "specs", "fixtures",
-        "fixture", "testdata", "internal", "pkg", "cmd", "app", "eval",
-        "bench", "benches", "examples", "example", "vendor", "third_party",
+        "src",
+        "lib",
+        ".",
+        "test",
+        "tests",
+        "spec",
+        "specs",
+        "fixtures",
+        "fixture",
+        "testdata",
+        "internal",
+        "pkg",
+        "cmd",
+        "app",
+        "eval",
+        "bench",
+        "benches",
+        "examples",
+        "example",
+        "vendor",
+        "third_party",
     ];
     let components: Vec<&str> = s
         .split('/')
