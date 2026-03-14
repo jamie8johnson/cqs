@@ -314,6 +314,16 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
 
     let mut parts = Vec::new();
 
+    // Compact enrichment: file path context for module-level discrimination.
+    // Only emits directory components (not the filename stem, which duplicates
+    // the chunk name). Requires 2+ path components after filtering.
+    if template == NlTemplate::Compact {
+        let file_context = extract_file_context(&chunk.file);
+        if !file_context.is_empty() {
+            parts.push(file_context);
+        }
+    }
+
     // Shared: doc comment — optionally truncated for StandardV2TruncDoc
     let has_doc = if let Some(ref doc) = chunk.doc {
         let doc_trimmed = doc.trim();
@@ -362,12 +372,14 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
-    // Struct/enum field names (StandardV2Fields experiment)
-    if template == NlTemplate::StandardV2Fields
-        && matches!(
-            chunk.chunk_type,
-            ChunkType::Struct | ChunkType::Enum | ChunkType::Class
-        )
+    // Struct/enum field names (StandardV2Fields + Compact)
+    if matches!(
+        template,
+        NlTemplate::StandardV2Fields | NlTemplate::Compact
+    ) && matches!(
+        chunk.chunk_type,
+        ChunkType::Struct | ChunkType::Enum | ChunkType::Class
+    )
     {
         let fields = extract_field_names(&chunk.content, chunk.language);
         if !fields.is_empty() {
@@ -543,6 +555,43 @@ pub fn strip_markdown_noise(content: &str) -> String {
 /// Truncate a doc comment to its first sentence (or 150 chars, whichever comes first).
 ///
 /// Keeps the most informative part of the doc within the embedding token budget.
+/// Extract concise module context from a file path.
+///
+/// Strips common prefixes (src/, lib/) and file extension, tokenizes remaining
+/// path components. E.g., `src/store/helpers.rs` → `"store helpers"`.
+fn extract_file_context(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    // Normalize separators
+    let s = s.replace('\\', "/");
+    // Strip leading ./ or common root dirs
+    let s = s
+        .strip_prefix("./")
+        .unwrap_or(&s);
+    // Split into components, skip common non-informative segments
+    let skip = [
+        "src", "lib", ".", "test", "tests", "spec", "specs", "fixtures",
+        "fixture", "testdata", "internal", "pkg", "cmd", "app", "eval",
+        "bench", "benches", "examples", "example", "vendor", "third_party",
+    ];
+    let components: Vec<&str> = s
+        .split('/')
+        .filter(|c| !c.is_empty() && !skip.contains(c))
+        .collect();
+    // Need at least 2 components (dir + file) to have meaningful dir context.
+    // Only emit directory components — the filename stem duplicates the chunk name.
+    if components.len() < 2 {
+        return String::new();
+    }
+    let result: Vec<String> = components[..components.len() - 1]
+        .iter()
+        .flat_map(|c| tokenize_identifier(c))
+        .collect();
+    if result.is_empty() {
+        return String::new();
+    }
+    result.join(" ")
+}
+
 fn truncate_doc(doc: &str) -> String {
     // Find first sentence boundary: `. ` or `.\n` or just `.` at end
     if let Some(pos) = doc.find(". ") {
@@ -1173,9 +1222,10 @@ mod tests {
         let nl = generate_nl_description(&chunk);
         // Compact: no "A method named" prefix, just tokenized name
         assert!(nl.contains("process"));
+        // Without parent_type_name, should not have any "X method" prefix
         assert!(
-            !nl.contains("method."),
-            "Should not have orphan 'method.' prefix: {}",
+            !nl.starts_with("method"),
+            "Should not start with orphan 'method' prefix: {}",
             nl
         );
     }

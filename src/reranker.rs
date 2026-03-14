@@ -72,6 +72,23 @@ impl Reranker {
         results: &mut Vec<SearchResult>,
         limit: usize,
     ) -> Result<(), RerankerError> {
+        let passages: Vec<String> = results.iter().map(|r| r.chunk.content.clone()).collect();
+        let refs: Vec<&str> = passages.iter().map(|s| s.as_str()).collect();
+        self.rerank_with_passages(query, results, &refs, limit)
+    }
+
+    /// Re-rank search results using custom passage text per result.
+    ///
+    /// Like [`rerank`](Self::rerank) but scores `(query, passages[i])` instead of
+    /// `(query, result.content)`. Useful for reranking on NL descriptions or
+    /// other derived text. `passages` must have the same length as `results`.
+    pub fn rerank_with_passages(
+        &self,
+        query: &str,
+        results: &mut Vec<SearchResult>,
+        passages: &[&str],
+        limit: usize,
+    ) -> Result<(), RerankerError> {
         let _span = tracing::info_span!(
             "rerank",
             count = results.len(),
@@ -82,15 +99,20 @@ impl Reranker {
         if results.len() <= 1 {
             return Ok(());
         }
+        assert_eq!(
+            results.len(),
+            passages.len(),
+            "passages must match results length"
+        );
 
         let tokenizer = self.tokenizer()?;
 
         // 1. Tokenize (query, passage) pairs
-        let encodings: Vec<tokenizers::Encoding> = results
+        let encodings: Vec<tokenizers::Encoding> = passages
             .iter()
-            .map(|r| {
+            .map(|passage| {
                 tokenizer
-                    .encode((query, r.chunk.content.as_str()), true)
+                    .encode((query, *passage), true)
                     .map_err(|e| RerankerError::Tokenizer(e.to_string()))
             })
             .collect::<Result<Vec<_>, _>>()?;

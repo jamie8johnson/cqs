@@ -908,3 +908,40 @@ mentions = [
 sentiment = -0.5
 text = "Release workflow: ubuntu-22.04 has glibc 2.35 but ort prebuilt binaries need glibc 2.38+ (__isoc23_strtoll). Must use ubuntu-24.04 (glibc 2.39) for release builds."
 mentions = ["release.yml"]
+
+[[note]]
+sentiment = -0.5
+text = "Cross-encoder reranking (ms-marco-MiniLM-L-6-v2) is useless for code search — all scoring modes worse than bi-encoder baseline. Would need a code-specific cross-encoder."
+mentions = [
+    "reranker.rs",
+    "search-quality",
+]
+
+[[note]]
+sentiment = 0.5
+text = "NL enrichment: adding field names for structs/enums/classes to Compact template is a clean win — hard eval +3.7pp R@1. But adding file path + language/type prefix hurts holdout -5pp. Dir-only file context (no stem) is neutral."
+mentions = [
+    "nl.rs",
+    "search-quality",
+]
+
+[[note]]
+sentiment = -0.5
+text = "name_boost sweep (0.0→0.8) has near-zero effect on stress eval with 3970 chunks. FTS keyword matching is just as noisy as semantic matching in large corpora."
+mentions = ["search-quality"]
+
+[[note]]
+sentiment = -0.5
+text = "HNSW search has non-determinism — holdout eval R@1 varies ~2-3pp between runs on identical code. Don't draw conclusions from 1-2pp differences."
+mentions = [
+    "hnsw",
+    "search-quality",
+]
+
+[[note]]
+sentiment = 0.5
+text = "CUDA 12+13 side-by-side: pip nvidia-cublas-cu12/cuda-runtime-cu12/cufft-cu12 in conda env, add to LD_LIBRARY_PATH. cuVS needs 13, ORT prebuilt needs 12. Both work."
+mentions = [
+    "embedder.rs",
+    ".bashrc",
+]

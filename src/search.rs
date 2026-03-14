@@ -10,6 +10,7 @@ use sqlx::Row;
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
+use crate::language::ChunkType;
 use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
@@ -509,6 +510,68 @@ fn chunk_importance(name: &str, file_path: &str) -> f32 {
     1.0
 }
 
+/// Boost container chunks (Class, Struct, Interface) when multiple child methods
+/// from the same parent appear in search results.
+///
+/// When a query semantically matches several methods of one class, the class
+/// itself is usually the best answer — the methods individually match fragments
+/// of the query, but the class embodies the whole concept (e.g., "circuit breaker
+/// pattern" → `CircuitBreaker` class, not `recordFailure` method).
+///
+/// Algorithm: count how many results have `parent_type_name == X`. If a
+/// Class/Struct/Interface chunk named `X` also appears in results, boost it.
+///
+/// Boost magnitude: `1.0 + 0.05 × (child_count - 1)`, capped at 1.15.
+/// With 2 children → 1.05×, 3 → 1.10×, 4+ → 1.15×.
+///
+/// Re-sorts results by score after boosting.
+fn apply_parent_boost(results: &mut [SearchResult]) {
+    if results.len() < 3 {
+        return; // Need at least a container + 2 children
+    }
+
+    // Count how many results share each parent_type_name
+    let mut parent_counts: HashMap<String, usize> = HashMap::new();
+    for r in results.iter() {
+        if let Some(ref ptn) = r.chunk.parent_type_name {
+            *parent_counts.entry(ptn.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Only proceed if any parent_type_name appears 2+ times
+    if !parent_counts.values().any(|&c| c >= 2) {
+        return;
+    }
+
+    let mut boosted = false;
+    for r in results.iter_mut() {
+        let is_container = matches!(
+            r.chunk.chunk_type,
+            ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+        );
+        if !is_container {
+            continue;
+        }
+        if let Some(&count) = parent_counts.get(&r.chunk.name) {
+            if count >= 2 {
+                let boost = 1.0 + 0.05 * (count as f32 - 1.0).min(3.0);
+                tracing::debug!(
+                    name = %r.chunk.name,
+                    child_count = count,
+                    boost = %boost,
+                    "parent_boost: boosting container"
+                );
+                r.score *= boost;
+                boosted = true;
+            }
+        }
+    }
+
+    if boosted {
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
+}
+
 /// Bounded min-heap for maintaining top-N search results by score.
 ///
 /// Uses a min-heap internally so the smallest score is always at the top,
@@ -896,6 +959,9 @@ impl Store {
                 })
                 .collect();
 
+            // Boost container chunks when multiple child methods appear in results
+            apply_parent_boost(&mut results);
+
             // Truncate back to requested limit after parent dedup
             results.truncate(limit);
 
@@ -1087,6 +1153,9 @@ impl Store {
                     }
                 })
                 .collect();
+
+            // Boost container chunks when multiple child methods appear in results
+            apply_parent_boost(&mut results);
 
             // Truncate back to requested limit after parent dedup
             results.truncate(limit);
@@ -1459,6 +1528,132 @@ mod tests {
         let heap = BoundedScoreHeap::new(5);
         let results = heap.into_sorted_vec();
         assert!(results.is_empty());
+    }
+
+    // ===== parent_boost tests =====
+
+    fn make_result(
+        name: &str,
+        chunk_type: ChunkType,
+        parent_type_name: Option<&str>,
+        score: f32,
+    ) -> SearchResult {
+        SearchResult {
+            chunk: ChunkSummary {
+                id: name.to_string(),
+                file: std::path::PathBuf::from("test.ts"),
+                language: crate::parser::Language::TypeScript,
+                chunk_type,
+                name: name.to_string(),
+                signature: String::new(),
+                content: String::new(),
+                doc: None,
+                line_start: 1,
+                line_end: 10,
+                parent_id: None,
+                parent_type_name: parent_type_name.map(|s| s.to_string()),
+            },
+            score,
+        }
+    }
+
+    #[test]
+    fn test_parent_boost_circuit_breaker() {
+        // CircuitBreaker class at rank 4, its methods rank 1-3
+        let mut results = vec![
+            make_result(
+                "recordFailure",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.88,
+            ),
+            make_result(
+                "retryWithBackoff",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.86,
+            ),
+            make_result(
+                "shouldAllow",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.85,
+            ),
+            make_result("CircuitBreaker", ChunkType::Class, None, 0.82),
+        ];
+        apply_parent_boost(&mut results);
+        // 3 children → boost = 1.10, 0.82 * 1.10 = 0.902 > 0.88
+        assert_eq!(results[0].chunk.name, "CircuitBreaker");
+        assert!(results[0].score > 0.90);
+    }
+
+    #[test]
+    fn test_parent_boost_no_effect_on_standalone_functions() {
+        // Sort variants — standalone functions, no parent_type_name
+        let mut results = vec![
+            make_result("_insertionSortSmall", ChunkType::Function, None, 0.88),
+            make_result("insertionSort", ChunkType::Function, None, 0.85),
+            make_result("mergeSort", ChunkType::Function, None, 0.80),
+        ];
+        let scores_before: Vec<f32> = results.iter().map(|r| r.score).collect();
+        apply_parent_boost(&mut results);
+        let scores_after: Vec<f32> = results.iter().map(|r| r.score).collect();
+        assert_eq!(scores_before, scores_after);
+    }
+
+    #[test]
+    fn test_parent_boost_needs_minimum_two_children() {
+        // Only 1 method from the class — no boost
+        let mut results = vec![
+            make_result(
+                "recordFailure",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.88,
+            ),
+            make_result("CircuitBreaker", ChunkType::Class, None, 0.82),
+            make_result("unrelatedFn", ChunkType::Function, None, 0.80),
+        ];
+        apply_parent_boost(&mut results);
+        // CircuitBreaker should stay at rank 2
+        assert_eq!(results[0].chunk.name, "recordFailure");
+        assert_eq!(results[1].chunk.name, "CircuitBreaker");
+    }
+
+    #[test]
+    fn test_parent_boost_caps_at_1_15() {
+        // 5 children → should cap at 1.15, not 1.20
+        let mut results = vec![
+            make_result("m1", ChunkType::Method, Some("BigClass"), 0.88),
+            make_result("m2", ChunkType::Method, Some("BigClass"), 0.87),
+            make_result("m3", ChunkType::Method, Some("BigClass"), 0.86),
+            make_result("m4", ChunkType::Method, Some("BigClass"), 0.85),
+            make_result("m5", ChunkType::Method, Some("BigClass"), 0.84),
+            make_result("BigClass", ChunkType::Class, None, 0.78),
+        ];
+        apply_parent_boost(&mut results);
+        // max boost = 1.15, 0.78 * 1.15 = 0.897
+        let class_score = results
+            .iter()
+            .find(|r| r.chunk.name == "BigClass")
+            .unwrap()
+            .score;
+        assert!(
+            (class_score - 0.897).abs() < 0.001,
+            "Expected ~0.897, got {class_score}"
+        );
+    }
+
+    #[test]
+    fn test_parent_boost_too_few_results() {
+        // Only 2 results — function returns early
+        let mut results = vec![
+            make_result("foo", ChunkType::Method, Some("Bar"), 0.88),
+            make_result("Bar", ChunkType::Class, None, 0.82),
+        ];
+        let score_before = results[1].score;
+        apply_parent_boost(&mut results);
+        assert_eq!(results[1].score, score_before);
     }
 
     // ===== search_filtered integration tests (TC4) =====
