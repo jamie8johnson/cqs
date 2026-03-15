@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.10] - 2026-03-15
+
+### Fixed
+- **HNSW ID desync** on zero-vector skip — used `id_map.len()` instead of loop index (RT-DATA-1, high) (#596)
+- **CQS_PDF_SCRIPT** now rejects non-.py extensions to prevent arbitrary script execution (RT-INJ-1) (#596)
+- **Path traversal** in `read_context_lines` — validates paths containing `..` against project root (RT-FS-1/2) (#596)
+- **Chat input** length capped at 1MB to match batch mode (RT-RES-1) (#596)
+
 ## [1.0.9] - 2026-03-15
 
 ### Changed
