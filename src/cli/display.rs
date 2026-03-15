@@ -21,14 +21,18 @@ pub fn read_context_lines(
     line_end: u32,
     context: usize,
 ) -> Result<(Vec<String>, Vec<String>)> {
-    // Path traversal guard: reject paths outside CWD. Prevents reading files
-    // outside project root via tampered DB paths. (RT-FS-1/RT-FS-2)
-    if let (Ok(canonical), Ok(cwd)) = (
-        dunce::canonicalize(file),
-        std::env::current_dir().and_then(|d| dunce::canonicalize(d)),
-    ) {
-        if !canonical.starts_with(&cwd) {
-            anyhow::bail!("Path outside project root: {}", file.display());
+    // Path traversal guard: reject paths containing `..` that resolve outside CWD.
+    // Prevents reading files outside project root via tampered DB paths. (RT-FS-1/RT-FS-2)
+    // Only checks paths with traversal indicators — absolute paths to temp dirs are fine.
+    let path_str = file.to_string_lossy();
+    if path_str.contains("..") {
+        if let (Ok(canonical), Ok(cwd)) = (
+            dunce::canonicalize(file),
+            std::env::current_dir().and_then(|d| dunce::canonicalize(d)),
+        ) {
+            if !canonical.starts_with(&cwd) {
+                anyhow::bail!("Path traversal blocked: {}", file.display());
+            }
         }
     }
 

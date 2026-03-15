@@ -235,12 +235,13 @@ mod tests {
         let _guard = EnvGuard::set("CQS_PDF_SCRIPT", script.to_str().unwrap());
 
         let result = find_pdf_script();
-        assert!(
-            result.is_err(),
-            "non-.py extension should be rejected"
-        );
+        assert!(result.is_err(), "non-.py extension should be rejected");
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains(".py extension"), "error should mention .py requirement, got: {}", msg);
+        assert!(
+            msg.contains(".py extension"),
+            "error should mention .py requirement, got: {}",
+            msg
+        );
     }
 }
 
