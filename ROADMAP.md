@@ -94,8 +94,14 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [x] SQ-2: Richer NL descriptions — field names, dir-only file context. +3.7pp R@1 on hard eval (v1.0.6).
 - [ ] SQ-3: Code-specific embedding model — evaluate UniXcoder, CodeBERT, or fine-tuned E5 as replacement for general-purpose E5-base-v2.
 - [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
-- [ ] SQ-5: Module-level context in NL — add filename stem / module name to NL descriptions. Cheap discrimination signal. `nl.rs` → "natural language generation".
+- [x] SQ-5: Module-level context in NL — tested: filename stems regress holdout R@1 by ~3pp (generic filenames add noise). Dead end with current approach. Would need smarter filtering (skip generic stems like sample/mod/index/lib).
 - [ ] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy.
+- [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
+  - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
+  - **LoRA:** Low-Rank Adaptation — freezes base weights, trains ~0.5-2M adapter params (vs 110M full). Adapter is ~10-50MB.
+  - **Training data:** hard eval (55 queries) + holdout (143 queries) + synthetic pairs from cqs/aveva codebases
+  - **Deployment:** Upload merged ONNX to HuggingFace (`jamie8johnson/e5-base-v2-code-search`), cqs downloads it instead of base E5. Or upload LoRA adapter separately for A/B testing.
+  - **Why:** E5-base-v2 is a general NL model — prose (README/CHANGELOG) naturally scores higher than generated code NL descriptions. LoRA teaches the model that "parse config file" should match `fn parse_config()` better than a README paragraph about configuration. This is the real fix for code-vs-doc ranking.
 
 ### Parked
 
