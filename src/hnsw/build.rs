@@ -144,11 +144,12 @@ impl HnswIndex {
                 continue;
             }
 
-            // Validate dimensions and build insertion data in a single pass
-            let base_idx = id_map.len();
+            // Validate dimensions and build insertion data in a single pass.
+            // Use a separate insertion counter (not loop index) because zero-vector
+            // skips would desync base_idx+i from id_map positions. (RT-DATA-1)
             let mut data_for_insert: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(batch.len());
 
-            for (i, (chunk_id, embedding)) in batch.iter().enumerate() {
+            for (chunk_id, embedding) in batch.iter() {
                 if embedding.len() != EMBEDDING_DIM {
                     return Err(HnswError::DimensionMismatch {
                         expected: EMBEDDING_DIM,
@@ -161,9 +162,10 @@ impl HnswIndex {
                     tracing::warn!(chunk_id = %chunk_id, "Skipping zero-vector embedding");
                     continue;
                 }
-                tracing::trace!("Adding {} to HNSW index", chunk_id);
+                let insert_idx = id_map.len();
+                tracing::trace!("Adding {} to HNSW index at {}", chunk_id, insert_idx);
                 id_map.push(chunk_id.clone());
-                data_for_insert.push((embedding.as_vec(), base_idx + i));
+                data_for_insert.push((embedding.as_vec(), insert_idx));
             }
 
             // Insert this batch (hnsw_rs supports consecutive parallel_insert calls)

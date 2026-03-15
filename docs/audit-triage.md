@@ -84,6 +84,38 @@
 | PERF-B1 | `chunks_paged` loads full content for skipped chunks — fetch ID-only first | |
 | RM-B1 | Pre-loaded callers/callees maps ~60-80MB for 50K chunks | |
 
+## Red Team — P1
+
+| # | Finding | Status |
+|---|---------|--------|
+| RT-DATA-1 | HNSW ID desync on zero-vector skip — `base_idx + i` vs `id_map.len()` | ✅ fixed |
+
+## Red Team — P2
+
+| # | Finding | Status |
+|---|---------|--------|
+| RT-INJ-1 | `CQS_PDF_SCRIPT` env var arbitrary script execution via malicious .envrc | |
+| RT-DATA-5 | Batch/chat OnceLock caches never invalidate — stale after external index | |
+| RT-DATA-6 | SQLite commit and HNSW save not atomic — crash leaves desync | |
+
+## Red Team — P3
+
+| # | Finding | Status |
+|---|---------|--------|
+| RT-DATA-2 | Enrichment pass no idempotency marker — partial state on interrupt | |
+| RT-DATA-3 | Watch mode HNSW orphan accumulation — no deletion API | |
+| RT-FS-1 | `read_context_lines` reads files from DB paths without boundary check | |
+| RT-FS-2 | `resolve_parent_context` same gap as RT-FS-1 | |
+| RT-INJ-2 | Batch `read_line` OOM before 1MB check (post-hoc) | |
+| RT-RES-1 | Chat mode no input length limit | |
+| RT-DATA-4 | Notes file lock vs atomic rename race | |
+
+## Red Team — P4
+
+| # | Finding | Status |
+|---|---------|--------|
+| RT-RES-2 | `node_letter()` fragile u8 cast | |
+
 ## P4: Medium/Hard or Low Impact (create issues)
 
 | # | Finding | Status |

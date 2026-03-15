@@ -122,6 +122,11 @@ pub(crate) fn cmd_chat() -> Result<()> {
     loop {
         match editor.readline("cqs> ") {
             Ok(line) => {
+                // Input length guard (RT-RES-1) — matches batch mode's 1MB limit
+                if line.len() > 1_048_576 {
+                    eprintln!("Input too long ({} bytes, max 1MB)", line.len());
+                    continue;
+                }
                 let trimmed = line.trim();
                 if trimmed.is_empty() || trimmed.starts_with('#') {
                     continue;
