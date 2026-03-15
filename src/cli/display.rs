@@ -28,7 +28,7 @@ pub fn read_context_lines(
     if path_str.contains("..") {
         if let (Ok(canonical), Ok(cwd)) = (
             dunce::canonicalize(file),
-            std::env::current_dir().and_then(|d| dunce::canonicalize(d)),
+            std::env::current_dir().and_then(dunce::canonicalize),
         ) {
             if !canonical.starts_with(&cwd) {
                 anyhow::bail!("Path traversal blocked: {}", file.display());
