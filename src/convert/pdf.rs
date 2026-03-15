@@ -59,10 +59,7 @@ fn find_pdf_script() -> Result<String> {
         tracing::warn!(script = %script, "Using custom PDF script from CQS_PDF_SCRIPT env var");
         let p = PathBuf::from(&script);
         if p.extension().is_none_or(|e| e != "py") {
-            tracing::warn!(
-                script = %script,
-                "CQS_PDF_SCRIPT does not have .py extension — ensure this is intentional"
-            );
+            anyhow::bail!("CQS_PDF_SCRIPT must have .py extension (got: {}).", script);
         }
         if p.exists() {
             return Ok(script);
@@ -227,10 +224,10 @@ mod tests {
         }
     }
 
-    /// CQS_PDF_SCRIPT with a non-.py extension produces a warning but still succeeds if file exists.
+    /// CQS_PDF_SCRIPT with a non-.py extension is now rejected (RT-INJ-1).
     #[test]
     #[serial_test::serial]
-    fn test_find_pdf_script_env_var_non_py_extension_accepted_if_exists() {
+    fn test_find_pdf_script_env_var_non_py_extension_rejected() {
         let dir = tempfile::TempDir::new().unwrap();
         let script = dir.path().join("converter.sh");
         fs::write(&script, "#!/bin/sh\necho hello").unwrap();
@@ -238,9 +235,12 @@ mod tests {
         let _guard = EnvGuard::set("CQS_PDF_SCRIPT", script.to_str().unwrap());
 
         let result = find_pdf_script();
+        assert!(result.is_err(), "non-.py extension should be rejected");
+        let msg = result.unwrap_err().to_string();
         assert!(
-            result.is_ok(),
-            "non-.py extension with existing file should still succeed (with a warning)"
+            msg.contains(".py extension"),
+            "error should mention .py requirement, got: {}",
+            msg
         );
     }
 }

@@ -389,9 +389,10 @@ pub(crate) fn cmd_batch() -> Result<()> {
     let mut stdout = std::io::stdout();
     let mut reader = std::io::BufReader::new(stdin.lock());
 
-    // SEC-1: Use bounded read_line instead of BufRead::lines() to prevent OOM
-    // on huge single-line input. read_line allocates incrementally (8KB chunks)
-    // but we enforce MAX_BATCH_LINE_LEN before processing.
+    // SEC-1: read_line allocates incrementally (8KB chunks) until newline or EOF.
+    // A multi-GB line without newlines could OOM before the post-hoc check below.
+    // Accepted risk: batch input is from a controlling process (AI agent or pipe),
+    // not from untrusted network input. The 1MB check prevents processing, not allocation.
     let mut line = String::new();
     loop {
         line.clear();
@@ -404,9 +405,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
             }
         };
 
-        // Reject lines exceeding 1MB to prevent unbounded memory allocation.
-        // read_line may have allocated up to this size already, but further
-        // processing (parsing, cloning) is prevented.
+        // Reject lines exceeding 1MB to prevent further processing.
         if line.len() > MAX_BATCH_LINE_LEN {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
             // Hardcoded JSON — no serialization needed, no NaN risk
