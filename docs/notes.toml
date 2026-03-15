@@ -148,15 +148,6 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Hybrid CAGRA startup: HNSW loads in 30ms, CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Non-blocking startup pattern for GPU index builds."
-mentions = [
-    "src/cagra.rs",
-    "src/hnsw/mod.rs",
-    "startup",
-]
-
-[[note]]
-sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via cursor pagination (WHERE rowid > N), HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
     "src/store/chunks.rs",
@@ -968,4 +959,28 @@ text = "SQ-4 enrichment pass: 63% of chunks have call graph context. IDF callee 
 mentions = [
     "pipeline.rs",
     "nl.rs",
+]
+
+[[note]]
+sentiment = -1.0
+text = "HNSW build_batched ID desync (RT-DATA-1): base_idx+i loop counter skips zero-vectors but id_map doesn't. Fix: use id_map.len() as insertion index. Bug was in production since HNSW batch build was added."
+mentions = [
+    "src/hnsw/build.rs",
+    "build_batched",
+]
+
+[[note]]
+sentiment = 0.0
+text = "SQ-5 filename stems: including filename in NL helps real codebases but regresses fixture eval by ~3pp. Generic stems (mod, index, utils, helpers) must be filtered. Fixture eval overfits to test file naming conventions."
+mentions = [
+    "src/nl.rs",
+    "extract_file_context",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Red team verified 21+ protections solid: FTS injection double-sanitized, pipeline fan-out linear not exponential, BFS depth capped at 5 + 200 nodes, all graph traversals use visited sets, HNSW checksummed."
+mentions = [
+    "security",
+    "red-team",
 ]
