@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.9] - 2026-03-15
+
+### Changed
+- NL descriptions now include filename stem for module-level discrimination (SQ-5). Generic stems (mod, index, lib, utils, helpers) are filtered (#594)
+
 ## [1.0.8] - 2026-03-15
 
 ### Fixed
