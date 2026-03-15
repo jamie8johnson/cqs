@@ -379,9 +379,9 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
 
     let mut parts = Vec::new();
 
-    // Compact enrichment: file path context for module-level discrimination.
-    // Only emits directory components (not the filename stem, which duplicates
-    // the chunk name). Requires 2+ path components after filtering.
+    // Compact enrichment: file path + module context for discrimination.
+    // Includes directory components and filename stem (SQ-5).
+    // Generic stems (mod, index, lib, utils) are filtered.
     if template == NlTemplate::Compact {
         let file_context = extract_file_context(&chunk.file);
         if !file_context.is_empty() {
@@ -615,10 +615,11 @@ pub fn strip_markdown_noise(content: &str) -> String {
     result.trim().to_string()
 }
 
-/// Extract concise module context from a file path.
+/// Extract module context from a file path, including filename stem (SQ-5).
 ///
-/// Strips common prefixes (src/, lib/) and file extension, tokenizes remaining
-/// path components. E.g., `src/store/helpers.rs` → `"store helpers"`.
+/// Strips common prefixes (src/, lib/) and file extension, tokenizes all
+/// remaining path components. Generic stems (mod, index, lib, utils, helpers)
+/// are filtered. E.g., `src/store/calls.rs` → `"store calls"`.
 fn extract_file_context(path: &std::path::Path) -> String {
     let s = path.to_string_lossy();
     // Normalize separators
@@ -653,15 +654,39 @@ fn extract_file_context(path: &std::path::Path) -> String {
         .split('/')
         .filter(|c| !c.is_empty() && !skip.contains(c))
         .collect();
-    // Need at least 2 components (dir + file) to have meaningful dir context.
-    // Only emit directory components — the filename stem duplicates the chunk name.
-    if components.len() < 2 {
+    // Include filename stem for module-level discrimination (SQ-5).
+    // Strip file extension from last component. Skip generic stems that add
+    // noise rather than signal.
+    let generic_stems = [
+        "mod",
+        "index",
+        "lib",
+        "main",
+        "utils",
+        "helpers",
+        "common",
+        "types",
+        "config",
+        "constants",
+        "init",
+    ];
+    if components.is_empty() {
         return String::new();
     }
-    let result: Vec<String> = components[..components.len() - 1]
-        .iter()
-        .flat_map(|c| tokenize_identifier(c))
-        .collect();
+    let mut result: Vec<String> = Vec::new();
+    for (i, c) in components.iter().enumerate() {
+        let c = if i == components.len() - 1 {
+            // Last component: strip extension, skip generic stems
+            let stem = c.rsplit_once('.').map_or(*c, |(s, _)| s);
+            if generic_stems.contains(&stem) {
+                continue;
+            }
+            stem
+        } else {
+            c
+        };
+        result.extend(tokenize_identifier(c));
+    }
     if result.is_empty() {
         return String::new();
     }
