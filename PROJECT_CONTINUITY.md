@@ -57,9 +57,9 @@ None (notes.toml edited but not git-tracked).
 
 ## Architecture
 
-- Version: 1.0.10
+- Version: 1.0.11
 - MSRV: 1.93
-- Schema: v12
+- Schema: v13
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only
 - 51 languages, 16 ChunkType variants
