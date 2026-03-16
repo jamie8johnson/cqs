@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.11] - 2026-03-16
+
+### Fixed
+- **RT-DATA-4**: Notes file lock vs rename race — use separate `.lock` file that survives atomic renames (#599)
+- **RT-DATA-2**: Enrichment idempotency — store blake3 hash of call context per chunk, skip re-enrichment when unchanged (#599)
+- **RT-DATA-6**: HNSW crash desync — dirty flag in SQLite metadata detects interrupted writes, falls back to brute-force until rebuild (#599)
+
+### Added
+- `where_to_add` pattern coverage for 43 languages across 10 family groups: C-like, JVM, .NET, dynamic, functional, data science, systems, Solidity, shell (#555, #599)
+- Schema v13 migration: `enrichment_hash` column + `hnsw_dirty` metadata key
+
+### Changed
+- Roadmap refreshed: v1.0.10 header, 51 languages, schema v12→v13, red team accepted findings section, missing injection entries
+
 ## [1.0.10] - 2026-03-15
 
 ### Fixed

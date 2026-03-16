@@ -1,6 +1,6 @@
 # Roadmap
 
-## Current: v1.0.10
+## Current: v1.0.11
 
 First stable release. All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 51 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
 
