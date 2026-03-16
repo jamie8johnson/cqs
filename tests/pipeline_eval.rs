@@ -870,7 +870,9 @@ fn test_stress_eval() {
         let mut cursor = 0i64;
         loop {
             let (chunks, next) = store.chunks_paged(cursor, 500).expect("paged");
-            if chunks.is_empty() { break; }
+            if chunks.is_empty() {
+                break;
+            }
             cursor = next;
 
             let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
@@ -882,7 +884,8 @@ fn test_stress_eval() {
                     let chunk: cqs::Chunk = cs.into();
                     let base_nl = generate_nl_description(&chunk);
                     let nl_with_summary = format!("{} {}", summary, base_nl);
-                    let embs = embedder.embed_documents(&[&nl_with_summary])
+                    let embs = embedder
+                        .embed_documents(&[&nl_with_summary])
                         .expect("embed");
                     let emb = embs.into_iter().next().unwrap().with_sentiment(0.0);
                     batch_updates.push((cs.id.clone(), emb));
@@ -890,7 +893,9 @@ fn test_stress_eval() {
             }
             if !batch_updates.is_empty() {
                 re_embedded += batch_updates.len();
-                store.update_embeddings_batch(&batch_updates).expect("update");
+                store
+                    .update_embeddings_batch(&batch_updates)
+                    .expect("update");
             }
         }
         eprintln!("  Re-embedded {} chunks with summaries", re_embedded);
