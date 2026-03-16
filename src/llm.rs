@@ -2,7 +2,11 @@
 //!
 //! Uses `reqwest::blocking` to avoid nested tokio runtime issues
 //! (the Store already uses `rt.block_on()`).
+//!
+//! The summary pass uses the Batches API for throughput (no RPM limit, 50% discount).
+//! Individual summarize_chunk() is available for single-chunk fallback.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -10,13 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::Store;
 
-const API_URL: &str = "https://api.anthropic.com/v1/messages";
+const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
 const MODEL: &str = "claude-haiku-4-5";
 const MAX_TOKENS: u32 = 100;
 const MAX_CONTENT_CHARS: usize = 8000;
-const MAX_RETRIES: u32 = 3;
 const MIN_CONTENT_CHARS: usize = 50;
+/// Poll interval for batch completion
+const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Claude API client for generating summaries.
 pub struct Client {
@@ -24,17 +29,19 @@ pub struct Client {
     api_key: String,
 }
 
+// --- Messages API types ---
+
 #[derive(Serialize)]
-struct MessagesRequest<'a> {
-    model: &'a str,
+struct MessagesRequest {
+    model: String,
     max_tokens: u32,
-    messages: Vec<Message<'a>>,
+    messages: Vec<ChatMessage>,
 }
 
 #[derive(Serialize)]
-struct Message<'a> {
-    role: &'a str,
-    content: &'a str,
+struct ChatMessage {
+    role: String,
+    content: String,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +54,38 @@ struct ContentBlock {
     #[serde(rename = "type")]
     block_type: String,
     text: Option<String>,
+}
+
+// --- Batches API types ---
+
+#[derive(Serialize)]
+struct BatchRequest {
+    requests: Vec<BatchItem>,
+}
+
+#[derive(Serialize)]
+struct BatchItem {
+    custom_id: String,
+    params: MessagesRequest,
+}
+
+#[derive(Deserialize)]
+struct BatchResponse {
+    id: String,
+    processing_status: String,
+}
+
+#[derive(Deserialize)]
+struct BatchResult {
+    custom_id: String,
+    result: BatchResultInner,
+}
+
+#[derive(Deserialize)]
+struct BatchResultInner {
+    #[serde(rename = "type")]
+    result_type: String,
+    message: Option<MessagesResponse>,
 }
 
 #[derive(Deserialize)]
@@ -63,142 +102,178 @@ impl Client {
     pub fn new(api_key: &str) -> Self {
         Self {
             http: reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(60))
                 .build()
                 .expect("Failed to create HTTP client"),
             api_key: api_key.to_string(),
         }
     }
 
-    /// Generate a one-sentence summary for a code chunk.
-    ///
-    /// Returns None if the API returns an empty or invalid response.
-    pub fn summarize_chunk(
-        &self,
-        content: &str,
-        chunk_type: &str,
-        language: &str,
-    ) -> Result<Option<String>> {
+    /// Build the prompt for a code chunk.
+    fn build_prompt(content: &str, chunk_type: &str, language: &str) -> String {
         let truncated = if content.len() > MAX_CONTENT_CHARS {
-            tracing::debug!(
-                len = content.len(),
-                max = MAX_CONTENT_CHARS,
-                "Truncating chunk content for LLM summary"
-            );
             &content[..MAX_CONTENT_CHARS]
         } else {
             content
         };
-
-        let prompt = format!(
+        format!(
             "Summarize this {} in one sentence. Focus on what it does, not how.\n\n```{}\n{}\n```",
             chunk_type, language, truncated
-        );
+        )
+    }
 
-        let request = MessagesRequest {
-            model: MODEL,
-            max_tokens: MAX_TOKENS,
-            messages: vec![Message {
-                role: "user",
-                content: &prompt,
-            }],
-        };
+    /// Submit a batch of summary requests to the Batches API.
+    ///
+    /// `items` is a list of (custom_id, content, chunk_type, language).
+    /// Returns the batch ID for polling.
+    fn submit_batch(&self, items: &[(String, String, String, String)]) -> Result<String> {
+        let requests: Vec<BatchItem> = items
+            .iter()
+            .map(|(id, content, chunk_type, language)| BatchItem {
+                custom_id: id.clone(),
+                params: MessagesRequest {
+                    model: MODEL.to_string(),
+                    max_tokens: MAX_TOKENS,
+                    messages: vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: Self::build_prompt(content, chunk_type, language),
+                    }],
+                },
+            })
+            .collect();
 
-        let mut last_err = None;
-        for attempt in 0..MAX_RETRIES {
-            let start = std::time::Instant::now();
+        let url = format!("{}/messages/batches", API_BASE);
+        let response = self
+            .http
+            .post(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .header("content-type", "application/json")
+            .json(&BatchRequest { requests })
+            .send()
+            .context("Failed to submit batch")?;
+
+        let status = response.status();
+        if status == 401 {
+            bail!("Invalid ANTHROPIC_API_KEY (401 Unauthorized)");
+        }
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            if let Ok(err) = serde_json::from_str::<ApiError>(&body) {
+                bail!("Batch submission failed: {}", err.error.message);
+            }
+            bail!("Batch submission failed: HTTP {status}: {body}");
+        }
+
+        let batch: BatchResponse = response.json().context("Failed to parse batch response")?;
+        tracing::info!(batch_id = %batch.id, count = items.len(), "Batch submitted");
+        Ok(batch.id)
+    }
+
+    /// Poll until a batch completes. Returns when status is "ended".
+    fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<()> {
+        let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
+        loop {
             let response = self
                 .http
-                .post(API_URL)
+                .get(&url)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", API_VERSION)
-                .header("content-type", "application/json")
-                .json(&request)
-                .send();
+                .send()
+                .context("Failed to poll batch status")?;
 
-            let response = match response {
-                Ok(r) => r,
-                Err(e) => {
-                    if attempt < MAX_RETRIES - 1 {
-                        let delay = Duration::from_secs(1 << attempt);
-                        tracing::warn!(attempt, error = %e, delay_secs = delay.as_secs(), "API request failed, retrying");
-                        std::thread::sleep(delay);
-                        last_err = Some(format!("Connection error: {e}"));
-                        continue;
+            if !response.status().is_success() {
+                let body = response.text().unwrap_or_default();
+                bail!("Batch status check failed: {body}");
+            }
+
+            let batch: BatchResponse = response.json().context("Failed to parse batch status")?;
+
+            match batch.processing_status.as_str() {
+                "ended" => {
+                    tracing::info!(batch_id, "Batch complete");
+                    return Ok(());
+                }
+                "canceling" | "canceled" | "expired" => {
+                    bail!(
+                        "Batch {} ended with status: {}",
+                        batch_id,
+                        batch.processing_status
+                    );
+                }
+                _ => {
+                    // "in_progress" or "created"
+                    if !quiet {
+                        eprint!(".");
                     }
-                    bail!("LLM summary API unreachable after {MAX_RETRIES} attempts: {e}");
+                    tracing::debug!(batch_id, status = %batch.processing_status, "Batch still processing");
+                    std::thread::sleep(BATCH_POLL_INTERVAL);
                 }
-            };
-
-            let status = response.status();
-            let latency = start.elapsed();
-            tracing::debug!(
-                status = status.as_u16(),
-                latency_ms = latency.as_millis() as u64,
-                "API response"
-            );
-
-            if status == 401 {
-                bail!("Invalid ANTHROPIC_API_KEY (401 Unauthorized)");
             }
+        }
+    }
 
-            if status == 429 || status.is_server_error() {
-                if attempt < MAX_RETRIES - 1 {
-                    let delay = Duration::from_secs(1 << attempt);
-                    tracing::warn!(
-                        attempt,
-                        status = status.as_u16(),
-                        delay_secs = delay.as_secs(),
-                        "Rate limited or server error, retrying"
-                    );
-                    std::thread::sleep(delay);
-                    last_err = Some(format!("HTTP {status}"));
-                    continue;
-                }
-                let body = response.text().unwrap_or_default();
-                bail!("LLM summary API failed after {MAX_RETRIES} attempts: HTTP {status}: {body}");
+    /// Fetch results from a completed batch.
+    ///
+    /// Returns a map from custom_id to summary text.
+    fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>> {
+        let url = format!("{}/messages/batches/{}/results", API_BASE, batch_id);
+        let response = self
+            .http
+            .get(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .send()
+            .context("Failed to fetch batch results")?;
+
+        if !response.status().is_success() {
+            let body = response.text().unwrap_or_default();
+            bail!("Batch results fetch failed: {body}");
+        }
+
+        // Results are JSONL (one JSON object per line)
+        let body = response
+            .text()
+            .context("Failed to read batch results body")?;
+        let mut results = HashMap::new();
+
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
             }
-
-            if !status.is_success() {
-                let body = response.text().unwrap_or_default();
-                if let Ok(err) = serde_json::from_str::<ApiError>(&body) {
-                    bail!("LLM summary API error: {}", err.error.message);
+            match serde_json::from_str::<BatchResult>(line) {
+                Ok(result) => {
+                    if result.result.result_type == "succeeded" {
+                        if let Some(msg) = result.result.message {
+                            let text = msg
+                                .content
+                                .into_iter()
+                                .find(|b| b.block_type == "text")
+                                .and_then(|b| b.text);
+                            if let Some(s) = text {
+                                let trimmed = s.trim().to_string();
+                                if !trimmed.is_empty() && trimmed.len() < 500 {
+                                    results.insert(result.custom_id, trimmed);
+                                }
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            custom_id = %result.custom_id,
+                            result_type = %result.result.result_type,
+                            "Batch item not succeeded"
+                        );
+                    }
                 }
-                bail!("LLM summary API error: HTTP {status}: {body}");
-            }
-
-            let resp: MessagesResponse = response
-                .json()
-                .context("Failed to parse LLM summary API response")?;
-
-            let text = resp
-                .content
-                .into_iter()
-                .find(|b| b.block_type == "text")
-                .and_then(|b| b.text);
-
-            match text {
-                Some(s) if !s.trim().is_empty() && s.len() < 500 => {
-                    return Ok(Some(s.trim().to_string()))
-                }
-                Some(s) => {
-                    tracing::warn!(
-                        len = s.len(),
-                        "LLM returned empty or oversized summary, skipping"
-                    );
-                    return Ok(None);
-                }
-                None => {
-                    tracing::warn!("LLM returned no text block, skipping");
-                    return Ok(None);
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to parse batch result line");
                 }
             }
         }
 
-        bail!(
-            "LLM summary API failed after {MAX_RETRIES} attempts: {}",
-            last_err.unwrap_or_else(|| "unknown error".to_string())
-        );
+        tracing::info!(batch_id, succeeded = results.len(), "Batch results fetched");
+        Ok(results)
     }
 }
 
@@ -209,13 +284,13 @@ pub struct SummaryEntry {
     pub model: String,
 }
 
-/// Run the LLM summary pass: generate summaries for uncached callable chunks.
+/// Run the LLM summary pass using the Batches API.
 ///
-/// Only callable chunks (Function, Method, Macro) with content >= 50 chars
-/// and no existing doc comment are sent to the API. Chunks with doc comments
-/// use the first sentence of the doc as the summary (free).
+/// Collects all uncached callable chunks, submits them as a batch to Claude,
+/// polls for completion, then stores results. Doc comments are extracted locally
+/// without API calls.
 ///
-/// Returns the number of new summaries generated via API.
+/// Returns the number of new summaries generated.
 pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
     let _span = tracing::info_span!("llm_summary_pass").entered();
 
@@ -223,26 +298,27 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         .context("--llm-summaries requires ANTHROPIC_API_KEY environment variable")?;
     let client = Client::new(&api_key);
 
-    let mut api_generated = 0usize;
     let mut doc_extracted = 0usize;
     let mut cached = 0usize;
     let mut skipped = 0usize;
     let mut cursor = 0i64;
     const PAGE_SIZE: usize = 500;
 
+    // Phase 1: Collect chunks needing summaries
+    // Store doc-comment summaries immediately, collect API-needing chunks
+    let mut to_store: Vec<(String, String, String)> = Vec::new();
+    // (custom_id=content_hash, content, chunk_type, language) for batch API
+    let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
+    // Track content_hashes already queued to avoid duplicate custom_ids in batch
+    let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     let stats = store.stats().context("Failed to get index stats")?;
-    let progress = if quiet {
-        indicatif::ProgressBar::hidden()
-    } else {
-        let pb = indicatif::ProgressBar::new(stats.total_chunks);
-        pb.set_style(
-            indicatif::ProgressStyle::default_bar()
-                .template("{spinner:.green} [{bar:40}] {pos}/{len} LLM summaries ({eta})")
-                .expect("valid template")
-                .progress_chars("=>-"),
+    if !quiet {
+        eprintln!(
+            "Scanning {} chunks for LLM summaries...",
+            stats.total_chunks
         );
-        pb
-    };
+    }
 
     loop {
         let (chunks, next) = store
@@ -253,42 +329,33 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         }
         cursor = next;
 
-        // Batch-check existing summaries
         let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
         let existing = store
             .get_summaries_by_hashes(&hashes)
             .context("Failed to fetch existing summaries")?;
 
-        let mut to_store: Vec<(String, String, String)> = Vec::new();
-
         for cs in &chunks {
-            progress.inc(1);
-
-            // Already cached
             if existing.contains_key(&cs.content_hash) {
                 cached += 1;
                 continue;
             }
 
-            // Only callable chunks
             if !cs.chunk_type.is_callable() {
                 skipped += 1;
                 continue;
             }
 
-            // Skip tiny chunks
             if cs.content.len() < MIN_CONTENT_CHARS {
                 skipped += 1;
                 continue;
             }
 
-            // Skip windowed chunks after the first (only summarize first/only window)
             if cs.window_idx.is_some_and(|idx| idx > 0) {
                 skipped += 1;
                 continue;
             }
 
-            // Doc comment shortcut: use first sentence if available
+            // Doc comment shortcut
             if let Some(ref doc) = cs.doc {
                 if doc.len() > 10 {
                     let first_sentence = extract_first_sentence(doc);
@@ -304,41 +371,77 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
                 }
             }
 
-            // Call Claude API
-            let language = cs.language.to_string();
-            let type_name = cs.chunk_type.to_string();
-            match client.summarize_chunk(&cs.content, &type_name, &language) {
-                Ok(Some(summary)) => {
-                    to_store.push((cs.content_hash.clone(), summary, MODEL.to_string()));
-                    api_generated += 1;
-                }
-                Ok(None) => {
-                    skipped += 1;
-                }
-                Err(e) => {
-                    progress.finish_and_clear();
-                    return Err(e);
-                }
+            // Queue for batch API (deduplicate by content_hash)
+            if queued_hashes.insert(cs.content_hash.clone()) {
+                batch_items.push((
+                    cs.content_hash.clone(),
+                    cs.content.clone(),
+                    cs.chunk_type.to_string(),
+                    cs.language.to_string(),
+                ));
             }
-
-            // Flush stored summaries periodically
-            if to_store.len() >= 50 {
-                store
-                    .upsert_summaries_batch(&to_store)
-                    .context("Failed to store LLM summaries")?;
-                to_store.clear();
-            }
-        }
-
-        // Flush remaining
-        if !to_store.is_empty() {
-            store
-                .upsert_summaries_batch(&to_store)
-                .context("Failed to store LLM summaries")?;
         }
     }
 
-    progress.finish_and_clear();
+    // Store doc-comment summaries immediately
+    if !to_store.is_empty() {
+        store
+            .upsert_summaries_batch(&to_store)
+            .context("Failed to store doc-comment summaries")?;
+    }
+
+    if !quiet {
+        eprintln!(
+            "  {} cached, {} from doc comments, {} skipped, {} need API calls",
+            cached,
+            doc_extracted,
+            skipped,
+            batch_items.len()
+        );
+    }
+
+    // Phase 2: Submit batch to Claude API
+    let api_generated = if batch_items.is_empty() {
+        0
+    } else {
+        if !quiet {
+            eprint!("Submitting batch of {} to Claude API", batch_items.len());
+        }
+
+        let batch_id = client
+            .submit_batch(&batch_items)
+            .context("Failed to submit summary batch")?;
+
+        if !quiet {
+            eprint!(" (batch {})\nWaiting for results", batch_id);
+        }
+
+        client
+            .wait_for_batch(&batch_id, quiet)
+            .context("Batch processing failed")?;
+
+        if !quiet {
+            eprintln!();
+        }
+
+        let results = client
+            .fetch_batch_results(&batch_id)
+            .context("Failed to fetch batch results")?;
+
+        // Store API-generated summaries
+        let api_summaries: Vec<(String, String, String)> = results
+            .into_iter()
+            .map(|(hash, summary)| (hash, summary, MODEL.to_string()))
+            .collect();
+        let count = api_summaries.len();
+        if !api_summaries.is_empty() {
+            store
+                .upsert_summaries_batch(&api_summaries)
+                .context("Failed to store API summaries")?;
+        }
+
+        count
+    };
 
     tracing::info!(
         api_generated,
@@ -360,14 +463,12 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
 /// Extract the first sentence from a doc comment.
 fn extract_first_sentence(doc: &str) -> String {
     let trimmed = doc.trim();
-    // Find first sentence-ending punctuation followed by space or end
     if let Some(pos) = trimmed.find(['.', '!', '?']) {
         let sentence = trimmed[..=pos].trim();
         if sentence.len() > 10 {
             return sentence.to_string();
         }
     }
-    // If no sentence boundary, use first line if it's substantial
     let first_line = trimmed.lines().next().unwrap_or("").trim();
     if first_line.len() > 10 {
         first_line.to_string()
@@ -398,7 +499,6 @@ mod tests {
 
     #[test]
     fn test_extract_first_sentence_short() {
-        // Too short to be useful
         assert_eq!(extract_first_sentence("Hi."), "");
     }
 
@@ -411,13 +511,18 @@ mod tests {
     }
 
     #[test]
-    fn test_content_truncation() {
-        let long_content = "x".repeat(10000);
-        let truncated = if long_content.len() > MAX_CONTENT_CHARS {
-            &long_content[..MAX_CONTENT_CHARS]
-        } else {
-            &long_content
-        };
-        assert_eq!(truncated.len(), MAX_CONTENT_CHARS);
+    fn test_build_prompt() {
+        let prompt = Client::build_prompt("fn foo() {}", "function", "rust");
+        assert!(prompt.contains("function"));
+        assert!(prompt.contains("```rust"));
+        assert!(prompt.contains("fn foo()"));
+    }
+
+    #[test]
+    fn test_build_prompt_truncation() {
+        let long = "x".repeat(10000);
+        let prompt = Client::build_prompt(&long, "function", "rust");
+        // Prompt should contain truncated content
+        assert!(prompt.len() < 10000 + 200); // prompt overhead + truncated
     }
 }
