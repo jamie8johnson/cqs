@@ -78,6 +78,7 @@ pub(crate) mod project;
 pub(crate) mod related;
 pub(crate) mod review;
 pub use review::{review_diff, ReviewNoteEntry, ReviewResult};
+pub mod plan;
 pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod structural;
