@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.12] - 2026-03-16
+
+### Added
+- `cqs plan` command: classify tasks into 11 templates (language, bug fix, CLI flag, injection, etc.) via keyword scoring, run scout, output actionable checklist (#601)
+
+### Fixed
+- cqs-plan skill: stale file references (schema.rs → helpers.rs/migrations.rs, PRAGMA → metadata table)
+
 ## [1.0.11] - 2026-03-16
 
 ### Fixed
