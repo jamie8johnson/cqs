@@ -53,9 +53,9 @@ None.
 
 ## Architecture
 
-- Version: 1.0.12
+- Version: 1.0.13
 - MSRV: 1.93
-- Schema: v13 (v14 pending for SQ-6)
+- Schema: v14 (llm_summaries table for SQ-6)
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only
 - 51 languages, 16 ChunkType variants
