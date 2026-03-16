@@ -25,6 +25,7 @@ pub(crate) fn cmd_index(
     force: bool,
     dry_run: bool,
     no_ignore: bool,
+    #[allow(unused_variables)] // used only with llm-summaries feature
     llm_summaries: bool,
 ) -> Result<()> {
     reset_interrupted();
