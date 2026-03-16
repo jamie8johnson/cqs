@@ -1001,3 +1001,12 @@ mentions = [
     "pipeline.rs",
     "nl.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "SQ-6 stress eval: summaries HURT search quality with E5-base-v2. R@1 dropped 2.1pp (58.0->55.9), Python MRR dropped 0.157. Model treats summaries same as prose — adds noise rather than discrimination. SQ-7 (LoRA) is the only real fix."
+mentions = [
+    "llm.rs",
+    "nl.rs",
+    "pipeline_eval.rs",
+]

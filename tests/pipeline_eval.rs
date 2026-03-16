@@ -855,6 +855,47 @@ fn test_stress_eval() {
         total, fixture_chunks, noise_chunks
     );
 
+    // LLM summary pass (SQ-6) — if ANTHROPIC_API_KEY is set
+    #[cfg(feature = "llm-summaries")]
+    if std::env::var("ANTHROPIC_API_KEY").is_ok() {
+        eprintln!("Running LLM summary pass...");
+        match cqs::llm::llm_summary_pass(&store, false) {
+            Ok(count) => eprintln!("  LLM summaries: {} new", count),
+            Err(e) => eprintln!("  LLM summary pass failed (continuing without): {}", e),
+        }
+
+        // Re-embed chunks that have summaries with summary prepended to NL
+        eprintln!("Re-embedding with summaries...");
+        let mut re_embedded = 0usize;
+        let mut cursor = 0i64;
+        loop {
+            let (chunks, next) = store.chunks_paged(cursor, 500).expect("paged");
+            if chunks.is_empty() { break; }
+            cursor = next;
+
+            let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
+            let summaries = store.get_summaries_by_hashes(&hashes).unwrap_or_default();
+
+            let mut batch_updates: Vec<(String, cqs::Embedding)> = Vec::new();
+            for cs in &chunks {
+                if let Some(summary) = summaries.get(&cs.content_hash) {
+                    let chunk: cqs::Chunk = cs.into();
+                    let base_nl = generate_nl_description(&chunk);
+                    let nl_with_summary = format!("{} {}", summary, base_nl);
+                    let embs = embedder.embed_documents(&[&nl_with_summary])
+                        .expect("embed");
+                    let emb = embs.into_iter().next().unwrap().with_sentiment(0.0);
+                    batch_updates.push((cs.id.clone(), emb));
+                }
+            }
+            if !batch_updates.is_empty() {
+                re_embedded += batch_updates.len();
+                store.update_embeddings_batch(&batch_updates).expect("update");
+            }
+        }
+        eprintln!("  Re-embedded {} chunks with summaries", re_embedded);
+    }
+
     // Build HNSW index
     eprintln!("Building HNSW index...");
     let hnsw = HnswIndex::build_batched(store.embedding_batches(10_000), total as usize)
