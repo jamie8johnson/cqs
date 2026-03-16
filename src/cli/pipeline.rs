@@ -988,6 +988,13 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 .get_enrichment_hashes_batch(&page_ids)
                 .context("Failed to fetch enrichment hashes")?;
 
+            // Pre-fetch LLM summaries for this page (SQ-6)
+            let content_hashes: Vec<&str> =
+                chunks.iter().map(|c| c.content_hash.as_str()).collect();
+            let page_summaries = store
+                .get_summaries_by_hashes(&content_hashes)
+                .unwrap_or_default();
+
             for cs in &chunks {
                 progress.inc(1);
 
@@ -996,16 +1003,18 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
                 let has_callers = callers.is_some_and(|v| !v.is_empty());
                 let has_callees = callees.is_some_and(|v| !v.is_empty());
+                let summary = page_summaries.get(&cs.content_hash).map(|s| s.as_str());
 
-                // Skip leaf nodes — no call context to add
-                if !has_callers && !has_callees {
+                // Skip chunks with nothing to add: no call context AND no summary
+                if !has_callers && !has_callees && summary.is_none() {
                     continue;
                 }
 
                 // Skip ambiguous names — functions like `new`, `parse`, `build`
                 // appear in multiple chunks and would get merged callers from
                 // unrelated functions. (RB-B1)
-                if name_file_count.get(&cs.name).copied().unwrap_or(0) > 1 {
+                // But still process if they have a summary (summary doesn't depend on call graph)
+                if name_file_count.get(&cs.name).copied().unwrap_or(0) > 1 && summary.is_none() {
                     continue;
                 }
 
@@ -1018,12 +1027,11 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                         .unwrap_or_default(),
                 };
 
-                // Compute enrichment hash from post-filtered call context (RT-DATA-2).
-                // This hash captures exactly what goes into generate_nl_with_call_context,
-                // so if the call graph hasn't changed, we skip re-enrichment.
-                let enrichment_hash = compute_enrichment_hash(&ctx, &callee_doc_freq);
+                // Compute enrichment hash from post-filtered call context + summary (RT-DATA-2, SQ-6).
+                let enrichment_hash =
+                    compute_enrichment_hash_with_summary(&ctx, &callee_doc_freq, summary);
 
-                // Skip if already enriched with the same call context
+                // Skip if already enriched with the same call context + summary
                 if let Some(stored) = stored_hashes.get(&cs.id) {
                     if *stored == enrichment_hash {
                         skipped_count += 1;
@@ -1032,12 +1040,13 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 }
 
                 let chunk: cqs::parser::Chunk = cs.into();
-                let enriched_nl = cqs::generate_nl_with_call_context(
+                let enriched_nl = cqs::generate_nl_with_call_context_and_summary(
                     &chunk,
                     &ctx,
                     &callee_doc_freq,
                     5, // max callers
                     5, // max callees
+                    summary,
                 );
 
                 embed_batch.push((cs.id.clone(), enriched_nl, enrichment_hash));
@@ -1076,26 +1085,24 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     Ok(enriched_count)
 }
 
-/// Compute a hash of the call context that will be used for enrichment.
+/// Compute enrichment hash including optional LLM summary (SQ-6).
 ///
-/// The hash captures the post-filtered caller/callee names — the same inputs
-/// that `generate_nl_with_call_context` uses. If the call graph hasn't changed,
-/// the hash matches and we skip re-enrichment. (RT-DATA-2)
-fn compute_enrichment_hash(
+/// Extends `compute_enrichment_hash` to also include the summary text.
+/// If the summary changes, the hash changes, triggering re-embedding.
+fn compute_enrichment_hash_with_summary(
     ctx: &cqs::CallContext,
     callee_doc_freq: &HashMap<String, f32>,
+    summary: Option<&str>,
 ) -> String {
     use std::fmt::Write;
     let mut input = String::new();
 
-    // Sorted callers (same as what generate_nl_with_call_context sees)
     let mut callers: Vec<&str> = ctx.callers.iter().map(|s| s.as_str()).collect();
     callers.sort_unstable();
     for c in &callers {
         let _ = write!(input, "c:{c}|");
     }
 
-    // Sorted callees, filtered by IDF (same threshold as generate_nl_with_call_context)
     let mut callees: Vec<&str> = ctx
         .callees
         .iter()
@@ -1105,6 +1112,10 @@ fn compute_enrichment_hash(
     callees.sort_unstable();
     for c in &callees {
         let _ = write!(input, "e:{c}|");
+    }
+
+    if let Some(s) = summary {
+        let _ = write!(input, "s:{s}");
     }
 
     let hash = blake3::hash(input.as_bytes());

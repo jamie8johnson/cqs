@@ -20,7 +20,13 @@ use crate::cli::{
 ///
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
-pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
+pub(crate) fn cmd_index(
+    cli: &Cli,
+    force: bool,
+    dry_run: bool,
+    no_ignore: bool,
+    llm_summaries: bool,
+) -> Result<()> {
     reset_interrupted();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -135,6 +141,20 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
     }
     if !cli.quiet && stats.total_type_edges > 0 {
         println!("  Type edges: {} edges", stats.total_type_edges);
+    }
+
+    // LLM summary pass (SQ-6): generate one-sentence summaries via Claude API
+    // Runs BEFORE enrichment so summaries are incorporated into enrichment NL.
+    #[cfg(feature = "llm-summaries")]
+    if !check_interrupted() && llm_summaries {
+        if !cli.quiet {
+            println!("Generating LLM summaries...");
+        }
+        let count =
+            cqs::llm::llm_summary_pass(&store, cli.quiet).context("LLM summary pass failed")?;
+        if !cli.quiet && count > 0 {
+            println!("  LLM summaries: {} new", count);
+        }
     }
 
     // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee context

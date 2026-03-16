@@ -295,6 +295,10 @@ enum Commands {
         /// Index files ignored by .gitignore
         #[arg(long)]
         no_ignore: bool,
+        /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        llm_summaries: bool,
     },
     /// Show index statistics
     Stats {
@@ -755,7 +759,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             force,
             dry_run,
             no_ignore,
-        }) => cmd_index(&cli, force, dry_run, no_ignore),
+            #[cfg(feature = "llm-summaries")]
+            llm_summaries,
+        }) => {
+            #[cfg(feature = "llm-summaries")]
+            let use_llm = llm_summaries;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_llm = false;
+            cmd_index(&cli, force, dry_run, no_ignore, use_llm)
+        }
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
             debounce,
@@ -1053,6 +1065,7 @@ mod tests {
                 force,
                 dry_run,
                 no_ignore,
+                ..
             }) => {
                 assert!(!force);
                 assert!(!dry_run);

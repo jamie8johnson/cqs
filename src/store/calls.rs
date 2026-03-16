@@ -972,6 +972,8 @@ impl Store {
                 doc,
                 line_start: light.line_start,
                 line_end: light.line_end,
+                content_hash: String::new(),
+                window_idx: None,
                 parent_id: None,
                 parent_type_name: None,
             });
@@ -1017,6 +1019,8 @@ impl Store {
                     doc: None,
                     line_start: clamp_line_number(row.get::<i64, _>(6)),
                     line_end: clamp_line_number(row.get::<i64, _>(7)),
+                    content_hash: String::new(),
+                    window_idx: None,
                     parent_id: row.get(8),
                     parent_type_name: row.get(9),
                 })

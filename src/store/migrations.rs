@@ -67,6 +67,7 @@ async fn run_migration(
         (10, 11) => migrate_v10_to_v11(conn).await,
         (11, 12) => migrate_v11_to_v12(conn).await,
         (12, 13) => migrate_v12_to_v13(conn).await,
+        (13, 14) => migrate_v13_to_v14(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -146,6 +147,26 @@ async fn migrate_v12_to_v13(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v13 to v14: LLM summaries cache table (SQ-6)
+///
+/// Stores one-sentence LLM-generated summaries keyed by content_hash.
+/// Summaries survive chunk deletion and --force rebuilds.
+async fn migrate_v13_to_v14(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS llm_summaries (
+            content_hash TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            model TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!("Created llm_summaries table for LLM-generated function summaries.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,7 +184,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 13);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
     }
 
     #[test]
@@ -187,7 +208,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 13, 13).await;
+            let result = migrate(&pool, 14, 14).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }
@@ -213,10 +234,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 13, 12).await;
+            let result = migrate(&pool, 14, 13).await;
             assert!(result.is_err(), "downgrade should fail");
             match result.unwrap_err() {
-                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 13),
+                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 14),
                 other => panic!("Expected SchemaNewerThanCq, got: {:?}", other),
             }
         });

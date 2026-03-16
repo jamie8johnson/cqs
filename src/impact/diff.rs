@@ -254,6 +254,8 @@ mod tests {
             line_end: line_start + 5,
             parent_id: None,
             parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
         }
     }
 

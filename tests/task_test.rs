@@ -248,6 +248,8 @@ fn test_compute_risk_and_tests_integration() {
         line_end: 5,
         parent_id: None,
         parent_type_name: None,
+        content_hash: String::new(),
+        window_idx: None,
     }];
 
     let (scores, tests) =

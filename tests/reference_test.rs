@@ -28,6 +28,8 @@ fn make_code_result(name: &str, score: f32) -> SearchResult {
             line_end: 1,
             parent_id: None,
             parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
         },
         score,
     }

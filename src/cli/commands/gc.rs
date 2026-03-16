@@ -58,6 +58,12 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
         .context("Failed to prune orphan type edges")?;
     tracing::debug!(pruned_type_edges, "Type edges pruned");
 
+    // Prune orphan LLM summaries (content_hash no longer in any chunk)
+    let pruned_summaries = store
+        .prune_orphan_summaries()
+        .context("Failed to prune orphan LLM summaries")?;
+    tracing::debug!(pruned_summaries, "LLM summaries pruned");
+
     // Rebuild HNSW if we pruned chunks. Delete the stale HNSW first so
     // concurrent searches fall back to brute-force during the rebuild window
     // rather than returning orphan IDs from the old index (RT-DATA-2).

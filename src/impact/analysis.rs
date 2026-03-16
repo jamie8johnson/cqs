@@ -537,6 +537,8 @@ mod tests {
                 doc: None,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             ChunkSummary {
                 id: "2".into(),
@@ -551,6 +553,8 @@ mod tests {
                 doc: None,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
         ];
 

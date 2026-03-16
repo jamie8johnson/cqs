@@ -256,6 +256,8 @@ mod tests {
                 line_end: 1,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             score,
         }
@@ -430,6 +432,8 @@ mod tests {
                 line_end: 1,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             score: 0.9,
         })];
@@ -449,6 +453,8 @@ mod tests {
                     line_end: 1,
                     parent_id: None,
                     parent_type_name: None,
+                    content_hash: String::new(),
+                    window_idx: None,
                 },
                 score: 0.7,
             }],

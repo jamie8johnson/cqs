@@ -333,6 +333,8 @@ mod tests {
                 line_end: 96,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             commits: vec![BlameEntry {
                 hash: "abc1234".to_string(),
@@ -377,6 +379,8 @@ mod tests {
                 line_end: 5,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             commits: vec![],
             callers: vec![],

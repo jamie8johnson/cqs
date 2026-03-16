@@ -207,6 +207,86 @@ impl Store {
         })
     }
 
+    /// Get LLM summaries for a batch of content hashes.
+    ///
+    /// Returns a map from content_hash to summary text. Only includes hashes
+    /// that have summaries in the llm_summaries table.
+    pub fn get_summaries_by_hashes(
+        &self,
+        content_hashes: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        if content_hashes.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.rt.block_on(async {
+            let mut result = std::collections::HashMap::new();
+            for batch in content_hashes.chunks(500) {
+                let placeholders: String = batch
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({})",
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+                for hash in batch {
+                    query = query.bind(*hash);
+                }
+                let rows = query.fetch_all(&self.pool).await?;
+                for (hash, summary) in rows {
+                    result.insert(hash, summary);
+                }
+            }
+            Ok(result)
+        })
+    }
+
+    /// Insert or update LLM summaries in batch.
+    ///
+    /// Each entry is (content_hash, summary, model).
+    pub fn upsert_summaries_batch(
+        &self,
+        summaries: &[(String, String, String)],
+    ) -> Result<usize, StoreError> {
+        if summaries.is_empty() {
+            return Ok(0);
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+            for (hash, summary, model) in summaries {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, created_at) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .bind(hash)
+                .bind(summary)
+                .bind(model)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            Ok(summaries.len())
+        })
+    }
+
+    /// Delete orphan LLM summaries whose content_hash doesn't exist in any chunk.
+    pub fn prune_orphan_summaries(&self) -> Result<usize, StoreError> {
+        self.rt.block_on(async {
+            let result = sqlx::query(
+                "DELETE FROM llm_summaries WHERE content_hash NOT IN \
+                 (SELECT DISTINCT content_hash FROM chunks)",
+            )
+            .execute(&self.pool)
+            .await?;
+            Ok(result.rows_affected() as usize)
+        })
+    }
+
     /// Check if a file needs reindexing based on mtime.
     ///
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),
@@ -1086,7 +1166,7 @@ impl Store {
         self.rt.block_on(async {
             let rows: Vec<_> = sqlx::query(
                 "SELECT rowid, id, origin, language, chunk_type, name, signature, content, doc, \
-                 line_start, line_end, parent_id, parent_type_name \
+                 line_start, line_end, content_hash, window_idx, parent_id, parent_type_name \
                  FROM chunks WHERE rowid > ?1 ORDER BY rowid ASC LIMIT ?2",
             )
             .bind(after_rowid)

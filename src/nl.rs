@@ -278,6 +278,27 @@ pub fn generate_nl_with_call_context(
     max_callers: usize,
     max_callees: usize,
 ) -> String {
+    generate_nl_with_call_context_and_summary(
+        chunk,
+        ctx,
+        callee_doc_freq,
+        max_callers,
+        max_callees,
+        None,
+    )
+}
+
+/// Generate NL with call context and optional LLM summary (SQ-6).
+///
+/// If a summary is provided, it's prepended to the NL for maximum embedding weight.
+pub fn generate_nl_with_call_context_and_summary(
+    chunk: &Chunk,
+    ctx: &CallContext,
+    callee_doc_freq: &std::collections::HashMap<String, f32>,
+    max_callers: usize,
+    max_callees: usize,
+    summary: Option<&str>,
+) -> String {
     let base = generate_nl_description(chunk);
 
     let mut extras = Vec::new();
@@ -314,11 +335,17 @@ pub fn generate_nl_with_call_context(
         }
     }
 
-    if extras.is_empty() {
-        return base;
-    }
+    let nl = if extras.is_empty() {
+        base
+    } else {
+        format!("{}. {}", base, extras.join(". "))
+    };
 
-    format!("{}. {}", base, extras.join(". "))
+    // Prepend LLM summary if available (SQ-6)
+    match summary {
+        Some(s) if !s.is_empty() => format!("{} {}", s, nl),
+        _ => nl,
+    }
 }
 
 /// Generate natural language description from chunk metadata.

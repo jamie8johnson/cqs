@@ -545,6 +545,8 @@ mod tests {
                 line_end: 10,
                 parent_id: None,
                 parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             score,
         }

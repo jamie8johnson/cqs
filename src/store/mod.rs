@@ -678,6 +678,8 @@ impl Store {
                         doc: row.get(7),
                         line_start: clamp_line_number(row.get::<i64, _>(8)),
                         line_end: clamp_line_number(row.get::<i64, _>(9)),
+                        content_hash: String::new(),
+                        window_idx: None,
                         parent_id: row.get(10),
                         parent_type_name: row.get(11),
                     });

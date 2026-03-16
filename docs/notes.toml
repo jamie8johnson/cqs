@@ -992,3 +992,12 @@ mentions = [
     "pipeline.rs",
     "persist.rs",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "SQ-6 plan review caught 8 issues: nested tokio panic (use blocking reqwest), summary_hash column redundant (enrichment_hash covers it), enrichment_pass signature change unnecessary (load internally), missing doc comment shortcut, missing callable filter, missing window chunk handling, missing content length minimum, existing summaries should always be used regardless of flag"
+mentions = [
+    "llm.rs",
+    "pipeline.rs",
+    "nl.rs",
+]

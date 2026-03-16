@@ -329,6 +329,8 @@ impl Store {
                         doc: row.get(8),
                         line_start: clamp_line_number(row.get::<i64, _>(9)),
                         line_end: clamp_line_number(row.get::<i64, _>(10)),
+                        content_hash: String::new(),
+                        window_idx: None,
                         parent_id: row.get(11),
                         parent_type_name: row.get(12),
                     });

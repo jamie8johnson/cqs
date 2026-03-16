@@ -13,11 +13,12 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v13: Current (enrichment_hash for idempotent enrichment, hnsw_dirty flag)
+/// - v14: Current (llm_summaries table for SQ-6)
+/// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
 /// - v12: parent_type_name column for method→class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 13;
+pub const CURRENT_SCHEMA_VERSION: i32 = 14;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
@@ -100,6 +101,8 @@ pub(crate) struct ChunkRow {
     pub doc: Option<String>,
     pub line_start: u32,
     pub line_end: u32,
+    pub content_hash: String,
+    pub window_idx: Option<i32>,
     pub parent_id: Option<String>,
     pub parent_type_name: Option<String>,
 }
@@ -120,6 +123,8 @@ impl ChunkRow {
             doc: row.get("doc"),
             line_start: clamp_line_number(row.get::<i64, _>("line_start")),
             line_end: clamp_line_number(row.get::<i64, _>("line_end")),
+            content_hash: row.try_get("content_hash").unwrap_or_default(),
+            window_idx: row.try_get("window_idx").unwrap_or(None),
             parent_id: row.get("parent_id"),
             parent_type_name: row.get("parent_type_name"),
         }
@@ -156,6 +161,10 @@ pub struct ChunkSummary {
     pub line_start: u32,
     /// Ending line number (1-indexed)
     pub line_end: u32,
+    /// Content hash (blake3) for embedding cache and summary lookup
+    pub content_hash: String,
+    /// Window index (None = not windowed, 0 = first window, 1+ = subsequent)
+    pub window_idx: Option<i32>,
     /// Parent chunk ID if this is a child chunk (table, windowed)
     pub parent_id: Option<String>,
     /// For methods: name of enclosing class/struct/impl
@@ -175,9 +184,9 @@ impl From<&ChunkSummary> for Chunk {
             doc: cs.doc.clone(),
             line_start: cs.line_start,
             line_end: cs.line_end,
-            content_hash: String::new(),
+            content_hash: cs.content_hash.clone(),
             parent_id: cs.parent_id.clone(),
-            window_idx: None,
+            window_idx: cs.window_idx.map(|i| i as u32),
             parent_type_name: cs.parent_type_name.clone(),
         }
     }
@@ -212,6 +221,8 @@ impl From<ChunkRow> for ChunkSummary {
             doc: row.doc,
             line_start: row.line_start,
             line_end: row.line_end,
+            content_hash: row.content_hash,
+            window_idx: row.window_idx,
             parent_id: row.parent_id,
             parent_type_name: row.parent_type_name,
         }
@@ -962,6 +973,8 @@ mod tests {
             line_end: 1,
             parent_id: parent_id.map(|s| s.to_string()),
             parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
         }
     }
 
