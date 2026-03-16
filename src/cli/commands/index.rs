@@ -86,6 +86,11 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         println!("Indexing {} files (pipelined)...", files.len());
     }
 
+    // Mark HNSW as dirty before writing chunks — if we crash between SQLite
+    // commit and HNSW save, the dirty flag tells the next load to fall back
+    // to brute-force search until a full rebuild. (RT-DATA-6)
+    store.set_hnsw_dirty(true).ok();
+
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)
     let stats = run_index_pipeline(&root, files.clone(), Arc::clone(&store), force, cli.quiet)?;
@@ -185,6 +190,8 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         }
 
         if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
+            // HNSW saved successfully — clear dirty flag (RT-DATA-6)
+            store.set_hnsw_dirty(false).ok();
             if !cli.quiet {
                 println!("  HNSW index: {} vectors", total);
             }

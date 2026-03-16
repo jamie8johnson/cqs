@@ -43,6 +43,7 @@ None (notes.toml edited but not git-tracked).
 
 ### Feature
 - #255: Pre-built reference packages
+- #555: EX-4 where_to_add catch-all for 44 languages
 
 ### Audit
 - #389: CAGRA CPU-side dataset retention

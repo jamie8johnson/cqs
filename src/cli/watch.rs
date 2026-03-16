@@ -341,6 +341,9 @@ fn process_file_changes(
     // results (RT-DATA-3). Per-file transactions are atomic but the
     // batch is not — files indexed so far are visible, remaining are
     // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
+    //
+    // Mark HNSW dirty before writing chunks (RT-DATA-6).
+    store.set_hnsw_dirty(true).ok();
     match reindex_files(root, store, &files, parser, emb, quiet) {
         Ok((count, content_hashes)) => {
             // Record mtimes to skip duplicate events
@@ -372,6 +375,7 @@ fn process_file_changes(
                         let n = index.len();
                         *hnsw_index = Some(index);
                         *incremental_count = 0;
+                        store.set_hnsw_dirty(false).ok(); // RT-DATA-6
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !quiet {
                             println!("  HNSW index: {} vectors (full rebuild)", n);
@@ -411,6 +415,8 @@ fn process_file_changes(
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
+                                    } else {
+                                        store.set_hnsw_dirty(false).ok(); // RT-DATA-6
                                     }
                                     info!(
                                         inserted = n,

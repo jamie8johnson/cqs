@@ -17,7 +17,7 @@ fn test_store_init() {
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_chunks, 0);
     assert_eq!(stats.total_files, 0);
-    assert_eq!(stats.schema_version, 12); // v12: parent_type_name column
+    assert_eq!(stats.schema_version, 13); // v13: enrichment_hash + hnsw_dirty
     assert_eq!(stats.model_name, "intfloat/e5-base-v2");
 }
 

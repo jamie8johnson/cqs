@@ -966,8 +966,10 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
         pb
     };
 
-    let mut embed_batch: Vec<(String, String)> = Vec::new(); // (chunk_id, enriched_nl)
+    // (chunk_id, enriched_nl, enrichment_hash)
+    let mut embed_batch: Vec<(String, String, String)> = Vec::new();
     const ENRICH_EMBED_BATCH: usize = 64;
+    let mut skipped_count = 0usize;
 
     // Wrap loop in closure so progress bar is always cleaned up on error
     let result: Result<usize> = (|| {
@@ -979,6 +981,12 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 break;
             }
             cursor = next_cursor;
+
+            // Pre-fetch enrichment hashes for this page (RT-DATA-2)
+            let page_ids: Vec<&str> = chunks.iter().map(|c| c.id.as_str()).collect();
+            let stored_hashes = store
+                .get_enrichment_hashes_batch(&page_ids)
+                .context("Failed to fetch enrichment hashes")?;
 
             for cs in &chunks {
                 progress.inc(1);
@@ -1010,6 +1018,19 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                         .unwrap_or_default(),
                 };
 
+                // Compute enrichment hash from post-filtered call context (RT-DATA-2).
+                // This hash captures exactly what goes into generate_nl_with_call_context,
+                // so if the call graph hasn't changed, we skip re-enrichment.
+                let enrichment_hash = compute_enrichment_hash(&ctx, &callee_doc_freq);
+
+                // Skip if already enriched with the same call context
+                if let Some(stored) = stored_hashes.get(&cs.id) {
+                    if *stored == enrichment_hash {
+                        skipped_count += 1;
+                        continue;
+                    }
+                }
+
                 let chunk: cqs::parser::Chunk = cs.into();
                 let enriched_nl = cqs::generate_nl_with_call_context(
                     &chunk,
@@ -1019,7 +1040,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                     5, // max callees
                 );
 
-                embed_batch.push((cs.id.clone(), enriched_nl));
+                embed_batch.push((cs.id.clone(), enriched_nl, enrichment_hash));
 
                 // Flush batch when full
                 if embed_batch.len() >= ENRICH_EMBED_BATCH {
@@ -1040,21 +1061,63 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
     let enriched_count = result?;
 
-    tracing::info!(enriched_count, "Enrichment pass complete");
+    tracing::info!(enriched_count, skipped_count, "Enrichment pass complete");
     if !quiet {
-        eprintln!("Enriched {} chunks with call graph context", enriched_count);
+        if skipped_count > 0 {
+            eprintln!(
+                "Enriched {} chunks with call graph context ({} already up-to-date)",
+                enriched_count, skipped_count
+            );
+        } else {
+            eprintln!("Enriched {} chunks with call graph context", enriched_count);
+        }
     }
 
     Ok(enriched_count)
+}
+
+/// Compute a hash of the call context that will be used for enrichment.
+///
+/// The hash captures the post-filtered caller/callee names — the same inputs
+/// that `generate_nl_with_call_context` uses. If the call graph hasn't changed,
+/// the hash matches and we skip re-enrichment. (RT-DATA-2)
+fn compute_enrichment_hash(
+    ctx: &cqs::CallContext,
+    callee_doc_freq: &HashMap<String, f32>,
+) -> String {
+    use std::fmt::Write;
+    let mut input = String::new();
+
+    // Sorted callers (same as what generate_nl_with_call_context sees)
+    let mut callers: Vec<&str> = ctx.callers.iter().map(|s| s.as_str()).collect();
+    callers.sort_unstable();
+    for c in &callers {
+        let _ = write!(input, "c:{c}|");
+    }
+
+    // Sorted callees, filtered by IDF (same threshold as generate_nl_with_call_context)
+    let mut callees: Vec<&str> = ctx
+        .callees
+        .iter()
+        .filter(|name| callee_doc_freq.get(name.as_str()).copied().unwrap_or(0.0) < 0.1)
+        .map(|s| s.as_str())
+        .collect();
+    callees.sort_unstable();
+    for c in &callees {
+        let _ = write!(input, "e:{c}|");
+    }
+
+    let hash = blake3::hash(input.as_bytes());
+    hash.to_hex()[..32].to_string()
 }
 
 /// Embed a batch of enriched NL descriptions and update their embeddings in the store.
 fn flush_enrichment_batch(
     store: &Store,
     embedder: &Embedder,
-    batch: &mut Vec<(String, String)>,
+    batch: &mut Vec<(String, String, String)>,
 ) -> Result<usize> {
-    let texts: Vec<&str> = batch.iter().map(|(_, nl)| nl.as_str()).collect();
+    let texts: Vec<&str> = batch.iter().map(|(_, nl, _)| nl.as_str()).collect();
     let expected = texts.len();
     let embeddings = embedder
         .embed_documents(&texts)
@@ -1069,14 +1132,14 @@ fn flush_enrichment_batch(
 
     // embed_documents returns 768-dim; add neutral sentiment for 769-dim
     // Build updates from batch without draining — only clear after successful write
-    let updates: Vec<(String, Embedding)> = batch
+    let updates: Vec<(String, Embedding, String)> = batch
         .iter()
         .zip(embeddings)
-        .map(|((id, _), emb)| (id.clone(), emb.with_sentiment(0.0)))
+        .map(|((id, _, hash), emb)| (id.clone(), emb.with_sentiment(0.0), hash.clone()))
         .collect();
 
     store
-        .update_embeddings_batch(&updates)
+        .update_embeddings_with_hashes_batch(&updates)
         .context("Failed to update enriched embeddings")?;
 
     let count = updates.len();

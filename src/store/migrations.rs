@@ -66,6 +66,7 @@ async fn run_migration(
     match (from, to) {
         (10, 11) => migrate_v10_to_v11(conn).await,
         (11, 12) => migrate_v11_to_v12(conn).await,
+        (12, 13) => migrate_v12_to_v13(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -122,6 +123,29 @@ async fn migrate_v11_to_v12(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v12 to v13: enrichment idempotency + HNSW dirty flag
+///
+/// - `enrichment_hash` column on chunks: blake3 hash of call context used during
+///   enrichment. NULL means not yet enriched. Allows skipping already-enriched
+///   chunks on re-index and detecting partial enrichment after crash.
+/// - `hnsw_dirty` metadata key: set to "1" before SQLite chunk writes, cleared
+///   to "0" after successful HNSW save. Detects crash between the two writes.
+async fn migrate_v12_to_v13(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query("ALTER TABLE chunks ADD COLUMN enrichment_hash TEXT")
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("INSERT OR IGNORE INTO metadata (key, value) VALUES ('hnsw_dirty', '0')")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Added enrichment_hash column and hnsw_dirty flag. \
+         Run 'cqs index --force' to populate enrichment hashes."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,7 +163,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 12);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 13);
     }
 
     #[test]
@@ -163,7 +187,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 12, 12).await;
+            let result = migrate(&pool, 13, 13).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }
@@ -189,10 +213,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 12, 11).await;
+            let result = migrate(&pool, 13, 12).await;
             assert!(result.is_err(), "downgrade should fail");
             match result.unwrap_err() {
-                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 12),
+                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 13),
                 other => panic!("Expected SchemaNewerThanCq, got: {:?}", other),
             }
         });
