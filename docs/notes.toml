@@ -984,3 +984,11 @@ mentions = [
     "security",
     "red-team",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Fresh-eyes plan review caught 3 bugs before implementation: wrong generation counter protocol, pre-filter hash input, feature/fix scope mixing. Self-review pays off."
+mentions = [
+    "pipeline.rs",
+    "persist.rs",
+]

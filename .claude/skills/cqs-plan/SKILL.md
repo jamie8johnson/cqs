@@ -193,9 +193,9 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 **When:** Bumping the SQLite schema version (adding tables, columns, or changing data layout).
 
 **Checklist:**
-1. `src/store/schema.rs` — Bump `SCHEMA_VERSION` constant.
-2. `src/store/schema.rs` — Add migration function `migrate_vN_to_vN1()` with ALTER TABLE / CREATE TABLE statements.
-3. `src/store/schema.rs` — Register migration in `migrate()` match arms.
+1. `src/store/helpers.rs + src/store/migrations.rs` — Bump `CURRENT_SCHEMA_VERSION` constant.
+2. `src/store/helpers.rs + src/store/migrations.rs` — Add migration function `migrate_vN_to_vN1()` with ALTER TABLE / CREATE TABLE statements.
+3. `src/store/helpers.rs + src/store/migrations.rs` — Register migration in `migrate()` match arms.
 4. `src/store/mod.rs` — Update `open()` if new tables need initialization or if Store fields changed.
 5. `src/store/*.rs` — Update queries that read/write affected tables.
 6. Tests: Migration test with a v(N-1) database → verify v(N) upgrade succeeds and data is preserved.
@@ -203,7 +203,7 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 
 **Patterns:**
 - Migrations must be idempotent — `IF NOT EXISTS`, `IF NOT COLUMN` guards.
-- Always `PRAGMA user_version = N` at the end of migration.
+- We use a metadata table for schema_version, not PRAGMA user_version.
 - Test with a real old-version database if available (copy from `.cqs/` before upgrading).
 - `cqs migrate` skill handles user-facing migration workflow.
 

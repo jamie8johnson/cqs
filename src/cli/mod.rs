@@ -94,9 +94,10 @@ use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_blame, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps,
     cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
-    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_project, cmd_query, cmd_read,
-    cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
-    cmd_task, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
+    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query,
+    cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats,
+    cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand,
+    RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -682,6 +683,20 @@ enum Commands {
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
+    /// Task planning with template classification: classify + scout + checklist
+    Plan {
+        /// Task description to plan
+        description: String,
+        /// Max scout file groups
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
     /// One-shot implementation context: scout + code + impact + placement + notes
     Task {
         /// Task description
@@ -896,6 +911,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             tokens,
         }) => cmd_scout(&cli, query, limit, json, tokens),
+        Some(Commands::Plan {
+            ref description,
+            limit,
+            json,
+            tokens,
+        }) => cmd_plan(&cli, description, limit, json, tokens),
         Some(Commands::Task {
             ref description,
             limit,
