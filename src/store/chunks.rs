@@ -114,6 +114,99 @@ impl Store {
         })
     }
 
+    /// Update embeddings and enrichment hashes in batch.
+    ///
+    /// Like `update_embeddings_batch` but also stores the enrichment hash
+    /// for idempotency detection. Used by the enrichment pass to record
+    /// which call context was used, so re-indexing can skip unchanged chunks.
+    pub fn update_embeddings_with_hashes_batch(
+        &self,
+        updates: &[(String, Embedding, String)],
+    ) -> Result<usize, StoreError> {
+        let _span =
+            tracing::info_span!("update_embeddings_with_hashes_batch", count = updates.len())
+                .entered();
+        if updates.is_empty() {
+            return Ok(0);
+        }
+
+        let embedding_bytes: Vec<Vec<u8>> = updates
+            .iter()
+            .map(|(_, emb, _)| embedding_to_bytes(emb))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.rt.block_on(async {
+            let mut tx = self.pool.begin().await?;
+            let mut updated = 0usize;
+            for (i, (id, _, hash)) in updates.iter().enumerate() {
+                let result = sqlx::query(
+                    "UPDATE chunks SET embedding = ?1, enrichment_hash = ?2 WHERE id = ?3",
+                )
+                .bind(&embedding_bytes[i])
+                .bind(hash)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+                if result.rows_affected() > 0 {
+                    updated += 1;
+                } else {
+                    tracing::debug!(chunk_id = %id, "Enrichment update found no row");
+                }
+            }
+            tx.commit().await?;
+            Ok(updated)
+        })
+    }
+
+    /// Get the enrichment hash for a chunk, if any.
+    pub fn get_enrichment_hash(&self, chunk_id: &str) -> Result<Option<String>, StoreError> {
+        self.rt.block_on(async {
+            let row: Option<(Option<String>,)> =
+                sqlx::query_as("SELECT enrichment_hash FROM chunks WHERE id = ?1")
+                    .bind(chunk_id)
+                    .fetch_optional(&self.pool)
+                    .await?;
+            Ok(row.and_then(|(h,)| h))
+        })
+    }
+
+    /// Get enrichment hashes for a batch of chunk IDs.
+    ///
+    /// Returns a map from chunk_id to enrichment_hash (only for chunks that have one).
+    pub fn get_enrichment_hashes_batch(
+        &self,
+        chunk_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        if chunk_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        self.rt.block_on(async {
+            let mut result = std::collections::HashMap::new();
+            // Process in batches to stay under SQLite parameter limit
+            for batch in chunk_ids.chunks(500) {
+                let placeholders: String = batch
+                    .iter()
+                    .enumerate()
+                    .map(|(i, _)| format!("?{}", i + 1))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let sql = format!(
+                    "SELECT id, enrichment_hash FROM chunks WHERE id IN ({}) AND enrichment_hash IS NOT NULL",
+                    placeholders
+                );
+                let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+                for id in batch {
+                    query = query.bind(*id);
+                }
+                let rows = query.fetch_all(&self.pool).await?;
+                for (id, hash) in rows {
+                    result.insert(id, hash);
+                }
+            }
+            Ok(result)
+        })
+    }
+
     /// Check if a file needs reindexing based on mtime.
     ///
     /// Returns `Ok(Some(mtime))` if reindex needed (with the file's current mtime),

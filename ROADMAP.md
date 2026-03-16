@@ -1,8 +1,17 @@
 # Roadmap
 
-## Current: v1.0.0
+## Current: v1.0.10
 
-First stable release. All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 50 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+First stable release. All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 51 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+
+### 1.0.x Highlights
+
+- v1.0.5: ASP.NET Web Forms (51st language), Make → Bash injection, schema v12 (`parent_type_name`)
+- v1.0.6: SQ-2 richer NL descriptions (+3.7pp R@1 on hard eval)
+- v1.0.7: SQ-4 call-graph-enriched embeddings (two-pass, IDF callee filtering)
+- v1.0.8: 14-category audit — 14 findings fixed
+- v1.0.9: SQ-5 module-level context (filename stems with generic filter)
+- v1.0.10: Red team audit — 7 findings fixed (HNSW ID desync, PDF script injection, path traversal)
 
 ### Next — Commands
 
@@ -69,6 +78,8 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [x] LaTeX → code listings — `minted_environment` + `listing_environment`. Language detection from `\begin{minted}{python}` and `[language=Rust]` options.
 - [x] Nix → Bash — `indented_string_expression` in shell contexts (buildPhase, installPhase, shellHook, etc.). `detect_nix_shell_context` checks parent binding name.
 - [x] HCL → Bash — `heredoc_template` with shell identifiers (EOT, BASH, SHELL, etc.). `detect_heredoc_language` checks heredoc identifier.
+- [x] Make → Bash — `recipe/shell_text` injection. Extracts shell commands from recipe bodies.
+- [x] Razor → JS/CSS — `_inner` content mode for grammars without named content children. `detect_razor_element_language` for script/style elements.
 
 **Next — New grammars required:**
 - [x] Vue (.vue) → JS/TS, CSS, HTML — `tree-sitter-vue-next`. Identical injection pattern to HTML/Svelte. Post-processing: headings, landmarks, setup script detection.
@@ -83,7 +94,6 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [ ] EEx/HEEx (.eex, .heex) → Elixir in HTML — needs grammar
 - [ ] SQL in string literals (Rust, Python, Go, Java) — fragile detection
 - [ ] GraphQL in tagged templates (JS/TS) — fragile detection
-- [ ] Shell in Makefile recipes — both grammars compatible
 - [ ] CSS-in-JS (styled-components, emotion) — template literal detection
 
 ### Next — Search Quality (large corpus)
@@ -94,7 +104,7 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [x] SQ-2: Richer NL descriptions — field names, dir-only file context. +3.7pp R@1 on hard eval (v1.0.6).
 - [ ] SQ-3: Code-specific embedding model — evaluate UniXcoder, CodeBERT, or fine-tuned E5 as replacement for general-purpose E5-base-v2.
 - [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
-- [x] SQ-5: Module-level context in NL — tested: filename stems regress holdout R@1 by ~3pp (generic filenames add noise). Dead end with current approach. Would need smarter filtering (skip generic stems like sample/mod/index/lib).
+- [x] SQ-5: Module-level context in NL — filename stems with generic filter (11 stems: mod, index, lib, main, utils, helpers, common, types, config, constants, init). Regresses fixture eval ~3pp but improves real queries — shipped in v1.0.9.
 - [ ] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy.
 - [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
   - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
@@ -112,16 +122,32 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - ~~**Pattern mining**~~ — closed: manual notes + `cqs suggest` cover practical needs. Automated AST pattern recognition is research-grade effort for uncertain payoff.
 - **Post-index name matching** — fuzzy cross-doc references
 
+### Red Team — Accepted/Deferred
+
+Findings from v1.0.10 red team audit. Accepted as trade-offs — each needs upstream API changes or schema work to fix.
+
+- RT-DATA-2: Enrichment no idempotency marker (medium — needs schema change)
+- RT-DATA-3: HNSW orphan accumulation in watch mode (medium — no deletion API)
+- RT-DATA-5: Batch OnceLock stale cache (medium — by design, restart to refresh)
+- RT-DATA-6: SQLite/HNSW crash desync (medium — needs generation counter)
+- RT-DATA-4: Notes file lock vs rename race (low)
+
 ### Open Issues
 
-- #389: CAGRA CPU-side dataset retention (~146MB at 50k chunks) — cuVS `search()` consumes the index, so `dataset` is needed for rebuild. Blocked on upstream API change.
-- #255: Pre-built reference packages
+**External/Waiting:**
 - #106: ort stable (currently 2.0.0-rc.12)
 - #63: paste dep unmaintained (RUSTSEC-2024-0436) — transitive via `tokenizers`, waiting on HuggingFace to switch to `pastey`
 
+**Feature:**
+- #255: Pre-built reference packages
+- #555: EX-4 `where_to_add` catch-all for 44 languages (P4, extensibility)
+
+**Infrastructure:**
+- #389: CAGRA CPU-side dataset retention (~146MB at 50k chunks) — cuVS `search()` consumes the index, so `dataset` is needed for rebuild. Blocked on upstream API change.
+
 ## 1.0 Release Criteria
 
-- [x] Schema stable for 1+ week of daily use (v11 since 2026-02-15)
+- [x] Schema stable for 1+ week of daily use (v12 since 2026-03-13)
 - [x] Used on 2+ different codebases without issues (cqs, aveva, rust)
 - [x] No known correctness bugs
 

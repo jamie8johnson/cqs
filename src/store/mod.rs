@@ -759,6 +759,35 @@ impl Store {
         })
     }
 
+    /// Mark the HNSW index as dirty (out of sync with SQLite).
+    ///
+    /// Call before writing chunks to SQLite. Clear after successful HNSW save.
+    /// On load, a dirty flag means a crash occurred between SQLite commit and
+    /// HNSW save — the HNSW index should not be trusted.
+    pub fn set_hnsw_dirty(&self, dirty: bool) -> Result<(), StoreError> {
+        let val = if dirty { "1" } else { "0" };
+        self.rt.block_on(async {
+            sqlx::query("INSERT OR REPLACE INTO metadata (key, value) VALUES ('hnsw_dirty', ?1)")
+                .bind(val)
+                .execute(&self.pool)
+                .await?;
+            Ok(())
+        })
+    }
+
+    /// Check if the HNSW index is marked as dirty (potentially stale).
+    ///
+    /// Returns `false` if the key doesn't exist (pre-v13 indexes).
+    pub fn is_hnsw_dirty(&self) -> Result<bool, StoreError> {
+        self.rt.block_on(async {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'hnsw_dirty'")
+                    .fetch_optional(&self.pool)
+                    .await?;
+            Ok(row.is_some_and(|(v,)| v == "1"))
+        })
+    }
+
     /// Get cached notes summaries (loaded on first call, invalidated on mutation).
     ///
     /// Returns a cloned Vec rather than a slice reference to avoid holding the

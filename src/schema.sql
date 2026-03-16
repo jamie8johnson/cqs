@@ -1,4 +1,4 @@
--- cq index schema v12
+-- cq index schema v13
 -- v10: Generalized for multiple sources (filesystem, SQL Server, etc.)
 --   file → origin (unique identifier like "file:src/main.rs" or "mssql:server/db/dbo.MyProc")
 --   file_mtime → source_mtime (nullable for sources without mtime)
@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     updated_at TEXT NOT NULL,
     parent_id TEXT,           -- if windowed: ID of the logical parent chunk
     window_idx INTEGER,       -- if windowed: 0, 1, 2... for each window
-    parent_type_name TEXT     -- for methods: name of enclosing class/struct/impl
+    parent_type_name TEXT,    -- for methods: name of enclosing class/struct/impl
+    enrichment_hash TEXT      -- blake3 hash of call context used for enrichment (NULL = not enriched)
 );
 
 CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
