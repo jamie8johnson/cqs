@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-03-16
+
+### Added
+- **SQ-6**: Optional LLM-generated function summaries via Claude Haiku API (`cqs index --llm-summaries`). One-sentence summaries prepended to NL descriptions for better code-vs-prose search ranking. Cached by content_hash — pay once per unique function body. Doc comment shortcut saves 30-50% on API costs. (#603)
+- `llm_summaries` table (schema v14) for summary caching across rebuilds
+- `content_hash` and `window_idx` fields on `ChunkSummary` for richer chunk metadata
+- GC prunes orphan LLM summaries
+- Enrichment pass incorporates LLM summaries into NL + hash when available
+
 ## [1.0.12] - 2026-03-16
 
 ### Added
