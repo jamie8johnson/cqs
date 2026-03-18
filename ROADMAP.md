@@ -105,7 +105,7 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [ ] SQ-3: Code-specific embedding model — evaluate UniXcoder, CodeBERT, or fine-tuned E5 as replacement for general-purpose E5-base-v2.
 - [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
 - [x] SQ-5: Module-level context in NL — filename stems with generic filter (11 stems: mod, index, lib, main, utils, helpers, common, types, config, constants, init). Regresses fixture eval ~3pp but improves real queries — shipped in v1.0.9.
-- [ ] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy.
+- [x] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy. Batch resume on interrupt (v1.0.14).
 - [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
   - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
   - **LoRA:** Low-Rank Adaptation — freezes base weights, trains ~0.5-2M adapter params (vs 110M full). Adapter is ~10-50MB.

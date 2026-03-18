@@ -666,114 +666,154 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
     Ok(())
 }
 
-/// Ensure ort CUDA provider libraries are findable (Unix only)
+/// Ensure ORT CUDA provider libraries are findable (Unix only)
 ///
-/// The ort crate downloads provider libs to ~/.cache/ort.pyke.io/... but
-/// doesn't add them to the library search path. This function creates
-/// symlinks in a directory that's already in LD_LIBRARY_PATH.
+/// ORT's C++ runtime resolves provider paths via `dladdr` → `argv[0]`.
+/// With static linking and PATH invocation, `argv[0]` is the bare binary
+/// name (e.g., "cqs"), so ORT constructs `absolute("cqs").remove_filename()`
+/// = CWD. Providers must exist there for `dlopen` to succeed.
+///
+/// Strategy: compute the same directory ORT will search (from argv[0]),
+/// and create symlinks from the ORT cache there. Symlinks are cleaned up
+/// on process exit.
 #[cfg(unix)]
 fn ensure_ort_provider_libs() {
-    // Find ort's download cache using cross-platform API
-    let cache_dir = match dirs::cache_dir() {
-        Some(c) => c,
-        None => return,
-    };
-
-    // Build target triplet dynamically (e.g., x86_64-unknown-linux-gnu, aarch64-apple-darwin)
-    let triplet = match (std::env::consts::ARCH, std::env::consts::OS) {
-        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
-        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
-        ("x86_64", "macos") => "x86_64-apple-darwin",
-        ("aarch64", "macos") => "aarch64-apple-darwin",
-        _ => return, // Unsupported platform for GPU acceleration
-    };
-    let ort_cache = cache_dir.join(format!("ort.pyke.io/dfbin/{}", triplet));
-
-    // Find the versioned subdirectory (hash-named)
-    let ort_lib_dir = match std::fs::read_dir(&ort_cache) {
-        Ok(entries) => entries
-            .filter_map(|e| {
-                e.map_err(|err| {
-                    tracing::debug!(path = %ort_cache.display(), error = %err, "Failed to read directory entry");
-                })
-                .ok()
-            })
-            .filter(|e| e.path().is_dir())
-            .map(|e| e.path())
-            .next(),
-        Err(e) => {
-            tracing::debug!(path = %ort_cache.display(), error = %e, "ORT cache directory not found");
-            return;
-        }
-    };
-
-    let ort_lib_dir = match ort_lib_dir {
+    let ort_lib_dir = match find_ort_provider_dir() {
         Some(d) => d,
         None => return,
     };
 
-    // Find target directory from LD_LIBRARY_PATH (skip ort cache dirs to avoid self-symlinks)
-    // Note: LD_LIBRARY_PATH uses colon separator on Unix
-    let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-    let ort_cache_str = ort_cache.to_string_lossy();
-    let target_dir = ld_path
-        .split(':')
-        .find(|p| {
-            !p.is_empty() && std::path::Path::new(p).is_dir() && !p.contains(ort_cache_str.as_ref())
-            // Don't symlink into ort's own cache
-        })
-        .map(std::path::PathBuf::from);
-
-    let target_dir = match target_dir {
-        Some(d) => d,
-        None => {
-            // LD_LIBRARY_PATH is unset or contains no usable directory outside the ORT cache.
-            // GPU provider libs cannot be symlinked, so GPU acceleration will be unavailable.
-            tracing::warn!(
-                "GPU provider libs skipped: LD_LIBRARY_PATH is unset or has no writable \
-                 directory outside the ORT cache. Set LD_LIBRARY_PATH to a writable lib \
-                 directory (e.g. ~/.local/lib) to enable GPU acceleration."
-            );
-            return;
-        }
-    };
-
-    // Provider libs to symlink
     let provider_libs = [
         "libonnxruntime_providers_shared.so",
         "libonnxruntime_providers_cuda.so",
         "libonnxruntime_providers_tensorrt.so",
     ];
 
-    for lib in &provider_libs {
-        let src = ort_lib_dir.join(lib);
+    // Compute the directory ORT's GetRuntimePath() will resolve to.
+    // ORT does: dladdr() → dli_fname (= argv[0] on glibc) →
+    //   std::filesystem::absolute(dli_fname).remove_filename()
+    // For PATH invocation: argv[0]="cqs" → absolute = CWD/"cqs" → parent = CWD
+    let ort_search_dir = match ort_runtime_search_dir() {
+        Some(d) => d,
+        None => return,
+    };
+
+    symlink_providers(&ort_lib_dir, &ort_search_dir, &provider_libs);
+
+    // Also symlink into LD_LIBRARY_PATH for other search paths
+    if let Some(ld_dir) = find_ld_library_dir(&ort_lib_dir) {
+        symlink_providers(&ort_lib_dir, &ld_dir, &provider_libs);
+    }
+
+    // Register cleanup for CWD symlinks (don't pollute project dirs)
+    register_provider_cleanup(&ort_search_dir, &provider_libs);
+}
+
+/// Compute the directory ORT's GetRuntimePath() will resolve to.
+///
+/// Reproduces ORT's logic: `dladdr` returns `dli_fname = argv[0]` (glibc),
+/// then `std::filesystem::absolute(dli_fname).remove_filename()`.
+#[cfg(unix)]
+fn ort_runtime_search_dir() -> Option<PathBuf> {
+    // Read argv[0] the same way glibc's dladdr does
+    let cmdline = std::fs::read("/proc/self/cmdline").ok()?;
+    let argv0_end = cmdline.iter().position(|&b| b == 0)?;
+    let argv0 = std::str::from_utf8(&cmdline[..argv0_end]).ok()?;
+
+    // If argv[0] is already absolute, parent is the binary's directory
+    let abs_path = if argv0.starts_with('/') {
+        PathBuf::from(argv0)
+    } else {
+        // Relative: resolve against CWD (same as std::filesystem::absolute)
+        std::env::current_dir().ok()?.join(argv0)
+    };
+
+    abs_path.parent().map(|p| p.to_path_buf())
+}
+
+/// Find the ORT provider library cache directory
+#[cfg(unix)]
+fn find_ort_provider_dir() -> Option<PathBuf> {
+    let cache_dir = dirs::cache_dir()?;
+    let triplet = match (std::env::consts::ARCH, std::env::consts::OS) {
+        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
+        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
+        ("x86_64", "macos") => "x86_64-apple-darwin",
+        ("aarch64", "macos") => "aarch64-apple-darwin",
+        _ => return None,
+    };
+    let ort_cache = cache_dir.join(format!("ort.pyke.io/dfbin/{triplet}"));
+
+    match std::fs::read_dir(&ort_cache) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.path())
+            .next(),
+        Err(e) => {
+            tracing::debug!(path = %ort_cache.display(), error = %e, "ORT cache not found");
+            None
+        }
+    }
+}
+
+/// Find a writable directory from LD_LIBRARY_PATH (excluding the ORT cache)
+#[cfg(unix)]
+fn find_ld_library_dir(ort_lib_dir: &Path) -> Option<PathBuf> {
+    let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+    let ort_cache_str = ort_lib_dir.to_string_lossy();
+    ld_path
+        .split(':')
+        .find(|p| !p.is_empty() && Path::new(p).is_dir() && !ort_cache_str.starts_with(p))
+        .map(PathBuf::from)
+}
+
+/// Create symlinks for provider libraries in the target directory
+#[cfg(unix)]
+fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
+    for lib in libs {
+        let src = src_dir.join(lib);
         let dst = target_dir.join(lib);
 
-        // Skip if source doesn't exist
         if !src.exists() {
             continue;
         }
 
-        // Skip if symlink already valid
-        if dst.symlink_metadata().is_ok() {
-            if let Ok(target) = std::fs::read_link(&dst) {
-                if target == src {
-                    continue; // Already correct
-                }
+        // Skip if symlink already points to the right place
+        if let Ok(existing) = std::fs::read_link(&dst) {
+            if existing == src {
+                continue;
             }
-            // Remove stale symlink
-            if let Err(e) = std::fs::remove_file(&dst) {
-                tracing::debug!("Failed to remove stale symlink {}: {}", dst.display(), e);
-            }
+            let _ = std::fs::remove_file(&dst);
         }
 
-        // Create symlink
         if let Err(e) = std::os::unix::fs::symlink(&src, &dst) {
             tracing::debug!("Failed to symlink {}: {}", lib, e);
-        } else {
-            tracing::info!("Created symlink: {} -> {}", dst.display(), src.display());
         }
     }
+}
+
+/// Register atexit cleanup for provider symlinks we created in CWD.
+/// Only removes symlinks that point to the ORT cache (we created them).
+#[cfg(unix)]
+fn register_provider_cleanup(dir: &Path, libs: &[&str]) {
+    use std::sync::OnceLock;
+    static CLEANUP_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+    let paths: Vec<PathBuf> = libs.iter().map(|lib| dir.join(lib)).collect();
+    let _ = CLEANUP_PATHS.set(paths);
+
+    extern "C" fn cleanup() {
+        if let Some(paths) = CLEANUP_PATHS.get() {
+            for path in paths {
+                // Only remove if it's a symlink (we created it)
+                if path.symlink_metadata().is_ok() && std::fs::read_link(path).is_ok() {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+    unsafe { libc::atexit(cleanup) };
 }
 
 /// No-op on non-Unix platforms (CUDA provider libs handled differently)
