@@ -39,7 +39,7 @@ tree-sitter-java = { version = "0.23", optional = true }
 tree-sitter-c-sharp = { version = "0.23", optional = true }
 tree-sitter-fsharp = { version = "0.1", optional = true }
 tree-sitter-powershell = { version = "0.26", optional = true }
-tree-sitter-scala = { version = "0.24", optional = true }
+tree-sitter-scala = { version = "0.25", optional = true }
 tree-sitter-ruby = { version = "0.23", optional = true }
 tree-sitter-bash = { version = "0.25", optional = true }
 tree-sitter-hcl = { version = "1.1", optional = true }
@@ -141,7 +141,7 @@ self_cell = "1"
 rustyline = "17"
 
 # LLM summaries (optional — for SQ-6 API calls to Claude)
-reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+reqwest = { version = "0.13", features = ["json", "blocking"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
