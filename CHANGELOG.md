@@ -7,6 +7,142 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-03-16
+
+### Added
+- **SQ-6**: Optional LLM-generated function summaries via Claude Haiku API (`cqs index --llm-summaries`). One-sentence summaries prepended to NL descriptions for better code-vs-prose search ranking. Cached by content_hash — pay once per unique function body. Doc comment shortcut saves 30-50% on API costs. (#603)
+- `llm_summaries` table (schema v14) for summary caching across rebuilds
+- `content_hash` and `window_idx` fields on `ChunkSummary` for richer chunk metadata
+- GC prunes orphan LLM summaries
+- Enrichment pass incorporates LLM summaries into NL + hash when available
+
+## [1.0.12] - 2026-03-16
+
+### Added
+- `cqs plan` command: classify tasks into 11 templates (language, bug fix, CLI flag, injection, etc.) via keyword scoring, run scout, output actionable checklist (#601)
+
+### Fixed
+- cqs-plan skill: stale file references (schema.rs → helpers.rs/migrations.rs, PRAGMA → metadata table)
+
+## [1.0.11] - 2026-03-16
+
+### Fixed
+- **RT-DATA-4**: Notes file lock vs rename race — use separate `.lock` file that survives atomic renames (#599)
+- **RT-DATA-2**: Enrichment idempotency — store blake3 hash of call context per chunk, skip re-enrichment when unchanged (#599)
+- **RT-DATA-6**: HNSW crash desync — dirty flag in SQLite metadata detects interrupted writes, falls back to brute-force until rebuild (#599)
+
+### Added
+- `where_to_add` pattern coverage for 43 languages across 10 family groups: C-like, JVM, .NET, dynamic, functional, data science, systems, Solidity, shell (#555, #599)
+- Schema v13 migration: `enrichment_hash` column + `hnsw_dirty` metadata key
+
+### Changed
+- Roadmap refreshed: v1.0.10 header, 51 languages, schema v12→v13, red team accepted findings section, missing injection entries
+
+## [1.0.10] - 2026-03-15
+
+### Fixed
+- **HNSW ID desync** on zero-vector skip — used `id_map.len()` instead of loop index (RT-DATA-1, high) (#596)
+- **CQS_PDF_SCRIPT** now rejects non-.py extensions to prevent arbitrary script execution (RT-INJ-1) (#596)
+- **Path traversal** in `read_context_lines` — validates paths containing `..` against project root (RT-FS-1/2) (#596)
+- **Chat input** length capped at 1MB to match batch mode (RT-RES-1) (#596)
+
+## [1.0.9] - 2026-03-15
+
+### Changed
+- NL descriptions now include filename stem for module-level discrimination (SQ-5). Generic stems (mod, index, lib, utils, helpers) are filtered (#594)
+
+## [1.0.8] - 2026-03-15
+
+### Fixed
+- Enrichment pass: assert embedding count mismatch instead of silent truncation (#592)
+- Enrichment pass: drain batch after successful store write, not before (#592)
+- Enrichment pass: skip ambiguous function names (`new`, `parse`, `build`) to prevent caller merging across files (#592)
+- Enrichment pass: progress bar cleanup on error via closure guard (#592)
+- `update_embeddings_batch`: check `rows_affected` and log missing chunk IDs (#592)
+- `ProgressStyle::template().unwrap()` → `.expect()` in enrichment pass (#592)
+
+### Changed
+- Renamed `callee_document_frequencies()` → `callee_caller_counts()` — name now matches return type (#592)
+- `ENRICHMENT_PAGE_SIZE` promoted from `let` to `const` (#592)
+
+### Removed
+- Dead code: `replace_file_chunks` (100 lines, zero production callers) (#592)
+
+### Added
+- 4 unit tests for `generate_nl_with_call_context` (callers, IDF filtering, truncation, empty context) (#592)
+
+## [1.0.7] - 2026-03-14
+
+### Added
+- Call-graph-enriched embeddings (SQ-4): two-pass indexing re-embeds chunks with caller/callee context after call graph is built (#590)
+- IDF-based callee filtering suppresses high-frequency utility functions (>10% threshold) (#590)
+- `update_embeddings_batch()` for lightweight embedding-only updates (#590)
+- `chunks_paged()` cursor-based chunk iterator (#590)
+- `callee_document_frequencies()` for IDF computation (#590)
+
+## [1.0.6] - 2026-03-14
+
+### Added
+- NL description enrichment (SQ-2): struct/enum/class field names and directory-path context improve embedding discrimination in large corpora (+3.7pp R@1 on hard eval) (#588)
+- Holdout eval infrastructure: 143-query eval set with stress eval against real codebases (3970 chunks) (#588)
+- `rerank_with_passages` method on reranker for scoring against custom passage text (#588)
+
+### Fixed
+- Dead code warning in Make language definition (#588)
+
+## [1.0.5] - 2026-03-13
+
+### Added
+- ASP.NET Web Forms support — 51st language. Parses C#/VB.NET in server script blocks and `<% %>` expressions (#584)
+- Makefile shell injection — extracts shell commands from recipe bodies via Bash grammar (#584)
+- Class NL enrichment — Class/Struct/Interface chunks include member method names in NL descriptions for better semantic search (#585)
+- `is_name_like_query()` — detects NL vs identifier queries, gates name_boost to prevent harmful re-ranking (#585)
+- `parent_type_name` column in chunks table — methods carry enclosing class/struct/impl name through to search results (#585)
+- Schema v11→v12 migration for `parent_type_name` (#585)
+
+### Changed
+- Test function demotion strengthened: `IMPORTANCE_TEST` 0.90→0.70, `IMPORTANCE_PRIVATE` 0.95→0.80 (#585)
+
+### Fixed
+- CUDA 13 compatibility via `--no-default-features` for ort build (#583)
+- sqlx slow statement threshold raised from 1s to 10s to reduce log noise (#583)
+- Flaky HNSW safety test — assertions now check memory safety, not approximate recall (#586)
+
+## [1.0.4] - 2026-03-13
+
+### Fixed
+- Release workflow: make ort CUDA/TensorRT features conditional on non-macOS targets
+- Release workflow: drop x86_64-apple-darwin target (ort-sys has no prebuilt binaries; use `cargo install cqs`)
+- Release workflow: upgrade macOS runner from macos-13 (deprecated) to macos-14
+
+## [1.0.1] - 2026-03-13
+
+v1.0.0 audit fixes — 97 findings across 14 categories, all resolved.
+
+### Fixed
+- 13 P1 crashes/security fixes: RwLock panic, FTS assertion crash, reranker stride=0 panic, zero-vector NaN, CHM/PDF command injection, schema migration guard (#576)
+- 12 P2 high-impact fixes: dual-Store race, migration ordering, anyhow-in-library, placeholder dedup, HNSW index search for cross-index gather, waterfall budget overshoot (#576)
+- 60 P3 code quality/API/perf fixes: type safety (ChunkType enums, FunctionRisk struct, ReviewNoteEntry), serde consistency, LazyLock SQL caching, streaming JSON count_vectors, single-pass FTS sanitizer (#576)
+- Release workflow: upgrade Linux runner to ubuntu-24.04 for glibc 2.38+ ort compatibility (#576)
+
+### Added
+- 55+ unit tests covering previously untested branches: suggest high_risk, health untested_hotspots, review match_notes, impact-diff depth-0 exclusion, related find_related, convert module (#577)
+- Property tests for FTS5 MATCH sanitizer (#576)
+
+## [1.0.0] - 2026-03-12
+
+First stable release. Schema v11 stable since 2026-02-15. Tested on 3 codebases (cqs, aveva, rust). 50 languages, 1534 tests, two full audits complete.
+
+### Added
+- Configurable `ef_search` parameter via config file (clamped 10-1000, default 100) (#556)
+- One-time WSL advisory lock warning on NTFS mounts (#558)
+- `_with_*` naming convention documented in CONTRIBUTING.md (#557)
+
+### Fixed
+- Atomic cross-device file writes for notes and project registry (#559)
+- Removed dead `scout_with_resources` function (#557)
+- Inlined dead `compute_hints_with_graph_depth` into `compute_hints_with_graph` (#557)
+
 ## [0.28.3] - 2026-03-08
 
 ### Changed

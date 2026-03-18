@@ -9,7 +9,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 
 /// Audit mode state - excludes notes from search/read during audits
@@ -112,9 +111,7 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     let content = serde_json::to_string_pretty(&file).context("Failed to serialize audit mode")?;
 
     // Atomic write: temp file + rename
-    let suffix = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let suffix = crate::temp_suffix();
     let tmp_path = path.with_extension(format!("json.{:016x}.tmp", suffix));
     std::fs::write(&tmp_path, &content).context("Failed to write temp audit-mode file")?;
 
@@ -158,11 +155,12 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
             if current_num.is_empty() {
                 anyhow::bail!("Invalid duration '{}': missing number before 'h'", s);
             }
-            let hours: i64 = current_num.parse().map_err(|_| {
+            let hours: i64 = current_num.parse().map_err(|e| {
                 anyhow::anyhow!(
-                    "Invalid duration '{}': '{}' is not a valid number",
+                    "Invalid duration '{}': '{}' is not a valid number ({})",
                     s,
-                    current_num
+                    current_num,
+                    e
                 )
             })?;
             total_minutes = hours
@@ -174,11 +172,12 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
             if current_num.is_empty() {
                 anyhow::bail!("Invalid duration '{}': missing number before 'm'", s);
             }
-            let mins: i64 = current_num.parse().map_err(|_| {
+            let mins: i64 = current_num.parse().map_err(|e| {
                 anyhow::anyhow!(
-                    "Invalid duration '{}': '{}' is not a valid number",
+                    "Invalid duration '{}': '{}' is not a valid number ({})",
                     s,
-                    current_num
+                    current_num,
+                    e
                 )
             })?;
             total_minutes = total_minutes
@@ -195,11 +194,12 @@ pub fn parse_duration(s: &str) -> Result<chrono::Duration> {
 
     // Handle bare number (assume minutes)
     if !current_num.is_empty() {
-        let mins: i64 = current_num.parse().map_err(|_| {
+        let mins: i64 = current_num.parse().map_err(|e| {
             anyhow::anyhow!(
-                "Invalid duration '{}': '{}' is not a valid number",
+                "Invalid duration '{}': '{}' is not a valid number ({})",
                 s,
-                current_num
+                current_num,
+                e
             )
         })?;
         total_minutes = total_minutes

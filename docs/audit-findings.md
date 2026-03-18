@@ -1,595 +1,717 @@
-# Audit Findings — v0.28.1+uncommitted
-
-Date: 2026-03-06
-Codebase: v0.28.1 + Vue + markdown fenced blocks + flaky CI fix (uncommitted)
-
-## Observability
-
-#### OB-1: `store/calls.rs` — 15 public functions missing `info_span!` at entry
-- **Difficulty:** medium
-- **Location:** src/store/calls.rs (multiple: `upsert_calls`:160, `upsert_calls_batch`:201, `get_callees`:252, `call_stats`:266, `upsert_function_calls`:283, `get_callers_full`:346, `get_callees_full`:378, `get_callers_with_context`:459, `get_callers_with_context_batch`:491, `get_callers_full_batch`:542, `get_callees_full_batch`:596, `prune_stale_calls`:1031, `find_shared_callers`:1138, `find_shared_callees`:1169, `function_call_stats`:1197)
-- **Description:** Only 5 of 20 public functions in `store/calls.rs` have `info_span!` entry (`get_call_graph`, `find_dead_code`, `find_test_chunks`, `get_caller_counts_batch`, `get_callee_counts_batch`). The remaining 15 public methods — including write-path functions like `upsert_calls_batch` and `upsert_function_calls`, and frequently-called read-path functions like `get_callers_full_batch` and `get_callees_full_batch` — have zero tracing. This makes it impossible to correlate slow queries or indexing bottlenecks with specific store operations.
-- **Suggested fix:** Add `let _span = tracing::info_span!("function_name", relevant_param).entered();` to each. For write paths, include count; for read paths, include the query key. Use `debug_span!` for simple getters that are called in hot loops (e.g., `get_callees`).
-
-#### OB-2: `store/types.rs` — All 9 public functions missing `info_span!`
-- **Difficulty:** easy
-- **Location:** src/store/types.rs (all of: `upsert_type_edges`:54, `upsert_type_edges_for_file`:106, `get_type_users`:227, `get_types_used_by`:254, `get_type_users_batch`:282, `get_types_used_by_batch`:343, `type_edge_stats`:394, `find_shared_type_users`:455, `prune_stale_type_edges`:489)
-- **Description:** Only `get_type_graph` (line 415) has a span. The entire type-edge subsystem — upsert, query, batch, stats, pruning — is invisible to tracing. `get_type_graph` was fixed in v0.26.0 audit but the rest were missed.
-- **Suggested fix:** Add `info_span!` to each function. Batch functions should include count. The `prune_stale_type_edges` and `upsert_type_edges_for_file` write paths are especially important for diagnosing indexing performance.
-
-#### OB-3: `store/notes.rs` — 7 of 8 public functions missing `info_span!`
-- **Difficulty:** easy
-- **Location:** src/store/notes.rs (`upsert_notes_batch`:99, `replace_notes_for_file`:187, `notes_need_reindex`:234, `note_count`:257, `note_stats`:272, `list_notes_summaries`:297, `note_embeddings`:330)
-- **Description:** Only `search_notes` (line 141) has a span. The write path (`upsert_notes_batch`, `replace_notes_for_file`) and stats functions are untraceable. Note indexing failures are hard to diagnose because there's no span context showing which operation was happening.
-- **Suggested fix:** Add spans with relevant structured fields (count for batch ops, path for file ops).
-
-#### OB-4: `store/chunks.rs` — 16 public functions missing `info_span!`
-- **Difficulty:** medium
-- **Location:** src/store/chunks.rs (multiple: `needs_reindex`:171, `upsert_chunks_and_calls`:323, `count_stale_files`:546, `list_stale_files`:592, `get_by_content_hash`:727, `get_embeddings_by_hashes`:750, `chunk_count`:793, `stats`:807, `get_chunks_by_origin`:902, `get_chunks_by_origins_batch`:926, `get_chunks_by_name`:970, `get_chunks_by_names_batch`:994, `search_chunks_by_signature`:1041, `get_chunk_with_embedding`:1080, `get_chunks_by_ids`:1104, `get_embeddings_by_ids`:1124, `all_chunk_identities`:1270, `all_chunk_identities_filtered`:1278, `embedding_batches`:1475)
-- **Description:** 6 of 22 public functions have spans. The remaining 16 include critical operations: `upsert_chunks_and_calls` (the combined write path used by `parse_file_all`), `stats` (used by `cmd_stats`), multiple batch getters. The `embedding_batches` iterator is used during HNSW index build and has no visibility.
-- **Suggested fix:** Add spans. Use `debug_span!` for simple getters called in tight loops (`chunk_count`, `get_by_content_hash`), `info_span!` for batch operations and write paths.
-
-#### OB-5: `parse_markdown_chunks` and `parse_markdown_references` missing spans
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:39, src/parser/markdown.rs:178
-- **Description:** The markdown parser's two main public functions have no tracing whatsoever (zero `info_span!`, zero `warn!` in the entire 1017-line file). Markdown parsing can be slow for large files with many headings, and failures in heading detection or reference extraction are silent. Compare with `parse_file` in `parser/mod.rs` which has full span coverage.
-- **Suggested fix:** Add `info_span!("parse_markdown_chunks", path = %path.display())` and `info_span!("parse_markdown_references", path = %path.display())`. Add `warn!` for degenerate cases (zero headings on large files, heading hierarchy inversions).
-
-#### OB-6: `parse_notes` and `rewrite_notes_file` missing spans
-- **Difficulty:** easy
-- **Location:** src/note.rs:133, src/note.rs:183
-- **Description:** Both public note I/O functions (`parse_notes`, `rewrite_notes_file`) lack entry spans. Lock contention, file size guard rejections, and TOML parse failures all happen without span context. The `rewrite_notes_file` function holds an exclusive lock for an entire read-modify-write cycle — tracing would help diagnose lock-wait bottlenecks.
-- **Suggested fix:** Add `info_span!("parse_notes", path = %path.display())` and `info_span!("rewrite_notes_file", path = %notes_path.display())`.
-
-#### OB-7: `HnswIndex::build`, `HnswIndex::save`, `HnswIndex::load` missing spans
-- **Difficulty:** easy
-- **Location:** src/hnsw/build.rs:43, src/hnsw/persist.rs:117, src/hnsw/persist.rs:305
-- **Description:** The three core HNSW lifecycle operations — build, save, load — have `tracing::info!` log messages but no `info_span!` entry spans. This means they show up in logs as isolated messages without timing or nesting context. `build_batched` (line 108) also lacks a span. The `HnswIndex::save` and `HnswIndex::load` do disk I/O and checksum verification — timing spans would help diagnose slow index save/load operations.
-- **Suggested fix:** Add `info_span!` at entry to each. Include `n_vectors` for build, `basename` and `dir` for save/load.
-
-#### OB-8: `CagraIndex::build` and `CagraIndex::build_from_store` missing spans
-- **Difficulty:** easy
-- **Location:** src/cagra.rs:79, src/cagra.rs:406
-- **Description:** Both GPU index build functions use `tracing::info!` messages but no entry span. GPU operations can be slow (cuVS initialization, data transfer, build) — spans would provide timing visibility. The `search` method (line 152) also lacks a span, making GPU search latency invisible to tracing.
-- **Suggested fix:** Add `info_span!("cagra_build", n_vectors)` and `info_span!("cagra_search", k)`.
-
-#### OB-9: `load_references` missing entry span
-- **Difficulty:** easy
-- **Location:** src/reference.rs:42
-- **Description:** `load_references` opens and loads all reference Store+HNSW indexes at startup. It has `warn!` for individual reference failures but no entry span. For projects with multiple large references, this can be a significant startup cost with no timing visibility.
-- **Suggested fix:** Add `info_span!("load_references", count = configs.len())`.
-
-#### OB-10: `enumerate_files` missing entry span
-- **Difficulty:** easy
-- **Location:** src/cli/files.rs:11
-- **Description:** `enumerate_files` walks the project directory to find indexable files. This is called during `cqs index` and `cqs watch`, and can be slow on large repos or network mounts. No span means slow file enumeration is invisible.
-- **Suggested fix:** Add `info_span!("enumerate_files")` and log the file count on completion.
-
-#### OB-11: `extract_fenced_blocks` missing span — markdown injection is silent
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:1017
-- **Description:** `extract_fenced_blocks` is the entry point for parsing fenced code blocks from markdown (the new multi-grammar injection feature). It has no tracing. The downstream `parse_fenced_blocks` (line 600 in `parser/mod.rs`) has a span, but blocks that fail language detection or are skipped are silent.
-- **Suggested fix:** Add `info_span!("extract_fenced_blocks")` and `debug!` for skipped blocks with unrecognized languages.
-
-#### OB-12: Inconsistent span levels — `find_injection_ranges` uses `info_span!` but is a hot inner loop
-- **Difficulty:** easy
-- **Location:** src/parser/injection.rs:55
-- **Description:** `find_injection_ranges` uses `info_span!` despite being called per-file during parsing (inside the rayon parallel iterator in `parse_file`). For a codebase with 1000 HTML files, this emits 1000 info-level spans. Compare with `extract_types` in `calls.rs:125` which correctly uses `info_span!` because it's called once per file. The issue is that `find_injection_ranges` is called per injection rule per file, not per file.
-- **Suggested fix:** Change to `debug_span!` to reduce noise at info level. Callers already have `info_span!` (e.g., `parse_file`, `parse_file_all`).
+# Audit Findings — v1.0.7
 
 ## API Design
 
-#### AD-1: CLI vs batch default `--limit` divergence — Scout (5 vs 10), Where (3 vs 5)
+#### AD-13: `generate_nl_with_call_context` takes 5 positional parameters — `max_callers`/`max_callees` should live in `CallContext`
 - **Difficulty:** easy
-- **Location:** src/cli/mod.rs:619 (Scout limit=5), src/cli/batch/commands.rs:202 (Scout limit=10), src/cli/mod.rs:608 (Where limit=3), src/cli/batch/commands.rs:213 (Where limit=5)
-- **Description:** The `scout` command defaults to `--limit 5` in CLI mode but `--limit 10` in batch mode. The `where` command defaults to `--limit 3` in CLI and `--limit 5` in batch. Users switching between `cqs scout` and batch `scout` get different result counts with no flag change. This is confusing and makes scripted vs interactive use inconsistent.
-- **Suggested fix:** Align defaults. Use `5` for both Scout and `3` for both Where (CLI values are the more conservative/tested defaults).
+- **Location:** src/nl.rs:274-279, src/cli/pipeline.rs:999-1005
+- **Description:** `generate_nl_with_call_context(chunk, ctx, callee_doc_freq, max_callers, max_callees)` has 5 positional parameters. The last two are configuration that controls how `ctx` is applied, but they are passed separately from it. The call site uses magic literals `5, 5` with inline comments to identify them (pipeline.rs:1003-1004). A new caller has to discover the intended defaults by reading the existing call site. `CallContext` is a public struct exported in `lib.rs:120`. Folding `max_callers` and `max_callees` into `CallContext` (with `Default` yielding 5) would make the API self-documenting and reduce the function arity. The IDF threshold (0.10, hardcoded at nl.rs:307) is a third implicit parameter that could join the same struct for completeness.
+- **Suggested fix:** Extend `CallContext` with the limits and reduce function arity:
+  ```rust
+  pub struct CallContext {
+      pub callers: Vec<String>,
+      pub callees: Vec<String>,
+      pub max_callers: usize,    // default: 5
+      pub max_callees: usize,    // default: 5
+      pub idf_threshold: f32,    // default: 0.10 (optional addition)
+  }
+  // Signature becomes:
+  pub fn generate_nl_with_call_context(chunk: &Chunk, ctx: &CallContext, callee_doc_freq: &HashMap<String, f32>) -> String
+  ```
 
-#### AD-2: `SearchResult` dual serialization — `#[derive(Serialize)]` nests, `to_json()` flattens
+#### AD-14: `callee_document_frequencies` return type forces callers to perform the frequency normalization themselves
+- **Difficulty:** easy
+- **Location:** src/store/calls.rs:1242, src/cli/pipeline.rs:926-929
+- **Description:** `callee_document_frequencies()` returns `Vec<(String, usize)>` (raw caller counts), but its sole caller immediately converts the result into `HashMap<String, f32>` (fractional frequencies, 0.0–1.0) by dividing each count by `total_chunks`. The function name uses the term "document frequencies", which in information retrieval means a ratio, but it returns raw counts. Callers must know to perform the division and must independently obtain `total_chunks` to do so. This splits a single conceptual operation across two call sites and introduces a second failure mode (wrong divisor). Additionally, the `usize` return requires a cast to `f32` in the caller, which is a silent precision loss for large codebases.
+- **Suggested fix:** Option A (naming): rename to `callee_caller_counts()` to match what the SQL actually returns (`COUNT(DISTINCT caller_name)` per callee). Option B (API): take `total_chunks: usize` as a parameter and return `HashMap<String, f32>` directly, keeping the normalization co-located with the function that knows the semantics.
+
+#### AD-15: `update_embeddings_batch` parameter tuple `(String, Embedding)` — `String` role undocumented
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:79-82
+- **Description:** `update_embeddings_batch(updates: &[(String, Embedding)])` takes a slice of tuples where `String` is a chunk ID. This is not stated in the function signature or the doc comment (there is no doc comment). Other store batch methods either use domain types (`&[(Chunk, Embedding)]` in `upsert_chunks_batch`) or document their tuple element roles. A reader encountering this signature cannot tell whether `String` is an ID, a name, a hash, or an origin path without tracing the call site. Prior audit AD-1 addressed the same class of issue for `file` fields (String → PathBuf). The fix here is lighter weight: a doc comment is sufficient; a newtype is optional.
+- **Suggested fix:** Add a doc comment:
+  ```rust
+  /// Update embeddings for existing chunks without changing their content.
+  ///
+  /// `updates` is a slice of `(chunk_id, embedding)` pairs. Chunk IDs not found
+  /// in the store are silently skipped (rows_affected == 0).
+  pub fn update_embeddings_batch(&self, updates: &[(String, Embedding)]) -> Result<usize, StoreError>
+  ```
+
+#### AD-16: `chunks_paged` cursor-return convention is ambiguous and inconsistent with `embedding_batches`
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:1085-1116
+- **Description:** `chunks_paged(after_rowid, limit)` returns `(Vec<ChunkSummary>, i64)` where the `i64` is the max rowid seen in the page, for use as the next `after_rowid`. Two issues:
+  1. When the returned vec is empty, the cursor is unchanged (equals `after_rowid`). The doc mentions "iteration is complete" but not what value the cursor holds, and a caller that passes the returned cursor unconditionally will loop forever.
+  2. `embedding_batches()` (same file, line 1312) solves identical pagination via an `Iterator` that handles the cursor internally — callers never see a raw rowid. Having both APIs for the same operation is inconsistent. The enrichment pass in `pipeline.rs` uses `chunks_paged` with manual cursor management; `embedding_batches` exists as the better pattern.
+- **Suggested fix:** Document the empty-page cursor value: "When the returned vec is empty, the returned cursor equals `after_rowid`; do not pass it to a subsequent call." Consider adding `chunks_batches(batch_size) -> impl Iterator<Item=Result<Vec<ChunkSummary>>>` analogous to `embedding_batches`, and routing `enrichment_pass` through it.
+
+#### AD-17: `enrichment_pass` `quiet: bool` parameter — output-control concern leaks into internal pipeline function
+- **Difficulty:** easy
+- **Location:** src/cli/pipeline.rs:911
+- **Description:** `enrichment_pass(store, embedder, quiet: bool)` has no doc comment and takes a `quiet` flag that controls progress-bar display and `eprintln!` output. `run_index_pipeline` (same file), which owns the first indexing pass, does not have a `quiet` flag — it emits output unconditionally via `eprintln!`. The asymmetry means these two closely related pipeline functions have inconsistent output contracts. `quiet` is a CLI concern (the user's `--quiet` flag from `index.rs:143`) flowing into an internal `pub(crate)` function, coupling the function to CLI semantics. It also lacks a doc comment explaining any of its parameters or return value.
+- **Suggested fix:** At minimum, add a doc comment:
+  ```rust
+  /// Re-embed all chunks with call graph context (caller/callee names).
+  ///
+  /// Returns the number of chunks re-embedded. Pass `quiet = true` to suppress
+  /// progress bar and eprintln output (e.g., in `--quiet` CLI mode).
+  ```
+  Longer-term: unify output policy with `run_index_pipeline` (both suppress or both accept a verbosity level).
+
+## Observability
+
+#### OB-8: `enrichment_pass()` missing skip metrics and timing
+- **Difficulty:** easy
+- **Location:** src/cli/pipeline.rs:911-1029
+- **Description:** `enrichment_pass()` has a basic span but logs only final enriched_count. Missing:
+  1. Skip count: how many chunks had no callers/callees (line 985-986 silently skips)
+  2. Batch flush count: how many batches were flushed
+  3. Callee frequency count: total unique callees suppressed (could be valuable for tuning)
+  4. Timing context: how long the pass took (compare to pipeline main pass)
+
+  For comparison, `run_index_pipeline()` (line 889-897) logs detailed structured metrics: `total_embedded`, `total_cached`, `gpu_failures`, `parse_errors`, `total_type_edges`, `total_calls`. The enrichment pass should follow the same pattern.
+- **Suggested fix:** Add structured logging fields to the final `tracing::info!` call:
+  ```rust
+  tracing::info!(
+      enriched_count,
+      skipped_leaf_nodes = total_chunks - enriched_count,  // approximation at least
+      total_callee_freq_entries = callee_doc_freq.len(),
+      utility_callees_filtered = callees_suppressed_count,
+      "Enrichment pass complete"
+  );
+  ```
+  Also track `skipped_count` explicitly during the loop to get exact count.
+
+#### OB-9: `update_embeddings_batch()` uses per-row UPDATE instead of batch UPDATE
 - **Difficulty:** medium
-- **Location:** src/store/helpers.rs:193 (`#[derive(Serialize)]`), src/store/helpers.rs:206 (`to_json()`)
-- **Description:** `SearchResult` has both `#[derive(serde::Serialize)]` and a manual `to_json()` method that produce different JSON shapes. The derive nests: `{ "chunk": { "file": ..., "name": ... }, "score": ... }`. The manual method flattens: `{ "file": ..., "name": ..., "score": ... }`. All current callers use the manual `to_json()` / `to_json_relative()`, so the `Serialize` derive produces a shape nobody consumes. Same issue on `NoteSearchResult` (line 333).
-- **Suggested fix:** Add `#[serde(flatten)]` on the `chunk` field in `SearchResult` so the `Serialize` output matches the flat shape. Then callers can use `serde_json::to_value()` instead of the manual `to_json()`. Or remove the `Serialize` derive if it's truly unused.
+- **Location:** src/cli/pipeline.rs:1050, src/store/chunks.rs:79-105
+- **Description:** `update_embeddings_batch()` executes one `UPDATE` per embedding (line 95-100), unlike the pattern used by `upsert_chunks_batch()` which batches INSERT with `QueryBuilder`. For 64-item batches, this means 64 individual SQLite transactions within a single outer transaction, reducing observability and likely hurting latency.
 
-#### AD-3: 5 store types missing `Serialize` — manual JSON assembly required
+  The missing span context makes it hard to see: (a) how long embedding serialization takes, (b) how long the SQL executions take, (c) whether batching would help. The span captures `count` but no per-operation timing.
+- **Suggested fix:** Either:
+  1. Implement batch UPDATE with `QueryBuilder::push_values()` (prefer, matches `upsert_chunks_batch` pattern)
+  2. Add child spans around the loop to surface per-op cost:
+     ```rust
+     let _span = tracing::info_span!("embedding_serialization").entered();
+     let embedding_bytes = ...; // serialize
+     drop(_span);
+
+     let _span = tracing::info_span!("embedding_updates", count = updates.len()).entered();
+     for (...) { ... }  // individual updates
+     ```
+
+#### OB-10: `chunks_paged()` has debug span but no result metrics
 - **Difficulty:** easy
-- **Location:** src/store/helpers.rs:310 (`NoteStats`), src/store/helpers.rs:357 (`StaleFile`), src/store/helpers.rs:368 (`StaleReport`), src/store/helpers.rs:379 (`ParentContext`), src/store/calls.rs:77 (`CallStats`)
-- **Description:** The v0.19.4 audit (AD-3) added `Serialize` to core types (`ChunkSummary`, `CallerInfo`, etc.) but missed these 5. `StaleFile` and `StaleReport` force `cmd_stale` to build JSON manually (stale.rs:29-53). `NoteStats` forces `cmd_health` to destructure fields. `CallStats` forces `cmd_stats` to build JSON manually. This was the exact pattern the previous audit sought to eliminate.
-- **Suggested fix:** Add `#[derive(serde::Serialize)]` to all 5 types. For `StaleFile`, add `#[serde(serialize_with = "...")]` to normalize the `origin` path, or rename to `file` with a `#[serde(rename)]`.
+- **Location:** src/store/chunks.rs:1085-1114
+- **Description:** `chunks_paged()` (debug-level span, line 1090) logs the inputs (`after_rowid`, `limit`) but not the output: how many chunks were returned. When called in a loop (enrichment_pass line 967), debug logs don't show progress. Compare to `upsert_chunks_batch` which logs `count` (input), and callers know how many were written. For pagination debugging, the actual chunk count retrieved is essential.
+- **Suggested fix:** Add `fetched` field to the span's structured data:
+  ```rust
+  let chunks: Vec<ChunkSummary> = ...;
+  let fetched = chunks.len();
+  tracing::debug!(fetched, "Paged {} chunks", fetched);
+  ```
+  Or use `Span::record()` if entering the span before the query is needed.
 
-#### AD-4: Module visibility inconsistency — `diff_parse`, `drift`, `review` are `pub mod` but peers are `pub(crate)`
+#### OB-11: `flush_enrichment_batch()` missing tracing span
 - **Difficulty:** easy
-- **Location:** src/lib.rs:67 (`diff_parse`), src/lib.rs:68 (`drift`), src/lib.rs:78 (`review`)
-- **Description:** `diff_parse`, `drift`, and `review` are declared as `pub mod` while their functional peers (`gather`, `scout`, `onboard`, `related`, `where_to_add`, `task`, `impact`, `diff`) are `pub(crate)`. There's no external consumer (CLAUDE.md: "nobody else is using cqs but us"), so these should be `pub(crate)` with selective re-exports. `drift` already has selective re-exports via `pub use drift::{...}` making the `pub mod` redundant.
-- **Suggested fix:** Change `pub mod diff_parse` → `pub(crate) mod diff_parse`, `pub mod drift` → `pub(crate) mod drift`, `pub mod review` → `pub(crate) mod review`. Add `pub use` re-exports for any items needed by the binary crate.
+- **Location:** src/cli/pipeline.rs:1032-1054
+- **Description:** `flush_enrichment_batch()` has no tracing span, called from `enrichment_pass()` on each flush (line 1011, 1018). The function does three observable operations: (1) serialize NL texts, (2) embed documents, (3) update store. Without a span, it's invisible to structured logging. Callers only see the parent span from `enrichment_pass()`.
+- **Suggested fix:** Add tracing span with key metrics:
+  ```rust
+  fn flush_enrichment_batch(...) -> Result<usize> {
+      let _span = tracing::debug_span!("flush_enrichment_batch", batch_size = batch.len()).entered();
+      let texts: Vec<&str> = ...;
+      let embeddings = embedder.embed_documents(&texts)...?;
+      // span auto-records elapsed via tracing infrastructure
+      ...
+  }
+  ```
 
-#### AD-5: 5 command handlers still accept unused `_cli: &Cli` parameter
+#### OB-12: `callee_document_frequencies()` returns usize but no span context on result
 - **Difficulty:** easy
-- **Location:** src/cli/commands/task.rs:19, src/cli/commands/impact_diff.rs:18, src/cli/commands/related.rs:24, src/cli/commands/onboard.rs:9, src/cli/commands/scout.rs:9
-- **Description:** Prior audits (v0.19.2 AD-5, v0.19.4 AD-6) fixed 6+ handlers that accepted unused `_cli: &Cli`. 5 remain. These parameters add noise to the API and complicate refactoring (callers must pass `&cli` even though the handler ignores it).
-- **Suggested fix:** Remove the `_cli` parameter from all 5 handlers. Update the dispatch in `cli/mod.rs` to not pass `&cli` to these commands.
-
-#### AD-6: Inconsistent `_with_*` naming across library functions
-- **Difficulty:** medium
-- **Location:** src/gather.rs:313 (`_with_graph`), src/scout.rs:135 (`_with_options`), src/scout.rs:170 (`_with_resources`), src/task.rs:91 (`_with_resources`), src/where_to_add.rs:125 (`_with_embedding`), src/where_to_add.rs:147 (`_with_options`), src/impact/diff.rs:86 (`_with_graph`), src/impact/hints.rs:21 (`_with_graph`), src/impact/hints.rs:37 (`_with_graph_depth`)
-- **Description:** The "bring your own dependency" pattern uses inconsistent suffixes: `_with_graph` (pre-loaded call graph), `_with_resources` (pre-loaded embedder + graph), `_with_options` (configurable parameters), `_with_embedding` (pre-computed embedding), `_with_graph_depth` (graph + depth override). There's no pattern a new contributor can follow. `_with_resources` and `_with_graph` serve different abstraction levels but their names don't indicate this.
-- **Suggested fix:** Standardize on a convention. Suggestion: `_with_graph` when only the call graph is pre-loaded, `_with_context` when multiple shared resources (embedder, graph, etc.) are pre-loaded, `_with_options` when the function accepts a config struct. Document the convention in CONTRIBUTING.md. Not urgent — functional correctness is fine.
-
-#### AD-7: `DiffHunk` missing `Serialize` derive
-- **Difficulty:** easy
-- **Location:** src/diff_parse.rs:14
-- **Description:** `DiffHunk` is a `pub` type in a `pub mod` with no `Serialize`. The `impact-diff` command manually constructs JSON for diff hunks. Since `impact-diff` outputs changed functions (not raw hunks) this is low-impact, but it breaks the pattern established by other output types.
-- **Suggested fix:** Add `#[derive(serde::Serialize)]` to `DiffHunk`.
+- **Location:** src/store/calls.rs:1242-1261
+- **Description:** `callee_document_frequencies()` has a debug span but doesn't log the result: how many unique callees were found. For enrichment_pass (line 923), knowing "found 127 unique callees with frequency data" is useful for debugging IDF filtering logic. The span captures no output size.
+- **Suggested fix:** Record the result count in the span:
+  ```rust
+  let result: Vec<_> = ...;
+  let count = result.len();
+  tracing::debug!(count, "Computed callee frequencies");
+  Ok(result)
+  ```
 
 ## Error Handling
 
-#### EH-1: `parse_fenced_blocks` silently skips `set_language`, `parse`, and `get_query` failures
+#### EH-8: `flush_enrichment_batch` leaves progress bar dangling on error
 - **Difficulty:** easy
-- **Location:** src/parser/mod.rs:618-630
-- **Description:** Three `continue` statements silently skip fenced code blocks when `set_language` fails (grammar/ABI mismatch), `parse` returns None (tree-sitter timeout/cancellation), or `get_query` fails (query compilation error). None of these emit a `tracing::warn!` or `debug!`. Compare with `parse_file` at line 252 which logs `warn!` for chunk extraction failures, and `parse_injected_chunks` at line 294 which logs injection failures. Fenced block failures are completely invisible.
-- **Suggested fix:** Add `tracing::debug!` for each `continue` path. Use `debug!` (not `warn!`) because fenced blocks with invalid content are common in documentation.
+- **Location:** src/cli/pipeline.rs:1011, 1018 / src/cli/pipeline.rs:950-961
+- **Description:** `enrichment_pass` creates a `ProgressBar` at line 950, but when `flush_enrichment_batch` returns an error the `?` propagates immediately, bypassing `progress.finish_and_clear()` at line 1021. The progress bar is left in a spinning/incomplete state in the terminal. The caller in `index.rs` catches the error (line 149) and prints a warning, but the terminal is already corrupted with the dangling bar.
+- **Suggested fix:** Use a guard or call `progress.abandon()` before returning, or restructure with a closure/defer pattern:
+  ```rust
+  let result = (|| -> Result<usize> {
+      // loop body
+  })();
+  progress.finish_and_clear();
+  result
+  ```
 
-#### EH-2: `serde_json::to_value(c).ok()` silently drops chunks from JSON output (4 locations)
+#### EH-9: `flush_enrichment_batch` silent truncation on embedding count mismatch
 - **Difficulty:** easy
-- **Location:** src/task.rs:249, src/cli/batch/handlers.rs:414, src/cli/commands/gather.rs:117, src/cli/commands/task.rs:375
-- **Description:** Four locations use `.filter_map(|c| serde_json::to_value(c).ok())` to serialize chunks for JSON output. If serialization fails, the chunk is silently dropped from results. Since `ChunkSummary` derives `Serialize`, failures are unlikely in practice -- but when they do happen (e.g., NaN float values, invalid UTF-8 in cached data), the user gets fewer results than expected with no diagnostic.
-- **Suggested fix:** Replace `.ok()` with `.map_err(|e| tracing::warn!(error = %e, "Failed to serialize chunk")).ok()` so failures are visible in tracing output.
+- **Location:** src/cli/pipeline.rs:1043-1047
+- **Description:** `batch.drain(..).zip(embeddings)` stops at the shorter iterator. If `embed_documents` returns fewer embeddings than texts (edge case in internal batching or a partial GPU failure), items are silently dropped from the batch — they are consumed by `drain` but never written to the store. The returned count will be understated, and there is no warning. The same pattern does not exist in `upsert_chunks_batch` which asserts lengths match.
+- **Suggested fix:** Assert or validate lengths before zipping:
+  ```rust
+  anyhow::ensure!(
+      embeddings.len() == texts.len(),
+      "Embedding count mismatch: expected {}, got {}",
+      texts.len(), embeddings.len()
+  );
+  ```
 
-#### EH-3: `config.rs` uses `map_err(|e| anyhow!(..., e))` instead of `.with_context()` -- loses error chain
+#### EH-10: `update_embeddings_batch` silently no-ops for unknown chunk IDs
 - **Difficulty:** easy
-- **Location:** src/config.rs:294, src/config.rs:315
-- **Description:** `add_reference_to_config` converts TOML parse and serialize errors via `.map_err(|e| anyhow::anyhow!("Failed to parse {}: {}", config_path.display(), e))`. This format-stringifies the source error, losing the `#[source]` chain. `anyhow`'s display already appends source errors, so `.with_context()` would show both the context message AND the source error with proper chain formatting. Compare with `project.rs:44-45` which correctly uses `.with_context(|| format!(...))` for the same pattern.
-- **Suggested fix:** Replace with `.with_context(|| format!("Failed to parse {}", config_path.display()))` and `.with_context(|| "Failed to serialize reference config")`.
+- **Location:** src/store/chunks.rs:95-100
+- **Description:** The `UPDATE chunks SET embedding = ?1 WHERE id = ?2` query executes without checking `rows_affected()`. If a chunk ID no longer exists (e.g., pruned between enrichment fetch and write, or a race with `delete_by_origin`), the UPDATE silently updates 0 rows. `enriched_count` in `enrichment_pass` is incremented for these phantom writes (it counts items in `updates`, not actual DB rows changed). No warning is emitted. The mismatch between claimed and actual enrichment count could mask stale data issues.
+- **Suggested fix:** Check rows_affected and emit a debug/warn if any ID was not found:
+  ```rust
+  let result = sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
+      .bind(&embedding_bytes[i])
+      .bind(id)
+      .execute(&mut *tx)
+      .await?;
+  if result.rows_affected() == 0 {
+      tracing::debug!(chunk_id = %id, "Enrichment update found no row (pruned race?)");
+  }
+  ```
 
-#### EH-4: `StoreError::Runtime(String)` catch-all stringifies source errors (8 locations)
-- **Difficulty:** hard
-- **Location:** src/store/mod.rs:196, 291, 738, 749; src/store/notes.rs:27; src/store/helpers.rs:699
-- **Description:** `StoreError::Runtime(String)` is used as a catch-all for heterogeneous error types (tokio `io::Error`, `serde_json::Error`, poisoned lock `PoisonError`, embedding dimension mismatches). Each is converted via `.map_err(|e| StoreError::Runtime(e.to_string()))` or `format!`, losing the source error chain. Callers cannot downcast to determine the root cause. This is a design-level issue -- the variant covers 4+ distinct error types that could benefit from dedicated variants.
-- **Suggested fix:** Wrap as `Runtime(Box<dyn std::error::Error + Send + Sync>)` to preserve the source error chain while remaining backward-compatible. Or add dedicated variants for `io::Error` (already distinct from `Io(sqlx::Error)`) and `serde_json::Error`. Low priority since cqs has no external consumers.
-
-## Code Quality
-
-#### CQ-1: Dead code — `Store::get_chunks_by_name` (singular) superseded by batch version
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:970
-- **Description:** `get_chunks_by_name` has zero callers in production code. It was superseded by `get_chunks_by_names_batch` (line 994), which explicitly documents it exists "to avoid N+1 `get_chunks_by_name` calls." The singular version is only referenced in doc comments. No tests call it either.
-- **Suggested fix:** Delete the method. Update doc comments on `get_chunks_by_names_batch` to remove the reference.
-
-#### CQ-2: Dead code — `Store::search_chunks_by_signature` has no production callers
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:1041
-- **Description:** `search_chunks_by_signature` has zero callers in any CLI command, batch handler, or library function. It exists only as a definition + 3 test functions in `tests/store_test.rs` (lines 991-1084). The method was likely written for the `deps` command but never wired in — `deps` uses type-edge queries instead.
-- **Suggested fix:** Delete the method and its 3 tests. If signature search is needed later, it can be re-added with proper integration.
-
-#### CQ-3: CAGRA/HNSW index selection logic duplicated between `cmd_query` and `batch::build_vector_index`
-- **Difficulty:** easy
-- **Location:** src/cli/commands/query.rs:116-154, src/cli/batch/mod.rs:276-306
-- **Description:** The CAGRA threshold check, GPU availability test, fallback-to-HNSW logic, and associated log messages are duplicated verbatim. Both define `const CAGRA_THRESHOLD: u64 = 5000` locally. The batch module already has this extracted into `build_vector_index()`, but `cmd_query` inlines the same 38-line block. If the threshold or fallback logic changes, both sites must be updated independently.
-- **Suggested fix:** Move `build_vector_index` to a shared location (e.g., `cli/mod.rs` or a new `cli/index_util.rs`) and call it from both `cmd_query` and `cmd_batch`. The function signature `fn build_vector_index(store: &Store, cqs_dir: &Path) -> Result<Option<Box<dyn VectorIndex>>>` already works for both callers.
-
-#### CQ-4: `normalize_lang()` in markdown.rs duplicates language alias knowledge with no sync enforcement
+#### EH-11: `flush_enrichment_batch` drains batch before store write — items lost on store error
 - **Difficulty:** medium
-- **Location:** src/parser/markdown.rs:957-1009
-- **Description:** `normalize_lang` maps 50+ fenced code block tags (e.g., `"py"` -> `"python"`, `"kt"` -> `"kotlin"`) to cqs language name strings. These output strings must match `Language::from_str` inputs (defined by the `define_languages!` macro in `language/mod.rs`), but there's no compile-time or test-time enforcement. Currently `ini` is missing from `normalize_lang` but present as a Language, meaning ````ini` blocks in markdown are silently skipped. When new languages are added, `normalize_lang` requires a manual update with no failing test to catch the omission.
-- **Suggested fix:** Add a test that verifies every non-`None` output of `normalize_lang` parses successfully via `Language::from_str`. Also add `"ini"` to `normalize_lang`. Optionally, consider deriving `normalize_lang` from `Language` metadata (each `LanguageDef` could include a `fenced_aliases: &[&str]` field), eliminating the parallel map entirely.
+- **Location:** src/cli/pipeline.rs:1043-1051
+- **Description:** `batch.drain(..)` is called to build `updates` (line 1044), emptying the batch before `store.update_embeddings_batch(...)` is called (line 1050). If the store write fails, the drained items are gone from `batch` — the caller cannot retry them. The `?` at line 1051 propagates the error, so in practice the enrichment pass aborts entirely, but the drain-before-write ordering means retry logic (if added later) would lose items. This is a latent correctness issue. By contrast, the drain should happen after a successful store write, or the IDs should be preserved for re-queue.
+- **Suggested fix:** Drain after success, or hold `updates` and only clear batch on success:
+  ```rust
+  let texts: Vec<&str> = batch.iter().map(|(_, nl)| nl.as_str()).collect();
+  let embeddings = embedder.embed_documents(&texts).context("...")?;
+  let updates: Vec<(String, Embedding)> = batch.iter()
+      .zip(embeddings)
+      .map(|((id, _), emb)| (id.clone(), emb.with_sentiment(0.0)))
+      .collect();
+  store.update_embeddings_batch(&updates).context("...")?;
+  batch.clear(); // only clear after successful write
+  Ok(updates.len())
+  ```
 
-#### CQ-5: Markdown `parse_markdown_chunks` — 3 near-identical Chunk constructions (14 fields each)
+#### EH-12: `ProgressStyle::template().unwrap()` in production path
 - **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:55-70 (no headings), 85-99 (one heading), 144-159 (section loop)
-- **Description:** The three code paths in `parse_markdown_chunks` each construct `Chunk { ... }` with all 14 fields. The structs differ only in `name`, `content`, and line range — `file`, `language`, `chunk_type`, `doc`, `parent_id`, `window_idx`, and `parent_type_name` are always the same values. This pattern is fragile: adding a new field to `Chunk` requires updating all 6 construction sites in `markdown.rs` (3 here + `extract_table_chunks` + `emit_table_window`).
-- **Suggested fix:** Extract a helper like `fn make_markdown_chunk(path: &Path, name: String, signature: String, content: String, line_start: u32, line_end: u32, parent_id: Option<String>) -> Chunk` that fills in the constant fields. This would reduce each construction site to a single function call.
+- **Location:** src/cli/pipeline.rs:956-957
+- **Description:** `ProgressStyle::default_bar().template("...").unwrap()` is called in the non-quiet code path of `enrichment_pass`. The template string is a compile-time literal so this is infallible in practice, but it is an `unwrap()` outside of tests in production code, violating the project convention (`No unwrap() except in tests`). A malformed template would panic at runtime.
+- **Suggested fix:** Replace with `expect("valid progress template")` to make the intent clear, or use `unwrap_or_else` with a fallback style. The same pattern appears in `run_index_pipeline` — check and fix consistently.
 
 ## Documentation
 
-#### DOC-1: `lib.rs` doc comment lists 49 languages but `define_languages!` has 50 (Vue missing from list)
+#### DOC-1: Language files list in CONTRIBUTING.md missing vue.rs and aspx.rs
 - **Difficulty:** easy
-- **Location:** src/lib.rs:10
-- **Description:** The `lib.rs` module doc comment lists 49 languages with "(49 languages)" label, but `define_languages!` in `src/language/mod.rs` now has 50 variants (Vue was added as uncommitted work). The doc comment enumerates every language but omits Vue. Similarly, `README.md` line 5 says "49 languages", line 477 says "49 languages", `Cargo.toml` line 6 says "49 languages", and `CONTRIBUTING.md` line 70 says "49 languages supported". The README Supported Languages section lists 49 bullet points without Vue.
-- **Suggested fix:** When Vue is committed, update the count to 50 in: `src/lib.rs:10`, `Cargo.toml:6`, `README.md:5,477`, `CONTRIBUTING.md:70`. Add Vue bullet to README Supported Languages section and `vue.rs` to CONTRIBUTING.md architecture listing.
+- **Location:** CONTRIBUTING.md:124
+- **Description:** The Architecture Overview lists 49 language module files (rust.rs through markdown.rs), but cqs actually supports 51 languages. Vue (.vue files) and ASP.NET Web Forms (.aspx/.ascx/.asmx/.master files) were added in v0.28.0 (Vue) and v1.0.5 (ASPX) but the list is stale. The enum in `src/language/mod.rs` and the language count claims in README.md and lib.rs are all correct, only the CONTRIBUTING.md file list is incomplete.
+- **Suggested fix:** Append `vue.rs, aspx.rs` after `vbnet.rs,` on line 124 to show all 51 language modules.
 
-#### DOC-2: Feature flag doc comment in `language/mod.rs` missing 10 language flags
+#### DOC-2: Function doc comment for IDF filtering threshold lacks explicit value
 - **Difficulty:** easy
-- **Location:** src/language/mod.rs:7-52
-- **Description:** The module doc comment lists feature flags for language support, but omits 10 that exist in the `define_languages!` macro and `Cargo.toml`: `lang-fsharp`, `lang-powershell`, `lang-html`, `lang-json`, `lang-xml`, `lang-ini`, `lang-svelte`, `lang-razor`, `lang-vbnet`, `lang-markdown`. The list covers 39 flags + `lang-all` but 49 languages (soon 50) exist. This makes the doc comment unreliable for determining available feature flags.
-- **Suggested fix:** Add the 10 missing feature flag entries to the doc comment. Keep them in the same order as the `define_languages!` invocation.
+- **Location:** src/nl.rs:265-330 (CallContext struct + generate_nl_with_call_context function)
+- **Description:** New function `generate_nl_with_call_context()` added in v1.0.7 (#590) has solid doc comments explaining the call-graph enrichment pass. However, the IDF filtering threshold is mentioned only inline as ">10% of chunks" in the code comment (line 288), but the rustdoc comment on the function doesn't state the exact threshold value (0.10 as f32). This makes the threshold non-discoverable via `rustdoc` without reading source code.
+- **Suggested fix:** Add threshold value to rustdoc comment: `/// Callees appearing in >10% of chunks are filtered as utilities (IDF threshold: 0.10).` This would make the threshold discoverable via `rustdoc` without reading source.
 
-#### DOC-3: `lib.rs` comment says "Internal modules — not part of public library API" but 3 modules are `pub`
+#### DOC-3: README.md schema version context unclear for upgrading users
 - **Difficulty:** easy
-- **Location:** src/lib.rs:63-83
-- **Description:** Line 63 says "Internal modules - not part of public library API" but `diff_parse` (line 67), `drift` (line 68), and `review` (line 78) are declared `pub mod` — making them part of the public API surface. The comment is misleading: a user looking at rustdoc would see these modules. Note: overlaps with AD-4 (API Design finding on visibility).
-- **Suggested fix:** Either change the 3 modules to `pub(crate)` (with selective re-exports), or update the comment to note the exceptions. The former is preferred per CLAUDE.md ("nobody else is using cqs but us").
+- **Location:** README.md:35
+- **Description:** Line 35 states "(current schema: v12)" which is correct, but the upgrade instruction `cqs index --force` doesn't mention the v11→v12 migration is automatic. For users upgrading from v1.0.4 or earlier, the v11→v12 migration happens automatically during first index open. The comment is accurate but could be clearer about when rebuilds are required vs. automatic migrations.
+- **Suggested fix:** Minor improvement — change to "(current schema: v12, auto-migrates from v11)" to clarify the migration is automatic. Or add a note: "Schema changes in v1.0.5+ auto-migrate existing indexes."
 
-#### DOC-4: CLAUDE.md skills list incomplete — 9 of 14 skills listed
+#### DOC-4: src/store/chunks.rs missing documented update pattern for new functions
 - **Difficulty:** easy
-- **Location:** CLAUDE.md:33-41
-- **Description:** The Skills section lists 9 skills (`/update-tears`, `/groom-notes`, `/release`, `/audit`, `/pr`, `/cqs`, `/cqs-bootstrap`, `/cqs-plan`, `/reindex`) but `.claude/skills/` has 14 directories. Missing: `/docs-review`, `/migrate`, `/troubleshoot`, `/cqs-batch`, `/red-team`. These skills are listed in `CONTRIBUTING.md` but not in CLAUDE.md, so Claude agents won't know they exist unless they read CONTRIBUTING.md.
-- **Suggested fix:** Add the 5 missing skills to the CLAUDE.md Skills section:
-  - `/docs-review` -- check project docs for staleness
-  - `/migrate` -- schema version upgrades
-  - `/troubleshoot` -- diagnose common cqs issues
-  - `/cqs-batch` -- batch mode with pipeline syntax
-  - `/red-team` -- adversarial security audit
+- **Location:** src/store/chunks.rs header comments (lines 1-5)
+- **Description:** Two new public functions added in v1.0.7 (#590): `update_embeddings_batch()` (line 79) and `chunks_paged()` (line 1085) are well-documented individually. However, the module's doc comment doesn't mention these new capabilities. Line 1 says "//! Chunk CRUD operations" but `update_embeddings_batch()` is not exactly CRUD — it's embedding-only update without content change. And `chunks_paged()` is cursor-based iteration. These are documented in the function comments but not in the module overview.
+- **Suggested fix:** Update module-level doc comment to include: `//! - Embedding-only updates (for enrichment passes)` and `//! - Cursor-based pagination (for streaming operations)`. This helps future readers understand the module scope.
 
-#### DOC-5: CHANGELOG `[Unreleased]` empty despite uncommitted Vue + markdown fenced block features
+## Code Quality
+
+#### CQ-7: `replace_file_chunks` is dead code — zero callers in production
 - **Difficulty:** easy
-- **Location:** CHANGELOG.md:8
-- **Description:** Significant uncommitted work (Vue language support, markdown fenced code block injection) is not documented in the `[Unreleased]` section. The CHANGELOG jumps from `[Unreleased]` (empty) to `[0.28.1]`. While not technically wrong (features aren't released), it means the features are invisible to anyone reading the CHANGELOG to understand current work.
-- **Suggested fix:** Add entries under `[Unreleased]` for the uncommitted features: Vue language support, markdown fenced code block extraction/injection.
+- **Location:** src/store/chunks.rs:164-265
+- **Description:** `replace_file_chunks` (100 lines) has no callers in production code. The entire call graph: the function is called only from three unit tests in the same file (lines 1624, 1668, 1693). The pipeline uses `upsert_chunks_and_calls` instead, and the watch mode no longer calls this function. The function also duplicates ~65 lines of INSERT logic from the `batch_insert_chunks` private helper (itself used by `upsert_chunks_batch` and `upsert_chunks_and_calls`). Keeping dead code inflates maintenance surface: the INSERT SQL at line 203 must stay in sync with `batch_insert_chunks` at line 1356 (19 columns, same order), and the FTS batch logic at line 234 duplicates `upsert_fts_conditional`. The v1.0.5 audit fixed PERF-3 ("upsert_chunks_and_calls duplicates ~120 lines of chunk-upsert logic"), but `replace_file_chunks` was not addressed.
+- **Suggested fix:** Remove `replace_file_chunks`. Its test cases should be ported to test `upsert_chunks_and_calls` (the live path), or kept as integration tests exercising the actual pipeline. If the delete-and-replace semantic is needed in future, re-implement it by calling `delete_by_origin` followed by `upsert_chunks_batch`, or add it to `upsert_chunks_and_calls` with a `replace: bool` flag.
 
-#### DOC-6: ROADMAP says "49 languages" but will be 50 when Vue commits
+#### CQ-8: `extract_file_context` doc comment is a merged accident — two functions' docs fused into one
 - **Difficulty:** easy
-- **Location:** ROADMAP.md:5
-- **Description:** Line 5 says "49 languages" — correct for committed code, but the same file at line 74 describes Vue as "Next" while the implementation is already in the working tree. Minor inconsistency — when Vue is committed, the count needs updating here too.
-- **Suggested fix:** Update to "50 languages" when Vue is committed.
+- **Location:** src/nl.rs:618-625
+- **Description:** The doc comment on `extract_file_context` at line 625 begins with the first two lines of what should be `truncate_doc`'s doc comment ("Truncate a doc comment to its first sentence (or 150 chars, whichever comes first). Keeps the most informative part of the doc within the embedding token budget.") followed by the correct doc for `extract_file_context` ("Extract concise module context from a file path..."). The `truncate_doc` function at line 674 has no doc comment at all — its doc was accidentally attached to the wrong function. This likely occurred when the two functions were defined adjacent and the doc comment blocks were merged during an edit.
+- **Suggested fix:** Split the doc comments: give `truncate_doc` its own doc ("Truncate a doc comment to its first sentence (or 150 chars, whichever comes first). Keeps the most informative part of the doc within the embedding token budget.") and give `extract_file_context` only its correct doc ("Extract concise module context from a file path...").
 
-## Platform Behavior
-
-#### PB-1: `parse_markdown_chunks` / `parse_markdown_references` don't normalize CRLF — rely on caller invariant
+#### CQ-9: `NlTemplate::Standard` doc comment is stale — claims "Current production template" but `Compact` is used
 - **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:39, src/parser/markdown.rs:178
-- **Description:** Both markdown parsing entry points accept `&str` source and immediately split on `.lines()`. While `.lines()` handles both `\n` and `\r\n`, the line count arithmetic for `line_start`/`line_end` uses `lines.len()` — if a caller passes un-normalized source, the line numbers are correct (Rust's `.lines()` strips both), but the `content` reconstructed via `lines[start..end].join("\n")` discards `\r` characters, causing `content_hash` to differ from a re-read of the same file with different line endings. In practice, all current callers (`parse_file`, `parse_file_all`) normalize CRLF before calling, but this invariant is undocumented and fragile — `parse_markdown_chunks` is `pub` and could be called directly (e.g., from tests or future callers). Compare with `extract_calls` in `calls.rs:29-32` which defensively normalizes CRLF at entry.
-- **Suggested fix:** Add a defensive CRLF check at entry: `let source = if source.contains("\r\n") { Cow::Owned(source.replace("\r\n", "\n")) } else { Cow::Borrowed(source) };`. Or add a doc comment: `/// # Precondition: source must have LF line endings (CRLF pre-normalized by caller)`.
+- **Location:** src/nl.rs:239-240
+- **Description:** The `Standard` variant's doc comment reads "Current production template: doc + 'A {type} named {name}' + params + returns". However, `generate_nl_description` (the production entry point) uses `NlTemplate::Compact`, not `Standard`. `Standard` is only exercised in the evaluation harness (`tests/model_eval.rs:511`). The stale comment creates false confidence: a reader could conclude `Standard` is the active format and write tests validating "A function named ..." structure, not knowing it's a retired experiment.
+- **Suggested fix:** Change the doc to "Baseline evaluation template (inactive): doc + 'A {type} named {name}' + params + returns. Use `Compact` for production. Kept for A/B testing via `model_eval`."
 
-#### PB-2: `enumerate_files` extension matching is case-sensitive — `.RS`, `.Py` files skipped on case-preserving FS
+#### CQ-10: `callee_document_frequencies` IDF metric is misnamed — counts distinct callers, not document occurrences
 - **Difficulty:** easy
-- **Location:** src/lib.rs:371-375
-- **Description:** The extension filter in `enumerate_files` does `ext.to_str().map(|ext| extensions.contains(&ext))` — the extension is NOT lowercased before comparison. The `extensions` list from `supported_extensions()` contains lowercase entries ("rs", "py", "ts"). On case-preserving filesystems (macOS HFS+, NTFS via WSL), files with uppercase extensions like `main.RS` or `script.PY` are silently skipped during indexing. The v0.28.1 audit fixed the analogous issue in `parse_file` (mod.rs:171), `extract_calls` (calls.rs:236), and `collect_events` (watch.rs:241) by lowercasing extensions, but `enumerate_files` was missed — it's the entry point that decides which files even get considered for indexing.
-- **Suggested fix:** Add `.to_ascii_lowercase()` before comparison: `let ext = ext.to_ascii_lowercase(); extensions.contains(&ext.as_str())`. This matches the pattern used in `collect_events` at watch.rs:242.
+- **Location:** src/store/calls.rs:1242-1261, src/cli/pipeline.rs:920-929
+- **Description:** `callee_document_frequencies()` is named using information-retrieval terminology ("document frequency"), which conventionally means "the fraction of documents (here: chunks) in which a term (here: callee name) appears." The SQL implementation uses `COUNT(DISTINCT caller_name)` — counting how many unique *callers* reference each callee, not how many chunks contain it. The comment in `enrichment_pass` (line 922) reinforces the mislabeling: "A callee appearing in >10% of chunks is a utility". The denominator `total_chunks` compounds the confusion: dividing distinct-caller-count by total-chunks gives a ratio that has no standard IR interpretation. A callee called by 1 000 distinct callers in a 10 000-chunk index yields 0.10 and hits the threshold — but if those callers are spread across 9 000 unique chunks, the actual document frequency is 0.90. The metric may still work empirically (high-caller-count callees are utilities), but the semantic drift between the name, the comment, and the implementation creates a maintenance hazard: a future developer may "fix" the denominator to `DISTINCT_CALLERS` or change the SQL to `COUNT(DISTINCT chunk_id)` expecting equivalent behavior.
+- **Suggested fix:** Option A: Rename to `callee_caller_counts()` and update `enrichment_pass` comments to say "A callee called by >10% of unique callers is suppressed as a utility." Option B: Fix the SQL to use `COUNT(DISTINCT c.id)` with a JOIN to the chunks table, making it a true document frequency. Then the metric and name align.
 
-#### PB-3: `find_project_root` walks to filesystem root on Windows drive letters — stops at `C:\` not CWD
-- **Difficulty:** medium
-- **Location:** src/cli/config.rs:28-65
-- **Description:** `find_project_root` walks up from CWD looking for project markers. The termination condition is `current.parent() == None`. On Unix, this terminates at `/`. On Windows (or WSL with `/mnt/c/`), `Path::new("/mnt/c").parent()` returns `Some("/mnt")`, then `Some("/")`, then `None` — walking through unrelated mount points. While this works correctly (no marker found = returns CWD), it scans `/mnt/c/`, `/mnt/`, and `/` for `Cargo.toml`/`.git` markers. If a user has a `.git` directory at `/mnt/` or `/`, `find_project_root` will return that as the project root instead of CWD. This is a latent issue — no user has `/mnt/.git`, but it's theoretically wrong.
-- **Suggested fix:** Add a stop sentinel: break if current is a filesystem root (`current == Path::new("/")` on Unix, or a drive root on Windows). Or limit walk depth (e.g., max 20 levels).
-
-#### PB-4: `ensure_ort_provider_libs` hardcodes `:` as PATH separator — would fail on native Windows
+#### CQ-11: `batch_count_query` injects column names via `format!` — internal but creates fragile SQL generation pattern
 - **Difficulty:** easy
-- **Location:** src/embedder.rs:684
-- **Description:** `ld_path.split(':')` is hardcoded for Unix PATH separator. The function is gated with `#[cfg(unix)]` so this is not currently broken, but the comment "Find target directory from LD_LIBRARY_PATH" and the `#[cfg(not(unix))]` stub suggest this might be extended to Windows in the future. On Windows, PATH uses `;` as separator, and the env var would be `PATH` not `LD_LIBRARY_PATH`. The `#[cfg(unix)]` guard makes this a non-issue today, but the stub comment "Windows/other platforms: CUDA libraries are typically in PATH already" is misleading — it implies the feature works on Windows when it doesn't.
-- **Suggested fix:** No code change needed — the `#[cfg(unix)]` guard is correct. Update the stub comment to clarify: "Windows: GPU provider libraries must be manually placed on PATH. Automatic symlinking is Unix-only."
+- **Location:** src/store/calls.rs:1087-1115
+- **Description:** `batch_count_query(filter_column, group_column, count_expr, names)` constructs SQL by formatting column names and expressions directly into the query string (line 1100). The function is private (`async fn`) and all three callers (`get_caller_counts_batch`, `get_callee_counts_batch`) pass hardcoded string literals — so there is no current injection risk. However, the API signature accepts arbitrary `&str` for column names and SQL expressions, so a future caller could pass user-influenced strings. The pattern is also inconsistent with the rest of `store/`: all other dynamic SQL uses only `make_placeholders` for values (which are bound via sqlx parameters). Column-name parameterization is a qualitatively different operation with no parameterized equivalent in SQLite, and mixing it silently with sqlx's bound-parameter pattern makes auditing harder.
+- **Suggested fix:** Add a comment documenting that `filter_column`, `group_column`, and `count_expr` must be compile-time constants and must not accept user input. Or use an enum to restrict the valid column names:
+  ```rust
+  enum CountColumn { CalleeName, CallerName }
+  async fn batch_count_query(&self, filter: CountColumn, names: &[&str]) -> Result<...>
+  ```
 
-#### PB-5: `ProjectRegistry::save()` lock file opens registry path, not a separate `.lock` file — NTFS advisory lock only
-- **Difficulty:** medium
-- **Location:** src/project.rs:56-65
-- **Description:** `ProjectRegistry::save()` locks the registry file itself (`projects.toml`) using `File::lock()`, then writes to a temp file and renames over it. On NTFS (WSL `/mnt/c/`), `File::lock()` is advisory-only — another process can still write to the file without acquiring the lock. The rename operation then clobbers the other process's writes. This is the same class of issue documented for HNSW files (persist.rs:19-28 warns about advisory locking on WSL), but `ProjectRegistry::save()` has no such warning. The `hnsw/persist.rs` code calls `warn_wsl_advisory_locking()` — `project.rs` doesn't.
-- **Suggested fix:** Add `warn_wsl_advisory_locking`-style warning for registry saves on WSL/NTFS. Low impact because concurrent `cqs ref add` operations are rare, but consistency with HNSW locking warnings would be good.
-
-#### PB-6: `validate_and_read_file` path traversal check may fail with mixed-case on case-insensitive FS
-- **Difficulty:** medium
-- **Location:** src/cli/commands/read.rs:35-41
-- **Description:** `validate_and_read_file` canonicalizes both the file path and the project root, then checks `canonical.starts_with(&project_canonical)`. On case-insensitive filesystems (macOS HFS+, NTFS), `dunce::canonicalize` returns the filesystem's stored case, not the input case. If the project root was opened as `/mnt/c/Projects/CQS` but the filesystem stores it as `/mnt/c/Projects/cqs`, the `starts_with` check works because `dunce::canonicalize` normalizes to the stored case. However, on case-preserving but case-insensitive filesystems, if two different canonical forms exist (e.g., directory rename race), the check could fail spuriously. In practice, `dunce::canonicalize` resolves to the true filesystem path, so this is more of a documentation gap than a real bug.
-- **Suggested fix:** Document the case-sensitivity assumption in a comment: `// Note: canonicalize resolves to filesystem-stored case, so this is case-correct on case-insensitive FS`.
-
-#### PB-7: `cmd_watch` `RecommendedWatcher` uses inotify on WSL — `PollWatcher` not offered as fallback
-- **Difficulty:** hard
-- **Location:** src/cli/watch.rs:90
-- **Description:** `RecommendedWatcher::new()` selects inotify on Linux (including WSL). On WSL2, inotify works for the Linux filesystem (`/home/...`) but is unreliable for Windows-mounted paths (`/mnt/c/...`) because the 9P filesystem server doesn't fully implement inotify semantics. The code warns at line 62-63 but doesn't offer a workaround. The `notify` crate provides `PollWatcher` as a cross-platform alternative that works reliably on `/mnt/c/`. Already documented in prior triage (PB-1 in v0.19.4 audit) as "existing behavior" — including here for completeness since it's the primary platform pain point.
-- **Suggested fix:** Add a `--poll` flag to `cqs watch` that uses `PollWatcher` instead of `RecommendedWatcher`. On WSL, auto-detect if CWD is under `/mnt/` and suggest `--poll`. This was deferred previously as low priority since `cqs index` works, but it's the #1 WSL usability issue.
-
-#### PB-8: `is_test_chunk` hardcodes both `/` and `\\` separators but `file` is always forward-slash normalized
+#### CQ-12: `generate_nl_with_call_context` has zero test coverage — new core function for SQ-4
 - **Difficulty:** easy
-- **Location:** src/lib.rs:212-216
-- **Description:** `is_test_chunk` checks for both `file.contains("/tests/")` and `file.contains("\\tests\\")`, and both `file.starts_with("tests/")` and `file.starts_with("tests\\")`. However, by the time `is_test_chunk` is called, the `file` parameter has already been normalized to forward slashes by `normalize_path()` / `normalize_slashes()` during indexing. The backslash checks are dead code — they'll never match. This is harmless but misleading: a reader might think backslash paths are possible at this layer when they're not.
-- **Suggested fix:** Remove the backslash variants and add a comment: `// file paths are forward-slash normalized by this point`. The SQL-level test path patterns in `store/calls.rs` (e.g., `%/tests/%`) correctly use only forward slashes.
-
-## Extensibility
-
-#### EX-1: `Pattern` enum has 4 manually-synced representations with no macro or sync test
-- **Difficulty:** easy
-- **Location:** src/structural.rs:10-61
-- **Description:** The `Pattern` enum has 4 parallel representations that must stay in sync: the enum variants (line 10-17), `FromStr` match arms (line 22-28), `Display` match arms (line 39-46), and `all_names()` (line 53-60). Adding a new pattern (e.g., `Callback`, `Singleton`) requires editing all 4 sites plus the `matches` dispatch (line 82-89) and the error message string (line 30). The `test_all_names_covers_all_variants` test (line 259) checks count equality (`== 6`) but would pass if a variant was added to the enum AND all_names without updating FromStr/Display. Compare with `Language` and `ChunkType` which use `define_languages!` / `define_chunk_types!` macros to generate all 4 from a single declaration.
-- **Suggested fix:** Either create a `define_patterns!` macro similar to `define_chunk_types!`, or add a roundtrip test that parses every `all_names()` entry and verifies `Display` produces the same string (the existing `test_pattern_display_roundtrip` does this but doesn't verify the count matches enum variant count via `std::mem::variant_count` or exhaustive matching).
-
-#### EX-2: `chunk_importance` test detection hardcoded — not connected to language system's `test_markers`/`test_path_patterns`
-- **Difficulty:** medium
-- **Location:** src/search.rs:398-413
-- **Description:** `chunk_importance` hardcodes `test_` and `Test` prefix checks for test function detection, and `_test.` / `test_` for test file detection. These patterns overlap with but don't match the language-driven `LanguageDef::test_markers` and `LanguageDef::test_path_patterns`. For example, Java uses `@Test` annotation (not `test_` prefix), Python has `pytest` conventions that differ from `test_` prefix. The v0.19.4 audit fixed the same issue in `find_dead_code` (EX-8, calls.rs), but `chunk_importance` in `search.rs` was missed. The result: dead code detection correctly uses language-aware test heuristics, but search result scoring uses hardcoded heuristics — a Java test class annotated with `@Test` gets full importance score instead of the 0.90 demotion.
-- **Suggested fix:** Use the language-driven test detection. Since `chunk_importance` doesn't have a `Language` parameter, either add one (requires changing callers in `search_filtered`) or extract the name-based heuristic into a shared function that `find_dead_code` and `chunk_importance` both call. The file-based check should use `REGISTRY.all_test_path_patterns()` for SQL LIKE-style matching, though for scoring purposes the simple heuristic may be acceptable if documented as intentionally conservative.
-
-#### EX-3: `normalize_lang` has no sync test verifying outputs match `Language::from_str`
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:957-1009
-- **Description:** `normalize_lang` maps 50+ fenced code block tags to language name strings. These output strings must parse via `Language::from_str`, but there's no test enforcing this invariant. The CQ-4 finding (already reported) covers the duplication; this finding specifically flags the missing validation test. If someone adds a new language to `define_languages!` but typos the output in `normalize_lang` (e.g., `"objective-c"` instead of `"objc"`), fenced blocks in markdown silently fail to parse with no test catching the mismatch. Also, `"ini"` and `"markdown"` are valid `Language::from_str` inputs but missing from `normalize_lang`.
-- **Suggested fix:** Add a test: `for (_, output) in normalize_lang_entries() { assert!(Language::from_str(output).is_ok(), "{} not a valid language", output); }`. This requires making `normalize_lang`'s mapping iterable (e.g., a const array of `(&str, &str)` pairs instead of a match).
-
-#### EX-4: `where_to_add::extract_patterns` catch-all silently falls through for 42 of 50 languages
-- **Difficulty:** medium
-- **Location:** src/where_to_add.rs:323-449
-- **Description:** `extract_patterns` has specific pattern extraction for 8 languages (Rust, Python, TypeScript/JavaScript, Go, C, Java, SQL, Markdown) and a `_ =>` catch-all for the remaining 42. The catch-all returns empty imports and "default" visibility. Languages like Kotlin (`import`), Swift (`import`), C# (`using`), PHP (`use`), Ruby (`require`), C++ (`#include`) all have well-known import patterns that would improve placement suggestions. The catch-all means `cqs where` gives significantly worse results for non-core languages — no import context and no visibility analysis. This is a known gap but not tracked.
-- **Suggested fix:** At minimum, add C++ (`#include`), C# (`using`), Ruby (`require`), PHP (`use`), Kotlin (`import`), and Swift (`import`) — these are the most common patterns with minimal logic. A more extensible approach: add an `import_patterns: &[&str]` field to `LanguageDef` so the language system drives import extraction. Low priority since `where` is advisory and the core languages cover most usage.
-
-#### EX-5: HNSW tuning parameters compile-time only — no config file override
-- **Difficulty:** medium
-- **Location:** src/hnsw/mod.rs:57-62
-- **Description:** `MAX_NB_CONNECTION` (M=24), `EF_CONSTRUCTION` (200), and `EF_SEARCH` (100) are compile-time constants with no config file override. The doc comment (lines 52-56) suggests different values for different workloads: M=16 for small codebases, M=32 for large, lower ef_search for batch processing. Users can't tune these without recompiling. This was flagged in the v0.9.1 audit (EX-4: "HNSW tuning parameters compile-time only") and deferred as "by design for now." Since the project now has a config file system (`Config` in config.rs), the infrastructure exists to make at least `ef_search` configurable at runtime. `ef_construction` and `M` affect index build and are reasonably compile-time, but `ef_search` only affects query time and could be overridden per-query.
-- **Suggested fix:** Add `ef_search: Option<usize>` to `Config`. Pass it through `SearchFilter` or as a parameter to `HnswIndex::search`. Keep `EF_SEARCH` as the default. Low priority — the current defaults work well for the 10k-100k chunk range that covers most projects.
-
-#### EX-6: `name_match_score` scoring weights are inline magic numbers without named constants
-- **Difficulty:** easy
-- **Location:** src/search.rs:130-196
-- **Description:** `NameMatcher::score` uses inline float literals for scoring tiers: `1.0` (exact match), `0.8` (name contains query), `0.6` (query contains name), `0.5` (max word overlap score). These thresholds control hybrid search ranking but aren't named constants — tuning requires reading the function to find which number means what. Compare with `NOTE_BOOST_FACTOR` (line 265), `RISK_THRESHOLD_HIGH` (impact/hints.rs:11), and `DEFAULT_NAME_BOOST` (cli/config.rs:20) which are all named constants.
-- **Suggested fix:** Extract to named constants: `const NAME_SCORE_EXACT: f32 = 1.0`, `const NAME_SCORE_CONTAINS: f32 = 0.8`, `const NAME_SCORE_CONTAINED_BY: f32 = 0.6`, `const NAME_SCORE_MAX_OVERLAP: f32 = 0.5`. Low priority — the function is well-documented with comments and the values are unlikely to change frequently.
-
-#### EX-7: `chunk_importance` demotion factors are inline magic numbers without named constants
-- **Difficulty:** easy
-- **Location:** src/search.rs:398-413
-- **Description:** `chunk_importance` returns `0.90` for test functions/files and `0.95` for underscore-prefixed private helpers. These multipliers affect search ranking but aren't named constants. They're documented in the function's doc comment table (lines 389-391), but someone tuning search scoring has to find and modify inline float literals inside the function body. Related to EX-6 — both are in the same scoring pipeline.
-- **Suggested fix:** Extract to named constants: `const IMPORTANCE_TEST: f32 = 0.90`, `const IMPORTANCE_PRIVATE: f32 = 0.95`. Group with the existing `NOTE_BOOST_FACTOR` constant since they're all search scoring parameters.
+- **Location:** src/nl.rs:274-322
+- **Description:** `generate_nl_with_call_context` was added in v1.0.7 (#590) as the key function for the SQ-4 call-graph enriched embeddings feature. It is public API (exported from `lib.rs:119`), called in production via `enrichment_pass`, and governs the embedding quality for all chunks with callers or callees. Despite being central to a major feature, it has zero unit tests in `nl.rs`. The test module (line 914) covers `tokenize_identifier`, `normalize_for_fts`, `extract_params_nl`, `extract_return_nl`, `generate_nl_description`, `parse_jsdoc_tags`, and `strip_markdown_noise` — but not `generate_nl_with_call_context` or its IDF-filtering behavior.
+- **Suggested fix:** Add unit tests covering:
+  1. Caller names appended correctly: `ctx.callers = ["foo", "bar"]` → NL includes "Called by: foo, bar"
+  2. Callee IDF filtering: a callee with `freq >= 0.10` is excluded; one with `freq < 0.10` is included
+  3. `max_callers`/`max_callees` truncation: more callers than limit → only first N appear
+  4. Empty caller/callee → returns base NL unchanged
+  5. Both empty → `extras.is_empty()` branch returns without trailing ". "
 
 ## Test Coverage
 
-#### TC-1: 9 languages have no parser integration tests in `parser_test.rs` — C#, F#, PowerShell, Scala, Ruby, Vue, Svelte, Razor, VB.NET
+#### TC-B1: `update_embeddings_batch` and `chunks_paged` have zero unit tests
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:79-111 (`update_embeddings_batch`), src/store/chunks.rs:983-1014 (`chunks_paged`)
+- **Description:** Both functions were added in v1.0.7 as core infrastructure for the SQ-4 enrichment pass. `update_embeddings_batch` is responsible for writing all enriched embeddings to the store; `chunks_paged` is the sole pagination mechanism for iterating chunks during enrichment. Neither has a single unit test in `store/chunks.rs`. The test module (line 1460+) covers `upsert_chunks_batch`, `embedding_batches`, `all_chunk_identities_filtered`, `get_chunks_by_origin`, and stale-file detection — but not the two new functions. Key behaviors that should be tested:
+  - `update_embeddings_batch`: writes embedding bytes correctly, skips unknown IDs without error, returns correct count of actually-updated rows, empty input returns 0.
+  - `chunks_paged`: returns chunks after cursor, advances cursor correctly, terminates when empty, handles `after_rowid = 0` (first page), handles store with exactly one chunk.
+- **Suggested fix:** Add tests for both. Minimal test for `update_embeddings_batch`: insert a chunk, call `update_embeddings_batch` with a new embedding, re-fetch and assert the embedding changed. Minimal test for `chunks_paged`: insert 3 chunks, call with `after_rowid=0, limit=2`, assert 2 returned and cursor advances; call again with the returned cursor, assert the remaining 1 is returned.
+
+#### TC-B2: `callee_caller_counts` has zero unit tests
+- **Difficulty:** easy
+- **Location:** src/store/calls.rs:1242-1261
+- **Description:** `callee_caller_counts()` is the source of truth for the IDF filter in `enrichment_pass`. It returns `(callee_name, distinct_caller_count)` pairs used to compute the frequency ratio that decides whether a callee appears in the enriched NL. Despite being the critical input to the IDF suppression logic, the function has no unit test. The calls.rs test module covers `get_caller_counts_batch`, `get_callee_counts_batch`, `find_shared_callers/callees`, dead code detection, and confidence scoring — but not `callee_caller_counts`. Without a test, a SQL change (e.g., removing `DISTINCT`) would go undetected until enrichment quality degraded.
+- **Suggested fix:** Add tests using the existing `seed_call_graph` fixture. In the seeded graph (A→B, A→C, B→C, D→B), `callee_caller_counts` should return: `func_b → 2` (called by func_a and func_d), `func_c → 2` (called by func_a and func_b). Test the empty store case (returns empty vec) and verify the DISTINCT behavior by having the same caller call the same callee twice (should still count as 1).
+
+#### TC-B3: `enrichment_pass` has no integration test — the SQ-4 feature path is untested end-to-end
 - **Difficulty:** medium
-- **Location:** tests/parser_test.rs, tests/fixtures/
-- **Description:** `parser_test.rs` has integration tests for 41 languages but 9 are missing: C# (has 1 inline unit test only), F# (9 inline tests, no integration), PowerShell (6 inline, no integration), Scala (8 inline, no integration), Ruby (8 inline, no integration), Vue (6 inline, no integration), Svelte (6 inline, no integration), Razor (14 inline, no integration), VB.NET (12 inline, no integration). Integration tests exercise the full `Parser::parse_file()` pipeline including chunk extraction, line numbering, content hashing, and post-process hooks. Inline tests only test the tree-sitter query in isolation. The v0.26.0 audit (TC-1) added integration tests for Bash, HCL, Kotlin, Swift, and Objective-C — these 9 were not included.
-- **Suggested fix:** Create fixture files (`sample.cs`, `sample.fs`, `sample.ps1`, `sample.scala`, `sample.rb`, `sample.vue`, `sample.svelte`, `sample.cshtml`, `sample.vb`) and add integration tests following the established pattern (parse fixture, assert chunk count, names, types, line numbers).
-
-#### TC-2: `normalize_lang` has no direct unit tests — missing languages silently skipped
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:957-1009
-- **Description:** `normalize_lang()` maps 50+ fenced code block tags to cqs language name strings, but has zero direct unit tests. It is exercised indirectly through `extract_fenced_blocks` tests, but those only test 3 aliases ("js", "py", "ts"). There is no test verifying that every non-None output of `normalize_lang` is a valid `Language::from_str` input. Currently `ini` is missing from the map (reported as CQ-4) — this gap would be caught by a sync test. When new languages are added, `normalize_lang` requires manual updates with no failing test to catch omissions.
-- **Suggested fix:** Add two tests: (1) `test_normalize_lang_outputs_are_valid_languages` — iterate all non-None outputs and verify each parses via `Language::from_str`, (2) `test_normalize_lang_all_languages_have_aliases` — verify each enabled language with a grammar has at least one alias in `normalize_lang`. This catches both stale outputs and missing inputs.
-
-#### TC-3: `extract_fenced_blocks` missing edge case tests — unclosed fences, nested fences, mixed fence types
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:1017-1083
-- **Description:** The fenced block extractor has 8 tests covering basic cases (single block, aliases, unknown lang, tilde, metadata, empty), but is missing edge cases common in real markdown: (1) unclosed fences (``` with no closing) — silently reads to EOF, (2) nested fences (4-backtick fence containing 3-backtick example), (3) indented fences (spec allows 1-3 spaces), (4) mixed fence types (backtick open + tilde close — should NOT match per spec), (5) case sensitivity in language tag (`Rust` vs `rust`).
-- **Suggested fix:** Add 5 edge case tests: `test_extract_fenced_blocks_unclosed`, `test_extract_fenced_blocks_nested`, `test_extract_fenced_blocks_indented`, `test_extract_fenced_blocks_mixed_fence_types`, `test_extract_fenced_blocks_case_insensitive_lang`.
-
-#### TC-4: `build_risk_summary` never directly tested — only exercised through integration
-- **Difficulty:** easy
-- **Location:** src/review.rs:215-243
-- **Description:** `build_risk_summary()` computes the aggregated risk breakdown (high/medium/low counts + overall level) from reviewed functions. It has zero direct tests — all coverage comes through `review_diff()` integration tests in `tests/review_test.rs`. The function's edge cases are not exercised: empty input (returns all-zero with Low), all-same-level inputs, and the high > medium > low priority logic.
-- **Suggested fix:** Add 4 unit tests in `review.rs::tests`: `test_build_risk_summary_empty`, `test_build_risk_summary_all_high`, `test_build_risk_summary_mixed_levels`, `test_build_risk_summary_overall_priority`.
-
-#### TC-5: `match_notes` in `review.rs` — note-matching logic only tested through one happy path
-- **Difficulty:** easy
-- **Location:** src/review.rs:183-212
-- **Description:** `match_notes()` uses `path_matches_mention()` to correlate notes with changed files. The integration test `test_review_diff_with_relevant_notes` covers exact filename mention, but doesn't test: (1) notes that don't match any changed file, (2) multiple notes matching the same file, (3) notes with empty mentions list. The filtering and aggregation logic in `match_notes` has only one test path.
-- **Suggested fix:** Add 2 test cases in `review_test.rs`: review with non-matching notes (verify empty `relevant_notes`), review with multiple notes matching same file (verify all appear).
-
-#### TC-6: Fenced code block call-graph relationships untested
-- **Difficulty:** medium
-- **Location:** src/parser/mod.rs:361-363
-- **Description:** `parse_file_all()` extracts fenced blocks from markdown and parses them for chunks AND relationships. The existing tests (`test_fenced_blocks_parsed_as_chunks`, `test_fenced_blocks_multiple_languages`) only check chunk extraction via `parse_file()`. No test verifies that `parse_file_all()` extracts function calls from fenced code blocks. If call extraction silently fails for fenced blocks, the call graph for code examples in markdown documentation will have missing edges.
-- **Suggested fix:** Add `test_fenced_blocks_call_extraction` using `parse_file_all()` on a markdown file containing a fenced Rust block with explicit function calls. Assert the returned `function_calls` vector contains expected callee names.
-
-#### TC-7: `batch/handlers.rs` — 1306-line file with zero inline tests
-- **Difficulty:** hard
-- **Location:** src/cli/batch/handlers.rs
-- **Description:** `batch/handlers.rs` (1306 lines) contains dispatch logic for all 30+ batch commands. It has zero inline tests. All testing is through `cli_batch_test.rs` (17 integration tests) via `assert_cmd`. Handler-level logic — parameter validation, output format construction, edge case handling — is only tested end-to-end. Integration tests are slow and can't test handler internals at the unit level.
-- **Suggested fix:** Extract pure-function helpers from handlers (parameter parsing, output formatting) and add unit tests. Low priority since 17 integration tests provide reasonable common-path coverage.
-
-#### TC-8: `run_ci_analysis` dead code path filtering — path edge cases untested
-- **Difficulty:** easy
-- **Location:** src/ci.rs:100-104
-- **Description:** `run_ci_analysis` filters dead code to diff-touched files using `diff_files.iter().any(|f| d.chunk.file.ends_with(f))`. The `ci_test.rs` tests cover basic scenarios but don't test path edge cases: (1) suffix collision (`bar.rs` matching `foobar.rs` — prevented by `Path::ends_with` component matching, but untested), (2) backslash paths (`src\lib.rs` vs `src/lib.rs`).
-- **Suggested fix:** Add 2 tests: `test_ci_dead_code_path_suffix_collision`, `test_ci_dead_code_cross_platform_path`.
+- **Location:** src/cli/pipeline.rs:911-1036, tests/ (no matching test file)
+- **Description:** The SQ-4 enrichment pass is exercised only through the CLI (`cqs index`), which is covered by smoke tests. No integration test calls `enrichment_pass` directly with a seeded store and verifies that chunk embeddings are actually updated. The function is 125 lines with multiple failure points (stats, callee counts, identity load, callers/callees batch fetch, pagination loop, flush). No test covers: (a) a chunk with callers gets its embedding updated; (b) a leaf node (no callers, no callees) is correctly skipped; (c) the IDF filter correctly suppresses high-frequency callees in the NL; (d) the function returns 0 on an empty store. The existing `tests/store_calls_test.rs` tests the call graph store functions but not the enrichment pipeline.
+- **Suggested fix:** Add a test in `tests/` (or in a new `enrichment_test.rs`) that: creates a Store, inserts chunks with embeddings, seeds a call graph, calls `enrichment_pass` with a mock/CPU embedder, and asserts that the embedding for a chunk with callers has changed (not equal to original). Use `#[ignore]` if the embedder requires a downloaded model, or use a mock that returns deterministic vectors.
 
 ## Robustness
 
-#### RB-1: `extract_attribute_from_text` uses byte offset from lowercased text to slice original — panics on non-ASCII before match
-- **Difficulty:** easy
-- **Location:** src/language/razor.rs:197-209
-- **Description:** `extract_attribute_from_text` calls `text.to_lowercase()` to produce `lower`, finds a byte position via `lower.find(&pattern)`, then uses that position to slice the original `text`: `&text[pos + pattern.len()..]`. The `to_lowercase()` transform can change byte lengths for non-ASCII characters (e.g., `\u{0130}` (Latin capital I with dot above) lowercases to 3 bytes from 2). If non-ASCII characters appear in the text *before* the matched attribute, the byte offset from `lower` won't correspond to the correct position in `text`, causing either an incorrect slice or a panic on a non-char boundary. In practice, HTML/Razor attributes are ASCII, so this is latent rather than active.
-- **Suggested fix:** Use `to_ascii_lowercase()` instead of `to_lowercase()` — it's guaranteed to preserve byte lengths since it only transforms ASCII characters. This is semantically correct for HTML/Razor attribute matching.
-
-#### RB-2: `detect_listing_language` same `to_lowercase()` byte offset bug as RB-1
-- **Difficulty:** easy
-- **Location:** src/language/latex.rs:143-145
-- **Description:** Same pattern as RB-1: `text_lower = trimmed.to_lowercase()`, `pos = text_lower.find("language=")`, then `trimmed[pos + 9..]`. If `trimmed` contains non-ASCII characters before the `language=` attribute, the byte offset from the lowercased version will be incorrect for slicing the original string. LaTeX documents commonly contain non-ASCII characters (accented characters, math symbols) in listing options, making this more likely to trigger than the Razor variant.
-- **Suggested fix:** Use `to_ascii_lowercase()` or find case-insensitively on the original string using byte-level matching.
-
-#### RB-3: `normalize_lang` missing 5+ supported languages — fenced blocks silently skipped in markdown
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:957-1009
-- **Description:** `normalize_lang` maps fenced code block language tags to cqs Language names but omits several supported languages: `"ini"`, `"vb"/"vbnet"/"vb.net"`, `"svelte"`, `"razor"/"cshtml"`, `"vue"`. All are supported languages with grammars, but can't be extracted from markdown fenced blocks. Users writing ` ```ini` or ` ```vue` blocks get zero chunks with no warning. This is the robustness aspect of the CQ-4 finding — the primary concern is silent data loss.
-- **Suggested fix:** Add the missing mappings. At minimum: `"ini" => Some("ini")`, `"vb" | "vbnet" | "vb.net" => Some("vbnet")`, `"svelte" => Some("svelte")`, `"razor" | "cshtml" => Some("razor")`, `"vue" => Some("vue")`.
-
-#### RB-4: `extract_fenced_blocks` unclosed fence silently eats rest of file
-- **Difficulty:** easy
-- **Location:** src/parser/markdown.rs:1047-1079
-- **Description:** When `extract_fenced_blocks` finds an opening fence (e.g., ` ```rust`) but no matching closing fence, the inner `while i < lines.len()` loop at line 1051 consumes all remaining lines. The outer loop ends because `i == lines.len()`. All subsequent fenced blocks after the unclosed fence are lost because the parser is stuck inside the unclosed block. This is correct behavior (don't emit incomplete blocks), but it does so silently — no `tracing::debug!` or `warn!` indicates that blocks were lost. If a large markdown file has an accidental unclosed fence early, every fenced block after it disappears from the index.
-- **Suggested fix:** After the inner while loop, if no close was found, add `tracing::debug!(lang = %lang_tag, open_line, "Unclosed fenced block — remaining blocks in file skipped")`.
-
-#### RB-5: `parse_fenced_blocks` silently skips 3 failure modes with no logging (overlaps EH-1)
-- **Difficulty:** easy
-- **Location:** src/parser/mod.rs:618-630
-- **Description:** Three `continue` statements silently skip fenced code blocks when `set_language` fails (line 618), `parse` returns None (line 622-624), or `get_query` fails (line 627-629). None emit tracing output. Compare with `parse_file` at line 252 which logs `warn!` for extraction failures, and `parse_injected_chunks` at line 294 which logs injection failures. If all fenced blocks in a markdown file fail, the user gets zero chunks with no diagnostic explaining why. Primary concern is silent data loss during parsing.
-- **Suggested fix:** Add `tracing::debug!` for each `continue` path. Use `debug!` (not `warn!`) because fenced blocks with invalid content are common in documentation markdown.
-
-#### RB-6: `store/chunks.rs` `CandidateRow`/`ChunkRow` use panicking `row.get()` — 16+ sites
+#### RB-B1: Name-based callers/callees lookup merges call context for same-named functions across files
 - **Difficulty:** medium
-- **Location:** src/store/chunks.rs (~1290-1323, ~1340-1370), src/store/helpers.rs:75-121
-- **Description:** Previously flagged as RB-2 in v0.19.4 audit (informational). `sqlx::Row::get()` panics if the column doesn't exist or the type doesn't match. All call sites use `get::<Type, _>("column_name")` where columns are from hardcoded SELECT queries in the same function, so column mismatches require a code change to the SELECT without updating the `from_row`. The risk is low but a schema migration bug or SQLite corruption could trigger a panic deep in the store layer with no recovery. This is the largest class of latent panics in production code (16+ sites across chunks.rs alone).
-- **Suggested fix:** Previously marked informational. `try_get()` with `?` propagation would convert panics to errors. Not urgent — the current pattern is standard `sqlx` usage.
+- **Location:** src/cli/pipeline.rs:940-948, src/store/calls.rs:625-667
+- **Description:** `enrichment_pass` looks up callers and callees by chunk name (`ci.name`), not by chunk ID. `get_callers_full_batch` groups by `callee_name` in `function_calls` — so all callers of *any* function named `parse` in the index are merged into one entry. When the loop later does `callers_map.get(&cs.name)` (line 980), a chunk named `parse` in `src/config.rs` gets the same callers list as a chunk named `parse` in `src/network.rs`, even though they are different functions. For common method names (`new`, `build`, `parse`, `from`, `into`), this produces spurious enrichment NL like "Called by: deserialize_config, connect_to_db, ..." for functions that are actually independent. This degrades embedding quality for functions with common names, which are often the most performance-critical ones (constructors, builders, converters).
+- **Suggested fix:** Two options. Option A (lightweight): post-filter the callers list by file — when processing `cs` with `cs.file = "src/config.rs"`, keep only CallerInfo entries where `caller.file == cs.file` (same-file callers are unambiguous). Option B (correct): look up callers/callees by chunk ID, not name. The `function_calls` table uses `caller_name`/`callee_name` (names, not IDs), so this would require a schema change to store chunk IDs. Document the current limitation in a code comment so future maintainers understand the approximation.
 
-#### RB-7: `structural.rs` `is_recursive` joins all lines then searches — O(n) allocation for line-by-line check
-- **Difficulty:** easy
-- **Location:** src/structural.rs:189-196
-- **Description:** `is_recursive` collects all lines into a Vec, then joins lines 1+ into a single String via `lines[1..].join("\n")` before doing `body.contains()`. For a 1000-line function, this allocates a ~40KB string to search. The `cqs structural recursion` command runs this for every function in the index. For 10,000 functions averaging 100 lines each, this is ~100MB of allocations. The search itself is fine (linear scan), but the allocation is unnecessary.
-- **Suggested fix:** Search line-by-line instead of joining: `lines[1..].iter().any(|l| l.contains(&pattern1) || l.contains(&pattern2))`. Avoids the allocation entirely and short-circuits on first match.
+#### RB-B2: `enrichment_pass` loads the entire call graph into memory before processing any chunks
+- **Difficulty:** medium
+- **Location:** src/cli/pipeline.rs:936-948
+- **Description:** The enrichment pass makes three full-scan memory allocations before paging through chunks: `all_chunk_identities()` (all chunk names, IDs, and metadata), `get_callers_full_batch(&all_names)` (all caller lists for every name), and `get_callees_full_batch(&all_names)` (all callee lists for every name). For a large codebase (50K chunks, 200K call edges), this could hold ~200MB in memory simultaneously: all identities (~10MB), the callers HashMap (~50-100MB for Vec<CallerInfo> with file paths), and the callees HashMap (~50-100MB). The `chunks_paged` loop then iterates through the same data in pages — the page-based approach doesn't reduce peak memory because the full call graph is already loaded. The pagination only affects the `content`-heavy `ChunkSummary` structs.
+- **Suggested fix:** The current design is reasonable for codebases up to ~20K chunks. For larger codebases, the fix is to process chunks in pages and fetch callers/callees per page instead of loading everything up front. This requires one `get_callers_full_batch` call per page (500 chunks × N pages) instead of one global call. Add a comment documenting the memory model: "Loads full call graph into memory. For indexes with >50K chunks, consider switching to per-page caller/callee lookup."
 
 ## Algorithm Correctness
 
-#### AC-1: `search_by_name` results not re-sorted by name-match score — order inconsistent with displayed scores
+#### AC-B1: IDF filter threshold comment says `>10%` but code uses `>=10%` — off-by-one at boundary
 - **Difficulty:** easy
-- **Location:** src/store/mod.rs:622-661
-- **Description:** `search_by_name` fetches results from FTS5 (ordered by `bm25()`), then assigns each result a `score_name_match_pre_lower` score (1.0 for exact, 0.9 for prefix, 0.7 for substring, 0.0 for no match). However, the results are returned in BM25 order, not in name-match score order. This means a user searching for `parse_config` might see `test_parse_config` (name-match 0.7) ranked above `parse_config` (name-match 1.0) if BM25 prefers the former (e.g., due to content/signature term frequency). The `.score` field on each result reflects name-match precision, but the ordering reflects BM25 relevance — a mismatch between what the user sees (scores) and how results are ordered. Both CLI `--name-only` and batch `name_only` pass results directly to output without re-sorting.
-- **Suggested fix:** Add `results.sort_by(|a, b| b.score.total_cmp(&a.score));` before returning from `search_by_name`. This makes ordering match the score the user sees. Alternatively, rename the score to indicate it's BM25-derived and display BM25 order explicitly.
+- **Location:** src/nl.rs:299, 307
+- **Description:** Line 299 comment: "A callee appearing in >10% of chunks is likely a utility." Line 307 predicate: `freq >= 0.10` (greater-than-or-equal). The two disagree at the exact boundary: a callee appearing in exactly 10% of chunks is suppressed by the code but would be kept by the comment's description. Additionally, the unit test (line 1471) uses `0.15` for the filtered case and `0.05`/`0.02` for the kept cases — it never tests the exact boundary value `0.10`, so neither the `>` nor `>=` interpretation is verified. For small codebases (10 chunks), a callee called by exactly 1 function hits the threshold (`1/10 = 0.10`) and is suppressed as a "utility", even though 1-caller callees are typically domain-specific and valuable to include.
+- **Suggested fix:** Pick one interpretation and make code and comment agree. `>=` (current code) is more conservative — suppresses more callees. If that's intended, update the comment to "appearing in >=10%" or ">= 10% of chunks". Add a boundary test: insert a callee with exactly `freq = 0.10` and assert it is filtered.
 
-#### AC-2: `apply_token_budget` can exceed budget due to `.max(1)` guarantee — `used` exceeds `budget` with no cap
+#### AC-B2: `page_size` is a `let` local rather than a named constant — inconsistent with `ENRICH_EMBED_BATCH`
 - **Difficulty:** easy
-- **Location:** src/cli/commands/review.rs:97-98, src/cli/commands/ci.rs:96-97
-- **Description:** When `max_callers` computes to 0 (budget exhausted by overhead + changed functions + notes), the `.max(1)` on the truncation forces at least 1 caller and 1 test to be kept, adding `tokens_per_caller + tokens_per_test` (33 tokens) beyond the budget. The returned `used` value can significantly exceed `budget`. The warning message "Output truncated to ~{used} tokens (budget: {budget})" is then misleading — it says output was truncated to a value larger than the budget. While the guarantee of at least 1 item is intentional and useful, the warning text implies the output fits within the budget when it doesn't.
-- **Suggested fix:** Adjust the warning message to say "Output limited to ~{used} tokens (budget: {budget}, minimum 1 caller + 1 test guaranteed)" or clamp `used` to `budget` in the warning. Alternatively, skip the `.max(1)` when the budget has already been exceeded (only guarantee 1 item when the budget allows at least 1 item's worth). Both functions (review.rs and ci.rs) have identical code and should be fixed together.
-
-#### AC-3: `EmbeddingBatchIterator::next()` uses recursion for corrupt-embedding skip — unbounded stack depth
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:1544-1545
-- **Description:** When a batch of rows is fetched but all embeddings fail validation (wrong dimensions or corrupt bytes), `batch.is_empty()` is true but `rows_fetched > 0`. The iterator handles this by calling `self.next()` recursively to fetch the next batch. If a large contiguous range of rows has corrupt embeddings (e.g., a failed migration left thousands of rows with wrong-dimension embeddings), this recursion would create one stack frame per batch. With a batch size of 10,000 and 100,000 corrupt rows, that's 10 recursive calls — fine. But with batch size 1 (allowed by the API) and 10,000 corrupt rows, it's 10,000 frames — potential stack overflow. While the production batch size is 10,000 (safe), the function accepts arbitrary `batch_size` from callers.
-- **Suggested fix:** Replace recursion with a loop:
+- **Location:** src/cli/pipeline.rs:934
+- **Description:** The enrichment pass uses two magic numbers that control its memory/throughput tradeoff. `ENRICH_EMBED_BATCH = 64` is declared as a named `const` at line 964. `page_size = 500` is declared as a plain `let` binding at line 934 — unnamed, untyped, and undocumented. Both serve the same extensibility role (tunable batch sizes), but only one is consistently named. The `page_size` value also has no comment explaining why 500 was chosen (e.g., "500 * ChunkSummary ~= Xmb per page" or "balances SQLite round-trips with memory"). A reader has no basis for choosing a different value.
+- **Suggested fix:** Promote to a named constant adjacent to `ENRICH_EMBED_BATCH`:
   ```rust
-  Ok((batch, _, max_rowid)) => {
-      self.last_rowid = max_rowid;
-      if batch.is_empty() {
-          continue; // loop instead of recurse
-      } else {
-          return Some(Ok(batch));
-      }
+  /// Chunks fetched per page during enrichment iteration.
+  /// Balances SQLite round-trips vs. memory per batch.
+  const ENRICH_PAGE_SIZE: usize = 500;
+  const ENRICH_EMBED_BATCH: usize = 64;
+  ```
+
+## Extensibility
+
+#### EX-B1: Four enrichment-pass tuning values are hardcoded with no config path
+- **Difficulty:** medium
+- **Location:** src/cli/pipeline.rs:934, 964, 1005-1006; src/nl.rs:307
+- **Description:** The enrichment pass behavior is controlled by four magic values with no configuration surface:
+  1. `page_size = 500` — chunks per page during iteration (pipeline.rs:934)
+  2. `ENRICH_EMBED_BATCH = 64` — embeddings per flush (pipeline.rs:964)
+  3. `5, 5` — max_callers and max_callees passed to `generate_nl_with_call_context` (pipeline.rs:1005-1006)
+  4. `0.10` — IDF suppression threshold (nl.rs:307)
+
+  These values govern embedding quality vs. token budget tradeoff. Users with large codebases may want more callers/callees in the NL; users with small codebases may want a lower IDF threshold to avoid over-suppression. There is no way to tune these without recompiling. By contrast, many other algorithmic parameters in cqs are already in `Config` (e.g., `ef_search`, `batch_size`, `max_depth`, `note_only`). The four values above follow no such pattern.
+- **Suggested fix:** Add an `[enrichment]` section to `Config` (or extend the existing `[index]` section):
+  ```toml
+  [enrichment]
+  max_callers = 5
+  max_callees = 5
+  idf_threshold = 0.10
+  embed_batch_size = 64
+  ```
+  Pass through `enrichment_pass` and `generate_nl_with_call_context`. This does not require all four to be configurable immediately — even exposing `max_callers`/`max_callees` would address the most user-visible tradeoff.
+
+## Platform Behavior
+
+No new platform-behavior findings specific to the SQ-4 code. The enrichment pass operates only on chunk IDs (strings) and embeddings (bytes); paths are already normalized to forward slashes before storage. `ChunkRow::from_row` and the `callers_map`/`callees_map` use no OS-specific APIs. The existing platform findings from prior batches (PB-1 through PB-7) are unrelated to the new code.
+
+---
+
+## Batch 3: Security
+
+No injection, path traversal, secrets, or access-control findings in the new SQ-4 code. All new SQL statements in `callee_document_frequencies` and `chunks_paged` use fully static query strings with sqlx bound parameters for values — no user input reaches them. `extract_file_context` operates on paths already stored in the database (never on raw user input) and performs only string slicing — no filesystem interaction. The enrichment pass's `embed_batch` and `flush_enrichment_batch` process only chunk IDs (UUIDs from the store) and NL strings generated internally; no user-controlled input enters those paths.
+
+## Batch 3: Data Safety
+
+#### DS-B1: `update_embeddings_batch` transaction does not protect against partial write on connection failure mid-loop
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:97-113
+- **Description:** `update_embeddings_batch` opens a single SQLite transaction and runs one `UPDATE` per embedding inside it. If the connection is lost or the process is killed between `tx.begin()` and `tx.commit()`, SQLite rolls back the entire transaction — correct. However, if `execute(&mut *tx).await?` returns an `Err` for a specific row (e.g., SQLITE_BUSY or a constraint error), the function propagates the error via `?` without explicitly calling `tx.rollback()`. `sqlx` will rollback the transaction when `tx` is dropped, so data integrity is preserved. The issue is operational: the `updated` counter at the point of failure understates progress — the caller in `flush_enrichment_batch` gets an error and aborts the entire enrichment pass. Chunks processed before the failure in this batch had their embedding updates rolled back (good), but chunks processed in *previous* successfully-committed batches are permanently enriched while remaining chunks are not. On re-run, the enrichment pass starts from scratch (cursor = 0), re-processing already-enriched chunks unnecessarily.
+- **Suggested fix:** Document the non-idempotent re-run behavior in `enrichment_pass`: "If interrupted, previously enriched chunks will be re-enriched on re-run." Optionally, add a `source_mtime`-style column or a boolean flag `enriched: bool` to `chunks` so the pass can skip already-enriched chunks on retry. This avoids re-embedding thousands of chunks after an interrupted run.
+
+#### DS-B2: `chunks_paged` cursor can skip rows if `rowid` gaps exist after compaction
+- **Difficulty:** easy
+- **Location:** src/store/chunks.rs:987-1018
+- **Description:** `chunks_paged` iterates by SQLite `rowid` using `WHERE rowid > ?1`. SQLite `rowid` values are not dense — rows deleted by `prune_missing` or `delete_by_origin` leave permanent gaps. This is not a bug in normal operation (the cursor still advances past gaps correctly), but the comment "Loads chunks without loading everything into memory" implies the pagination reduces per-page data. For a codebase where many chunks were pruned, `ENRICHMENT_PAGE_SIZE = 500` may return far fewer than 500 chunks per page (e.g., 50 chunks for a rowid range covering 500 rowid slots with 450 gaps). The enrichment pass does not detect this case — it just processes fewer chunks per iteration without adjusting. This is a functional non-issue but creates misleading performance expectations: a codebase with heavy pruning history may take many more page iterations than expected.
+- **Suggested fix:** Document the gap behavior in `chunks_paged`: "Page size is an upper bound; returned count may be lower after deletions leave rowid gaps. The cursor always advances past processed rows." No code change needed — the behavior is correct.
+
+#### DS-B3: `name_file_count` HashMap key uses cloned String when identities are already live
+- **Difficulty:** easy
+- **Location:** src/cli/pipeline.rs:942-944
+- **Description:** The enrichment pass builds `name_file_count: HashMap<String, usize>` by cloning `ci.name` for each entry (line 944). `identities` is still alive (used on line 946 for `all_names`), so the name strings already exist in memory. `name_file_count` holds a second copy of each unique name as an owned key. For a 50K-chunk codebase with 20K unique names averaging 15 chars, this is ~300KB of avoidable duplication. More importantly, `name_file_count` is queried at line 1000 via `name_file_count.get(&cs.name)`, using `cs.name` (a `String` from `ChunkSummary`), which is correct. The fix is cosmetic — the allocation is small — but it illustrates an unnecessary clone in a hot loop.
+- **Suggested fix:** Use `entry` with a borrowed key by building the map from identities as `&str` slices (possible if `HashMap<&str, usize>` lifetime is tied to `identities`), or simply accept the ~300KB overhead and add a comment. Not worth a refactor.
+
+## Batch 3: Performance
+
+#### PERF-B1: `chunks_paged` fetches full chunk content (including `content`, `doc`, `signature`) for all chunks, including those skipped as leaf nodes or ambiguous names
+- **Difficulty:** medium
+- **Location:** src/store/chunks.rs:994-997, src/cli/pipeline.rs:992-1001
+- **Description:** `chunks_paged` selects all columns including `content`, `doc`, and `signature` — the three largest per-chunk fields. For a typical Rust function, `content` alone can be 500–2000 bytes. In the enrichment pass, chunks are fetched in pages of 500. But the majority of chunks are skipped before content is used:
+  1. Leaf nodes (no callers, no callees) are skipped at line 992-994 — these are typically 40–70% of all chunks.
+  2. Ambiguous names are skipped at line 1000-1001 (functions named `new`, `parse`, `build`, etc.).
+  Only the remaining ~20–40% of chunks actually need full content for `generate_nl_with_call_context` (which calls `generate_nl_description`, which reads `content`, `doc`, `signature`). The other 60–80% load all that data from SQLite and then discard it immediately.
+  For 50K chunks at 1KB average content: 500 chunks × 1KB = 500KB per page loaded; 300–400KB immediately discarded.
+- **Suggested fix:** Add a lightweight page variant that fetches only `(rowid, id, name, chunk_type, language, parent_id)` for the filtering phase, then fetch full content only for chunks that pass both the leaf-node and ambiguity filters via `fetch_chunks_by_ids_async`. This reduces I/O proportionally to the skip rate. The enrichment pass would then be a two-step: filter page → fetch survivors → generate NL → embed.
+
+#### PERF-B2: `callee_caller_counts` full-table scan runs once per `cqs index` on every re-index, including incremental runs
+- **Difficulty:** easy
+- **Location:** src/store/calls.rs:1242-1261, src/cli/commands/index.rs:136
+- **Description:** `enrichment_pass` is called unconditionally whenever `stats.total_calls > 0` (index.rs:136). For incremental re-indexes (where only 1–5 files changed), the enrichment pass still re-embeds all chunks with callers/callees, even if none of their callers or callees changed. The `callee_caller_counts` query scans the entire `function_calls` table, and `get_callers_full_batch` and `get_callees_full_batch` scan all edges. For a 200K-call codebase, this means three full table scans plus re-embedding potentially thousands of chunks on every file save (if triggered by `cqs watch`, which does not currently call `enrichment_pass` at all — but `cqs index` on a changed file does).
+  Currently watch mode does not call `enrichment_pass`, so the cost is only paid on explicit `cqs index` runs. But if watch mode is enhanced to call it in future, this becomes a 200K-row scan on every file change.
+- **Suggested fix:** Track which chunks were enriched and skip them on re-index if neither their callers nor callees changed. A lightweight approach: store the enrichment timestamp in the `chunks` table (`enriched_at`), and only re-enrich chunks where `function_calls.updated_at > chunks.enriched_at`. This is a non-trivial schema change. Short-term: add a `--skip-enrichment` flag to `cqs index` for fast incremental runs, letting users opt out of the enrichment pass when they know only non-call-graph files changed.
+
+#### PERF-B3: `generate_nl_description` called twice per enriched chunk — once in the pipeline, once in the enrichment pass
+- **Difficulty:** easy
+- **Location:** src/nl.rs:281 (inside `generate_nl_with_call_context`), src/cli/pipeline.rs:187
+- **Description:** Every chunk with callers/callees has its NL description generated twice: once during the main pipeline pass (pipeline.rs:187, via `generate_nl_description`) when its embedding is first computed, and once during the enrichment pass (nl.rs:281, called by `generate_nl_with_call_context`) when the enriched embedding replaces it. The enriched pass rebuilds the full base NL — including tokenization, doc-comment parsing, field extraction, and file-context extraction — before appending the caller/callee context. This is CPU-bound work duplicated for every enriched chunk. For 10K enriched chunks at ~5μs per `generate_nl_description` call: ~50ms of wasted work (minor at current scale). The concern is architectural: the enrichment pass doesn't have access to the pre-computed base NL from the pipeline pass (it's not stored in the DB), forcing the recomputation.
+- **Suggested fix:** Store the base NL text in a `nl_text` column in `chunks` during the pipeline pass, and read it back during enrichment (appending context without full recomputation). This also enables caching embeddings by NL hash. Alternatively, document that double NL generation is intentional and accepted.
+
+## Batch 3: Resource Management
+
+#### RM-B1: `enrichment_pass` loads three large data structures before processing any chunks — peak memory is 3× higher than necessary for large codebases
+- **Difficulty:** medium
+- **Location:** src/cli/pipeline.rs:939-954
+- **Description:** Before entering the pagination loop, `enrichment_pass` loads:
+  1. `identities`: all `ChunkIdentity` structs from the DB — for 50K chunks, ~5–8MB (id: ~36B UUID, origin: ~60B path, name: ~15B, plus metadata = ~130B per entry × 50K = ~6.5MB).
+  2. `callers_map: HashMap<String, Vec<CallerInfo>>`: for 200K call edges, each `CallerInfo` has a `PathBuf` (~60B) + `String` name (~15B) + `u32`. Total ~75B × 200K + HashMap overhead ≈ **~25–40MB**.
+  3. `callees_map: HashMap<String, Vec<(String, u32)>>`: similar, ~75B × 200K ≈ **~20–30MB**.
+  4. `name_file_count: HashMap<String, usize>`: ~1–2MB of cloned name strings.
+  All four live simultaneously until `identities` goes out of scope after line 946 (it doesn't — it lives until the end of `enrichment_pass` because `all_names` borrows from it). Total peak: ~60–80MB for a 50K-chunk/200K-edge codebase.
+  The `chunks_paged` loop then adds 500 × `ChunkSummary` (~500KB with content) per page, but this is small compared to the pre-loaded maps.
+  For codebases with 200K+ chunks (large monorepos), this could exceed 300–500MB before processing begins. The previously documented finding RB-B2 noted this and suggested per-page lookup; this finding quantifies the memory cost more precisely.
+- **Suggested fix:** The `identities` vec is only used to build `name_file_count` and `all_names`. After line 946, only `name_file_count`, `callers_map`, `callees_map` are needed. `identities` cannot be dropped early because `all_names` borrows from it. Fix: collect `all_names` as owned `Vec<String>` rather than `Vec<&str>` — then `identities` can be dropped after line 946, freeing ~6.5MB before the maps are built. Document the remaining memory model in a comment above line 939: "Peak memory: callers_map + callees_map ≈ 50–80MB for 200K edges. For larger codebases, switch to per-page lookup."
+
+#### RM-B2: Enrichment pass creates a fresh `Embedder` instance after the pipeline's embedder has been dropped — doubles model-load time
+- **Difficulty:** easy
+- **Location:** src/cli/commands/index.rs:142
+- **Description:** `cmd_index` creates an `Embedder` for the enrichment pass (line 142) after `run_index_pipeline` has returned and its GPU embedder thread has exited (dropping its `Embedder`). Each `Embedder::new()` call performs lazy ONNX session initialization on first use: `~500ms` init time + ~500MB GPU/CPU memory load. So `cqs index` on a codebase with a non-empty call graph loads the ONNX model **twice** per invocation — once for the pipeline, once for the enrichment pass. On GPU, that's ~1s of pure model init overhead; on CPU, potentially longer.
+  The enrichment pass embedder is scoped to `index.rs:142-155` and drops at line 156. The pipeline's embedder drops when its thread is joined at line 866-873 of pipeline.rs. They do not coexist in memory simultaneously (sequential execution), so this is not a double-memory issue. It is a double-init-time issue.
+- **Suggested fix:** Pass the pipeline's `Embedder` out of `run_index_pipeline` and into `enrichment_pass`, avoiding the second initialization. Or, refactor `cmd_index` to create one `Embedder` before the pipeline and pass it through both phases. This saves ~500ms per `cqs index` invocation when the call graph is non-empty.
+
+## Red Team — RT-FS: Filesystem Boundary Violations
+
+#### RT-FS-1: `read_context_lines` reads files from index DB paths without boundary validation
+- **Severity:** low
+- **Location:** `src/cli/display.rs:116-121, 143-148, 316-321, 344-349`
+- **Attack vector:** Corrupt or tamper with `.cqs/index.db` to insert a chunk with `file = "../../etc/shadow"`. Then run `cqs search <query> --context 1` where the search returns the poisoned chunk.
+- **PoC:** `display_unified_results()` calls `root.join(&r.chunk.file)` at line 116 and passes the result to `read_context_lines()` which does `std::fs::read_to_string(file)` at line 35 with no canonicalize+starts_with check. The `chunk.file` value comes directly from the SQLite DB (`chunks` table, `origin` column). If the DB contains `../../etc/shadow`, the join resolves to an out-of-project path and the file is read and its context lines are printed to stdout.
+- **Impact:** File contents from outside the project root are leaked to stdout via context display. Limited to files readable by the current user. Requires DB tampering (the DB is documented as trusted-user, but the stated protection is "Commands cannot read files outside project root" per SECURITY.md line 20).
+- **Mitigating factors:** (1) The DB is stored inside `.cqs/` which is user-writable by design — this is a self-attack scenario. (2) The context lines only show a few lines around the chunk's line range, not the whole file. (3) The attacker must already have write access to `.cqs/index.db`. (4) Normal indexing stores only project-relative paths (pipeline.rs line 320).
+- **Suggested mitigation:** Add canonicalize+starts_with validation in `read_context_lines()` or at the call sites in `display.rs`, consistent with the protection in `validate_and_read_file()`.
+
+#### RT-FS-2: `resolve_parent_context` reads files from index DB paths without boundary validation
+- **Severity:** low
+- **Location:** `src/cli/commands/query.rs:652-653`
+- **Attack vector:** Same DB tampering as RT-FS-1. Insert a chunk with a traversal path and a `parent_id` that is NOT in the DB (forcing the fallback to file read). Run `cqs search <query> --expand`.
+- **PoC:** `resolve_parent_context()` at line 652 does `root.join(&sr.chunk.file)` and passes it to `std::fs::read_to_string()` at line 653. This code path is the fallback when a parent chunk ID is not found in the DB (the "windowed chunk" case). No boundary check is performed. The read content is inserted into `ParentContext` and displayed to the user.
+- **Impact:** Same as RT-FS-1 — out-of-project file content leaked to stdout via parent context display.
+- **Mitigating factors:** Same as RT-FS-1, plus: this path is only reached for windowed chunks whose parent is missing from the DB, which is an unusual state.
+- **Suggested mitigation:** Add canonicalize+starts_with check before the `read_to_string` call at line 652.
+
+#### RT-FS-3: Verified protections — no findings
+
+The following attack surfaces were tested and found to be properly protected:
+
+1. **`cqs read` path traversal (validate_and_read_file):** `dunce::canonicalize()` + `starts_with()` at `src/cli/commands/read.rs:37-43`. Both CLI and batch handlers call through this shared function. Confirmed solid.
+
+2. **`cqs read --focus` path:** Reads `chunk.content` from the DB directly (read.rs line 197), never re-reads the file from disk based on `chunk.file`. No FS boundary issue.
+
+3. **Batch `read` handler:** Delegates to `validate_and_read_file` at `src/cli/batch/handlers.rs:1091`. Same protection as CLI.
+
+4. **`cqs context` command:** Reads only from the index DB (chunk summaries, caller/callee data). Does NOT read source files from disk based on `chunk.file`. No FS boundary issue.
+
+5. **Reference name path traversal (`cqs ref add`):** `validate_ref_name()` at `src/reference.rs:214-231` rejects `/`, `\`, `..`, `.`, null bytes, and leading dots. Called before `ref_path()` constructs any filesystem path. Confirmed solid.
+
+6. **`cqs ref remove` directory deletion:** Uses `canonicalize+starts_with` at `src/cli/commands/reference.rs:240-244` before `remove_dir_all`. Does NOT call `validate_ref_name` but does not need to — the canonicalize check is sufficient. Confirmed solid.
+
+7. **CHM zip-slip containment:** `dunce::canonicalize()` + `starts_with()` on all extracted paths at `src/convert/chm.rs:58-91`. Symlinks skipped. Confirmed solid.
+
+8. **`cqs convert --output`:** Output directory is intentionally unsandboxed (documented in SECURITY.md line 93: "The output path is not sandboxed beyond normal filesystem permissions"). User explicitly provides the output path. Source-overwrite guard exists at `src/convert/mod.rs:251-265`. Not a finding — by design.
+
+9. **Reference symlink rejection:** `load_references()` at `src/reference.rs:47-60` rejects reference paths that are symlinks before opening the DB. Prevents symlink-based redirection of reference index loading.
+
+10. **`cqs blame` file argument injection:** `run_git_log_line_range()` at `src/cli/commands/blame.rs:79-85` rejects file paths starting with `-` and containing `:`. Prevents git argument injection via `chunk.file`.
+
+## Red Team — RT-INJ: Input Injection & Command Injection
+
+#### RT-INJ-1: `CQS_PDF_SCRIPT` env var allows arbitrary Python script execution without path validation
+- **Severity:** medium
+- **Location:** `src/convert/pdf.rs:57-71`
+- **Attack vector:** Set `CQS_PDF_SCRIPT=/tmp/evil.py` via a `.envrc`, `.env`, or shell profile in a cloned repository. When any user runs `cqs convert` on a PDF in that project, the attacker's script runs under `python3`.
+- **PoC:** `find_pdf_script()` at line 58 reads `std::env::var("CQS_PDF_SCRIPT")`. If the file exists (line 67), it is returned immediately. The only guard is a non-`.py` extension warning (line 61-65), which is a log message, not a rejection. The path is then passed to `Command::new(&python).arg("--").arg(&script).arg(path)` at line 21-23. While `--` prevents argument injection into the Python interpreter, the script itself runs with full user privileges. A project-local `.envrc` (auto-loaded by direnv) or `.env` (loaded by many tools) can set this variable, causing arbitrary code execution when the user runs `cqs convert` on any PDF. The threat model says "external docs (PDF/CHM) are semi-trusted" but this vector bypasses the document entirely -- the code runs even if the PDF is benign.
+- **Impact:** Arbitrary code execution under the user's identity. The script receives the PDF path as argv[1] and can exfiltrate data, modify files, or establish persistence.
+- **Suggested mitigation:** (1) Reject non-`.py` extensions (hard error, not warning). (2) Require the script to be inside the project root or a well-known system path. (3) Validate the script path is not a symlink. (4) Document the security implications of `CQS_PDF_SCRIPT` in SECURITY.md.
+
+#### RT-INJ-2: Batch `read_line` allocates unboundedly before the 1MB limit check
+- **Severity:** low
+- **Location:** `src/cli/batch/mod.rs:392-418`
+- **Attack vector:** Pipe a single line of 2GB+ without any newline character into `cqs batch` via stdin.
+- **PoC:** `reader.read_line(&mut line)` at line 398 reads until `\n` or EOF. If stdin provides 2GB of data with no newline, `read_line` allocates the entire buffer before returning. The 1MB check at line 410 (`if line.len() > MAX_BATCH_LINE_LEN`) happens AFTER the allocation. The comment at line 392-394 acknowledges this: "read_line allocates incrementally (8KB chunks) but we enforce MAX_BATCH_LINE_LEN before processing." However, the stated protection #5 in the threat model is "1MB batch line limit" -- this implies the allocation is bounded, when it is not. The `line.clear()` at line 397 retains the capacity (String reuse), so subsequent lines don't re-allocate, but the peak allocation is unbounded. This bypasses the stated "1MB batch line limit" protection for a single malicious line.
+- **Impact:** OOM kill of the `cqs batch` process. No data corruption. Requires the attacker to control stdin, which is typically the calling AI agent or a pipe.
+- **Mitigating factors:** (1) The code acknowledges this in SEC-1 comments. (2) The process is killed by OOM killer, not exploited further. (3) String reuse prevents repeated allocations.
+- **Suggested mitigation:** Use `BufReader::read_until` with a custom implementation that stops reading after 1MB and discards the remainder of the line. Or use `take(MAX_BATCH_LINE_LEN + 1)` to wrap the reader before `read_line`.
+
+#### RT-INJ-3: Verified protections -- no findings
+
+The following injection surfaces were tested and found to be properly protected:
+
+1. **FTS5 injection via `normalize_for_fts()`:** `src/nl.rs:123-170` strips all non-alphanumeric/underscore characters. Only lowercased identifier tokens joined by spaces pass through. FTS5 operators (`OR`, `AND`, `NOT`, `NEAR`), quotes, parentheses, `*`, `+`, `-`, `^`, `:` are all eliminated. Confirmed solid.
+
+2. **FTS5 injection via `sanitize_fts_query()`:** `src/store/mod.rs:148-166` provides defense-in-depth. Independently strips `"`, `*`, `(`, `)`, `+`, `-`, `^`, `:` from characters and filters `OR`, `AND`, `NOT`, `NEAR` as whole words. The double-pass pattern (`normalize_for_fts` then `sanitize_fts_query`) means either layer alone prevents injection. Confirmed solid.
+
+3. **FTS5 injection via `search_by_name` format! construction:** `src/store/mod.rs:643-650` uses `format!("name:\"{}\" OR name:\"{}\"*", normalized, normalized)` which looks dangerous, but `sanitize_fts_query` at line 633 independently strips double quotes, AND there is a runtime `contains('"')` guard at line 647-649 that returns empty results if a double quote somehow survives. The `debug_assert!` at line 643-645 catches this in development. Confirmed solid (triple-layered protection).
+
+4. **FTS5 injection via `search_by_names_batch`:** `src/store/chunks.rs:910-928` uses the same `sanitize_fts_query` + `contains('"')` guard + `debug_assert` pattern as `search_by_name`. Same triple protection. Confirmed solid.
+
+5. **TOML injection via notes text:** `src/note.rs:240` uses `toml::to_string_pretty(&file)` which serializes through serde. The `toml` crate v1.x properly escapes all TOML metacharacters in string values: newlines become `\n`, backslashes become `\\`, double quotes become `\"`. A note containing `"""`, `[[note]]`, or `\n[note]` in its text will be properly escaped by the serializer. Round-trip test: `NoteFile` derives both `Deserialize` and `Serialize` (line 56-57), and the fuzz tests at line 524-557 cover arbitrary input without panics. Confirmed solid.
+
+6. **SQL injection via parameterized queries:** All SQL in `src/store/`, `src/search.rs` uses `sqlx::query().bind()` parameterization. The only `format!` SQL constructions create placeholder strings (`?1`, `?2`) or static column/table names -- never user data. Confirmed solid.
+
+7. **Batch pipeline boundary bypass:** `src/cli/batch/pipeline.rs:135-148` splits on standalone `|` token. Since `shell_words::split` handles quoting, a `|` inside quotes becomes part of a token and is NOT treated as a pipe separator. Attempting `search "foo | bar"` correctly treats `foo | bar` as a single quoted argument, not a pipeline. Confirmed solid.
+
+8. **`shell_words::split` with unbalanced quotes:** `src/cli/batch/mod.rs:433` catches `shell_words::split` parse errors (returned as `Err` for unclosed quotes) and reports them as JSON errors. Null bytes in input survive `shell_words::split` but are passed to clap, which rejects them as invalid arguments. Confirmed solid.
+
+9. **`--ref` name validation on search path:** `src/cli/commands/query.rs:109` passes the `--ref` name to `find_reference()` at `src/cli/commands/resolve.rs:26-38`, which matches against names loaded from `.cqs.toml` config. No `validate_ref_name` call is needed because: (a) the name is matched by string equality against config entries, not used to construct filesystem paths directly, and (b) `load_references` at `src/reference.rs:42-62` rejects symlink paths and constructs DB paths from config, not from the `--ref` CLI value. Confirmed solid.
+
+10. **`--path` glob ReDoS:** `src/store/helpers.rs:580-612` validates path patterns: max 500 chars, max 10 brace nesting depth, control character rejection. The `globset` crate compiles globs to DFA (not regex), so catastrophic backtracking is not possible. `src/search.rs:324-331` compiles globs once per search, not per chunk. Confirmed solid.
+
+## Red Team — RT-RES: Adversarial Robustness
+
+#### RT-RES-1: Chat mode has no input length limit — OOM via large paste
+- **Severity:** low
+- **Location:** `src/cli/chat.rs:123-141`
+- **Attack vector:** Paste an extremely long line (>1GB) into the `cqs chat` REPL.
+- **PoC:** `editor.readline("cqs> ")` at line 123 uses rustyline's internal line buffer. Unlike batch mode, there is no `MAX_BATCH_LINE_LEN` check anywhere in the chat path. The line goes directly to `shell_words::split()` at line 141, then to `BatchInput::try_parse_from()` at line 160 and command dispatch. A sufficiently long line could cause OOM during tokenization or during embedding if it reaches the embedder. Batch mode has the 1MB `MAX_BATCH_LINE_LEN` guard (batch/mod.rs:410), but chat mode skips this entirely.
+- **Impact:** OOM crash of the `cqs chat` process. Lower severity because chat mode is interactive (human-driven), making adversarial >1GB pastes unlikely in practice. However, programmatic use of chat mode (piping into it) would be vulnerable.
+- **Suggested mitigation:** Add a line length check after `editor.readline()` returns, matching batch mode's 1MB limit. Reject with an error message before passing to `shell_words::split`.
+
+#### RT-RES-2: `node_letter` in trace.rs uses truncating `as u8` cast
+- **Severity:** low
+- **Location:** `src/cli/commands/trace.rs:182-186`
+- **Attack vector:** `cqs trace A Z --max-depth 50` where the BFS path visits >256 nodes (requires a deep call graph).
+- **PoC:** `node_letter(i)` at line 183 does `((b'A' + i as u8) as char).to_string()` for `i < 26`. For `i >= 26`, line 185 does `((b'A' + (i % 26) as u8) as char)` which is safe since `i % 26` is 0-25. However, the `i < 26` branch casts `i` directly to `u8` -- this is also safe since the branch guard ensures `i < 26`. The real issue is that `i` could exceed 255 in the `i >= 26` branch if `i / 26` exceeds 255, but `i / 26` is used as a Display integer, not cast to u8. **Currently safe** but fragile. The equivalent function in `src/impact/format.rs:200-209` uses a robust spreadsheet-style implementation that handles arbitrary indices without any `as u8` casts.
+- **Impact:** No crash or incorrect behavior with current `max_depth` limit of 50. Would produce cosmetically wrong Mermaid node IDs if path length exceeded 256+26 = 282 nodes (unreachable with current limits).
+- **Suggested mitigation:** Replace trace.rs `node_letter` with the robust `impact/format.rs` implementation or extract a shared helper.
+
+#### RT-RES-3: Pipeline fan-out is correctly bounded — verified safe
+- **Severity:** informational
+- **Location:** `src/cli/batch/pipeline.rs:12, 232-240, 293-305`
+- **Attack vector:** `search "common_pattern" | callers | callers | callers` in batch mode.
+- **PoC:** `PIPELINE_FAN_OUT_LIMIT` (line 12) is 50 per stage. Stage 0 runs 1 command. Each subsequent stage extracts up to 50 names from the previous result and dispatches 50 commands. The intermediate merge at lines 293-305 also enforces the 50-name cap via `if merged_names.len() >= PIPELINE_FAN_OUT_LIMIT { break 'merge; }`. Total dispatches for N stages: 1 + 50*(N-1). For a 4-stage pipeline, that's 151 dispatches — linear, not exponential. The deduplication via `HashSet` at line 295 further reduces fan-out in practice. **Verified protection — no vulnerability.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-4: BFS gather depth clamped and node-capped — verified safe
+- **Severity:** informational
+- **Location:** `src/cli/batch/handlers.rs:370-374`, `src/gather.rs:23, 200`
+- **Attack vector:** `gather "query" --expand 999999` in batch mode.
+- **PoC:** The batch gather handler at line 372 clamps: `expand_depth: expand.clamp(0, 5)`. The task module uses `TASK_GATHER_DEPTH = 2` and `TASK_GATHER_MAX_NODES = 100` (task.rs:19-22). Even without the depth clamp, `bfs_expand()` in gather.rs enforces `opts.max_expanded_nodes` (default 200) at lines 200-201 and 209-210, breaking out of the BFS loop once the node count is reached. **Two independent caps — depth AND node count — prevent unbounded expansion.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-5: Graph cycle handling in all BFS traversals — verified safe
+- **Severity:** informational
+- **Location:** `src/gather.rs:189`, `src/impact/bfs.rs:16`, `src/cli/commands/trace.rs:203`, `src/cli/batch/handlers.rs:494`
+- **Attack vector:** Index a codebase with mutual recursion: `fn a() { b(); }` and `fn b() { a(); }`.
+- **PoC:** Every BFS implementation in the codebase uses a visited set that prevents re-processing. Specifically: (1) `bfs_expand()` uses `visited: HashSet<String>` (gather.rs:189) and checks `!visited.contains(&neighbor)` at line 213, (2) `reverse_bfs()` uses `ancestors: HashMap<String, usize>` (bfs.rs:16) and checks `!ancestors.contains_key(caller)` at line 27, (3) `bfs_shortest_path()` uses `visited: HashMap<String, String>` (trace.rs:203) and checks `!visited.contains_key(callee)` at line 229, (4) batch test-map handler uses `ancestors: HashMap` (handlers.rs:494) and checks `!ancestors.contains_key(caller)` at line 505. **All four BFS implementations are cycle-safe.** Additionally, `reverse_bfs_multi` has stale-entry protection (bfs.rs:63) that prevents incorrect depth propagation.
+- **Impact:** None. Verified that mutual recursion cannot cause infinite traversal.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-6: `--tokens` accepts `usize::MAX` without upper bound — benign
+- **Severity:** informational
+- **Location:** `src/cli/mod.rs:154-161`
+- **Attack vector:** `cqs --tokens 18446744073709551615 "query"`
+- **PoC:** `parse_nonzero_usize()` at line 155 only rejects 0. A value like `usize::MAX` is accepted. The token budgeting code uses this as a greedy knapsack ceiling — with `usize::MAX`, everything is packed, equivalent to no budget. No OOM because the budget only limits already-loaded results (it doesn't allocate memory proportional to the budget). This is functionally equivalent to omitting `--tokens`.
+- **Impact:** None. No crash, no OOM.
+- **Suggested mitigation:** Optional: add a reasonable upper bound (e.g., 10,000,000) to catch typos, but this is cosmetic.
+
+#### RT-RES-7: HNSW corrupted file handling — checksums + size limits verified
+- **Severity:** informational
+- **Location:** `src/hnsw/persist.rs:54-104, 347-391`
+- **Attack vector:** Replace `.cqs/index.hnsw.graph` with a 2GB file of random bytes.
+- **PoC:** `HnswIndex::load()` enforces three defenses: (1) `verify_hnsw_checksums()` at line 345 checks blake3 hashes before loading, rejecting corrupted files; (2) file size limits (graph <=500MB at line 367, data <=1GB at line 368, ID map <=500MB at line 348) prevent OOM from oversized files; (3) ID map count validation at lines 419-427 verifies the deserialized vector count matches the HNSW graph. A tampered file will fail checksum or size validation before reaching the bincode deserializer. The only attack surface for bincode deserialization is if an attacker modifies both files AND matching checksums — documented in persist.rs:47-51 as outside the threat model. **Verified safe.**
+- **Impact:** None. Corrupted files produce clean error messages.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-8: `Embedder::split_into_windows` overlap validation prevents exponential window count
+- **Severity:** informational
+- **Location:** `src/embedder.rs:339-357`
+- **Attack vector:** Call `split_into_windows(text, 100, 99)` — overlap nearly equal to max_tokens.
+- **PoC:** Validation at line 352 rejects `overlap >= max_tokens / 2`. With `max_tokens=100`, any `overlap >= 50` fails. This ensures `step = max_tokens - overlap > max_tokens/2`, guaranteeing linear window count: `O(n / step)` where `step > max_tokens/2`. The `max_tokens == 0` case returns empty vec at line 346-347. **Verified safe.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-9: Watch mode pending file set bounded — verified safe
+- **Severity:** informational
+- **Location:** `src/cli/watch.rs:41, 141, 289`
+- **Attack vector:** Rapidly create >10,000 files while `cqs watch` runs.
+- **PoC:** `MAX_PENDING_FILES = 10_000` (line 41). `collect_events()` at line 289 checks `pending_files.len() < MAX_PENDING_FILES` before insertion. The `last_indexed_mtime` HashMap is bounded by comment ("pruned when >10k entries"). Files exceeding the pending limit are silently dropped and picked up on the next cycle. **Verified safe against event storm attacks.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-10: Batch `OnceLock` caches are fixed-size snapshots — no unbounded growth
+- **Severity:** informational
+- **Location:** `src/cli/batch/mod.rs:74-96`
+- **Attack vector:** Run thousands of commands in a single `cqs batch` session.
+- **PoC:** `BatchContext` caches (call_graph, test_chunks, file_set, notes_cache, audit_state, config) are initialized once via `OnceLock` and never grow thereafter. They are snapshots of the index state at session start. ONNX sessions (embedder, reranker) are cleared after 5 minutes idle (lines 99-124). The only potentially growing cache is `refs: RefCell<HashMap<String, ReferenceIndex>>`, which grows by one entry per distinct `--ref` value used. In practice, projects have 0-3 references. **Memory is bounded by codebase size, not command count.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-11: Empty query string handled cleanly — no panic
+- **Severity:** informational
+- **Location:** `src/embedder.rs:420-424`, `src/store/mod.rs:633-636`
+- **Attack vector:** `cqs "" --json` or batch `search ""`
+- **PoC:** `embed_query()` trims input and returns `Err(EmbedderError::EmptyQuery)` for empty strings. `sanitize_fts_query()` returns empty string for empty/whitespace input, and `search_by_name()` returns `Ok(vec![])` for empty normalized queries. Both paths produce clean error messages. **Verified safe.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+#### RT-RES-12: `validate_finite_f32` coverage — clap rejects NaN/Infinity strings
+- **Severity:** informational
+- **Location:** `src/cli/mod.rs:163-170`, CLI threshold parsing
+- **Attack vector:** `cqs --threshold NaN "query"` or `cqs --threshold inf "query"`
+- **PoC:** `validate_finite_f32()` is called in batch handlers (handlers.rs:305, 1193-1194) and command modules (similar.rs:44, drift.rs:19-20), but NOT in the main CLI search dispatch path. However, clap's `f32` value parser rejects `NaN`, `nan`, `inf`, `Infinity`, `-inf` etc. as invalid float strings — they never reach `validate_finite_f32`. A NaN could theoretically reach the threshold via the batch handler if a custom parser accepted it, but the batch handler at handlers.rs:305 calls `validate_finite_f32(threshold, "threshold")?` before use. **All paths verified safe.**
+- **Impact:** None.
+- **Suggested mitigation:** Add `validate_finite_f32` to the CLI search dispatch for defense-in-depth, though it is not strictly needed.
+
+#### RT-RES-13: `store/helpers.rs::build_placeholders` — `as u8` casts verified safe
+- **Severity:** informational
+- **Location:** `src/store/helpers.rs:748-756`
+- **Attack vector:** Call `search_by_names_batch` with >255 names.
+- **PoC:** For `i < 10`, `i as u8` ranges 1-9 (safe). For `10 <= i < 100`, `i / 10` ranges 1-9 and `i % 10` ranges 0-9, both safe as u8. For `i >= 100`, the code falls through to `write!(s, "{}", i)` at line 755 which handles arbitrary values correctly. **Verified safe.**
+- **Impact:** None.
+- **Suggested mitigation:** None needed.
+
+## Red Team — RT-DATA: Silent Data Corruption
+
+#### RT-DATA-1: `build_batched` HNSW ID / id_map desync when zero-vector embeddings are skipped
+- **Severity:** high
+- **Location:** `src/hnsw/build.rs:148-167`
+- **Attack vector:** A batch containing one or more zero-vector embeddings (norm_sq == 0.0) triggers the `continue` at line 162, skipping the id_map push but NOT adjusting the `base_idx + i` value used as the HNSW internal ID for subsequent items in the same batch. This causes a mismatch between the HNSW graph's internal IDs and the id_map positions.
+- **PoC:** Consider a batch of 3 embeddings: `[("a", valid), ("b", zero_vec), ("c", valid)]`. Before this batch, `id_map.len() == N`, so `base_idx = N`.
+  - `i=0`: "a" is valid. `id_map.push("a")` -> id_map[N] = "a". HNSW gets ID `N+0 = N`. Correct.
+  - `i=1`: "b" is zero-vector. `continue`. id_map not pushed.
+  - `i=2`: "c" is valid. `id_map.push("c")` -> id_map[N+1] = "c". HNSW gets ID `N+2`. But id_map[N+2] does not exist yet.
+  When search returns HNSW ID `N+2`, `search()` at search.rs:50 checks `idx < self.id_map.len()`. If the id_map grew to N+3 from a later batch, it returns the WRONG chunk ID (whatever is at position N+2). If not, it logs a warning and drops the result silently.
+  The `save()` validation at persist.rs:128-135 compares `hnsw.get_nb_point()` to `id_map.len()`. With zero-vector skips, HNSW has fewer points than the highest assigned ID implies, and the IDs don't form a contiguous sequence matching id_map indices. This is the production code path (`build_batched` is used by `cmd_index` unconditionally per build.rs:39-41).
+- **Impact:** When triggered: search returns wrong chunk IDs silently, or drops valid results. The bug is dormant when no zero-vector embeddings exist (common case), but any embedding failure producing a zero vector activates it.
+- **Suggested mitigation:** Use a separate counter for inserted items:
+  ```rust
+  let mut inserted = 0usize;
+  for (i, (chunk_id, embedding)) in batch.iter().enumerate() {
+      if norm_sq == 0.0 { continue; }
+      id_map.push(chunk_id.clone());
+      data_for_insert.push((embedding.as_vec(), base_idx + inserted));
+      inserted += 1;
   }
   ```
-  Wrap the entire `match` in a `loop { ... }` and use `continue`/`return` instead of recursive `self.next()`.
 
-#### AC-4: `index_pack` and `token_pack` always include first item regardless of budget — downstream `used` can exceed budget silently
-- **Difficulty:** easy
-- **Location:** src/cli/commands/task.rs:62-63, src/cli/commands/mod.rs:135-137
-- **Description:** Both greedy knapsack functions guarantee at least one item is included even when it exceeds the budget (`kept.is_empty()` / `!kept_any` check). The returned `used` value can then exceed `budget`. Downstream code like `waterfall_pack` uses `remaining = remaining.saturating_sub(used)` which clamps to 0, so subsequent sections get zero budget. This is correct behavior (one giant code chunk shouldn't starve all other sections), but the surplus calculation `scout_budget.saturating_sub(scout_used)` will produce 0 surplus (correct) while `remaining` could have already been driven to 0 before accounting for subsequent guaranteed-first-items. In the worst case, each of the 5 waterfall sections could exceed its budget by one item, accumulating a multi-hundred-token overrun that's invisible in the final `token_count` field.
-- **Suggested fix:** This is by-design behavior (guarantee at least 1 result per section). Document the "first-item guarantee" contract explicitly in both functions. If exact budget adherence is needed, add a `strict: bool` parameter that skips the first-item guarantee when `true`.
+#### RT-DATA-2: Enrichment pass has no idempotency guard -- interrupted re-run produces inconsistent embeddings
+- **Severity:** medium
+- **Location:** `src/cli/pipeline.rs:911-1049`, `src/store/chunks.rs:83-107`
+- **Attack vector:** The enrichment pass iterates all chunks with callers/callees, generates enriched NL descriptions with call context, re-embeds them, and calls `update_embeddings_batch` which does `UPDATE chunks SET embedding = ?1 WHERE id = ?2`. There is no flag marking a chunk as "enriched" vs "base-embedded". If the process is interrupted mid-enrichment, some chunks have enriched embeddings and others have base embeddings, with no way to distinguish them.
+- **PoC:** 1) Run `cqs index` on a codebase with 1000 chunks and a non-empty call graph. 2) Kill the process when enrichment shows ~50% progress. 3) The index has ~500 enriched and ~500 base-only chunks. Enriched chunks incorporate caller/callee names in their embedding text, giving them different similarity profiles. 4) A search query matching a non-enriched chunk may rank it lower than an enriched chunk with weaker semantic match. Re-running `cqs index` produces different enrichment when the call graph changes, so the same chunk gets different embeddings across runs.
+- **Impact:** Non-reproducible search results. Mixed enrichment state after interruption causes inconsistent ranking. The lack of an enrichment marker makes partial enrichment undetectable.
+- **Suggested mitigation:** Store an `enrichment_hash` column alongside the embedding, or add `is_enriched` boolean. Skip chunks whose hash hasn't changed on re-enrichment.
 
-## Data Safety
+#### RT-DATA-3: Watch mode HNSW orphan accumulation degrades search quality silently
+- **Severity:** medium
+- **Location:** `src/cli/watch.rs:394-442`
+- **Attack vector:** Watch mode inserts new vectors into in-memory HNSW for modified files. Old vectors for replaced chunks remain in the graph (hnsw_rs has no deletion API, acknowledged at watch.rs:396-399). Orphan vectors consume HNSW exploration budget. `search_filtered_with_index` retrieves `limit * 5` candidates; with a high orphan ratio, many point to stale chunk IDs absent from SQLite.
+- **PoC:** 1) Start `cqs watch`. 2) Modify the same file 50 times. 3) With 10 chunks/file, after 50 edits the HNSW has 500 orphan vectors plus 10 live ones. 4) `search_by_candidate_ids` queries SQLite for candidates; orphans return nothing, shrinking the effective pool below `limit`. 5) Full rebuild only at `HNSW_REBUILD_THRESHOLD = 100`.
+- **Impact:** Gradually degrading search recall during long watch sessions. No error or warning reported. Self-heals after 100 incremental inserts.
+- **Suggested mitigation:** Track orphan ratio and trigger early rebuild when it exceeds ~20%. Or reduce `HNSW_REBUILD_THRESHOLD` to 20-30.
 
-#### DS-8: GC uses wrong HNSW filename — `index.hnsw.id_map.json` instead of `index.hnsw.ids`
-- **Difficulty:** easy
-- **Location:** src/cli/commands/gc.rs:71
-- **Description:** The GC command hardcodes a list of HNSW files to delete before rebuild: `["index.hnsw.graph", "index.hnsw.data", "index.hnsw.checksum", "index.hnsw.id_map.json"]`. The last entry `index.hnsw.id_map.json` is a stale filename from a previous version. The actual HNSW ID map file is `index.hnsw.ids` (as defined in `HNSW_ALL_EXTENSIONS` in `src/hnsw/persist.rs:35`). Consequence: GC's pre-rebuild cleanup never deletes the stale HNSW IDs file, so if GC is interrupted between deletion and rebuild, the old `.ids` file remains and a subsequent `HnswIndex::load()` may load outdated IDs paired with missing graph/data files (load will fail on checksum mismatch, so no data corruption, but it's an unnecessary failure mode). The watch code at `watch.rs:335` correctly uses `HNSW_ALL_EXTENSIONS`, making this a GC-only divergence.
-- **Suggested fix:** Replace the hardcoded list at `gc.rs:67-72` with `cqs::hnsw::HNSW_ALL_EXTENSIONS`, matching what `watch.rs` already does. This eliminates the divergence and ensures future filename changes are automatically reflected.
+#### RT-DATA-4: Notes file lock on FD does not survive atomic rename -- concurrent writers can lose data
+- **Severity:** low
+- **Location:** `src/note.rs:190-289`
+- **Attack vector:** `rewrite_notes_file` acquires an exclusive lock on the notes.toml file descriptor (line 200), reads from it (line 226), writes a temp file, then renames the temp over the original (line 263). On Unix, `rename()` replaces the directory entry to point at a new inode. The exclusive lock is held on the OLD inode's FD. After rename, a concurrent writer that opened the file before the rename holds an FD to the old (now unlinked) inode and reads stale content.
+- **PoC:** Writer1 opens notes.toml (inode A), locks, reads. Writer2 opens notes.toml (inode A), blocks on lock. Writer1 renames temp over notes.toml (now inode B), drops lock. Writer2 acquires lock on inode A (unlinked), reads stale content from inode A, applies mutation to stale data, renames -- overwriting inode B. Writer1's changes silently lost.
+- **Impact:** Lost note writes under concurrent `cqs notes add` from two processes. Very unlikely in practice.
+- **Suggested mitigation:** Use a separate lock file (`notes.toml.lock`) that survives the data file rename.
 
-#### DS-9: `config.rs` `add_reference_to_config` reads config via separate `read_to_string` after locking config file itself
-- **Difficulty:** medium
-- **Location:** src/config.rs:276-288
-- **Description:** `add_reference_to_config` opens the config file itself for locking (`OpenOptions::new().read(true).write(true).create(true).truncate(false).open(config_path)`), then acquires an exclusive lock on it. However, it then reads the file content via a separate `std::fs::read_to_string(config_path)` call (line 284) rather than reading from the locked file handle. On platforms where advisory locks don't prevent other processes from reading/writing, this creates a TOCTOU gap — another process could modify the file between the lock acquisition and the read. This is the same anti-pattern that was fixed in `note.rs` (which reads from the locked fd directly). The `remove_reference_from_config` function at line 371 has the identical issue.
-- **Suggested fix:** Read from the locked file handle (`lock_file`) using `std::io::Read::read_to_string()` instead of the separate `std::fs::read_to_string()`, mirroring the pattern already used in `note.rs:222-230`. Also apply the same fix to `remove_reference_from_config`.
+#### RT-DATA-5: Batch/chat `OnceLock` caches become silently stale when index changes externally
+- **Severity:** medium
+- **Location:** `src/cli/batch/mod.rs:74-96`
+- **Attack vector:** `BatchContext` caches call_graph, test_chunks, notes, file_set, and config in `OnceLock` fields that are never invalidated (lines 82-90, documented at lines 60-73). During a `cqs chat` session, running `cqs index` in another terminal updates SQLite but the chat session's caches remain frozen.
+- **PoC:** 1) `cqs chat` in terminal 1. 2) `callers parse_file` returns [A, B]. 3) In terminal 2, add caller C, run `cqs index`. 4) In terminal 1, `callers parse_file` still returns [A, B]. No error, no staleness warning.
+- **Impact:** Stale call graph, test mapping, and dead code results in long-running sessions. Documentation acknowledges this (lines 60-73) but users won't see source comments.
+- **Suggested mitigation:** Compare SQLite's `updated_at` metadata timestamp against session start value on each command. Emit warning if changed.
 
-#### DS-10: `rewrite_notes_file` copy fallback loses exclusive lock protection
-- **Difficulty:** medium
-- **Location:** src/note.rs:264-281
-- **Description:** `rewrite_notes_file` acquires an exclusive lock on the notes file (`lock_file.lock()`) and holds it for the entire read-modify-write cycle. The write path uses `std::fs::rename(&tmp_path, notes_path)` which is atomic. However, when rename fails (EXDEV on cross-device mounts), the fallback uses `std::fs::copy(&tmp_path, notes_path)` which is NOT atomic — it opens the destination, truncates it, and writes. During this non-atomic copy, a concurrent reader acquiring a shared lock would see truncated/partial content. The lock on `lock_file` (the original file descriptor before rename) may no longer protect the same inode after copy overwrites the path. This is a narrow race window but could corrupt a concurrent `parse_notes()` read on cross-device setups (Docker overlayfs, NFS).
-- **Suggested fix:** On the copy fallback path, write to a second temp file in the destination directory (guaranteed same device), then rename that. If both renames fail (shouldn't happen for same-device), then fall back to copy. Alternatively, document the limitation for cross-device mounts.
+#### RT-DATA-6: HNSW save is not atomic with SQLite commit -- crash window causes desync
+- **Severity:** medium
+- **Location:** `src/cli/watch.rs:410-414`, `src/cli/commands/gc.rs:64-87`
+- **Attack vector:** Watch mode commits chunks to SQLite (watch.rs:616) then separately saves HNSW (watch.rs:412). GC prunes SQLite (gc.rs:44-46) then rebuilds HNSW (gc.rs:84). A crash between SQLite commit and HNSW save leaves them inconsistent.
+- **PoC:** 1) `cqs watch` running. 2) Modify a file. Watch mode upserts new chunks to SQLite. 3) SIGKILL during `index.save()` at watch.rs:412. 4) New process loads stale HNSW. HNSW has vectors for old chunk IDs absent from SQLite. Search retrieves stale candidates, reducing effective result set.
+- **Impact:** After crash: HNSW/SQLite desync causes degraded search results until next full rebuild. No automatic detection.
+- **Suggested mitigation:** Store an "HNSW generation" counter in SQLite metadata, incremented on each HNSW save. On load, compare against SQLite value. Mismatch triggers automatic rebuild.
 
-#### DS-11: `extract_relationships` in `index.rs` is not transactional with chunk upserts
-- **Difficulty:** medium
-- **Location:** src/cli/commands/index.rs:124-137
-- **Description:** In `cmd_index`, chunks are upserted via `run_index_pipeline` (line 87), then relationships are extracted in a separate pass via `extract_relationships` (line 131). If the process is interrupted between these two phases, chunks exist in the database without their call graph or type edges. This was documented in previous audit (DS-3 in v0.19.4 triage) as "acceptable (reindex recovers)". The watch path (`watch.rs`) correctly uses `upsert_chunks_and_calls` for atomic chunk+call transactions and upserts type edges immediately after. The `cmd_index` path still has this gap because the pipeline architecture sends chunks through parse->embed->store stages before relationship extraction. This is a design tension, not a bug — documenting for completeness since the previous finding was "acceptable" but the root cause remains.
-- **Suggested fix:** Already marked acceptable in prior audit. The pipeline would need restructuring to eliminate this gap. Consider adding a metadata flag (`relationships_complete = false`) that gets set to `true` after `extract_relationships` finishes, so `cqs index` can resume from the relationship extraction phase on restart.
+#### RT-DATA-7: Verified protections -- no findings
 
-#### DS-12: `notes_need_reindex` uses second-precision mtime comparison — sub-second edits missed
-- **Difficulty:** easy
-- **Location:** src/store/notes.rs:234-254
-- **Description:** `notes_need_reindex` compares file mtime (as seconds since epoch, via `duration_since(UNIX_EPOCH).as_secs() as i64`) with the stored `file_mtime` column. The `as_secs()` call truncates sub-second precision. If a notes file is modified twice within the same second (e.g., by a script or rapid manual edits), the second modification will have the same truncated mtime as the stored value, and `notes_need_reindex` returns `None` (no reindex needed), causing the update to be silently skipped. The same pattern exists in the chunk staleness check (`needs_reindex` in `chunks.rs`). This is a known limitation of second-precision mtime comparison and is unlikely to cause issues in practice (notes are manually edited, not scripted).
-- **Suggested fix:** Use `as_millis()` or `as_nanos()` for mtime storage and comparison, or accept this as a known limitation. On filesystems with sub-second mtime support (ext4, APFS), this would catch rapid edits. On FAT/NTFS (2-second precision), no change needed.
+The following data integrity mechanisms were tested and confirmed working:
 
-#### DS-13: HNSW `count_vectors` reads ID map without any file lock
-- **Difficulty:** easy
-- **Location:** src/hnsw/persist.rs:442-485
-- **Description:** `count_vectors` opens and reads the HNSW `.ids` file directly without acquiring any file lock (shared or exclusive). In contrast, `load()` acquires a shared lock and `save()` acquires an exclusive lock. If `count_vectors` is called while a concurrent `save()` is in progress (during the rename from temp to final), it could read a partially-written or inconsistent file. The function handles parse failures gracefully (returns `None` with a warning), so this won't crash, but it could return an incorrect vector count. This is used by `cqs stats` which is a read-only informational command.
-- **Suggested fix:** Add shared lock acquisition before reading, matching the `load()` pattern. Alternatively, accept this as informational — `cqs stats` showing a stale count during a concurrent index build is harmless.
+1. **PRAGMA quick_check on DB open:** Both `Store::open` (mod.rs:291) and `Store::open_readonly` (mod.rs:369) run `PRAGMA quick_check`. Catches B-tree corruption.
 
-## Resource Management
+2. **Parameterized SQL:** All queries use `sqlx::query().bind()`. No string interpolation in SQL.
 
-#### RM-1: CAGRA `dataset` field retains full embedding matrix for lifetime of index — no release path
-- **Difficulty:** hard
-- **Location:** src/cagra.rs:64, src/cagra.rs:109-121
-- **Description:** `CagraIndex` stores `dataset: Array2<f32>` containing the full embedding matrix (n_vectors x 769 dims x 4 bytes = ~50MB for 17k vectors) for the lifetime of the index. This is necessary because cuVS `search()` consumes the index and `rebuild_index_with_resources()` needs the dataset to rebuild. However, once the index is built on the GPU, this CPU-side copy is only needed for rebuild after search. In batch mode (`BatchContext`), the CAGRA index is held for the entire session via `OnceLock`, meaning this ~50MB+ stays allocated even during idle periods or non-search commands. Related to existing issue #389 (GPU memory), but this is specifically the CPU-side duplication.
-- **Suggested fix:** Possible approaches: (1) After a configurable number of idle seconds, drop the CAGRA index entirely and rebuild from store on next search — this would free both CPU `dataset` and GPU memory. (2) Accept as designed — the CAGRA threshold is 5000+ chunks, meaning any project using CAGRA already has significant memory overhead from SQLite and HNSW. Document the tradeoff in the batch mode `VRAM cost` comment.
+3. **`validate_finite_f32()`:** Used in CLI drift, similar, and batch handlers to reject NaN/Infinity parameters.
 
-#### RM-2: `cqs watch` rebuilds full HNSW index on every file change — O(total_chunks) rebuild for O(1) changes
-- **Difficulty:** hard
-- **Location:** src/cli/watch.rs:324, src/cli/commands/index.rs:286-302
-- **Description:** When `cqs watch` detects file changes, it re-parses and re-embeds the changed files (efficient, O(changed)), then calls `build_hnsw_index()` which rebuilds the entire HNSW index from scratch by streaming all embeddings from SQLite. For a 17k-chunk project, this reads ~50MB of embeddings from disk and builds a new HNSW graph on every single file save. The previous HNSW index files on disk are overwritten, so peak memory briefly holds both the old (in-memory if loaded by a concurrent search) and new HNSW data. For a 50k-chunk project, this is ~300MB of embedding I/O per file save.
-- **Suggested fix:** Implement incremental HNSW updates. `hnsw_rs` supports `parallel_insert_data` on existing indexes — new/changed chunks can be inserted without rebuilding. Deleted chunks are harder (HNSW doesn't support removal), but a periodic full rebuild (e.g., every 100 incremental updates) would amortize the cost. The `content_hashes` return value from `reindex_files` is already collected for this purpose but unused.
+4. **Embedding dimension validation:** `embedding_to_bytes()` (helpers.rs:778) validates on write. `embedding_slice()` (helpers.rs:793) validates on read. `check_model_version()` (mod.rs:501) validates model name and dimension on store open.
 
-#### RM-3: `BatchContext` caches call graph, test chunks, file set, and notes in `OnceLock` — never released during long sessions
-- **Difficulty:** medium
-- **Location:** src/cli/batch/mod.rs:55-75
-- **Description:** `BatchContext` caches several data structures in `OnceLock` fields that are never invalidated or released during a session: `call_graph` (all call edges — up to 500K string pairs), `test_chunks` (all test chunk summaries), `file_set` (all file paths as `PathBuf`), `notes_cache` (all parsed notes). For `cqs chat` sessions that run for hours, these caches can become stale AND hold memory that's no longer needed. The embedder and reranker have idle timeout clearing (`check_idle_timeout`), but these data caches do not. For a 50k-chunk project with a large call graph (~10K edges), this is ~5-10MB of string data held indefinitely.
-- **Suggested fix:** Add a `refresh_caches()` method that resets the `OnceLock` fields (or switch to `RwLock<Option<T>>` like `notes_summaries_cache`). Call it after a configurable number of commands or idle timeout. Alternatively, accept as designed — batch/chat sessions are typically short-lived, and the data stays valid unless the index changes (which would require a separate `cqs index` run anyway).
+5. **HNSW checksum verification:** blake3 checksums on save (persist.rs:196-230), verified on load (persist.rs:54-104). Missing checksum file is a hard error.
 
-#### RM-4: `index_notes_from_file` creates a separate `Embedder` during `cqs index` — redundant model path resolution
-- **Difficulty:** easy
-- **Location:** src/cli/commands/index.rs:269
-- **Description:** After the main indexing pipeline completes (which created and dropped an `Embedder` in the GPU/CPU embed threads), `index_notes_from_file` creates a brand new `Embedder::new()`. While the ONNX session is lazy (so ~500MB is only allocated if notes need embedding), the constructor still: (1) calls `select_provider()` (cached via static — cheap), (2) allocates an LRU cache, (3) creates `OnceCell` wrappers. More importantly, if notes need embedding, this creates a second ONNX session after the pipeline's session was already dropped. The pipeline's Embedder could have been passed through to avoid this.
-- **Suggested fix:** Pass the `Embedder` from the pipeline thread (or create one in `cmd_index` and share it) to `index_notes_from_file`. The pipeline threads own their Embedder by value and drop it when they exit, so either (1) create the Embedder in `cmd_index` and share via `Arc`, or (2) accept the current approach since the pipeline's session is dropped before notes indexing starts, so there's no double-allocation of the heavy ONNX session.
+6. **HNSW id_map / vector count validation:** `save()` (persist.rs:128-135) and `load()` (persist.rs:420-427) verify `hnsw.get_nb_point() == id_map.len()`.
 
-#### RM-5: `extract_relationships` re-reads and re-parses every source file during `cqs index` — double I/O for call graph
-- **Difficulty:** hard
-- **Location:** src/cli/commands/index.rs:193-241
-- **Description:** The doc comment on `extract_relationships` acknowledges this: "Note: This re-reads and re-parses files that were already parsed in `parser_stage`." During `cqs index`, every source file is read and parsed twice: once in the pipeline (parse -> embed -> store) and again for call graph extraction. For a large project with 1000+ files, this doubles the file I/O and tree-sitter parsing work. The watch path (`watch.rs`) uses `parse_file_all()` which combines parsing and relationship extraction in a single pass — but the pipeline can't do this because chunks must be stored before relationships reference them.
-- **Suggested fix:** Already documented in the code comment. The proper fix is to restructure the pipeline to collect relationships during the parse stage (stage 1) and defer relationship storage to after the write stage (stage 3). The data is available from `parse_file_all()` — the relationships just need to be buffered. This was fixed for watch mode but remains in the bulk indexer. Medium-term, consider adding a "relationship buffer" to `ParsedBatch` that flows through the pipeline alongside chunks.
+7. **Non-finite HNSW score filtering:** `search()` (search.rs:55-62) checks `score.is_finite()`. `cosine_similarity()` (math.rs:25-28) returns `None` for non-finite. Both sort paths use `total_cmp`.
 
-#### RM-6: `HnswIndex::build` (test-only) creates intermediate `Vec<Vec<f32>>` — 2x peak embedding memory
-- **Difficulty:** easy
-- **Location:** src/hnsw/build.rs:67-73
-- **Description:** The `build` method (soft-deprecated, test-only per its doc comment) calls `prepare_index_data` which flattens embeddings into `Vec<f32>`, then re-chunks this flat buffer into `chunks: Vec<Vec<f32>>` for the `hnsw_rs` API. This doubles the peak memory for embeddings: both `data: Vec<f32>` (N x 769 x 4 bytes) and `chunks: Vec<Vec<f32>>` (same size) exist simultaneously. For 50k vectors, this is ~300MB instead of ~150MB. Production code uses `build_batched` which doesn't have this issue.
-- **Suggested fix:** Accept as-is — `build` is test-only (the doc comment says so, and `build_hnsw_index` unconditionally uses `build_batched`). The test datasets are small (<100 vectors). If anyone removes the "test-only" constraint, add a note about the 2x memory peak. Alternatively, refactor `build` to use slices of the flat buffer instead of copying into Vec<Vec<f32>>.
+8. **Notes file locking:** `parse_notes()` acquires shared lock. `rewrite_notes_file()` acquires exclusive lock and reads from locked FD. Correct for single-process use.
 
-#### RM-7: `last_indexed_mtime` HashMap in watch mode grows unbounded for projects with file churn
-- **Difficulty:** easy
-- **Location:** src/cli/watch.rs:119, src/cli/watch.rs:315-319
-- **Description:** The `last_indexed_mtime: HashMap<PathBuf, SystemTime>` tracks per-file mtimes to deduplicate WSL/NTFS events. It grows every time a new file is indexed and only prunes when size exceeds 10,000 entries OR when size exceeds 1,000 and only 1 file changed. However, for projects where files are frequently created and deleted (e.g., build artifacts, generated code), entries for deleted files accumulate. The pruning condition (`root.join(f).exists()`) does file I/O for every entry, which is expensive when the map is large. The cap of 10,000 entries means up to 10,000 stale `PathBuf`s (~500KB) are held before cleanup triggers.
-- **Suggested fix:** Change the pruning heuristic to trigger based on a counter (e.g., every 100 reindex cycles) rather than size-based. Or use a bounded data structure like an LRU cache with a fixed capacity. Current behavior is acceptable for typical projects but could surprise users with heavy file churn.
+9. **Migration atomicity:** `migrate()` (migrations.rs:43-56) wraps all steps in a single transaction with rollback on failure.
 
-#### RM-8: SQLite `PRAGMA cache_size = -16384` (16MB) per connection x 4 connections = 64MB page cache
-- **Difficulty:** easy
-- **Location:** src/store/mod.rs:217
-- **Description:** Each SQLite connection in the pool gets `PRAGMA cache_size = -16384` (16MB page cache) via `after_connect`. With `max_connections(4)`, the total SQLite page cache can reach 64MB. Combined with `mmap_size = 268435456` (256MB), a single Store can use up to 320MB of memory for SQLite caching alone. For `cqs batch` or `cqs chat` where both the project Store AND reference Stores may be open simultaneously, this multiplies. Two references = 3 Stores = 192MB page cache + 768MB mmap potential. The mmap pages are demand-paged by the OS and share physical pages, so the actual RSS impact depends on access patterns. The page cache, however, is private per-connection.
-- **Suggested fix:** Consider reducing `cache_size` for read-only stores (`open_readonly` uses `max_connections(1)`, so it's already 16MB) and for the pool connections that handle read-only queries. The write path (connections 1-2) benefits from large caches; the search path (connections 3-4) may not need 16MB each. Alternatively, document the expected memory footprint. For most cqs users (single project, ~17k chunks, ~50MB DB), the actual cache utilization is well below 16MB per connection.
-
-## Security
-
-#### SEC-1: `BufRead::lines()` allocates full line before `MAX_BATCH_LINE_LEN` check — OOM on single huge line
-- **Difficulty:** medium
-- **Location:** src/cli/batch/mod.rs:394-404
-- **Description:** The SEC-12 fix from v0.13.1 added a `MAX_BATCH_LINE_LEN` (1MB) check at line 404, but the check runs *after* `BufRead::lines()` has already read the entire line into a `String`. Rust's `BufReader::lines()` internally calls `read_line()` which grows the `String` buffer without bound until it hits `\n` or EOF. A single line without newlines (e.g., `yes | tr -d '\n' | cqs batch`) will allocate memory until OOM before the 1MB check is reached. The check only protects against processing the line — it doesn't prevent the allocation. This is the residual risk that SEC-12 didn't address. Threat model: local CLI tool, so exploitation requires controlling stdin to `cqs batch` or `cqs chat`, which in practice means either a malicious pipe or a compromised agent.
-- **Suggested fix:** Replace `stdin.lock().lines()` with a bounded line reader. Use `BufRead::read_line()` in a loop with a running length check: read into a buffer, and if it exceeds `MAX_BATCH_LINE_LEN` before hitting `\n`, discard the rest of the line and emit an error. Alternatively, wrap the reader with `.take(MAX_BATCH_LINE_LEN as u64 + 1)` per line, though this requires more restructuring. The `chat` REPL (cli/chat.rs) uses `rustyline` which has its own bounded input handling and is not affected.
-
-#### SEC-2: `is_webhelp_dir` detection walk follows symlinks through the initial `content/` join
-- **Difficulty:** easy
-- **Location:** src/convert/webhelp.rs:19-36
-- **Description:** `is_webhelp_dir()` checks if a directory looks like a web help site by joining `dir + "content"` and walking it. The `content_dir.is_dir()` check at line 21 follows symlinks — if `content/` is a symlink pointing to an arbitrary directory, `is_dir()` returns true and the `WalkDir` at line 25 enumerates that target. While `WalkDir` defaults to `follow_links(false)` for entries *within* the walk, the initial root path (`content_dir`) is a symlink that was already resolved by `is_dir()`. The actual `webhelp_to_markdown()` at line 58 correctly uses `filter_entry(|e| !e.path_is_symlink())`, but `is_webhelp_dir()` in `convert_directory()` runs before conversion and probes the symlinked target for HTML files. The impact is limited: an attacker who controls a `content/` symlink inside a directory being converted gets information about whether HTML files exist at the symlink target, but no file content is read in the detection phase. The real conversion path is safe.
-- **Suggested fix:** Add a symlink check before the `is_dir()` call: `if content_dir.symlink_metadata().map(|m| m.is_symlink()).unwrap_or(false) { return false; }`. This is consistent with the symlink filtering in `webhelp_to_markdown()` and `convert_directory()`.
-
-#### SEC-3: `SECURITY.md` threat model understates "project files" trust level
-- **Difficulty:** easy
-- **Location:** SECURITY.md:14
-- **Description:** The SECURITY.md threat model table says project files are "Trusted" with the note "Your code, indexed by your choice." However, `cqs convert` operates on external documents (PDFs, CHMs, HTML from third parties) and `cqs ref add` indexes arbitrary external codebases. Both paths handle untrusted data — crafted CHM archives, malicious HTML, attacker-controlled source trees. The codebase has extensive mitigations (symlink filtering, zip-slip containment, path traversal checks), but the documented threat model doesn't acknowledge that some project files may be untrusted. The v0.13.1 audit added several fixes for exactly these scenarios (SEC-9 through SEC-15). The `"What We Don't Protect Against"` section says "Malicious code in your project" won't be stopped, but doesn't mention malicious documents or reference sources.
-- **Suggested fix:** Update the trust boundary table to distinguish between "project source code" (trusted) and "external documents/references" (semi-trusted — sanitized but not sandboxed). Add a row for "External documents (convert input)" with trust level "Semi-trusted" and note "Symlink/path traversal mitigated, format parsing delegated to libraries." This documents the actual threat model that the code already defends against.
-
-## Performance
-
-#### PF-1: `get_call_graph()` uncached — 15 call sites each do a full `function_calls` table scan
-- **Difficulty:** medium
-- **Location:** src/store/calls.rs:411 (TODO at line 408); 15 callers across onboard.rs, suggest.rs, task.rs, review.rs, impact/hints.rs, health.rs, scout.rs, gather.rs (2x), cli/commands/trace.rs, impact/diff.rs, impact/analysis.rs (2x), cli/commands/test_map.rs, cli/batch/mod.rs
-- **Description:** `get_call_graph()` runs `SELECT DISTINCT caller_name, callee_name FROM function_calls LIMIT 500000` on every call. With 15 call sites across the codebase, any compound operation (e.g., `cqs task` calls scout which calls both `get_call_graph` and `find_test_chunks`) triggers multiple full table scans of the same data. For a project with ~2000 edges this takes ~5ms per call, but it adds up: a single `cqs health` call triggers `get_call_graph` once then `find_test_chunks` once; `cqs task` chains scout + gather + impact + placement, each independently calling `get_call_graph`. The TODO comment at line 408 acknowledges this (`TODO(PF-7): Add OnceLock<CallGraph> cache field to Store`) but was never implemented. The previous audit (v0.19.4) triaged this as PF-7 and marked it "fixed" in PR #502, but only the TODO comment was added — the actual cache was not built.
-- **Suggested fix:** Add `call_graph_cache: OnceLock<Result<CallGraph, StoreError>>` to `Store`. Invalidate (reset) in `upsert_function_calls`, `prune_stale_calls`, and `replace_calls_for_file`. The `BatchContext` already has this pattern for its own `OnceLock<CallGraph>` (src/cli/batch/mod.rs:60), but only batch mode benefits — all other callers (scout, task, health, impact, review, suggest, onboard) still hit the database directly.
-
-#### PF-2: `find_test_chunks()` uncached — 14 call sites each do a complex SQL scan with LIKE patterns
-- **Difficulty:** medium
-- **Location:** src/store/calls.rs:1054 (TODO around line 937); 14 callers across onboard.rs, task.rs, scout.rs, review.rs, suggest.rs, health.rs, impact/diff.rs, impact/analysis.rs (2x), impact/hints.rs, cli/batch/mod.rs, cli/batch/handlers.rs, cli/commands/test_map.rs
-- **Description:** `find_test_chunks()` runs a broad SQL query combining name patterns (`test_%`, `Test%`), content LIKE patterns from `LanguageDef::test_markers`, and path patterns from `LanguageDef::test_path_patterns`. The SQL uses OR-chains of LIKE clauses which force full table scans (LIKE with leading wildcards can't use indexes). With 14 call sites, compound operations repeatedly scan the entire chunks table for test detection. Same situation as PF-1: previous audit (v0.19.4 PF-10) marked "fixed" but only a TODO comment exists. `BatchContext` has its own `OnceLock<Vec<ChunkSummary>>` but non-batch callers (scout, health, impact, review, etc.) all hit the database independently.
-- **Suggested fix:** Add `test_chunks_cache: OnceLock<Result<Vec<ChunkSummary>, StoreError>>` to `Store`. Invalidate in `replace_file_chunks`, `upsert_chunks_batch`, and `upsert_chunks_and_calls`. This is the same pattern as PF-1 — both caches should be implemented together since they share the invalidation points.
-
-#### PF-3: `analyze_impact` triggers both uncached table scans — double penalty for impact analysis
-- **Difficulty:** easy (fixed by PF-1 + PF-2)
-- **Location:** src/impact/analysis.rs:29-30
-- **Description:** `analyze_impact` calls `store.get_call_graph()` on line 29 and `store.find_test_chunks()` on line 30, back-to-back. Each is a full table scan (PF-1 and PF-2). The `analyze_impact_batch` variant at line 238 does the same. Since `impact` is called from `cqs impact`, `cqs review`, `cqs task`, and `cqs ci`, every impact analysis pays the cost of two full table scans. In compound operations like `cqs task` (which calls scout first, then impact), the call graph is loaded at least twice and test chunks at least twice.
-- **Suggested fix:** Automatically resolved by implementing PF-1 and PF-2 caches at the Store level. No changes needed in `analyze_impact` itself.
-
-#### PF-4: `search_across_projects` serializes project searches — no parallelism
-- **Difficulty:** medium
-- **Location:** src/project.rs:172 (`for entry in &registry.project` loop)
-- **Description:** `search_across_projects` iterates over registered projects sequentially in a `for` loop (line 172). Each iteration: (1) checks index existence on disk, (2) opens a SQLite Store (`Store::open_readonly`), (3) loads HNSW index from disk (`HnswIndex::try_load`), and (4) runs a full `search_filtered_with_index`. For N projects, total latency is the sum of all searches rather than the maximum. Store opening involves SQLite connection setup (~10-50ms), HNSW loading involves mmap setup (~5-20ms), and search itself depends on corpus size. With 3+ registered projects, the serial overhead becomes noticeable.
-- **Suggested fix:** Use rayon `par_iter` over `registry.project` to search projects in parallel. Each project search is independent (separate Store, separate HNSW index). The results are already merged and sorted after the loop. The gather cross-index code (`gather.rs:540`) already demonstrates the pattern: `rayon::scope` with parallel store operations. Care needed: each parallel search creates its own tokio runtime via `Store::open_readonly` — verify that multiple concurrent runtimes don't conflict.
-
-#### PF-5: `replace_file_chunks` FTS INSERT is per-row despite bulk DELETE
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:290-311
-- **Description:** `replace_file_chunks` does a bulk DELETE of all FTS entries for the origin (efficient), then inserts new FTS entries one row at a time in a loop (line 291-311). Each iteration calls `normalize_for_fts` 4 times (name, signature, content, doc) and then issues a separate `INSERT INTO chunks_fts` SQL statement. The chunk data itself is inserted in batches of 55 using `QueryBuilder::push_values` (line 253-287), but the FTS path doesn't batch. For a file with 50 chunks, this is 50 individual INSERT statements plus 200 `normalize_for_fts` calls, vs. potentially 1 batch INSERT. The same per-row pattern exists in `upsert_chunks_batch` (line 119-147) and `upsert_chunks_and_calls` (line 399-427), though those have a hash-based skip optimization for unchanged chunks.
-- **Suggested fix:** Use `QueryBuilder::push_values` for FTS INSERT as well, batching similarly to the chunk INSERT (groups of ~200 rows, since FTS has 5 columns = ~200 rows per 999-param batch). The `normalize_for_fts` calls still need to happen per-row, but eliminating 49 of 50 SQL round trips would reduce SQLite transaction overhead. Alternatively, accept the current approach — FTS INSERT is fast within a transaction and `replace_file_chunks` is only called from watch mode (typically 1-5 files at a time).
-
-#### PF-6: `count_stale_files` and `list_stale_files` run identical SQL queries — callers that need both pay double
-- **Difficulty:** easy
-- **Location:** src/store/chunks.rs:546-586 (`count_stale_files`), src/store/chunks.rs:592-643 (`list_stale_files`)
-- **Description:** `count_stale_files` and `list_stale_files` both run `SELECT DISTINCT origin, source_mtime FROM chunks WHERE source_type = 'file'` and iterate over all rows checking file existence and mtime. They differ only in return type: `(u64, u64)` counts vs. `StaleReport` with file lists. Currently no single caller invokes both, but `health.rs` calls `count_stale_files` and `gc.rs` calls `count_stale_files` — if either ever needed the full list, they'd have to call both and double the I/O. The doc comment on `list_stale_files` even says "Like `count_stale_files()` but returns full details."
-- **Suggested fix:** Refactor `count_stale_files` to call `list_stale_files` internally and extract counts from the `StaleReport`. The SQL query and file I/O (mtime checks) are the expensive part; computing counts from a `StaleReport` is trivial. This makes `count_stale_files` a thin wrapper and eliminates code duplication. Current impact is low since no caller uses both, but the duplicated logic is a maintenance burden.
-
+10. **RRF sort stability:** `rrf_fuse()` and `search_filtered()` both use `total_cmp` for sorting, handling NaN correctly.

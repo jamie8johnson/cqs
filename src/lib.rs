@@ -7,7 +7,7 @@
 //!
 //! - **Semantic search**: Uses E5-base-v2 embeddings (769-dim: 768 model + sentiment)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Gleam, Haskell, Julia, OCaml, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, Markdown (50 languages)
+//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Gleam, Haskell, Julia, OCaml, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, ASP.NET Web Forms, Markdown (51 languages)
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
@@ -77,7 +77,10 @@ pub(crate) mod onboard;
 pub(crate) mod project;
 pub(crate) mod related;
 pub(crate) mod review;
-pub use review::{review_diff, ReviewResult};
+pub use review::{review_diff, ReviewNoteEntry, ReviewResult};
+#[cfg(feature = "llm-summaries")]
+pub mod llm;
+pub mod plan;
 pub(crate) mod scout;
 pub(crate) mod search;
 pub(crate) mod structural;
@@ -101,21 +104,25 @@ pub use store::{ModelInfo, SearchFilter, Store};
 
 // Re-exports for binary crate (CLI) - these are NOT part of the public library API
 // but need to be accessible to src/cli/* and tests/
-pub use diff::{semantic_diff, DiffResult};
+pub use diff::{semantic_diff, DiffEntry, DiffResult};
 pub use focused_read::COMMON_TYPES;
 pub use gather::{
-    gather, gather_cross_index, gather_with_graph, GatherDirection, GatherOptions, GatherResult,
-    GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
+    gather, gather_cross_index, gather_cross_index_with_index, gather_with_graph, GatherDirection,
+    GatherOptions, GatherResult, GatheredChunk, DEFAULT_MAX_EXPANDED_NODES,
 };
 pub use impact::{
     analyze_diff_impact, analyze_impact, compute_hints, compute_hints_with_graph,
-    compute_hints_with_graph_depth, compute_risk_and_tests, compute_risk_batch,
-    diff_impact_to_json, find_hotspots, impact_to_json, impact_to_mermaid, map_hunks_to_functions,
-    suggest_tests, CallerDetail, ChangedFunction, DiffImpactResult, DiffImpactSummary,
-    DiffTestInfo, FunctionHints, ImpactResult, RiskLevel, RiskScore, TestInfo, TestSuggestion,
-    TransitiveCaller, TypeImpacted, DEFAULT_MAX_TEST_SEARCH_DEPTH,
+    compute_risk_and_tests, compute_risk_batch, diff_impact_to_json, find_hotspots, impact_to_json,
+    impact_to_mermaid, map_hunks_to_functions, suggest_tests, CallerDetail, ChangedFunction,
+    DiffImpactResult, DiffImpactSummary, DiffTestInfo, FunctionHints, ImpactResult, RiskLevel,
+    RiskScore, TestInfo, TestSuggestion, TransitiveCaller, TypeImpacted,
+    DEFAULT_MAX_TEST_SEARCH_DEPTH,
 };
-pub use nl::{generate_nl_description, generate_nl_with_template, normalize_for_fts, NlTemplate};
+pub use nl::{
+    generate_nl_description, generate_nl_with_call_context,
+    generate_nl_with_call_context_and_summary, generate_nl_with_template, normalize_for_fts,
+    CallContext, NlTemplate,
+};
 pub use onboard::{
     onboard, onboard_to_json, OnboardEntry, OnboardResult, OnboardSummary, TestEntry, TypeInfo,
     DEFAULT_ONBOARD_DEPTH,
@@ -123,19 +130,19 @@ pub use onboard::{
 pub use project::{search_across_projects, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
-    scout, scout_to_json, scout_with_options, scout_with_resources, ChunkRole, FileGroup,
-    ScoutChunk, ScoutOptions, ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT,
-    DEFAULT_SCOUT_SEARCH_THRESHOLD,
+    scout, scout_to_json, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
+    ScoutResult, ScoutSummary, DEFAULT_SCOUT_SEARCH_LIMIT, DEFAULT_SCOUT_SEARCH_THRESHOLD,
 };
 pub use search::{parse_target, resolve_target, ResolvedTarget};
 pub use structural::Pattern;
 pub use task::{
-    extract_modify_targets, task, task_to_json, task_with_resources, TaskResult, TaskSummary,
+    extract_modify_targets, task, task_to_json, task_with_resources, FunctionRisk, TaskResult,
+    TaskSummary,
 };
 pub use where_to_add::{
-    suggest_placement, suggest_placement_with_embedding, suggest_placement_with_options,
-    FileSuggestion, LocalPatterns, PlacementOptions, PlacementResult,
-    DEFAULT_PLACEMENT_SEARCH_LIMIT, DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
+    suggest_placement, suggest_placement_with_options, FileSuggestion, LocalPatterns,
+    PlacementOptions, PlacementResult, DEFAULT_PLACEMENT_SEARCH_LIMIT,
+    DEFAULT_PLACEMENT_SEARCH_THRESHOLD,
 };
 
 #[cfg(feature = "gpu-index")]
@@ -235,6 +242,18 @@ pub fn normalize_path(path: &Path) -> String {
 /// For already-stringified paths. Returns the input unchanged on Unix.
 pub fn normalize_slashes(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+/// Generate an unpredictable u64 suffix for temporary file names.
+///
+/// Uses [`std::collections::hash_map::RandomState`] (seeded by the OS on each
+/// process start) to produce a value that is different every run and resists
+/// symlink-based TOCTOU attacks on temp-file paths.
+pub fn temp_suffix() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }
 
 /// Serde serializer for `PathBuf` fields: forward-slash normalized.

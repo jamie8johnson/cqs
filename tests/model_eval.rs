@@ -1268,7 +1268,7 @@ fn test_cuda_compatibility() {
         };
 
         // Load session and inspect
-        let session = match Session::builder().and_then(|b| b.commit_from_file(&model_path)) {
+        let session = match Session::builder().and_then(|mut b| b.commit_from_file(&model_path)) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("  SKIP: {}\n", e);
@@ -1346,11 +1346,13 @@ mod metric_tests {
                 query: "find alpha",
                 expected_name: "alpha",
                 language: Language::Rust,
+                also_accept: &[],
             },
             EvalCase {
                 query: "find gamma",
                 expected_name: "gamma",
                 language: Language::Rust,
+                also_accept: &[],
             },
         ]
     }
@@ -1380,6 +1382,7 @@ mod metric_tests {
             query: "find beta",
             expected_name: "beta",
             language: Language::Rust,
+            also_accept: &[],
         }];
         // Query embedding is closer to alpha than beta → beta is rank 2
         let query_embeddings = vec![vec![0.6, 0.5, 0.0, 0.0]];
@@ -1394,6 +1397,7 @@ mod metric_tests {
             query: "find missing",
             expected_name: "nonexistent",
             language: Language::Rust,
+            also_accept: &[],
         }];
         let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0]];
         let (mrr, _) = compute_mrr(&indexed, &cases, &query_embeddings);
@@ -1475,6 +1479,7 @@ mod metric_tests {
             query: "find beta",
             expected_name: "beta",
             language: Language::Rust,
+            also_accept: &[],
         }];
         // beta at rank 2 → NDCG = 1/log2(3) ≈ 0.631
         let query_embeddings = vec![vec![0.6, 0.5, 0.0, 0.0]];
@@ -1493,6 +1498,7 @@ mod metric_tests {
             query: "find missing",
             expected_name: "nonexistent",
             language: Language::Rust,
+            also_accept: &[],
         }];
         let query_embeddings = vec![vec![1.0, 0.0, 0.0, 0.0]];
         let ndcg = compute_ndcg_at_k(&indexed, &cases, &query_embeddings, 10);

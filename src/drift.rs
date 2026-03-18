@@ -3,6 +3,8 @@
 //! Thin wrapper over `semantic_diff()` focused on the "modified" entries.
 //! Sorts by drift magnitude (most changed first), supports min-drift filtering.
 
+use std::path::PathBuf;
+
 use crate::diff::semantic_diff;
 use crate::store::{Store, StoreError};
 
@@ -12,9 +14,9 @@ pub struct DriftEntry {
     /// Function/class name
     pub name: String,
     /// Source file path
-    pub file: String,
+    pub file: PathBuf,
     /// Type of code element
-    pub chunk_type: String,
+    pub chunk_type: crate::language::ChunkType,
     /// Cosine similarity (lower = more drift)
     pub similarity: f32,
     /// 1.0 - similarity (higher = more drift)
@@ -74,7 +76,7 @@ pub fn detect_drift(
                 Some(DriftEntry {
                     name: entry.name,
                     file: entry.file,
-                    chunk_type: entry.chunk_type.to_string(),
+                    chunk_type: entry.chunk_type,
                     similarity: sim,
                     drift,
                 })
@@ -132,7 +134,7 @@ mod tests {
         let entry = DriftEntry {
             name: "foo".into(),
             file: "src/foo.rs".into(),
-            chunk_type: "Function".into(),
+            chunk_type: ChunkType::Function,
             similarity: 0.7,
             drift: 0.3,
         };
@@ -145,21 +147,21 @@ mod tests {
             DriftEntry {
                 name: "a".into(),
                 file: "a.rs".into(),
-                chunk_type: "Function".into(),
+                chunk_type: ChunkType::Function,
                 similarity: 0.9,
                 drift: 0.1,
             },
             DriftEntry {
                 name: "b".into(),
                 file: "b.rs".into(),
-                chunk_type: "Function".into(),
+                chunk_type: ChunkType::Function,
                 similarity: 0.5,
                 drift: 0.5,
             },
             DriftEntry {
                 name: "c".into(),
                 file: "c.rs".into(),
-                chunk_type: "Function".into(),
+                chunk_type: ChunkType::Function,
                 similarity: 0.7,
                 drift: 0.3,
             },
@@ -177,14 +179,14 @@ mod tests {
             DriftEntry {
                 name: "small".into(),
                 file: "a.rs".into(),
-                chunk_type: "Function".into(),
+                chunk_type: ChunkType::Function,
                 similarity: 0.92,
                 drift: 0.08,
             },
             DriftEntry {
                 name: "big".into(),
                 file: "b.rs".into(),
-                chunk_type: "Function".into(),
+                chunk_type: ChunkType::Function,
                 similarity: 0.5,
                 drift: 0.5,
             },

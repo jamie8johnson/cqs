@@ -24,6 +24,7 @@ mod index;
 mod init;
 mod notes;
 mod onboard;
+mod plan;
 mod project;
 mod query;
 pub(crate) mod read;
@@ -63,6 +64,7 @@ pub(crate) use index::{build_hnsw_index, build_hnsw_index_owned, cmd_index};
 pub(crate) use init::cmd_init;
 pub(crate) use notes::{cmd_notes, NotesCommand};
 pub(crate) use onboard::cmd_onboard;
+pub(crate) use plan::cmd_plan;
 pub(crate) use project::{cmd_project, ProjectCommand};
 pub(crate) use query::cmd_query;
 pub(crate) use read::cmd_read;
@@ -134,6 +136,13 @@ pub(crate) fn token_pack<T>(
         let tokens = token_counts[idx] + json_overhead_per_item;
         if used + tokens > budget && kept_any {
             break;
+        }
+        if !kept_any && tokens > budget {
+            tracing::debug!(
+                tokens,
+                budget,
+                "First item exceeds token budget, including anyway"
+            );
         }
         used += tokens;
         keep[idx] = true;

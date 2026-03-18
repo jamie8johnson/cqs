@@ -7,7 +7,9 @@ use hnsw_rs::hnsw::Hnsw;
 use crate::embedder::Embedding;
 use crate::EMBEDDING_DIM;
 
-use super::{HnswError, HnswIndex, HnswInner, EF_CONSTRUCTION, MAX_LAYER, MAX_NB_CONNECTION};
+use super::{
+    HnswError, HnswIndex, HnswInner, EF_CONSTRUCTION, EF_SEARCH, MAX_LAYER, MAX_NB_CONNECTION,
+};
 
 impl HnswIndex {
     /// Build a new HNSW index from embeddings (single-pass).
@@ -48,6 +50,7 @@ impl HnswIndex {
             return Ok(Self {
                 inner: HnswInner::Owned(hnsw),
                 id_map: Vec::new(),
+                ef_search: EF_SEARCH,
             });
         }
 
@@ -64,6 +67,8 @@ impl HnswIndex {
             DistCosine,
         );
 
+        // Test-only path: allocates the full Vec<Vec<f32>> double-buffer here.
+        // Production code uses `build_batched` to avoid this peak allocation.
         // Reconstruct Vec<f32> chunks from flat buffer for hnsw_rs API
         let chunks: Vec<Vec<f32>> = (0..nb_elem)
             .map(|i| {
@@ -83,6 +88,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
             id_map,
+            ef_search: EF_SEARCH,
         })
     }
 
@@ -138,20 +144,28 @@ impl HnswIndex {
                 continue;
             }
 
-            // Validate dimensions and build insertion data in a single pass
-            let base_idx = id_map.len();
+            // Validate dimensions and build insertion data in a single pass.
+            // Use a separate insertion counter (not loop index) because zero-vector
+            // skips would desync base_idx+i from id_map positions. (RT-DATA-1)
             let mut data_for_insert: Vec<(&Vec<f32>, usize)> = Vec::with_capacity(batch.len());
 
-            for (i, (chunk_id, embedding)) in batch.iter().enumerate() {
+            for (chunk_id, embedding) in batch.iter() {
                 if embedding.len() != EMBEDDING_DIM {
                     return Err(HnswError::DimensionMismatch {
                         expected: EMBEDDING_DIM,
                         actual: embedding.len(),
                     });
                 }
-                tracing::trace!("Adding {} to HNSW index", chunk_id);
+                // Skip zero-vector embeddings — they produce NaN cosine distances
+                let norm_sq: f32 = embedding.as_vec().iter().map(|x| x * x).sum();
+                if norm_sq == 0.0 {
+                    tracing::warn!(chunk_id = %chunk_id, "Skipping zero-vector embedding");
+                    continue;
+                }
+                let insert_idx = id_map.len();
+                tracing::trace!("Adding {} to HNSW index at {}", chunk_id, insert_idx);
                 id_map.push(chunk_id.clone());
-                data_for_insert.push((embedding.as_vec(), base_idx + i));
+                data_for_insert.push((embedding.as_vec(), insert_idx));
             }
 
             // Insert this batch (hnsw_rs supports consecutive parallel_insert calls)
@@ -188,6 +202,7 @@ impl HnswIndex {
                     DistCosine,
                 )),
                 id_map: Vec::new(),
+                ef_search: EF_SEARCH,
             });
         }
 
@@ -196,6 +211,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Owned(hnsw),
             id_map,
+            ef_search: EF_SEARCH,
         })
     }
 }

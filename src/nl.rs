@@ -236,7 +236,7 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
 /// Template variants for NL description generation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NlTemplate {
-    /// Current production template: doc + "A {type} named {name}" + params + returns
+    /// Baseline eval template (not used in production): doc + "A {type} named {name}" + params + returns
     Standard,
     /// No structural prefix: doc + name + params + returns
     NoPrefix,
@@ -254,6 +254,98 @@ pub enum NlTemplate {
     StandardV2Keywords,
     /// Experiment 3d: Standard but doc truncated to first sentence
     StandardV2TruncDoc,
+}
+
+/// Call graph context for enriching NL descriptions.
+///
+/// Provided during the second indexing pass, after the call graph is built.
+#[derive(Debug, Default)]
+pub struct CallContext {
+    /// Names of functions that call this chunk (most specific discrimination signal).
+    pub callers: Vec<String>,
+    /// Names of functions this chunk calls (less discriminating, often shared utilities).
+    pub callees: Vec<String>,
+}
+
+/// Generate NL description enriched with call graph context.
+///
+/// Used in the second indexing pass. Appends caller/callee names to the base
+/// Compact description, filtered by IDF to suppress high-frequency utilities.
+pub fn generate_nl_with_call_context(
+    chunk: &Chunk,
+    ctx: &CallContext,
+    callee_doc_freq: &std::collections::HashMap<String, f32>,
+    max_callers: usize,
+    max_callees: usize,
+) -> String {
+    generate_nl_with_call_context_and_summary(
+        chunk,
+        ctx,
+        callee_doc_freq,
+        max_callers,
+        max_callees,
+        None,
+    )
+}
+
+/// Generate NL with call context and optional LLM summary (SQ-6).
+///
+/// If a summary is provided, it's prepended to the NL for maximum embedding weight.
+pub fn generate_nl_with_call_context_and_summary(
+    chunk: &Chunk,
+    ctx: &CallContext,
+    callee_doc_freq: &std::collections::HashMap<String, f32>,
+    max_callers: usize,
+    max_callees: usize,
+    summary: Option<&str>,
+) -> String {
+    let base = generate_nl_description(chunk);
+
+    let mut extras = Vec::new();
+
+    // Callers: most discriminating signal. Tokenize names for embedding.
+    if !ctx.callers.is_empty() {
+        let caller_words: Vec<String> = ctx
+            .callers
+            .iter()
+            .take(max_callers)
+            .map(|c| tokenize_identifier(c).join(" "))
+            .collect();
+        if !caller_words.is_empty() {
+            extras.push(format!("Called by: {}", caller_words.join(", ")));
+        }
+    }
+
+    // Callees: filter high-frequency utilities (IDF threshold).
+    // A callee appearing in >10% of chunks is likely a utility (log, unwrap, etc.).
+    if !ctx.callees.is_empty() {
+        let callee_words: Vec<String> = ctx
+            .callees
+            .iter()
+            .filter(|c| {
+                !callee_doc_freq
+                    .get(c.as_str())
+                    .is_some_and(|&freq| freq >= 0.10)
+            })
+            .take(max_callees)
+            .map(|c| tokenize_identifier(c).join(" "))
+            .collect();
+        if !callee_words.is_empty() {
+            extras.push(format!("Calls: {}", callee_words.join(", ")));
+        }
+    }
+
+    let nl = if extras.is_empty() {
+        base
+    } else {
+        format!("{}. {}", base, extras.join(". "))
+    };
+
+    // Prepend LLM summary if available (SQ-6)
+    match summary {
+        Some(s) if !s.is_empty() => format!("{} {}", s, nl),
+        _ => nl,
+    }
 }
 
 /// Generate natural language description from chunk metadata.
@@ -314,6 +406,16 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
 
     let mut parts = Vec::new();
 
+    // Compact enrichment: file path + module context for discrimination.
+    // Includes directory components and filename stem (SQ-5).
+    // Generic stems (mod, index, lib, utils) are filtered.
+    if template == NlTemplate::Compact {
+        let file_context = extract_file_context(&chunk.file);
+        if !file_context.is_empty() {
+            parts.push(file_context);
+        }
+    }
+
     // Shared: doc comment — optionally truncated for StandardV2TruncDoc
     let has_doc = if let Some(ref doc) = chunk.doc {
         let doc_trimmed = doc.trim();
@@ -334,15 +436,9 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     // Shared: tokenized name
     let name_words = tokenize_identifier(&chunk.name).join(" ");
 
-    // Shared: type word — derived from ChunkType::Display, with "typealias" → "type alias"
-    let type_display = chunk.chunk_type.to_string();
-    let type_word = if type_display == "typealias" {
-        "type alias"
-    } else {
-        // SAFETY: type_display lives long enough — we only borrow within this function scope.
-        // Using leak-free approach: store the String, borrow from it.
-        &type_display
-    };
+    // Shared: type word — use ChunkType::human_name() which owns the multi-word mapping.
+    // TypeAlias → "type alias"; all other variants return their single-word Display string.
+    let type_word = chunk.chunk_type.human_name();
 
     // DocFirst: minimal metadata when doc exists
     if template == NlTemplate::DocFirst && has_doc {
@@ -368,8 +464,8 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
-    // Struct/enum field names (StandardV2Fields experiment)
-    if template == NlTemplate::StandardV2Fields
+    // Struct/enum field names (StandardV2Fields + Compact)
+    if matches!(template, NlTemplate::StandardV2Fields | NlTemplate::Compact)
         && matches!(
             chunk.chunk_type,
             ChunkType::Struct | ChunkType::Enum | ChunkType::Class
@@ -378,6 +474,22 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         let fields = extract_field_names(&chunk.content, chunk.language);
         if !fields.is_empty() {
             parts.push(format!("Fields: {}", fields.join(", ")));
+        }
+    }
+
+    // Class/struct/interface: extract member method names for richer NL
+    if matches!(
+        chunk.chunk_type,
+        ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+    ) {
+        let methods = extract_member_method_names(&chunk.content, chunk.language);
+        if !methods.is_empty() {
+            let method_words: Vec<String> = methods
+                .iter()
+                .take(10)
+                .map(|m| tokenize_identifier(m).join(" "))
+                .collect();
+            parts.push(format!("Methods: {}", method_words.join(", ")));
         }
     }
 
@@ -501,6 +613,19 @@ static MULTI_NEWLINE_RE: LazyLock<Regex> =
 /// strips bold/italic markers, HTML tags, and collapses whitespace.
 /// Keeps inline code content (strips backticks but preserves text).
 pub fn strip_markdown_noise(content: &str) -> String {
+    // Fast path: skip regex work if the input has no markdown characters.
+    let has_markdown = content.contains('#')
+        || content.contains('[')
+        || content.contains('*')
+        || content.contains('`')
+        || content.contains('<');
+    if !has_markdown {
+        use std::borrow::Cow;
+        let result: Cow<str> = MULTI_WHITESPACE_RE.replace_all(content, " ");
+        let result: Cow<str> = MULTI_NEWLINE_RE.replace_all(&result, "\n\n");
+        return result.trim().to_string();
+    }
+
     use std::borrow::Cow;
     let result: Cow<str> = MD_HEADING_RE.replace_all(content, "");
     let result: Cow<str> = MD_IMAGE_RE.replace_all(&result, "");
@@ -515,6 +640,84 @@ pub fn strip_markdown_noise(content: &str) -> String {
     let result: Cow<str> = MULTI_WHITESPACE_RE.replace_all(&result, " ");
     let result: Cow<str> = MULTI_NEWLINE_RE.replace_all(&result, "\n\n");
     result.trim().to_string()
+}
+
+/// Extract module context from a file path, including filename stem (SQ-5).
+///
+/// Strips common prefixes (src/, lib/) and file extension, tokenizes all
+/// remaining path components. Generic stems (mod, index, lib, utils, helpers)
+/// are filtered. E.g., `src/store/calls.rs` → `"store calls"`.
+fn extract_file_context(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    // Normalize separators
+    let s = s.replace('\\', "/");
+    // Strip leading ./ or common root dirs
+    let s = s.strip_prefix("./").unwrap_or(&s);
+    // Split into components, skip common non-informative segments
+    let skip = [
+        "src",
+        "lib",
+        ".",
+        "test",
+        "tests",
+        "spec",
+        "specs",
+        "fixtures",
+        "fixture",
+        "testdata",
+        "internal",
+        "pkg",
+        "cmd",
+        "app",
+        "eval",
+        "bench",
+        "benches",
+        "examples",
+        "example",
+        "vendor",
+        "third_party",
+    ];
+    let components: Vec<&str> = s
+        .split('/')
+        .filter(|c| !c.is_empty() && !skip.contains(c))
+        .collect();
+    // Include filename stem for module-level discrimination (SQ-5).
+    // Strip file extension from last component. Skip generic stems that add
+    // noise rather than signal.
+    let generic_stems = [
+        "mod",
+        "index",
+        "lib",
+        "main",
+        "utils",
+        "helpers",
+        "common",
+        "types",
+        "config",
+        "constants",
+        "init",
+    ];
+    if components.is_empty() {
+        return String::new();
+    }
+    let mut result: Vec<String> = Vec::new();
+    for (i, c) in components.iter().enumerate() {
+        let c = if i == components.len() - 1 {
+            // Last component: strip extension, skip generic stems
+            let stem = c.rsplit_once('.').map_or(*c, |(s, _)| s);
+            if generic_stems.contains(&stem) {
+                continue;
+            }
+            stem
+        } else {
+            c
+        };
+        result.extend(tokenize_identifier(c));
+    }
+    if result.is_empty() {
+        return String::new();
+    }
+    result.join(" ")
 }
 
 /// Truncate a doc comment to its first sentence (or 150 chars, whichever comes first).
@@ -613,6 +816,129 @@ fn extract_field_names(content: &str, language: Language) -> Vec<String> {
         }
     }
     fields
+}
+
+/// Extract member method/function names from class/struct/interface content.
+///
+/// Scans lines for common method declaration patterns across languages.
+/// Returns raw method names (not tokenized) — caller tokenizes for NL.
+fn extract_member_method_names(content: &str, language: Language) -> Vec<String> {
+    let mut methods = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = extract_method_name_from_line(trimmed, language) {
+            if !name.is_empty() && name.len() > 1 {
+                methods.push(name);
+            }
+            if methods.len() >= 15 {
+                break;
+            }
+        }
+    }
+    methods
+}
+
+/// Try to extract a method name from a single line of code.
+fn extract_method_name_from_line(line: &str, language: Language) -> Option<String> {
+    // Skip comments, empty, decorators
+    if line.is_empty()
+        || line.starts_with("//")
+        || line.starts_with('#')
+        || line.starts_with("/*")
+        || line.starts_with('*')
+        || line.starts_with('@')
+    {
+        return None;
+    }
+
+    // Rust: fn name(, pub fn name(, pub(crate) fn name(
+    // Go: func (r *T) Name(, func Name(
+    // Python: def name(
+    // JS/TS: methodName(, async methodName(, public methodName(
+    // Java/C#/Kotlin: visibility type methodName(
+    // Ruby: def name
+    let work = line
+        .trim_start_matches("pub(crate) ")
+        .trim_start_matches("pub(super) ")
+        .trim_start_matches("pub ")
+        .trim_start_matches("private ")
+        .trim_start_matches("protected ")
+        .trim_start_matches("public ")
+        .trim_start_matches("internal ")
+        .trim_start_matches("override ")
+        .trim_start_matches("virtual ")
+        .trim_start_matches("abstract ")
+        .trim_start_matches("static ")
+        .trim_start_matches("async ")
+        .trim_start_matches("final ");
+
+    match language {
+        Language::Rust => {
+            if let Some(rest) = work.strip_prefix("fn ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+        }
+        Language::Python | Language::Ruby => {
+            if let Some(rest) = work.strip_prefix("def ") {
+                return rest
+                    .split('(')
+                    .next()
+                    .or_else(|| rest.split_whitespace().next())
+                    .map(|s| s.trim().to_string());
+            }
+        }
+        Language::Go => {
+            if let Some(rest) = work.strip_prefix("func ") {
+                // func (r *T) Name( or func Name(
+                let rest = if rest.starts_with('(') {
+                    // Skip receiver: func (r *T) Name(
+                    rest.find(") ").map(|i| &rest[i + 2..]).unwrap_or(rest)
+                } else {
+                    rest
+                };
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+        }
+        _ => {
+            // Generic: look for fn/def/func prefix, or name( pattern
+            if let Some(rest) = work.strip_prefix("fn ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("def ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            if let Some(rest) = work.strip_prefix("func ") {
+                return rest.split('(').next().map(|s| s.trim().to_string());
+            }
+            // JS/TS/Java/C#: word( pattern after stripping modifiers
+            // But need to distinguish from field declarations, so require (
+            if let Some(paren_pos) = work.find('(') {
+                let before = work[..paren_pos].trim();
+                // Could be "returnType methodName" or just "methodName"
+                let name = before.split_whitespace().last().unwrap_or(before);
+                if !name.is_empty()
+                    && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
+                    && !name.contains('{')
+                    && !name.contains('}')
+                    && !name.contains('=')
+                    && name != "if"
+                    && name != "for"
+                    && name != "while"
+                    && name != "switch"
+                    && name != "catch"
+                    && name != "return"
+                    && name != "new"
+                    && name != "class"
+                    && name != "interface"
+                    && name != "struct"
+                    && name != "enum"
+                {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Extract meaningful keywords from function body, filtering language noise.
@@ -1027,9 +1353,10 @@ mod tests {
         let nl = generate_nl_description(&chunk);
         // Compact: no "A method named" prefix, just tokenized name
         assert!(nl.contains("process"));
+        // Without parent_type_name, should not have any "X method" prefix
         assert!(
-            !nl.contains("method."),
-            "Should not have orphan 'method.' prefix: {}",
+            !nl.starts_with("method"),
+            "Should not start with orphan 'method' prefix: {}",
             nl
         );
     }
@@ -1147,5 +1474,85 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn test_chunk(name: &str) -> Chunk {
+        Chunk {
+            id: name.to_string(),
+            file: PathBuf::from("src/test.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 10,
+            content_hash: String::new(),
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        }
+    }
+
+    #[test]
+    fn test_call_context_callers_only() {
+        let chunk = test_chunk("handle_request");
+        let ctx = CallContext {
+            callers: vec!["main".to_string(), "serve".to_string()],
+            callees: vec![],
+        };
+        let freq = std::collections::HashMap::new();
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        assert!(nl.contains("Called by: main, serve"), "got: {}", nl);
+        assert!(!nl.contains("Calls:"), "got: {}", nl);
+    }
+
+    #[test]
+    fn test_call_context_callees_with_idf_filter() {
+        let chunk = test_chunk("process");
+        let ctx = CallContext {
+            callers: vec![],
+            callees: vec![
+                "validate".to_string(),
+                "log".to_string(),
+                "save".to_string(),
+            ],
+        };
+        let mut freq = std::collections::HashMap::new();
+        freq.insert("log".to_string(), 0.15_f32); // above 10% threshold — filtered
+        freq.insert("validate".to_string(), 0.05_f32); // below — kept
+        freq.insert("save".to_string(), 0.02_f32); // below — kept
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        assert!(nl.contains("Calls: validate, save"), "got: {}", nl);
+        assert!(!nl.contains("log"), "log should be filtered, got: {}", nl);
+    }
+
+    #[test]
+    fn test_call_context_max_callers_truncation() {
+        let chunk = test_chunk("f");
+        let ctx = CallContext {
+            callers: vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+            ],
+            callees: vec![],
+        };
+        let freq = std::collections::HashMap::new();
+        let nl = generate_nl_with_call_context(&chunk, &ctx, &freq, 2, 5);
+        assert!(nl.contains("Called by: a, b"), "got: {}", nl);
+        assert!(!nl.contains(", c"), "c should be truncated, got: {}", nl);
+    }
+
+    #[test]
+    fn test_call_context_empty_returns_base() {
+        let chunk = test_chunk("lonely");
+        let ctx = CallContext::default();
+        let freq = std::collections::HashMap::new();
+        let base = generate_nl_description(&chunk);
+        let enriched = generate_nl_with_call_context(&chunk, &ctx, &freq, 5, 5);
+        assert_eq!(base, enriched);
     }
 }

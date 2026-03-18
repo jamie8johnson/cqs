@@ -26,10 +26,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     let sevenzip = find_7z()?;
     let temp_dir = tempfile::tempdir()?;
 
-    let path_str = path.to_string_lossy();
-    let output_arg = format!("-o{}", temp_dir.path().display());
+    let mut output_arg = std::ffi::OsString::from("-o");
+    output_arg.push(temp_dir.path());
     let output = std::process::Command::new(&sevenzip)
-        .args(["x", path_str.as_ref(), output_arg.as_str(), "-y"])
+        .args(["x", "--"])
+        .arg(path)
+        .arg(&output_arg)
+        .arg("-y")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -60,7 +63,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     })?;
     for entry in walkdir::WalkDir::new(temp_dir.path())
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping entry during zip-slip check due to walkdir error");
+                None
+            }
+        })
     {
         match dunce::canonicalize(entry.path()) {
             Ok(canonical) => {
@@ -89,7 +98,13 @@ pub fn chm_to_markdown(path: &Path) -> Result<String> {
     let mut pages: Vec<_> = walkdir::WalkDir::new(temp_dir.path())
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping CHM page due to walkdir error");
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
             e.path()
@@ -186,4 +201,19 @@ fn find_7z() -> Result<String> {
     anyhow::bail!(
         "7z not found. Install: `sudo apt install p7zip-full` (Linux) or `brew install p7zip` (macOS)"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chm_to_markdown_nonexistent_file_returns_error() {
+        let path = std::path::Path::new("/nonexistent/path/does_not_exist.chm");
+        let result = chm_to_markdown(path);
+        assert!(
+            result.is_err(),
+            "chm_to_markdown should return an error for a nonexistent file"
+        );
+    }
 }

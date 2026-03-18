@@ -1,8 +1,17 @@
 # Roadmap
 
-## Current: v0.28.1
+## Current: v1.0.13
 
-All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 50 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+First stable release. All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 51 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+
+### 1.0.x Highlights
+
+- v1.0.5: ASP.NET Web Forms (51st language), Make → Bash injection, schema v12 (`parent_type_name`)
+- v1.0.6: SQ-2 richer NL descriptions (+3.7pp R@1 on hard eval)
+- v1.0.7: SQ-4 call-graph-enriched embeddings (two-pass, IDF callee filtering)
+- v1.0.8: 14-category audit — 14 findings fixed
+- v1.0.9: SQ-5 module-level context (filename stems with generic filter)
+- v1.0.10: Red team audit — 7 findings fixed (HNSW ID desync, PDF script injection, path traversal)
 
 ### Next — Commands
 
@@ -15,7 +24,7 @@ All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 50 lan
 
 ### Next — Expansion
 
-- [ ] Pre-built release binaries (GitHub Actions) — adoption friction
+- [x] Pre-built release binaries (GitHub Actions) — adoption friction
 
 ### Future Languages — Priority Order
 
@@ -69,13 +78,15 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [x] LaTeX → code listings — `minted_environment` + `listing_environment`. Language detection from `\begin{minted}{python}` and `[language=Rust]` options.
 - [x] Nix → Bash — `indented_string_expression` in shell contexts (buildPhase, installPhase, shellHook, etc.). `detect_nix_shell_context` checks parent binding name.
 - [x] HCL → Bash — `heredoc_template` with shell identifiers (EOT, BASH, SHELL, etc.). `detect_heredoc_language` checks heredoc identifier.
+- [x] Make → Bash — `recipe/shell_text` injection. Extracts shell commands from recipe bodies.
+- [x] Razor → JS/CSS — `_inner` content mode for grammars without named content children. `detect_razor_element_language` for script/style elements.
 
 **Next — New grammars required:**
-- [ ] Vue (.vue) → JS/TS, CSS, HTML — needs `tree-sitter-vue` grammar. `<script>`, `<style>`, `<template>` identical to HTML injection pattern.
+- [x] Vue (.vue) → JS/TS, CSS, HTML — `tree-sitter-vue-next`. Identical injection pattern to HTML/Svelte. Post-processing: headings, landmarks, setup script detection.
 
 **Next — Medium value (narrower scope):**
-- [ ] Markdown → fenced code blocks — custom parser, not tree-sitter. Needs different approach (parse ` ```lang ` content with target grammar).
-- [ ] YAML → Bash — GitHub Actions `run:` blocks. Detection fragile (not all strings are scripts).
+- [x] Markdown → fenced code blocks — custom line scanner + per-block tree-sitter parse. `extract_fenced_blocks()` + `parse_fenced_blocks()` in parser/mod.rs.
+- ~~YAML → Bash~~ — closed: bash chunk query only captures `function_definition` nodes; GHA `run:` blocks are bare commands, so injection would produce zero chunks.
 
 **Lower priority (niche or fragile):**
 - [ ] Astro (.astro) → JS/TS + HTML — needs grammar
@@ -83,30 +94,62 @@ Injection framework shipped in v0.27.0 (PRs #540, #544). `InjectionRule` on `Lan
 - [ ] EEx/HEEx (.eex, .heex) → Elixir in HTML — needs grammar
 - [ ] SQL in string literals (Rust, Python, Go, Java) — fragile detection
 - [ ] GraphQL in tagged templates (JS/TS) — fragile detection
-- [ ] Shell in Makefile recipes — both grammars compatible
 - [ ] CSS-in-JS (styled-components, emotion) — template literal detection
+
+### Next — Search Quality (large corpus)
+
+Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed MRR drops from 0.91 (fixture-only) to 0.46 (3969 chunks). Rust MRR = 0.000. NL descriptions are too generic to discriminate in large corpora.
+
+- [x] SQ-1: Adaptive name_boost — sweep proved ineffective at scale. Dead end.
+- [x] SQ-2: Richer NL descriptions — field names, dir-only file context. +3.7pp R@1 on hard eval (v1.0.6).
+- [ ] SQ-3: Code-specific embedding model — evaluate UniXcoder, CodeBERT, or fine-tuned E5 as replacement for general-purpose E5-base-v2.
+- [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
+- [x] SQ-5: Module-level context in NL — filename stems with generic filter (11 stems: mod, index, lib, main, utils, helpers, common, types, config, constants, init). Regresses fixture eval ~3pp but improves real queries — shipped in v1.0.9.
+- [ ] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy.
+- [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
+  - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
+  - **LoRA:** Low-Rank Adaptation — freezes base weights, trains ~0.5-2M adapter params (vs 110M full). Adapter is ~10-50MB.
+  - **Training data:** hard eval (55 queries) + holdout (143 queries) + synthetic pairs from cqs/aveva codebases
+  - **Deployment:** Upload merged ONNX to HuggingFace (`jamie8johnson/e5-base-v2-code-search`), cqs downloads it instead of base E5. Or upload LoRA adapter separately for A/B testing.
+  - **Why:** E5-base-v2 is a general NL model — prose (README/CHANGELOG) naturally scores higher than generated code NL descriptions. LoRA teaches the model that "parse config file" should match `fn parse_config()` better than a README paragraph about configuration. This is the real fix for code-vs-doc ranking.
 
 ### Parked
 
 - **MCP server** — re-add as slim read-only wrapper when CLI features are rock solid. Architecture proven clean (removed in v0.10.0 with zero core changes).
 - **Pre-built reference packages** (#255) — `cqs ref install tokio`
-- **Index encryption** — SQLCipher behind cargo feature flag
-- **Query-intent routing** — auto-boost ref weight when query mentions product names
-- **Pattern mining** (`cqs patterns`) — recurring code conventions. Large effort, defer.
+- ~~**Index encryption**~~ — closed: use OS-level disk encryption (BitLocker/LUKS/FileVault). sqlx doesn't support SQLCipher natively; not worth the complexity.
+- ~~**Query-intent routing**~~ — closed: `--ref` flag covers explicit scoping, and hybrid RRF already boosts keyword matches naturally.
+- ~~**Pattern mining**~~ — closed: manual notes + `cqs suggest` cover practical needs. Automated AST pattern recognition is research-grade effort for uncertain payoff.
 - **Post-index name matching** — fuzzy cross-doc references
+
+### Red Team — Accepted/Deferred
+
+Findings from v1.0.10 red team audit. Accepted as trade-offs — each needs upstream API changes or schema work to fix.
+
+- RT-DATA-2: Enrichment no idempotency marker (medium — needs schema change)
+- RT-DATA-3: HNSW orphan accumulation in watch mode (medium — no deletion API)
+- RT-DATA-5: Batch OnceLock stale cache (medium — by design, restart to refresh)
+- RT-DATA-6: SQLite/HNSW crash desync (medium — needs generation counter)
+- RT-DATA-4: Notes file lock vs rename race (low)
 
 ### Open Issues
 
-- #389: CAGRA GPU memory — needs disk persistence layer
+**External/Waiting:**
+- #106: ort stable (currently 2.0.0-rc.12)
+- #63: paste dep unmaintained (RUSTSEC-2024-0436) — transitive via `tokenizers`, waiting on HuggingFace to switch to `pastey`
+
+**Feature:**
 - #255: Pre-built reference packages
-- #106: ort stable (currently 2.0.0-rc.11)
-- #63: paste dep (via tokenizers)
+- #555: EX-4 `where_to_add` catch-all for 44 languages (P4, extensibility)
+
+**Infrastructure:**
+- #389: CAGRA CPU-side dataset retention (~146MB at 50k chunks) — cuVS `search()` consumes the index, so `dataset` is needed for rebuild. Blocked on upstream API change.
 
 ## 1.0 Release Criteria
 
-- [ ] Schema stable for 1+ week of daily use (currently v11)
-- [ ] Used on 2+ different codebases without issues
-- [ ] No known correctness bugs
+- [x] Schema stable for 1+ week of daily use (v12 since 2026-03-13)
+- [x] Used on 2+ different codebases without issues (cqs, aveva, rust)
+- [x] No known correctness bugs
 
 1.0 means: API stable, semver enforced, breaking changes = major bump.
 

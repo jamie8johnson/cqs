@@ -203,7 +203,7 @@ fn display_ci_text(
                 "  {} {} ({}:{}) — {} callers, {} tests",
                 risk_indicator,
                 f.name,
-                f.file,
+                f.file.display(),
                 f.line_start,
                 f.risk.caller_count,
                 f.risk.test_count,
@@ -222,7 +222,10 @@ fn display_ci_text(
         for d in &report.dead_in_diff {
             println!(
                 "  {} {}:{} [{}]",
-                d.name, d.file, d.line_start, d.confidence
+                d.name,
+                d.file.display(),
+                d.line_start,
+                d.confidence.as_str()
             );
         }
     }

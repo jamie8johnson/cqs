@@ -63,7 +63,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 
     let root = find_project_root();
 
-    // Auto-detect when polling is needed: WSL + /mnt/ path
+    // Auto-detect when polling is needed: WSL + /mnt/ path.
+    //
+    // Detection is prefix-based (/mnt/) rather than filesystem-based (statfs NTFS/FAT magic)
+    // because that's pragmatic: paths under /mnt/ in WSL are DrvFs mounts of Windows
+    // filesystems (NTFS, FAT32, exFAT), none of which support inotify. A statfs check would
+    // give the same answer with more syscalls and less portability across WSL versions.
+    // If the project root is on a Linux filesystem inside WSL (e.g. /home/...), inotify works
+    // fine and we leave use_poll false.
     let use_poll =
         poll || (cqs::config::is_wsl() && root.to_str().is_some_and(|p| p.starts_with("/mnt/")));
 
@@ -305,6 +312,7 @@ fn process_file_changes(
     quiet: bool,
 ) {
     let files: Vec<PathBuf> = pending_files.drain().collect();
+    let _span = info_span!("process_file_changes", file_count = files.len()).entered();
     pending_files.shrink_to(64);
     if !quiet {
         println!("\n{} file(s) changed, reindexing...", files.len());
@@ -333,6 +341,9 @@ fn process_file_changes(
     // results (RT-DATA-3). Per-file transactions are atomic but the
     // batch is not — files indexed so far are visible, remaining are
     // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
+    //
+    // Mark HNSW dirty before writing chunks (RT-DATA-6).
+    store.set_hnsw_dirty(true).ok();
     match reindex_files(root, store, &files, parser, emb, quiet) {
         Ok((count, content_hashes)) => {
             // Record mtimes to skip duplicate events
@@ -355,12 +366,16 @@ fn process_file_changes(
             let needs_full_rebuild =
                 hnsw_index.is_none() || *incremental_count >= HNSW_REBUILD_THRESHOLD;
 
+            // During full rebuild the old index and new batch coexist briefly,
+            // but `build_batched` streams one batch at a time so peak memory is
+            // old_index + one_batch, not 2× the full index.
             if needs_full_rebuild {
                 match super::commands::build_hnsw_index_owned(store, cqs_dir) {
                     Ok(Some(index)) => {
                         let n = index.len();
                         *hnsw_index = Some(index);
                         *incremental_count = 0;
+                        store.set_hnsw_dirty(false).ok(); // RT-DATA-6
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !quiet {
                             println!("  HNSW index: {} vectors (full rebuild)", n);
@@ -400,6 +415,8 @@ fn process_file_changes(
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
+                                    } else {
+                                        store.set_hnsw_dirty(false).ok(); // RT-DATA-6
                                     }
                                     info!(
                                         inserted = n,
@@ -497,7 +514,7 @@ fn reindex_files(
                     file_chunks
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to parse {}: {}", abs_path.display(), e);
+                    tracing::warn!(path = %abs_path.display(), error = %e, "Failed to parse file");
                     vec![]
                 }
             }
@@ -593,6 +610,8 @@ fn reindex_files(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_secs() as i64)
         });
+        // `all_calls` is scoped to the changed files in this reindex batch, not the full
+        // index, so this filter is O(changed_chunks) rather than O(all_chunks).
         // Filter calls to only those belonging to chunks in this file
         let chunk_ids: HashSet<&str> = pairs.iter().map(|(c, _)| c.id.as_str()).collect();
         let file_calls: Vec<_> = all_calls

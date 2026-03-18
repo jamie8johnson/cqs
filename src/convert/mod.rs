@@ -331,7 +331,13 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
     // Find immediate subdirectories that are web help sites
     let mut webhelp_dirs: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.filter_map(|e| e.ok()) {
+        for entry in entries.filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping directory entry due to read_dir error");
+                None
+            }
+        }) {
             let path = entry.path();
             if path.is_dir() && webhelp::is_webhelp_dir(&path) {
                 webhelp_dirs.push(path);
@@ -357,7 +363,13 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
         .max_depth(MAX_WALK_DEPTH)
         .into_iter()
         .filter_entry(|e| !e.path_is_symlink())
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                tracing::warn!(error = %err, "Skipping directory entry due to walkdir error");
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
         .filter(|e| detect_format(e.path()).is_some())
         .filter(|e| !webhelp_dirs.iter().any(|wh| e.path().starts_with(wh)))

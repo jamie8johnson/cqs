@@ -6,7 +6,7 @@ use crate::embedder::Embedding;
 use crate::index::IndexResult;
 use crate::EMBEDDING_DIM;
 
-use super::{HnswIndex, EF_SEARCH};
+use super::HnswIndex;
 
 impl HnswIndex {
     /// Search for nearest neighbors (inherent implementation).
@@ -35,10 +35,10 @@ impl HnswIndex {
             return Vec::new();
         }
 
-        // Adaptive ef_search: baseline EF_SEARCH or 2*k (whichever is larger),
+        // Adaptive ef_search: baseline self.ef_search or 2*k (whichever is larger),
         // capped at index size (searching more than the index is pointless for small indexes).
         let index_size = self.id_map.len();
-        let ef_search = EF_SEARCH.max(k * 2).min(index_size.max(EF_SEARCH));
+        let ef_search = self.ef_search.max(k * 2).min(index_size);
 
         let neighbors = self
             .inner

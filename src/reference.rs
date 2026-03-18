@@ -224,6 +224,9 @@ pub fn validate_ref_name(name: &str) -> Result<(), &'static str> {
     if name == "." {
         return Err("Reference name cannot be '.'");
     }
+    if name.starts_with('.') {
+        return Err("Reference name cannot start with '.'");
+    }
     Ok(())
 }
 
@@ -252,6 +255,9 @@ mod tests {
                 line_start: 1,
                 line_end: 1,
                 parent_id: None,
+                parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             score,
         }
@@ -425,6 +431,9 @@ mod tests {
                 line_start: 1,
                 line_end: 1,
                 parent_id: None,
+                parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             score: 0.9,
         })];
@@ -443,6 +452,9 @@ mod tests {
                     line_start: 1,
                     line_end: 1,
                     parent_id: None,
+                    parent_type_name: None,
+                    content_hash: String::new(),
+                    window_idx: None,
                 },
                 score: 0.7,
             }],

@@ -77,6 +77,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs related <function>` — co-occurrence: shared callers, callees, types. What else to review.
 - `cqs where "description"` — placement suggestion: where to add new code, with local patterns.
 - `cqs scout "task"` — pre-investigation dashboard: search + callers/tests + staleness + notes in one call.
+- `cqs plan "description"` — task planning: classify into 11 task-type templates (language, bug fix, CLI flag, etc.) + scout + checklist. `--json` for structured output.
 - `cqs task "description"` — single-call implementation brief: scout + gather + impact + placement + notes. Loads shared resources once. Waterfall token budgeting.
 - `cqs onboard "concept"` — guided tour: entry point → call chain → callers → types → tests. One-call orientation.
 - `cqs callers <function>` / `cqs callees <function>` — call graph navigation.

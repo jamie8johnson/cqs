@@ -1,8 +1,10 @@
 //! Diff-aware impact analysis
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::store::CallerWithContext;
+use crate::AnalysisError;
 use crate::Store;
 
 use super::analysis::extract_call_snippet_from_cache;
@@ -27,17 +29,17 @@ pub fn map_hunks_to_functions(
     let mut functions = Vec::new();
 
     // Group hunks by file
-    let mut by_file: HashMap<&str, Vec<&crate::diff_parse::DiffHunk>> = HashMap::new();
+    let mut by_file: HashMap<&Path, Vec<&crate::diff_parse::DiffHunk>> = HashMap::new();
     for hunk in hunks {
         by_file.entry(&hunk.file).or_default().push(hunk);
     }
 
     for (file, file_hunks) in &by_file {
-        let normalized = normalize_slashes(file);
+        let normalized = normalize_slashes(&file.to_string_lossy());
         let chunks = match store.get_chunks_by_origin(&normalized) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(file = %file, error = %e, "Failed to get chunks for file");
+                tracing::warn!(file = %file.display(), error = %e, "Failed to get chunks for file");
                 continue;
             }
         };
@@ -55,7 +57,7 @@ pub fn map_hunks_to_functions(
                 {
                     functions.push(ChangedFunction {
                         name: chunk.name.clone(),
-                        file: file.to_string(),
+                        file: file.to_path_buf(),
                         line_start: chunk.line_start,
                     });
                 }
@@ -73,7 +75,7 @@ pub fn map_hunks_to_functions(
 pub fn analyze_diff_impact(
     store: &Store,
     changed: Vec<ChangedFunction>,
-) -> anyhow::Result<DiffImpactResult> {
+) -> Result<DiffImpactResult, AnalysisError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     analyze_diff_impact_with_graph(store, changed, &graph, &test_chunks)
@@ -88,7 +90,7 @@ pub fn analyze_diff_impact_with_graph(
     changed: Vec<ChangedFunction>,
     graph: &crate::store::CallGraph,
     test_chunks: &[crate::store::ChunkSummary],
-) -> anyhow::Result<DiffImpactResult> {
+) -> Result<DiffImpactResult, AnalysisError> {
     let _span = tracing::info_span!("analyze_diff_impact", changed_count = changed.len()).entered();
     if changed.is_empty() {
         return Ok(DiffImpactResult {
@@ -220,4 +222,273 @@ pub fn analyze_diff_impact_with_graph(
         all_tests,
         summary,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::language::{ChunkType, Language};
+    use crate::store::{CallGraph, ChunkSummary};
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    fn make_test_store() -> (crate::Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = crate::Store::open(&db_path).unwrap();
+        store.init(&crate::store::ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    fn make_chunk_summary(name: &str, file: &str, line_start: u32) -> ChunkSummary {
+        ChunkSummary {
+            id: name.to_string(),
+            file: PathBuf::from(file),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: name.to_string(),
+            signature: format!("fn {}()", name),
+            content: String::new(),
+            doc: None,
+            line_start,
+            line_end: line_start + 5,
+            parent_id: None,
+            parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
+        }
+    }
+
+    fn make_changed(name: &str, file: &str, line_start: u32) -> ChangedFunction {
+        ChangedFunction {
+            name: name.to_string(),
+            file: PathBuf::from(file),
+            line_start,
+        }
+    }
+
+    fn make_empty_graph() -> CallGraph {
+        CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        }
+    }
+
+    /// Depth-0 exclusion: if a test chunk has the same name as a changed function,
+    /// BFS returns depth 0 for it and it must NOT appear in all_tests.
+    #[test]
+    fn test_depth0_changed_function_excluded_from_tests() {
+        let (store, _dir) = make_test_store();
+
+        let changed = vec![make_changed("my_func", "src/lib.rs", 10)];
+
+        // The changed function is itself a test chunk (depth 0 in BFS).
+        let test_chunks = vec![make_chunk_summary("my_func", "src/lib.rs", 10)];
+
+        let graph = make_empty_graph();
+
+        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+
+        assert!(
+            result.all_tests.is_empty(),
+            "depth-0 test chunk (same as changed function) must be excluded; got {:?}",
+            result.all_tests
+        );
+        assert_eq!(result.summary.test_count, 0);
+    }
+
+    /// Depth-1 test is included, but the changed function itself (depth 0) is not.
+    #[test]
+    fn test_depth1_test_is_included_depth0_is_not() {
+        let (store, _dir) = make_test_store();
+
+        // Graph: test_fn calls changed_fn (so changed_fn is called by test_fn)
+        // Reverse: changed_fn <- test_fn
+        let mut reverse = HashMap::new();
+        reverse.insert("changed_fn".to_string(), vec!["test_fn".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let changed = vec![make_changed("changed_fn", "src/lib.rs", 10)];
+
+        // Two test chunks: changed_fn at depth 0 (excluded), test_fn at depth 1 (included)
+        let test_chunks = vec![
+            make_chunk_summary("changed_fn", "src/lib.rs", 10),
+            make_chunk_summary("test_fn", "tests/lib_test.rs", 50),
+        ];
+
+        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+
+        assert_eq!(
+            result.all_tests.len(),
+            1,
+            "only depth-1 test should be included"
+        );
+        assert_eq!(result.all_tests[0].name, "test_fn");
+        assert_eq!(result.all_tests[0].call_depth, 1);
+        assert_eq!(result.all_tests[0].via, "changed_fn");
+    }
+
+    /// Empty changed list returns empty result immediately (early return path).
+    #[test]
+    fn test_empty_changed_returns_empty_result() {
+        let (store, _dir) = make_test_store();
+        let graph = make_empty_graph();
+        let test_chunks = vec![make_chunk_summary("some_test", "tests/foo.rs", 1)];
+
+        let result = analyze_diff_impact_with_graph(&store, vec![], &graph, &test_chunks).unwrap();
+
+        assert!(result.changed_functions.is_empty());
+        assert!(result.all_callers.is_empty());
+        assert!(result.all_tests.is_empty());
+        assert_eq!(result.summary.changed_count, 0);
+        assert_eq!(result.summary.test_count, 0);
+    }
+
+    /// BFS anomaly: multi-BFS finds the test at depth > 0, but the only per-function
+    /// path to it is at depth 0 (the test IS the changed function in that function's BFS),
+    /// so no `d > 0` match exists → falls back to "(unknown)" via.
+    ///
+    /// Setup: two changed functions A and B.
+    /// - A's individual BFS finds test_T at depth 0 (A == T — same node, which never happens
+    ///   in practice, but we model it via the graph rather than name identity).
+    /// - Instead, we model the anomaly using depth-only checks: multi-BFS reaches test_T
+    ///   at depth 1 (via B→test_T), but A's BFS reaches test_T at depth 0 (A calls test_T
+    ///   directly with A == test_T is impossible; instead we make A's reverse graph have
+    ///   test_T as itself).
+    ///
+    /// Actually the most natural anomaly: test_T appears at depth 1 in multi-BFS
+    /// (from changed_B), but in changed_A's per-function BFS test_T appears only at depth 0
+    /// because test_T == changed_A. The via for test_T then comes from changed_B, not "(unknown)".
+    ///
+    /// To get "(unknown)" we need: multi-BFS finds test_T but BOTH per-function BFS results
+    /// only have test_T at depth 0.  This happens when test_T == changed_A AND test_T == changed_B
+    /// — impossible. The real "(unknown)" path requires a graph topology bug.
+    ///
+    /// We test the logged anomaly branch via the depth-0 skip: when multi-BFS returns depth 1
+    /// for a test, but the per-function BFS has it at depth 0 only, best_via stays None.
+    ///
+    /// Simulate: changed = [T], test_chunks = [T]. Multi-BFS has T at 0 (excluded by `depth > 0`
+    /// on the outer if). So actually with a single changed function that IS the test,
+    /// there's no way to trigger the inner anomaly without separate multi/single BFS disagreement.
+    ///
+    /// Instead, test the closest approximation: multi-source with two functions where one
+    /// reaches the test normally.
+    #[test]
+    fn test_bfs_anomaly_via_attribution_uses_closest_function() {
+        let (store, _dir) = make_test_store();
+
+        // Call graph (forward direction): test_t calls func_a and test_t calls func_b.
+        // Reverse edges (callee → callers):
+        //   func_a is called by test_t  →  reverse["func_a"] = ["test_t"]
+        //   func_b is called by test_t  →  reverse["func_b"] = ["test_t"]
+        //
+        // BFS from func_a: traverses reverse["func_a"] = [test_t] → test_t at depth 1.
+        // BFS from func_b: traverses reverse["func_b"] = [test_t] → test_t at depth 1.
+        // Multi-BFS from [func_a, func_b]: test_t at depth 1.
+        // Per-function: both find test_t at depth 1, so best_via is one of them (not "(unknown)").
+        let mut reverse = HashMap::new();
+        reverse.insert("func_a".to_string(), vec!["test_t".to_string()]);
+        reverse.insert("func_b".to_string(), vec!["test_t".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let changed = vec![
+            make_changed("func_a", "src/a.rs", 1),
+            make_changed("func_b", "src/b.rs", 1),
+        ];
+        let test_chunks = vec![make_chunk_summary("test_t", "tests/t.rs", 5)];
+
+        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+
+        assert_eq!(result.all_tests.len(), 1);
+        let test = &result.all_tests[0];
+        assert_eq!(test.name, "test_t");
+        assert_eq!(test.call_depth, 1);
+        // via must be one of the two changed functions, not "(unknown)"
+        assert!(
+            test.via == "func_a" || test.via == "func_b",
+            "via should be a known changed function, got {:?}",
+            test.via
+        );
+    }
+
+    /// Tests are sorted by call_depth ascending.
+    #[test]
+    fn test_results_sorted_by_call_depth() {
+        let (store, _dir) = make_test_store();
+
+        // Chain: changed_fn <- mid <- deep_test
+        //        changed_fn <- near_test
+        let mut reverse = HashMap::new();
+        reverse.insert(
+            "changed_fn".to_string(),
+            vec!["mid".to_string(), "near_test".to_string()],
+        );
+        reverse.insert("mid".to_string(), vec!["deep_test".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let changed = vec![make_changed("changed_fn", "src/lib.rs", 1)];
+        let test_chunks = vec![
+            make_chunk_summary("deep_test", "tests/deep.rs", 1),
+            make_chunk_summary("near_test", "tests/near.rs", 1),
+        ];
+
+        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+
+        assert_eq!(result.all_tests.len(), 2);
+        assert!(
+            result.all_tests[0].call_depth <= result.all_tests[1].call_depth,
+            "tests must be sorted by call_depth ascending"
+        );
+        assert_eq!(result.all_tests[0].name, "near_test");
+        assert_eq!(result.all_tests[0].call_depth, 1);
+        assert_eq!(result.all_tests[1].name, "deep_test");
+        assert_eq!(result.all_tests[1].call_depth, 2);
+    }
+
+    /// Deduplication: same test reachable from two changed functions gets the shallower via.
+    #[test]
+    fn test_dedup_keeps_shallower_depth() {
+        let (store, _dir) = make_test_store();
+
+        // Call graph (forward): test_t calls func_a (direct), and test_t calls mid which calls func_b.
+        // Reverse edges (callee → callers):
+        //   func_a is called by test_t → reverse["func_a"] = ["test_t"]  (depth 1 from func_a)
+        //   func_b is called by mid    → reverse["func_b"] = ["mid"]
+        //   mid is called by test_t   → reverse["mid"]    = ["test_t"]  (depth 1 from mid)
+        //
+        // BFS from func_a: test_t at depth 1.
+        // BFS from func_b: mid at depth 1, test_t at depth 2.
+        // Multi-BFS from [func_a, func_b]: test_t at depth 1 (min).
+        // test_t should appear once with call_depth=1, via=func_a.
+        let mut reverse = HashMap::new();
+        reverse.insert("func_a".to_string(), vec!["test_t".to_string()]);
+        reverse.insert("func_b".to_string(), vec!["mid".to_string()]);
+        reverse.insert("mid".to_string(), vec!["test_t".to_string()]);
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse,
+        };
+
+        let changed = vec![
+            make_changed("func_a", "src/a.rs", 1),
+            make_changed("func_b", "src/b.rs", 1),
+        ];
+        let test_chunks = vec![make_chunk_summary("test_t", "tests/t.rs", 5)];
+
+        let result = analyze_diff_impact_with_graph(&store, changed, &graph, &test_chunks).unwrap();
+
+        assert_eq!(result.all_tests.len(), 1, "test_t deduped to one entry");
+        // Multi-BFS minimum depth: test_t is at depth 1 (from func_a).
+        assert_eq!(result.all_tests[0].call_depth, 1);
+        assert_eq!(result.all_tests[0].via, "func_a");
+    }
 }

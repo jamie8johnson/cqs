@@ -209,7 +209,7 @@ fn display_review_text(
             "  {} {} ({}:{}) — {} callers, {} tests{}",
             risk_indicator,
             f.name,
-            f.file,
+            f.file.display(),
             f.line_start,
             f.risk.caller_count,
             f.risk.test_count,

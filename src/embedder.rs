@@ -1,7 +1,7 @@
 //! Embedding generation with ort + tokenizers
 
 use lru::LruCache;
-use ndarray::Array2;
+use ndarray::{Array2, Array3, Axis};
 use once_cell::sync::OnceCell;
 use ort::ep::ExecutionProvider as OrtExecutionProvider;
 use ort::session::Session;
@@ -41,11 +41,9 @@ pub enum EmbedderError {
 
 /// Convert any ort error to [`EmbedderError::InferenceFailed`] via `.to_string()`.
 ///
-/// This is a function instead of a `From<ort::Error>` impl because ort 2.0.0-rc.12+
-/// changed `Error` to `Error<T>` (generic over the builder stage). A blanket
-/// `impl<T> From<ort::Error<T>>` isn't possible with rc.11 where `Error` is non-generic,
-/// so call sites use `.map_err(ort_err)` instead of `?` auto-conversion.
-fn ort_err(e: ort::Error) -> EmbedderError {
+/// Call sites use `.map_err(ort_err)` instead of `?` auto-conversion because
+/// a blanket `From` impl would conflict with other error conversions.
+fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
     EmbedderError::InferenceFailed(e.to_string())
 }
 
@@ -397,9 +395,19 @@ impl Embedder {
     }
 
     /// Embed documents (code chunks). Adds "passage: " prefix for E5.
+    ///
+    /// Large inputs are processed in batches of 64 to cap GPU memory usage.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
+        const MAX_BATCH: usize = 64;
         let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
-        self.embed_batch(&prefixed)
+        if prefixed.len() <= MAX_BATCH {
+            return self.embed_batch(&prefixed);
+        }
+        let mut all = Vec::with_capacity(prefixed.len());
+        for chunk in prefixed.chunks(MAX_BATCH) {
+            all.extend(self.embed_batch(chunk)?);
+        }
+        Ok(all)
     }
 
     /// Embed a query. Adds "query: " prefix for E5. Uses LRU cache for repeated queries.
@@ -537,9 +545,13 @@ impl Embedder {
             .map_err(ort_err)?;
 
         // Get the last_hidden_state output: shape [batch, seq_len, 768]
-        let (shape, data) = outputs["last_hidden_state"]
-            .try_extract_tensor::<f32>()
-            .map_err(ort_err)?;
+        let output = outputs.get("last_hidden_state").ok_or_else(|| {
+            EmbedderError::InferenceFailed(format!(
+                "ONNX model has no 'last_hidden_state' output. Available: {:?}",
+                outputs.keys().collect::<Vec<_>>()
+            ))
+        })?;
+        let (shape, data) = output.try_extract_tensor::<f32>().map_err(ort_err)?;
 
         // Validate tensor shape: expect [batch_size, seq_len, 768]
         let batch_size = texts.len();
@@ -563,32 +575,33 @@ impl Embedder {
                 batch_size, shape[0]
             )));
         }
-        let mut results = Vec::with_capacity(batch_size);
+        // Mean-pooling via ndarray (vectorized, SIMD-friendly)
+        let hidden = Array3::from_shape_vec((batch_size, seq_len, embedding_dim), data.to_vec())
+            .map_err(|e| EmbedderError::InferenceFailed(format!("tensor reshape failed: {e}")))?;
 
-        for (i, mask_vec) in attention_mask.iter().enumerate().take(batch_size) {
-            let mut sum = vec![0.0f32; embedding_dim];
-            let mut count = 0.0f32;
+        // Build mask: [batch, seq, 1] for broadcasting
+        let mask_2d = Array2::from_shape_fn((batch_size, seq_len), |(i, j)| {
+            attention_mask[i].get(j).copied().unwrap_or(0) as f32
+        });
+        let mask_3d = mask_2d.clone().insert_axis(Axis(2));
 
-            for j in 0..seq_len {
-                let mask = mask_vec.get(j).copied().unwrap_or(0) as f32;
-                if mask > 0.0 {
-                    count += mask;
-                    let offset = i * seq_len * embedding_dim + j * embedding_dim;
-                    for (k, sum_val) in sum.iter_mut().enumerate() {
-                        *sum_val += data[offset + k] * mask;
-                    }
-                }
-            }
+        // Masked sum: (hidden * mask).sum(axis=1) / mask.sum(axis=1)
+        let masked = &hidden * &mask_3d;
+        let summed = masked.sum_axis(Axis(1)); // [batch, dim]
+        let counts = mask_2d.sum_axis(Axis(1)).insert_axis(Axis(1)); // [batch, 1]
 
-            // Avoid division by zero
-            if count > 0.0 {
-                for sum_val in &mut sum {
-                    *sum_val /= count;
-                }
-            }
-
-            results.push(Embedding::new(normalize_l2(sum)));
-        }
+        let results = (0..batch_size)
+            .map(|i| {
+                let count = counts[[i, 0]];
+                let row = summed.row(i);
+                let pooled: Vec<f32> = if count > 0.0 {
+                    row.iter().map(|v| v / count).collect()
+                } else {
+                    vec![0.0f32; embedding_dim]
+                };
+                Embedding::new(normalize_l2(pooled))
+            })
+            .collect();
 
         Ok(results)
     }
@@ -608,12 +621,27 @@ fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
         .get(TOKENIZER_FILE)
         .map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
 
-    // Verify checksums (skip if not configured)
-    if !MODEL_BLAKE3.is_empty() {
-        verify_checksum(&model_path, MODEL_BLAKE3)?;
-    }
-    if !TOKENIZER_BLAKE3.is_empty() {
-        verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
+    // Verify checksums (skip if already verified via marker file)
+    if !MODEL_BLAKE3.is_empty() || !TOKENIZER_BLAKE3.is_empty() {
+        let marker = model_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(".cqs_verified");
+        let expected_marker = format!("{}\n{}", MODEL_BLAKE3, TOKENIZER_BLAKE3);
+        let already_verified = std::fs::read_to_string(&marker)
+            .map(|s| s == expected_marker)
+            .unwrap_or(false);
+
+        if !already_verified {
+            if !MODEL_BLAKE3.is_empty() {
+                verify_checksum(&model_path, MODEL_BLAKE3)?;
+            }
+            if !TOKENIZER_BLAKE3.is_empty() {
+                verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
+            }
+            // Write marker after successful verification
+            let _ = std::fs::write(&marker, &expected_marker);
+        }
     }
 
     Ok((model_path, tokenizer_path))
@@ -698,7 +726,16 @@ fn ensure_ort_provider_libs() {
 
     let target_dir = match target_dir {
         Some(d) => d,
-        None => return, // No writable lib dir in path (or only ort cache in path)
+        None => {
+            // LD_LIBRARY_PATH is unset or contains no usable directory outside the ORT cache.
+            // GPU provider libs cannot be symlinked, so GPU acceleration will be unavailable.
+            tracing::warn!(
+                "GPU provider libs skipped: LD_LIBRARY_PATH is unset or has no writable \
+                 directory outside the ORT cache. Set LD_LIBRARY_PATH to a writable lib \
+                 directory (e.g. ~/.local/lib) to enable GPU acceleration."
+            );
+            return;
+        }
     };
 
     // Provider libs to symlink
@@ -787,7 +824,7 @@ pub(crate) fn create_session(
 ) -> Result<Session, EmbedderError> {
     use ort::ep::{TensorRT, CUDA};
 
-    let builder = Session::builder().map_err(ort_err)?;
+    let mut builder = Session::builder().map_err(ort_err)?;
 
     let session = match provider {
         ExecutionProvider::CUDA { device_id } => builder

@@ -60,7 +60,12 @@ fn display_diff(result: &DiffResult) -> Result<()> {
     if !result.added.is_empty() {
         println!("{} ({}):", "Added".green().bold(), result.added.len());
         for entry in &result.added {
-            println!("  + {} {} ({})", entry.chunk_type, entry.name, entry.file);
+            println!(
+                "  + {} {} ({})",
+                entry.chunk_type,
+                entry.name,
+                entry.file.display()
+            );
         }
         println!();
     }
@@ -68,7 +73,12 @@ fn display_diff(result: &DiffResult) -> Result<()> {
     if !result.removed.is_empty() {
         println!("{} ({}):", "Removed".red().bold(), result.removed.len());
         for entry in &result.removed {
-            println!("  - {} {} ({})", entry.chunk_type, entry.name, entry.file);
+            println!(
+                "  - {} {} ({})",
+                entry.chunk_type,
+                entry.name,
+                entry.file.display()
+            );
         }
         println!();
     }
@@ -86,7 +96,10 @@ fn display_diff(result: &DiffResult) -> Result<()> {
                 .unwrap_or_else(|| "[?]".to_string());
             println!(
                 "  ~ {} {} ({}) {}",
-                entry.chunk_type, entry.name, entry.file, sim
+                entry.chunk_type,
+                entry.name,
+                entry.file.display(),
+                sim
             );
         }
         println!();
@@ -110,7 +123,7 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file,
+                "file": e.file.display().to_string(),
                 "type": e.chunk_type.to_string(),
             })
         })
@@ -122,7 +135,7 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file,
+                "file": e.file.display().to_string(),
                 "type": e.chunk_type.to_string(),
             })
         })
@@ -134,7 +147,7 @@ fn display_diff_json(result: &DiffResult) -> Result<()> {
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file,
+                "file": e.file.display().to_string(),
                 "type": e.chunk_type.to_string(),
                 "similarity": e.similarity,
             })

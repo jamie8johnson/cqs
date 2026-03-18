@@ -136,6 +136,8 @@ pub struct HnswIndex {
     pub(crate) inner: HnswInner,
     /// Mapping from internal index to chunk ID
     pub(crate) id_map: Vec<String>,
+    /// Configurable search width (defaults to EF_SEARCH constant)
+    pub(crate) ef_search: usize,
 }
 
 /// Internal HNSW state
@@ -160,6 +162,11 @@ impl HnswInner {
 }
 
 impl HnswIndex {
+    /// Override the ef_search parameter (from config)
+    pub fn set_ef_search(&mut self, ef: usize) {
+        self.ef_search = ef;
+    }
+
     /// Get the number of vectors in the index
     pub fn len(&self) -> usize {
         self.id_map.len()

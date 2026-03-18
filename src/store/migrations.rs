@@ -65,6 +65,9 @@ async fn run_migration(
 ) -> Result<(), StoreError> {
     match (from, to) {
         (10, 11) => migrate_v10_to_v11(conn).await,
+        (11, 12) => migrate_v11_to_v12(conn).await,
+        (12, 13) => migrate_v12_to_v13(conn).await,
+        (13, 14) => migrate_v13_to_v14(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -106,6 +109,64 @@ async fn migrate_v10_to_v11(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v11 to v12: add parent_type_name column to chunks
+///
+/// Stores the enclosing class/struct/impl name for method chunks.
+/// The column will be NULL after migration — run `cqs index --force` to populate.
+async fn migrate_v11_to_v12(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query("ALTER TABLE chunks ADD COLUMN parent_type_name TEXT")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Added parent_type_name column. Run 'cqs index --force' to populate method→class links."
+    );
+    Ok(())
+}
+
+/// Migrate from v12 to v13: enrichment idempotency + HNSW dirty flag
+///
+/// - `enrichment_hash` column on chunks: blake3 hash of call context used during
+///   enrichment. NULL means not yet enriched. Allows skipping already-enriched
+///   chunks on re-index and detecting partial enrichment after crash.
+/// - `hnsw_dirty` metadata key: set to "1" before SQLite chunk writes, cleared
+///   to "0" after successful HNSW save. Detects crash between the two writes.
+async fn migrate_v12_to_v13(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query("ALTER TABLE chunks ADD COLUMN enrichment_hash TEXT")
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("INSERT OR IGNORE INTO metadata (key, value) VALUES ('hnsw_dirty', '0')")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Added enrichment_hash column and hnsw_dirty flag. \
+         Run 'cqs index --force' to populate enrichment hashes."
+    );
+    Ok(())
+}
+
+/// Migrate from v13 to v14: LLM summaries cache table (SQ-6)
+///
+/// Stores one-sentence LLM-generated summaries keyed by content_hash.
+/// Summaries survive chunk deletion and --force rebuilds.
+async fn migrate_v13_to_v14(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS llm_summaries (
+            content_hash TEXT PRIMARY KEY,
+            summary TEXT NOT NULL,
+            model TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    tracing::info!("Created llm_summaries table for LLM-generated function summaries.");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,7 +184,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 11);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
     }
 
     #[test]
@@ -147,7 +208,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 11, 11).await;
+            let result = migrate(&pool, 14, 14).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }
@@ -173,10 +234,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 12, 11).await;
+            let result = migrate(&pool, 14, 13).await;
             assert!(result.is_err(), "downgrade should fail");
             match result.unwrap_err() {
-                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 12),
+                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 14),
                 other => panic!("Expected SchemaNewerThanCq, got: {:?}", other),
             }
         });

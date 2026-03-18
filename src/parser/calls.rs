@@ -5,7 +5,7 @@ use tree_sitter::StreamingIterator;
 
 use super::types::{
     capture_name_to_chunk_type, CallSite, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
-    ParserError, TypeEdgeKind, TypeRef, CHUNK_CAPTURE_NAMES,
+    ParserError, TypeEdgeKind, TypeRef,
 };
 use super::Parser;
 
@@ -255,10 +255,20 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
-        // Grammar-less languages (Markdown) use custom reference extraction
+        // Grammar-less languages use custom reference extraction
         if language.def().grammar.is_none() {
-            let md_calls = crate::parser::markdown::parse_markdown_references(&source, path)?;
-            return Ok((md_calls, vec![]));
+            return match language {
+                Language::Aspx => {
+                    let (_chunks, calls, chunk_types) =
+                        crate::parser::aspx::parse_aspx_all(&source, path, self)?;
+                    Ok((calls, chunk_types))
+                }
+                _ => {
+                    let md_calls =
+                        crate::parser::markdown::parse_markdown_references(&source, path)?;
+                    Ok((md_calls, vec![]))
+                }
+            };
         }
 
         let grammar = language.grammar();
@@ -293,7 +303,7 @@ impl Parser {
             // Find chunk node
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                CHUNK_CAPTURE_NAMES.contains(&name)
+                capture_name_to_chunk_type(name).is_some()
             });
 
             let Some(func_capture) = func_node else {

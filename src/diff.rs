@@ -4,6 +4,7 @@
 //! Reports added, removed, modified, and unchanged functions.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::language::ChunkType;
 use crate::math::full_cosine_similarity;
@@ -15,7 +16,7 @@ pub struct DiffEntry {
     /// Function/class name
     pub name: String,
     /// Source file path
-    pub file: String,
+    pub file: PathBuf,
     /// Type of code element
     pub chunk_type: ChunkType,
     /// Embedding similarity (only for Modified)
@@ -76,7 +77,8 @@ pub fn semantic_diff(
     threshold: f32,
     language_filter: Option<&str>,
 ) -> Result<DiffResult, StoreError> {
-    let _span = tracing::info_span!("semantic_diff").entered();
+    let _span =
+        tracing::info_span!("semantic_diff", source_label, target_label, threshold).entered();
 
     // Load identities from both stores (push language filter into SQL when present)
     let source_ids = source_store.all_chunk_identities_filtered(language_filter)?;
@@ -118,7 +120,7 @@ pub fn semantic_diff(
         } else {
             added.push(DiffEntry {
                 name: target_chunk.name.clone(),
-                file: target_chunk.origin.clone(),
+                file: PathBuf::from(&target_chunk.origin),
                 chunk_type: target_chunk.chunk_type,
                 similarity: None,
             });
@@ -130,7 +132,7 @@ pub fn semantic_diff(
         if !target_map.contains_key(key) {
             removed.push(DiffEntry {
                 name: source_chunk.name.clone(),
-                file: source_chunk.origin.clone(),
+                file: PathBuf::from(&source_chunk.origin),
                 chunk_type: source_chunk.chunk_type,
                 similarity: None,
             });
@@ -158,7 +160,7 @@ pub fn semantic_diff(
                     if sim < threshold {
                         modified.push(DiffEntry {
                             name: target_chunk.name.clone(),
-                            file: target_chunk.origin.clone(),
+                            file: PathBuf::from(&target_chunk.origin),
                             chunk_type: target_chunk.chunk_type,
                             similarity: Some(sim),
                         });
@@ -170,7 +172,7 @@ pub fn semantic_diff(
                     // Can't compare — treat as modified
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
-                        file: target_chunk.origin.clone(),
+                        file: PathBuf::from(&target_chunk.origin),
                         chunk_type: target_chunk.chunk_type,
                         similarity: None,
                     });
@@ -203,38 +205,7 @@ pub fn semantic_diff(
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_cosine_similarity_identical() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        assert!((full_cosine_similarity(&a, &b) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_orthogonal() {
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        assert!(full_cosine_similarity(&a, &b).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_opposite() {
-        let a = vec![1.0, 0.0];
-        let b = vec![-1.0, 0.0];
-        assert!((full_cosine_similarity(&a, &b) + 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn test_cosine_similarity_empty() {
-        assert_eq!(full_cosine_similarity(&[], &[]), 0.0);
-    }
-
-    #[test]
-    fn test_cosine_similarity_zero_vector() {
-        let a = vec![0.0, 0.0];
-        let b = vec![1.0, 0.0];
-        assert_eq!(full_cosine_similarity(&a, &b), 0.0);
-    }
+    // full_cosine_similarity tests are in math.rs (canonical location)
 
     #[test]
     fn test_chunk_key_equality() {

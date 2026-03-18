@@ -146,7 +146,7 @@ pub fn diff_impact_to_json(result: &DiffImpactResult, root: &Path) -> serde_json
         .map(|f| {
             serde_json::json!({
                 "name": f.name,
-                "file": f.file,
+                "file": f.file.display().to_string(),
                 "line_start": f.line_start,
             })
         })
@@ -360,7 +360,7 @@ mod tests {
         let result = DiffImpactResult {
             changed_functions: vec![ChangedFunction {
                 name: "changed_fn".to_string(),
-                file: "src/lib.rs".to_string(),
+                file: PathBuf::from("src/lib.rs"),
                 line_start: 10,
             }],
             all_callers: vec![CallerDetail {

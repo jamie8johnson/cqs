@@ -4,9 +4,9 @@
 //! diff-touched files, and configurable gate thresholds with CI exit codes.
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use crate::AnalysisError;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::RiskLevel;
@@ -41,9 +41,9 @@ pub struct GateResult {
 #[derive(Debug, serde::Serialize)]
 pub struct DeadInDiff {
     pub name: String,
-    pub file: String,
+    pub file: PathBuf,
     pub line_start: u32,
-    pub confidence: String,
+    pub confidence: DeadConfidence,
 }
 
 /// Complete CI analysis report.
@@ -68,7 +68,7 @@ pub fn run_ci_analysis(
     diff_text: &str,
     root: &Path,
     threshold: GateThreshold,
-) -> Result<CiReport> {
+) -> Result<CiReport, AnalysisError> {
     let _span = tracing::info_span!("run_ci_analysis", ?threshold).entered();
 
     // 1. Full review (impact + risk + notes + stale)
@@ -90,7 +90,11 @@ pub fn run_ci_analysis(
 
     // 2. Dead code in diff files
     let hunks = parse_unified_diff(diff_text);
-    let diff_files: HashSet<&str> = hunks.iter().map(|h| h.file.as_str()).collect();
+    let diff_file_strings: Vec<String> = hunks
+        .iter()
+        .map(|h| h.file.to_string_lossy().into_owned())
+        .collect();
+    let diff_files: HashSet<&str> = diff_file_strings.iter().map(|s| s.as_str()).collect();
 
     let dead_in_diff = match store.find_dead_code(true) {
         Ok((confident, possibly_pub)) => {
@@ -104,14 +108,9 @@ pub fn run_ci_analysis(
                 })
                 .map(|d| DeadInDiff {
                     name: d.chunk.name.clone(),
-                    file: crate::rel_display(&d.chunk.file, root),
+                    file: PathBuf::from(crate::rel_display(&d.chunk.file, root)),
                     line_start: d.chunk.line_start,
-                    confidence: match d.confidence {
-                        DeadConfidence::High => "high",
-                        DeadConfidence::Medium => "medium",
-                        DeadConfidence::Low => "low",
-                    }
-                    .to_string(),
+                    confidence: d.confidence,
                 })
                 .collect();
             tracing::info!(

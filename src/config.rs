@@ -8,7 +8,6 @@
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use std::hash::{BuildHasher, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -17,6 +16,11 @@ use std::sync::OnceLock;
 pub fn is_wsl() -> bool {
     static IS_WSL: OnceLock<bool> = OnceLock::new();
     *IS_WSL.get_or_init(|| {
+        // Fast path: WSL sets this env var
+        if std::env::var_os("WSL_DISTRO_NAME").is_some() {
+            return true;
+        }
+        // Fallback: check /proc/version
         std::fs::read_to_string("/proc/version")
             .map(|v| {
                 let lower = v.to_lowercase();
@@ -88,6 +92,8 @@ pub struct Config {
     pub note_only: Option<bool>,
     /// Disable staleness checks (useful on NFS or slow filesystems)
     pub stale_check: Option<bool>,
+    /// HNSW search width (higher = more accurate but slower, default 100)
+    pub ef_search: Option<usize>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -184,6 +190,9 @@ impl Config {
         if let Some(ref mut nw) = self.note_weight {
             clamp_config_f32(nw, "note_weight", 0.0, 1.0);
         }
+        if let Some(ref mut ef) = self.ef_search {
+            clamp_config_usize(ef, "ef_search", 10, 1000);
+        }
     }
 
     /// Load configuration from a specific file
@@ -263,6 +272,7 @@ impl Config {
             note_weight: other.note_weight.or(self.note_weight),
             note_only: other.note_only.or(self.note_only),
             stale_check: other.stale_check.or(self.stale_check),
+            ef_search: other.ef_search.or(self.ef_search),
             references: refs,
         }
     }
@@ -324,9 +334,7 @@ pub fn add_reference_to_config(
     }
 
     // Atomic write: temp file + rename (while holding lock)
-    let suffix = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let suffix = crate::temp_suffix();
     let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
     let serialized = toml::to_string_pretty(&table)?;
     std::fs::write(&tmp_path, &serialized)?;
@@ -339,7 +347,9 @@ pub fn add_reference_to_config(
     }
 
     if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
-        if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
+        // Cross-device fallback: copy to a same-dir temp, then rename
+        let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
+        if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
             anyhow::bail!(
                 "rename failed ({}), copy fallback failed: {}",
@@ -348,6 +358,10 @@ pub fn add_reference_to_config(
             );
         }
         let _ = std::fs::remove_file(&tmp_path);
+        if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
+            let _ = std::fs::remove_file(&fallback_tmp);
+            anyhow::bail!("fallback rename failed: {}", e);
+        }
     }
 
     // lock_file dropped here, releasing exclusive lock
@@ -397,9 +411,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
 
     if removed {
         // Atomic write: temp file + rename (while holding lock)
-        let suffix = std::collections::hash_map::RandomState::new()
-            .build_hasher()
-            .finish();
+        let suffix = crate::temp_suffix();
         let tmp_path = config_path.with_extension(format!("toml.{:016x}.tmp", suffix));
         let serialized = toml::to_string_pretty(&table)?;
         std::fs::write(&tmp_path, &serialized)?;
@@ -412,7 +424,9 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
         }
 
         if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
-            if let Err(copy_err) = std::fs::copy(&tmp_path, config_path) {
+            // Cross-device fallback: copy to a same-dir temp, then rename
+            let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
+            if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
                 let _ = std::fs::remove_file(&tmp_path);
                 anyhow::bail!(
                     "rename failed ({}), copy fallback failed: {}",
@@ -421,6 +435,10 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
                 );
             }
             let _ = std::fs::remove_file(&tmp_path);
+            if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
+                let _ = std::fs::remove_file(&fallback_tmp);
+                anyhow::bail!("fallback rename failed: {}", e);
+            }
         }
     }
     // lock_file dropped here, releasing exclusive lock

@@ -10,10 +10,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
 use rayon::prelude::*;
 
 use crate::parser::{ChunkType, Language};
+use crate::store::StoreError;
 
 use crate::store::helpers::{CallGraph, SearchFilter};
 use crate::store::SearchResult;
@@ -189,8 +189,8 @@ pub(crate) fn bfs_expand(
     let mut visited: HashSet<String> = name_scores.keys().cloned().collect();
 
     let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    for (name, &(_, depth)) in name_scores.iter() {
-        queue.push_back((name.clone(), depth));
+    for (name, &(_, _depth)) in name_scores.iter() {
+        queue.push_back((name.clone(), 0));
     }
 
     while let Some((name, depth)) = queue.pop_front() {
@@ -294,7 +294,7 @@ pub fn gather(
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
-) -> Result<GatherResult> {
+) -> Result<GatherResult, StoreError> {
     let graph = store.get_call_graph()?;
     gather_with_graph(
         store,
@@ -317,7 +317,7 @@ pub fn gather_with_graph(
     opts: &GatherOptions,
     project_root: &Path,
     graph: &CallGraph,
-) -> Result<GatherResult> {
+) -> Result<GatherResult, StoreError> {
     let _span = tracing::info_span!(
         "gather",
         query_len = query_text.len(),
@@ -391,7 +391,29 @@ pub fn gather_cross_index(
     query_text: &str,
     opts: &GatherOptions,
     project_root: &Path,
-) -> Result<GatherResult> {
+) -> Result<GatherResult, StoreError> {
+    gather_cross_index_with_index(
+        project_store,
+        ref_idx,
+        query_embedding,
+        query_text,
+        opts,
+        project_root,
+        None,
+    )
+}
+
+/// Like [`gather_cross_index`] but accepts an optional HNSW index for O(log n)
+/// bridge searches instead of brute-force scans per reference seed.
+pub fn gather_cross_index_with_index(
+    project_store: &Store,
+    ref_idx: &crate::reference::ReferenceIndex,
+    query_embedding: &crate::Embedding,
+    query_text: &str,
+    opts: &GatherOptions,
+    project_root: &Path,
+    project_index: Option<&dyn crate::index::VectorIndex>,
+) -> Result<GatherResult, StoreError> {
     let _span = tracing::info_span!(
         "gather_cross_index",
         ref_name = %ref_idx.name,
@@ -483,11 +505,12 @@ pub fn gather_cross_index(
             let search_embedding = ref_embeddings
                 .get(&seed.chunk.id)
                 .unwrap_or(query_embedding);
-            match project_store.search_filtered(
+            match project_store.search_filtered_with_index(
                 search_embedding,
                 &bridge_filter,
                 bridge_limit,
                 opts.seed_threshold,
+                project_index,
             ) {
                 Ok(r) if !r.is_empty() => Some((seed.score, r)),
                 Ok(_) => None,

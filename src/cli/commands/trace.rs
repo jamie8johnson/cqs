@@ -179,10 +179,11 @@ fn format_mermaid(store: &Store, root: &std::path::Path, names: &[String]) -> Re
 
 /// Generate mermaid node ID from index (A, B, C, ..., Z, A1, B1, ...)
 fn node_letter(i: usize) -> String {
+    let letter = (b'A' + (i % 26) as u8) as char;
     if i < 26 {
-        ((b'A' + i as u8) as char).to_string()
+        letter.to_string()
     } else {
-        format!("{}{}", ((b'A' + (i % 26) as u8) as char), i / 26)
+        format!("{}{}", letter, i / 26)
     }
 }
 

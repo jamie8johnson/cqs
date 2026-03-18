@@ -148,15 +148,6 @@ mentions = [
 
 [[note]]
 sentiment = 1.0
-text = "Hybrid CAGRA startup: HNSW loads in 30ms, CAGRA builds in background (~1.2s), auto-swaps via Arc<RwLock>. Non-blocking startup pattern for GPU index builds."
-mentions = [
-    "src/cagra.rs",
-    "src/hnsw/mod.rs",
-    "startup",
-]
-
-[[note]]
-sentiment = 1.0
 text = "Streaming HNSW build for large repos: Store::embedding_batches() yields chunks in 10k batches via cursor pagination (WHERE rowid > N), HnswIndex::build_batched() inserts incrementally. Memory drops from O(n) to O(batch_size). Fixes #107 OOM on huge repos."
 mentions = [
     "src/store/chunks.rs",
@@ -351,15 +342,6 @@ mentions = [
     "LD_LIBRARY_PATH",
     "CUDA_PATH",
     "gpu-index",
-]
-
-[[note]]
-sentiment = -0.5
-text = """Tree-sitter query capture names must match extract_chunk's hardcoded capture_types: "function", "struct", "class", "enum", "trait", "interface", "const". Using @constant instead of @const silently drops matches — no error, just missing chunks."""
-mentions = [
-    "src/parser/chunk.rs",
-    "src/language/sql.rs",
-    "extract_chunk",
 ]
 
 [[note]]
@@ -907,16 +889,124 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "HNSW insert_batch only works on Owned variant — Loaded (from disk via self_cell) is immutable. Watch mode must keep Owned in memory across cycles. content_hashes from reindex_files must be filtered to newly-embedded only, or unchanged chunks create duplicates."
+text = "ort-sys 2.0.0-rc.12 has no prebuilt binaries for x86_64-apple-darwin (Intel Mac) at all — not even CPU-only. Only aarch64-apple-darwin is supported. Had to drop Intel Mac from release targets."
+mentions = [
+    "embedder.rs",
+    "release.yml",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Release workflow: ubuntu-22.04 has glibc 2.35 but ort prebuilt binaries need glibc 2.38+ (__isoc23_strtoll). Must use ubuntu-24.04 (glibc 2.39) for release builds."
+mentions = ["release.yml"]
+
+[[note]]
+sentiment = -0.5
+text = "Cross-encoder reranking (ms-marco-MiniLM-L-6-v2) is useless for code search — all scoring modes worse than bi-encoder baseline. Would need a code-specific cross-encoder."
+mentions = [
+    "reranker.rs",
+    "search-quality",
+]
+
+[[note]]
+sentiment = 0.5
+text = "NL enrichment: adding field names for structs/enums/classes to Compact template is a clean win — hard eval +3.7pp R@1. But adding file path + language/type prefix hurts holdout -5pp. Dir-only file context (no stem) is neutral."
+mentions = [
+    "nl.rs",
+    "search-quality",
+]
+
+[[note]]
+sentiment = -0.5
+text = "name_boost sweep (0.0→0.8) has near-zero effect on stress eval with 3970 chunks. FTS keyword matching is just as noisy as semantic matching in large corpora."
+mentions = ["search-quality"]
+
+[[note]]
+sentiment = -0.5
+text = "HNSW search has non-determinism — holdout eval R@1 varies ~2-3pp between runs on identical code. Don't draw conclusions from 1-2pp differences."
 mentions = [
     "hnsw",
-    "watch.rs",
+    "search-quality",
+]
+
+[[note]]
+sentiment = 0.5
+text = "CUDA 12+13 side-by-side: pip nvidia-cublas-cu12/cuda-runtime-cu12/cufft-cu12 in conda env, add to LD_LIBRARY_PATH. cuVS needs 13, ORT prebuilt needs 12. Both work."
+mentions = [
+    "embedder.rs",
+    ".bashrc",
+]
+
+[[note]]
+sentiment = -0.5
+text = "embed_documents() returns 768-dim but store expects 769 (768 + sentiment). Must call .with_sentiment(0.0) when using embed_documents for store updates."
+mentions = [
+    "embedder.rs",
+    "pipeline.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "CUDA 12 runtime loading fixed by symlinking pip CUDA 12 libs into conda lib dir. Cargo [env] LD_LIBRARY_PATH does NOT work for dlopen. rpath is the only reliable path."
+mentions = [
+    "config.toml",
+    "embedder.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "SQ-4 enrichment pass: 63% of chunks have call graph context. IDF callee filtering at 10% threshold suppresses utilities. Test callers-only before adding callees."
+mentions = [
+    "pipeline.rs",
+    "nl.rs",
+]
+
+[[note]]
+sentiment = -1.0
+text = "HNSW build_batched ID desync (RT-DATA-1): base_idx+i loop counter skips zero-vectors but id_map doesn't. Fix: use id_map.len() as insertion index. Bug was in production since HNSW batch build was added."
+mentions = [
+    "src/hnsw/build.rs",
+    "build_batched",
 ]
 
 [[note]]
 sentiment = 0.0
-text = "ort::Error is non-generic in rc.11 but becomes Error<T> in rc.12. Generic From impl doesn't compile on rc.11. Use .map_err() with a helper fn instead — works across both versions."
+text = "SQ-5 filename stems: including filename in NL helps real codebases but regresses fixture eval by ~3pp. Generic stems (mod, index, utils, helpers) must be filtered. Fixture eval overfits to test file naming conventions."
 mentions = [
-    "embedder.rs",
-    "reranker.rs",
+    "src/nl.rs",
+    "extract_file_context",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Red team verified 21+ protections solid: FTS injection double-sanitized, pipeline fan-out linear not exponential, BFS depth capped at 5 + 200 nodes, all graph traversals use visited sets, HNSW checksummed."
+mentions = [
+    "security",
+    "red-team",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Fresh-eyes plan review caught 3 bugs before implementation: wrong generation counter protocol, pre-filter hash input, feature/fix scope mixing. Self-review pays off."
+mentions = [
+    "pipeline.rs",
+    "persist.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "SQ-6 plan review caught 8 issues: nested tokio panic (use blocking reqwest), summary_hash column redundant (enrichment_hash covers it), enrichment_pass signature change unnecessary (load internally), missing doc comment shortcut, missing callable filter, missing window chunk handling, missing content length minimum, existing summaries should always be used regardless of flag"
+mentions = [
+    "llm.rs",
+    "pipeline.rs",
+    "nl.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "SQ-6 stress eval: summaries HURT search quality with E5-base-v2. R@1 dropped 2.1pp (58.0->55.9), Python MRR dropped 0.157. Model treats summaries same as prose — adds noise rather than discrimination. SQ-7 (LoRA) is the only real fix."
+mentions = [
+    "llm.rs",
+    "nl.rs",
+    "pipeline_eval.rs",
 ]

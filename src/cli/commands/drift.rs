@@ -47,7 +47,7 @@ pub(crate) fn cmd_drift(
             .map(|e| {
                 serde_json::json!({
                     "name": e.name,
-                    "file": e.file,
+                    "file": e.file.display().to_string(),
                     "chunk_type": e.chunk_type,
                     "similarity": e.similarity,
                     "drift": e.drift,
@@ -88,8 +88,8 @@ pub(crate) fn cmd_drift(
                     "  {:.2}  {}  {}  {}",
                     entry.drift,
                     entry.name,
-                    entry.file.dimmed(),
-                    entry.chunk_type.dimmed()
+                    entry.file.display().to_string().dimmed(),
+                    entry.chunk_type.to_string().dimmed()
                 );
             }
         }

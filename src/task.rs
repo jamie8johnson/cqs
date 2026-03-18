@@ -24,6 +24,15 @@ const TASK_GATHER_MAX_NODES: usize = 100;
 /// Multiplier applied to `limit` for gather phase truncation.
 const TASK_GATHER_LIMIT_MULTIPLIER: usize = 3;
 
+/// Per-function risk assessment from impact analysis.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FunctionRisk {
+    /// Function name.
+    pub name: String,
+    /// Risk score and level.
+    pub risk: RiskScore,
+}
+
 /// Complete task analysis result.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TaskResult {
@@ -34,7 +43,7 @@ pub struct TaskResult {
     /// Gather phase: BFS-expanded code with full content.
     pub code: Vec<GatheredChunk>,
     /// Impact phase: per-modify-target risk assessment.
-    pub risk: Vec<(String, RiskScore)>,
+    pub risk: Vec<FunctionRisk>,
     /// Impact phase: affected tests (deduped across targets).
     pub tests: Vec<TestInfo>,
     /// Placement phase: where to add new code.
@@ -155,18 +164,26 @@ pub fn task_with_resources(
         let risk = target_refs
             .iter()
             .zip(scores)
-            .map(|(&n, r)| (n.to_string(), r))
+            .map(|(&n, r)| FunctionRisk {
+                name: n.to_string(),
+                risk: r,
+            })
             .collect();
         (risk, tests)
     };
     tracing::debug!(risks = risk.len(), tests = tests.len(), "Impact complete");
 
     // 6. Placement phase — reuse query embedding to avoid redundant ONNX inference
-    let placement = match crate::where_to_add::suggest_placement_with_embedding(
+    let placement_opts = crate::where_to_add::PlacementOptions {
+        query_embedding: Some(query_embedding.clone()),
+        ..Default::default()
+    };
+    let placement = match crate::where_to_add::suggest_placement_with_options(
         store,
-        &query_embedding,
+        embedder,
         description,
         3,
+        &placement_opts,
     ) {
         Ok(result) => result.suggestions,
         Err(e) => {
@@ -211,7 +228,7 @@ pub fn extract_modify_targets(scout: &ScoutResult) -> Vec<String> {
 /// Compute summary statistics from task phases.
 pub(crate) fn compute_summary(
     scout: &ScoutResult,
-    risk: &[(String, RiskScore)],
+    risk: &[FunctionRisk],
     tests: &[TestInfo],
 ) -> TaskSummary {
     let modify_targets = scout
@@ -223,7 +240,7 @@ pub(crate) fn compute_summary(
 
     let high_risk_count = risk
         .iter()
-        .filter(|(_, r)| r.risk_level == RiskLevel::High)
+        .filter(|fr| fr.risk.risk_level == RiskLevel::High)
         .count();
 
     TaskSummary {
@@ -254,7 +271,11 @@ pub fn task_to_json(result: &TaskResult, root: &Path) -> serde_json::Value {
             }
         })
         .collect();
-    let risk_json: Vec<serde_json::Value> = result.risk.iter().map(|(n, r)| r.to_json(n)).collect();
+    let risk_json: Vec<serde_json::Value> = result
+        .risk
+        .iter()
+        .map(|fr| fr.risk.to_json(&fr.name))
+        .collect();
     let tests_json: Vec<serde_json::Value> = result.tests.iter().map(|t| t.to_json(root)).collect();
     let placement_json: Vec<serde_json::Value> =
         result.placement.iter().map(|s| s.to_json(root)).collect();
@@ -357,9 +378,9 @@ mod tests {
         ]);
 
         let risk = vec![
-            (
-                "a".to_string(),
-                RiskScore {
+            FunctionRisk {
+                name: "a".to_string(),
+                risk: RiskScore {
                     caller_count: 5,
                     test_count: 0,
                     coverage: 0.0,
@@ -367,10 +388,10 @@ mod tests {
                     blast_radius: RiskLevel::Medium,
                     score: 5.0,
                 },
-            ),
-            (
-                "b".to_string(),
-                RiskScore {
+            },
+            FunctionRisk {
+                name: "b".to_string(),
+                risk: RiskScore {
                     caller_count: 2,
                     test_count: 2,
                     coverage: 1.0,
@@ -378,7 +399,7 @@ mod tests {
                     blast_radius: RiskLevel::Low,
                     score: 0.0,
                 },
-            ),
+            },
         ];
 
         let tests = vec![TestInfo {
@@ -513,9 +534,9 @@ mod tests {
                 depth: 0,
                 source: None,
             }],
-            risk: vec![(
-                "fn_a".to_string(),
-                RiskScore {
+            risk: vec![FunctionRisk {
+                name: "fn_a".to_string(),
+                risk: RiskScore {
                     caller_count: 5,
                     test_count: 1,
                     coverage: 0.2,
@@ -523,7 +544,7 @@ mod tests {
                     blast_radius: RiskLevel::Medium,
                     score: 4.0,
                 },
-            )],
+            }],
             tests: vec![TestInfo {
                 name: "test_fn_a".to_string(),
                 file: PathBuf::from("/project/tests/a.rs"),

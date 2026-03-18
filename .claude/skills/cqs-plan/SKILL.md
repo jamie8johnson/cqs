@@ -99,6 +99,114 @@ Generate an implementation plan by combining `cqs scout` output with a task-type
 - Chunk query captures must use names from `extract_chunk`'s `capture_types`: function, struct, class, enum, trait, interface, const.
 - Call query uses `@callee` capture.
 
+### Add ChunkType Variant
+
+**When:** Adding a new chunk type (e.g., Extension, Protocol, Alias).
+
+**Checklist:**
+1. `src/chunk.rs` — Add variant to `ChunkType` enum. Update `Display`, `FromStr`, `is_callable()`.
+2. `src/nl.rs` — Add natural language label for the variant (used in embedding text).
+3. `src/language/<lang>.rs` — Add capture using the new variant name in chunk_query.
+4. `src/parser/extract_chunk.rs` — Add to `capture_types` map if using a new capture name.
+5. `src/cli/commands/stats.rs` — Variant appears automatically via `ChunkType` iteration.
+6. Tests: Parser tests for each language using the new variant. Verify `cqs search` returns results with correct type.
+7. `ROADMAP.md` — Update ChunkType Variant Status table.
+
+**Patterns:**
+- `is_callable()` returns true for Function, Method, Macro — most others return false.
+- `Display` uses lowercase singular (e.g., "type_alias"). `FromStr` accepts both snake_case and spaces.
+- Container extraction uses `capture_types` to decide what's a container vs leaf.
+
+### Add Injection Rule
+
+**When:** Adding multi-grammar parsing (e.g., HTML→JS, PHP→HTML, Svelte→CSS).
+
+**Checklist:**
+1. `src/language/<host>.rs` — Add `InjectionRule` to `LanguageDef::injection_rules()`. Specify `parent_node`, `content_node`, `target_language`, and optional `detect_language` callback.
+2. `src/language/<target>.rs` — Ensure target language's `LanguageDef` exists and parses correctly in isolation.
+3. `src/parser/injection.rs` — Usually NO changes. Only if new detection logic is needed (e.g., `detect_script_language`, `detect_heredoc_language`).
+4. Tests: `tests/fixtures/<host>/` — sample file with embedded content. Verify chunks from both host and injected language appear.
+5. Verify depth limit: recursive injections (PHP→HTML→JS) must respect depth limit (default 3).
+6. `ROADMAP.md` — Update Multi-Grammar Parsing section.
+
+**Patterns:**
+- `content_scoped_lines` prevents container-spans-file problem in recursive injection.
+- `detect_language` callbacks inspect attributes (e.g., `lang="ts"`, `type="module"`).
+- `set_included_ranges()` for byte-range isolation of injected content.
+
+### Performance Optimization
+
+**When:** Improving speed or reducing resource usage for a specific operation.
+
+**Checklist:**
+1. **Benchmark before**: `cargo bench` or manual timing with `time cqs <command>`. Record baseline.
+2. **Profile**: `cqs scout "<bottleneck description>"` to find hot path. `cqs callers` to trace the call chain.
+3. **Identify approach**: Lazy loading, caching, reduced allocations, parallel iteration, candidate pruning.
+4. **Implement**: Minimal change. Prefer data structure changes over algorithmic rewrites.
+5. **Benchmark after**: Same benchmark as step 1. Quantify improvement.
+6. **Regression test**: Ensure correctness is preserved — same inputs produce same outputs.
+7. **Check callers**: `cqs impact <function> --json` — did the optimization change the API surface?
+
+**Patterns:**
+- HNSW candidate fetch: load only `(id, embedding)` for scoring, full content for top-k.
+- Rayon `par_iter` for embarrassingly parallel work. Check for shared mutable state first.
+- `tracing::info_span!` around hot paths for flame graph visibility.
+
+### Audit Finding Fix
+
+**When:** Fixing an issue identified during a code audit (from `docs/audit-triage.md`).
+
+**Checklist:**
+1. **Read triage entry**: Get priority, category, description, and affected code from `docs/audit-triage.md`.
+2. **Locate**: `cqs scout "<finding description>"` — verify the issue still exists (may have been fixed since audit).
+3. **Assess scope**: `cqs impact <function> --json` — how many callers are affected?
+4. **Fix**: Follow the triage entry's suggested approach if provided.
+5. **Add test**: Cover the specific scenario from the finding.
+6. **Update triage**: Mark entry as fixed in `docs/audit-triage.md` with PR reference.
+7. **Check related findings**: Same category may have related issues — fix together if trivial.
+
+**Patterns:**
+- P1 findings: fix immediately, standalone PR.
+- P2-P3: batch by category into single PR.
+- P4: fix opportunistically when touching nearby code.
+
+### Add Tree-Sitter Grammar
+
+**When:** Adding a new tree-sitter grammar dependency (new language or replacing a grammar).
+
+**Checklist:**
+1. `Cargo.toml` — Add grammar crate as optional dependency. Prefer crates.io; use git dep with `rev` pin if unpublished.
+2. `build.rs` — Usually NO changes (grammars self-register via `tree-sitter-language` crate).
+3. `src/language/<lang>.rs` — Wire grammar via `tree_sitter_<lang>::LANGUAGE` or `tree_sitter_<lang>::language()`.
+4. `Cargo.toml` features — Add to `lang-<name>` feature gate. Add to `default` and `lang-all`.
+5. Verify compatibility: grammar must target tree-sitter `>=0.24, <0.27` (current range). Check grammar's `Cargo.toml`.
+6. Tests: `cargo test --features lang-<name>` — parser produces expected chunks.
+7. If forked: document fork reason in `Cargo.toml` comment. Track upstream for eventual switch.
+
+**Patterns:**
+- Git deps need `rev` pin, not `branch` — branches break reproducibility.
+- Some grammars export `LANGUAGE` (static), others `language()` (function). Check their API.
+- Monolithic grammars (Razor, VB.NET) don't need injection — they parse everything in one pass.
+
+### Schema Migration
+
+**When:** Bumping the SQLite schema version (adding tables, columns, or changing data layout).
+
+**Checklist:**
+1. `src/store/helpers.rs + src/store/migrations.rs` — Bump `CURRENT_SCHEMA_VERSION` constant.
+2. `src/store/helpers.rs + src/store/migrations.rs` — Add migration function `migrate_vN_to_vN1()` with ALTER TABLE / CREATE TABLE statements.
+3. `src/store/helpers.rs + src/store/migrations.rs` — Register migration in `migrate()` match arms.
+4. `src/store/mod.rs` — Update `open()` if new tables need initialization or if Store fields changed.
+5. `src/store/*.rs` — Update queries that read/write affected tables.
+6. Tests: Migration test with a v(N-1) database → verify v(N) upgrade succeeds and data is preserved.
+7. `PROJECT_CONTINUITY.md` — Update schema version in Architecture section.
+
+**Patterns:**
+- Migrations must be idempotent — `IF NOT EXISTS`, `IF NOT COLUMN` guards.
+- We use a metadata table for schema_version, not PRAGMA user_version.
+- Test with a real old-version database if available (copy from `.cqs/` before upgrading).
+- `cqs migrate` skill handles user-facing migration workflow.
+
 ### Refactor / Extract
 
 **When:** Moving code, splitting files, extracting shared helpers.
@@ -142,4 +250,4 @@ Present the plan as:
 
 - Trivial changes (typos, single-line fixes) — just do it
 - Pure research — use `cqs gather` or `cqs scout` directly
-- Audit findings — use `/audit` skill
+- Running an audit — use `/audit` skill (but audit *finding fixes* have a template above)

@@ -59,6 +59,7 @@
 //! - `lang-vbnet` - VB.NET support (enabled by default)
 //! - `lang-vue` - Vue support (enabled by default)
 //! - `lang-markdown` - Markdown support (enabled by default, no external deps)
+//! - `lang-aspx` - ASP.NET Web Forms support (enabled by default, no external deps)
 //! - `lang-all` - All languages
 
 use std::collections::HashMap;
@@ -411,6 +412,19 @@ define_chunk_types! {
 }
 
 impl ChunkType {
+    /// Human-readable display name for use in NL text generation.
+    ///
+    /// Most variants return their canonical `Display` string (always single words), but
+    /// multi-word concepts need a spaced form. Currently `TypeAlias` → `"type alias"`.
+    /// This is the single authoritative place for that mapping — callers (e.g., `nl.rs`)
+    /// must use this method rather than hardcoding `"typealias"` string comparisons.
+    pub fn human_name(self) -> String {
+        match self {
+            ChunkType::TypeAlias => "type alias".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
     pub fn is_callable(self) -> bool {
         matches!(
@@ -649,6 +663,8 @@ define_languages! {
     Vue => "vue", feature = "lang-vue", module = vue;
     /// Markdown (.md, .mdx files)
     Markdown => "markdown", feature = "lang-markdown", module = markdown;
+    /// ASP.NET Web Forms (.aspx, .ascx, .asmx, .master files)
+    Aspx => "aspx", feature = "lang-aspx", module = aspx;
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,6 +1122,10 @@ mod tests {
             expected += 1;
         }
         #[cfg(feature = "lang-vue")]
+        {
+            expected += 1;
+        }
+        #[cfg(feature = "lang-aspx")]
         {
             expected += 1;
         }

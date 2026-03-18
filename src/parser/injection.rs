@@ -16,7 +16,7 @@ use tree_sitter::StreamingIterator;
 
 use super::types::{
     capture_name_to_chunk_type, Chunk, ChunkType, ChunkTypeRefs, FunctionCalls, Language,
-    ParserError, CHUNK_CAPTURE_NAMES,
+    ParserError,
 };
 use super::Parser;
 use crate::language::InjectionRule;
@@ -503,7 +503,7 @@ impl Parser {
             // Find chunk node (same logic as parse_file_relationships)
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                CHUNK_CAPTURE_NAMES.contains(&name)
+                capture_name_to_chunk_type(name).is_some()
             });
 
             let Some(func_capture) = func_node else {
@@ -721,7 +721,7 @@ impl Parser {
         while let Some(m) = matches2.next() {
             let func_node = m.captures.iter().find(|c| {
                 let name = capture_names.get(c.index as usize).copied().unwrap_or("");
-                CHUNK_CAPTURE_NAMES.contains(&name)
+                capture_name_to_chunk_type(name).is_some()
             });
 
             let Some(func_capture) = func_node else {

@@ -346,10 +346,10 @@ diff --git a/src/app.rs b/src/app.rs
     let report = run_ci_analysis(&store, diff, Path::new("/tmp"), GateThreshold::High).unwrap();
 
     // dead_fn is in src/utils.rs which is NOT in the diff — should be excluded
-    let dead_files: Vec<&str> = report
+    let dead_files: Vec<String> = report
         .dead_in_diff
         .iter()
-        .map(|d| d.file.as_str())
+        .map(|d| d.file.display().to_string())
         .collect();
     assert!(
         !dead_files.iter().any(|f| f.contains("utils")),

@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use crate::AnalysisError;
 
 use crate::diff_parse::parse_unified_diff;
 use crate::impact::{
@@ -26,7 +26,7 @@ pub struct ReviewResult {
     /// Tests affected by or suggested for the changes (uses impact's DiffTestInfo directly)
     pub affected_tests: Vec<DiffTestInfo>,
     /// Notes relevant to changed files
-    pub relevant_notes: Vec<NoteEntry>,
+    pub relevant_notes: Vec<ReviewNoteEntry>,
     /// Aggregated risk summary
     pub risk_summary: RiskSummary,
     /// Files that are stale in the index (if any)
@@ -40,14 +40,17 @@ pub struct ReviewResult {
 #[derive(Debug, serde::Serialize)]
 pub struct ReviewedFunction {
     pub name: String,
-    pub file: String,
+    pub file: PathBuf,
     pub line_start: u32,
     pub risk: RiskScore,
 }
 
 /// A note relevant to the review.
+///
+/// Named `ReviewNoteEntry` to avoid collision with `note::NoteEntry`
+/// (parsed note from TOML) which is a different type.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct NoteEntry {
+pub struct ReviewNoteEntry {
     pub text: String,
     pub sentiment: f32,
     pub matching_files: Vec<String>,
@@ -71,7 +74,11 @@ pub struct RiskSummary {
 /// 4. Risk scoring -> per-function risk
 /// 5. Note matching -> relevant notes for changed files (non-fatal)
 /// 6. Staleness check -> warn if changed files are stale (non-fatal)
-pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option<ReviewResult>> {
+pub fn review_diff(
+    store: &Store,
+    diff_text: &str,
+    root: &Path,
+) -> Result<Option<ReviewResult>, AnalysisError> {
     let _span = tracing::info_span!("review_diff").entered();
     let mut warnings: Vec<String> = Vec::new();
 
@@ -116,11 +123,12 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
         .collect();
 
     // 7. Match notes to changed files (non-fatal: warning on failure)
-    let changed_files: HashSet<&str> = impact
+    let changed_file_strings: Vec<String> = impact
         .changed_functions
         .iter()
-        .map(|f| f.file.as_str())
+        .map(|f| f.file.to_string_lossy().into_owned())
         .collect();
+    let changed_files: HashSet<&str> = changed_file_strings.iter().map(|s| s.as_str()).collect();
     let relevant_notes = match match_notes(store, &changed_files) {
         Ok(notes) => notes,
         Err(e) => {
@@ -180,7 +188,10 @@ pub fn review_diff(store: &Store, diff_text: &str, root: &Path) -> Result<Option
 /// Match notes to a set of changed file paths.
 ///
 /// Returns an error if notes cannot be loaded (caller decides how to handle).
-fn match_notes(store: &Store, changed_files: &HashSet<&str>) -> Result<Vec<NoteEntry>> {
+fn match_notes(
+    store: &Store,
+    changed_files: &HashSet<&str>,
+) -> Result<Vec<ReviewNoteEntry>, AnalysisError> {
     let _span = tracing::info_span!("match_notes").entered();
 
     let notes = store.list_notes_summaries()?;
@@ -201,7 +212,7 @@ fn match_notes(store: &Store, changed_files: &HashSet<&str>) -> Result<Vec<NoteE
             if matching.is_empty() {
                 None
             } else {
-                Some(NoteEntry {
+                Some(ReviewNoteEntry {
                     text: note.text,
                     sentiment: note.sentiment,
                     matching_files: matching,
@@ -246,11 +257,12 @@ fn build_risk_summary(functions: &[ReviewedFunction]) -> RiskSummary {
 mod tests {
     use super::*;
     use crate::impact::RiskScore;
+    use crate::note::path_matches_mention;
 
     fn mock_reviewed(name: &str, level: RiskLevel) -> ReviewedFunction {
         ReviewedFunction {
             name: name.to_string(),
-            file: "src/lib.rs".to_string(),
+            file: PathBuf::from("src/lib.rs"),
             line_start: 1,
             risk: RiskScore {
                 risk_level: level,
@@ -297,5 +309,202 @@ mod tests {
         assert_eq!(summary.medium, 1);
         assert_eq!(summary.low, 2);
         assert!(matches!(summary.overall, RiskLevel::Medium));
+    }
+
+    // ─── TC-4: match_notes partial-match edge cases ───────────────────────────
+
+    /// path_matches_mention: exact match always succeeds.
+    #[test]
+    fn test_path_matches_exact() {
+        assert!(path_matches_mention("src/gather.rs", "src/gather.rs"));
+    }
+
+    /// path_matches_mention: suffix match at a component boundary.
+    /// "gather.rs" should match "src/gather.rs" because the remaining prefix
+    /// is "src/" (ends with '/').
+    #[test]
+    fn test_path_matches_suffix_component_boundary() {
+        assert!(path_matches_mention("src/gather.rs", "gather.rs"));
+    }
+
+    /// path_matches_mention: suffix match must be component-aligned.
+    /// "gather.rs" must NOT match "src/gatherer.rs" (the stripped prefix
+    /// "src/gather" does not end with '/').
+    #[test]
+    fn test_path_does_not_match_mid_component_suffix() {
+        assert!(!path_matches_mention("src/gatherer.rs", "gather.rs"));
+    }
+
+    /// path_matches_mention: prefix match at a component boundary.
+    /// "src/store" should match "src/store/chunks.rs" because the remaining
+    /// suffix starts with '/'.
+    #[test]
+    fn test_path_matches_prefix_component_boundary() {
+        assert!(path_matches_mention("src/store/chunks.rs", "src/store"));
+    }
+
+    /// path_matches_mention: prefix match must be component-aligned.
+    /// "src/store" must NOT match "my_src/store/chunks.rs" (does not start
+    /// with the mention prefix).
+    #[test]
+    fn test_path_does_not_match_non_prefix_path() {
+        assert!(!path_matches_mention("my_src/store/chunks.rs", "src/store"));
+    }
+
+    /// path_matches_mention: mention longer than path never matches.
+    #[test]
+    fn test_path_does_not_match_longer_mention() {
+        assert!(!path_matches_mention("store.rs", "src/store.rs"));
+    }
+
+    /// match_notes filters to only notes whose mentions match at least one
+    /// changed file, and populates matching_files correctly.
+    #[test]
+    fn test_match_notes_returns_matching_notes() {
+        use crate::store::ModelInfo;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = crate::Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Insert a note that mentions "gather.rs" (file mention)
+        store
+            .replace_notes_for_file(
+                &[(
+                    crate::note::Note {
+                        id: "note:gather".to_string(),
+                        text: "gather needs review".to_string(),
+                        sentiment: -0.5,
+                        mentions: vec!["gather.rs".to_string()],
+                    },
+                    crate::Embedding::new(vec![0.0; 769]),
+                )],
+                &dir.path().join("notes.toml"),
+                0,
+            )
+            .unwrap();
+
+        // Insert a second note that mentions an unrelated file
+        store
+            .replace_notes_for_file(
+                &[(
+                    crate::note::Note {
+                        id: "note:other".to_string(),
+                        text: "unrelated note".to_string(),
+                        sentiment: 0.0,
+                        mentions: vec!["src/other.rs".to_string()],
+                    },
+                    crate::Embedding::new(vec![0.0; 769]),
+                )],
+                &dir.path().join("notes2.toml"),
+                0,
+            )
+            .unwrap();
+
+        // Changed files include the full path that "gather.rs" should suffix-match
+        let changed_files: HashSet<&str> =
+            ["src/gather.rs", "src/index.rs"].iter().copied().collect();
+
+        let notes = match_notes(&store, &changed_files).unwrap();
+
+        // Only the "gather.rs" note should be returned
+        assert_eq!(
+            notes.len(),
+            1,
+            "Expected exactly 1 matching note for changed files {:?}, got: {:?}",
+            changed_files,
+            notes.iter().map(|n| &n.text).collect::<Vec<_>>()
+        );
+        assert_eq!(notes[0].text, "gather needs review");
+        assert!(
+            notes[0]
+                .matching_files
+                .contains(&"src/gather.rs".to_string()),
+            "matching_files should include src/gather.rs, got {:?}",
+            notes[0].matching_files
+        );
+    }
+
+    /// match_notes: a note whose mention is a directory prefix matches all
+    /// files under that directory.
+    #[test]
+    fn test_match_notes_directory_prefix_match() {
+        use crate::store::ModelInfo;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = crate::Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        // Note mentions the directory "src/store"
+        store
+            .replace_notes_for_file(
+                &[(
+                    crate::note::Note {
+                        id: "note:store-dir".to_string(),
+                        text: "store module has schema issues".to_string(),
+                        sentiment: -0.5,
+                        mentions: vec!["src/store".to_string()],
+                    },
+                    crate::Embedding::new(vec![0.0; 769]),
+                )],
+                &dir.path().join("notes.toml"),
+                0,
+            )
+            .unwrap();
+
+        // Changed file is inside that directory
+        let changed_files: HashSet<&str> = ["src/store/chunks.rs"].iter().copied().collect();
+
+        let notes = match_notes(&store, &changed_files).unwrap();
+
+        assert_eq!(
+            notes.len(),
+            1,
+            "Directory-prefix mention 'src/store' should match 'src/store/chunks.rs'"
+        );
+        assert!(notes[0]
+            .matching_files
+            .contains(&"src/store/chunks.rs".to_string()));
+    }
+
+    /// match_notes: returns empty when no note mentions any changed file.
+    #[test]
+    fn test_match_notes_no_match() {
+        use crate::store::ModelInfo;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = crate::Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+
+        store
+            .replace_notes_for_file(
+                &[(
+                    crate::note::Note {
+                        id: "note:unrelated".to_string(),
+                        text: "unrelated note".to_string(),
+                        sentiment: 0.0,
+                        mentions: vec!["src/unrelated.rs".to_string()],
+                    },
+                    crate::Embedding::new(vec![0.0; 769]),
+                )],
+                &dir.path().join("notes.toml"),
+                0,
+            )
+            .unwrap();
+
+        let changed_files: HashSet<&str> = ["src/other.rs"].iter().copied().collect();
+
+        let notes = match_notes(&store, &changed_files).unwrap();
+        assert!(
+            notes.is_empty(),
+            "Expected no matches for unrelated changed file, got: {:?}",
+            notes.iter().map(|n| &n.text).collect::<Vec<_>>()
+        );
     }
 }

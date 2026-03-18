@@ -7,6 +7,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+use std::sync::Arc;
+
 use cqs::{parse_notes, Embedder, HnswIndex, ModelInfo, Parser as CqParser, Store};
 
 use crate::cli::{
@@ -18,7 +20,14 @@ use crate::cli::{
 ///
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
-pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) -> Result<()> {
+pub(crate) fn cmd_index(
+    cli: &Cli,
+    force: bool,
+    dry_run: bool,
+    no_ignore: bool,
+    #[allow(unused_variables)] // used only with llm-summaries feature
+    llm_summaries: bool,
+) -> Result<()> {
     reset_interrupted();
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
@@ -78,13 +87,20 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         store.init(&ModelInfo::default())?;
         store
     };
+    let store = Arc::new(store);
 
     if !cli.quiet {
         println!("Indexing {} files (pipelined)...", files.len());
     }
 
+    // Mark HNSW as dirty before writing chunks — if we crash between SQLite
+    // commit and HNSW save, the dirty flag tells the next load to fall back
+    // to brute-force search until a full rebuild. (RT-DATA-6)
+    store.set_hnsw_dirty(true).ok();
+
     // Run the 3-stage pipeline: parse → embed → write
-    let stats = run_index_pipeline(&root, files.clone(), &index_path, force, cli.quiet)?;
+    // Pipeline shares the same Store via Arc (no duplicate DB connections)
+    let stats = run_index_pipeline(&root, files.clone(), Arc::clone(&store), force, cli.quiet)?;
     let total_embedded = stats.total_embedded;
     let total_cached = stats.total_cached;
     let gpu_failures = stats.gpu_failures;
@@ -128,6 +144,43 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         println!("  Type edges: {} edges", stats.total_type_edges);
     }
 
+    // LLM summary pass (SQ-6): generate one-sentence summaries via Claude API
+    // Runs BEFORE enrichment so summaries are incorporated into enrichment NL.
+    #[cfg(feature = "llm-summaries")]
+    if !check_interrupted() && llm_summaries {
+        if !cli.quiet {
+            println!("Generating LLM summaries...");
+        }
+        let count =
+            cqs::llm::llm_summary_pass(&store, cli.quiet).context("LLM summary pass failed")?;
+        if !cli.quiet && count > 0 {
+            println!("  LLM summaries: {} new", count);
+        }
+    }
+
+    // Call-graph enrichment pass (SQ-4): re-embed chunks with caller/callee context
+    if !check_interrupted() && stats.total_calls > 0 {
+        use crate::cli::enrichment_pass;
+
+        if !cli.quiet {
+            println!("Enriching embeddings with call graph context...");
+        }
+        let embedder = Embedder::new().context("Failed to create embedder for enrichment pass")?;
+        match enrichment_pass(&store, &embedder, cli.quiet) {
+            Ok(count) => {
+                if !cli.quiet && count > 0 {
+                    println!("  Enriched: {} chunks", count);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Enrichment pass failed, continuing without");
+                if !cli.quiet {
+                    eprintln!("  Warning: enrichment pass failed: {:?}", e);
+                }
+            }
+        }
+    }
+
     // Index notes if notes.toml exists
     if !check_interrupted() {
         if !cli.quiet {
@@ -158,6 +211,8 @@ pub(crate) fn cmd_index(cli: &Cli, force: bool, dry_run: bool, no_ignore: bool) 
         }
 
         if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
+            // HNSW saved successfully — clear dirty flag (RT-DATA-6)
+            store.set_hnsw_dirty(false).ok();
             if !cli.quiet {
                 println!("  HNSW index: {} vectors", total);
             }

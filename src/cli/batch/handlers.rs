@@ -380,13 +380,15 @@ pub(super) fn dispatch_gather(
         let ref_idx = ctx
             .borrow_ref(rn)
             .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", rn))?;
-        cqs::gather_cross_index(
+        let index = ctx.vector_index()?;
+        cqs::gather_cross_index_with_index(
             &ctx.store,
             &ref_idx,
             &query_embedding,
             query,
             &opts,
             &ctx.root,
+            index,
         )?
     } else {
         cqs::gather(&ctx.store, &query_embedding, query, &opts, &ctx.root)?
@@ -694,11 +696,7 @@ pub(super) fn dispatch_dead(
         .collect();
 
     let format_dead = |dead: &cqs::store::DeadFunction| {
-        let confidence = match dead.confidence {
-            cqs::store::DeadConfidence::High => "high",
-            cqs::store::DeadConfidence::Medium => "medium",
-            cqs::store::DeadConfidence::Low => "low",
-        };
+        let confidence = dead.confidence.as_str();
         serde_json::json!({
             "name": dead.chunk.name,
             "file": cqs::rel_display(&dead.chunk.file, &ctx.root),
@@ -1216,7 +1214,7 @@ pub(super) fn dispatch_drift(
         .map(|e| {
             serde_json::json!({
                 "name": e.name,
-                "file": e.file,
+                "file": e.file.display().to_string(),
                 "chunk_type": e.chunk_type,
                 "similarity": e.similarity,
                 "drift": e.drift,

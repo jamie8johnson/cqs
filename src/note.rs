@@ -4,7 +4,6 @@
 //! indexed for semantic search.
 
 use serde::{Deserialize, Serialize};
-use std::hash::{BuildHasher, Hasher};
 use std::path::Path;
 use thiserror::Error;
 
@@ -132,27 +131,42 @@ pub const NOTES_HEADER: &str = "\
 /// Parse notes from a notes.toml file
 pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
     let _span = tracing::debug_span!("parse_notes", path = %path.display()).entered();
-    // Acquire shared lock and read from the locked handle directly
-    use std::io::Read;
-    let mut lock_file = std::fs::OpenOptions::new()
+    // Lock a separate .lock file (shared) to coordinate with writers.
+    // Using a separate lock file avoids the inode-vs-rename race: if we locked
+    // the data file itself, a concurrent writer's atomic rename would orphan
+    // our lock onto the old inode, letting a third process read stale data.
+    let lock_path = path.with_extension("toml.lock");
+    let lock_file = std::fs::OpenOptions::new()
         .read(true)
-        .open(path)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
         .map_err(|e| {
             NoteError::Io(std::io::Error::new(
                 e.kind(),
-                format!("{}: {}", path.display(), e),
+                format!("{}: {}", lock_path.display(), e),
             ))
         })?;
     lock_file.lock_shared().map_err(|e| {
         NoteError::Io(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
-            format!("Could not lock {} for reading: {}", path.display(), e),
+            format!("Could not lock {} for reading: {}", lock_path.display(), e),
+        ))
+    })?;
+
+    // Now open and read the data file (protected by the lock file)
+    use std::io::Read;
+    let mut data_file = std::fs::File::open(path).map_err(|e| {
+        NoteError::Io(std::io::Error::new(
+            e.kind(),
+            format!("{}: {}", path.display(), e),
         ))
     })?;
 
     // Size guard: notes.toml should be well under 10MB
     const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
-    if let Ok(meta) = lock_file.metadata() {
+    if let Ok(meta) = data_file.metadata() {
         if meta.len() > MAX_NOTES_FILE_SIZE {
             return Err(NoteError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -166,7 +180,7 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
         }
     }
     let mut content = String::new();
-    lock_file.read_to_string(&mut content).map_err(|e| {
+    data_file.read_to_string(&mut content).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
             format!("{}: {}", path.display(), e),
@@ -186,11 +200,35 @@ pub fn rewrite_notes_file(
     mutate: impl FnOnce(&mut Vec<NoteEntry>) -> Result<(), NoteError>,
 ) -> Result<Vec<NoteEntry>, NoteError> {
     let _span = tracing::debug_span!("rewrite_notes_file", path = %notes_path.display()).entered();
-    // Acquire exclusive lock before the read-modify-write cycle.
-    // Open with read+write so the exclusive lock covers both operations across all platforms.
-    let mut lock_file = std::fs::OpenOptions::new()
+    // Lock a separate .lock file (exclusive) to coordinate with readers/writers.
+    // See parse_notes() for why we use a separate lock file instead of the data file.
+    let lock_path = notes_path.with_extension("toml.lock");
+    let _lock_file = {
+        let f = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| {
+                NoteError::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("{}: {}", lock_path.display(), e),
+                ))
+            })?;
+        f.lock().map_err(|e| {
+            NoteError::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("Could not lock {} for writing: {}", lock_path.display(), e),
+            ))
+        })?;
+        f // held until end of function
+    };
+
+    // Now open and read the data file (protected by the lock file)
+    use std::io::Read;
+    let mut data_file = std::fs::OpenOptions::new()
         .read(true)
-        .write(true)
         .open(notes_path)
         .map_err(|e| {
             NoteError::Io(std::io::Error::new(
@@ -198,17 +236,10 @@ pub fn rewrite_notes_file(
                 format!("{}: {}", notes_path.display(), e),
             ))
         })?;
-    lock_file.lock().map_err(|e| {
-        NoteError::Io(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            format!("Could not lock {} for writing: {}", notes_path.display(), e),
-        ))
-    })?;
-    // lock_file held until end of function (dropped automatically)
 
-    // Size guard (same limit as read path) — use locked fd, not a separate syscall
+    // Size guard (same limit as read path)
     const MAX_NOTES_FILE_SIZE: u64 = 10 * 1024 * 1024;
-    if let Ok(meta) = lock_file.metadata() {
+    if let Ok(meta) = data_file.metadata() {
         if meta.len() > MAX_NOTES_FILE_SIZE {
             return Err(NoteError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -221,10 +252,8 @@ pub fn rewrite_notes_file(
             )));
         }
     }
-    // Read from the locked fd — avoids a separate open that could see different content
-    use std::io::Read;
     let mut content = String::new();
-    lock_file.read_to_string(&mut content).map_err(|e| {
+    data_file.read_to_string(&mut content).map_err(|e| {
         NoteError::Io(std::io::Error::new(
             e.kind(),
             format!("{}: {}", notes_path.display(), e),
@@ -235,9 +264,7 @@ pub fn rewrite_notes_file(
     mutate(&mut file.note)?;
 
     // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
-    let suffix = std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish();
+    let suffix = crate::temp_suffix();
     let tmp_path = notes_path.with_extension(format!("toml.{:016x}.tmp", suffix));
 
     let serialized = match toml::to_string_pretty(&file) {
@@ -265,9 +292,13 @@ pub fn rewrite_notes_file(
 
     if let Err(rename_err) = std::fs::rename(&tmp_path, notes_path) {
         // Rename can fail with EXDEV on cross-device (Docker overlayfs, some CI).
-        // Fall back to copy + remove.
-        if let Err(copy_err) = std::fs::copy(&tmp_path, notes_path) {
+        // Write a second temp in the destination directory (guaranteed same device),
+        // then rename atomically.
+        let dest_dir = notes_path.parent().unwrap_or(Path::new("."));
+        let dest_tmp = dest_dir.join(format!(".notes.{:016x}.tmp", suffix));
+        if let Err(copy_err) = std::fs::copy(&tmp_path, &dest_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
+            let _ = std::fs::remove_file(&dest_tmp);
             return Err(NoteError::Io(std::io::Error::new(
                 copy_err.kind(),
                 format!(
@@ -280,6 +311,11 @@ pub fn rewrite_notes_file(
             )));
         }
         let _ = std::fs::remove_file(&tmp_path);
+        // Same-device rename is atomic
+        if let Err(e) = std::fs::rename(&dest_tmp, notes_path) {
+            let _ = std::fs::remove_file(&dest_tmp);
+            return Err(NoteError::Io(e));
+        }
     }
 
     Ok(file.note)

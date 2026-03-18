@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 use crate::embedder::Embedding;
-use crate::parser::{ChunkType, Language};
+use crate::parser::{Chunk, ChunkType, Language};
 
 /// Schema version for database migrations
 ///
@@ -13,9 +13,12 @@ use crate::parser::{ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v11: Current (type_edges table for type-level dependency tracking)
+/// - v14: Current (llm_summaries table for SQ-6)
+/// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
+/// - v12: parent_type_name column for method→class association
+/// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 11;
+pub const CURRENT_SCHEMA_VERSION: i32 = 14;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
@@ -98,12 +101,15 @@ pub(crate) struct ChunkRow {
     pub doc: Option<String>,
     pub line_start: u32,
     pub line_end: u32,
+    pub content_hash: String,
+    pub window_idx: Option<i32>,
     pub parent_id: Option<String>,
+    pub parent_type_name: Option<String>,
 }
 
 impl ChunkRow {
     /// Construct from a SQLite row containing columns:
-    /// id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id
+    /// id, origin, language, chunk_type, name, signature, content, doc, line_start, line_end, parent_id, parent_type_name
     pub(crate) fn from_row(row: &sqlx::sqlite::SqliteRow) -> Self {
         use sqlx::Row;
         ChunkRow {
@@ -117,7 +123,10 @@ impl ChunkRow {
             doc: row.get("doc"),
             line_start: clamp_line_number(row.get::<i64, _>("line_start")),
             line_end: clamp_line_number(row.get::<i64, _>("line_end")),
+            content_hash: row.try_get("content_hash").unwrap_or_default(),
+            window_idx: row.try_get("window_idx").unwrap_or(None),
             parent_id: row.get("parent_id"),
+            parent_type_name: row.get("parent_type_name"),
         }
     }
 }
@@ -152,8 +161,35 @@ pub struct ChunkSummary {
     pub line_start: u32,
     /// Ending line number (1-indexed)
     pub line_end: u32,
+    /// Content hash (blake3) for embedding cache and summary lookup
+    pub content_hash: String,
+    /// Window index (None = not windowed, 0 = first window, 1+ = subsequent)
+    pub window_idx: Option<i32>,
     /// Parent chunk ID if this is a child chunk (table, windowed)
     pub parent_id: Option<String>,
+    /// For methods: name of enclosing class/struct/impl
+    pub parent_type_name: Option<String>,
+}
+
+impl From<&ChunkSummary> for Chunk {
+    fn from(cs: &ChunkSummary) -> Self {
+        Self {
+            id: cs.id.clone(),
+            file: cs.file.clone(),
+            language: cs.language,
+            chunk_type: cs.chunk_type,
+            name: cs.name.clone(),
+            signature: cs.signature.clone(),
+            content: cs.content.clone(),
+            doc: cs.doc.clone(),
+            line_start: cs.line_start,
+            line_end: cs.line_end,
+            content_hash: cs.content_hash.clone(),
+            parent_id: cs.parent_id.clone(),
+            window_idx: cs.window_idx.map(|i| i as u32),
+            parent_type_name: cs.parent_type_name.clone(),
+        }
+    }
 }
 
 impl From<ChunkRow> for ChunkSummary {
@@ -185,7 +221,10 @@ impl From<ChunkRow> for ChunkSummary {
             doc: row.doc,
             line_start: row.line_start,
             line_end: row.line_end,
+            content_hash: row.content_hash,
+            window_idx: row.window_idx,
             parent_id: row.parent_id,
+            parent_type_name: row.parent_type_name,
         }
     }
 }
@@ -589,6 +628,7 @@ impl SearchFilter {
 }
 
 /// Model metadata for index initialization
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ModelInfo {
     pub name: String,
     pub dimensions: u32,
@@ -690,6 +730,55 @@ pub fn score_name_match_pre_lower(name_lower: &str, query_lower: &str) -> f32 {
 #[inline]
 pub fn clamp_line_number(n: i64) -> u32 {
     n.clamp(1, u32::MAX as i64) as u32
+}
+
+// ============ SQL Helpers ============
+
+/// Maximum batch size that is pre-built and cached at startup.
+/// All observed batch sizes (55, 100, 190, 200, 250, 300, 500, 900) fall within this range.
+const PLACEHOLDER_CACHE_MAX: usize = 999;
+
+/// Pre-built placeholder strings for n = 1..=PLACEHOLDER_CACHE_MAX.
+/// Index 0 is unused; index n holds the string for n placeholders.
+static PLACEHOLDER_CACHE: std::sync::LazyLock<Vec<String>> = std::sync::LazyLock::new(|| {
+    let mut cache = vec![String::new()]; // index 0 unused
+    for n in 1..=PLACEHOLDER_CACHE_MAX {
+        cache.push(build_placeholders(n));
+    }
+    cache
+});
+
+/// Build a placeholder string without caching (used by both cache init and large n).
+fn build_placeholders(n: usize) -> String {
+    let mut s = String::with_capacity(n * 4);
+    for i in 1..=n {
+        if i > 1 {
+            s.push(',');
+        }
+        s.push('?');
+        // Fast itoa for small numbers (covers all practical batch sizes)
+        if i < 10 {
+            s.push((b'0' + i as u8) as char);
+        } else if i < 100 {
+            s.push((b'0' + (i / 10) as u8) as char);
+            s.push((b'0' + (i % 10) as u8) as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(s, "{}", i);
+        }
+    }
+    s
+}
+
+/// Build a comma-separated list of numbered SQL placeholders: "?1,?2,...,?N".
+///
+/// Common batch sizes (1–999) are served from a static cache; larger values are built on demand.
+pub(crate) fn make_placeholders(n: usize) -> String {
+    if n <= PLACEHOLDER_CACHE_MAX {
+        PLACEHOLDER_CACHE[n].clone()
+    } else {
+        build_placeholders(n)
+    }
 }
 
 // ============ Embedding Serialization ============
@@ -883,6 +972,9 @@ mod tests {
             line_start: 1,
             line_end: 1,
             parent_id: parent_id.map(|s| s.to_string()),
+            parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
         }
     }
 

@@ -44,6 +44,22 @@ Thank you for your interest in contributing to cqs!
 - Add tests for new features
 - Follow existing code patterns
 
+### `_with_*` Function Naming Convention
+
+Functions that accept pre-loaded resources use a `_with_<resource>` suffix:
+
+| Suffix | Meaning | Example |
+|--------|---------|---------|
+| `_with_graph` | Pre-loaded call graph | `gather_with_graph()` |
+| `_with_options` | Config struct parameter | `scout_with_options()` |
+| `_with_embedding` | Pre-computed embedding | `suggest_placement_with_embedding()` |
+| `_with_resources` | Pre-loaded embedder + graph | `task_with_resources()` |
+
+Rules:
+- The base function loads its own resources. The `_with_*` variant accepts them.
+- Don't stack suffixes (`_with_graph_depth`). Add parameters to the existing `_with_*` function instead.
+- If the `_with_*` variant has no external callers, fold it into the base function.
+
 ## Pull Request Process
 
 1. Fork the repository and create a feature branch
@@ -67,7 +83,7 @@ Thank you for your interest in contributing to cqs!
 
 ### Feature Ideas
 
-- Additional language support (see `src/language/` for current list — 50 languages supported)
+- Additional language support (see `src/language/` for current list — 51 languages supported)
 - Non-CUDA GPU support (ROCm for AMD, Metal for Apple Silicon)
 - VS Code extension
 - Performance improvements
@@ -105,8 +121,8 @@ src/
     watch.rs    - File watcher for incremental reindexing
   language/     - Tree-sitter language support
     mod.rs      - Language enum, LanguageRegistry, LanguageDef, ChunkType
-    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, protobuf.rs, graphql.rs, php.rs, lua.rs, zig.rs, r.rs, yaml.rs, toml_lang.rs, elixir.rs, erlang.rs, gleam.rs, haskell.rs, julia.rs, ocaml.rs, css.rs, perl.rs, html.rs, json.rs, xml.rs, ini.rs, nix.rs, make.rs, latex.rs, solidity.rs, cuda.rs, glsl.rs, svelte.rs, razor.rs, vbnet.rs, markdown.rs
-  store/        - SQLite storage layer (Schema v11, WAL mode)
+    rust.rs, python.rs, typescript.rs, javascript.rs, go.rs, c.rs, cpp.rs, java.rs, csharp.rs, fsharp.rs, powershell.rs, scala.rs, ruby.rs, bash.rs, hcl.rs, kotlin.rs, swift.rs, objc.rs, sql.rs, protobuf.rs, graphql.rs, php.rs, lua.rs, zig.rs, r.rs, yaml.rs, toml_lang.rs, elixir.rs, erlang.rs, gleam.rs, haskell.rs, julia.rs, ocaml.rs, css.rs, perl.rs, html.rs, json.rs, xml.rs, ini.rs, nix.rs, make.rs, latex.rs, solidity.rs, cuda.rs, glsl.rs, svelte.rs, razor.rs, vbnet.rs, vue.rs, aspx.rs, markdown.rs
+  store/        - SQLite storage layer (Schema v12, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
     chunks.rs   - Chunk CRUD, embedding_batches() for streaming
     notes.rs    - Note CRUD, note_embeddings(), brute-force search

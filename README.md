@@ -2,7 +2,7 @@
 
 Code intelligence and RAG for AI agents. Semantic search, call graph analysis, impact tracing, type dependencies, and smart context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 
-**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval. 50 languages, GPU-accelerated.
+**TL;DR:** Code intelligence toolkit for Claude Code. Instead of grep + sequential file reads, cqs understands what code *does* — semantic search finds functions by concept, call graph commands trace dependencies, and `gather`/`impact`/`context` assemble the right context in one call. 17-41x token reduction vs full file reads. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval. 51 languages, GPU-accelerated.
 
 [![Crates.io](https://img.shields.io/crates/v/cqs.svg)](https://crates.io/crates/cqs)
 [![CI](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml/badge.svg)](https://github.com/jamie8johnson/cqs/actions/workflows/ci.yml)
@@ -32,7 +32,7 @@ cargo install cqs
 
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
-cqs index --force  # Run after upgrading from older versions (current schema: v11)
+cqs index --force  # Run after upgrading from older versions (current schema: v12)
 ```
 
 ## Quick Start
@@ -97,6 +97,7 @@ cqs --no-content "query"     # File:line only, no code
 cqs -n 10 "query"            # Limit results
 cqs -t 0.5 "query"           # Min similarity threshold
 cqs --no-stale-check "query" # Skip staleness checks (useful on NFS)
+cqs --no-demote "query"      # Disable score demotion for low-quality matches
 ```
 
 ## Configuration
@@ -121,6 +122,15 @@ name_boost = 0.2
 
 # Note weight in search results (0.0-1.0, lower = notes rank below code)
 note_weight = 1.0
+
+# HNSW search width (higher = better recall, slower queries)
+ef_search = 100
+
+# Skip index staleness checks on every query (useful on NFS or slow disks)
+stale_check = true
+
+# Search only notes, skip code results (equivalent to --note-only flag)
+note_only = false
 
 # Output modes
 quiet = false
@@ -403,12 +413,14 @@ Key commands (all support `--json`):
 - `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
+- `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell)
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
 
 ## Supported Languages
 
+- ASP.NET Web Forms (ASPX/ASCX/ASMX — C#/VB.NET code-behind in server script blocks and `<% %>` expressions, delegates to C#/VB.NET grammars)
 - Bash (functions, command calls)
 - C (functions, structs, enums, macros)
 - C++ (classes, structs, namespaces, concepts, templates, out-of-class methods, preprocessor macros)
@@ -475,7 +487,7 @@ cqs index --dry-run    # Show what would be indexed
 
 **Parse → Embed → Index → Reason**
 
-1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 50 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
+1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 51 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
 2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). This bridges the gap between how developers describe code and how it's written.
 3. **Embed** — E5-base-v2 generates 769-dimensional embeddings (768 semantic + 1 sentiment) locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
 4. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.

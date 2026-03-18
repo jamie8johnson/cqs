@@ -176,10 +176,7 @@ impl Store {
             // Delete existing type edges for all resolved chunk IDs
             let chunk_ids: Vec<&str> = name_to_id.values().map(|s| s.as_str()).collect();
             for batch in chunk_ids.chunks(500) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "DELETE FROM type_edges WHERE source_chunk_id IN ({})",
                     placeholders
@@ -235,7 +232,7 @@ impl Store {
         self.rt.block_on(async {
             let rows: Vec<ChunkRow> = sqlx::query(
                 "SELECT DISTINCT c.id, c.origin, c.language, c.chunk_type, c.name,
-                        c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                        c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
                  FROM type_edges te
                  JOIN chunks c ON te.source_chunk_id = c.id
                  WHERE te.target_type_name = ?1
@@ -302,13 +299,10 @@ impl Store {
 
             const BATCH_SIZE: usize = 200;
             for batch in type_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT te.target_type_name, c.id, c.origin, c.language, c.chunk_type, c.name,
-                            c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id
+                            c.signature, c.content, c.doc, c.line_start, c.line_end, c.parent_id, c.parent_type_name
                      FROM type_edges te
                      JOIN chunks c ON te.source_chunk_id = c.id
                      WHERE te.target_type_name IN ({})
@@ -335,7 +329,10 @@ impl Store {
                         doc: row.get(8),
                         line_start: clamp_line_number(row.get::<i64, _>(9)),
                         line_end: clamp_line_number(row.get::<i64, _>(10)),
+                        content_hash: String::new(),
+                        window_idx: None,
                         parent_id: row.get(11),
+                        parent_type_name: row.get(12),
                     });
                     result.entry(type_name).or_default().push(chunk);
                 }
@@ -365,10 +362,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 200;
             for batch in chunk_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT c.name, te.target_type_name, te.edge_kind
                      FROM type_edges te

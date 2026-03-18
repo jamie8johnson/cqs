@@ -58,6 +58,7 @@ impl FileSuggestion {
             "insertion_line": self.insertion_line,
             "near_function": self.near_function,
             "reason": self.reason,
+            "patterns": self.patterns,
         })
     }
 }
@@ -116,23 +117,6 @@ pub fn suggest_placement(
         limit,
         &PlacementOptions::default(),
     )
-}
-
-/// Suggest where to place new code using a pre-computed embedding.
-///
-/// Avoids redundant ONNX inference when the caller already embedded the query
-/// (e.g., `task()` embeds once and reuses across phases).
-pub fn suggest_placement_with_embedding(
-    store: &Store,
-    query_embedding: &crate::Embedding,
-    description: &str,
-    limit: usize,
-) -> Result<PlacementResult, AnalysisError> {
-    let opts = PlacementOptions {
-        query_embedding: Some(query_embedding.clone()),
-        ..Default::default()
-    };
-    suggest_placement_with_options_core(store, description, limit, &opts)
 }
 
 /// Suggest where to place new code matching a description with configurable search parameters.
@@ -438,14 +422,257 @@ fn extract_patterns(chunks: &[ChunkSummary], language: Option<Language>) -> Loca
             };
             (imports, vis.to_string())
         }
-        Some(Language::Sql) => {
-            // SQL has no imports or visibility conventions
-            (Vec::new(), "default".to_string())
+        // C-like: reuse C patterns (#include, static/extern)
+        Some(Language::Cpp | Language::ObjC | Language::Cuda | Language::Glsl) => {
+            let imports = extract_imports(chunks, &["#include"], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(
+                chunks,
+                &[
+                    ("errno", "errno"),
+                    ("throw ", "throw"),
+                    ("try {", "try/catch"),
+                ],
+            );
+            let statics = chunks
+                .iter()
+                .filter(|c| c.signature.starts_with("static "))
+                .count();
+            let vis = if statics > chunks.len() / 2 {
+                "static"
+            } else {
+                "extern"
+            };
+            (imports, vis.to_string())
         }
-        Some(Language::Markdown) => {
-            // Markdown has no code patterns
-            (Vec::new(), "default".to_string())
+        // JVM: reuse Java patterns (import, public/package-private)
+        Some(Language::Scala | Language::Kotlin) => {
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(
+                chunks,
+                &[("throws ", "checked exceptions"), ("try {", "try/catch")],
+            );
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.contains("public"))
+                .count();
+            let vis = if public > chunks.len() / 2 {
+                "public"
+            } else {
+                "package-private"
+            };
+            (imports, vis.to_string())
         }
+        // .NET: using/open statements, public/internal visibility
+        Some(
+            Language::CSharp
+            | Language::FSharp
+            | Language::VbNet
+            | Language::Razor
+            | Language::Aspx,
+        ) => {
+            let imports = extract_imports(chunks, &["using ", "open "], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("throw ", "throw"), ("try {", "try/catch")]);
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.contains("public"))
+                .count();
+            let internal = chunks
+                .iter()
+                .filter(|c| c.signature.contains("internal"))
+                .count();
+            let vis = if public >= internal {
+                "public"
+            } else {
+                "internal"
+            };
+            (imports, vis.to_string())
+        }
+        // Dynamic: require/use/include, mixed visibility
+        Some(Language::Ruby) => {
+            let imports =
+                extract_imports(chunks, &["require ", "require_relative "], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("raise ", "raise"), ("rescue", "begin/rescue")]);
+            (imports, "module-level".to_string())
+        }
+        Some(Language::Php) => {
+            let imports = extract_imports(
+                chunks,
+                &["require ", "require_once ", "include ", "use "],
+                MAX_IMPORT_COUNT,
+            );
+            error_style =
+                detect_error_style(chunks, &[("throw ", "throw"), ("try {", "try/catch")]);
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.contains("public"))
+                .count();
+            let vis = if public > chunks.len() / 2 {
+                "public"
+            } else {
+                "default"
+            };
+            (imports, vis.to_string())
+        }
+        Some(Language::Perl) => {
+            let imports = extract_imports(chunks, &["use ", "require "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("die ", "die"), ("croak", "croak")]);
+            (imports, "module-level".to_string())
+        }
+        Some(Language::Lua) => {
+            let imports = extract_imports(
+                chunks,
+                &["require(", "require \"", "require '"],
+                MAX_IMPORT_COUNT,
+            );
+            error_style = detect_error_style(chunks, &[("error(", "error"), ("pcall(", "pcall")]);
+            (imports, "module-level".to_string())
+        }
+        // Functional: import/use, module visibility
+        Some(Language::Haskell) => {
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("error ", "error"), ("throwIO", "throwIO")]);
+            (imports, "module-level".to_string())
+        }
+        Some(Language::OCaml) => {
+            let imports = extract_imports(chunks, &["open "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("raise ", "raise"), ("Result.", "Result")]);
+            (imports, "module-level".to_string())
+        }
+        Some(Language::Elixir) => {
+            let imports = extract_imports(
+                chunks,
+                &["import ", "alias ", "use ", "require "],
+                MAX_IMPORT_COUNT,
+            );
+            error_style =
+                detect_error_style(chunks, &[("raise ", "raise"), ("{:error,", "{:error, _}")]);
+            let private = chunks
+                .iter()
+                .filter(|c| c.signature.starts_with("defp "))
+                .count();
+            let vis = if private > chunks.len() / 2 {
+                "private"
+            } else {
+                "public"
+            };
+            (imports, vis.to_string())
+        }
+        Some(Language::Erlang) => {
+            let imports = extract_imports(chunks, &["-include"], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("throw(", "throw"), ("{error,", "{error, _}")]);
+            (imports, "module-level".to_string())
+        }
+        Some(Language::Gleam) => {
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("Error(", "Error"), ("Result(", "Result")]);
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.starts_with("pub "))
+                .count();
+            let vis = if public > chunks.len() / 2 {
+                "pub"
+            } else {
+                "private"
+            };
+            (imports, vis.to_string())
+        }
+        // Data science: library/using
+        Some(Language::R) => {
+            let imports = extract_imports(chunks, &["library(", "require("], MAX_IMPORT_COUNT);
+            (imports, "default".to_string())
+        }
+        Some(Language::Julia) => {
+            let imports = extract_imports(chunks, &["using ", "import "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("throw(", "throw"), ("error(", "error")]);
+            (imports, "module-level".to_string())
+        }
+        // Systems
+        Some(Language::Zig) => {
+            let imports = extract_imports(chunks, &["@import("], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("error.", "error set"), ("catch", "catch")]);
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.starts_with("pub "))
+                .count();
+            let vis = if public > chunks.len() / 2 {
+                "pub"
+            } else {
+                "private"
+            };
+            (imports, vis.to_string())
+        }
+        Some(Language::Swift) => {
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style = detect_error_style(chunks, &[("throw ", "throw"), ("try ", "do/catch")]);
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.contains("public"))
+                .count();
+            let vis = if public > chunks.len() / 2 {
+                "public"
+            } else {
+                "internal"
+            };
+            (imports, vis.to_string())
+        }
+        // Solidity: contract visibility
+        Some(Language::Solidity) => {
+            let imports = extract_imports(chunks, &["import "], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("revert ", "revert"), ("require(", "require")]);
+            let public = chunks
+                .iter()
+                .filter(|c| c.signature.contains("public") || c.signature.contains("external"))
+                .count();
+            let vis = if public > chunks.len() / 2 {
+                "public"
+            } else {
+                "internal"
+            };
+            (imports, vis.to_string())
+        }
+        // Shell: source/import
+        Some(Language::Bash) => {
+            let imports = extract_imports(chunks, &["source ", ". "], MAX_IMPORT_COUNT);
+            error_style =
+                detect_error_style(chunks, &[("exit ", "exit code"), ("set -e", "set -e")]);
+            (imports, "default".to_string())
+        }
+        Some(Language::PowerShell) => {
+            let imports = extract_imports(
+                chunks,
+                &["Import-Module ", "using module "],
+                MAX_IMPORT_COUNT,
+            );
+            error_style =
+                detect_error_style(chunks, &[("throw ", "throw"), ("try {", "try/catch")]);
+            (imports, "default".to_string())
+        }
+        // Non-code: no meaningful patterns
+        Some(
+            Language::Sql
+            | Language::Markdown
+            | Language::Json
+            | Language::Yaml
+            | Language::Toml
+            | Language::Xml
+            | Language::Ini
+            | Language::Css
+            | Language::Html
+            | Language::Svelte
+            | Language::Vue
+            | Language::Make
+            | Language::Nix
+            | Language::Latex
+            | Language::Protobuf
+            | Language::GraphQL
+            | Language::Hcl,
+        ) => (Vec::new(), "default".to_string()),
         _ => (Vec::new(), "default".to_string()),
     };
 
@@ -506,6 +733,9 @@ mod tests {
             line_start: 1,
             line_end: 10,
             parent_id: None,
+            parent_type_name: None,
+            content_hash: String::new(),
+            window_idx: None,
         }
     }
 

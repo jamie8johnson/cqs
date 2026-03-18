@@ -4,7 +4,7 @@
 //! assignments. No call graph — prerequisite references are structural, not
 //! function calls.
 
-use super::{LanguageDef, SignatureStyle};
+use super::{InjectionRule, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Make definitions as chunks.
 ///
@@ -56,7 +56,15 @@ static DEFINITION: LanguageDef = LanguageDef {
     structural_matchers: None,
     entry_point_names: &["all", "default"],
     trait_method_names: &[],
-    injections: &[],
+    injections: &[
+        InjectionRule {
+            container_kind: "recipe",
+            content_kind: "shell_text",
+            target_language: "bash",
+            detect_language: None,
+            content_scoped_lines: false,
+        },
+    ],
 };
 
 pub fn definition() -> &'static LanguageDef {
@@ -154,6 +162,17 @@ clean:
             let calls = parser.extract_calls_from_chunk(chunk);
             assert!(calls.is_empty(), "Make should have no call graph");
         }
+    }
+
+    #[test]
+    fn parse_make_bash_injection() {
+        let content = "setup:\n\tmy_helper() { \\\n\t\techo \"setting up\"; \\\n\t}; \\\n\tmy_helper\n";
+        let file = write_temp_file(content, "mk");
+        let parser = Parser::new().unwrap();
+        let (chunks, _calls, _types) = parser.parse_file_all(file.path()).unwrap();
+        let names: Vec<_> = chunks.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"setup"), "Expected Make 'setup' rule, got: {:?}", names);
+        // Bash injection may extract function if grammar can parse line-continued shell
     }
 
     #[test]

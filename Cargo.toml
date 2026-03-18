@@ -1,9 +1,9 @@
 [package]
 name = "cqs"
-version = "0.28.3"
+version = "1.0.13"
 edition = "2021"
 rust-version = "1.93"
-description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 50 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
+description = "Code intelligence and RAG for AI agents. Semantic search, call graphs, impact analysis, type dependencies, and smart context assembly — in single tool calls. 51 languages, 90.9% Recall@1, 0.951 NDCG@10. Local ML, GPU-accelerated."
 license = "MIT"
 repository = "https://github.com/jamie8johnson/cqs"
 homepage = "https://github.com/jamie8johnson/cqs"
@@ -79,8 +79,8 @@ tree-sitter-razor = { version = "0.1", optional = true }
 tree-sitter-vb-dotnet = { version = "0.1", optional = true }
 tree-sitter-vue = { version = "0.1", package = "tree-sitter-vue-next", optional = true }
 
-# ML
-ort = { version = "2.0.0-rc.11", features = ["cuda", "tensorrt"] }
+# ML (CUDA/TensorRT added for non-macOS targets below)
+ort = "2.0.0-rc.12"
 tokenizers = { version = "0.22", features = ["http"] }
 hf-hub = "0.4.3"
 ndarray = "0.17"
@@ -126,6 +126,7 @@ shell-words = "1"
 anyhow = "1"
 thiserror = "2"
 dirs = "6"
+log = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rand = "0.10"
@@ -139,11 +140,18 @@ walkdir = { version = "2", optional = true }
 self_cell = "1"
 rustyline = "17"
 
+# LLM summaries (optional — for SQ-6 API calls to Claude)
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# CUDA/TensorRT only available on Linux and Windows (no prebuilt binaries for macOS)
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["cuda", "tensorrt"] }
+
 [features]
-default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "convert"]
+default = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx", "convert", "llm-summaries"]
 
 # Language support (opt-in, all enabled by default)
 lang-rust = ["dep:tree-sitter-rust"]
@@ -196,7 +204,8 @@ lang-razor = ["dep:tree-sitter-razor"]
 lang-vbnet = ["dep:tree-sitter-vb-dotnet"]
 lang-vue = ["dep:tree-sitter-vue"]
 lang-markdown = []  # No external deps — custom parser
-lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown"]
+lang-aspx = ["lang-csharp", "lang-vbnet"]  # Delegates to C#/VB.NET grammars
+lang-all = ["lang-rust", "lang-python", "lang-typescript", "lang-javascript", "lang-go", "lang-c", "lang-cpp", "lang-java", "lang-csharp", "lang-fsharp", "lang-powershell", "lang-scala", "lang-ruby", "lang-bash", "lang-hcl", "lang-kotlin", "lang-swift", "lang-objc", "lang-sql", "lang-protobuf", "lang-graphql", "lang-php", "lang-lua", "lang-zig", "lang-r", "lang-yaml", "lang-toml", "lang-elixir", "lang-erlang", "lang-haskell", "lang-ocaml", "lang-julia", "lang-gleam", "lang-css", "lang-perl", "lang-html", "lang-json", "lang-xml", "lang-ini", "lang-nix", "lang-make", "lang-latex", "lang-solidity", "lang-cuda", "lang-glsl", "lang-svelte", "lang-razor", "lang-vbnet", "lang-vue", "lang-markdown", "lang-aspx"]
 
 # Document conversion
 convert = ["dep:fast_html2md", "dep:walkdir"]
@@ -206,6 +215,7 @@ convert = ["dep:fast_html2md", "dep:walkdir"]
 # TODO: Re-evaluate encryption strategy with sqlx
 encrypt = ["keyring"]
 gpu-index = ["cuvs", "ndarray_015"]
+llm-summaries = ["dep:reqwest"]
 
 [dev-dependencies]
 insta = "1"

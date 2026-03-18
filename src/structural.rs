@@ -27,8 +27,9 @@ impl std::str::FromStr for Pattern {
             "unsafe" => Ok(Self::Unsafe),
             "recursion" => Ok(Self::Recursion),
             _ => anyhow::bail!(
-                "Unknown pattern '{}'. Valid: builder, error_swallow, async, mutex, unsafe, recursion",
-                s
+                "Unknown pattern '{}'. Valid: {}",
+                s,
+                Self::all_names().join(", ")
             ),
         }
     }

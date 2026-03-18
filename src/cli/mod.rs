@@ -14,7 +14,7 @@ mod watch;
 // Re-export for watch.rs and commands
 pub(crate) use config::find_project_root;
 pub(crate) use files::{acquire_index_lock, enumerate_files, try_acquire_index_lock};
-pub(crate) use pipeline::run_index_pipeline;
+pub(crate) use pipeline::{enrichment_pass, run_index_pipeline};
 pub(crate) use signal::{check_interrupted, reset_interrupted};
 
 /// Open the project store, returning the store, project root, and index directory.
@@ -45,6 +45,14 @@ pub(crate) fn build_vector_index(
     store: &cqs::Store,
     cqs_dir: &std::path::Path,
 ) -> anyhow::Result<Option<Box<dyn cqs::index::VectorIndex>>> {
+    build_vector_index_with_config(store, cqs_dir, None)
+}
+
+pub(crate) fn build_vector_index_with_config(
+    store: &cqs::Store,
+    cqs_dir: &std::path::Path,
+    ef_search: Option<usize>,
+) -> anyhow::Result<Option<Box<dyn cqs::index::VectorIndex>>> {
     let _ = store; // Used only with gpu-index feature
     #[cfg(feature = "gpu-index")]
     {
@@ -70,7 +78,15 @@ pub(crate) fn build_vector_index(
             tracing::debug!("GPU not available, using HNSW");
         }
     }
-    Ok(cqs::HnswIndex::try_load(cqs_dir))
+    // Check for crash between SQLite commit and HNSW save (RT-DATA-6)
+    if store.is_hnsw_dirty().unwrap_or(false) {
+        tracing::warn!(
+            "HNSW index may be stale (interrupted write detected). \
+             Falling back to brute-force search. Run 'cqs index' to rebuild."
+        );
+        return Ok(None);
+    }
+    Ok(cqs::HnswIndex::try_load_with_ef(cqs_dir, ef_search))
 }
 
 #[cfg(feature = "convert")]
@@ -78,9 +94,10 @@ use commands::cmd_convert;
 use commands::{
     cmd_audit_mode, cmd_blame, cmd_callees, cmd_callers, cmd_ci, cmd_context, cmd_dead, cmd_deps,
     cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
-    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_project, cmd_query, cmd_read,
-    cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats, cmd_suggest,
-    cmd_task, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand, RefCommand,
+    cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query,
+    cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats,
+    cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand,
+    RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -196,7 +213,7 @@ pub struct Cli {
     #[arg(short = 'l', long)]
     lang: Option<String>,
 
-    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant, property, delegate, event)
+    /// Filter by chunk type (function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias)
     #[arg(long)]
     chunk_type: Option<Vec<String>>,
 
@@ -278,6 +295,10 @@ enum Commands {
         /// Index files ignored by .gitignore
         #[arg(long)]
         no_ignore: bool,
+        /// Generate LLM summaries for functions (requires ANTHROPIC_API_KEY)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        llm_summaries: bool,
     },
     /// Show index statistics
     Stats {
@@ -666,6 +687,20 @@ enum Commands {
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
+    /// Task planning with template classification: classify + scout + checklist
+    Plan {
+        /// Task description to plan
+        description: String,
+        /// Max scout file groups
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
     /// One-shot implementation context: scout + code + impact + placement + notes
     Task {
         /// Task description
@@ -724,7 +759,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             force,
             dry_run,
             no_ignore,
-        }) => cmd_index(&cli, force, dry_run, no_ignore),
+            #[cfg(feature = "llm-summaries")]
+            llm_summaries,
+        }) => {
+            #[cfg(feature = "llm-summaries")]
+            let use_llm = llm_summaries;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_llm = false;
+            cmd_index(&cli, force, dry_run, no_ignore, use_llm)
+        }
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
             debounce,
@@ -880,6 +923,12 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             tokens,
         }) => cmd_scout(&cli, query, limit, json, tokens),
+        Some(Commands::Plan {
+            ref description,
+            limit,
+            json,
+            tokens,
+        }) => cmd_plan(&cli, description, limit, json, tokens),
         Some(Commands::Task {
             ref description,
             limit,
@@ -1016,6 +1065,7 @@ mod tests {
                 force,
                 dry_run,
                 no_ignore,
+                ..
             }) => {
                 assert!(!force);
                 assert!(!dry_run);
@@ -1662,6 +1712,7 @@ mod tests {
             note_weight: None,
             note_only: None,
             stale_check: None,
+            ef_search: None,
         };
         apply_config_defaults(&mut cli, &config);
 
@@ -1685,6 +1736,7 @@ mod tests {
             note_weight: None,
             note_only: None,
             stale_check: None,
+            ef_search: None,
         };
         apply_config_defaults(&mut cli, &config);
 

@@ -37,6 +37,23 @@ pub enum DeadConfidence {
     High,
 }
 
+impl DeadConfidence {
+    /// Stable string representation for display and JSON serialization.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeadConfidence::Low => "low",
+            DeadConfidence::Medium => "medium",
+            DeadConfidence::High => "high",
+        }
+    }
+}
+
+impl std::fmt::Display for DeadConfidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Fallback entry point names — used when language definitions don't provide any.
 /// Cross-language names that span multiple languages live here.
 /// These are superseded by `LanguageDef::entry_point_names` via `build_entry_point_names()`.
@@ -154,6 +171,58 @@ fn build_trait_method_names() -> Vec<&'static str> {
     }
     names
 }
+
+/// Build the shared SQL WHERE filter clause for test chunks.
+///
+/// Combines name patterns, content markers, and path patterns into a single
+/// OR-joined clause string. Computed once at startup via LazyLock callers.
+fn build_test_chunk_filter() -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    for pat in TEST_NAME_PATTERNS {
+        clauses.push(format!("name LIKE '{pat}'"));
+    }
+    for marker in build_test_content_markers() {
+        clauses.push(format!("content LIKE '%{marker}%'"));
+    }
+    for pat in build_test_path_patterns() {
+        if pat.contains("\\_") {
+            clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
+        } else {
+            clauses.push(format!("origin LIKE '{pat}'"));
+        }
+    }
+    clauses.join("\n                 OR ")
+}
+
+/// Cached SQL for `find_test_chunks_async` — built once at first use, reused on every call.
+static TEST_CHUNKS_SQL: LazyLock<String> = LazyLock::new(|| {
+    let filter = build_test_chunk_filter();
+    let callable = ChunkType::callable_sql_list();
+    format!(
+        "SELECT id, origin, language, chunk_type, name, signature,
+                    line_start, line_end, parent_id, parent_type_name
+             FROM chunks
+             WHERE chunk_type IN ({callable})
+               AND (
+                 {filter}
+               )
+             ORDER BY origin, line_start"
+    )
+});
+
+/// Cached SQL for `find_test_chunk_names_async` — built once at first use, reused on every call.
+static TEST_CHUNK_NAMES_SQL: LazyLock<String> = LazyLock::new(|| {
+    let filter = build_test_chunk_filter();
+    let callable = ChunkType::callable_sql_list();
+    format!(
+        "SELECT DISTINCT name
+             FROM chunks
+             WHERE chunk_type IN ({callable})
+               AND (
+                 {filter}
+               )"
+    )
+});
 
 impl Store {
     /// Insert or replace call sites for a chunk
@@ -414,8 +483,12 @@ impl Store {
     /// Used by trace (forward BFS), impact (reverse BFS), and test-map (reverse BFS).
     ///
     /// Cached call graph — populated on first access, returns clone from OnceLock.
-    /// Each CLI invocation creates a fresh Store, so the cache is valid for the
-    /// invocation's lifetime. ~15 call sites benefit from this caching.
+    ///
+    /// **No invalidation by design.** The cache lives for the `Store` lifetime and is
+    /// never cleared. Normal usage is one `Store` per CLI command, so the index cannot
+    /// change while the cache is live. In long-lived modes (batch, watch), callers must
+    /// re-open the `Store` to pick up index changes — do not add a `clear()` here.
+    /// ~15 call sites benefit from this single-scan caching.
     pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
         if let Some(cached) = self.call_graph_cache.get() {
             return Ok(cached.clone());
@@ -515,10 +588,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 200; // 200 names * 5 cols = 1000 binds, but we only bind names
             for batch in callee_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT callee_name, file, caller_name, caller_line, call_line
                      FROM function_calls
@@ -568,10 +638,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 250; // 250 * 4 cols = 1000, but only binding names
             for batch in callee_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT DISTINCT callee_name, file, caller_name, caller_line
                      FROM function_calls
@@ -624,10 +691,7 @@ impl Store {
 
             const BATCH_SIZE: usize = 250;
             for batch in caller_names.chunks(BATCH_SIZE) {
-                let placeholders: String = (1..=batch.len())
-                    .map(|i| format!("?{}", i))
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let placeholders = super::helpers::make_placeholders(batch.len());
                 let sql = format!(
                     "SELECT DISTINCT caller_name, callee_name, call_line
                      FROM function_calls
@@ -805,37 +869,22 @@ impl Store {
     ///
     /// Used for confidence scoring: files with active functions are "active".
     async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
-        // Files with at least one function that has callers (JOIN is more efficient than IN subquery)
-        let files_with_callers: std::collections::HashSet<String> = {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT c.origin
-                 FROM chunks c
-                 INNER JOIN function_calls fc ON c.name = fc.callee_name",
-            )
-            .fetch_all(&self.pool)
-            .await?;
-            rows.into_iter().map(|(f,)| f).collect()
-        };
-
-        // Files with type-edge activity (functions that reference types)
-        let files_with_type_activity: std::collections::HashSet<String> = {
-            let rows: Vec<(String,)> = sqlx::query_as(
-                "SELECT DISTINCT c.origin FROM chunks c
-                 JOIN type_edges te ON c.id = te.source_chunk_id",
-            )
-            .fetch_all(&self.pool)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "Failed to query files with type activity");
-                Vec::new()
-            });
-            rows.into_iter().map(|(f,)| f).collect()
-        };
-
-        // Union both sets
-        let mut active = files_with_callers;
-        active.extend(files_with_type_activity);
-        Ok(active)
+        // Single query: UNION of files with callers and files with type-edge activity
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT c.origin
+             FROM chunks c
+             INNER JOIN function_calls fc ON c.name = fc.callee_name
+             UNION
+             SELECT DISTINCT c.origin FROM chunks c
+             JOIN type_edges te ON c.id = te.source_chunk_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Failed to query active files");
+            Vec::new()
+        });
+        Ok(rows.into_iter().map(|(f,)| f).collect())
     }
 
     /// Phase 2: Batch-fetch content for candidates and assign confidence scores.
@@ -854,10 +903,7 @@ impl Store {
 
         const BATCH_SIZE: usize = 500;
         for batch in candidate_ids.chunks(BATCH_SIZE) {
-            let placeholders: String = (1..=batch.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT id, content, doc FROM chunks WHERE id IN ({})",
                 placeholders
@@ -926,7 +972,10 @@ impl Store {
                 doc,
                 line_start: light.line_start,
                 line_end: light.line_end,
+                content_hash: String::new(),
+                window_idx: None,
                 parent_id: None,
+                parent_type_name: None,
             });
 
             let dead_fn = DeadFunction { chunk, confidence };
@@ -950,43 +999,11 @@ impl Store {
     /// Test markers and path patterns are sourced from `LanguageDef` fields
     /// (`test_markers`, `test_path_patterns`) across all enabled languages,
     /// falling back to hardcoded defaults when no language provides any.
-    //
-    // TODO(PF-10): Add OnceLock<Vec<ChunkSummary>> cache to Store (requires store/mod.rs).
-    // Called 13 times across codebase — test chunk set rarely changes during a session.
-    // Cache should invalidate on chunk upsert.
     async fn find_test_chunks_async(&self) -> Result<Vec<ChunkSummary>, StoreError> {
-        // Build OR clauses from language-sourced test patterns
-        let mut clauses: Vec<String> = Vec::new();
-        for pat in TEST_NAME_PATTERNS {
-            clauses.push(format!("name LIKE '{pat}'"));
-        }
-        for marker in build_test_content_markers() {
-            clauses.push(format!("content LIKE '%{marker}%'"));
-        }
-        for pat in build_test_path_patterns() {
-            if pat.contains("\\_") {
-                clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
-            } else {
-                clauses.push(format!("origin LIKE '{pat}'"));
-            }
-        }
-        let filter = clauses.join("\n                 OR ");
-
+        // SQL is built once and cached in TEST_CHUNKS_SQL (LazyLock).
         // Select only lightweight columns; content/doc filtering happens in WHERE
-        // but we don't need them in the result set
-        let callable = ChunkType::callable_sql_list();
-        let sql = format!(
-            "SELECT id, origin, language, chunk_type, name, signature,
-                    line_start, line_end, parent_id
-             FROM chunks
-             WHERE chunk_type IN ({callable})
-               AND (
-                 {filter}
-               )
-             ORDER BY origin, line_start"
-        );
-
-        let rows: Vec<_> = sqlx::query(&sql).fetch_all(&self.pool).await?;
+        // but we don't need them in the result set.
+        let rows: Vec<_> = sqlx::query(&TEST_CHUNKS_SQL).fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -1002,7 +1019,10 @@ impl Store {
                     doc: None,
                     line_start: clamp_line_number(row.get::<i64, _>(6)),
                     line_end: clamp_line_number(row.get::<i64, _>(7)),
+                    content_hash: String::new(),
+                    window_idx: None,
                     parent_id: row.get(8),
+                    parent_type_name: row.get(9),
                 })
             })
             .collect())
@@ -1013,32 +1033,10 @@ impl Store {
     /// Avoids allocating `ChunkSummary` structs when callers only need
     /// the name set (e.g., `find_dead_code` exclusion filtering).
     async fn find_test_chunk_names_async(&self) -> Result<Vec<String>, StoreError> {
-        let mut clauses: Vec<String> = Vec::new();
-        for pat in TEST_NAME_PATTERNS {
-            clauses.push(format!("name LIKE '{pat}'"));
-        }
-        for marker in build_test_content_markers() {
-            clauses.push(format!("content LIKE '%{marker}%'"));
-        }
-        for pat in build_test_path_patterns() {
-            if pat.contains("\\_") {
-                clauses.push(format!("origin LIKE '{pat}' ESCAPE '\\'"));
-            } else {
-                clauses.push(format!("origin LIKE '{pat}'"));
-            }
-        }
-        let filter = clauses.join("\n                 OR ");
-        let callable = ChunkType::callable_sql_list();
-        let sql = format!(
-            "SELECT DISTINCT name
-             FROM chunks
-             WHERE chunk_type IN ({callable})
-               AND (
-                 {filter}
-               )"
-        );
-
-        let rows: Vec<(String,)> = sqlx::query_as(&sql).fetch_all(&self.pool).await?;
+        // SQL is built once and cached in TEST_CHUNK_NAMES_SQL (LazyLock).
+        let rows: Vec<(String,)> = sqlx::query_as(&TEST_CHUNK_NAMES_SQL)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
@@ -1069,8 +1067,13 @@ impl Store {
     /// - Path patterns: sourced from `LanguageDef::test_path_patterns` per language
     ///
     /// Uses a broad SQL filter then Rust post-filter for precision.
+    ///
     /// Cached test chunks — populated on first access, returns clone from OnceLock.
-    /// ~14 call sites benefit from this caching.
+    ///
+    /// **No invalidation by design.** Same contract as `get_call_graph`: the cache is
+    /// intentionally write-once for the `Store` lifetime. Long-lived modes (batch, watch)
+    /// must re-open the `Store` to see updated test discovery — do not add a `clear()`.
+    /// ~14 call sites benefit from this single-scan caching.
     pub fn find_test_chunks(&self) -> Result<Vec<ChunkSummary>, StoreError> {
         if let Some(cached) = self.test_chunks_cache.get() {
             return Ok(cached.clone());
@@ -1096,10 +1099,7 @@ impl Store {
 
         const BATCH_SIZE: usize = 500;
         for batch in names.chunks(BATCH_SIZE) {
-            let placeholders: String = (1..=batch.len())
-                .map(|i| format!("?{}", i))
-                .collect::<Vec<_>>()
-                .join(",");
+            let placeholders = super::helpers::make_placeholders(batch.len());
             let sql = format!(
                 "SELECT {group_column}, {count_expr} FROM function_calls WHERE {filter_column} IN ({placeholders}) GROUP BY {group_column}",
             );
@@ -1235,6 +1235,32 @@ impl Store {
                 unique_callers: unique_callers as u64,
                 unique_callees: unique_callees as u64,
             })
+        })
+    }
+
+    /// Count distinct callers for each callee name.
+    ///
+    /// Returns `(callee_name, distinct_caller_count)` pairs. Used by the
+    /// enrichment pass for IDF-style filtering: callees called by many
+    /// distinct callers are likely utilities (log, unwrap, etc.).
+    pub fn callee_caller_counts(&self) -> Result<Vec<(String, usize)>, StoreError> {
+        let _span = tracing::debug_span!("callee_caller_counts").entered();
+        self.rt.block_on(async {
+            let rows: Vec<_> = sqlx::query(
+                "SELECT callee_name, COUNT(DISTINCT caller_name) as caller_count \
+                 FROM function_calls GROUP BY callee_name",
+            )
+            .fetch_all(&self.pool)
+            .await?;
+
+            Ok(rows
+                .iter()
+                .map(|row| {
+                    let name: String = row.get("callee_name");
+                    let count: i64 = row.get("caller_count");
+                    (name, count as usize)
+                })
+                .collect())
         })
     }
 }

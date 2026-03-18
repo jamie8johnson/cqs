@@ -10,7 +10,7 @@ use hnsw_rs::hnswio::HnswIo;
 
 use crate::index::VectorIndex;
 
-use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw};
+use super::{HnswError, HnswIndex, HnswInner, HnswIoCell, LoadedHnsw, EF_SEARCH};
 
 /// Whether the WSL advisory locking warning has been emitted (once per process)
 static WSL_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -32,7 +32,13 @@ const HNSW_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids"];
 
 /// All HNSW file extensions including checksum (for cleanup/deletion).
 /// NOTE: Keep in sync with HNSW_EXTENSIONS above — first 3 elements must match.
-pub const HNSW_ALL_EXTENSIONS: &[&str] = &["hnsw.graph", "hnsw.data", "hnsw.ids", "hnsw.checksum"];
+pub const HNSW_ALL_EXTENSIONS: &[&str] = &[
+    "hnsw.graph",
+    "hnsw.data",
+    "hnsw.ids",
+    "hnsw.checksum",
+    "hnsw.lock",
+];
 
 /// Verify HNSW index file checksums using blake3.
 ///
@@ -425,6 +431,7 @@ impl HnswIndex {
         Ok(Self {
             inner: HnswInner::Loaded(loaded),
             id_map,
+            ef_search: EF_SEARCH,
         })
     }
 
@@ -480,23 +487,57 @@ impl HnswIndex {
             }
             _ => {}
         }
+        // Count array elements by streaming JSON without allocating all strings.
+        // The id map is a JSON array of strings: ["id1","id2",...].
+        // We iterate the stream and count SeqAccess elements rather than
+        // deserializing into a Vec<String>.
+        use serde::de::{Deserializer, SeqAccess, Visitor};
+        use std::fmt;
+
+        struct CountVisitor;
+        impl<'de> Visitor<'de> for CountVisitor {
+            type Value = usize;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(f, "an array")
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<usize, A::Error> {
+                let mut count = 0usize;
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {
+                    count += 1;
+                }
+                Ok(count)
+            }
+        }
+
         let reader = std::io::BufReader::new(file);
-        let ids: Vec<String> = match serde_json::from_reader(reader) {
-            Ok(ids) => ids,
+        let mut de = serde_json::Deserializer::from_reader(reader);
+        match de.deserialize_seq(CountVisitor) {
+            Ok(count) => Some(count),
             Err(e) => {
                 tracing::warn!("Corrupted HNSW id map {}: {}", id_map_path.display(), e);
-                return None;
+                None
             }
-        };
-        Some(ids.len())
+        }
     }
 
     /// Load HNSW index if available, wrapped as VectorIndex trait object.
     /// Shared helper for CLI commands.
     pub fn try_load(cq_dir: &Path) -> Option<Box<dyn VectorIndex>> {
+        Self::try_load_with_ef(cq_dir, None)
+    }
+
+    /// Load HNSW index with optional ef_search override from config.
+    pub fn try_load_with_ef(
+        cq_dir: &Path,
+        ef_search: Option<usize>,
+    ) -> Option<Box<dyn VectorIndex>> {
         if Self::exists(cq_dir, "index") {
             match Self::load(cq_dir, "index") {
-                Ok(index) => {
+                Ok(mut index) => {
+                    if let Some(ef) = ef_search {
+                        index.set_ef_search(ef);
+                        tracing::debug!(ef_search = ef, "Applied config ef_search override");
+                    }
                     tracing::info!("HNSW index loaded ({} vectors)", index.len());
                     Some(Box::new(index))
                 }

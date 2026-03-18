@@ -6,9 +6,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
-
 use crate::impact::find_hotspots;
+use crate::store::StoreError;
 use crate::{compute_risk_batch, normalize_slashes, RiskLevel, Store};
 
 /// Minimum dead functions in a single file to flag as a dead code cluster.
@@ -35,7 +34,7 @@ pub struct SuggestedNote {
 ///
 /// Takes a store and project root, returns suggested notes or an error.
 /// Errors are non-fatal — other detectors still run.
-type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>>;
+type Detector = fn(&Store, &Path) -> Result<Vec<SuggestedNote>, StoreError>;
 
 /// Registry of all active detectors, run in order by `suggest_notes`.
 ///
@@ -54,7 +53,7 @@ const DETECTORS: &[(&str, Detector)] = &[
 /// Scan the index for anti-patterns and suggest notes.
 ///
 /// Each detector runs independently — if one fails, the others still produce results.
-pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>> {
+pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>, StoreError> {
     let _span = tracing::info_span!("suggest_notes").entered();
 
     let mut suggestions = Vec::new();
@@ -86,7 +85,7 @@ pub fn suggest_notes(store: &Store, project_root: &Path) -> Result<Vec<Suggested
 }
 
 /// Detect files with 5+ dead (uncalled) functions.
-fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>> {
+fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>, StoreError> {
     let (confident, _) = store.find_dead_code(true)?;
 
     // Group by file
@@ -109,7 +108,7 @@ fn detect_dead_clusters(store: &Store) -> Result<Vec<SuggestedNote>> {
 }
 
 /// Detect untested hotspots and high-risk functions.
-fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>> {
+fn detect_risk_patterns(store: &Store) -> Result<Vec<SuggestedNote>, StoreError> {
     let graph = store.get_call_graph()?;
     let test_chunks = store.find_test_chunks()?;
     let hotspots = find_hotspots(&graph, SUGGEST_HOTSPOT_POOL);
@@ -189,7 +188,10 @@ pub(crate) fn is_pascal_case(s: &str) -> bool {
 ///
 /// Returns `(note_text, stale_mentions)` pairs for each note with at least one
 /// stale mention. Shared by `detect_stale_mentions` and `check_note_staleness`.
-fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String, Vec<String>)>> {
+fn find_stale_mentions(
+    store: &Store,
+    project_root: &Path,
+) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let notes = store.list_notes_summaries()?;
 
     // Batch all symbol mentions for one query
@@ -243,7 +245,10 @@ fn find_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<(String
 }
 
 /// Detect notes with stale mentions (deleted files, removed functions).
-fn detect_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<SuggestedNote>> {
+fn detect_stale_mentions(
+    store: &Store,
+    project_root: &Path,
+) -> Result<Vec<SuggestedNote>, StoreError> {
     let stale_pairs = find_stale_mentions(store, project_root)?;
 
     Ok(stale_pairs
@@ -275,7 +280,7 @@ fn detect_stale_mentions(store: &Store, project_root: &Path) -> Result<Vec<Sugge
 pub fn check_note_staleness(
     store: &Store,
     project_root: &Path,
-) -> Result<Vec<(String, Vec<String>)>> {
+) -> Result<Vec<(String, Vec<String>)>, StoreError> {
     let _span = tracing::info_span!("check_note_staleness").entered();
     let result = find_stale_mentions(store, project_root)?;
     tracing::info!(stale_notes = result.len(), "Note staleness check complete");
@@ -534,6 +539,159 @@ mod tests {
             note.mentions.contains(&"hot_function".to_string()),
             "Expected mention of hot_function, got {:?}",
             note.mentions
+        );
+    }
+
+    /// TC-2: Verify the high_risk branch in detect_risk_patterns.
+    ///
+    /// A function with many callers but *some* tests still scores High if
+    /// coverage is low enough (score = callers * (1 - coverage) >= 5.0).
+    /// With 6 callers and 1 test: score = 6 * (1 - 1/6) = 5.0 → High.
+    /// Because test_count > 0, the untested_hotspot branch is skipped and
+    /// we must land in the high_risk branch (lines 140-150 of suggest.rs).
+    #[test]
+    fn test_suggest_high_risk_with_few_tests() {
+        use crate::language::{ChunkType, Language};
+        use crate::parser::{CallSite, Chunk, FunctionCalls};
+        use std::path::PathBuf;
+
+        let (store, dir) = make_store();
+
+        // Insert the target function that will be the hotspot
+        let target_content = "fn risky_function() { }";
+        let target_hash = blake3::hash(target_content.as_bytes()).to_hex().to_string();
+        let target = Chunk {
+            id: format!("src/risky.rs:1:{}", &target_hash[..8]),
+            file: PathBuf::from("src/risky.rs"),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: "risky_function".to_string(),
+            signature: "fn risky_function()".to_string(),
+            content: target_content.to_string(),
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: target_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        store
+            .upsert_chunk(&target, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+            .unwrap();
+
+        // Insert 6 non-test callers — gives caller_count = 6
+        for i in 0..6 {
+            let caller_name = format!("caller_{}", i);
+            let file = format!("src/user{}.rs", i);
+            let content = format!("fn {}() {{ risky_function() }}", caller_name);
+            let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+            let chunk = Chunk {
+                id: format!("{}:1:{}", file, &hash[..8]),
+                file: PathBuf::from(&file),
+                language: Language::Rust,
+                chunk_type: ChunkType::Function,
+                name: caller_name.clone(),
+                signature: format!("fn {}()", caller_name),
+                content,
+                doc: None,
+                line_start: 1,
+                line_end: 5,
+                content_hash: hash,
+                parent_id: None,
+                window_idx: None,
+                parent_type_name: None,
+            };
+            store
+                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+                .unwrap();
+
+            store
+                .upsert_function_calls(
+                    Path::new(&file),
+                    &[FunctionCalls {
+                        name: caller_name,
+                        line_start: 1,
+                        calls: vec![CallSite {
+                            callee_name: "risky_function".to_string(),
+                            line_number: 2,
+                        }],
+                    }],
+                )
+                .unwrap();
+        }
+
+        // Insert 1 test function that calls risky_function.
+        // Name starts with "test_" so find_test_chunks picks it up.
+        // This gives test_count = 1: coverage = 1/6, score = 5.0 → High.
+        // Since test_count > 0, the untested_hotspot branch is skipped.
+        let test_name = "test_risky_function";
+        let test_file = "src/tests.rs";
+        let test_content = format!("#[test] fn {}() {{ risky_function() }}", test_name);
+        let test_hash = blake3::hash(test_content.as_bytes()).to_hex().to_string();
+        let test_chunk = Chunk {
+            id: format!("{}:1:{}", test_file, &test_hash[..8]),
+            file: PathBuf::from(test_file),
+            language: Language::Rust,
+            chunk_type: ChunkType::Function,
+            name: test_name.to_string(),
+            signature: format!("fn {}()", test_name),
+            content: test_content,
+            doc: None,
+            line_start: 1,
+            line_end: 5,
+            content_hash: test_hash,
+            parent_id: None,
+            window_idx: None,
+            parent_type_name: None,
+        };
+        store
+            .upsert_chunk(
+                &test_chunk,
+                &crate::Embedding::new(vec![0.0; 769]),
+                Some(1000),
+            )
+            .unwrap();
+        store
+            .upsert_function_calls(
+                Path::new(test_file),
+                &[FunctionCalls {
+                    name: test_name.to_string(),
+                    line_start: 1,
+                    calls: vec![CallSite {
+                        callee_name: "risky_function".to_string(),
+                        line_number: 2,
+                    }],
+                }],
+            )
+            .unwrap();
+
+        let suggestions = suggest_notes(&store, dir.path()).unwrap();
+
+        let high_risk = suggestions.iter().find(|s| s.reason == "high_risk");
+        assert!(
+            high_risk.is_some(),
+            "Expected a high_risk suggestion for a function with 6 callers and only 1 test \
+             (score = 5.0 >= threshold). Got reasons: {:?}",
+            suggestions.iter().map(|s| &s.reason).collect::<Vec<_>>()
+        );
+        let note = high_risk.unwrap();
+        assert!(
+            note.mentions.contains(&"risky_function".to_string()),
+            "Expected mention of risky_function, got {:?}",
+            note.mentions
+        );
+        assert_eq!(
+            note.sentiment, -1.0,
+            "high_risk notes should have sentiment -1.0"
+        );
+        // Confirm it was NOT classified as untested_hotspot (test_count > 0)
+        let untested = suggestions.iter().find(|s| {
+            s.reason == "untested_hotspot" && s.mentions.contains(&"risky_function".to_string())
+        });
+        assert!(
+            untested.is_none(),
+            "risky_function should not appear as untested_hotspot because it has 1 test"
         );
     }
 }

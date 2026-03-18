@@ -10,6 +10,7 @@ use sqlx::Row;
 
 use crate::embedder::Embedding;
 use crate::index::VectorIndex;
+use crate::language::ChunkType;
 use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::nl::tokenize_identifier;
@@ -94,7 +95,17 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
             }
         }
     } else {
-        0
+        // Prefer non-test chunks when names are ambiguous
+        results
+            .iter()
+            .position(|r| {
+                let path = r.chunk.file.to_string_lossy();
+                let name = &r.chunk.name;
+                !name.starts_with("test_")
+                    && !path.contains("/tests/")
+                    && !path.ends_with("_test.rs")
+            })
+            .unwrap_or(0)
     };
     let chunk = results[idx].chunk.clone();
     Ok(ResolvedTarget {
@@ -104,6 +115,70 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget, Sto
 }
 
 // ============ Name Matching ============
+
+/// Detect whether a query looks like a code identifier vs natural language.
+///
+/// Name-like: "parseConfig", "handle_error", "CircuitBreaker"
+/// NL-like: "function that handles errors", "how does parsing work"
+///
+/// Used to gate name_boost — boosting by name similarity is harmful for
+/// NL queries because it rewards coincidental substring matches over
+/// semantic relevance.
+fn is_name_like_query(query: &str) -> bool {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    // Single token or two-token queries are likely identifiers
+    if words.len() <= 2 {
+        return true;
+    }
+    // NL indicators: common function words that never appear in identifiers
+    const NL_WORDS: &[&str] = &[
+        "the",
+        "a",
+        "an",
+        "is",
+        "are",
+        "was",
+        "were",
+        "that",
+        "which",
+        "how",
+        "what",
+        "where",
+        "when",
+        "does",
+        "do",
+        "can",
+        "should",
+        "would",
+        "could",
+        "for",
+        "with",
+        "from",
+        "into",
+        "this",
+        "these",
+        "those",
+        "function",
+        "method",
+        "code",
+        "implement",
+        "find",
+        "search",
+    ];
+    let lower = query.to_lowercase();
+    let lower_words: Vec<&str> = lower.split_whitespace().collect();
+    for w in &lower_words {
+        if NL_WORDS.contains(w) {
+            return false;
+        }
+    }
+    // 3+ words with no NL indicators — still likely NL if all lowercase
+    // (identifiers are usually camelCase or snake_case)
+    if words.len() >= 3 && lower == query && !query.contains('_') {
+        return false;
+    }
+    true
+}
 
 /// Pre-tokenized query for efficient name matching in loops
 ///
@@ -392,17 +467,17 @@ impl<'a> NoteBoostIndex<'a> {
 ///
 /// | Signal                   | Detection                                        | Multiplier |
 /// |--------------------------|--------------------------------------------------|------------|
-/// | Test function (name)     | name starts with `test_` or `Test`               | 0.90       |
-/// | Test file (filename)     | filename contains `_test.` or starts with `test_` | 0.90      |
-/// | Underscore-prefixed      | name starts with `_` (not `__`)                  | 0.95       |
+/// | Test function (name)     | name starts with `test_` or `Test`               | 0.70       |
+/// | Test file (filename)     | filename contains `_test.` or starts with `test_` | 0.70      |
+/// | Underscore-prefixed      | name starts with `_` (not `__`)                  | 0.80       |
 ///
 /// File-based detection uses only the filename, not the full path — being inside a
 /// `tests/` directory doesn't demote. This avoids false positives on test fixtures
 /// and monorepo layouts.
 ///
 /// Returns 1.0 (no change) when demotion doesn't apply.
-const IMPORTANCE_TEST: f32 = 0.90;
-const IMPORTANCE_PRIVATE: f32 = 0.95;
+const IMPORTANCE_TEST: f32 = 0.70;
+const IMPORTANCE_PRIVATE: f32 = 0.80;
 
 fn chunk_importance(name: &str, file_path: &str) -> f32 {
     // Name-based: test function
@@ -433,6 +508,68 @@ fn chunk_importance(name: &str, file_path: &str) -> f32 {
         return IMPORTANCE_PRIVATE;
     }
     1.0
+}
+
+/// Boost container chunks (Class, Struct, Interface) when multiple child methods
+/// from the same parent appear in search results.
+///
+/// When a query semantically matches several methods of one class, the class
+/// itself is usually the best answer — the methods individually match fragments
+/// of the query, but the class embodies the whole concept (e.g., "circuit breaker
+/// pattern" → `CircuitBreaker` class, not `recordFailure` method).
+///
+/// Algorithm: count how many results have `parent_type_name == X`. If a
+/// Class/Struct/Interface chunk named `X` also appears in results, boost it.
+///
+/// Boost magnitude: `1.0 + 0.05 × (child_count - 1)`, capped at 1.15.
+/// With 2 children → 1.05×, 3 → 1.10×, 4+ → 1.15×.
+///
+/// Re-sorts results by score after boosting.
+fn apply_parent_boost(results: &mut [SearchResult]) {
+    if results.len() < 3 {
+        return; // Need at least a container + 2 children
+    }
+
+    // Count how many results share each parent_type_name
+    let mut parent_counts: HashMap<String, usize> = HashMap::new();
+    for r in results.iter() {
+        if let Some(ref ptn) = r.chunk.parent_type_name {
+            *parent_counts.entry(ptn.clone()).or_insert(0) += 1;
+        }
+    }
+
+    // Only proceed if any parent_type_name appears 2+ times
+    if !parent_counts.values().any(|&c| c >= 2) {
+        return;
+    }
+
+    let mut boosted = false;
+    for r in results.iter_mut() {
+        let is_container = matches!(
+            r.chunk.chunk_type,
+            ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+        );
+        if !is_container {
+            continue;
+        }
+        if let Some(&count) = parent_counts.get(&r.chunk.name) {
+            if count >= 2 {
+                let boost = 1.0 + 0.05 * (count as f32 - 1.0).min(3.0);
+                tracing::debug!(
+                    name = %r.chunk.name,
+                    child_count = count,
+                    boost = %boost,
+                    "parent_boost: boosting container"
+                );
+                r.score *= boost;
+                boosted = true;
+            }
+        }
+    }
+
+    if boosted {
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
+    }
 }
 
 /// Bounded min-heap for maintaining top-N search results by score.
@@ -555,7 +692,9 @@ fn build_filter_sql(filter: &SearchFilter) -> FilterSql {
         }
     }
 
-    let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+    let use_hybrid = filter.name_boost > 0.0
+        && !filter.query_text.is_empty()
+        && is_name_like_query(&filter.query_text);
     let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
 
     // Select columns: always id + embedding, optionally name for hybrid scoring
@@ -820,6 +959,9 @@ impl Store {
                 })
                 .collect();
 
+            // Boost container chunks when multiple child methods appear in results
+            apply_parent_boost(&mut results);
+
             // Truncate back to requested limit after parent dedup
             results.truncate(limit);
 
@@ -877,7 +1019,9 @@ impl Store {
             return Ok(vec![]);
         }
 
-        let use_hybrid = filter.name_boost > 0.0 && !filter.query_text.is_empty();
+        let use_hybrid = filter.name_boost > 0.0
+            && !filter.query_text.is_empty()
+            && is_name_like_query(&filter.query_text);
         let use_rrf = filter.enable_rrf && !filter.query_text.is_empty();
 
         // Load notes once for note-boosted ranking
@@ -1009,6 +1153,9 @@ impl Store {
                     }
                 })
                 .collect();
+
+            // Boost container chunks when multiple child methods appear in results
+            apply_parent_boost(&mut results);
 
             // Truncate back to requested limit after parent dedup
             results.truncate(limit);
@@ -1383,6 +1530,134 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    // ===== parent_boost tests =====
+
+    fn make_result(
+        name: &str,
+        chunk_type: ChunkType,
+        parent_type_name: Option<&str>,
+        score: f32,
+    ) -> SearchResult {
+        SearchResult {
+            chunk: ChunkSummary {
+                id: name.to_string(),
+                file: std::path::PathBuf::from("test.ts"),
+                language: crate::parser::Language::TypeScript,
+                chunk_type,
+                name: name.to_string(),
+                signature: String::new(),
+                content: String::new(),
+                doc: None,
+                line_start: 1,
+                line_end: 10,
+                parent_id: None,
+                parent_type_name: parent_type_name.map(|s| s.to_string()),
+                content_hash: String::new(),
+                window_idx: None,
+            },
+            score,
+        }
+    }
+
+    #[test]
+    fn test_parent_boost_circuit_breaker() {
+        // CircuitBreaker class at rank 4, its methods rank 1-3
+        let mut results = vec![
+            make_result(
+                "recordFailure",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.88,
+            ),
+            make_result(
+                "retryWithBackoff",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.86,
+            ),
+            make_result(
+                "shouldAllow",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.85,
+            ),
+            make_result("CircuitBreaker", ChunkType::Class, None, 0.82),
+        ];
+        apply_parent_boost(&mut results);
+        // 3 children → boost = 1.10, 0.82 * 1.10 = 0.902 > 0.88
+        assert_eq!(results[0].chunk.name, "CircuitBreaker");
+        assert!(results[0].score > 0.90);
+    }
+
+    #[test]
+    fn test_parent_boost_no_effect_on_standalone_functions() {
+        // Sort variants — standalone functions, no parent_type_name
+        let mut results = vec![
+            make_result("_insertionSortSmall", ChunkType::Function, None, 0.88),
+            make_result("insertionSort", ChunkType::Function, None, 0.85),
+            make_result("mergeSort", ChunkType::Function, None, 0.80),
+        ];
+        let scores_before: Vec<f32> = results.iter().map(|r| r.score).collect();
+        apply_parent_boost(&mut results);
+        let scores_after: Vec<f32> = results.iter().map(|r| r.score).collect();
+        assert_eq!(scores_before, scores_after);
+    }
+
+    #[test]
+    fn test_parent_boost_needs_minimum_two_children() {
+        // Only 1 method from the class — no boost
+        let mut results = vec![
+            make_result(
+                "recordFailure",
+                ChunkType::Method,
+                Some("CircuitBreaker"),
+                0.88,
+            ),
+            make_result("CircuitBreaker", ChunkType::Class, None, 0.82),
+            make_result("unrelatedFn", ChunkType::Function, None, 0.80),
+        ];
+        apply_parent_boost(&mut results);
+        // CircuitBreaker should stay at rank 2
+        assert_eq!(results[0].chunk.name, "recordFailure");
+        assert_eq!(results[1].chunk.name, "CircuitBreaker");
+    }
+
+    #[test]
+    fn test_parent_boost_caps_at_1_15() {
+        // 5 children → should cap at 1.15, not 1.20
+        let mut results = vec![
+            make_result("m1", ChunkType::Method, Some("BigClass"), 0.88),
+            make_result("m2", ChunkType::Method, Some("BigClass"), 0.87),
+            make_result("m3", ChunkType::Method, Some("BigClass"), 0.86),
+            make_result("m4", ChunkType::Method, Some("BigClass"), 0.85),
+            make_result("m5", ChunkType::Method, Some("BigClass"), 0.84),
+            make_result("BigClass", ChunkType::Class, None, 0.78),
+        ];
+        apply_parent_boost(&mut results);
+        // max boost = 1.15, 0.78 * 1.15 = 0.897
+        let class_score = results
+            .iter()
+            .find(|r| r.chunk.name == "BigClass")
+            .unwrap()
+            .score;
+        assert!(
+            (class_score - 0.897).abs() < 0.001,
+            "Expected ~0.897, got {class_score}"
+        );
+    }
+
+    #[test]
+    fn test_parent_boost_too_few_results() {
+        // Only 2 results — function returns early
+        let mut results = vec![
+            make_result("foo", ChunkType::Method, Some("Bar"), 0.88),
+            make_result("Bar", ChunkType::Class, None, 0.82),
+        ];
+        let score_before = results[1].score;
+        apply_parent_boost(&mut results);
+        assert_eq!(results[1].score, score_before);
+    }
+
     // ===== search_filtered integration tests (TC4) =====
 
     mod search_filtered_tests {
@@ -1738,7 +2013,7 @@ mod tests {
 
     #[test]
     fn test_chunk_importance_test_prefix() {
-        assert_eq!(chunk_importance("test_parse_config", "src/lib.rs"), 0.90);
+        assert_eq!(chunk_importance("test_parse_config", "src/lib.rs"), 0.70);
     }
 
     #[test]
@@ -1786,6 +2061,40 @@ mod tests {
     fn test_chunk_importance_test_name_beats_path() {
         // test_ name triggers demotion even in normal directory
         assert_eq!(chunk_importance("test_foo", "src/lib.rs"), IMPORTANCE_TEST);
+    }
+
+    // ===== is_name_like_query tests =====
+
+    #[test]
+    fn test_name_like_single_token() {
+        assert!(is_name_like_query("parseConfig"));
+        assert!(is_name_like_query("CircuitBreaker"));
+        assert!(is_name_like_query("handle_error"));
+    }
+
+    #[test]
+    fn test_name_like_two_tokens() {
+        assert!(is_name_like_query("parse config"));
+        assert!(is_name_like_query("error handler"));
+    }
+
+    #[test]
+    fn test_nl_query_with_indicators() {
+        assert!(!is_name_like_query("function that handles errors"));
+        assert!(!is_name_like_query("how does parsing work"));
+        assert!(!is_name_like_query("find error handling code"));
+        assert!(!is_name_like_query("code that implements retry logic"));
+    }
+
+    #[test]
+    fn test_nl_query_all_lowercase_3_plus_words() {
+        assert!(!is_name_like_query("error handling retry"));
+    }
+
+    #[test]
+    fn test_name_like_snake_case_multi() {
+        // snake_case with 3+ words is still name-like
+        assert!(is_name_like_query("handle_error_retry"));
     }
 
     // ===== build_filter_sql tests =====

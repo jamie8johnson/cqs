@@ -38,7 +38,13 @@ fn emit_empty_results(query: &str, json: bool, context: Option<&str>) -> ! {
 
 /// Execute a semantic search query and display results
 pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
-    let _span = tracing::info_span!("cmd_query", query_len = query.len()).entered();
+    let query_preview = if query.len() > 200 {
+        &query[..200]
+    } else {
+        query
+    };
+    let _span =
+        tracing::info_span!("cmd_query", query_len = query.len(), query = %query_preview).entered();
 
     let (store, root, cqs_dir) = crate::cli::open_project_store()?;
 
@@ -74,9 +80,12 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let chunk_types = match &cli.chunk_type {
         Some(types) => {
             let parsed: Result<Vec<ChunkType>, _> = types.iter().map(|t| t.parse()).collect();
-            Some(parsed.context(
-                "Invalid chunk type. Valid: function, method, class, struct, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, typealias",
-            )?)
+            Some(parsed.with_context(|| {
+                format!(
+                    "Invalid chunk type. Valid: {}",
+                    ChunkType::valid_names().join(", ")
+                )
+            })?)
         }
         None => None,
     };
@@ -112,26 +121,48 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         );
     }
 
-    // Load vector index for O(log n) search
-    let index = crate::cli::build_vector_index(&store, &cqs_dir)?;
+    cmd_query_project(
+        cli,
+        query,
+        &query_embedding,
+        &filter,
+        &store,
+        &cqs_dir,
+        &root,
+        &embedder,
+        effective_limit,
+    )
+}
 
-    // Check audit mode for note exclusion
-    let audit_mode = cqs::audit::load_audit_state(&cqs_dir);
+/// Project search: search project index (+ references if configured), post-process, display.
+#[allow(clippy::too_many_arguments)]
+fn cmd_query_project(
+    cli: &Cli,
+    query: &str,
+    query_embedding: &Embedding,
+    filter: &SearchFilter,
+    store: &Store,
+    cqs_dir: &std::path::Path,
+    root: &std::path::Path,
+    embedder: &Embedder,
+    effective_limit: usize,
+) -> Result<()> {
+    let index = crate::cli::build_vector_index(store, cqs_dir)?;
+
+    let audit_mode = cqs::audit::load_audit_state(cqs_dir);
     if audit_mode.is_active() && cli.note_only {
         bail!("--note-only is unavailable during audit mode");
     }
 
-    // Use unified search, or code-only if audit mode active
     let search_limit = if cli.pattern.is_some() {
         effective_limit * 3
     } else {
         effective_limit
     };
     let results = if audit_mode.is_active() {
-        // Audit mode: search code only, skip notes
         let code_results = store.search_filtered_with_index(
-            &query_embedding,
-            &filter,
+            query_embedding,
+            filter,
             search_limit,
             cli.threshold,
             index.as_deref(),
@@ -139,19 +170,15 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         code_results.into_iter().map(UnifiedResult::Code).collect()
     } else {
         store.search_unified_with_index(
-            &query_embedding,
-            &filter,
+            query_embedding,
+            filter,
             search_limit,
             cli.threshold,
             index.as_deref(),
         )?
     };
 
-    // Load references for multi-index search
-    let config = cqs::config::Config::load(&root);
-    let references = reference::load_references(&config.references);
-
-    // Parse pattern filter if specified
+    // Pattern filter
     let pattern: Option<Pattern> = cli
         .pattern
         .as_ref()
@@ -159,7 +186,6 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         .transpose()
         .context("Invalid pattern")?;
 
-    // Apply structural pattern filter if specified
     let results = if let Some(ref pat) = pattern {
         let mut filtered: Vec<UnifiedResult> = results
             .into_iter()
@@ -167,7 +193,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
                 UnifiedResult::Code(sr) => {
                     pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
                 }
-                UnifiedResult::Note(_) => false, // Pattern filter only applies to code
+                UnifiedResult::Note(_) => false,
             })
             .collect();
         filtered.truncate(cli.limit);
@@ -176,21 +202,21 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         results
     };
 
-    // Cross-encoder re-ranking (no-ref path only)
+    // Cross-encoder re-ranking
     let results = if cli.rerank {
         rerank_unified(query, results, cli.limit)?
     } else {
         results
     };
 
-    // Token-budget packing for unified results (no-ref path)
+    // Token-budget packing
     let json_overhead = json_overhead_for(cli);
     let (results, token_info) = if let Some(budget) = cli.tokens {
         token_pack_results(
             results,
             budget,
             json_overhead,
-            &embedder,
+            embedder,
             unified_text,
             unified_score,
             "query",
@@ -199,15 +225,15 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         (results, None)
     };
 
-    // Resolve parent context if --expand requested
+    // Parent context
     let parents = if cli.expand {
-        resolve_parent_context(&results, &store, &root)
+        resolve_parent_context(&results, store, root)
     } else {
         HashMap::new()
     };
     let parents_ref = if cli.expand { Some(&parents) } else { None };
 
-    // Proactive staleness warning (stderr, doesn't pollute JSON)
+    // Staleness warning
     if !cli.quiet && !cli.no_stale_check {
         let origins: Vec<&str> = results
             .iter()
@@ -219,22 +245,24 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
             .into_iter()
             .collect();
         if !origins.is_empty() {
-            staleness::warn_stale_results(&store, &origins, &root);
+            staleness::warn_stale_results(store, &origins, root);
         }
     }
 
-    // Fast path: no references configured
+    // Load references for multi-index search
+    let config = cqs::config::Config::load(root);
+    let references = reference::load_references(&config.references);
+
     if references.is_empty() {
         if results.is_empty() {
             emit_empty_results(query, cli.json, None);
         }
-
         if cli.json {
             display::display_unified_results_json(&results, query, parents_ref, token_info)?;
         } else {
             display::display_unified_results(
                 &results,
-                &root,
+                root,
                 cli.no_content,
                 cli.context,
                 parents_ref,
@@ -243,25 +271,22 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Multi-index search: reranking not supported (score scales incompatible)
     if cli.rerank {
-        eprintln!(
-            "Warning: --rerank is not supported with multi-index search. Skipping re-ranking."
-        );
+        tracing::warn!("--rerank is not supported with multi-index search, skipping re-ranking");
     }
 
-    // Multi-index search: search references in parallel
+    // Multi-index search
     use rayon::prelude::*;
     let ref_results: Vec<_> = references
         .par_iter()
         .filter_map(|ref_idx| {
             match reference::search_reference(
                 ref_idx,
-                &query_embedding,
-                &filter,
+                query_embedding,
+                filter,
                 cli.limit,
                 cli.threshold,
-                true, // apply weight for multi-index merged search
+                true,
             ) {
                 Ok(r) if !r.is_empty() => Some((ref_idx.name.clone(), r)),
                 Err(e) => {
@@ -275,13 +300,12 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     let tagged = reference::merge_results(results, ref_results, cli.limit);
 
-    // Token-budget packing for tagged results (multi-ref path)
     let (tagged, token_info) = if let Some(budget) = cli.tokens {
         token_pack_results(
             tagged,
             budget,
             json_overhead,
-            &embedder,
+            embedder,
             |r| unified_text(&r.result),
             |r| unified_score(&r.result),
             "tagged",
@@ -297,7 +321,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     if cli.json {
         display::display_tagged_results_json(&tagged, query, parents_ref, token_info)?;
     } else {
-        display::display_tagged_results(&tagged, &root, cli.no_content, cli.context, parents_ref)?;
+        display::display_tagged_results(&tagged, root, cli.no_content, cli.context, parents_ref)?;
     }
 
     Ok(())

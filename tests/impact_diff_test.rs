@@ -69,7 +69,7 @@ fn test_map_hunks_to_functions() {
 
     // Hunk at lines 15-17 overlaps foo (10-20)
     let hunks = vec![DiffHunk {
-        file: "src/lib.rs".to_string(),
+        file: PathBuf::from("src/lib.rs"),
         start: 15,
         count: 3,
     }];
@@ -90,7 +90,7 @@ fn test_map_hunks_no_overlap() {
 
     // Hunk at lines 22-28 — between foo and bar
     let hunks = vec![DiffHunk {
-        file: "src/lib.rs".to_string(),
+        file: PathBuf::from("src/lib.rs"),
         start: 22,
         count: 7,
     }];
@@ -107,7 +107,7 @@ fn test_map_hunks_partial_overlap() {
 
     // Hunk starts at line 10 (first line of foo)
     let hunks = vec![DiffHunk {
-        file: "src/lib.rs".to_string(),
+        file: PathBuf::from("src/lib.rs"),
         start: 10,
         count: 1,
     }];
@@ -126,7 +126,7 @@ fn test_map_hunks_boundary_off_by_one() {
 
     // Hunk covers lines [8, 10) — exclusive end at 10 means it doesn't touch foo
     let hunks = vec![DiffHunk {
-        file: "src/lib.rs".to_string(),
+        file: PathBuf::from("src/lib.rs"),
         start: 8,
         count: 2, // lines 8, 9 — exclusive end at 10
     }];
@@ -144,7 +144,7 @@ fn test_map_hunks_non_indexed_file() {
     // No chunks in the store for this file
 
     let hunks = vec![DiffHunk {
-        file: "src/unknown.rs".to_string(),
+        file: PathBuf::from("src/unknown.rs"),
         start: 1,
         count: 10,
     }];
@@ -185,12 +185,12 @@ fn test_diff_impact_aggregation() {
         &store,
         &[
             DiffHunk {
-                file: "src/lib.rs".to_string(),
+                file: PathBuf::from("src/lib.rs"),
                 start: 15,
                 count: 1,
             },
             DiffHunk {
-                file: "src/lib.rs".to_string(),
+                file: PathBuf::from("src/lib.rs"),
                 start: 35,
                 count: 1,
             },
@@ -314,7 +314,7 @@ fn test_diff_impact_all_tests_populated() {
 
     let changed = vec![ChangedFunction {
         name: "changed_fn".to_string(),
-        file: "src/lib.rs".to_string(),
+        file: PathBuf::from("src/lib.rs"),
         line_start: 10,
     }];
 
@@ -379,12 +379,12 @@ fn test_diff_impact_via_attribution_multiple_functions() {
     let changed = vec![
         ChangedFunction {
             name: "fn_alpha".to_string(),
-            file: "src/lib.rs".to_string(),
+            file: PathBuf::from("src/lib.rs"),
             line_start: 10,
         },
         ChangedFunction {
             name: "fn_beta".to_string(),
-            file: "src/lib.rs".to_string(),
+            file: PathBuf::from("src/lib.rs"),
             line_start: 30,
         },
     ];
@@ -446,12 +446,12 @@ fn test_diff_impact_shared_test_via_minimum_depth() {
     let changed = vec![
         ChangedFunction {
             name: "fn_close".to_string(),
-            file: "src/lib.rs".to_string(),
+            file: PathBuf::from("src/lib.rs"),
             line_start: 10,
         },
         ChangedFunction {
             name: "fn_far".to_string(),
-            file: "src/lib.rs".to_string(),
+            file: PathBuf::from("src/lib.rs"),
             line_start: 30,
         },
     ];

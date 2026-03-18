@@ -52,6 +52,25 @@ const IDLE_TIMEOUT_MINUTES: u64 = 5;
 /// The CAGRA/HNSW index is held for the full session lifetime; this is
 /// intentional. Rebuilding between commands would add seconds of latency.
 /// VRAM cost: ~3 KB per vector (769-dim × 4 bytes), so 100k chunks ≈ 300 MB.
+///
+/// # Cache invalidation
+///
+/// ONNX sessions (embedder, reranker) are cleared after `IDLE_TIMEOUT_MINUTES`
+/// of inactivity to free memory, and re-initialized lazily on next use.
+///
+/// The remaining caches (call graph, test chunks, file set, notes, config) are
+/// **never cleared during a session**. This is a deliberate trade-off:
+/// - Batch sessions are typically short-lived (a single pipeline invocation or
+///   a bounded interactive session).
+/// - Re-reading the SQLite call graph or scanning the file system on every
+///   command would add latency with no correctness benefit for the common case.
+/// - If the index changes mid-session (e.g. `cqs index` runs concurrently),
+///   cached data may be stale. The correct remedy is to restart the batch
+///   session, which re-opens the Store and re-initializes all caches.
+///
+/// There is no `clear_caches()` method because `OnceLock` cannot be reset after
+/// it has been set. To force cache invalidation, discard the `BatchContext` and
+/// call `create_context()` again.
 pub(crate) struct BatchContext {
     pub store: Store,
     embedder: OnceLock<Embedder>,
@@ -64,7 +83,9 @@ pub(crate) struct BatchContext {
     // Intentionally never invalidated — notes/audit state fixed for session duration
     audit_state: OnceLock<cqs::audit::AuditMode>,
     notes_cache: OnceLock<Vec<cqs::note::Note>>,
+    // Intentionally never cleared — see struct-level doc comment on cache invalidation
     call_graph: OnceLock<cqs::store::CallGraph>,
+    // Intentionally never cleared — see struct-level doc comment on cache invalidation
     test_chunks: OnceLock<Vec<cqs::store::ChunkSummary>>,
     config: OnceLock<cqs::config::Config>,
     reranker: OnceLock<cqs::Reranker>,
@@ -123,7 +144,7 @@ impl BatchContext {
             return Ok(idx.as_deref());
         }
         let _span = tracing::info_span!("batch_vector_index_init").entered();
-        let idx = build_vector_index(&self.store, &self.cqs_dir)?;
+        let idx = build_vector_index(&self.store, &self.cqs_dir, self.config().ef_search)?;
         let _ = self.hnsw.set(idx);
         Ok(self
             .hnsw
@@ -276,8 +297,9 @@ impl BatchContext {
 fn build_vector_index(
     store: &Store,
     cqs_dir: &std::path::Path,
+    ef_search: Option<usize>,
 ) -> Result<Option<Box<dyn VectorIndex>>> {
-    crate::cli::build_vector_index(store, cqs_dir)
+    crate::cli::build_vector_index_with_config(store, cqs_dir, ef_search)
 }
 
 // ─── JSON serialization helpers ──────────────────────────────────────────────
@@ -367,9 +389,10 @@ pub(crate) fn cmd_batch() -> Result<()> {
     let mut stdout = std::io::stdout();
     let mut reader = std::io::BufReader::new(stdin.lock());
 
-    // SEC-1: Use bounded read_line instead of BufRead::lines() to prevent OOM
-    // on huge single-line input. read_line allocates incrementally (8KB chunks)
-    // but we enforce MAX_BATCH_LINE_LEN before processing.
+    // SEC-1: read_line allocates incrementally (8KB chunks) until newline or EOF.
+    // A multi-GB line without newlines could OOM before the post-hoc check below.
+    // Accepted risk: batch input is from a controlling process (AI agent or pipe),
+    // not from untrusted network input. The 1MB check prevents processing, not allocation.
     let mut line = String::new();
     loop {
         line.clear();
@@ -382,9 +405,7 @@ pub(crate) fn cmd_batch() -> Result<()> {
             }
         };
 
-        // Reject lines exceeding 1MB to prevent unbounded memory allocation.
-        // read_line may have allocated up to this size already, but further
-        // processing (parsing, cloning) is prevented.
+        // Reject lines exceeding 1MB to prevent further processing.
         if line.len() > MAX_BATCH_LINE_LEN {
             ctx.error_count.fetch_add(1, Ordering::Relaxed);
             // Hardcoded JSON — no serialization needed, no NaN risk

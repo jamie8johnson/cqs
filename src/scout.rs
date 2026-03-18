@@ -13,6 +13,7 @@ use crate::{normalize_slashes, AnalysisError, Embedder, Store};
 
 /// Role classification for chunks in scout results
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ChunkRole {
     /// High-relevance function likely needing modification (score >= 0.5)
     ModifyTarget,
@@ -80,7 +81,6 @@ pub struct ScoutSummary {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScoutResult {
     pub file_groups: Vec<FileGroup>,
-    #[serde(skip)]
     pub relevant_notes: Vec<NoteSummary>,
     pub summary: ScoutSummary,
 }
@@ -159,35 +159,6 @@ pub fn scout_with_options(
         opts,
         &graph,
         &test_chunks,
-    )
-}
-
-/// Like [`scout_with_options`] but accepts pre-loaded call graph and test chunks.
-///
-/// Use when the caller already has these resources (e.g., batch mode where
-/// `BatchContext` caches them across commands).
-#[allow(clippy::too_many_arguments)]
-pub fn scout_with_resources(
-    store: &Store,
-    embedder: &Embedder,
-    task: &str,
-    root: &Path,
-    limit: usize,
-    opts: &ScoutOptions,
-    graph: &crate::store::CallGraph,
-    test_chunks: &[crate::store::ChunkSummary],
-) -> Result<ScoutResult, AnalysisError> {
-    let _span = tracing::info_span!("scout_with_resources", task_len = task.len(), limit).entered();
-    let query_embedding = embedder.embed_query(task)?;
-    scout_core(
-        store,
-        &query_embedding,
-        task,
-        root,
-        limit,
-        opts,
-        graph,
-        test_chunks,
     )
 }
 
@@ -573,6 +544,9 @@ mod tests {
                 line_start: 1,
                 line_end: 10,
                 parent_id: None,
+                parent_type_name: None,
+                content_hash: String::new(),
+                window_idx: None,
             },
             score,
         }

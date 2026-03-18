@@ -36,7 +36,7 @@ cqs runs entirely locally. No telemetry, no external API calls during operation.
 
 The only network activity is:
 
-- **Model download** (`cqs init`): Downloads ~440MB model from HuggingFace Hub
+- **Model download** (`cqs init`): Downloads ~547MB model from HuggingFace Hub
   - Source: `huggingface.co/intfloat/e5-base-v2`
   - One-time download, cached in `~/.cache/huggingface/`
 
@@ -68,6 +68,7 @@ No other network requests are made. Search, indexing, and all other operations a
 | `.cqs/index.db` | SQLite database | `cqs index`, note operations |
 | `.cqs/index.hnsw.*` | Vector index + checksums | `cqs index` |
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
+| `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 
