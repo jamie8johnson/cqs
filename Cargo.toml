@@ -141,7 +141,7 @@ self_cell = "1"
 rustyline = "17"
 
 # LLM summaries (optional — for SQ-6 API calls to Claude)
-reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+reqwest = { version = "0.13", features = ["json", "blocking"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
