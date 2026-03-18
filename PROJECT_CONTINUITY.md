@@ -2,34 +2,31 @@
 
 ## Right Now
 
-**Clean main, moving to A6000 machine for SQ-7 (2026-03-17).** Build artifacts cleaned.
+**A6000 machine sync + bug fixes (2026-03-18).** Synced from other machine (v0.28.3→v1.0.13), found and fixed 4 bugs.
 
-### Done this session (2026-03-16)
-- v1.0.11: RT-DATA-2/4/6 data integrity fixes + #555 where_to_add 43 languages
-- v1.0.12: `cqs plan` command — 11 task-type templates
-- v1.0.13: SQ-6 LLM summaries (schema v14, Batches API, cached by content_hash)
-- PR #605: Batches API + llm-summaries in default features
-- PR #606: Stress eval A/B results
+### Done this session (2026-03-18)
+- Synced 39 commits from other machine (v0.28.3→v1.0.13)
+- Fixed ORT CUDA provider path resolution (dladdr returns argv[0] on glibc, ORT falls back to CWD)
+- Fixed ORT 1.23.2/1.24.2 version mismatch SIGSEGV (stale cache, updated LD_LIBRARY_PATH)
+- Fixed CAGRA use-after-free on shape pointers (host ndarrays dropped while device tensors referenced them)
+- Fixed LLM batch resume on interrupt (persist batch_id in SQLite metadata, resume polling on restart)
+- Ran LLM summaries on A6000: 2638 API + 4556 doc-comment = 7194 total, 4088 unique stored
+- Added ANTHROPIC_API_KEY to ~/.bashrc
+- All tests pass: 1650 pass, 0 fail
 
-### SQ-6 eval results (CRITICAL for SQ-7 planning)
-- Fixture eval baseline: 85.5% R@1, 0.914 MRR (ceiling-bound, no room)
-- Stress eval baseline (no summaries, 3727 chunks): R@1 58.0%, MRR 0.653
-- Stress eval WITH SQ-6 (3727 chunks): R@1 55.9%, MRR 0.630 (**-2.1pp, -0.023**)
-- Python MRR: 0.457 → 0.300 (-0.157). TS/JS improved slightly.
-- Rust MRR: 0.000 in both cases
-- **Verdict: E5-base-v2 treats summaries same as prose. SQ-7 (LoRA) is the fix.**
-- SQ-6 + SQ-7 expected to outperform SQ-7 alone (richer NL + trained discrimination)
-
-### Key decisions made
-- Dirty flag over generation counter for RT-DATA-6
-- Batches API over sequential calls for SQ-6 (Tier 1 = 50 RPM, too low for sequential)
-- Doc comment shortcut: skip API for documented functions
-- enrichment_hash extended to include summary (no new column)
-- llm-summaries is default feature now (reqwest always compiled)
+### Uncommitted changes
+- `src/embedder.rs`: ORT provider symlink fix (ort_runtime_search_dir + atexit cleanup)
+- `src/cagra.rs`: Shape pointer lifetime fix (host arrays same scope as device tensors)
+- `src/llm.rs`: Batch resume (check_batch_status, resume_or_fetch_batch, pending batch logic)
+- `src/store/mod.rs`: set_pending_batch_id / get_pending_batch_id
+- `.gitignore`: libonnxruntime_providers_*.so pattern
+- `.cargo/config.toml`: unchanged (reverted -rdynamic)
+- `ROADMAP.md`: SQ-6 marked done with batch resume
+- Plus 70+ files from merge with origin/main
 
 ## Pending Changes
 
-None. Clean main.
+Uncommitted fixes above — need branch + PR.
 
 ## Parked
 
@@ -56,16 +53,17 @@ None. Clean main.
 
 ## Architecture
 
-- Version: 1.0.13
+- Version: 1.0.13 (with local fixes, not yet released)
 - MSRV: 1.93
 - Schema: v14 (llm_summaries table)
 - 769-dim embeddings (768 E5-base-v2 + 1 sentiment)
 - HNSW index: chunks only
 - 51 languages, 16 ChunkType variants
-- Tests: 1095 lib pass
-- SQ-6: LLM summaries via Claude Batches API, cached by content_hash
+- Tests: 1650 pass (with gpu-index)
+- ORT: 1.24.2 (ort crate 2.0.0-rc.12)
+- SQ-6: LLM summaries via Claude Batches API, cached by content_hash, batch resume on interrupt
 - `cqs plan` command: 11 task-type templates
-- CUDA: 13 (cuVS) + 12 (ORT) symlinked into conda lib dir
+- CUDA: 13 (cuVS) + 12 (ORT, at /usr/local/cuda-12/)
 - Release targets: Linux x86_64, macOS ARM64, Windows x86_64
 - Notes: 122 indexed
 - Red team: 21+ protections verified, 10 findings fixed, 2 deferred

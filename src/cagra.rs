@@ -201,48 +201,64 @@ impl CagraIndex {
         //   - 128 minimum ensures enough candidates for the graph search
         // Trade-off: larger itopk_size = better recall, more GPU memory/compute
         let itopk_size = (k * 2).max(128);
-        // Before consuming the index, create a scope where errors can restore it.
-        // Once we call index.search(), we rely on IndexRebuilder to restore it.
-        // This block handles errors that occur BEFORE the index is consumed.
-        let (search_params, query_device, neighbors_device, distances_device) = {
-            let search_params = match cuvs::cagra::SearchParams::new() {
-                Ok(params) => params.set_itopk_size(itopk_size),
-                Err(e) => {
-                    tracing::error!("Failed to create search params: {}", e);
-                    // Put index back
-                    let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                        tracing::debug!("CAGRA index mutex poisoned, recovering");
-                        poisoned.into_inner()
-                    });
-                    *guard = Some(index);
-                    return Vec::new();
-                }
-            };
 
-            // Prepare query as 2D array (1 query x EMBEDDING_DIM)
-            let query_host =
-                match Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec()) {
-                    Ok(arr) => arr,
-                    Err(e) => {
-                        tracing::error!(
-                            "Invalid query shape (expected {} dims): {}",
-                            EMBEDDING_DIM,
-                            e
-                        );
-                        let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                            tracing::debug!("CAGRA index mutex poisoned, recovering");
-                            poisoned.into_inner()
-                        });
-                        *guard = Some(index);
-                        return Vec::new();
-                    }
-                };
+        let search_params = match cuvs::cagra::SearchParams::new() {
+            Ok(params) => params.set_itopk_size(itopk_size),
+            Err(e) => {
+                tracing::error!("Failed to create search params: {}", e);
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::debug!("CAGRA index mutex poisoned, recovering");
+                    poisoned.into_inner()
+                });
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
 
-            // Copy query to device
-            let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
+        // Prepare query as 2D array (1 query x EMBEDDING_DIM)
+        let query_host = match Array2::from_shape_vec((1, EMBEDDING_DIM), query.as_slice().to_vec())
+        {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!(
+                    "Invalid query shape (expected {} dims): {}",
+                    EMBEDDING_DIM,
+                    e
+                );
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::debug!("CAGRA index mutex poisoned, recovering");
+                    poisoned.into_inner()
+                });
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        // IMPORTANT: host arrays must outlive device tensors — ManagedTensor::to_device()
+        // copies data to GPU but the DLTensor shape pointer still references the host
+        // ndarray's internal shape storage. Dropping the host array = dangling shape pointer.
+        let neighbors_host: Array2<u32> = Array2::zeros((1, k));
+        let distances_host: Array2<f32> = Array2::zeros((1, k));
+
+        // Copy to device (shape pointers reference host arrays above)
+        let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("Failed to copy query to device: {}", e);
+                let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                    tracing::debug!("CAGRA index mutex poisoned, recovering");
+                    poisoned.into_inner()
+                });
+                *guard = Some(index);
+                return Vec::new();
+            }
+        };
+
+        let neighbors_device =
+            match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
                 Ok(t) => t,
                 Err(e) => {
-                    tracing::error!("Failed to copy query to device: {}", e);
+                    tracing::error!("Failed to allocate neighbors on device: {}", e);
                     let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
                         tracing::debug!("CAGRA index mutex poisoned, recovering");
                         poisoned.into_inner()
@@ -252,45 +268,19 @@ impl CagraIndex {
                 }
             };
 
-            // Prepare output buffers on host, then copy to device
-            let neighbors_host: Array2<u32> = Array2::zeros((1, k));
-            let distances_host: Array2<f32> = Array2::zeros((1, k));
-
-            let neighbors_device =
-                match cuvs::ManagedTensor::from(&neighbors_host).to_device(&resources) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::error!("Failed to allocate neighbors on device: {}", e);
-                        let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                            tracing::debug!("CAGRA index mutex poisoned, recovering");
-                            poisoned.into_inner()
-                        });
-                        *guard = Some(index);
-                        return Vec::new();
-                    }
-                };
-
-            let distances_device =
-                match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::error!("Failed to allocate distances on device: {}", e);
-                        let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
-                            tracing::debug!("CAGRA index mutex poisoned, recovering");
-                            poisoned.into_inner()
-                        });
-                        *guard = Some(index);
-                        return Vec::new();
-                    }
-                };
-
-            (
-                search_params,
-                query_device,
-                neighbors_device,
-                distances_device,
-            )
-        };
+        let distances_device =
+            match cuvs::ManagedTensor::from(&distances_host).to_device(&resources) {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::error!("Failed to allocate distances on device: {}", e);
+                    let mut guard = self.index.lock().unwrap_or_else(|poisoned| {
+                        tracing::debug!("CAGRA index mutex poisoned, recovering");
+                        poisoned.into_inner()
+                    });
+                    *guard = Some(index);
+                    return Vec::new();
+                }
+            };
 
         // Install RAII guard to rebuild index on all exit paths (including panics/early returns)
         let _rebuilder = IndexRebuilder {

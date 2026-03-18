@@ -107,16 +107,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "ort CUDA provider fails silently if libs not in LD_LIBRARY_PATH. No error - just falls back to CPU. The log shows 'Adding default CPU execution provider' instead of CUDA. Must include ~/.cache/ort.pyke.io/dfbin/.../  in LD_LIBRARY_PATH."
-mentions = [
-    "ort",
-    "CUDA",
-    "LD_LIBRARY_PATH",
-    "embedder.rs",
-]
-
-[[note]]
-sentiment = -0.5
 text = "Don't make up numbers. Git history is right there: `git log --reverse --format='%ai' | head -1`. Check facts instead of guessing."
 mentions = ["git"]
 
@@ -930,27 +920,11 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "CUDA 12+13 side-by-side: pip nvidia-cublas-cu12/cuda-runtime-cu12/cufft-cu12 in conda env, add to LD_LIBRARY_PATH. cuVS needs 13, ORT prebuilt needs 12. Both work."
-mentions = [
-    "embedder.rs",
-    ".bashrc",
-]
-
-[[note]]
 sentiment = -0.5
 text = "embed_documents() returns 768-dim but store expects 769 (768 + sentiment). Must call .with_sentiment(0.0) when using embed_documents for store updates."
 mentions = [
     "embedder.rs",
     "pipeline.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "CUDA 12 runtime loading fixed by symlinking pip CUDA 12 libs into conda lib dir. Cargo [env] LD_LIBRARY_PATH does NOT work for dlopen. rpath is the only reliable path."
-mentions = [
-    "config.toml",
-    "embedder.rs",
 ]
 
 [[note]]
@@ -1009,4 +983,36 @@ mentions = [
     "llm.rs",
     "nl.rs",
     "pipeline_eval.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "ORT CUDA provider path resolution: dladdr returns argv[0] on glibc static linking. ORT computes absolute(argv0).remove_filename() = CWD, not binary dir. Fix: compute same path via /proc/self/cmdline, symlink providers there."
+mentions = [
+    "embedder.rs",
+    "ort",
+]
+
+[[note]]
+sentiment = -1.0
+text = "CAGRA use-after-free: ManagedTensor::to_device copies shape pointer from host ndarray. If host array is dropped before search(), shape pointer dangles. Manifests as dimension mismatch error, not crash, because cuVS validates shapes."
+mentions = [
+    "cagra.rs",
+    "cuvs",
+]
+
+[[note]]
+sentiment = -1.0
+text = "ORT version mismatch between static .a (1.24.2) and provider .so (1.23.2) causes SIGSEGV in KernelDefBuilder::MayInplace. Always delete stale ORT cache dirs after ort crate updates."
+mentions = [
+    "embedder.rs",
+    "ort",
+]
+
+[[note]]
+sentiment = 0.5
+text = "LLM batch resume: persist batch_id in SQLite metadata. On restart, check status and resume polling instead of submitting duplicate. Prevents wasted API credits on interrupted indexing."
+mentions = [
+    "llm.rs",
+    "store",
 ]

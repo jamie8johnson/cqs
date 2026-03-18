@@ -170,6 +170,26 @@ impl Client {
         Ok(batch.id)
     }
 
+    /// Check the current status of a batch without polling.
+    fn check_batch_status(&self, batch_id: &str) -> Result<String> {
+        let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
+        let response = self
+            .http
+            .get(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .send()
+            .context("Failed to check batch status")?;
+
+        if !response.status().is_success() {
+            let body = response.text().unwrap_or_default();
+            bail!("Batch status check failed: {body}");
+        }
+
+        let batch: BatchResponse = response.json().context("Failed to parse batch status")?;
+        Ok(batch.processing_status)
+    }
+
     /// Poll until a batch completes. Returns when status is "ended".
     fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<()> {
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
@@ -275,6 +295,43 @@ impl Client {
         tracing::info!(batch_id, succeeded = results.len(), "Batch results fetched");
         Ok(results)
     }
+}
+
+/// Wait for a batch to complete, fetch results, store them, and clear the pending marker.
+fn resume_or_fetch_batch(
+    client: &Client,
+    store: &Store,
+    batch_id: &str,
+    quiet: bool,
+) -> Result<usize> {
+    client
+        .wait_for_batch(batch_id, quiet)
+        .context("Batch processing failed")?;
+
+    if !quiet {
+        eprintln!();
+    }
+
+    let results = client
+        .fetch_batch_results(batch_id)
+        .context("Failed to fetch batch results")?;
+
+    // Store API-generated summaries
+    let api_summaries: Vec<(String, String, String)> = results
+        .into_iter()
+        .map(|(hash, summary)| (hash, summary, MODEL.to_string()))
+        .collect();
+    let count = api_summaries.len();
+    if !api_summaries.is_empty() {
+        store
+            .upsert_summaries_batch(&api_summaries)
+            .context("Failed to store API summaries")?;
+    }
+
+    // Clear pending batch marker
+    store.set_pending_batch_id(None).ok();
+
+    Ok(count)
 }
 
 /// A summary entry ready for storage.
@@ -400,47 +457,68 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         );
     }
 
-    // Phase 2: Submit batch to Claude API
+    // Phase 2: Submit batch to Claude API (or resume a pending one)
     let api_generated = if batch_items.is_empty() {
-        0
+        // No new items needed, but check if a previous batch is still pending
+        if let Ok(Some(pending)) = store.get_pending_batch_id() {
+            if !quiet {
+                eprintln!("Resuming pending batch {}", pending);
+            }
+            resume_or_fetch_batch(&client, store, &pending, quiet)?
+        } else {
+            0
+        }
     } else {
-        if !quiet {
-            eprint!("Submitting batch of {} to Claude API", batch_items.len());
-        }
+        // Check for a pending batch from a previous interrupted run
+        let batch_id = if let Ok(Some(pending)) = store.get_pending_batch_id() {
+            // Verify it's still valid (not expired/canceled)
+            if !quiet {
+                eprint!("Found pending batch {}, checking status...", pending);
+            }
+            match client.check_batch_status(&pending) {
+                Ok(status) if status == "in_progress" || status == "finalizing" => {
+                    if !quiet {
+                        eprint!(" still processing, resuming\nWaiting for results");
+                    }
+                    pending
+                }
+                Ok(status) if status == "ended" => {
+                    if !quiet {
+                        eprintln!(" completed, fetching results");
+                    }
+                    pending
+                }
+                _ => {
+                    // Stale/failed batch — submit fresh
+                    if !quiet {
+                        eprintln!(" stale, submitting new batch");
+                        eprint!("Submitting batch of {} to Claude API", batch_items.len());
+                    }
+                    let id = client
+                        .submit_batch(&batch_items)
+                        .context("Failed to submit summary batch")?;
+                    store.set_pending_batch_id(Some(&id)).ok();
+                    if !quiet {
+                        eprint!(" (batch {})\nWaiting for results", id);
+                    }
+                    id
+                }
+            }
+        } else {
+            if !quiet {
+                eprint!("Submitting batch of {} to Claude API", batch_items.len());
+            }
+            let id = client
+                .submit_batch(&batch_items)
+                .context("Failed to submit summary batch")?;
+            store.set_pending_batch_id(Some(&id)).ok();
+            if !quiet {
+                eprint!(" (batch {})\nWaiting for results", id);
+            }
+            id
+        };
 
-        let batch_id = client
-            .submit_batch(&batch_items)
-            .context("Failed to submit summary batch")?;
-
-        if !quiet {
-            eprint!(" (batch {})\nWaiting for results", batch_id);
-        }
-
-        client
-            .wait_for_batch(&batch_id, quiet)
-            .context("Batch processing failed")?;
-
-        if !quiet {
-            eprintln!();
-        }
-
-        let results = client
-            .fetch_batch_results(&batch_id)
-            .context("Failed to fetch batch results")?;
-
-        // Store API-generated summaries
-        let api_summaries: Vec<(String, String, String)> = results
-            .into_iter()
-            .map(|(hash, summary)| (hash, summary, MODEL.to_string()))
-            .collect();
-        let count = api_summaries.len();
-        if !api_summaries.is_empty() {
-            store
-                .upsert_summaries_batch(&api_summaries)
-                .context("Failed to store API summaries")?;
-        }
-
-        count
+        resume_or_fetch_batch(&client, store, &batch_id, quiet)?
     };
 
     tracing::info!(

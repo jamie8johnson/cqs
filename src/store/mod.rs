@@ -790,6 +790,39 @@ impl Store {
         })
     }
 
+    /// Store a pending LLM batch ID so interrupted processes can resume polling.
+    pub fn set_pending_batch_id(&self, batch_id: Option<&str>) -> Result<(), StoreError> {
+        self.rt.block_on(async {
+            match batch_id {
+                Some(id) => {
+                    sqlx::query(
+                        "INSERT OR REPLACE INTO metadata (key, value) VALUES ('pending_llm_batch', ?1)",
+                    )
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                }
+                None => {
+                    sqlx::query("DELETE FROM metadata WHERE key = 'pending_llm_batch'")
+                        .execute(&self.pool)
+                        .await?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Get the pending LLM batch ID, if any.
+    pub fn get_pending_batch_id(&self) -> Result<Option<String>, StoreError> {
+        self.rt.block_on(async {
+            let row: Option<(String,)> =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'pending_llm_batch'")
+                    .fetch_optional(&self.pool)
+                    .await?;
+            Ok(row.map(|(v,)| v))
+        })
+    }
+
     /// Get cached notes summaries (loaded on first call, invalidated on mutation).
     ///
     /// Returns a cloned Vec rather than a slice reference to avoid holding the
