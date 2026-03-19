@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- CAGRA use-after-free on shape pointers — host ndarrays dropped while device tensors referenced them (#613)
+- ORT CUDA provider path resolution — dladdr returns argv[0] on glibc, ORT falls back to CWD (#613)
+- LLM batch resume on interrupt — persist batch_id in SQLite metadata, resume polling on restart (#613)
+
+### Changed
+- LLM summaries now use Batches API for throughput (no RPM limit, 50% discount) (#605)
+
 ## [1.0.13] - 2026-03-16
 
 ### Added

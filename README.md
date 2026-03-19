@@ -32,7 +32,7 @@ cargo install cqs
 
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
-cqs index --force  # Run after upgrading from older versions (current schema: v12)
+cqs index --force  # Run after upgrading from older versions (current schema: v14)
 ```
 
 ## Quick Start
