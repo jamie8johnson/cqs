@@ -358,7 +358,40 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
+    use crate::embedder::Embedding;
+    use crate::note::{Note, SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
+    use crate::store::helpers::ModelInfo;
+    use crate::store::Store;
+    use std::path::Path;
+
+    fn setup_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    fn mock_embedding(seed: f32) -> Embedding {
+        let mut v = vec![seed; 768];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v.push(0.0); // sentiment dimension
+        Embedding::new(v)
+    }
+
+    fn make_note(id: &str, text: &str, sentiment: f32) -> Note {
+        Note {
+            id: id.to_string(),
+            text: text.to_string(),
+            sentiment,
+            mentions: vec![],
+        }
+    }
 
     #[test]
     fn sentiment_thresholds_match_discrete_values() {
@@ -371,5 +404,186 @@ mod tests {
         // 0.5 counts as a pattern but 0 does not.
         assert!(SENTIMENT_POSITIVE_THRESHOLD > 0.0);
         assert!(SENTIMENT_POSITIVE_THRESHOLD < 0.5);
+    }
+
+    #[test]
+    fn test_replace_notes_replaces_not_appends() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/notes.toml");
+
+        // Insert 2 notes
+        let notes = vec![
+            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
+            (make_note("n2", "second", 0.0), mock_embedding(2.0)),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+        assert_eq!(store.note_count().unwrap(), 2);
+
+        // Replace with 1 note
+        let replacement = vec![(make_note("n3", "replacement", 0.0), mock_embedding(3.0))];
+        store
+            .replace_notes_for_file(&replacement, source, 200)
+            .unwrap();
+        assert_eq!(store.note_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_replace_notes_with_empty_deletes() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/notes.toml");
+
+        let notes = vec![
+            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
+            (make_note("n2", "second", 0.5), mock_embedding(2.0)),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+        assert_eq!(store.note_count().unwrap(), 2);
+
+        // Replace with empty
+        store.replace_notes_for_file(&[], source, 200).unwrap();
+        assert_eq!(store.note_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_notes_need_reindex_stale() {
+        let (store, dir) = setup_store();
+        // Create a real temp file so metadata() works
+        let notes_file = dir.path().join("notes.toml");
+        std::fs::write(&notes_file, "# empty").unwrap();
+
+        // Insert a note with an old mtime (0) so it's stale
+        let notes = vec![(make_note("n1", "old note", 0.0), mock_embedding(1.0))];
+        store.upsert_notes_batch(&notes, &notes_file, 0).unwrap();
+
+        // Should return Some(current_mtime) because stored mtime (0) < file mtime
+        let result = store.notes_need_reindex(&notes_file).unwrap();
+        assert!(
+            result.is_some(),
+            "Should need reindex when stored mtime is old"
+        );
+    }
+
+    #[test]
+    fn test_notes_need_reindex_current() {
+        let (store, dir) = setup_store();
+        let notes_file = dir.path().join("notes.toml");
+        std::fs::write(&notes_file, "# empty").unwrap();
+
+        // Get the file's actual mtime
+        let current_mtime = notes_file
+            .metadata()
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+
+        // Insert with the current mtime
+        let notes = vec![(make_note("n1", "current note", 0.0), mock_embedding(1.0))];
+        store
+            .upsert_notes_batch(&notes, &notes_file, current_mtime)
+            .unwrap();
+
+        // Should return None — no reindex needed
+        let result = store.notes_need_reindex(&notes_file).unwrap();
+        assert!(
+            result.is_none(),
+            "Should not need reindex when mtime matches"
+        );
+    }
+
+    #[test]
+    fn test_note_embeddings_roundtrip() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/notes.toml");
+
+        let notes = vec![
+            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
+            (make_note("n2", "second", 0.5), mock_embedding(2.0)),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+
+        let embeddings = store.note_embeddings().unwrap();
+        assert_eq!(embeddings.len(), 2);
+
+        // IDs must have "note:" prefix
+        for (id, emb) in &embeddings {
+            assert!(
+                id.starts_with("note:"),
+                "ID should have note: prefix, got {}",
+                id
+            );
+            assert_eq!(emb.as_slice().len(), 769, "Embedding should be 769-dim");
+        }
+    }
+
+    #[test]
+    fn test_note_count() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/notes.toml");
+
+        assert_eq!(store.note_count().unwrap(), 0);
+
+        let notes = vec![
+            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
+            (make_note("n2", "second", -0.5), mock_embedding(2.0)),
+            (make_note("n3", "third", 1.0), mock_embedding(3.0)),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+        assert_eq!(store.note_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn test_note_stats_sentiment() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/notes.toml");
+
+        // -1 = warning, 0 = neutral, 0.5 = pattern
+        let notes = vec![
+            (make_note("n1", "pain point", -1.0), mock_embedding(1.0)),
+            (make_note("n2", "neutral obs", 0.0), mock_embedding(2.0)),
+            (make_note("n3", "good pattern", 0.5), mock_embedding(3.0)),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+
+        let stats = store.note_stats().unwrap();
+        assert_eq!(stats.total, 3);
+        assert_eq!(stats.warnings, 1, "Only -1 should count as warning");
+        assert_eq!(stats.patterns, 1, "Only 0.5 should count as pattern");
+    }
+
+    #[test]
+    fn test_search_notes_sorted() {
+        let (store, _dir) = setup_store();
+        let source = Path::new("/tmp/notes.toml");
+
+        // Use distinct seeds so cosine similarities differ
+        let notes = vec![
+            (make_note("n1", "alpha", 0.0), mock_embedding(1.0)),
+            (make_note("n2", "beta", 0.0), mock_embedding(2.0)),
+            (make_note("n3", "gamma", 0.0), mock_embedding(3.0)),
+        ];
+        store.upsert_notes_batch(&notes, source, 100).unwrap();
+
+        // Search with a query close to seed 1.0
+        let query = mock_embedding(1.0);
+        let results = store.search_notes(&query, 10, 0.0).unwrap();
+
+        assert!(!results.is_empty(), "Should find at least one result");
+        // Verify descending score order
+        for w in results.windows(2) {
+            assert!(
+                w[0].score >= w[1].score,
+                "Results should be sorted descending by score: {} < {}",
+                w[0].score,
+                w[1].score
+            );
+        }
+        // The best match should be the note with the same seed
+        assert_eq!(
+            results[0].note.id, "n1",
+            "Closest embedding should rank first"
+        );
     }
 }
