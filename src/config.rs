@@ -369,13 +369,10 @@ pub fn add_reference_to_config(
         let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
         if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
-            return Err(ConfigError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "rename failed ({}), copy fallback failed: {}",
-                    rename_err, copy_err
-                ),
-            )));
+            return Err(ConfigError::Io(std::io::Error::other(format!(
+                "rename failed ({}), copy fallback failed: {}",
+                rename_err, copy_err
+            ))));
         }
         let _ = std::fs::remove_file(&tmp_path);
         if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
@@ -446,13 +443,10 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
             let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
             if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
                 let _ = std::fs::remove_file(&tmp_path);
-                return Err(ConfigError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!(
-                        "rename failed ({}), copy fallback failed: {}",
-                        rename_err, copy_err
-                    ),
-                )));
+                return Err(ConfigError::Io(std::io::Error::other(format!(
+                    "rename failed ({}), copy fallback failed: {}",
+                    rename_err, copy_err
+                ))));
             }
             let _ = std::fs::remove_file(&tmp_path);
             if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {

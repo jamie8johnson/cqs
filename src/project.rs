@@ -103,16 +103,13 @@ impl ProjectRegistry {
             if let Err(copy_err) = std::fs::copy(&tmp, &dest_tmp) {
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(&dest_tmp);
-                return Err(ProjectError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!(
-                        "rename {} -> {} failed ({}), copy fallback failed: {}",
-                        tmp.display(),
-                        path.display(),
-                        rename_err,
-                        copy_err
-                    ),
-                )));
+                return Err(ProjectError::Io(std::io::Error::other(format!(
+                    "rename {} -> {} failed ({}), copy fallback failed: {}",
+                    tmp.display(),
+                    path.display(),
+                    rename_err,
+                    copy_err
+                ))));
             }
             let _ = std::fs::remove_file(&tmp);
             if let Err(e) = std::fs::rename(&dest_tmp, &path) {

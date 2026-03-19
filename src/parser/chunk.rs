@@ -134,8 +134,7 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
             let is_boundary = |b: u8| b == b' ' || b == b'\n' || b == b'\t' || b == b'\r';
             let mut pos = None;
             for i in 0..bytes.len().saturating_sub(2) {
-                if bytes[i].to_ascii_uppercase() == b'A'
-                    && bytes[i + 1].to_ascii_uppercase() == b'S'
+                if bytes[i].eq_ignore_ascii_case(&b'A') && bytes[i + 1].eq_ignore_ascii_case(&b'S')
                 {
                     let left_ok = i == 0 || is_boundary(bytes[i - 1]);
                     let right_ok = i + 2 >= bytes.len() || is_boundary(bytes[i + 2]);
@@ -216,7 +215,7 @@ fn extract_name_fallback(content: &str) -> Option<String> {
         if let Some(pos) = bytes.windows(keyword.len()).position(|w| {
             w.iter()
                 .zip(keyword.iter())
-                .all(|(a, b)| a.to_ascii_uppercase() == *b)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
         }) {
             let after_keyword = pos + keyword.len();
             if after_keyword >= content.len() {
