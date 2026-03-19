@@ -371,15 +371,12 @@ mod tests {
         // Insert a note that mentions "gather.rs" (file mention)
         store
             .replace_notes_for_file(
-                &[(
-                    crate::note::Note {
-                        id: "note:gather".to_string(),
-                        text: "gather needs review".to_string(),
-                        sentiment: -0.5,
-                        mentions: vec!["gather.rs".to_string()],
-                    },
-                    crate::Embedding::new(vec![0.0; 769]),
-                )],
+                &[crate::note::Note {
+                    id: "note:gather".to_string(),
+                    text: "gather needs review".to_string(),
+                    sentiment: -0.5,
+                    mentions: vec!["gather.rs".to_string()],
+                }],
                 &dir.path().join("notes.toml"),
                 0,
             )
@@ -388,15 +385,12 @@ mod tests {
         // Insert a second note that mentions an unrelated file
         store
             .replace_notes_for_file(
-                &[(
-                    crate::note::Note {
-                        id: "note:other".to_string(),
-                        text: "unrelated note".to_string(),
-                        sentiment: 0.0,
-                        mentions: vec!["src/other.rs".to_string()],
-                    },
-                    crate::Embedding::new(vec![0.0; 769]),
-                )],
+                &[crate::note::Note {
+                    id: "note:other".to_string(),
+                    text: "unrelated note".to_string(),
+                    sentiment: 0.0,
+                    mentions: vec!["src/other.rs".to_string()],
+                }],
                 &dir.path().join("notes2.toml"),
                 0,
             )
@@ -441,15 +435,12 @@ mod tests {
         // Note mentions the directory "src/store"
         store
             .replace_notes_for_file(
-                &[(
-                    crate::note::Note {
-                        id: "note:store-dir".to_string(),
-                        text: "store module has schema issues".to_string(),
-                        sentiment: -0.5,
-                        mentions: vec!["src/store".to_string()],
-                    },
-                    crate::Embedding::new(vec![0.0; 769]),
-                )],
+                &[crate::note::Note {
+                    id: "note:store-dir".to_string(),
+                    text: "store module has schema issues".to_string(),
+                    sentiment: -0.5,
+                    mentions: vec!["src/store".to_string()],
+                }],
                 &dir.path().join("notes.toml"),
                 0,
             )
@@ -483,15 +474,12 @@ mod tests {
 
         store
             .replace_notes_for_file(
-                &[(
-                    crate::note::Note {
-                        id: "note:unrelated".to_string(),
-                        text: "unrelated note".to_string(),
-                        sentiment: 0.0,
-                        mentions: vec!["src/unrelated.rs".to_string()],
-                    },
-                    crate::Embedding::new(vec![0.0; 769]),
-                )],
+                &[crate::note::Note {
+                    id: "note:unrelated".to_string(),
+                    text: "unrelated note".to_string(),
+                    sentiment: 0.0,
+                    mentions: vec!["src/unrelated.rs".to_string()],
+                }],
                 &dir.path().join("notes.toml"),
                 0,
             )

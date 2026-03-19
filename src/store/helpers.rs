@@ -374,8 +374,8 @@ pub struct NoteSummary {
 
 /// A note search result with similarity score
 ///
-/// Used by `Store::search_notes()` for note-specific search.
 /// No longer surfaced in unified search results (SQ-9).
+/// `search_notes()` was removed; this type is retained for backward compatibility.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NoteSearchResult {
     /// The matching note

@@ -343,15 +343,12 @@ mod tests {
         // Insert a note with a mention of a nonexistent file
         store
             .replace_notes_for_file(
-                &[(
-                    crate::note::Note {
-                        id: "note:test1".to_string(),
-                        text: "test note".to_string(),
-                        sentiment: 0.0,
-                        mentions: vec!["src/nonexistent.rs".to_string()],
-                    },
-                    crate::Embedding::new(vec![0.0; 769]),
-                )],
+                &[crate::note::Note {
+                    id: "note:test1".to_string(),
+                    text: "test note".to_string(),
+                    sentiment: 0.0,
+                    mentions: vec!["src/nonexistent.rs".to_string()],
+                }],
                 &dir.path().join("notes.toml"),
                 0,
             )
@@ -371,15 +368,12 @@ mod tests {
         // Insert a note with no mentions
         store
             .replace_notes_for_file(
-                &[(
-                    crate::note::Note {
-                        id: "note:test2".to_string(),
-                        text: "no mentions here".to_string(),
-                        sentiment: 0.0,
-                        mentions: vec![],
-                    },
-                    crate::Embedding::new(vec![0.0; 769]),
-                )],
+                &[crate::note::Note {
+                    id: "note:test2".to_string(),
+                    text: "no mentions here".to_string(),
+                    sentiment: 0.0,
+                    mentions: vec![],
+                }],
                 &dir.path().join("notes.toml"),
                 0,
             )

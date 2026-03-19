@@ -1245,18 +1245,6 @@ mod tests {
 
     // ===== TC-16: cache invalidation =====
 
-    fn mock_embedding_769(seed: f32) -> crate::embedder::Embedding {
-        let mut v = vec![seed; 768];
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut v {
-                *x /= norm;
-            }
-        }
-        v.push(0.0); // sentiment dim
-        crate::embedder::Embedding::new(v)
-    }
-
     #[test]
     fn test_cached_notes_empty() {
         let (store, _dir) = setup_store();
@@ -1278,9 +1266,7 @@ mod tests {
             sentiment: 0.0,
             mentions: vec![],
         };
-        store
-            .upsert_notes_batch(&[(note1, mock_embedding_769(1.0))], &source, 100)
-            .unwrap();
+        store.upsert_notes_batch(&[note1], &source, 100).unwrap();
 
         // Populate cache
         let cached = store.cached_notes_summaries().unwrap();
@@ -1295,7 +1281,7 @@ mod tests {
             mentions: vec!["src/lib.rs".to_string()],
         };
         store
-            .replace_notes_for_file(&[(note2, mock_embedding_769(2.0))], &source, 200)
+            .replace_notes_for_file(&[note2], &source, 200)
             .unwrap();
 
         // Cache should reflect the replacement

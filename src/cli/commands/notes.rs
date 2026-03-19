@@ -5,7 +5,7 @@
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 
-use cqs::{parse_notes, rewrite_notes_file, Embedder, NoteEntry, NOTES_HEADER};
+use cqs::{parse_notes, rewrite_notes_file, NoteEntry, NOTES_HEADER};
 
 use crate::cli::{find_project_root, Cli};
 
@@ -107,16 +107,12 @@ fn reindex_notes_cli(root: &std::path::Path) -> (usize, Option<String>) {
     let notes_path = root.join("docs/notes.toml");
     match parse_notes(&notes_path) {
         Ok(notes) if !notes.is_empty() => {
-            let embedder = match Embedder::new() {
-                Ok(e) => e,
-                Err(e) => return (0, Some(format!("Failed to create embedder: {}", e))),
-            };
             let index_path = cqs::resolve_index_dir(root).join("index.db");
             let store = match cqs::Store::open(&index_path) {
                 Ok(s) => s,
                 Err(e) => return (0, Some(format!("Failed to open index: {}", e))),
             };
-            match cqs::index_notes(&notes, &notes_path, &embedder, &store) {
+            match cqs::index_notes(&notes, &notes_path, &store) {
                 Ok(count) => (count, None),
                 Err(e) => (0, Some(format!("Failed to index notes: {}", e))),
             }
