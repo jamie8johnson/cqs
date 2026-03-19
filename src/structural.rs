@@ -5,62 +5,69 @@
 
 use crate::language::Language;
 
-/// Known structural patterns
-#[derive(Debug, Clone, Copy)]
-pub enum Pattern {
-    Builder,
-    ErrorSwallow,
-    Async,
-    Mutex,
-    Unsafe,
-    Recursion,
+// ---------------------------------------------------------------------------
+// Macro: define_patterns!
+//
+// Generates from a single declaration table:
+//   - `Pattern` enum with Debug, Clone, Copy, PartialEq, Eq
+//   - `Display` impl (variant → name string)
+//   - `FromStr` impl (name string → variant, with optional aliases)
+//   - `Pattern::all_names()` — canonical names only
+//
+// Adding a pattern = one new line here. Display, FromStr, all_names() stay
+// in sync automatically. Behavioral methods (`matches`, per-pattern fns)
+// remain hand-written below.
+// ---------------------------------------------------------------------------
+macro_rules! define_patterns {
+    ( $( $variant:ident => $name:expr $(, aliases = [ $($alias:expr),* ])? ; )* ) => {
+        /// Known structural patterns
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Pattern {
+            $( $variant, )*
+        }
+
+        impl std::fmt::Display for Pattern {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( Pattern::$variant => write!(f, $name), )*
+                }
+            }
+        }
+
+        impl std::str::FromStr for Pattern {
+            type Err = anyhow::Error;
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                match s {
+                    $( $name => Ok(Pattern::$variant), )*
+                    $( $( $( $alias => Ok(Pattern::$variant), )* )? )*
+                    _ => anyhow::bail!(
+                        "Unknown pattern '{}'. Valid: {}",
+                        s,
+                        Self::all_names().join(", ")
+                    ),
+                }
+            }
+        }
+
+        impl Pattern {
+            /// All valid pattern names (for schema generation and validation)
+            pub fn all_names() -> &'static [&'static str] {
+                &[ $( $name, )* ]
+            }
+        }
+    };
 }
 
-impl std::str::FromStr for Pattern {
-    type Err = anyhow::Error;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "builder" => Ok(Self::Builder),
-            "error_swallow" | "error-swallow" => Ok(Self::ErrorSwallow),
-            "async" => Ok(Self::Async),
-            "mutex" => Ok(Self::Mutex),
-            "unsafe" => Ok(Self::Unsafe),
-            "recursion" => Ok(Self::Recursion),
-            _ => anyhow::bail!(
-                "Unknown pattern '{}'. Valid: {}",
-                s,
-                Self::all_names().join(", ")
-            ),
-        }
-    }
-}
-
-impl std::fmt::Display for Pattern {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Builder => write!(f, "builder"),
-            Self::ErrorSwallow => write!(f, "error_swallow"),
-            Self::Async => write!(f, "async"),
-            Self::Mutex => write!(f, "mutex"),
-            Self::Unsafe => write!(f, "unsafe"),
-            Self::Recursion => write!(f, "recursion"),
-        }
-    }
+define_patterns! {
+    Builder => "builder";
+    ErrorSwallow => "error_swallow", aliases = ["error-swallow"];
+    Async => "async";
+    Mutex => "mutex";
+    Unsafe => "unsafe";
+    Recursion => "recursion";
 }
 
 impl Pattern {
-    /// All valid pattern names (for schema generation and validation)
-    pub fn all_names() -> &'static [&'static str] {
-        &[
-            "builder",
-            "error_swallow",
-            "async",
-            "mutex",
-            "unsafe",
-            "recursion",
-        ]
-    }
-
     /// Check if a code chunk matches this pattern.
     ///
     /// If the language provides a specific structural matcher for this pattern

@@ -5,36 +5,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 // Re-export from language module (source of truth)
-pub use crate::language::{ChunkType, Language, SignatureStyle};
-
-/// Map a tree-sitter capture name to a `ChunkType`.
-///
-/// Single source of truth — used by chunk extraction, call graph, and injection.
-/// Returns `None` for unknown capture names (including non-chunk captures like `"name"`).
-///
-/// To test whether a capture corresponds to a chunk definition, use
-/// `capture_name_to_chunk_type(name).is_some()` instead of maintaining a
-/// separate list of valid names.
-pub fn capture_name_to_chunk_type(name: &str) -> Option<ChunkType> {
-    match name {
-        "function" => Some(ChunkType::Function),
-        "struct" => Some(ChunkType::Struct),
-        "class" => Some(ChunkType::Class),
-        "enum" => Some(ChunkType::Enum),
-        "trait" => Some(ChunkType::Trait),
-        "interface" => Some(ChunkType::Interface),
-        "const" => Some(ChunkType::Constant),
-        "section" => Some(ChunkType::Section),
-        "property" => Some(ChunkType::Property),
-        "delegate" => Some(ChunkType::Delegate),
-        "event" => Some(ChunkType::Event),
-        "module" => Some(ChunkType::Module),
-        "macro" => Some(ChunkType::Macro),
-        "object" => Some(ChunkType::Object),
-        "typealias" => Some(ChunkType::TypeAlias),
-        _ => None,
-    }
-}
+pub use crate::language::{capture_name_to_chunk_type, ChunkType, Language, SignatureStyle};
 
 /// Errors that can occur during code parsing
 #[derive(Error, Debug)]
