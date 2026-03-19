@@ -100,15 +100,15 @@ Date: 2026-03-18. 99 findings across 14 categories, 3 batches.
 | 6 | EX-11: Search scoring constants scattered across 3 files | Extensibility | search.rs, store/mod.rs, helpers.rs | |
 | 7 | DS-9: Watch mode Store never re-opened — OnceLock caches stale | Data Safety | watch.rs:135 | |
 | 8 | RM-18: BatchContext refs accumulate without eviction | Resource Mgmt | batch/mod.rs:79 | |
-| 9 | TC-8: LLM summary store functions zero tests | Test Coverage | store/chunks.rs:214 | |
-| 10 | TC-9: Schema migrations v12→v14 zero tests | Test Coverage | store/migrations.rs:134 | |
-| 11 | TC-10: `set_hnsw_dirty` / `is_hnsw_dirty` zero tests | Test Coverage | store/mod.rs:769 | |
-| 12 | TC-11: `chunks_paged` zero tests | Test Coverage | store/chunks.rs:1160 | |
-| 13 | TC-12: `extract_first_sentence` edge cases (URLs with periods) | Test Coverage | llm.rs:542 | |
-| 14 | TC-13: `Store::open_readonly` zero tests | Test Coverage | store/mod.rs:315 | |
-| 15 | TC-14: `watch.rs` zero tests (671 lines) | Test Coverage | cli/watch.rs | |
-| 16 | TC-15: Notes store 1 test / 8 functions | Test Coverage | store/notes.rs | |
-| 17 | TC-16: `cached_notes_summaries` cache invalidation untested | Test Coverage | store/mod.rs:831 | |
+| 9 | TC-8: LLM summary store functions zero tests | Test Coverage | store/chunks.rs:214 | ✅ 14 tests |
+| 10 | TC-9: Schema migrations v12→v14 zero tests | Test Coverage | store/migrations.rs:134 | ✅ 3 tests |
+| 11 | TC-10: `set_hnsw_dirty` / `is_hnsw_dirty` zero tests | Test Coverage | store/mod.rs:769 | ✅ 3 tests |
+| 12 | TC-11: `chunks_paged` zero tests | Test Coverage | store/chunks.rs:1160 | ✅ 4 tests |
+| 13 | TC-12: `extract_first_sentence` edge cases (URLs with periods) | Test Coverage | llm.rs:542 | ✅ 8 tests |
+| 14 | TC-13: `Store::open_readonly` zero tests | Test Coverage | store/mod.rs:315 | ✅ 3 tests |
+| 15 | TC-14: `watch.rs` zero tests (671 lines) | Test Coverage | cli/watch.rs | ✅ 4 tests |
+| 16 | TC-15: Notes store 1 test / 8 functions | Test Coverage | store/notes.rs | ✅ 8 tests |
+| 17 | TC-16: `cached_notes_summaries` cache invalidation untested | Test Coverage | store/mod.rs:831 | ✅ 2 tests |
 
 ## Summary
 

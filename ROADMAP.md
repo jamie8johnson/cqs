@@ -106,6 +106,13 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
 - [x] SQ-5: Module-level context in NL — filename stems with generic filter (11 stems: mod, index, lib, main, utils, helpers, common, types, config, constants, init). Regresses fixture eval ~3pp but improves real queries — shipped in v1.0.9.
 - [x] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy. Batch resume on interrupt (v1.0.14).
+- [ ] SQ-8: LLM doc comment generation — augment thin doc comments and generate docs for undocumented functions.
+  - **Augment existing:** Functions with thin docs (one-liner, param-list-only) get doc + body sent to Claude for an improved version.
+  - **Generate new:** Functions with `doc: None` get full doc comments generated from the function body.
+  - **Infrastructure:** Reuses `llm_summary_pass` paging, Batches API, content_hash caching. Different system prompt, higher `MAX_TOKENS` (500-1000 vs 100 for summaries). Separate model/source tag in `llm_summaries` to distinguish summary vs generated-doc.
+  - **CLI:** `cqs index --improve-docs` (separate from `--llm-summaries`). Default behavior: write generated comments back to source files. `--dry-run` to preview. `cqs read` shows generated docs as virtual comments when `--improve-docs` hasn't written back yet.
+  - **Prioritization:** `is_callable()` functions first, sorted by: no doc > thin doc > adequate doc. Use content length and doc/content ratio as heuristics.
+  - **Cost:** Higher than summaries (~5-10x output tokens). Batch API 50% discount helps. Cache by content_hash — pay once per function body.
 - [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
   - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
   - **LoRA:** Low-Rank Adaptation — freezes base weights, trains ~0.5-2M adapter params (vs 110M full). Adapter is ~10-50MB.
