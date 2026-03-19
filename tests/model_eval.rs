@@ -508,15 +508,8 @@ fn test_template_comparison() {
     eprintln!("Parsed {} chunks from fixtures\n", chunks.len());
 
     let templates = [
-        ("Standard (baseline)", NlTemplate::Standard),
-        ("NoPrefix", NlTemplate::NoPrefix),
-        ("BodyKeywords", NlTemplate::BodyKeywords),
         ("Compact", NlTemplate::Compact),
         ("DocFirst", NlTemplate::DocFirst),
-        ("V2 NoPrefix", NlTemplate::StandardV2NoPrefix),
-        ("V2 Fields", NlTemplate::StandardV2Fields),
-        ("V2 Keywords", NlTemplate::StandardV2Keywords),
-        ("V2 TruncDoc", NlTemplate::StandardV2TruncDoc),
     ];
 
     let mut all_results: EvalResults = Vec::new();
@@ -693,15 +686,8 @@ fn test_hard_template_comparison() {
     );
 
     let templates = [
-        ("Standard (baseline)", NlTemplate::Standard),
-        ("NoPrefix", NlTemplate::NoPrefix),
-        ("BodyKeywords", NlTemplate::BodyKeywords),
         ("Compact", NlTemplate::Compact),
         ("DocFirst", NlTemplate::DocFirst),
-        ("V2 NoPrefix", NlTemplate::StandardV2NoPrefix),
-        ("V2 Fields", NlTemplate::StandardV2Fields),
-        ("V2 Keywords", NlTemplate::StandardV2Keywords),
-        ("V2 TruncDoc", NlTemplate::StandardV2TruncDoc),
     ];
 
     // Store results: (name, recall@1, recall@5, mrr, ndcg@10)
@@ -801,26 +787,6 @@ fn test_hard_template_comparison() {
         );
     }
     eprintln!();
-
-    // Delta from baseline
-    if let Some((_, baseline_r1, _, baseline_mrr, baseline_ndcg)) = all_results.first() {
-        eprintln!("=== Delta from Standard baseline ===\n");
-        eprintln!(
-            "{:<25} {:>10} {:>10} {:>10}",
-            "Template", "dR@1", "dMRR", "dNDCG@10"
-        );
-        eprintln!("{}", "-".repeat(60));
-        for (name, r1, _, mrr, ndcg) in &all_results[1..] {
-            let dr1 = (r1 - baseline_r1) * 100.0;
-            let dmrr = mrr - baseline_mrr;
-            let dndcg = ndcg - baseline_ndcg;
-            eprintln!(
-                "{:<25} {:>+9.1}% {:>+10.4} {:>+10.4}",
-                name, dr1, dmrr, dndcg
-            );
-        }
-        eprintln!();
-    }
 }
 
 // ===== Hard eval - confusable functions =====

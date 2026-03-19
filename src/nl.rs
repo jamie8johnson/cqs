@@ -236,24 +236,10 @@ impl<'a> Iterator for TokenizeIdentifierIter<'a> {
 /// Template variants for NL description generation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NlTemplate {
-    /// Baseline eval template (not used in production): doc + "A {type} named {name}" + params + returns
-    Standard,
-    /// No structural prefix: doc + name + params + returns
-    NoPrefix,
-    /// Standard + body keywords extracted from function content
-    BodyKeywords,
-    /// No prefix + body keywords
+    /// No prefix + body keywords (production template)
     Compact,
     /// Doc-first: minimal metadata when doc exists, full template when missing
     DocFirst,
-    /// Experiment 3a: Standard but name without "A {type} named" prefix — just the name
-    StandardV2NoPrefix,
-    /// Experiment 3b: Standard + struct/enum field names from content
-    StandardV2Fields,
-    /// Experiment 3c: Standard + top-5 body keywords
-    StandardV2Keywords,
-    /// Experiment 3d: Standard but doc truncated to first sentence
-    StandardV2TruncDoc,
 }
 
 /// Call graph context for enriching NL descriptions.
@@ -416,15 +402,11 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
-    // Shared: doc comment — optionally truncated for StandardV2TruncDoc
+    // Shared: doc comment
     let has_doc = if let Some(ref doc) = chunk.doc {
         let doc_trimmed = doc.trim();
         if !doc_trimmed.is_empty() {
-            if template == NlTemplate::StandardV2TruncDoc {
-                parts.push(truncate_doc(doc_trimmed));
-            } else {
-                parts.push(doc_trimmed.to_string());
-            }
+            parts.push(doc_trimmed.to_string());
             true
         } else {
             false
@@ -435,10 +417,6 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
 
     // Shared: tokenized name
     let name_words = tokenize_identifier(&chunk.name).join(" ");
-
-    // Shared: type word — use ChunkType::human_name() which owns the multi-word mapping.
-    // TypeAlias → "type alias"; all other variants return their single-word Display string.
-    let type_word = chunk.chunk_type.human_name();
 
     // DocFirst: minimal metadata when doc exists
     if template == NlTemplate::DocFirst && has_doc {
@@ -454,23 +432,14 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
-    // Name line: with or without "A {type} named" prefix
-    match template {
-        NlTemplate::NoPrefix | NlTemplate::Compact | NlTemplate::StandardV2NoPrefix => {
-            parts.push(name_words);
-        }
-        _ => {
-            parts.push(format!("A {} named {}", type_word, name_words));
-        }
-    }
+    // Name line (no prefix)
+    parts.push(name_words);
 
-    // Struct/enum field names (StandardV2Fields + Compact)
-    if matches!(template, NlTemplate::StandardV2Fields | NlTemplate::Compact)
-        && matches!(
-            chunk.chunk_type,
-            ChunkType::Struct | ChunkType::Enum | ChunkType::Class
-        )
-    {
+    // Struct/enum field names
+    if matches!(
+        chunk.chunk_type,
+        ChunkType::Struct | ChunkType::Enum | ChunkType::Class
+    ) {
         let fields = extract_field_names(&chunk.content, chunk.language);
         if !fields.is_empty() {
             parts.push(format!("Fields: {}", fields.join(", ")));
@@ -521,20 +490,12 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
-    // Body keywords for variants that use them
-    if matches!(
-        template,
-        NlTemplate::BodyKeywords | NlTemplate::Compact | NlTemplate::StandardV2Keywords
-    ) {
+    // Body keywords
+    {
         let keywords = extract_body_keywords(&chunk.content, chunk.language);
         if !keywords.is_empty() {
-            // StandardV2Keywords caps at 5 keywords
-            let capped: Vec<&str> = if template == NlTemplate::StandardV2Keywords {
-                keywords.iter().take(5).map(|s| s.as_str()).collect()
-            } else {
-                keywords.iter().map(|s| s.as_str()).collect()
-            };
-            parts.push(format!("Uses: {}", capped.join(", ")));
+            let kw_strs: Vec<&str> = keywords.iter().map(|s| s.as_str()).collect();
+            parts.push(format!("Uses: {}", kw_strs.join(", ")));
         }
     }
 
@@ -718,27 +679,6 @@ fn extract_file_context(path: &std::path::Path) -> String {
         return String::new();
     }
     result.join(" ")
-}
-
-/// Truncate a doc comment to its first sentence (or 150 chars, whichever comes first).
-///
-/// Keeps the most informative part of the doc within the embedding token budget.
-fn truncate_doc(doc: &str) -> String {
-    // Find first sentence boundary: `. ` or `.\n` or just `.` at end
-    if let Some(pos) = doc.find(". ") {
-        return doc[..=pos].to_string();
-    }
-    if let Some(pos) = doc.find(".\n") {
-        return doc[..=pos].to_string();
-    }
-    // No sentence boundary — truncate at 150 chars
-    if doc.len() > 150 {
-        let boundary = doc.floor_char_boundary(150);
-        let boundary = doc[..boundary].rfind(' ').unwrap_or(boundary);
-        format!("{}...", &doc[..boundary])
-    } else {
-        doc.to_string()
-    }
 }
 
 /// Extract field/variant names from struct, enum, or class content.

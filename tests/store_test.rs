@@ -195,7 +195,7 @@ fn test_prune_missing() {
 }
 
 #[test]
-fn test_get_by_content_hash() {
+fn test_get_embeddings_by_hashes_single() {
     let store = TestStore::new();
 
     let content = "fn test() { 42 }";
@@ -204,12 +204,20 @@ fn test_get_by_content_hash() {
     store.upsert_chunk(&chunk, &embedding, Some(12345)).unwrap();
 
     // Should find embedding by content hash
-    let found = store.get_by_content_hash(&chunk.content_hash);
-    assert!(found.is_some());
+    let found = store
+        .get_embeddings_by_hashes(&[&chunk.content_hash])
+        .unwrap();
+    assert!(
+        found.contains_key(&chunk.content_hash),
+        "Should find embedding for existing content hash"
+    );
 
     // Should not find non-existent hash
-    let not_found = store.get_by_content_hash("nonexistent");
-    assert!(not_found.is_none());
+    let not_found = store.get_embeddings_by_hashes(&["nonexistent"]).unwrap();
+    assert!(
+        not_found.is_empty(),
+        "Should return empty map for non-existent hash"
+    );
 }
 
 #[test]
