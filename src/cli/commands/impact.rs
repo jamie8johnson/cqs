@@ -45,7 +45,7 @@ pub(crate) fn cmd_impact(
                 .map(|s| {
                     serde_json::json!({
                         "test_name": s.test_name,
-                        "suggested_file": s.suggested_file,
+                        "suggested_file": cqs::normalize_path(&s.suggested_file),
                         "for_function": s.for_function,
                         "pattern_source": s.pattern_source,
                         "inline": s.inline,
@@ -96,7 +96,10 @@ fn display_test_suggestions(suggestions: &[cqs::TestSuggestion]) {
             s.test_name,
             location.dimmed()
         );
-        println!("    {}", format!("in {}", s.suggested_file).dimmed());
+        println!(
+            "    {}",
+            format!("in {}", s.suggested_file.display()).dimmed()
+        );
         if !s.pattern_source.is_empty() {
             println!(
                 "    {}",

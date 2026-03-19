@@ -180,8 +180,8 @@ fn cmd_ref_list(cli: &Cli, json: bool) -> Result<()> {
                     .unwrap_or(0);
                 serde_json::json!({
                     "name": r.name,
-                    "path": crate::normalize_path(&r.path),
-                    "source": r.source.as_ref().map(|p| crate::normalize_path(p)),
+                    "path": cqs::normalize_path(&r.path),
+                    "source": r.source.as_ref().map(|p| cqs::normalize_path(p)),
                     "weight": r.weight,
                     "chunks": chunks,
                 })

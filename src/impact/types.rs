@@ -123,7 +123,8 @@ pub struct TestSuggestion {
     /// Suggested test function name
     pub test_name: String,
     /// Suggested file for the test
-    pub suggested_file: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
+    pub suggested_file: PathBuf,
     /// The untested function this test would cover
     pub for_function: String,
     /// Where the naming pattern came from (empty if default)

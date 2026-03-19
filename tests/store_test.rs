@@ -793,13 +793,13 @@ fn test_all_chunk_identities() {
 
     // Find chunk1 identity
     let id1 = identities.iter().find(|i| i.name == "fn1").unwrap();
-    assert_eq!(id1.origin, "test.rs");
+    assert_eq!(id1.file.to_string_lossy(), "test.rs");
     assert_eq!(id1.language, Language::Rust);
     assert_eq!(id1.line_start, 1);
 
     // Find chunk2 identity
     let id2 = identities.iter().find(|i| i.name == "fn2").unwrap();
-    assert_eq!(id2.origin, "other.rs");
+    assert_eq!(id2.file.to_string_lossy(), "other.rs");
     assert_eq!(id2.line_start, 10);
 }
 

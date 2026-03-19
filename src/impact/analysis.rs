@@ -345,9 +345,9 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
         let caller_file_str = normalize_path(&caller.file);
 
         let suggested_file = if has_inline_tests {
-            caller_file_str.to_string()
+            std::path::PathBuf::from(&caller_file_str)
         } else {
-            suggest_test_file(&caller_file_str)
+            std::path::PathBuf::from(suggest_test_file(&caller_file_str))
         };
 
         suggestions.push(TestSuggestion {

@@ -17,7 +17,7 @@ use crate::gather::{
     bfs_expand, fetch_and_assemble, GatherDirection, GatherOptions, GatheredChunk,
 };
 use crate::impact::{find_affected_tests_with_chunks, TestInfo, DEFAULT_MAX_TEST_SEARCH_DEPTH};
-use crate::language::ChunkType;
+use crate::language::{ChunkType, Language};
 use crate::parser::TypeEdgeKind;
 use crate::store::Store;
 use crate::{AnalysisError, Embedder};
@@ -54,7 +54,7 @@ pub struct OnboardEntry {
     pub file: PathBuf,
     pub line_start: u32,
     pub line_end: u32,
-    pub language: String,
+    pub language: Language,
     pub chunk_type: ChunkType,
     pub signature: String,
     pub content: String,
@@ -299,7 +299,7 @@ fn gathered_to_onboard(c: GatheredChunk) -> OnboardEntry {
         file: c.file,
         line_start: c.line_start,
         line_end: c.line_end,
-        language: c.language.to_string(),
+        language: c.language,
         chunk_type: c.chunk_type,
         signature: c.signature,
         content: c.content,
@@ -354,7 +354,7 @@ fn fetch_entry_point(
                 file: rel_file,
                 line_start: r.chunk.line_start,
                 line_end: r.chunk.line_end,
-                language: r.chunk.language.to_string(),
+                language: r.chunk.language,
                 chunk_type: r.chunk.chunk_type,
                 signature: r.chunk.signature.clone(),
                 content: r.chunk.content.clone(),

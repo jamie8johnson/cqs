@@ -6,7 +6,6 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
-use cqs::normalize_slashes;
 use cqs::Parser;
 
 use crate::cli::Cli;
@@ -31,7 +30,7 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
             .iter()
             .map(|f| {
                 serde_json::json!({
-                    "file": normalize_slashes(&f.origin),
+                    "file": cqs::normalize_path(&f.file),
                     "stored_mtime": f.stored_mtime,
                     "current_mtime": f.current_mtime,
                 })
@@ -41,7 +40,7 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
         let missing_json: Vec<_> = report
             .missing
             .iter()
-            .map(|f| normalize_slashes(f))
+            .map(|f| cqs::normalize_path(f))
             .collect();
 
         let result = serde_json::json!({
@@ -83,13 +82,13 @@ pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
             if !report.stale.is_empty() {
                 println!("\nStale:");
                 for f in &report.stale {
-                    println!("  {}", normalize_slashes(&f.origin));
+                    println!("  {}", cqs::normalize_path(&f.file));
                 }
             }
             if !report.missing.is_empty() {
                 println!("\nMissing:");
                 for f in &report.missing {
-                    println!("  {}", normalize_slashes(f));
+                    println!("  {}", cqs::normalize_path(f));
                 }
             }
             println!("\nRun 'cqs index' to update.");

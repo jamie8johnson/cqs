@@ -461,7 +461,7 @@ pub(super) fn dispatch_impact(
             .map(|s| {
                 serde_json::json!({
                     "test_name": s.test_name,
-                    "suggested_file": s.suggested_file,
+                    "suggested_file": normalize_path(&s.suggested_file),
                     "for_function": s.for_function,
                     "pattern_source": s.pattern_source,
                     "inline": s.inline,
@@ -1151,7 +1151,7 @@ pub(super) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_json::Value> {
         .iter()
         .map(|f| {
             serde_json::json!({
-                "origin": f.origin,
+                "origin": normalize_path(&f.file),
                 "stored_mtime": f.stored_mtime,
                 "current_mtime": f.current_mtime,
             })
@@ -1161,7 +1161,7 @@ pub(super) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_json::Value> {
     let missing_json: Vec<_> = report
         .missing
         .iter()
-        .map(|origin| serde_json::json!(origin))
+        .map(|path| serde_json::json!(normalize_path(path)))
         .collect();
 
     Ok(serde_json::json!({
