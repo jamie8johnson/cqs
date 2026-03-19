@@ -188,35 +188,6 @@ pub fn display_unified_results(
                     println!();
                 }
             }
-            UnifiedResult::Note(r) => {
-                // Format: [note:sentiment] text [score]
-                let sentiment_indicator = if r.note.sentiment < -0.3 {
-                    format!("v={:.1}", r.note.sentiment).red()
-                } else if r.note.sentiment > 0.3 {
-                    format!("v={:.1}", r.note.sentiment).green()
-                } else {
-                    format!("v={:.1}", r.note.sentiment).dimmed()
-                };
-
-                let header = format!("[note] {} [{:.2}]", sentiment_indicator, r.score);
-
-                println!("{}", header.blue());
-
-                if !no_content {
-                    println!("{}", "─".repeat(50));
-                    // Show truncated text
-                    let text_lines: Vec<&str> = r.note.text.lines().collect();
-                    if text_lines.len() <= 3 {
-                        println!("{}", r.note.text);
-                    } else {
-                        for line in text_lines.iter().take(3) {
-                            println!("{}", line);
-                        }
-                        println!("    ...");
-                    }
-                    println!();
-                }
-            }
         }
     }
 
@@ -257,14 +228,6 @@ pub fn display_unified_results_json(
                 }
                 obj
             }
-            UnifiedResult::Note(r) => serde_json::json!({
-                "type": "note",
-                "id": r.note.id,
-                "text": r.note.text,
-                "sentiment": r.note.sentiment,
-                "mentions": r.note.mentions,
-                "score": r.score,
-            }),
         })
         .collect();
 
@@ -390,32 +353,6 @@ pub fn display_tagged_results(
                     println!();
                 }
             }
-            UnifiedResult::Note(r) => {
-                let sentiment_indicator = if r.note.sentiment < -0.3 {
-                    format!("v={:.1}", r.note.sentiment).red()
-                } else if r.note.sentiment > 0.3 {
-                    format!("v={:.1}", r.note.sentiment).green()
-                } else {
-                    format!("v={:.1}", r.note.sentiment).dimmed()
-                };
-
-                let header = format!("[note] {} [{:.2}]", sentiment_indicator, r.score);
-                println!("{}", header.blue());
-
-                if !no_content {
-                    println!("{}", "─".repeat(50));
-                    let text_lines: Vec<&str> = r.note.text.lines().collect();
-                    if text_lines.len() <= 3 {
-                        println!("{}", r.note.text);
-                    } else {
-                        for line in text_lines.iter().take(3) {
-                            println!("{}", line);
-                        }
-                        println!("    ...");
-                    }
-                    println!();
-                }
-            }
         }
     }
 
@@ -488,14 +425,6 @@ pub fn display_tagged_results_json(
                     }
                     obj
                 }
-                UnifiedResult::Note(r) => serde_json::json!({
-                    "type": "note",
-                    "id": r.note.id,
-                    "text": r.note.text,
-                    "sentiment": r.note.sentiment,
-                    "mentions": r.note.mentions,
-                    "score": r.score,
-                }),
             };
             if let Some(source) = &t.source {
                 json["source"] = serde_json::json!(source);

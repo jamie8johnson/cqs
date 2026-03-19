@@ -197,8 +197,7 @@ pub fn merge_results(
     tagged.sort_by(|a, b| b.result.score().total_cmp(&a.result.score()));
 
     // Deduplicate code results by content hash (keeps highest-scoring occurrence).
-    // Notes are never deduplicated — they're project-local and unique.
-    // NOTE: Dedup must happen before truncation for correctness — otherwise duplicates
+    // Dedup must happen before truncation for correctness — otherwise duplicates
     // from different sources could occupy result slots, pushing out unique results.
     let mut seen_hashes = std::collections::HashSet::new();
     tagged.retain(|t| match &t.result {
@@ -206,7 +205,6 @@ pub fn merge_results(
             let hash = blake3::hash(r.chunk.content.as_bytes());
             seen_hashes.insert(hash)
         }
-        UnifiedResult::Note(_) => true,
     });
 
     tagged.truncate(limit);
@@ -251,7 +249,7 @@ pub fn ref_path(name: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{ChunkSummary, NoteSearchResult, NoteSummary};
+    use crate::store::ChunkSummary;
 
     fn make_code_result(name: &str, score: f32) -> SearchResult {
         SearchResult {
@@ -270,18 +268,6 @@ mod tests {
                 parent_type_name: None,
                 content_hash: String::new(),
                 window_idx: None,
-            },
-            score,
-        }
-    }
-
-    fn make_note_result(text: &str, score: f32) -> NoteSearchResult {
-        NoteSearchResult {
-            note: NoteSummary {
-                id: String::new(),
-                text: text.to_string(),
-                sentiment: 0.0,
-                mentions: vec![],
             },
             score,
         }
@@ -358,21 +344,6 @@ mod tests {
         // Primary (0.8) should rank above weighted ref (0.72)
         assert!(merged[0].source.is_none());
         assert_eq!(merged[1].source.as_deref(), Some("tokio"));
-    }
-
-    #[test]
-    fn test_merge_results_with_notes() {
-        let primary = vec![
-            UnifiedResult::Code(make_code_result("fn_a", 0.9)),
-            UnifiedResult::Note(make_note_result("a note", 0.85)),
-        ];
-        let refs = vec![("tokio".to_string(), vec![make_code_result("spawn", 0.88)])];
-
-        let merged = merge_results(primary, refs, 10);
-        assert_eq!(merged.len(), 3);
-        // Sorted: 0.9 (code), 0.88 (ref), 0.85 (note)
-        assert!(merged[0].result.score() >= merged[1].result.score());
-        assert!(merged[1].result.score() >= merged[2].result.score());
     }
 
     #[test]
@@ -478,20 +449,6 @@ mod tests {
         // Kept the highest-scoring one (primary, 0.9)
         assert!(merged[0].source.is_none());
         assert!((merged[0].result.score() - 0.9).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_merge_dedup_keeps_notes() {
-        // Notes should never be deduplicated, even with same score
-        let primary = vec![
-            UnifiedResult::Note(make_note_result("a note", 0.85)),
-            UnifiedResult::Note(make_note_result("a note", 0.85)), // duplicate note text
-        ];
-        let refs: Vec<(String, Vec<SearchResult>)> = vec![];
-
-        let merged = merge_results(primary, refs, 10);
-        // Both notes should be kept (notes are never deduped)
-        assert_eq!(merged.len(), 2);
     }
 
     #[test]

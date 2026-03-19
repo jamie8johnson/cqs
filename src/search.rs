@@ -19,7 +19,7 @@ use crate::store::helpers::{
     embedding_slice, CandidateRow, ChunkSummary, NoteSummary, SearchFilter, SearchResult,
 };
 use crate::store::sanitize_fts_query;
-use crate::store::{Store, StoreError, UnifiedResult};
+use crate::store::{Store, StoreError};
 
 /// Result of resolving a target name to a concrete chunk.
 ///
@@ -31,13 +31,6 @@ pub struct ResolvedTarget {
     pub chunk: ChunkSummary,
     /// Other candidates found during resolution, ordered by match quality
     pub alternatives: Vec<SearchResult>,
-}
-
-/// Minimum code slots for a given result limit (60% floor, at least 1).
-///
-/// Used for note/code slot allocation in unified search.
-pub(crate) fn min_code_slot_count(limit: usize) -> usize {
-    ((limit * 3) / 5).max(1)
 }
 
 // ============ Target Resolution ============
@@ -1101,10 +1094,10 @@ impl Store {
         })
     }
 
-    /// Unified search with optional vector index
+    /// Unified search with optional vector index.
     ///
-    /// When an HNSW index is provided, uses O(log n) search for both chunks and notes.
-    /// Note IDs in HNSW are prefixed with `note:` to distinguish from chunk IDs.
+    /// Returns code-only results (SQ-9: notes removed from search pipeline).
+    /// When an HNSW index is provided, uses O(log n) candidate retrieval.
     pub fn search_unified_with_index(
         &self,
         query: &Embedding,
@@ -1119,85 +1112,13 @@ impl Store {
 
         let _span = tracing::info_span!("search_unified", limit, threshold = %threshold).entered();
 
-        // note_only: return only notes, skip code search entirely
-        if filter.note_only {
-            let note_results = self.search_notes(query, limit, threshold)?;
-            return Ok(note_results.into_iter().map(UnifiedResult::Note).collect());
-        }
+        let code_results =
+            self.search_filtered_with_index(query, filter, limit, threshold, index)?;
 
-        // Skip note search entirely when note_weight is effectively zero
-        let skip_notes = filter.note_weight <= 0.0;
-
-        // Notes always use brute-force search from SQLite (capped at 1000).
-        // This ensures notes are immediately searchable without
-        // waiting for an HNSW rebuild. HNSW is only used for chunks (10k-100k+).
-        let note_results = if skip_notes {
-            vec![]
-        } else {
-            self.search_notes(query, limit, threshold)?
-        };
-
-        let code_results = if let Some(idx) = index {
-            // Query HNSW for chunk candidates only
-            let candidate_count = (limit * 5).max(100);
-            let index_results = idx.search(query, candidate_count);
-
-            if index_results.is_empty() {
-                tracing::info!("Index returned no candidates, falling back to brute-force search (performance may degrade)");
-                self.search_filtered(query, filter, limit, threshold)?
-            } else {
-                // Filter to chunk IDs only (skip any legacy note: prefixed entries)
-                let chunk_ids: Vec<&str> = index_results
-                    .iter()
-                    .filter_map(|r| {
-                        if r.id.starts_with("note:") {
-                            None
-                        } else {
-                            Some(r.id.as_str())
-                        }
-                    })
-                    .collect();
-
-                tracing::debug!("Index returned {} chunk candidates", chunk_ids.len());
-
-                self.search_by_candidate_ids(&chunk_ids, query, filter, limit, threshold)?
-            }
-        } else {
-            self.search_filtered(query, filter, limit, threshold)?
-        };
-
-        // Slot allocation: reserve minimum 60% for code results, up to 40% for notes.
-        // This prevents notes from dominating while still surfacing relevant observations.
-        // When code results are sparse, cap notes to the proportional amount (40%)
-        // rather than letting them fill all remaining slots.
-        let min_code_slots = min_code_slot_count(limit);
-        let code_count = code_results.len().min(limit);
-        let note_slots = if code_count >= min_code_slots {
-            limit.saturating_sub(code_count)
-        } else {
-            // Code is sparse — still cap notes to proportional amount
-            limit.saturating_sub(min_code_slots)
-        };
-
-        let mut unified: Vec<crate::store::UnifiedResult> = code_results
+        let unified: Vec<crate::store::UnifiedResult> = code_results
             .into_iter()
-            .take(limit)
             .map(crate::store::UnifiedResult::Code)
             .collect();
-
-        // Apply note_weight to attenuate note scores before merging
-        let notes_to_add: Vec<crate::store::UnifiedResult> = note_results
-            .into_iter()
-            .take(note_slots)
-            .map(|mut r| {
-                r.score *= filter.note_weight;
-                crate::store::UnifiedResult::Note(r)
-            })
-            .collect();
-        unified.extend(notes_to_add);
-
-        unified.sort_by(|a, b| b.score().total_cmp(&a.score()));
-        unified.truncate(limit);
 
         Ok(unified)
     }
@@ -1316,20 +1237,6 @@ mod tests {
             "Expected ~1.15, got {}",
             boost
         );
-    }
-
-    // ===== min_code_slots tests =====
-
-    #[test]
-    fn test_min_code_slots_limit_1() {
-        // With limit=1, (1*3)/5 = 0 which starved code results.
-        // After fix: .max(1) ensures at least 1 code slot.
-        assert_eq!(min_code_slot_count(1), 1);
-    }
-
-    #[test]
-    fn test_min_code_slots_limit_5() {
-        assert_eq!(min_code_slot_count(5), 3);
     }
 
     // ===== compile_glob_filter tests =====

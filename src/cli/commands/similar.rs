@@ -71,7 +71,6 @@ pub(crate) fn cmd_similar(
     let filter = SearchFilter {
         languages,
         path_pattern: cli.path.clone(),
-        note_weight: 0.0, // Code only, no notes
         ..Default::default()
     };
 
