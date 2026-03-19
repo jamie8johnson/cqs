@@ -2082,4 +2082,262 @@ mod tests {
             "Unknown origin should not appear in stale set"
         );
     }
+
+    // ===== TC-8: LLM summary functions =====
+
+    #[test]
+    fn test_get_summaries_empty_input() {
+        let (store, _dir) = setup_store();
+        let result = store.get_summaries_by_hashes(&[]).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_summaries_roundtrip() {
+        let (store, _dir) = setup_store();
+        let summaries = vec![
+            (
+                "hash_a".to_string(),
+                "summary A".to_string(),
+                "model-1".to_string(),
+            ),
+            (
+                "hash_b".to_string(),
+                "summary B".to_string(),
+                "model-1".to_string(),
+            ),
+            (
+                "hash_c".to_string(),
+                "summary C".to_string(),
+                "model-1".to_string(),
+            ),
+        ];
+        store.upsert_summaries_batch(&summaries).unwrap();
+
+        let result = store
+            .get_summaries_by_hashes(&["hash_a", "hash_b", "hash_c"])
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert_eq!(result["hash_a"], "summary A");
+        assert_eq!(result["hash_b"], "summary B");
+        assert_eq!(result["hash_c"], "summary C");
+    }
+
+    #[test]
+    fn test_get_summaries_missing_keys() {
+        let (store, _dir) = setup_store();
+        let result = store
+            .get_summaries_by_hashes(&["nonexistent_1", "nonexistent_2"])
+            .unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_summaries_mixed() {
+        let (store, _dir) = setup_store();
+        let summaries = vec![
+            ("h1".to_string(), "s1".to_string(), "m".to_string()),
+            ("h2".to_string(), "s2".to_string(), "m".to_string()),
+            ("h3".to_string(), "s3".to_string(), "m".to_string()),
+        ];
+        store.upsert_summaries_batch(&summaries).unwrap();
+
+        // Query 5 hashes, only 3 exist
+        let result = store
+            .get_summaries_by_hashes(&["h1", "h2", "h3", "h4", "h5"])
+            .unwrap();
+        assert_eq!(result.len(), 3);
+        assert!(result.contains_key("h1"));
+        assert!(result.contains_key("h2"));
+        assert!(result.contains_key("h3"));
+        assert!(!result.contains_key("h4"));
+    }
+
+    #[test]
+    fn test_upsert_summaries_empty() {
+        let (store, _dir) = setup_store();
+        let count = store.upsert_summaries_batch(&[]).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_upsert_summaries_overwrites() {
+        let (store, _dir) = setup_store();
+        store
+            .upsert_summaries_batch(&[("h1".to_string(), "first".to_string(), "m".to_string())])
+            .unwrap();
+        store
+            .upsert_summaries_batch(&[("h1".to_string(), "second".to_string(), "m".to_string())])
+            .unwrap();
+
+        let result = store.get_summaries_by_hashes(&["h1"]).unwrap();
+        assert_eq!(result["h1"], "second");
+    }
+
+    #[test]
+    fn test_get_all_summaries_empty() {
+        let (store, _dir) = setup_store();
+        let result = store.get_all_summaries().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_get_all_summaries_all() {
+        let (store, _dir) = setup_store();
+        let summaries = vec![
+            ("ha".to_string(), "sa".to_string(), "m".to_string()),
+            ("hb".to_string(), "sb".to_string(), "m".to_string()),
+            ("hc".to_string(), "sc".to_string(), "m".to_string()),
+        ];
+        store.upsert_summaries_batch(&summaries).unwrap();
+
+        let all = store.get_all_summaries().unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all["ha"], "sa");
+        assert_eq!(all["hb"], "sb");
+        assert_eq!(all["hc"], "sc");
+    }
+
+    #[test]
+    fn test_prune_no_orphans() {
+        let (store, _dir) = setup_store();
+
+        // Insert chunks with known content_hashes
+        let c1 = make_chunk("fn_a", "src/a.rs");
+        let c2 = make_chunk("fn_b", "src/b.rs");
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c1.clone(), emb.clone()), (c2.clone(), emb)], Some(100))
+            .unwrap();
+
+        // Insert summaries matching those content_hashes
+        let summaries = vec![
+            (c1.content_hash, "summary a".to_string(), "m".to_string()),
+            (c2.content_hash, "summary b".to_string(), "m".to_string()),
+        ];
+        store.upsert_summaries_batch(&summaries).unwrap();
+
+        let pruned = store.prune_orphan_summaries().unwrap();
+        assert_eq!(pruned, 0);
+
+        // All summaries survive
+        let all = store.get_all_summaries().unwrap();
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn test_prune_removes_orphans() {
+        let (store, _dir) = setup_store();
+
+        // Insert one chunk
+        let c1 = make_chunk("fn_a", "src/a.rs");
+        let emb = mock_embedding(1.0);
+        store
+            .upsert_chunks_batch(&[(c1.clone(), emb)], Some(100))
+            .unwrap();
+
+        // Insert summaries: one matching, two orphans
+        let summaries = vec![
+            (
+                c1.content_hash.clone(),
+                "matching".to_string(),
+                "m".to_string(),
+            ),
+            (
+                "orphan_hash_1".to_string(),
+                "orphan 1".to_string(),
+                "m".to_string(),
+            ),
+            (
+                "orphan_hash_2".to_string(),
+                "orphan 2".to_string(),
+                "m".to_string(),
+            ),
+        ];
+        store.upsert_summaries_batch(&summaries).unwrap();
+        assert_eq!(store.get_all_summaries().unwrap().len(), 3);
+
+        let pruned = store.prune_orphan_summaries().unwrap();
+        assert_eq!(pruned, 2);
+
+        let remaining = store.get_all_summaries().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert!(remaining.contains_key(&c1.content_hash));
+    }
+
+    // ===== TC-11: chunks_paged =====
+
+    #[test]
+    fn test_chunks_paged_empty() {
+        let (store, _dir) = setup_store();
+        let (chunks, max_rowid) = store.chunks_paged(0, 10).unwrap();
+        assert!(chunks.is_empty());
+        assert_eq!(max_rowid, 0);
+    }
+
+    #[test]
+    fn test_chunks_paged_single_page() {
+        let (store, _dir) = setup_store();
+        let pairs: Vec<_> = (0..3)
+            .map(|i| {
+                let c = make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i));
+                (c, mock_embedding(i as f32))
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        let (chunks, max_rowid) = store.chunks_paged(0, 10).unwrap();
+        assert_eq!(chunks.len(), 3);
+        assert!(max_rowid > 0);
+    }
+
+    #[test]
+    fn test_chunks_paged_multi_page() {
+        let (store, _dir) = setup_store();
+        let pairs: Vec<_> = (0..5)
+            .map(|i| {
+                let c = make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i));
+                (c, mock_embedding(i as f32))
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        // Page 1: limit=2
+        let (page1, cursor1) = store.chunks_paged(0, 2).unwrap();
+        assert_eq!(page1.len(), 2);
+        assert!(cursor1 > 0);
+
+        // Page 2
+        let (page2, cursor2) = store.chunks_paged(cursor1, 2).unwrap();
+        assert_eq!(page2.len(), 2);
+        assert!(cursor2 > cursor1);
+
+        // Page 3: remaining
+        let (page3, _cursor3) = store.chunks_paged(cursor2, 2).unwrap();
+        assert_eq!(page3.len(), 1);
+
+        // Total across all pages
+        assert_eq!(page1.len() + page2.len() + page3.len(), 5);
+    }
+
+    #[test]
+    fn test_chunks_paged_exact_boundary() {
+        let (store, _dir) = setup_store();
+        let pairs: Vec<_> = (0..4)
+            .map(|i| {
+                let c = make_chunk(&format!("fn_{}", i), &format!("src/{}.rs", i));
+                (c, mock_embedding(i as f32))
+            })
+            .collect();
+        store.upsert_chunks_batch(&pairs, Some(100)).unwrap();
+
+        // Fetch exactly 4 with limit=4
+        let (page1, cursor1) = store.chunks_paged(0, 4).unwrap();
+        assert_eq!(page1.len(), 4);
+
+        // Next page should be empty
+        let (page2, cursor2) = store.chunks_paged(cursor1, 4).unwrap();
+        assert!(page2.is_empty());
+        assert_eq!(cursor2, cursor1);
+    }
 }

@@ -1171,4 +1171,136 @@ mod tests {
             }
         }
     }
+
+    // ===== TC-8: pending batch ID =====
+
+    fn setup_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+        store.init(&helpers::ModelInfo::default()).unwrap();
+        (store, dir)
+    }
+
+    #[test]
+    fn test_pending_batch_roundtrip() {
+        let (store, _dir) = setup_store();
+        store.set_pending_batch_id(Some("batch_123")).unwrap();
+        let result = store.get_pending_batch_id().unwrap();
+        assert_eq!(result, Some("batch_123".to_string()));
+    }
+
+    #[test]
+    fn test_pending_batch_clear() {
+        let (store, _dir) = setup_store();
+        store.set_pending_batch_id(Some("batch_abc")).unwrap();
+        store.set_pending_batch_id(None).unwrap();
+        let result = store.get_pending_batch_id().unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_pending_batch_default_none() {
+        let (store, _dir) = setup_store();
+        let result = store.get_pending_batch_id().unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_pending_batch_overwrite() {
+        let (store, _dir) = setup_store();
+        store.set_pending_batch_id(Some("a")).unwrap();
+        store.set_pending_batch_id(Some("b")).unwrap();
+        let result = store.get_pending_batch_id().unwrap();
+        assert_eq!(result, Some("b".to_string()));
+    }
+
+    // ===== TC-10: HNSW dirty flag =====
+
+    #[test]
+    fn test_hnsw_dirty_roundtrip() {
+        let (store, _dir) = setup_store();
+        store.set_hnsw_dirty(true).unwrap();
+        assert!(store.is_hnsw_dirty().unwrap());
+    }
+
+    #[test]
+    fn test_hnsw_dirty_default_false() {
+        let (store, _dir) = setup_store();
+        assert!(!store.is_hnsw_dirty().unwrap());
+    }
+
+    #[test]
+    fn test_hnsw_dirty_toggle() {
+        let (store, _dir) = setup_store();
+        store.set_hnsw_dirty(true).unwrap();
+        assert!(store.is_hnsw_dirty().unwrap());
+
+        store.set_hnsw_dirty(false).unwrap();
+        assert!(!store.is_hnsw_dirty().unwrap());
+
+        store.set_hnsw_dirty(true).unwrap();
+        assert!(store.is_hnsw_dirty().unwrap());
+    }
+
+    // ===== TC-16: cache invalidation =====
+
+    fn mock_embedding_769(seed: f32) -> crate::embedder::Embedding {
+        let mut v = vec![seed; 768];
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut v {
+                *x /= norm;
+            }
+        }
+        v.push(0.0); // sentiment dim
+        crate::embedder::Embedding::new(v)
+    }
+
+    #[test]
+    fn test_cached_notes_empty() {
+        let (store, _dir) = setup_store();
+        let notes = store.cached_notes_summaries().unwrap();
+        assert!(notes.is_empty());
+    }
+
+    #[test]
+    fn test_cached_notes_invalidation() {
+        let (store, dir) = setup_store();
+
+        let source = dir.path().join("notes.toml");
+        std::fs::write(&source, "# dummy").unwrap();
+
+        // Insert first batch of notes
+        let note1 = crate::note::Note {
+            id: "note:0".to_string(),
+            text: "first note".to_string(),
+            sentiment: 0.0,
+            mentions: vec![],
+        };
+        store
+            .upsert_notes_batch(&[(note1, mock_embedding_769(1.0))], &source, 100)
+            .unwrap();
+
+        // Populate cache
+        let cached = store.cached_notes_summaries().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].text, "first note");
+
+        // Replace notes with a different set (replace_notes_for_file invalidates cache)
+        let note2 = crate::note::Note {
+            id: "note:0".to_string(),
+            text: "replaced note".to_string(),
+            sentiment: 0.5,
+            mentions: vec!["src/lib.rs".to_string()],
+        };
+        store
+            .replace_notes_for_file(&[(note2, mock_embedding_769(2.0))], &source, 200)
+            .unwrap();
+
+        // Cache should reflect the replacement
+        let cached = store.cached_notes_summaries().unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].text, "replaced note");
+    }
 }
