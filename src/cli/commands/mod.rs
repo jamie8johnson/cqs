@@ -40,6 +40,7 @@ mod suggest;
 pub(crate) mod task;
 mod test_map;
 mod trace;
+mod train_data;
 mod where_cmd;
 
 pub(crate) use audit_mode::cmd_audit_mode;
@@ -79,6 +80,7 @@ pub(crate) use suggest::cmd_suggest;
 pub(crate) use task::cmd_task;
 pub(crate) use test_map::cmd_test_map;
 pub(crate) use trace::cmd_trace;
+pub(crate) use train_data::cmd_train_data;
 pub(crate) use where_cmd::cmd_where;
 
 /// Count tokens for text, with fallback estimation on error.

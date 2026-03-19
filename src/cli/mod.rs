@@ -99,8 +99,8 @@ use commands::{
     cmd_diff, cmd_doctor, cmd_drift, cmd_explain, cmd_gather, cmd_gc, cmd_health, cmd_impact,
     cmd_impact_diff, cmd_index, cmd_init, cmd_notes, cmd_onboard, cmd_plan, cmd_project, cmd_query,
     cmd_read, cmd_ref, cmd_related, cmd_review, cmd_scout, cmd_similar, cmd_stale, cmd_stats,
-    cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_where, NotesCommand, ProjectCommand,
-    RefCommand,
+    cmd_suggest, cmd_task, cmd_test_map, cmd_trace, cmd_train_data, cmd_where, NotesCommand,
+    ProjectCommand, RefCommand,
 };
 use config::apply_config_defaults;
 
@@ -671,6 +671,33 @@ enum Commands {
         #[arg(long)]
         clean_tags: Option<String>,
     },
+    /// Generate training data for LoRA fine-tuning from git history
+    TrainData {
+        /// Paths to git repositories to process
+        #[arg(long, required = true, num_args = 1..)]
+        repos: Vec<std::path::PathBuf>,
+        /// Output JSONL file path
+        #[arg(long)]
+        output: std::path::PathBuf,
+        /// Maximum commits to process per repo (0 = unlimited)
+        #[arg(long, default_value = "0")]
+        max_commits: usize,
+        /// Minimum commit message length to include
+        #[arg(long, default_value = "15")]
+        min_msg_len: usize,
+        /// Maximum files changed per commit to include
+        #[arg(long, default_value = "20")]
+        max_files: usize,
+        /// Maximum identical-query triplets (dedup cap)
+        #[arg(long, default_value = "5")]
+        dedup_cap: usize,
+        /// Resume from checkpoint
+        #[arg(long)]
+        resume: bool,
+        /// Verbose output
+        #[arg(long)]
+        verbose: bool,
+    },
 }
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
@@ -877,6 +904,25 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             overwrite,
             dry_run,
             clean_tags.as_deref(),
+        ),
+        Some(Commands::TrainData {
+            repos,
+            output,
+            max_commits,
+            min_msg_len,
+            max_files,
+            dedup_cap,
+            resume,
+            verbose,
+        }) => cmd_train_data(
+            repos,
+            output,
+            max_commits,
+            min_msg_len,
+            max_files,
+            dedup_cap,
+            resume,
+            verbose,
         ),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
