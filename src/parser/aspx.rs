@@ -93,6 +93,8 @@ pub fn detect_language(source: &str) -> Language {
 
 /// Calculate the 0-indexed (row, col) for a byte offset in source text.
 fn byte_to_point(source: &str, byte: usize) -> (usize, usize) {
+    let byte = byte.min(source.len());
+    let byte = source.floor_char_boundary(byte);
     let before = &source[..byte];
     let row = before.bytes().filter(|&b| b == b'\n').count();
     let col = before.len() - before.rfind('\n').map(|p| p + 1).unwrap_or(0);

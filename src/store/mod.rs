@@ -288,7 +288,7 @@ impl Store {
 
         // Quick integrity check — catches B-tree corruption early
         store.rt.block_on(async {
-            let result: (String,) = sqlx::query_as("PRAGMA quick_check")
+            let result: (String,) = sqlx::query_as("PRAGMA integrity_check(1)")
                 .fetch_one(&store.pool)
                 .await?;
             if result.0 != "ok" {
@@ -366,7 +366,7 @@ impl Store {
 
         // Quick integrity check — catches B-tree corruption early
         store.rt.block_on(async {
-            let result: (String,) = sqlx::query_as("PRAGMA quick_check")
+            let result: (String,) = sqlx::query_as("PRAGMA integrity_check(1)")
                 .fetch_one(&store.pool)
                 .await?;
             if result.0 != "ok" {

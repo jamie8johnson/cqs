@@ -102,7 +102,7 @@ impl Store {
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
         let _span = tracing::info_span!("upsert_notes_batch", count = notes.len()).entered();
-        let source_str = source_file.to_string_lossy().into_owned();
+        let source_str = crate::normalize_path(source_file);
         tracing::debug!(
             source = %source_str,
             count = notes.len(),
@@ -192,7 +192,7 @@ impl Store {
     ) -> Result<usize, StoreError> {
         let _span =
             tracing::info_span!("replace_notes_for_file", path = %source_file.display()).entered();
-        let source_str = source_file.to_string_lossy().into_owned();
+        let source_str = crate::normalize_path(source_file);
         tracing::debug!(
             source = %source_str,
             count = notes.len(),
@@ -246,7 +246,7 @@ impl Store {
         self.rt.block_on(async {
             let row: Option<(i64,)> =
                 sqlx::query_as("SELECT file_mtime FROM notes WHERE source_file = ?1 LIMIT 1")
-                    .bind(source_file.to_string_lossy().into_owned())
+                    .bind(crate::normalize_path(source_file))
                     .fetch_optional(&self.pool)
                     .await?;
 

@@ -14,6 +14,7 @@ pub struct DriftEntry {
     /// Function/class name
     pub name: String,
     /// Source file path
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Type of code element
     pub chunk_type: crate::language::ChunkType,

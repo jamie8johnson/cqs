@@ -6,9 +6,29 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::{bail, Context, Result};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+
+/// Typed error for project registry operations (EH-13).
+///
+/// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("TOML parse error: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("TOML serialize error: {0}")]
+    Serialize(#[from] toml::ser::Error),
+    #[error("Config directory not found")]
+    ConfigDirNotFound,
+    #[error("Project not found: {0}")]
+    NotFound(String),
+    #[error("File too large: {0}")]
+    FileTooLarge(String),
+    #[error("No projects registered")]
+    NoProjects,
+}
 
 /// Whether the WSL advisory locking warning has been emitted (once per process)
 static WSL_REGISTRY_LOCK_WARNED: AtomicBool = AtomicBool::new(false);
@@ -29,31 +49,29 @@ pub struct ProjectEntry {
 
 impl ProjectRegistry {
     /// Load registry from default location (~/.config/cqs/projects.toml)
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<Self, ProjectError> {
         let path = registry_path()?;
         if !path.exists() {
             return Ok(Self::default());
         }
         // Read first, then enforce the size guard — avoids TOCTOU between stat and read.
         const MAX_REGISTRY_SIZE: usize = 1024 * 1024;
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let content = std::fs::read_to_string(&path)?;
         if content.len() > MAX_REGISTRY_SIZE {
-            anyhow::bail!(
+            return Err(ProjectError::FileTooLarge(format!(
                 "Project registry too large: {}KB (limit {}KB)",
                 content.len() / 1024,
                 MAX_REGISTRY_SIZE / 1024
-            );
+            )));
         }
-        toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))
+        Ok(toml::from_str(&content)?)
     }
 
     /// Save registry to default location
-    pub fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<(), ProjectError> {
         let path = registry_path()?;
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create {}", parent.display()))?;
+            std::fs::create_dir_all(parent)?;
         }
         // Acquire exclusive lock for the write
         let lock_file = std::fs::OpenOptions::new()
@@ -61,11 +79,8 @@ impl ProjectRegistry {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(&path)
-            .with_context(|| format!("Failed to open {} for locking", path.display()))?;
-        lock_file
-            .lock()
-            .with_context(|| format!("Failed to lock {}", path.display()))?;
+            .open(&path)?;
+        lock_file.lock()?;
 
         if crate::config::is_wsl()
             && path.to_str().is_some_and(|p| p.starts_with("/mnt/"))
@@ -80,8 +95,7 @@ impl ProjectRegistry {
         // Atomic write: temp file + rename (unpredictable suffix to prevent symlink attacks)
         let suffix = crate::temp_suffix();
         let tmp = path.with_extension(format!("toml.{:016x}.tmp", suffix));
-        std::fs::write(&tmp, &content)
-            .with_context(|| format!("Failed to write {}", tmp.display()))?;
+        std::fs::write(&tmp, &content)?;
         if let Err(rename_err) = std::fs::rename(&tmp, &path) {
             // Cross-device fallback: copy to dest dir temp, then same-device rename (atomic)
             let dest_dir = path.parent().unwrap_or(Path::new("."));
@@ -89,23 +103,19 @@ impl ProjectRegistry {
             if let Err(copy_err) = std::fs::copy(&tmp, &dest_tmp) {
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(&dest_tmp);
-                bail!(
+                return Err(ProjectError::Io(std::io::Error::other(format!(
                     "rename {} -> {} failed ({}), copy fallback failed: {}",
                     tmp.display(),
                     path.display(),
                     rename_err,
                     copy_err
-                );
+                ))));
             }
             let _ = std::fs::remove_file(&tmp);
-            std::fs::rename(&dest_tmp, &path).with_context(|| {
+            if let Err(e) = std::fs::rename(&dest_tmp, &path) {
                 let _ = std::fs::remove_file(&dest_tmp);
-                format!(
-                    "Failed to rename {} -> {}",
-                    dest_tmp.display(),
-                    path.display()
-                )
-            })?;
+                return Err(ProjectError::Io(e));
+            }
         }
 
         #[cfg(unix)]
@@ -118,13 +128,13 @@ impl ProjectRegistry {
     }
 
     /// Register a project (replaces existing entry with same name)
-    pub fn register(&mut self, name: String, path: PathBuf) -> Result<()> {
+    pub fn register(&mut self, name: String, path: PathBuf) -> Result<(), ProjectError> {
         // Validate the path has a .cqs (or legacy .cq) directory
         if !path.join(".cqs/index.db").exists() && !path.join(".cq/index.db").exists() {
-            bail!(
+            return Err(ProjectError::NotFound(format!(
                 "No cqs index found at {}. Run 'cqs init && cqs index' there first.",
                 path.display()
-            );
+            )));
         }
 
         // Remove existing entry with same name
@@ -134,7 +144,7 @@ impl ProjectRegistry {
     }
 
     /// Remove a project by name
-    pub fn remove(&mut self, name: &str) -> Result<bool> {
+    pub fn remove(&mut self, name: &str) -> Result<bool, ProjectError> {
         let before = self.project.len();
         self.project.retain(|p| p.name != name);
         let removed = self.project.len() < before;
@@ -151,9 +161,8 @@ impl ProjectRegistry {
 }
 
 /// Get the registry file path
-fn registry_path() -> Result<PathBuf> {
-    let config_dir = dirs::config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
+fn registry_path() -> Result<PathBuf, ProjectError> {
+    let config_dir = dirs::config_dir().ok_or(ProjectError::ConfigDirNotFound)?;
     Ok(config_dir.join("cqs").join("projects.toml"))
 }
 
@@ -174,7 +183,7 @@ pub fn search_across_projects(
     query_text: &str,
     limit: usize,
     threshold: f32,
-) -> Result<Vec<CrossProjectResult>> {
+) -> Result<Vec<CrossProjectResult>, ProjectError> {
     let registry = ProjectRegistry::load()?;
     let _span = tracing::info_span!(
         "search_across_projects",
@@ -182,7 +191,7 @@ pub fn search_across_projects(
     )
     .entered();
     if registry.project.is_empty() {
-        bail!("No projects registered. Use 'cqs project register <name> <path>' to add one.");
+        return Err(ProjectError::NoProjects);
     }
 
     let project_results: Vec<Vec<CrossProjectResult>> = registry

@@ -157,7 +157,7 @@ cqs callers <name>   # Functions that call <name>
 cqs callees <name>   # Functions called by <name>
 cqs deps <type>      # Who uses this type?
 cqs deps --reverse <fn>  # What types does this function use?
-cqs callers <name> --format mermaid  # Mermaid graph output
+cqs impact <name> --format mermaid   # Mermaid graph output
 ```
 
 Use cases:
@@ -204,13 +204,13 @@ cqs drift old-version --lang rust --limit 20   # scoped + limited
 # Diff review: structured risk analysis of changes
 cqs review                                # review uncommitted changes
 cqs review --base main                    # review changes since main
-cqs review --json                         # JSON output for CI integration
+cqs review --format json                  # JSON output for CI integration
 
 # CI pipeline: review + dead code + gate (exit 3 on fail)
 cqs ci                                    # analyze uncommitted changes
 cqs ci --base main                        # analyze changes since main
 cqs ci --gate medium                      # fail on medium+ risk
-cqs ci --gate off --json                  # report only, JSON output
+cqs ci --gate off --format json           # report only, JSON output
 echo "$diff" | cqs ci --stdin             # pipe diff from CI system
 
 # Follow a call chain between two functions (BFS shortest path)
@@ -370,7 +370,7 @@ Use `cqs` for semantic search, call graph analysis, and code intelligence instea
 - Trace dependencies and impact ("what breaks if I change X?")
 - Assemble context efficiently (one call instead of 5-10 file reads)
 
-Key commands (all support `--json`):
+Key commands (most support `--json`; `impact`, `review`, `ci`, and `trace` use `--format json` instead):
 - `cqs "query"` - semantic search (hybrid RRF by default)
 - `cqs "name" --name-only` - definition lookup (fast, no embedding)
 - `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
@@ -400,8 +400,8 @@ Key commands (all support `--json`):
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
 - `cqs task "description"` - implementation brief: scout + gather + impact + placement + notes in one call
 - `cqs onboard "concept"` - guided tour: entry point, call chain, callers, key types, tests
-- `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--json`
-- `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--json`
+- `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--format json`
+- `cqs ci` - CI pipeline: review + dead code in diff + gate. `--base`, `--gate`, `--format json`
 - `cqs blame <function>` - semantic git blame: who changed a function, when, and why. `--callers` for affected callers
 - `cqs chat` - interactive REPL with readline, history, tab completion. Same commands as batch
 - `cqs batch` - batch mode: stdin commands, JSONL output. Pipeline syntax: `search "error" | callers | test-map`

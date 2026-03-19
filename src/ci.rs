@@ -41,6 +41,7 @@ pub struct GateResult {
 #[derive(Debug, serde::Serialize)]
 pub struct DeadInDiff {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line_start: u32,
     pub confidence: DeadConfidence,

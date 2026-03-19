@@ -128,14 +128,24 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
         SignatureStyle::UntilColon => content.find(':').unwrap_or(content.len()),
         SignatureStyle::FirstLine => content.find('\n').unwrap_or(content.len()),
         SignatureStyle::UntilAs => {
-            // Case-insensitive search for AS as a standalone word
-            let upper = content.to_uppercase();
-            upper
-                .find(" AS ")
-                .or_else(|| upper.find("\nAS\n"))
-                .or_else(|| upper.find("\nAS "))
-                .or_else(|| upper.find(" AS\n"))
-                .unwrap_or(content.len())
+            // ASCII case-insensitive search preserves byte offsets
+            // (to_uppercase() can change byte lengths for non-ASCII like ß→SS)
+            let bytes = content.as_bytes();
+            let is_boundary = |b: u8| b == b' ' || b == b'\n' || b == b'\t' || b == b'\r';
+            let mut pos = None;
+            for i in 0..bytes.len().saturating_sub(2) {
+                if bytes[i].eq_ignore_ascii_case(&b'A') && bytes[i + 1].eq_ignore_ascii_case(&b'S')
+                {
+                    let left_ok = i == 0 || is_boundary(bytes[i - 1]);
+                    let right_ok = i + 2 >= bytes.len() || is_boundary(bytes[i + 2]);
+                    if left_ok && right_ok {
+                        // Position at the boundary before AS (or 0 if AS starts the string)
+                        pos = Some(if i > 0 { i - 1 } else { 0 });
+                        break;
+                    }
+                }
+            }
+            pos.unwrap_or(content.len())
         }
         // Markdown builds its own signatures in the custom parser; this arm
         // satisfies exhaustiveness but is never reached via extract_chunk().
@@ -198,9 +208,15 @@ fn extract_doc_comment(
 /// Looks for `PROCEDURE name`, `FUNCTION name`, `VIEW name`, or `TRIGGER name`
 /// patterns in the first few lines.
 fn extract_name_fallback(content: &str) -> Option<String> {
-    let upper = content.to_uppercase();
-    for keyword in &["PROCEDURE", "FUNCTION", "VIEW", "TRIGGER"] {
-        if let Some(pos) = upper.find(keyword) {
+    let bytes = content.as_bytes();
+    for keyword in &[b"PROCEDURE" as &[u8], b"FUNCTION", b"VIEW", b"TRIGGER"] {
+        // ASCII case-insensitive search preserves byte offsets
+        // (to_uppercase() can change byte lengths for non-ASCII like ß→SS)
+        if let Some(pos) = bytes.windows(keyword.len()).position(|w| {
+            w.iter()
+                .zip(keyword.iter())
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        }) {
             let after_keyword = pos + keyword.len();
             if after_keyword >= content.len() {
                 continue;
@@ -371,6 +387,14 @@ mod tests {
             let content = "fn abstract_decl()";
             let sig = extract_signature(content, Language::Rust);
             assert_eq!(sig, "fn abstract_decl()");
+        }
+
+        #[test]
+        fn extract_signature_until_as_preserves_unicode() {
+            let content = "CREATE VIEW stra\u{00DF}e AS SELECT 1";
+            let sig = extract_signature(content, Language::Sql);
+            assert!(sig.contains("stra\u{00DF}e"));
+            assert!(!sig.contains("AS"));
         }
     }
 
@@ -916,5 +940,12 @@ public class Calculator {
             assert_eq!(chunks[0].chunk_type, ChunkType::Function);
             assert!(chunks[0].parent_type_name.is_none());
         }
+    }
+
+    #[test]
+    fn extract_name_fallback_with_unicode_before_keyword() {
+        let content = "CREATE FUNCTION caf\u{00e9}_func() RETURNS void";
+        let name = extract_name_fallback(content);
+        assert_eq!(name, Some("caf\u{00e9}_func".to_string()));
     }
 }

@@ -26,23 +26,23 @@ Date: 2026-03-18. 99 findings across 14 categories, 3 batches.
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | SEC-7: HNSW bincode deserialization from untrusted files — OOM via crafted lengths | Security | hnsw/persist.rs:414 | |
-| 2 | DOC-11: SECURITY/PRIVACY claim offline-only — false with `--llm-summaries` | Documentation | SECURITY.md:36, PRIVACY.md:5 | |
-| 3 | DOC-10: README documents `--json` for commands that use `--format json` | Documentation | README.md:160,207,213 | |
-| 4 | RB-8/RB-9: `to_uppercase()` byte offset on original string — panics on non-ASCII SQL | Robustness | parser/chunk.rs:130,200 | |
-| 5 | RB-10: `byte_offset_to_point` slices at unchecked byte offset | Robustness | parser/injection.rs:147, aspx.rs:96 | |
-| 6 | EH-13/EH-14: `anyhow::Result` in project.rs and llm.rs library code | Error Handling | project.rs, llm.rs | |
-| 7 | CQ-7: `search_filtered` / `search_by_candidate_ids` duplicate ~120 lines post-scoring | Code Quality | search.rs:900,1099 | |
-| 8 | CQ-8: Test detection logic divergent across 3 places | Code Quality | lib.rs:210, search.rs:482, calls.rs:117 | |
-| 9 | AD-16: Missing `serialize_path_normalized` on 12+ PathBuf fields | API Design | impact/types.rs, drift.rs, review.rs, etc. | |
-| 10 | PB-8/PB-9/PB-15: ORT provider code `#[cfg(unix)]` should be `#[cfg(target_os = "linux")]` | Platform | embedder.rs:686,719,760 | |
-| 11 | PB-13/DS-12: Notes path normalization mismatch with chunks | Platform/Data | store/notes.rs:105,195,249 | |
-| 12 | DS-7: LLM batch resume can skip newly-added chunks | Data Safety | llm.rs:461 | |
-| 13 | DS-10: Failed batch status check submits duplicate — wastes API credits | Data Safety | llm.rs:491 | |
-| 14 | AC-8: CAGRA distance-to-similarity incorrect for non-unit-norm (sentiment) | Algorithm | cagra.rs:328 | |
-| 15 | OB-8: `llm_summary_pass` uses 13 `eprint!/eprintln!` in library code | Observability | llm.rs:312+ | |
-| 16 | RM-15: `PRAGMA quick_check` on every Store open — 20-50ms per command | Resource Mgmt | store/mod.rs:290 | |
-| 17 | EH-15: `anyhow::Result` in config.rs write functions | Error Handling | config.rs:285,372 | |
+| 1 | SEC-7: HNSW bincode deserialization from untrusted files — OOM via crafted lengths | Security | hnsw/persist.rs:414 | ✅ fixed |
+| 2 | DOC-11: SECURITY/PRIVACY claim offline-only — false with `--llm-summaries` | Documentation | SECURITY.md:36, PRIVACY.md:5 | ✅ fixed |
+| 3 | DOC-10: README documents `--json` for commands that use `--format json` | Documentation | README.md:160,207,213 | ✅ fixed |
+| 4 | RB-8/RB-9: `to_uppercase()` byte offset on original string — panics on non-ASCII SQL | Robustness | parser/chunk.rs:130,200 | ✅ fixed |
+| 5 | RB-10: `byte_offset_to_point` slices at unchecked byte offset | Robustness | parser/injection.rs:147, aspx.rs:96 | ✅ fixed |
+| 6 | EH-13/EH-14: `anyhow::Result` in project.rs and llm.rs library code | Error Handling | project.rs, llm.rs | ✅ fixed |
+| 7 | CQ-7: `search_filtered` / `search_by_candidate_ids` duplicate ~120 lines post-scoring | Code Quality | search.rs:900,1099 | ✅ fixed |
+| 8 | CQ-8: Test detection logic divergent across 3 places | Code Quality | lib.rs:210, search.rs:482, calls.rs:117 | ✅ fixed |
+| 9 | AD-16: Missing `serialize_path_normalized` on 12+ PathBuf fields | API Design | impact/types.rs, drift.rs, review.rs, etc. | ✅ fixed |
+| 10 | PB-8/PB-9/PB-15: ORT provider code `#[cfg(unix)]` should be `#[cfg(target_os = "linux")]` | Platform | embedder.rs:686,719,760 | ✅ fixed |
+| 11 | PB-13/DS-12: Notes path normalization mismatch with chunks | Platform/Data | store/notes.rs:105,195,249 | ✅ fixed |
+| 12 | DS-7: LLM batch resume can skip newly-added chunks | Data Safety | llm.rs:461 | ✅ fixed |
+| 13 | DS-10: Failed batch status check submits duplicate — wastes API credits | Data Safety | llm.rs:491 | ✅ fixed |
+| 14 | AC-8: CAGRA distance-to-similarity incorrect for non-unit-norm (sentiment) | Algorithm | cagra.rs:328 | ✅ documented |
+| 15 | OB-8: `llm_summary_pass` uses 13 `eprint!/eprintln!` in library code | Observability | llm.rs:312+ | ✅ fixed |
+| 16 | RM-15: `PRAGMA quick_check` on every Store open — 20-50ms per command | Resource Mgmt | store/mod.rs:290 | ✅ fixed |
+| 17 | EH-15: `anyhow::Result` in config.rs write functions | Error Handling | config.rs:285,372 | ✅ fixed |
 
 ## P3: Easy + Low Impact — Fix If Time
 

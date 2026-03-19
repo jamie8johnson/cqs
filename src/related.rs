@@ -11,6 +11,7 @@ use crate::store::Store;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RelatedFunction {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub overlap_count: u32,

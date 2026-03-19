@@ -420,10 +420,8 @@ fn process_file_changes(
                                     // Save updated index to disk for search processes
                                     if let Err(e) = index.save(cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
-                                    } else {
-                                        if let Err(e) = store.set_hnsw_dirty(false) {
-                                            tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
-                                        }
+                                    } else if let Err(e) = store.set_hnsw_dirty(false) {
+                                        tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
                                     }
                                     info!(
                                         inserted = n,

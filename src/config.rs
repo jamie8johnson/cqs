@@ -6,10 +6,27 @@
 //!
 //! CLI flags override all config file values.
 
-use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+/// Typed error for config file operations (EH-15).
+///
+/// Used by `add_reference_to_config` and `remove_reference_from_config`.
+/// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("TOML parse error: {0}")]
+    Parse(#[from] toml::de::Error),
+    #[error("TOML serialize error: {0}")]
+    Serialize(#[from] toml::ser::Error),
+    #[error("Duplicate reference: {0}")]
+    DuplicateReference(String),
+    #[error("Invalid config format: {0}")]
+    InvalidFormat(String),
+}
 
 /// Detect if running under Windows Subsystem for Linux (cached)
 #[cfg(unix)]
@@ -282,7 +299,7 @@ impl Config {
 pub fn add_reference_to_config(
     config_path: &Path,
     ref_config: &ReferenceConfig,
-) -> anyhow::Result<()> {
+) -> Result<(), ConfigError> {
     // Acquire exclusive lock for the entire read-modify-write cycle.
     // Read through the locked fd to avoid TOCTOU between lock and read.
     let mut lock_file = std::fs::OpenOptions::new()
@@ -299,9 +316,7 @@ pub fn add_reference_to_config(
     let mut table: toml::Table = if content.is_empty() {
         toml::Table::new()
     } else {
-        content
-            .parse()
-            .with_context(|| format!("Failed to parse {}", config_path.display()))?
+        content.parse()?
     };
 
     // Check for duplicate name
@@ -313,16 +328,15 @@ pub fn add_reference_to_config(
                 .unwrap_or(false)
         });
         if has_duplicate {
-            anyhow::bail!(
+            return Err(ConfigError::DuplicateReference(format!(
                 "Reference '{}' already exists in {}",
                 ref_config.name,
                 config_path.display()
-            );
+            )));
         }
     }
 
-    let ref_value = toml::Value::try_from(ref_config)
-        .with_context(|| "Failed to serialize reference config")?;
+    let ref_value = toml::Value::try_from(ref_config)?;
 
     let refs = table
         .entry("reference")
@@ -330,7 +344,11 @@ pub fn add_reference_to_config(
 
     match refs {
         toml::Value::Array(arr) => arr.push(ref_value),
-        _ => anyhow::bail!("'reference' in config is not an array"),
+        _ => {
+            return Err(ConfigError::InvalidFormat(
+                "'reference' in config is not an array".to_string(),
+            ))
+        }
     }
 
     // Atomic write: temp file + rename (while holding lock)
@@ -351,16 +369,15 @@ pub fn add_reference_to_config(
         let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
         if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
-            anyhow::bail!(
+            return Err(ConfigError::Io(std::io::Error::other(format!(
                 "rename failed ({}), copy fallback failed: {}",
-                rename_err,
-                copy_err
-            );
+                rename_err, copy_err
+            ))));
         }
         let _ = std::fs::remove_file(&tmp_path);
         if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
             let _ = std::fs::remove_file(&fallback_tmp);
-            anyhow::bail!("fallback rename failed: {}", e);
+            return Err(ConfigError::Io(e));
         }
     }
 
@@ -369,7 +386,7 @@ pub fn add_reference_to_config(
 }
 
 /// Remove a reference from a config file by name (read-modify-write)
-pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::Result<bool> {
+pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bool, ConfigError> {
     // Acquire exclusive lock for the entire read-modify-write cycle.
     // Read through the locked fd to avoid TOCTOU between lock and read.
     let mut lock_file = match std::fs::OpenOptions::new()
@@ -379,7 +396,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
     {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(e) => return Err(e.into()),
+        Err(e) => return Err(ConfigError::Io(e)),
     };
     lock_file.lock()?;
 
@@ -387,9 +404,7 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
     use std::io::Read;
     lock_file.read_to_string(&mut content)?;
 
-    let mut table: toml::Table = content
-        .parse()
-        .with_context(|| format!("Failed to parse {}", config_path.display()))?;
+    let mut table: toml::Table = content.parse()?;
 
     let removed = if let Some(toml::Value::Array(arr)) = table.get_mut("reference") {
         let before = arr.len();
@@ -428,16 +443,15 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> anyhow::R
             let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
             if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
                 let _ = std::fs::remove_file(&tmp_path);
-                anyhow::bail!(
+                return Err(ConfigError::Io(std::io::Error::other(format!(
                     "rename failed ({}), copy fallback failed: {}",
-                    rename_err,
-                    copy_err
-                );
+                    rename_err, copy_err
+                ))));
             }
             let _ = std::fs::remove_file(&tmp_path);
             if let Err(e) = std::fs::rename(&fallback_tmp, config_path) {
                 let _ = std::fs::remove_file(&fallback_tmp);
-                anyhow::bail!("fallback rename failed: {}", e);
+                return Err(ConfigError::Io(e));
             }
         }
     }

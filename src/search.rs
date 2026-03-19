@@ -462,45 +462,21 @@ impl<'a> NoteBoostIndex<'a> {
 
 /// Compute search-time importance multiplier for a chunk.
 ///
-/// Demotes test functions and underscore-prefixed private helpers.
+/// Demotes test functions (via [`is_test_chunk`](crate::is_test_chunk)) and
+/// underscore-prefixed private helpers.
 /// Applied as a multiplier like `note_boost`, so it composes: `score * note_boost * importance`.
 ///
-/// | Signal                   | Detection                                        | Multiplier |
-/// |--------------------------|--------------------------------------------------|------------|
-/// | Test function (name)     | name starts with `test_` or `Test`               | 0.70       |
-/// | Test file (filename)     | filename contains `_test.` or starts with `test_` | 0.70      |
-/// | Underscore-prefixed      | name starts with `_` (not `__`)                  | 0.80       |
-///
-/// File-based detection uses only the filename, not the full path — being inside a
-/// `tests/` directory doesn't demote. This avoids false positives on test fixtures
-/// and monorepo layouts.
+/// | Signal                   | Detection                           | Multiplier |
+/// |--------------------------|-------------------------------------|------------|
+/// | Test chunk               | `crate::is_test_chunk(name, path)`  | 0.70       |
+/// | Underscore-prefixed      | name starts with `_` (not `__`)     | 0.80       |
 ///
 /// Returns 1.0 (no change) when demotion doesn't apply.
 const IMPORTANCE_TEST: f32 = 0.70;
 const IMPORTANCE_PRIVATE: f32 = 0.80;
 
 fn chunk_importance(name: &str, file_path: &str) -> f32 {
-    // Name-based: test function
-    if name.starts_with("test_")
-        || name.starts_with("Test")
-        || name.starts_with("spec_")
-        || name.ends_with("_test")
-        || name.ends_with("_spec")
-    {
-        return IMPORTANCE_TEST;
-    }
-    // File-based: test file (by filename, not full path)
-    let filename = file_path.rsplit('/').next().unwrap_or(file_path);
-    if filename.contains("_test.")
-        || filename.contains(".test.")
-        || filename.contains(".spec.")
-        || filename.contains("_spec.")
-        || filename.starts_with("test_")
-    {
-        return IMPORTANCE_TEST;
-    }
-    // Path-based: tests/ directory
-    if file_path.contains("/tests/") || file_path.starts_with("tests/") {
+    if crate::is_test_chunk(name, file_path) {
         return IMPORTANCE_TEST;
     }
     // Underscore-prefixed private (but not dunder like __init__)
@@ -897,77 +873,92 @@ impl Store {
                 }
             }
 
-            let mut scored = score_heap.into_sorted_vec();
+            let scored = score_heap.into_sorted_vec();
 
-            // Normalize + sanitize query text for FTS5 MATCH (defense-in-depth)
-            let normalized_query = if fsql.use_rrf {
-                let normalized = normalize_for_fts(&filter.query_text);
-                Some(sanitize_fts_query(&normalized))
-            } else {
-                None
-            };
-
-            let final_scored: Vec<(String, f32)> = if fsql.use_rrf {
-                let fts_ids = if let Some(nq) = normalized_query.as_ref() {
-                    if nq.is_empty() {
-                        vec![]
-                    } else {
-                        let fts_rows: Vec<(String,)> = sqlx::query_as(
-                            "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
-                        )
-                        .bind(nq)
-                        .bind(semantic_limit as i64)
-                        .fetch_all(&self.pool)
-                        .await?;
-                        fts_rows.into_iter().map(|(id,)| id).collect()
-                    }
-                } else {
-                    vec![]
-                };
-                let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
-                // Request extra candidates from RRF to compensate for parent dedup
-                // filtering below — dedup can drop results, leaving fewer than `limit`.
-                Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
-            } else {
-                scored.truncate(limit);
-                scored
-            };
-
-            if final_scored.is_empty() {
-                return Ok(vec![]);
-            }
-
-            // Phase 2: Fetch full content only for top-N results
-            let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
-            let rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
-
-            let mut seen_parents: HashSet<String> = HashSet::new();
-            let mut results: Vec<SearchResult> = final_scored
-                .into_iter()
-                .filter_map(|(id, score)| {
-                    rows_map.get(&id).and_then(|row| {
-                        let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                        if seen_parents.insert(dedup_key) {
-                            Some(SearchResult {
-                                chunk: ChunkSummary::from(row.clone()),
-                                score,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect();
-
-            // Boost container chunks when multiple child methods appear in results
-            apply_parent_boost(&mut results);
-
-            // Truncate back to requested limit after parent dedup
-            results.truncate(limit);
+            let results = self
+                .finalize_results(scored, &filter.query_text, fsql.use_rrf, limit)
+                .await?;
 
             tracing::debug!(count = results.len(), "search_filtered complete");
             Ok(results)
         })
+    }
+
+    /// Post-scoring pipeline: RRF fusion, content fetch, parent dedup, boost, truncate.
+    ///
+    /// Shared by `search_filtered` and `search_by_candidate_ids`. Both produce
+    /// `Vec<(chunk_id, score)>` through different scoring paths (brute-force vs
+    /// index-guided), then converge here for the same finalization steps.
+    ///
+    /// When `use_rrf` is true, fuses semantic rankings with FTS keyword results
+    /// via Reciprocal Rank Fusion before fetching full content. Requests `limit * 2`
+    /// candidates from RRF to compensate for parent dedup filtering.
+    async fn finalize_results(
+        &self,
+        mut scored: Vec<(String, f32)>,
+        query_text: &str,
+        use_rrf: bool,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, StoreError> {
+        // Step 1: RRF fusion with FTS keyword search, or plain truncate
+        let final_scored: Vec<(String, f32)> = if use_rrf {
+            let normalized = normalize_for_fts(query_text);
+            let sanitized = sanitize_fts_query(&normalized);
+            let fts_ids = if sanitized.is_empty() {
+                vec![]
+            } else {
+                let fts_rows: Vec<(String,)> = sqlx::query_as(
+                    "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
+                )
+                .bind(&sanitized)
+                .bind((limit * 3) as i64)
+                .fetch_all(&self.pool)
+                .await?;
+                fts_rows.into_iter().map(|(id,)| id).collect()
+            };
+            let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
+            // Request extra candidates from RRF to compensate for parent dedup
+            // filtering below — dedup can drop results, leaving fewer than `limit`.
+            Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
+        } else {
+            scored.truncate(limit);
+            scored
+        };
+
+        if final_scored.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Step 2: Fetch full content only for top-N results (PF-5 payoff —
+        // heavy content/doc/signature columns loaded only for winners)
+        let ids: Vec<&str> = final_scored.iter().map(|(id, _)| id.as_str()).collect();
+        let rows_map = self.fetch_chunks_by_ids_async(&ids).await?;
+
+        // Step 3: Parent dedup — keep first occurrence per parent_id
+        let mut seen_parents: HashSet<String> = HashSet::new();
+        let mut results: Vec<SearchResult> = final_scored
+            .into_iter()
+            .filter_map(|(id, score)| {
+                let row = rows_map.get(&id)?;
+                let dedup_key = row.parent_id.clone().unwrap_or_else(|| row.id.clone());
+                if seen_parents.insert(dedup_key) {
+                    Some(SearchResult {
+                        chunk: ChunkSummary::from(row.clone()),
+                        score,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Step 4: Boost container chunks when multiple child methods appear
+        apply_parent_boost(&mut results);
+
+        // Step 5: Truncate back to requested limit after parent dedup
+        results.truncate(limit);
+
+        Ok(results)
     }
 
     /// Search with optional vector index for O(log n) candidate retrieval
@@ -1036,9 +1027,7 @@ impl Store {
         self.rt.block_on(async {
             // Phase 1: Lightweight candidate fetch — only scoring fields + embedding.
             // Excludes heavy content/doc/signature columns (PF-5).
-            let candidates = self
-                .fetch_candidates_by_ids_async(candidate_ids)
-                .await?;
+            let candidates = self.fetch_candidates_by_ids_async(candidate_ids).await?;
 
             // Compile glob pattern once outside the loop (not per-chunk).
             let glob_matcher = compile_glob_filter(filter.path_pattern.as_ref());
@@ -1054,12 +1043,14 @@ impl Store {
             let note_index = NoteBoostIndex::new(&notes);
 
             // Pre-build filter sets once — avoids per-candidate string parsing (PF-1)
-            let lang_set: Option<HashSet<String>> = filter.languages.as_ref().map(|langs| {
-                langs.iter().map(|l| l.to_string().to_lowercase()).collect()
-            });
-            let type_set: Option<HashSet<String>> = filter.chunk_types.as_ref().map(|types| {
-                types.iter().map(|t| t.to_string().to_lowercase()).collect()
-            });
+            let lang_set: Option<HashSet<String>> = filter
+                .languages
+                .as_ref()
+                .map(|langs| langs.iter().map(|l| l.to_string().to_lowercase()).collect());
+            let type_set: Option<HashSet<String>> = filter
+                .chunk_types
+                .as_ref()
+                .map(|types| types.iter().map(|t| t.to_string().to_lowercase()).collect());
 
             let mut scored: Vec<(CandidateRow, f32)> = candidates
                 .into_iter()
@@ -1096,71 +1087,11 @@ impl Store {
 
             scored.sort_by(|a, b| b.1.total_cmp(&a.1));
 
-            // Apply RRF fusion with FTS keyword search (same pattern as search_filtered)
-            let final_scored: Vec<(String, f32)> = if use_rrf {
-                let normalized = normalize_for_fts(&filter.query_text);
-                let sanitized = sanitize_fts_query(&normalized);
-                let fts_ids = if sanitized.is_empty() {
-                    vec![]
-                } else {
-                    let fts_rows: Vec<(String,)> = sqlx::query_as(
-                        "SELECT id FROM chunks_fts WHERE chunks_fts MATCH ?1 ORDER BY bm25(chunks_fts) LIMIT ?2",
-                    )
-                    .bind(&sanitized)
-                    .bind((limit * 3) as i64)
-                    .fetch_all(&self.pool)
-                    .await?;
-                    fts_rows.into_iter().map(|(id,)| id).collect()
-                };
-                let semantic_ids: Vec<&str> =
-                    scored.iter().map(|(c, _)| c.id.as_str()).collect();
-                // Request extra candidates from RRF to compensate for parent dedup
-                Self::rrf_fuse(&semantic_ids, &fts_ids, limit * 2)
-            } else {
-                scored
-                    .iter()
-                    .take(limit)
-                    .map(|(c, score)| (c.id.clone(), *score))
-                    .collect()
-            };
+            let scored: Vec<(String, f32)> =
+                scored.into_iter().map(|(c, score)| (c.id, score)).collect();
 
-            if final_scored.is_empty() {
-                return Ok(vec![]);
-            }
-
-            // Phase 2: Fetch full content only for survivors (~limit*2 rows
-            // instead of all candidates). This is the PF-5 payoff — heavy
-            // content/doc/signature columns skipped for the 500+ scoring
-            // candidates, loaded only for the ~20 winners.
-            let fetch_ids: Vec<&str> =
-                final_scored.iter().map(|(id, _)| id.as_str()).collect();
-            let full_rows = self.fetch_chunks_by_ids_async(&fetch_ids).await?;
-
-            let mut seen_parents: HashSet<String> = HashSet::new();
-            let mut results: Vec<SearchResult> = final_scored
-                .into_iter()
-                .filter_map(|(id, score)| {
-                    let row = full_rows.get(&id)?;
-                    let dedup_key =
-                        row.parent_id.clone().unwrap_or_else(|| row.id.clone());
-                    if seen_parents.insert(dedup_key) {
-                        Some(SearchResult {
-                            chunk: ChunkSummary::from(row.clone()),
-                            score,
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            // Boost container chunks when multiple child methods appear in results
-            apply_parent_boost(&mut results);
-
-            // Truncate back to requested limit after parent dedup
-            results.truncate(limit);
-
-            Ok(results)
+            self.finalize_results(scored, &filter.query_text, use_rrf, limit)
+                .await
         })
     }
 

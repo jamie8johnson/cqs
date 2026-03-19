@@ -402,6 +402,30 @@ impl HnswIndex {
         let id_map: Vec<String> = serde_json::from_reader(id_map_reader)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
 
+        // SEC-7: Validate data file size against id_map before bincode deserialization.
+        // A crafted file could claim more vectors than the id_map supports, causing
+        // unbounded allocation during deserialization. Each vector is EMBEDDING_DIM f32s,
+        // with 2x headroom for HNSW graph overhead (neighbor lists, metadata).
+        if !id_map.is_empty() {
+            let expected_max_data =
+                id_map.len() * crate::EMBEDDING_DIM * std::mem::size_of::<f32>() * 2;
+            let data_meta = std::fs::metadata(&data_path).map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to stat data file {}: {}",
+                    data_path.display(),
+                    e
+                ))
+            })?;
+            if data_meta.len() as usize > expected_max_data {
+                return Err(HnswError::Internal(format!(
+                    "HNSW data file ({} bytes) too large for {} vectors (max {} bytes)",
+                    data_meta.len(),
+                    id_map.len(),
+                    expected_max_data
+                )));
+            }
+        }
+
         // Load HNSW graph using self_cell for safe self-referential ownership
         //
         // hnsw_rs returns Hnsw<'a> borrowing from &'a mut HnswIo.
@@ -642,6 +666,36 @@ mod tests {
                 );
             }
             Ok(_) => panic!("Expected error for oversized data file"),
+        }
+    }
+
+    #[test]
+    fn test_load_rejects_data_too_large_for_id_map() {
+        let tmp = TempDir::new().unwrap();
+
+        let graph_path = tmp.path().join("test.hnsw.graph");
+        let data_path = tmp.path().join("test.hnsw.data");
+        let ids_path = tmp.path().join("test.hnsw.ids");
+
+        std::fs::write(&graph_path, b"dummy").unwrap();
+
+        // id_map claims 2 vectors, but data file is far larger than
+        // 2 * 769 * 4 * 2 = 12,304 bytes would allow
+        std::fs::write(&ids_path, r#"["a","b"]"#).unwrap();
+        let f = std::fs::File::create(&data_path).unwrap();
+        f.set_len(1_000_000).unwrap(); // ~1MB >> 12KB limit
+        write_checksums(tmp.path(), "test");
+
+        match HnswIndex::load(tmp.path(), "test") {
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("data file") && msg.contains("too large for"),
+                    "Expected data/id_map size mismatch error, got: {}",
+                    msg
+                );
+            }
+            Ok(_) => panic!("Expected error for data file exceeding id_map capacity"),
         }
     }
 
