@@ -144,6 +144,8 @@ fn advance_cursor(cursor: &mut tree_sitter::TreeCursor) -> bool {
 /// Used by `_inner` content mode where we compute content ranges from source text
 /// rather than from tree-sitter node positions.
 fn byte_offset_to_point(source: &str, byte: usize) -> tree_sitter::Point {
+    let byte = byte.min(source.len());
+    let byte = source.floor_char_boundary(byte);
     let before = &source[..byte];
     let row = before.as_bytes().iter().filter(|&&b| b == b'\n').count();
     let col = before.len() - before.rfind('\n').map(|p| p + 1).unwrap_or(0);
