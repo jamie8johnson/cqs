@@ -12,6 +12,39 @@ use crate::nl::tokenize_identifier;
 use crate::note::path_matches_mention;
 use crate::store::helpers::{NoteSummary, SearchFilter, SearchResult};
 
+// ============ Scoring Configuration ============
+
+/// Central configuration for all search scoring constants.
+///
+/// Consolidates name matching tiers, note boost factor, importance
+/// demotion weights, and parent boost parameters into one struct.
+/// Use `ScoringConfig::DEFAULT` everywhere — no scattered magic numbers.
+pub(crate) struct ScoringConfig {
+    pub name_exact: f32,
+    pub name_contains: f32,
+    pub name_contained_by: f32,
+    pub name_max_overlap: f32,
+    pub note_boost_factor: f32,
+    pub importance_test: f32,
+    pub importance_private: f32,
+    pub parent_boost_per_child: f32,
+    pub parent_boost_cap: f32,
+}
+
+impl ScoringConfig {
+    pub const DEFAULT: Self = Self {
+        name_exact: 1.0,
+        name_contains: 0.8,
+        name_contained_by: 0.6,
+        name_max_overlap: 0.5,
+        note_boost_factor: 0.15,
+        importance_test: 0.70,
+        importance_private: 0.80,
+        parent_boost_per_child: 0.05,
+        parent_boost_cap: 1.15,
+    };
+}
+
 // ============ Name Matching ============
 
 /// Detect whether a query looks like a code identifier vs natural language.
@@ -99,29 +132,24 @@ impl NameMatcher {
         }
     }
 
-    // Name match score tiers
-    const SCORE_EXACT: f32 = 1.0;
-    const SCORE_CONTAINS: f32 = 0.8;
-    const SCORE_CONTAINED_BY: f32 = 0.6;
-    const SCORE_MAX_OVERLAP: f32 = 0.5;
-
     /// Compute name match score against pre-tokenized query
     pub fn score(&self, name: &str) -> f32 {
+        let cfg = &ScoringConfig::DEFAULT;
         let name_lower = name.to_lowercase();
 
         // Exact match
         if name_lower == self.query_lower {
-            return Self::SCORE_EXACT;
+            return cfg.name_exact;
         }
 
         // Name contains query as substring
         if name_lower.contains(&self.query_lower) {
-            return Self::SCORE_CONTAINS;
+            return cfg.name_contains;
         }
 
         // Query contains name as substring
         if self.query_lower.contains(&name_lower) {
-            return Self::SCORE_CONTAINED_BY;
+            return cfg.name_contained_by;
         }
 
         // Word overlap scoring
@@ -172,7 +200,7 @@ impl NameMatcher {
             .count() as f32;
         let total = self.query_words.len().max(1) as f32;
 
-        (overlap / total) * Self::SCORE_MAX_OVERLAP
+        (overlap / total) * cfg.name_max_overlap
     }
 }
 
@@ -237,19 +265,13 @@ pub(crate) fn name_match_score(query: &str, name: &str) -> f32 {
     NameMatcher::new(query).score(name)
 }
 
-/// Multiplicative boost factor for note-matched code chunks.
-///
-/// A note with sentiment +1 boosts the chunk's score by 15%.
-/// A note with sentiment -1 reduces it by 15%.
-const NOTE_BOOST_FACTOR: f32 = 0.15;
-
 /// Compute the note-based score boost for a chunk.
 ///
 /// Checks if any note's mentions match the chunk's file path or name.
 /// When multiple notes match, takes the strongest absolute sentiment
 /// (preserving sign) to avoid averaging away strong signals.
 ///
-/// Returns a multiplier: `1.0 + sentiment * NOTE_BOOST_FACTOR`
+/// Returns a multiplier: `1.0 + sentiment * ScoringConfig::DEFAULT.note_boost_factor`
 ///
 /// Production code uses [`NoteBoostIndex::boost`] for amortized O(1) lookups.
 /// This function is retained for unit tests.
@@ -273,7 +295,7 @@ fn note_boost(file_path: &str, chunk_name: &str, notes: &[NoteSummary]) -> f32 {
         }
     }
     match strongest {
-        Some(s) => 1.0 + s * NOTE_BOOST_FACTOR,
+        Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
         None => 1.0,
     }
 }
@@ -332,7 +354,7 @@ impl<'a> NoteBoostIndex<'a> {
     /// for suffix/prefix matches. Takes strongest absolute sentiment across all
     /// matches (preserving sign).
     ///
-    /// Returns a multiplier: `1.0 + sentiment * NOTE_BOOST_FACTOR`
+    /// Returns a multiplier: `1.0 + sentiment * note_boost_factor`
     #[inline]
     pub fn boost(&self, file_path: &str, chunk_name: &str) -> f32 {
         let mut strongest: Option<f32> = None;
@@ -358,7 +380,7 @@ impl<'a> NoteBoostIndex<'a> {
         }
 
         match strongest {
-            Some(s) => 1.0 + s * NOTE_BOOST_FACTOR,
+            Some(s) => 1.0 + s * ScoringConfig::DEFAULT.note_boost_factor,
             None => 1.0,
         }
     }
@@ -376,16 +398,14 @@ impl<'a> NoteBoostIndex<'a> {
 /// | Underscore-prefixed      | name starts with `_` (not `__`)     | 0.80       |
 ///
 /// Returns 1.0 (no change) when demotion doesn't apply.
-const IMPORTANCE_TEST: f32 = 0.70;
-const IMPORTANCE_PRIVATE: f32 = 0.80;
-
 pub(crate) fn chunk_importance(name: &str, file_path: &str) -> f32 {
+    let cfg = &ScoringConfig::DEFAULT;
     if crate::is_test_chunk(name, file_path) {
-        return IMPORTANCE_TEST;
+        return cfg.importance_test;
     }
     // Underscore-prefixed private (but not dunder like __init__)
     if name.starts_with('_') && !name.starts_with("__") {
-        return IMPORTANCE_PRIVATE;
+        return cfg.importance_private;
     }
     1.0
 }
@@ -401,7 +421,7 @@ pub(crate) fn chunk_importance(name: &str, file_path: &str) -> f32 {
 /// Algorithm: count how many results have `parent_type_name == X`. If a
 /// Class/Struct/Interface chunk named `X` also appears in results, boost it.
 ///
-/// Boost magnitude: `1.0 + 0.05 × (child_count - 1)`, capped at 1.15.
+/// Boost magnitude: `1.0 + parent_boost_per_child × (child_count - 1)`, capped at `parent_boost_cap`.
 /// With 2 children → 1.05×, 3 → 1.10×, 4+ → 1.15×.
 ///
 /// Re-sorts results by score after boosting.
@@ -423,6 +443,8 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         return;
     }
 
+    let cfg = &ScoringConfig::DEFAULT;
+    let max_children = (cfg.parent_boost_cap - 1.0) / cfg.parent_boost_per_child;
     let mut boosted = false;
     for r in results.iter_mut() {
         let is_container = matches!(
@@ -434,7 +456,8 @@ pub(crate) fn apply_parent_boost(results: &mut [SearchResult]) {
         }
         if let Some(&count) = parent_counts.get(&r.chunk.name) {
             if count >= 2 {
-                let boost = 1.0 + 0.05 * (count as f32 - 1.0).min(3.0);
+                let boost =
+                    1.0 + cfg.parent_boost_per_child * (count as f32 - 1.0).min(max_children);
                 tracing::debug!(
                     name = %r.chunk.name,
                     child_count = count,
@@ -1040,7 +1063,7 @@ mod tests {
         // Go convention: TestFoo
         assert_eq!(
             chunk_importance("TestParseConfig", "src/lib.go"),
-            IMPORTANCE_TEST
+            ScoringConfig::DEFAULT.importance_test
         );
     }
 
@@ -1048,7 +1071,7 @@ mod tests {
     fn test_chunk_importance_underscore() {
         assert_eq!(
             chunk_importance("_helper", "src/lib.rs"),
-            IMPORTANCE_PRIVATE
+            ScoringConfig::DEFAULT.importance_private
         );
     }
 
@@ -1063,7 +1086,7 @@ mod tests {
         // File named foo_test.rs → demotion via filename
         assert_eq!(
             chunk_importance("helper_fn", "src/foo_test.rs"),
-            IMPORTANCE_TEST
+            ScoringConfig::DEFAULT.importance_test
         );
     }
 
@@ -1072,14 +1095,17 @@ mod tests {
         // Files in tests/ directory are test infrastructure → demoted
         assert_eq!(
             chunk_importance("real_fn", "tests/fixtures/eval.rs"),
-            IMPORTANCE_TEST
+            ScoringConfig::DEFAULT.importance_test
         );
     }
 
     #[test]
     fn test_chunk_importance_test_name_beats_path() {
         // test_ name triggers demotion even in normal directory
-        assert_eq!(chunk_importance("test_foo", "src/lib.rs"), IMPORTANCE_TEST);
+        assert_eq!(
+            chunk_importance("test_foo", "src/lib.rs"),
+            ScoringConfig::DEFAULT.importance_test
+        );
     }
 
     // ===== is_name_like_query tests =====
@@ -1493,7 +1519,7 @@ mod tests {
             boost > 1.0,
             "Positive sentiment should boost > 1.0, got {boost}"
         );
-        assert!((boost - (1.0 + 0.5 * NOTE_BOOST_FACTOR)).abs() < 1e-6);
+        assert!((boost - (1.0 + 0.5 * ScoringConfig::DEFAULT.note_boost_factor)).abs() < 1e-6);
     }
 
     #[test]
@@ -1510,7 +1536,7 @@ mod tests {
             boost < 1.0,
             "Negative sentiment should reduce score, got {boost}"
         );
-        assert!((boost - (1.0 - 1.0 * NOTE_BOOST_FACTOR)).abs() < 1e-6);
+        assert!((boost - (1.0 - 1.0 * ScoringConfig::DEFAULT.note_boost_factor)).abs() < 1e-6);
     }
 
     #[test]
@@ -1558,7 +1584,7 @@ mod tests {
             boost < 1.0,
             "Stronger negative should win over weaker positive, got {boost}"
         );
-        assert!((boost - (1.0 - 1.0 * NOTE_BOOST_FACTOR)).abs() < 1e-6);
+        assert!((boost - (1.0 - 1.0 * ScoringConfig::DEFAULT.note_boost_factor)).abs() < 1e-6);
     }
 
     #[test]
