@@ -17,7 +17,7 @@ use crate::note::path_matches_mention;
 use crate::Store;
 
 /// Result of a comprehensive diff review.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ReviewResult {
     /// Functions changed by the diff
     pub changed_functions: Vec<ReviewedFunction>,
@@ -37,7 +37,7 @@ pub struct ReviewResult {
 }
 
 /// A changed function with its risk assessment.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ReviewedFunction {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -58,7 +58,7 @@ pub struct ReviewNoteEntry {
 }
 
 /// Aggregated risk counts.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RiskSummary {
     pub high: usize,
     pub medium: usize,
@@ -133,9 +133,8 @@ pub fn review_diff(
     let relevant_notes = match match_notes(store, &changed_files) {
         Ok(notes) => notes,
         Err(e) => {
-            let msg = format!("Failed to load notes for review: {e}");
-            tracing::warn!("{}", msg);
-            warnings.push(msg);
+            tracing::warn!(error = %e, "Failed to load notes for review");
+            warnings.push(format!("Failed to load notes for review: {e}"));
             Vec::new()
         }
     };
@@ -146,9 +145,8 @@ pub fn review_diff(
         Ok(stale) if stale.is_empty() => None,
         Ok(stale) => Some(stale.into_iter().collect()),
         Err(e) => {
-            let msg = format!("Failed to check staleness: {e}");
-            tracing::warn!("{}", msg);
-            warnings.push(msg);
+            tracing::warn!(error = %e, "Failed to check staleness");
+            warnings.push(format!("Failed to check staleness: {e}"));
             None
         }
     };

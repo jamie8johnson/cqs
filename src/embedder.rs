@@ -398,6 +398,7 @@ impl Embedder {
     ///
     /// Large inputs are processed in batches of 64 to cap GPU memory usage.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
+        let _span = tracing::info_span!("embed_documents", count = texts.len()).entered();
         const MAX_BATCH: usize = 64;
         if texts.len() <= MAX_BATCH {
             let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();

@@ -247,13 +247,13 @@ pub fn search_across_projects(
                             Some(mapped)
                         }
                         Err(e) => {
-                            tracing::warn!("Search failed for project '{}': {}", entry.name, e);
+                            tracing::warn!(project = %entry.name, error = %e, "Search failed for project");
                             None
                         }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to open project '{}': {}", entry.name, e);
+                    tracing::warn!(project = %entry.name, error = %e, "Failed to open project");
                     None
                 }
             }

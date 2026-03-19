@@ -303,7 +303,9 @@ pub fn index_notes(
     embedder: &Embedder,
     store: &Store,
 ) -> anyhow::Result<usize> {
-    tracing::info!(path = %notes_path.display(), count = notes.len(), "Indexing notes");
+    let _span =
+        tracing::info_span!("index_notes", path = %notes_path.display(), count = notes.len())
+            .entered();
 
     if notes.is_empty() {
         return Ok(0);
@@ -432,7 +434,7 @@ pub fn enumerate_files(
                 if path.starts_with(&root) {
                     Some(path.strip_prefix(&root).unwrap_or(&path).to_path_buf())
                 } else {
-                    tracing::warn!("Skipping path outside project: {}", e.path().display());
+                    tracing::warn!(path = %e.path().display(), "Skipping path outside project");
                     None
                 }
             }

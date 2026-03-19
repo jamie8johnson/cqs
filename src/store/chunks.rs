@@ -77,51 +77,30 @@ impl Store {
     /// found in the store are logged and skipped (rows_affected == 0).
     /// Returns the count of actually updated rows.
     ///
-    /// Used by the call-graph enrichment pass: chunk content hasn't changed,
-    /// only the NL description (and therefore embedding) is different.
-    /// Skips FTS rebuild since content is unchanged.
+    /// Update embeddings in batch (without changing enrichment hashes).
+    ///
+    /// Convenience wrapper around `update_embeddings_with_hashes_batch` that
+    /// passes `None` for the enrichment hash, leaving it unchanged.
     pub fn update_embeddings_batch(
         &self,
         updates: &[(String, Embedding)],
     ) -> Result<usize, StoreError> {
-        let _span = tracing::info_span!("update_embeddings_batch", count = updates.len()).entered();
-        if updates.is_empty() {
-            return Ok(0);
-        }
-
-        let embedding_bytes: Vec<Vec<u8>> = updates
+        let with_none: Vec<(String, Embedding, Option<String>)> = updates
             .iter()
-            .map(|(_, emb)| embedding_to_bytes(emb))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        self.rt.block_on(async {
-            let mut tx = self.pool.begin().await?;
-            let mut updated = 0usize;
-            for (i, (id, _)) in updates.iter().enumerate() {
-                let result = sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
-                    .bind(&embedding_bytes[i])
-                    .bind(id)
-                    .execute(&mut *tx)
-                    .await?;
-                if result.rows_affected() > 0 {
-                    updated += 1;
-                } else {
-                    tracing::debug!(chunk_id = %id, "Enrichment update found no row");
-                }
-            }
-            tx.commit().await?;
-            Ok(updated)
-        })
+            .map(|(id, emb)| (id.clone(), emb.clone(), None))
+            .collect();
+        self.update_embeddings_with_hashes_batch(&with_none)
     }
 
-    /// Update embeddings and enrichment hashes in batch.
+    /// Update embeddings and optionally enrichment hashes in batch.
     ///
-    /// Like `update_embeddings_batch` but also stores the enrichment hash
-    /// for idempotency detection. Used by the enrichment pass to record
-    /// which call context was used, so re-indexing can skip unchanged chunks.
+    /// When the hash is `Some`, stores the enrichment hash for idempotency
+    /// detection. When `None`, leaves the existing enrichment hash unchanged.
+    /// Used by the enrichment pass to record which call context was used,
+    /// so re-indexing can skip unchanged chunks.
     pub fn update_embeddings_with_hashes_batch(
         &self,
-        updates: &[(String, Embedding, String)],
+        updates: &[(String, Embedding, Option<String>)],
     ) -> Result<usize, StoreError> {
         let _span =
             tracing::info_span!("update_embeddings_with_hashes_batch", count = updates.len())
@@ -139,14 +118,24 @@ impl Store {
             let mut tx = self.pool.begin().await?;
             let mut updated = 0usize;
             for (i, (id, _, hash)) in updates.iter().enumerate() {
-                let result = sqlx::query(
-                    "UPDATE chunks SET embedding = ?1, enrichment_hash = ?2 WHERE id = ?3",
-                )
-                .bind(&embedding_bytes[i])
-                .bind(hash)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
+                let result =
+                    match hash {
+                        Some(h) => sqlx::query(
+                            "UPDATE chunks SET embedding = ?1, enrichment_hash = ?2 WHERE id = ?3",
+                        )
+                        .bind(&embedding_bytes[i])
+                        .bind(h)
+                        .bind(id)
+                        .execute(&mut *tx)
+                        .await?,
+                        None => {
+                            sqlx::query("UPDATE chunks SET embedding = ?1 WHERE id = ?2")
+                                .bind(&embedding_bytes[i])
+                                .bind(id)
+                                .execute(&mut *tx)
+                                .await?
+                        }
+                    };
                 if result.rows_affected() > 0 {
                     updated += 1;
                 } else {
@@ -155,18 +144,6 @@ impl Store {
             }
             tx.commit().await?;
             Ok(updated)
-        })
-    }
-
-    /// Get the enrichment hash for a chunk, if any.
-    pub fn get_enrichment_hash(&self, chunk_id: &str) -> Result<Option<String>, StoreError> {
-        self.rt.block_on(async {
-            let row: Option<(Option<String>,)> =
-                sqlx::query_as("SELECT enrichment_hash FROM chunks WHERE id = ?1")
-                    .bind(chunk_id)
-                    .fetch_optional(&self.pool)
-                    .await?;
-            Ok(row.and_then(|(h,)| h))
         })
     }
 
@@ -257,20 +234,37 @@ impl Store {
         let now = chrono::Utc::now().to_rfc3339();
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
-            for (hash, summary, model) in summaries {
-                sqlx::query(
-                    "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, created_at) \
-                     VALUES (?1, ?2, ?3, ?4)",
-                )
-                .bind(hash)
-                .bind(summary)
-                .bind(model)
-                .bind(&now)
-                .execute(&mut *tx)
-                .await?;
+            const BATCH_SIZE: usize = 166; // 166 * 4 params = 664 < 999
+            for batch in summaries.chunks(BATCH_SIZE) {
+                let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
+                    "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, created_at)",
+                );
+                qb.push_values(batch.iter(), |mut b, (hash, summary, model)| {
+                    b.push_bind(hash)
+                        .push_bind(summary)
+                        .push_bind(model)
+                        .push_bind(&now);
+                });
+                qb.build().execute(&mut *tx).await?;
             }
             tx.commit().await?;
             Ok(summaries.len())
+        })
+    }
+
+    /// Fetch all LLM summaries as a map from content_hash to summary text.
+    ///
+    /// Single query, no batching needed (reads entire table). Used by the
+    /// enrichment pass to avoid per-page summary fetches.
+    pub fn get_all_summaries(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, StoreError> {
+        self.rt.block_on(async {
+            let rows: Vec<(String, String)> =
+                sqlx::query_as("SELECT content_hash, summary FROM llm_summaries")
+                    .fetch_all(&self.pool)
+                    .await?;
+            Ok(rows.into_iter().collect())
         })
     }
 
@@ -503,7 +497,7 @@ impl Store {
             for (origin, stored_mtime) in rows {
                 let path = PathBuf::from(&origin);
                 if !existing_files.contains(&path) {
-                    missing.push(origin);
+                    missing.push(path);
                     continue;
                 }
 
@@ -512,7 +506,7 @@ impl Store {
                     None => {
                         // NULL mtime → treat as stale (can't verify freshness)
                         stale.push(StaleFile {
-                            origin,
+                            file: path,
                             stored_mtime: 0,
                             current_mtime: 0,
                         });
@@ -530,7 +524,7 @@ impl Store {
                 if let Some(current) = current_mtime {
                     if current > stored {
                         stale.push(StaleFile {
-                            origin,
+                            file: path,
                             stored_mtime: stored,
                             current_mtime: current,
                         });
@@ -611,30 +605,6 @@ impl Store {
             }
 
             Ok(stale)
-        })
-    }
-
-    /// Get embedding by content hash (for reuse when content unchanged)
-    ///
-    /// Note: Prefer `get_embeddings_by_hashes` for batch lookups in production.
-    pub fn get_by_content_hash(&self, hash: &str) -> Option<Embedding> {
-        let _span = tracing::debug_span!("get_by_content_hash", hash = %hash).entered();
-        self.rt.block_on(async {
-            let row: Option<(Vec<u8>,)> = match sqlx::query_as(
-                "SELECT embedding FROM chunks WHERE content_hash = ?1 LIMIT 1",
-            )
-            .bind(hash)
-            .fetch_optional(&self.pool)
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("Failed to fetch embedding by content_hash: {}", e);
-                    return None;
-                }
-            };
-
-            row.and_then(|(bytes,)| bytes_to_embedding(&bytes).map(Embedding::new))
         })
     }
 
@@ -1220,7 +1190,7 @@ impl Store {
                 .iter()
                 .map(|row| ChunkIdentity {
                     id: row.get("id"),
-                    origin: row.get("origin"),
+                    file: PathBuf::from(row.get::<String, _>("origin")),
                     name: row.get("name"),
                     chunk_type: {
                         let raw: String = row.get("chunk_type");
@@ -1681,8 +1651,8 @@ mod tests {
         assert_eq!(store.chunk_count().unwrap(), 1);
 
         // Embedding should be the updated one
-        let found = store.get_by_content_hash(&c1.content_hash);
-        assert!(found.is_some());
+        let found = store.get_embeddings_by_hashes(&[&c1.content_hash]).unwrap();
+        assert!(found.contains_key(&c1.content_hash));
     }
 
     #[test]

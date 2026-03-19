@@ -26,11 +26,14 @@ impl HnswIndex {
             return Vec::new();
         }
 
+        let _span =
+            tracing::debug_span!("hnsw_search", k, index_size = self.id_map.len()).entered();
+
         if query.len() != EMBEDDING_DIM {
             tracing::warn!(
-                "Query dimension mismatch: expected {}, got {}",
-                EMBEDDING_DIM,
-                query.len()
+                expected = EMBEDDING_DIM,
+                actual = query.len(),
+                "Query dimension mismatch"
             );
             return Vec::new();
         }
@@ -65,7 +68,7 @@ impl HnswIndex {
                         score,
                     })
                 } else {
-                    tracing::warn!("Invalid index {} in HNSW result", idx);
+                    tracing::warn!(idx, "Invalid index in HNSW result");
                     None
                 }
             })

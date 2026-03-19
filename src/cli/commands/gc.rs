@@ -68,7 +68,9 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
     // concurrent searches fall back to brute-force during the rebuild window
     // rather than returning orphan IDs from the old index (RT-DATA-2).
     let hnsw_vectors = if pruned_chunks > 0 {
-        store.set_hnsw_dirty(true).ok(); // RT-DATA-6: mark before rebuild
+        if let Err(e) = store.set_hnsw_dirty(true) {
+            tracing::warn!(error = %e, "Failed to mark HNSW dirty before rebuild");
+        }
         let hnsw_path = cqs_dir.join("index.hnsw.graph");
         if hnsw_path.exists() {
             for file_name in cqs::hnsw::HNSW_ALL_EXTENSIONS
@@ -90,7 +92,9 @@ pub(crate) fn cmd_gc(json: bool) -> Result<()> {
         }
         let result = build_hnsw_index(&store, &cqs_dir)?;
         if result.is_some() {
-            store.set_hnsw_dirty(false).ok(); // RT-DATA-6
+            if let Err(e) = store.set_hnsw_dirty(false) {
+                tracing::warn!(error = %e, "Failed to clear HNSW dirty flag after rebuild");
+            }
         }
         result
     } else {

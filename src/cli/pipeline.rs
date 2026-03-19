@@ -84,7 +84,7 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
             }
             Err(e) => {
                 // Tokenization failed - pass through unchanged and hope for the best
-                tracing::warn!("Windowing failed for {}: {}, passing through", chunk.id, e);
+                tracing::warn!(chunk_id = %chunk.id, error = %e, "Windowing failed, passing through");
                 result.push(chunk);
             }
         }
@@ -971,6 +971,16 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
     const ENRICH_EMBED_BATCH: usize = 64;
     let mut skipped_count = 0usize;
 
+    // Pre-fetch all LLM summaries once before the page loop (PERF-18).
+    // Single query instead of per-page batched fetches.
+    let all_summaries = match store.get_all_summaries() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to pre-fetch LLM summaries for enrichment");
+            HashMap::new()
+        }
+    };
+
     // Wrap loop in closure so progress bar is always cleaned up on error
     let result: Result<usize> = (|| {
         loop {
@@ -988,17 +998,6 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 .get_enrichment_hashes_batch(&page_ids)
                 .context("Failed to fetch enrichment hashes")?;
 
-            // Pre-fetch LLM summaries for this page (SQ-6)
-            let content_hashes: Vec<&str> =
-                chunks.iter().map(|c| c.content_hash.as_str()).collect();
-            let page_summaries = match store.get_summaries_by_hashes(&content_hashes) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(error = %e, "Failed to fetch LLM summaries for enrichment page");
-                    HashMap::new()
-                }
-            };
-
             for cs in &chunks {
                 progress.inc(1);
 
@@ -1007,7 +1006,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
                 let has_callers = callers.is_some_and(|v| !v.is_empty());
                 let has_callees = callees.is_some_and(|v| !v.is_empty());
-                let summary = page_summaries.get(&cs.content_hash).map(|s| s.as_str());
+                let summary = all_summaries.get(&cs.content_hash).map(|s| s.as_str());
 
                 // Skip chunks with nothing to add: no call context AND no summary
                 if !has_callers && !has_callees && summary.is_none() {
@@ -1147,10 +1146,10 @@ fn flush_enrichment_batch(
 
     // embed_documents returns 768-dim; add neutral sentiment for 769-dim
     // Build updates from batch without draining — only clear after successful write
-    let updates: Vec<(String, Embedding, String)> = batch
+    let updates: Vec<(String, Embedding, Option<String>)> = batch
         .iter()
         .zip(embeddings)
-        .map(|((id, _, hash), emb)| (id.clone(), emb.with_sentiment(0.0), hash.clone()))
+        .map(|((id, _, hash), emb)| (id.clone(), emb.with_sentiment(0.0), Some(hash.clone())))
         .collect();
 
     store

@@ -96,7 +96,9 @@ pub(crate) fn cmd_index(
     // Mark HNSW as dirty before writing chunks — if we crash between SQLite
     // commit and HNSW save, the dirty flag tells the next load to fall back
     // to brute-force search until a full rebuild. (RT-DATA-6)
-    store.set_hnsw_dirty(true).ok();
+    if let Err(e) = store.set_hnsw_dirty(true) {
+        tracing::warn!(error = %e, "Failed to mark HNSW dirty before indexing");
+    }
 
     // Run the 3-stage pipeline: parse → embed → write
     // Pipeline shares the same Store via Arc (no duplicate DB connections)
@@ -212,7 +214,9 @@ pub(crate) fn cmd_index(
 
         if let Some(total) = build_hnsw_index(&store, &cqs_dir)? {
             // HNSW saved successfully — clear dirty flag (RT-DATA-6)
-            store.set_hnsw_dirty(false).ok();
+            if let Err(e) = store.set_hnsw_dirty(false) {
+                tracing::warn!(error = %e, "Failed to clear HNSW dirty flag after HNSW save");
+            }
             if !cli.quiet {
                 println!("  HNSW index: {} vectors", total);
             }
@@ -258,7 +262,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
             Ok((count, false))
         }
         Err(e) => {
-            tracing::warn!("Failed to parse notes: {}", e);
+            tracing::warn!(error = %e, "Failed to parse notes");
             Ok((0, false))
         }
     }

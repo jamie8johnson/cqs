@@ -185,16 +185,37 @@ impl HnswIndex {
                 ))
             })?;
 
-        // Save the ID map to temp directory
-        let id_map_json = serde_json::to_string(&self.id_map)
-            .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
+        // RM-16: Stream ID map directly to file via BufWriter instead of
+        // serializing to an in-memory JSON string first.
         let id_map_temp = temp_dir.join(format!("{}.hnsw.ids", basename));
-        std::fs::write(&id_map_temp, &id_map_json).map_err(|e| {
-            HnswError::Internal(format!("Failed to write {}: {}", id_map_temp.display(), e))
-        })?;
+        {
+            let file = std::fs::File::create(&id_map_temp).map_err(|e| {
+                HnswError::Internal(format!("Failed to create {}: {}", id_map_temp.display(), e))
+            })?;
+            let writer = std::io::BufWriter::new(file);
+            serde_json::to_writer(writer, &self.id_map)
+                .map_err(|e| HnswError::Internal(format!("Failed to serialize ID map: {}", e)))?;
+        }
 
-        // Compute checksums from temp files
-        let ids_hash = blake3::hash(id_map_json.as_bytes());
+        // Compute checksum by reading back the file (avoids holding JSON in memory)
+        let ids_hash = {
+            let file = std::fs::File::open(&id_map_temp).map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to open {} for checksum: {}",
+                    id_map_temp.display(),
+                    e
+                ))
+            })?;
+            let mut hasher = blake3::Hasher::new();
+            hasher.update_reader(file).map_err(|e| {
+                HnswError::Internal(format!(
+                    "Failed to read {} for checksum: {}",
+                    id_map_temp.display(),
+                    e
+                ))
+            })?;
+            hasher.finalize()
+        };
         let mut checksums = vec![format!("hnsw.ids:{}", ids_hash.to_hex())];
         for ext in &["hnsw.graph", "hnsw.data"] {
             let path = temp_dir.join(format!("{}.{}", basename, ext));
@@ -478,16 +499,16 @@ impl HnswIndex {
             Ok(f) => f,
             Err(e) => {
                 tracing::debug!(
-                    "Could not read HNSW id map {}: {}",
-                    id_map_path.display(),
-                    e
+                    path = %id_map_path.display(),
+                    error = %e,
+                    "Could not read HNSW id map"
                 );
                 return None;
             }
         };
         // Acquire shared lock for consistency with load()
         if let Err(e) = file.lock_shared() {
-            tracing::debug!("Could not lock HNSW id map: {}", e);
+            tracing::debug!(error = %e, "Could not lock HNSW id map");
             return None;
         }
         // Guard against oversized id map files
@@ -495,17 +516,17 @@ impl HnswIndex {
         match file.metadata() {
             Ok(meta) if meta.len() > MAX_ID_MAP_SIZE => {
                 tracing::warn!(
-                    "HNSW id map too large ({} bytes): {}",
-                    meta.len(),
-                    id_map_path.display()
+                    size_bytes = meta.len(),
+                    path = %id_map_path.display(),
+                    "HNSW id map too large"
                 );
                 return None;
             }
             Err(e) => {
                 tracing::debug!(
-                    "Could not stat HNSW id map {}: {}",
-                    id_map_path.display(),
-                    e
+                    path = %id_map_path.display(),
+                    error = %e,
+                    "Could not stat HNSW id map"
                 );
                 return None;
             }
@@ -538,7 +559,7 @@ impl HnswIndex {
         match de.deserialize_seq(CountVisitor) {
             Ok(count) => Some(count),
             Err(e) => {
-                tracing::warn!("Corrupted HNSW id map {}: {}", id_map_path.display(), e);
+                tracing::warn!(path = %id_map_path.display(), error = %e, "Corrupted HNSW id map");
                 None
             }
         }

@@ -166,9 +166,9 @@ impl Parser {
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > MAX_FILE_SIZE => {
                 tracing::warn!(
-                    "Skipping large file ({}MB > 50MB limit): {}",
-                    meta.len() / (1024 * 1024),
-                    path.display()
+                    size_mb = meta.len() / (1024 * 1024),
+                    path = %path.display(),
+                    "Skipping large file (> 50MB limit)"
                 );
                 return Ok(vec![]);
             }
@@ -180,7 +180,7 @@ impl Parser {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                tracing::warn!("Skipping non-UTF8 file: {}", path.display());
+                tracing::warn!(path = %path.display(), "Skipping non-UTF8 file");
                 return Ok(vec![]);
             }
             Err(e) => return Err(e.into()),
@@ -257,7 +257,7 @@ impl Parser {
                     chunks.push(chunk);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to extract chunk from {}: {}", path.display(), e);
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to extract chunk");
                 }
             }
         }
@@ -330,9 +330,9 @@ impl Parser {
         match std::fs::metadata(path) {
             Ok(meta) if meta.len() > MAX_FILE_SIZE => {
                 tracing::warn!(
-                    "Skipping large file ({}MB > 50MB limit): {}",
-                    meta.len() / (1024 * 1024),
-                    path.display()
+                    size_mb = meta.len() / (1024 * 1024),
+                    path = %path.display(),
+                    "Skipping large file (> 50MB limit)"
                 );
                 return Ok((vec![], vec![], vec![]));
             }
@@ -344,7 +344,7 @@ impl Parser {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                tracing::warn!("Skipping non-UTF8 file: {}", path.display());
+                tracing::warn!(path = %path.display(), "Skipping non-UTF8 file");
                 return Ok((vec![], vec![], vec![]));
             }
             Err(e) => return Err(e.into()),
@@ -422,7 +422,7 @@ impl Parser {
                     chunks.push(chunk);
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to extract chunk from {}: {}", path.display(), e);
+                    tracing::warn!(path = %path.display(), error = %e, "Failed to extract chunk");
                 }
             }
         }

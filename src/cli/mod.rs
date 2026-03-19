@@ -65,7 +65,7 @@ pub(crate) fn build_vector_index_with_config(
                     return Ok(Some(Box::new(idx) as Box<dyn cqs::index::VectorIndex>));
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to build CAGRA index, falling back to HNSW: {}", e);
+                    tracing::warn!(error = %e, "Failed to build CAGRA index, falling back to HNSW");
                 }
             }
         } else if chunk_count < CAGRA_THRESHOLD {
