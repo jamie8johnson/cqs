@@ -20,6 +20,7 @@ const MODEL: &str = "claude-haiku-4-5";
 const MAX_TOKENS: u32 = 100;
 const MAX_CONTENT_CHARS: usize = 8000;
 const MIN_CONTENT_CHARS: usize = 50;
+const MAX_BATCH_SIZE: usize = 10_000;
 /// Poll interval for batch completion
 const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -27,6 +28,12 @@ const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 pub struct Client {
     http: reqwest::blocking::Client,
     api_key: String,
+}
+
+fn is_valid_batch_id(id: &str) -> bool {
+    id.starts_with("msgbatch_")
+        && id.len() < 100
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 // --- Messages API types ---
@@ -99,20 +106,21 @@ struct ApiErrorDetail {
 }
 
 impl Client {
-    pub fn new(api_key: &str) -> Self {
-        Self {
+    pub fn new(api_key: &str) -> Result<Self> {
+        Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(60))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .expect("Failed to create HTTP client"),
+                .context("Failed to create HTTP client")?,
             api_key: api_key.to_string(),
-        }
+        })
     }
 
     /// Build the prompt for a code chunk.
     fn build_prompt(content: &str, chunk_type: &str, language: &str) -> String {
         let truncated = if content.len() > MAX_CONTENT_CHARS {
-            &content[..MAX_CONTENT_CHARS]
+            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
         } else {
             content
         };
@@ -172,6 +180,9 @@ impl Client {
 
     /// Check the current status of a batch without polling.
     fn check_batch_status(&self, batch_id: &str) -> Result<String> {
+        if !is_valid_batch_id(batch_id) {
+            bail!("Invalid batch ID format: {}", batch_id);
+        }
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
         let response = self
             .http
@@ -192,6 +203,9 @@ impl Client {
 
     /// Poll until a batch completes. Returns when status is "ended".
     fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<()> {
+        if !is_valid_batch_id(batch_id) {
+            bail!("Invalid batch ID format: {}", batch_id);
+        }
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
         loop {
             let response = self
@@ -237,6 +251,9 @@ impl Client {
     ///
     /// Returns a map from custom_id to summary text.
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>> {
+        if !is_valid_batch_id(batch_id) {
+            bail!("Invalid batch ID format: {}", batch_id);
+        }
         let url = format!("{}/messages/batches/{}/results", API_BASE, batch_id);
         let response = self
             .http
@@ -329,7 +346,9 @@ fn resume_or_fetch_batch(
     }
 
     // Clear pending batch marker
-    store.set_pending_batch_id(None).ok();
+    if let Err(e) = store.set_pending_batch_id(None) {
+        tracing::warn!(error = %e, "Failed to clear pending batch ID");
+    }
 
     Ok(count)
 }
@@ -353,7 +372,7 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .context("--llm-summaries requires ANTHROPIC_API_KEY environment variable")?;
-    let client = Client::new(&api_key);
+    let client = Client::new(&api_key).context("Failed to create API client")?;
 
     let mut doc_extracted = 0usize;
     let mut cached = 0usize;
@@ -377,6 +396,7 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         );
     }
 
+    let mut batch_full = false;
     loop {
         let (chunks, next) = store
             .chunks_paged(cursor, PAGE_SIZE)
@@ -436,7 +456,18 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
                     cs.chunk_type.to_string(),
                     cs.language.to_string(),
                 ));
+                if batch_items.len() >= MAX_BATCH_SIZE {
+                    batch_full = true;
+                    break;
+                }
             }
+        }
+        if batch_full {
+            tracing::info!(
+                max = MAX_BATCH_SIZE,
+                "Batch size limit reached, submitting partial batch"
+            );
+            break;
         }
     }
 
@@ -460,62 +491,90 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
     // Phase 2: Submit batch to Claude API (or resume a pending one)
     let api_generated = if batch_items.is_empty() {
         // No new items needed, but check if a previous batch is still pending
-        if let Ok(Some(pending)) = store.get_pending_batch_id() {
-            if !quiet {
-                eprintln!("Resuming pending batch {}", pending);
+        match store.get_pending_batch_id() {
+            Ok(Some(pending)) => {
+                if !quiet {
+                    eprintln!("Resuming pending batch {}", pending);
+                }
+                resume_or_fetch_batch(&client, store, &pending, quiet)?
             }
-            resume_or_fetch_batch(&client, store, &pending, quiet)?
-        } else {
-            0
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read pending batch ID");
+                0
+            }
+            _ => 0,
         }
     } else {
         // Check for a pending batch from a previous interrupted run
-        let batch_id = if let Ok(Some(pending)) = store.get_pending_batch_id() {
-            // Verify it's still valid (not expired/canceled)
-            if !quiet {
-                eprint!("Found pending batch {}, checking status...", pending);
-            }
-            match client.check_batch_status(&pending) {
-                Ok(status) if status == "in_progress" || status == "finalizing" => {
-                    if !quiet {
-                        eprint!(" still processing, resuming\nWaiting for results");
-                    }
-                    pending
+        let batch_id = match store.get_pending_batch_id() {
+            Ok(Some(pending)) => {
+                // Verify it's still valid (not expired/canceled)
+                if !quiet {
+                    eprint!("Found pending batch {}, checking status...", pending);
                 }
-                Ok(status) if status == "ended" => {
-                    if !quiet {
-                        eprintln!(" completed, fetching results");
+                match client.check_batch_status(&pending) {
+                    Ok(status) if status == "in_progress" || status == "finalizing" => {
+                        if !quiet {
+                            eprint!(" still processing, resuming\nWaiting for results");
+                        }
+                        pending
                     }
-                    pending
+                    Ok(status) if status == "ended" => {
+                        if !quiet {
+                            eprintln!(" completed, fetching results");
+                        }
+                        pending
+                    }
+                    _ => {
+                        // Stale/failed batch — submit fresh
+                        if !quiet {
+                            eprintln!(" stale, submitting new batch");
+                            eprint!("Submitting batch of {} to Claude API", batch_items.len());
+                        }
+                        let id = client
+                            .submit_batch(&batch_items)
+                            .context("Failed to submit summary batch")?;
+                        if let Err(e) = store.set_pending_batch_id(Some(&id)) {
+                            tracing::warn!(error = %e, "Failed to store pending batch ID");
+                        }
+                        if !quiet {
+                            eprint!(" (batch {})\nWaiting for results", id);
+                        }
+                        id
+                    }
                 }
-                _ => {
-                    // Stale/failed batch — submit fresh
-                    if !quiet {
-                        eprintln!(" stale, submitting new batch");
-                        eprint!("Submitting batch of {} to Claude API", batch_items.len());
-                    }
-                    let id = client
-                        .submit_batch(&batch_items)
-                        .context("Failed to submit summary batch")?;
-                    store.set_pending_batch_id(Some(&id)).ok();
-                    if !quiet {
-                        eprint!(" (batch {})\nWaiting for results", id);
-                    }
-                    id
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read pending batch ID");
+                if !quiet {
+                    eprint!("Submitting batch of {} to Claude API", batch_items.len());
                 }
+                let id = client
+                    .submit_batch(&batch_items)
+                    .context("Failed to submit summary batch")?;
+                if let Err(e) = store.set_pending_batch_id(Some(&id)) {
+                    tracing::warn!(error = %e, "Failed to store pending batch ID");
+                }
+                if !quiet {
+                    eprint!(" (batch {})\nWaiting for results", id);
+                }
+                id
             }
-        } else {
-            if !quiet {
-                eprint!("Submitting batch of {} to Claude API", batch_items.len());
+            _ => {
+                if !quiet {
+                    eprint!("Submitting batch of {} to Claude API", batch_items.len());
+                }
+                let id = client
+                    .submit_batch(&batch_items)
+                    .context("Failed to submit summary batch")?;
+                if let Err(e) = store.set_pending_batch_id(Some(&id)) {
+                    tracing::warn!(error = %e, "Failed to store pending batch ID");
+                }
+                if !quiet {
+                    eprint!(" (batch {})\nWaiting for results", id);
+                }
+                id
             }
-            let id = client
-                .submit_batch(&batch_items)
-                .context("Failed to submit summary batch")?;
-            store.set_pending_batch_id(Some(&id)).ok();
-            if !quiet {
-                eprint!(" (batch {})\nWaiting for results", id);
-            }
-            id
         };
 
         resume_or_fetch_batch(&client, store, &batch_id, quiet)?
@@ -602,5 +661,29 @@ mod tests {
         let prompt = Client::build_prompt(&long, "function", "rust");
         // Prompt should contain truncated content
         assert!(prompt.len() < 10000 + 200); // prompt overhead + truncated
+    }
+
+    #[test]
+    fn build_prompt_multibyte_no_panic() {
+        let content: String = std::iter::repeat('あ').take(2667).collect();
+        let prompt = Client::build_prompt(&content, "function", "rust");
+        assert!(prompt.len() <= 8100);
+    }
+
+    #[test]
+    fn is_valid_batch_id_accepts_real_ids() {
+        assert!(is_valid_batch_id("msgbatch_abc123"));
+        assert!(is_valid_batch_id("msgbatch_0123456789abcdef_ABCDEF"));
+    }
+
+    #[test]
+    fn is_valid_batch_id_rejects_crafted() {
+        assert!(!is_valid_batch_id("../../v1/complete"));
+        assert!(!is_valid_batch_id("msgbatch_abc?redirect=evil.com"));
+        assert!(!is_valid_batch_id(""));
+        assert!(!is_valid_batch_id("not_a_batch"));
+        assert!(!is_valid_batch_id(
+            &("msgbatch_".to_string() + &"a".repeat(200))
+        ));
     }
 }

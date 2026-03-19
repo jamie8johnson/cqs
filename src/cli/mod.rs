@@ -122,24 +122,6 @@ impl std::fmt::Display for OutputFormat {
     }
 }
 
-/// Confidence level for dead code detection
-#[derive(Clone, Debug, clap::ValueEnum)]
-pub enum DeadConfidenceLevel {
-    Low,
-    Medium,
-    High,
-}
-
-impl From<&DeadConfidenceLevel> for cqs::store::DeadConfidence {
-    fn from(level: &DeadConfidenceLevel) -> Self {
-        match level {
-            DeadConfidenceLevel::Low => Self::Low,
-            DeadConfidenceLevel::Medium => Self::Medium,
-            DeadConfidenceLevel::High => Self::High,
-        }
-    }
-}
-
 /// Gate threshold level for CI pipeline
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum GateLevel {
@@ -568,7 +550,7 @@ enum Commands {
         include_pub: bool,
         /// Minimum confidence level to report
         #[arg(long, default_value = "low")]
-        min_confidence: DeadConfidenceLevel,
+        min_confidence: cqs::store::DeadConfidence,
     },
     /// Gather minimal code context to answer a question
     Gather {
@@ -873,7 +855,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
             include_pub,
             ref min_confidence,
-        }) => cmd_dead(&cli, json, include_pub, min_confidence.into()),
+        }) => cmd_dead(&cli, json, include_pub, *min_confidence),
         Some(Commands::Gather {
             ref query,
             expand,

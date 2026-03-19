@@ -1,124 +1,121 @@
-# Audit Triage — v1.0.7
+# Audit Triage — v1.0.13
 
-## P1: Easy + High Impact (fix now)
+Date: 2026-03-18. 99 findings across 14 categories, 3 batches.
 
-| # | Finding | Status |
-|---|---------|--------|
-| EH-9 | Silent truncation on embedding count mismatch — add assert | ✅ fixed |
-| EH-11 | Drain-before-write loses items on store error — drain after success | ✅ fixed |
-| CQ-12 | `generate_nl_with_call_context` has zero tests — core SQ-4 function | ✅ fixed (4 tests) |
-| CQ-7 | `replace_file_chunks` dead code — 100 lines, zero production callers | ✅ removed |
-| CQ-8 | Doc comment merged accident — `extract_file_context` has wrong doc | ✅ fixed |
+## P1: Easy + High Impact — Fix Immediately
 
-## P2: Easy + Medium Impact (fix in batch)
+| # | Finding | Category | Location | Status |
+|---|---------|----------|----------|--------|
+| 1 | RB-7: `build_prompt` byte slice panics on CJK/multi-byte content | Robustness | llm.rs:115 | ✅ fixed |
+| 2 | SEC-5/SEC-6: Stored batch_id unsanitized in URL + reqwest forwards API key on redirect | Security | llm.rs:175,104 | ✅ fixed |
+| 3 | DS-11: `set_hnsw_dirty(true).ok()` silently fails, defeating crash safety | Data Safety | watch.rs:346 | ✅ fixed |
+| 4 | SEC-9: Unbounded `batch_items` accumulation — OOM on large index | Security | llm.rs:368 | ✅ fixed |
+| 5 | EH-8: `Client::new()` panics via `.expect()` in library code | Error Handling | llm.rs:107 | ✅ fixed |
+| 6 | AC-7: `waterfall_pack` impact/placement overshoot not capped | Algorithm | task.rs:201,228 | ✅ fixed |
+| 7 | DS-8/PB-11: `audit.rs` copy-fallback writes directly to final path (not atomic) | Data Safety | audit.rs:125 | ✅ fixed |
+| 8 | SEC-8: `libc::atexit` cleanup allocates during teardown — deadlock risk | Security | embedder.rs:816 | ✅ fixed |
+| 9 | PB-14/RM-13: `OnceLock::set()` only cleans first directory's symlinks | Platform/Resource | embedder.rs:801 | ✅ fixed |
+| 10 | EH-10: `set_pending_batch_id` errors silently swallowed — duplicate API calls | Error Handling | llm.rs:332,463,500 | ✅ fixed |
+| 11 | RB-11: CAGRA `search()` with k=0 — zero-sized GPU buffers | Robustness | cagra.rs:240 | ✅ fixed |
+| 12 | DOC-8/DOC-9: Schema version says v12, actual is v14 | Documentation | README.md:35, CONTRIBUTING.md:125 | ✅ fixed |
+| 13 | EX-10: plan.rs "Add ChunkType" checklist stale after macro consolidation | Extensibility | plan.rs:148 | ✅ fixed |
+| 14 | EX-12: `DeadConfidence` / `DeadConfidenceLevel` duplicate enums | Extensibility | calls.rs:31, cli/mod.rs:127 | ✅ fixed |
+| 15 | DOC-13: CHANGELOG missing entries for PRs #605 and #613 | Documentation | CHANGELOG.md:8 | ✅ fixed |
 
-| # | Finding | Status |
-|---|---------|--------|
-| AD-13 | `generate_nl_with_call_context` 5 positional params — fold into `CallContext` | |
-| AD-14 | `callee_document_frequencies` misnamed — returns counts not frequencies | ✅ renamed to `callee_caller_counts` |
-| CQ-10 | Same as AD-14 — IDF metric name/impl mismatch | ✅ fixed with AD-14 |
-| EH-8 | Progress bar dangling on error — use guard pattern | ✅ fixed (closure pattern) |
-| EH-10 | `update_embeddings_batch` no-ops silently for missing IDs | ✅ fixed (rows_affected check) |
-| EH-12 | `unwrap()` on progress template — use `expect()` | ✅ fixed |
-| OB-8 | `enrichment_pass` missing skip metrics and timing | |
-| CQ-9 | `NlTemplate::Standard` doc stale — says "current" but Compact is used | ✅ fixed |
+## P2: Medium Effort + High Impact — Fix in Batch
 
-## P3: Easy + Low Impact (fix if time)
+| # | Finding | Category | Location | Status |
+|---|---------|----------|----------|--------|
+| 1 | SEC-7: HNSW bincode deserialization from untrusted files — OOM via crafted lengths | Security | hnsw/persist.rs:414 | |
+| 2 | DOC-11: SECURITY/PRIVACY claim offline-only — false with `--llm-summaries` | Documentation | SECURITY.md:36, PRIVACY.md:5 | |
+| 3 | DOC-10: README documents `--json` for commands that use `--format json` | Documentation | README.md:160,207,213 | |
+| 4 | RB-8/RB-9: `to_uppercase()` byte offset on original string — panics on non-ASCII SQL | Robustness | parser/chunk.rs:130,200 | |
+| 5 | RB-10: `byte_offset_to_point` slices at unchecked byte offset | Robustness | parser/injection.rs:147, aspx.rs:96 | |
+| 6 | EH-13/EH-14: `anyhow::Result` in project.rs and llm.rs library code | Error Handling | project.rs, llm.rs | |
+| 7 | CQ-7: `search_filtered` / `search_by_candidate_ids` duplicate ~120 lines post-scoring | Code Quality | search.rs:900,1099 | |
+| 8 | CQ-8: Test detection logic divergent across 3 places | Code Quality | lib.rs:210, search.rs:482, calls.rs:117 | |
+| 9 | AD-16: Missing `serialize_path_normalized` on 12+ PathBuf fields | API Design | impact/types.rs, drift.rs, review.rs, etc. | |
+| 10 | PB-8/PB-9/PB-15: ORT provider code `#[cfg(unix)]` should be `#[cfg(target_os = "linux")]` | Platform | embedder.rs:686,719,760 | |
+| 11 | PB-13/DS-12: Notes path normalization mismatch with chunks | Platform/Data | store/notes.rs:105,195,249 | |
+| 12 | DS-7: LLM batch resume can skip newly-added chunks | Data Safety | llm.rs:461 | |
+| 13 | DS-10: Failed batch status check submits duplicate — wastes API credits | Data Safety | llm.rs:491 | |
+| 14 | AC-8: CAGRA distance-to-similarity incorrect for non-unit-norm (sentiment) | Algorithm | cagra.rs:328 | |
+| 15 | OB-8: `llm_summary_pass` uses 13 `eprint!/eprintln!` in library code | Observability | llm.rs:312+ | |
+| 16 | RM-15: `PRAGMA quick_check` on every Store open — 20-50ms per command | Resource Mgmt | store/mod.rs:290 | |
+| 17 | EH-15: `anyhow::Result` in config.rs write functions | Error Handling | config.rs:285,372 | |
 
-| # | Finding | Status |
-|---|---------|--------|
-| AD-15 | `update_embeddings_batch` String role undocumented — add doc comment | ✅ fixed |
-| AD-16 | `chunks_paged` cursor convention inconsistent with `embedding_batches` | |
-| AD-17 | `enrichment_pass` `quiet: bool` leaks CLI concern — add doc comment | |
-| OB-10 | `chunks_paged` no result metrics in span | |
-| OB-11 | `flush_enrichment_batch` missing tracing span | |
-| OB-12 | `callee_document_frequencies` no result count in span | |
-| DOC-1 | CONTRIBUTING.md missing vue.rs, aspx.rs | ✅ fixed |
-| DOC-2 | IDF threshold not in rustdoc | |
-| DOC-3 | README schema version auto-migration unclear | |
-| DOC-4 | store/chunks.rs module doc incomplete | |
+## P3: Easy + Low Impact — Fix If Time
 
-## Batch 2 — P1
+| # | Finding | Category | Location | Status |
+|---|---------|----------|----------|--------|
+| 1 | AD-13: `OnboardEntry.language` String → Language enum | API Design | onboard.rs:57 | |
+| 2 | AD-14: `DiffEntry`/`DiffResult` missing Serialize/Clone | API Design | diff.rs:14,27 | |
+| 3 | AD-15: `TestSuggestion.suggested_file` String → PathBuf | API Design | impact/types.rs:120 | |
+| 4 | AD-17: `ChunkIdentity.origin` String → PathBuf | API Design | store/helpers.rs:335 | |
+| 5 | AD-18: `StaleFile.origin` String → PathBuf | API Design | store/helpers.rs:402 | |
+| 6 | AD-19: `SuggestedNote` missing Serialize/Clone | API Design | suggest.rs:24 | |
+| 7 | AD-20: Inconsistent Clone derives across 13+ result types | API Design | multiple | |
+| 8 | AD-21: `GatherDirection` missing Serialize | API Design | gather.rs:89 | |
+| 9 | AD-22: `ReferenceIndex` missing Debug | API Design | reference.rs:17 | |
+| 10 | CQ-9: `get_enrichment_hash` dead code (zero callers) | Code Quality | store/chunks.rs:162 | |
+| 11 | CQ-10: `NlTemplate` 7 unused variants | Code Quality | nl.rs:238 | |
+| 12 | CQ-12: `get_by_content_hash` superseded by batch variant | Code Quality | store/chunks.rs:620 | |
+| 13 | CQ-13: Test fixture `setup_store()`/`mock_embedding()` copy-pasted 4+ times | Code Quality | search.rs, chunks.rs, calls.rs, etc. | |
+| 14 | CQ-14: `update_embeddings_batch` strict subset of `_with_hashes` variant | Code Quality | store/chunks.rs:83,122 | |
+| 15 | OB-9: 14 `tracing::warn!` calls use positional format instead of structured | Observability | multiple (14 sites) | |
+| 16 | OB-10: `embed_documents` missing outer span for multi-batch | Observability | embedder.rs:400 | |
+| 17 | OB-11: `HnswIndex::search` missing tracing span | Observability | hnsw/search.rs:24 | |
+| 18 | OB-12: `set_hnsw_dirty().ok()` — missing warn on failure (7 sites) | Observability | watch.rs, gc.rs, index.rs | |
+| 19 | OB-13: `index_notes` uses info! but no info_span! | Observability | lib.rs:291 | |
+| 20 | OB-14: `review.rs` warn via pre-formatted message string | Observability | review.rs:136,149 | |
+| 21 | DOC-12: SECURITY.md Write Access missing `.cqs.toml` and `projects.toml` | Documentation | SECURITY.md:63 | |
+| 22 | DOC-14: README missing `--llm-summaries` flag | Documentation | README.md:476 | |
+| 23 | EH-11: `get_summaries_by_hashes` error swallowed in enrichment | Error Handling | pipeline.rs:996 | |
+| 24 | EH-16: `convert_directory` ignores top-level `read_dir` failure | Error Handling | convert/mod.rs:333 | |
+| 25 | PB-10: symlink path comparison without canonicalization | Platform | embedder.rs:783 | |
+| 26 | PB-12: `ref list --json` uses `to_string_lossy` without normalize | Platform | reference.rs:183 | |
+| 27 | EX-6: `Pattern` enum 4 manual sync points | Extensibility | structural.rs:10 | |
+| 28 | EX-7: `capture_name_to_chunk_type` manual sync point | Extensibility | parser/types.rs:18 | |
+| 29 | PERF-11: `upsert_summaries_batch` per-row INSERT | Performance | store/chunks.rs:258 | |
+| 30 | PERF-13: `llm_summary_pass` clones full content per chunk | Performance | llm.rs:434 | |
+| 31 | PERF-15: `apply_parent_boost` clones strings into HashMap | Performance | search.rs:534 | |
+| 32 | PERF-16: `MODEL.to_string()` allocated per batch item | Performance | llm.rs:135 | |
+| 33 | PERF-17: per-candidate `.to_lowercase()` in filter check | Performance | search.rs:1057 | |
+| 34 | PERF-18: summaries fetched per page without caching | Performance | pipeline.rs:994 | |
+| 35 | RM-11: `embed_documents` prefixed copy of all strings upfront | Resource Mgmt | embedder.rs:402 | |
+| 36 | RM-12: CAGRA redundant host array allocation per search | Resource Mgmt | cagra.rs:240 | |
+| 37 | RM-16: HNSW id_map serialized to in-memory JSON string | Resource Mgmt | hnsw/persist.rs:189 | |
+| 38 | RM-17: watch mode mtime pruning skips multi-file batches | Resource Mgmt | watch.rs:355 | |
+| 39 | RM-14: `Store::open` multi-threaded tokio with all cores | Resource Mgmt | store/mod.rs:221 | |
 
-| # | Finding | Status |
-|---|---------|--------|
-| RB-B1 | Call context lookup by name not ID — `new`/`parse`/`build` get merged callers across files | ✅ fixed (skip ambiguous names) |
+## P4: Hard or Low Impact — Create Issues
 
-## Batch 2 — P2
+| # | Finding | Category | Location | Status |
+|---|---------|----------|----------|--------|
+| 1 | PERF-12: CAGRA rebuilds index from scratch after every search | Performance | cagra.rs:285 | |
+| 2 | PERF-14/RM-19/RM-20: Enrichment pass loads full call graph + identities upfront | Perf/Resource | pipeline.rs:939 | |
+| 3 | CQ-11: `Store::open` / `open_readonly` 80% duplication | Code Quality | store/mod.rs:219,315 | |
+| 4 | EX-8: CLI/batch command arg duplication across 30 commands | Extensibility | cli/mod.rs, batch/commands.rs | |
+| 5 | EX-9: LLM config compile-time constants, no env/config override | Extensibility | llm.rs:17 | |
+| 6 | EX-11: Search scoring constants scattered across 3 files | Extensibility | search.rs, store/mod.rs, helpers.rs | |
+| 7 | DS-9: Watch mode Store never re-opened — OnceLock caches stale | Data Safety | watch.rs:135 | |
+| 8 | RM-18: BatchContext refs accumulate without eviction | Resource Mgmt | batch/mod.rs:79 | |
+| 9 | TC-8: LLM summary store functions zero tests | Test Coverage | store/chunks.rs:214 | |
+| 10 | TC-9: Schema migrations v12→v14 zero tests | Test Coverage | store/migrations.rs:134 | |
+| 11 | TC-10: `set_hnsw_dirty` / `is_hnsw_dirty` zero tests | Test Coverage | store/mod.rs:769 | |
+| 12 | TC-11: `chunks_paged` zero tests | Test Coverage | store/chunks.rs:1160 | |
+| 13 | TC-12: `extract_first_sentence` edge cases (URLs with periods) | Test Coverage | llm.rs:542 | |
+| 14 | TC-13: `Store::open_readonly` zero tests | Test Coverage | store/mod.rs:315 | |
+| 15 | TC-14: `watch.rs` zero tests (671 lines) | Test Coverage | cli/watch.rs | |
+| 16 | TC-15: Notes store 1 test / 8 functions | Test Coverage | store/notes.rs | |
+| 17 | TC-16: `cached_notes_summaries` cache invalidation untested | Test Coverage | store/mod.rs:831 | |
 
-| # | Finding | Status |
-|---|---------|--------|
-| AC-B1 | IDF comment says >10% but code uses >=0.10 — boundary mismatch | ✅ fixed |
-| AC-B2 | `page_size=500` is a `let` not a `const` — inconsistent with `ENRICH_EMBED_BATCH` | ✅ fixed → `ENRICHMENT_PAGE_SIZE` |
-| TC-B1 | `update_embeddings_batch` and `chunks_paged` — zero unit tests | |
-| TC-B2 | `callee_caller_counts` — no unit tests | |
+## Summary
 
-## Batch 2 — P3
-
-| # | Finding | Status |
-|---|---------|--------|
-| TC-B3 | No integration test for `enrichment_pass` | |
-| RB-B2 | Enrichment pass pre-loads full call graph into memory | |
-| EX-B1 | Four enrichment tuning params hardcoded, no config surface | |
-
-## Batch 3 — P2
-
-| # | Finding | Status |
-|---|---------|--------|
-| RM-B2 | Enrichment creates fresh Embedder — doubles model init time (~500ms) | deferred — refactoring pipeline embedder ownership is non-trivial |
-| PERF-B3 | `generate_nl_description` called twice per enriched chunk | deferred — storing base NL requires schema change |
-
-## Batch 3 — P3
-
-| # | Finding | Status |
-|---|---------|--------|
-| DS-B1 | Partial enrichment on failure — already-enriched not tracked for skip | |
-| DS-B2 | `chunks_paged` cursor may return fewer rows than page_size after pruning | |
-| DS-B3 | `name_file_count` HashMap clones names unnecessarily | |
-| PERF-B2 | Full enrichment on every `cqs index` even for incremental changes | |
-
-## Batch 3 — P4
-
-| # | Finding | Status |
-|---|---------|--------|
-| PERF-B1 | `chunks_paged` loads full content for skipped chunks — fetch ID-only first | |
-| RM-B1 | Pre-loaded callers/callees maps ~60-80MB for 50K chunks | |
-
-## Red Team — P1
-
-| # | Finding | Status |
-|---|---------|--------|
-| RT-DATA-1 | HNSW ID desync on zero-vector skip — `base_idx + i` vs `id_map.len()` | ✅ fixed |
-
-## Red Team — P2
-
-| # | Finding | Status |
-|---|---------|--------|
-| RT-INJ-1 | `CQS_PDF_SCRIPT` env var arbitrary script execution via malicious .envrc | |
-| RT-DATA-5 | Batch/chat OnceLock caches never invalidate — stale after external index | |
-| RT-DATA-6 | SQLite commit and HNSW save not atomic — crash leaves desync | |
-
-## Red Team — P3
-
-| # | Finding | Status |
-|---|---------|--------|
-| RT-DATA-2 | Enrichment pass no idempotency marker — partial state on interrupt | |
-| RT-DATA-3 | Watch mode HNSW orphan accumulation — no deletion API | |
-| RT-FS-1 | `read_context_lines` reads files from DB paths without boundary check | |
-| RT-FS-2 | `resolve_parent_context` same gap as RT-FS-1 | |
-| RT-INJ-2 | Batch `read_line` OOM before 1MB check (post-hoc) | |
-| RT-RES-1 | Chat mode no input length limit | |
-| RT-DATA-4 | Notes file lock vs atomic rename race | |
-
-## Red Team — P4
-
-| # | Finding | Status |
-|---|---------|--------|
-| RT-RES-2 | `node_letter()` fragile u8 cast | |
-
-## P4: Medium/Hard or Low Impact (create issues)
-
-| # | Finding | Status |
-|---|---------|--------|
-| OB-9 | `update_embeddings_batch` per-row UPDATE — batch with QueryBuilder | |
-| CQ-11 | `batch_count_query` format! SQL injection pattern — add enum restriction | |
+| Priority | Count | Key themes |
+|----------|-------|-----------|
+| P1 | 15 | Panics (RB-7, EH-8, RB-11), security (SEC-5/6/8/9), data safety (DS-11, DS-8), algorithm (AC-7) |
+| P2 | 17 | Security (SEC-7), doc accuracy (DOC-10/11), parser panics (RB-8/9/10), error types, path normalization |
+| P3 | 39 | Type consistency (AD-*), dead code (CQ-9/10/12), observability (OB-*), minor perf, derives |
+| P4 | 17 | Test coverage (TC-*), major refactors (CQ-11, EX-8), CAGRA perf (PERF-12), config (EX-9) |
+| **Total** | **88** | (99 findings, 11 overlaps consolidated) |

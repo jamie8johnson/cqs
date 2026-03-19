@@ -198,7 +198,7 @@ pub(crate) fn waterfall_pack(
         index_pack(&test_counts, tests_budget, overhead_per_item, |i| {
             1.0 / (result.tests[i].call_depth as f32 + 1.0)
         });
-    remaining = remaining.saturating_sub(risk_used + tests_used);
+    remaining = remaining.saturating_sub((risk_used + tests_used).min(impact_budget));
 
     // 4. Placement section (+ surplus)
     let placement_budget = ((budget as f64 * WATERFALL_PLACEMENT) as usize
@@ -225,7 +225,7 @@ pub(crate) fn waterfall_pack(
         overhead_per_item,
         |i| result.placement[i].score,
     );
-    remaining = remaining.saturating_sub(placement_used);
+    remaining = remaining.saturating_sub(placement_used.min(placement_budget));
 
     // 5. Notes section — takes whatever budget remains
     let notes_budget = remaining;

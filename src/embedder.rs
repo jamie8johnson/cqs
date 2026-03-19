@@ -700,13 +700,20 @@ fn ensure_ort_provider_libs() {
 
     symlink_providers(&ort_lib_dir, &ort_search_dir, &provider_libs);
 
+    // Collect all symlink paths for cleanup
+    let mut cleanup_paths: Vec<PathBuf> = provider_libs
+        .iter()
+        .map(|lib| ort_search_dir.join(lib))
+        .collect();
+
     // Also symlink into LD_LIBRARY_PATH for other search paths
     if let Some(ld_dir) = find_ld_library_dir(&ort_lib_dir) {
         symlink_providers(&ort_lib_dir, &ld_dir, &provider_libs);
+        cleanup_paths.extend(provider_libs.iter().map(|lib| ld_dir.join(lib)));
     }
 
-    // Register cleanup for CWD symlinks (don't pollute project dirs)
-    register_provider_cleanup(&ort_search_dir, &provider_libs);
+    // Register cleanup for ALL symlinked paths (both directories)
+    register_provider_cleanup(cleanup_paths);
 }
 
 /// Compute the directory ORT's GetRuntimePath() will resolve to.
@@ -793,27 +800,33 @@ fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
     }
 }
 
-/// Register atexit cleanup for provider symlinks we created in CWD.
-/// Only removes symlinks that point to the ORT cache (we created them).
+/// Register atexit cleanup for provider symlinks.
+/// Uses Mutex to support paths from multiple directories.
 #[cfg(unix)]
-fn register_provider_cleanup(dir: &Path, libs: &[&str]) {
-    use std::sync::OnceLock;
-    static CLEANUP_PATHS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+fn register_provider_cleanup(paths: Vec<PathBuf>) {
+    use std::sync::Mutex;
 
-    let paths: Vec<PathBuf> = libs.iter().map(|lib| dir.join(lib)).collect();
-    let _ = CLEANUP_PATHS.set(paths);
+    static CLEANUP_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
-    extern "C" fn cleanup() {
-        if let Some(paths) = CLEANUP_PATHS.get() {
-            for path in paths {
-                // Only remove if it's a symlink (we created it)
-                if path.symlink_metadata().is_ok() && std::fs::read_link(path).is_ok() {
-                    let _ = std::fs::remove_file(path);
+    if let Ok(mut guard) = CLEANUP_PATHS.lock() {
+        guard.extend(paths);
+    }
+
+    // Register atexit handler only once
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    REGISTERED.call_once(|| {
+        extern "C" fn cleanup() {
+            // Note: remove_file may allocate. Acceptable for CLI tool that exits normally.
+            if let Ok(paths) = CLEANUP_PATHS.lock() {
+                for path in paths.iter() {
+                    if path.symlink_metadata().is_ok() && std::fs::read_link(path).is_ok() {
+                        let _ = std::fs::remove_file(path);
+                    }
                 }
             }
         }
-    }
-    unsafe { libc::atexit(cleanup) };
+        unsafe { libc::atexit(cleanup) };
+    });
 }
 
 /// No-op on non-Unix platforms (CUDA provider libs handled differently)

@@ -156,6 +156,10 @@ impl CagraIndex {
             return Vec::new();
         }
 
+        if k == 0 {
+            return Vec::new();
+        }
+
         if query.len() != EMBEDDING_DIM {
             tracing::warn!(
                 "Query dimension mismatch: expected {}, got {}",
