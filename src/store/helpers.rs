@@ -332,7 +332,8 @@ pub struct ChunkIdentity {
     /// Unique chunk identifier
     pub id: String,
     /// Source file path
-    pub origin: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
+    pub file: PathBuf,
     /// Function/class/etc. name
     pub name: String,
     /// Type of code element
@@ -372,7 +373,7 @@ pub struct NoteSummary {
 }
 
 /// A note search result with similarity score
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct NoteSearchResult {
     /// The matching note
     #[serde(flatten)]
@@ -399,7 +400,8 @@ impl NoteSearchResult {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StaleFile {
     /// Source file path (as stored in the index)
-    pub origin: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
+    pub file: PathBuf,
     /// Mtime stored in the index (Unix seconds)
     pub stored_mtime: i64,
     /// Current mtime on disk (Unix seconds)
@@ -407,12 +409,12 @@ pub struct StaleFile {
 }
 
 /// Report of index freshness
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct StaleReport {
     /// Files whose disk mtime is newer than stored mtime
     pub stale: Vec<StaleFile>,
     /// Files in the index that no longer exist on disk
-    pub missing: Vec<String>,
+    pub missing: Vec<PathBuf>,
     /// Total number of unique files in the index
     pub total_indexed: u64,
 }
@@ -433,7 +435,7 @@ pub struct ParentContext {
 ///
 /// Search can return both code chunks and notes. This enum allows
 /// handling them uniformly while preserving type-specific data.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UnifiedResult {
     /// A code chunk search result
     Code(SearchResult),
@@ -649,7 +651,7 @@ impl Default for ModelInfo {
 ///
 /// Provides overview information about the indexed codebase.
 /// Retrieved via `Store::stats()`.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct IndexStats {
     /// Total number of code chunks indexed
     pub total_chunks: u64,

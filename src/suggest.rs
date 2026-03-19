@@ -21,7 +21,7 @@ pub(crate) const HOTSPOT_MIN_CALLERS: usize = 5;
 const SUGGEST_HOTSPOT_POOL: usize = 20;
 
 /// A suggested note from pattern detection.
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SuggestedNote {
     pub text: String,
     pub sentiment: f32,

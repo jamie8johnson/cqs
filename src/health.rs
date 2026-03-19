@@ -23,7 +23,7 @@ pub struct Hotspot {
 }
 
 /// Codebase health report.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct HealthReport {
     pub stats: IndexStats,
     pub stale_count: u64,

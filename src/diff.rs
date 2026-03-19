@@ -11,7 +11,7 @@ use crate::math::full_cosine_similarity;
 use crate::store::{ChunkIdentity, Store, StoreError};
 
 /// A single diff entry
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffEntry {
     /// Function/class name
     pub name: String,
@@ -24,7 +24,7 @@ pub struct DiffEntry {
 }
 
 /// Result of a semantic diff
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffResult {
     /// Source label (reference name)
     pub source: String,
@@ -55,7 +55,7 @@ struct ChunkKey {
 impl From<&ChunkIdentity> for ChunkKey {
     fn from(c: &ChunkIdentity) -> Self {
         ChunkKey {
-            origin: c.origin.clone(),
+            origin: c.file.to_string_lossy().into_owned(),
             name: c.name.clone(),
             chunk_type: c.chunk_type,
         }
@@ -120,7 +120,7 @@ pub fn semantic_diff(
         } else {
             added.push(DiffEntry {
                 name: target_chunk.name.clone(),
-                file: PathBuf::from(&target_chunk.origin),
+                file: target_chunk.file.clone(),
                 chunk_type: target_chunk.chunk_type,
                 similarity: None,
             });
@@ -132,7 +132,7 @@ pub fn semantic_diff(
         if !target_map.contains_key(key) {
             removed.push(DiffEntry {
                 name: source_chunk.name.clone(),
-                file: PathBuf::from(&source_chunk.origin),
+                file: source_chunk.file.clone(),
                 chunk_type: source_chunk.chunk_type,
                 similarity: None,
             });
@@ -160,7 +160,7 @@ pub fn semantic_diff(
                     if sim < threshold {
                         modified.push(DiffEntry {
                             name: target_chunk.name.clone(),
-                            file: PathBuf::from(&target_chunk.origin),
+                            file: target_chunk.file.clone(),
                             chunk_type: target_chunk.chunk_type,
                             similarity: Some(sim),
                         });
@@ -172,7 +172,7 @@ pub fn semantic_diff(
                     // Can't compare — treat as modified
                     modified.push(DiffEntry {
                         name: target_chunk.name.clone(),
-                        file: PathBuf::from(&target_chunk.origin),
+                        file: target_chunk.file.clone(),
                         chunk_type: target_chunk.chunk_type,
                         similarity: None,
                     });

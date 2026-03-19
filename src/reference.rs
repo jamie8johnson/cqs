@@ -14,6 +14,8 @@ use crate::store::{SearchFilter, SearchResult, Store, StoreError, UnifiedResult}
 use crate::Embedding;
 
 /// A loaded reference index ready for searching
+///
+/// Cannot derive `Debug` because `Box<dyn VectorIndex>` is not `Debug`.
 pub struct ReferenceIndex {
     /// Display name
     pub name: String,
@@ -23,6 +25,16 @@ pub struct ReferenceIndex {
     pub index: Option<Box<dyn VectorIndex>>,
     /// Score multiplier (0.0-1.0)
     pub weight: f32,
+}
+
+impl std::fmt::Debug for ReferenceIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReferenceIndex")
+            .field("name", &self.name)
+            .field("weight", &self.weight)
+            .field("has_index", &self.index.is_some())
+            .finish()
+    }
 }
 
 /// A search result tagged with its source

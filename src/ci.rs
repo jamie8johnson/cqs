@@ -27,7 +27,7 @@ pub enum GateThreshold {
 }
 
 /// Result of gate evaluation.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct GateResult {
     /// The threshold that was applied
     pub threshold: GateThreshold,
@@ -38,7 +38,7 @@ pub struct GateResult {
 }
 
 /// Dead code found in files touched by the diff.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DeadInDiff {
     pub name: String,
     #[serde(serialize_with = "crate::serialize_path_normalized")]
@@ -48,7 +48,7 @@ pub struct DeadInDiff {
 }
 
 /// Complete CI analysis report.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct CiReport {
     /// Full review result (impact + risk + notes + staleness)
     pub review: ReviewResult,
