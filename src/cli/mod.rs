@@ -239,6 +239,10 @@ pub struct Cli {
     #[arg(long = "ref")]
     ref_name: Option<String>,
 
+    /// Include reference indexes in search results (default: project only)
+    #[arg(long)]
+    include_refs: bool,
+
     /// Maximum token budget for results (packs highest-scoring into budget)
     #[arg(long, value_parser = parse_nonzero_usize)]
     tokens: Option<usize>,

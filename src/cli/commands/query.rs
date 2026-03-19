@@ -134,7 +134,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     )
 }
 
-/// Project search: search project index (+ references if configured), post-process, display.
+/// Project search: search project index, optionally include references (--include-refs).
 #[allow(clippy::too_many_arguments)]
 fn cmd_query_project(
     cli: &Cli,
@@ -249,9 +249,13 @@ fn cmd_query_project(
         }
     }
 
-    // Load references for multi-index search
-    let config = cqs::config::Config::load(root);
-    let references = reference::load_references(&config.references);
+    // Load references only when --include-refs is set (default: project only)
+    let references = if cli.include_refs {
+        let config = cqs::config::Config::load(root);
+        reference::load_references(&config.references)
+    } else {
+        Vec::new()
+    };
 
     if references.is_empty() {
         if results.is_empty() {
