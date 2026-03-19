@@ -859,7 +859,8 @@ fn test_stress_eval() {
     #[cfg(feature = "llm-summaries")]
     if std::env::var("ANTHROPIC_API_KEY").is_ok() {
         eprintln!("Running LLM summary pass...");
-        match cqs::llm::llm_summary_pass(&store, false) {
+        let config = cqs::config::Config::default();
+        match cqs::llm::llm_summary_pass(&store, false, &config) {
             Ok(count) => eprintln!("  LLM summaries: {} new", count),
             Err(e) => eprintln!("  LLM summary pass failed (continuing without): {}", e),
         }

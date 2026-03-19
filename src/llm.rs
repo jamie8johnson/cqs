@@ -44,10 +44,39 @@ const MAX_BATCH_SIZE: usize = 10_000;
 /// Poll interval for batch completion
 const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+/// Resolved LLM configuration (env vars > config file > constants).
+pub struct LlmConfig {
+    pub api_base: String,
+    pub model: String,
+    pub max_tokens: u32,
+}
+
+impl LlmConfig {
+    /// Resolve config with priority: env vars > config file > hardcoded constants.
+    pub fn resolve(config: &crate::config::Config) -> Self {
+        Self {
+            api_base: std::env::var("CQS_API_BASE")
+                .ok()
+                .or_else(|| config.llm_api_base.clone())
+                .unwrap_or_else(|| API_BASE.to_string()),
+            model: std::env::var("CQS_LLM_MODEL")
+                .ok()
+                .or_else(|| config.llm_model.clone())
+                .unwrap_or_else(|| MODEL.to_string()),
+            max_tokens: std::env::var("CQS_LLM_MAX_TOKENS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .or(config.llm_max_tokens)
+                .unwrap_or(MAX_TOKENS),
+        }
+    }
+}
+
 /// Claude API client for generating summaries.
 pub struct Client {
     http: reqwest::blocking::Client,
     api_key: String,
+    llm_config: LlmConfig,
 }
 
 fn is_valid_batch_id(id: &str) -> bool {
@@ -126,13 +155,14 @@ struct ApiErrorDetail {
 }
 
 impl Client {
-    pub fn new(api_key: &str) -> Result<Self, LlmError> {
+    pub fn new(api_key: &str, llm_config: LlmConfig) -> Result<Self, LlmError> {
         Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(60))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             api_key: api_key.to_string(),
+            llm_config,
         })
     }
 
@@ -154,14 +184,15 @@ impl Client {
     /// `items` is a list of (custom_id, content, chunk_type, language).
     /// Returns the batch ID for polling.
     fn submit_batch(&self, items: &[(String, String, String, String)]) -> Result<String, LlmError> {
-        let model = MODEL.to_string();
+        let model = self.llm_config.model.clone();
+        let max_tokens = self.llm_config.max_tokens;
         let requests: Vec<BatchItem> = items
             .iter()
             .map(|(id, content, chunk_type, language)| BatchItem {
                 custom_id: id.clone(),
                 params: MessagesRequest {
                     model: model.clone(),
-                    max_tokens: MAX_TOKENS,
+                    max_tokens,
                     messages: vec![ChatMessage {
                         role: "user".to_string(),
                         content: Self::build_prompt(content, chunk_type, language),
@@ -170,7 +201,7 @@ impl Client {
             })
             .collect();
 
-        let url = format!("{}/messages/batches", API_BASE);
+        let url = format!("{}/messages/batches", self.llm_config.api_base);
         let response = self
             .http
             .post(&url)
@@ -208,7 +239,7 @@ impl Client {
         if !is_valid_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
-        let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
+        let url = format!("{}/messages/batches/{}", self.llm_config.api_base, batch_id);
         let response = self
             .http
             .get(&url)
@@ -234,7 +265,7 @@ impl Client {
         if !is_valid_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
-        let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
+        let url = format!("{}/messages/batches/{}", self.llm_config.api_base, batch_id);
         loop {
             let response = self
                 .http
@@ -284,7 +315,10 @@ impl Client {
         if !is_valid_batch_id(batch_id) {
             return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
-        let url = format!("{}/messages/batches/{}/results", API_BASE, batch_id);
+        let url = format!(
+            "{}/messages/batches/{}/results",
+            self.llm_config.api_base, batch_id
+        );
         let response = self
             .http
             .get(&url)
@@ -362,7 +396,7 @@ fn resume_or_fetch_batch(
     let results = client.fetch_batch_results(batch_id)?;
 
     // Store API-generated summaries
-    let model = MODEL.to_string();
+    let model = client.llm_config.model.clone();
     let api_summaries: Vec<(String, String, String)> = results
         .into_iter()
         .map(|(hash, summary)| (hash, summary, model.clone()))
@@ -394,15 +428,27 @@ pub struct SummaryEntry {
 /// without API calls.
 ///
 /// Returns the number of new summaries generated.
-pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize, LlmError> {
+pub fn llm_summary_pass(
+    store: &Store,
+    quiet: bool,
+    config: &crate::config::Config,
+) -> Result<usize, LlmError> {
     let _span = tracing::info_span!("llm_summary_pass").entered();
+
+    let llm_config = LlmConfig::resolve(config);
+    tracing::info!(
+        model = %llm_config.model,
+        api_base = %llm_config.api_base,
+        max_tokens = llm_config.max_tokens,
+        "LLM config resolved"
+    );
 
     let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
         LlmError::ApiKeyMissing(
             "--llm-summaries requires ANTHROPIC_API_KEY environment variable".to_string(),
         )
     })?;
-    let client = Client::new(&api_key)?;
+    let client = Client::new(&api_key, llm_config)?;
 
     let mut doc_extracted = 0usize;
     let mut cached = 0usize;
@@ -730,5 +776,69 @@ mod tests {
         assert!(!is_valid_batch_id(
             &("msgbatch_".to_string() + &"a".repeat(200))
         ));
+    }
+
+    #[test]
+    fn llm_config_defaults_from_empty_config() {
+        let config = crate::config::Config::default();
+        let llm = LlmConfig::resolve(&config);
+        assert_eq!(llm.api_base, API_BASE);
+        assert_eq!(llm.model, MODEL);
+        assert_eq!(llm.max_tokens, MAX_TOKENS);
+    }
+
+    #[test]
+    fn llm_config_from_config_file_fields() {
+        let config = crate::config::Config {
+            llm_model: Some("claude-sonnet-4-20250514".to_string()),
+            llm_api_base: Some("https://custom.api/v1".to_string()),
+            llm_max_tokens: Some(200),
+            ..Default::default()
+        };
+        let llm = LlmConfig::resolve(&config);
+        assert_eq!(llm.model, "claude-sonnet-4-20250514");
+        assert_eq!(llm.api_base, "https://custom.api/v1");
+        assert_eq!(llm.max_tokens, 200);
+    }
+
+    #[test]
+    fn llm_config_env_overrides_config_file() {
+        let config = crate::config::Config {
+            llm_model: Some("from-config".to_string()),
+            llm_api_base: Some("https://from-config/v1".to_string()),
+            llm_max_tokens: Some(200),
+            ..Default::default()
+        };
+
+        // Set env vars (scoped to this test via unsafe + cleanup)
+        std::env::set_var("CQS_LLM_MODEL", "from-env");
+        std::env::set_var("CQS_API_BASE", "https://from-env/v1");
+        std::env::set_var("CQS_LLM_MAX_TOKENS", "500");
+
+        let llm = LlmConfig::resolve(&config);
+
+        // Clean up env vars
+        std::env::remove_var("CQS_LLM_MODEL");
+        std::env::remove_var("CQS_API_BASE");
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
+
+        assert_eq!(llm.model, "from-env");
+        assert_eq!(llm.api_base, "https://from-env/v1");
+        assert_eq!(llm.max_tokens, 500);
+    }
+
+    #[test]
+    fn llm_config_invalid_max_tokens_env_falls_through() {
+        let config = crate::config::Config {
+            llm_max_tokens: Some(300),
+            ..Default::default()
+        };
+
+        std::env::set_var("CQS_LLM_MAX_TOKENS", "not_a_number");
+        let llm = LlmConfig::resolve(&config);
+        std::env::remove_var("CQS_LLM_MAX_TOKENS");
+
+        // Invalid env var should fall through to config value
+        assert_eq!(llm.max_tokens, 300);
     }
 }

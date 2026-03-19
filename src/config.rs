@@ -107,6 +107,12 @@ pub struct Config {
     pub stale_check: Option<bool>,
     /// HNSW search width (higher = more accurate but slower, default 100)
     pub ef_search: Option<usize>,
+    /// LLM model name (overridden by CQS_LLM_MODEL env var)
+    pub llm_model: Option<String>,
+    /// LLM API base URL (overridden by CQS_API_BASE env var)
+    pub llm_api_base: Option<String>,
+    /// LLM max tokens for summary generation (overridden by CQS_LLM_MAX_TOKENS env var)
+    pub llm_max_tokens: Option<u32>,
     /// Reference indexes for multi-index search
     #[serde(default, rename = "reference")]
     pub references: Vec<ReferenceConfig>,
@@ -203,6 +209,16 @@ impl Config {
         if let Some(ref mut ef) = self.ef_search {
             clamp_config_usize(ef, "ef_search", 10, 1000);
         }
+        if let Some(ref mut mt) = self.llm_max_tokens {
+            if *mt == 0 || *mt > 4096 {
+                tracing::warn!(
+                    field = "llm_max_tokens",
+                    value = *mt,
+                    "Config value out of bounds, clamping to [1, 4096]"
+                );
+                *mt = (*mt).clamp(1, 4096);
+            }
+        }
     }
 
     /// Load configuration from a specific file
@@ -281,6 +297,9 @@ impl Config {
             verbose: other.verbose.or(self.verbose),
             stale_check: other.stale_check.or(self.stale_check),
             ef_search: other.ef_search.or(self.ef_search),
+            llm_model: other.llm_model.or(self.llm_model),
+            llm_api_base: other.llm_api_base.or(self.llm_api_base),
+            llm_max_tokens: other.llm_max_tokens.or(self.llm_max_tokens),
             references: refs,
         }
     }
@@ -868,5 +887,66 @@ weight = 0.7
         std::fs::write(&config_path, "limit = 5\n").unwrap();
         let config = Config::load(dir.path());
         assert_eq!(config.stale_check, None);
+    }
+
+    #[test]
+    fn test_llm_config_fields() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+llm_model = "claude-sonnet-4-20250514"
+llm_api_base = "https://custom.api/v1"
+llm_max_tokens = 200
+"#,
+        )
+        .unwrap();
+
+        let config = Config::load_file(&config_path).unwrap().unwrap();
+        assert_eq!(
+            config.llm_model.as_deref(),
+            Some("claude-sonnet-4-20250514")
+        );
+        assert_eq!(
+            config.llm_api_base.as_deref(),
+            Some("https://custom.api/v1")
+        );
+        assert_eq!(config.llm_max_tokens, Some(200));
+    }
+
+    #[test]
+    fn test_llm_max_tokens_clamping() {
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join(".cqs.toml");
+
+        // Over max
+        std::fs::write(&config_path, "llm_max_tokens = 9999\n").unwrap();
+        let config = Config::load(dir.path());
+        assert_eq!(config.llm_max_tokens, Some(4096));
+
+        // Zero
+        std::fs::write(&config_path, "llm_max_tokens = 0\n").unwrap();
+        let config = Config::load(dir.path());
+        assert_eq!(config.llm_max_tokens, Some(1));
+    }
+
+    #[test]
+    fn test_llm_config_merge() {
+        let base = Config {
+            llm_model: Some("base-model".into()),
+            llm_max_tokens: Some(100),
+            ..Default::default()
+        };
+        let override_cfg = Config {
+            llm_model: Some("override-model".into()),
+            llm_api_base: Some("https://override/v1".into()),
+            ..Default::default()
+        };
+
+        let merged = base.override_with(override_cfg);
+        assert_eq!(merged.llm_model.as_deref(), Some("override-model"));
+        assert_eq!(merged.llm_api_base.as_deref(), Some("https://override/v1"));
+        assert_eq!(merged.llm_max_tokens, Some(100)); // from base, not overridden
     }
 }

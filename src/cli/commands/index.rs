@@ -153,8 +153,9 @@ pub(crate) fn cmd_index(
         if !cli.quiet {
             println!("Generating LLM summaries...");
         }
-        let count =
-            cqs::llm::llm_summary_pass(&store, cli.quiet).context("LLM summary pass failed")?;
+        let config = cqs::config::Config::load(&root);
+        let count = cqs::llm::llm_summary_pass(&store, cli.quiet, &config)
+            .context("LLM summary pass failed")?;
         if !cli.quiet && count > 0 {
             println!("  LLM summaries: {} new", count);
         }
