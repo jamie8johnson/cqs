@@ -112,7 +112,7 @@ impl Client {
     /// Build the prompt for a code chunk.
     fn build_prompt(content: &str, chunk_type: &str, language: &str) -> String {
         let truncated = if content.len() > MAX_CONTENT_CHARS {
-            &content[..MAX_CONTENT_CHARS]
+            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
         } else {
             content
         };
@@ -602,5 +602,12 @@ mod tests {
         let prompt = Client::build_prompt(&long, "function", "rust");
         // Prompt should contain truncated content
         assert!(prompt.len() < 10000 + 200); // prompt overhead + truncated
+    }
+
+    #[test]
+    fn build_prompt_multibyte_no_panic() {
+        let content: String = std::iter::repeat('あ').take(2667).collect();
+        let prompt = Client::build_prompt(&content, "function", "rust");
+        assert!(prompt.len() <= 8100);
     }
 }
