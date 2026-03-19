@@ -9,10 +9,30 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::Store;
+
+/// Typed error for LLM operations (EH-14).
+///
+/// CLI callers convert to `anyhow::Error` at the boundary via the blanket `From`.
+#[derive(Debug, thiserror::Error)]
+pub enum LlmError {
+    #[error("API key missing: {0}")]
+    ApiKeyMissing(String),
+    #[error("HTTP error: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("API error ({status}): {message}")]
+    Api { status: u16, message: String },
+    #[error("Batch failed: {0}")]
+    BatchFailed(String),
+    #[error("Invalid batch ID: {0}")]
+    InvalidBatchId(String),
+    #[error("JSON parse error: {0}")]
+    Json(#[from] serde_json::Error),
+    #[error("Store error: {0}")]
+    Store(#[from] crate::store::StoreError),
+}
 
 const API_BASE: &str = "https://api.anthropic.com/v1";
 const API_VERSION: &str = "2023-06-01";
@@ -106,13 +126,12 @@ struct ApiErrorDetail {
 }
 
 impl Client {
-    pub fn new(api_key: &str) -> Result<Self> {
+    pub fn new(api_key: &str) -> Result<Self, LlmError> {
         Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(60))
                 .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .context("Failed to create HTTP client")?,
+                .build()?,
             api_key: api_key.to_string(),
         })
     }
@@ -134,7 +153,7 @@ impl Client {
     ///
     /// `items` is a list of (custom_id, content, chunk_type, language).
     /// Returns the batch ID for polling.
-    fn submit_batch(&self, items: &[(String, String, String, String)]) -> Result<String> {
+    fn submit_batch(&self, items: &[(String, String, String, String)]) -> Result<String, LlmError> {
         let requests: Vec<BatchItem> = items
             .iter()
             .map(|(id, content, chunk_type, language)| BatchItem {
@@ -158,30 +177,35 @@ impl Client {
             .header("anthropic-version", API_VERSION)
             .header("content-type", "application/json")
             .json(&BatchRequest { requests })
-            .send()
-            .context("Failed to submit batch")?;
+            .send()?;
 
         let status = response.status();
         if status == 401 {
-            bail!("Invalid ANTHROPIC_API_KEY (401 Unauthorized)");
+            return Err(LlmError::Api {
+                status: 401,
+                message: "Invalid ANTHROPIC_API_KEY (401 Unauthorized)".to_string(),
+            });
         }
         if !status.is_success() {
             let body = response.text().unwrap_or_default();
-            if let Ok(err) = serde_json::from_str::<ApiError>(&body) {
-                bail!("Batch submission failed: {}", err.error.message);
-            }
-            bail!("Batch submission failed: HTTP {status}: {body}");
+            let message = serde_json::from_str::<ApiError>(&body)
+                .map(|err| format!("Batch submission failed: {}", err.error.message))
+                .unwrap_or_else(|_| format!("Batch submission failed: HTTP {status}: {body}"));
+            return Err(LlmError::Api {
+                status: status.as_u16(),
+                message,
+            });
         }
 
-        let batch: BatchResponse = response.json().context("Failed to parse batch response")?;
+        let batch: BatchResponse = response.json()?;
         tracing::info!(batch_id = %batch.id, count = items.len(), "Batch submitted");
         Ok(batch.id)
     }
 
     /// Check the current status of a batch without polling.
-    fn check_batch_status(&self, batch_id: &str) -> Result<String> {
+    fn check_batch_status(&self, batch_id: &str) -> Result<String, LlmError> {
         if !is_valid_batch_id(batch_id) {
-            bail!("Invalid batch ID format: {}", batch_id);
+            return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
         let response = self
@@ -189,22 +213,25 @@ impl Client {
             .get(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .send()
-            .context("Failed to check batch status")?;
+            .send()?;
 
         if !response.status().is_success() {
+            let status = response.status().as_u16();
             let body = response.text().unwrap_or_default();
-            bail!("Batch status check failed: {body}");
+            return Err(LlmError::Api {
+                status,
+                message: format!("Batch status check failed: {body}"),
+            });
         }
 
-        let batch: BatchResponse = response.json().context("Failed to parse batch status")?;
+        let batch: BatchResponse = response.json()?;
         Ok(batch.processing_status)
     }
 
     /// Poll until a batch completes. Returns when status is "ended".
-    fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<()> {
+    fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<(), LlmError> {
         if !is_valid_batch_id(batch_id) {
-            bail!("Invalid batch ID format: {}", batch_id);
+            return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
         loop {
@@ -213,15 +240,18 @@ impl Client {
                 .get(&url)
                 .header("x-api-key", &self.api_key)
                 .header("anthropic-version", API_VERSION)
-                .send()
-                .context("Failed to poll batch status")?;
+                .send()?;
 
             if !response.status().is_success() {
+                let status = response.status().as_u16();
                 let body = response.text().unwrap_or_default();
-                bail!("Batch status check failed: {body}");
+                return Err(LlmError::Api {
+                    status,
+                    message: format!("Batch status check failed: {body}"),
+                });
             }
 
-            let batch: BatchResponse = response.json().context("Failed to parse batch status")?;
+            let batch: BatchResponse = response.json()?;
 
             match batch.processing_status.as_str() {
                 "ended" => {
@@ -229,15 +259,14 @@ impl Client {
                     return Ok(());
                 }
                 "canceling" | "canceled" | "expired" => {
-                    bail!(
+                    return Err(LlmError::BatchFailed(format!(
                         "Batch {} ended with status: {}",
-                        batch_id,
-                        batch.processing_status
-                    );
+                        batch_id, batch.processing_status
+                    )));
                 }
                 _ => {
-                    // "in_progress" or "created"
                     if !quiet {
+                        // Progress dot — tracing has no equivalent for inline progress
                         eprint!(".");
                     }
                     tracing::debug!(batch_id, status = %batch.processing_status, "Batch still processing");
@@ -250,9 +279,9 @@ impl Client {
     /// Fetch results from a completed batch.
     ///
     /// Returns a map from custom_id to summary text.
-    fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>> {
+    fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>, LlmError> {
         if !is_valid_batch_id(batch_id) {
-            bail!("Invalid batch ID format: {}", batch_id);
+            return Err(LlmError::InvalidBatchId(batch_id.to_string()));
         }
         let url = format!("{}/messages/batches/{}/results", API_BASE, batch_id);
         let response = self
@@ -260,18 +289,19 @@ impl Client {
             .get(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .send()
-            .context("Failed to fetch batch results")?;
+            .send()?;
 
         if !response.status().is_success() {
+            let status = response.status().as_u16();
             let body = response.text().unwrap_or_default();
-            bail!("Batch results fetch failed: {body}");
+            return Err(LlmError::Api {
+                status,
+                message: format!("Batch results fetch failed: {body}"),
+            });
         }
 
         // Results are JSONL (one JSON object per line)
-        let body = response
-            .text()
-            .context("Failed to read batch results body")?;
+        let body = response.text()?;
         let mut results = HashMap::new();
 
         for line in body.lines() {
@@ -320,18 +350,15 @@ fn resume_or_fetch_batch(
     store: &Store,
     batch_id: &str,
     quiet: bool,
-) -> Result<usize> {
-    client
-        .wait_for_batch(batch_id, quiet)
-        .context("Batch processing failed")?;
+) -> Result<usize, LlmError> {
+    client.wait_for_batch(batch_id, quiet)?;
 
     if !quiet {
+        // Newline after progress dots
         eprintln!();
     }
 
-    let results = client
-        .fetch_batch_results(batch_id)
-        .context("Failed to fetch batch results")?;
+    let results = client.fetch_batch_results(batch_id)?;
 
     // Store API-generated summaries
     let api_summaries: Vec<(String, String, String)> = results
@@ -340,9 +367,7 @@ fn resume_or_fetch_batch(
         .collect();
     let count = api_summaries.len();
     if !api_summaries.is_empty() {
-        store
-            .upsert_summaries_batch(&api_summaries)
-            .context("Failed to store API summaries")?;
+        store.upsert_summaries_batch(&api_summaries)?;
     }
 
     // Clear pending batch marker
@@ -367,12 +392,15 @@ pub struct SummaryEntry {
 /// without API calls.
 ///
 /// Returns the number of new summaries generated.
-pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
+pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize, LlmError> {
     let _span = tracing::info_span!("llm_summary_pass").entered();
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .context("--llm-summaries requires ANTHROPIC_API_KEY environment variable")?;
-    let client = Client::new(&api_key).context("Failed to create API client")?;
+    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+        LlmError::ApiKeyMissing(
+            "--llm-summaries requires ANTHROPIC_API_KEY environment variable".to_string(),
+        )
+    })?;
+    let client = Client::new(&api_key)?;
 
     let mut doc_extracted = 0usize;
     let mut cached = 0usize;
@@ -388,28 +416,19 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
     // Track content_hashes already queued to avoid duplicate custom_ids in batch
     let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    let stats = store.stats().context("Failed to get index stats")?;
-    if !quiet {
-        eprintln!(
-            "Scanning {} chunks for LLM summaries...",
-            stats.total_chunks
-        );
-    }
+    let stats = store.stats()?;
+    tracing::info!(chunks = stats.total_chunks, "Scanning for LLM summaries");
 
     let mut batch_full = false;
     loop {
-        let (chunks, next) = store
-            .chunks_paged(cursor, PAGE_SIZE)
-            .context("Failed to page chunks")?;
+        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
         if chunks.is_empty() {
             break;
         }
         cursor = next;
 
         let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store
-            .get_summaries_by_hashes(&hashes)
-            .context("Failed to fetch existing summaries")?;
+        let existing = store.get_summaries_by_hashes(&hashes)?;
 
         for cs in &chunks {
             if existing.contains_key(&cs.content_hash) {
@@ -473,30 +492,29 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
 
     // Store doc-comment summaries immediately
     if !to_store.is_empty() {
-        store
-            .upsert_summaries_batch(&to_store)
-            .context("Failed to store doc-comment summaries")?;
+        store.upsert_summaries_batch(&to_store)?;
     }
 
-    if !quiet {
-        eprintln!(
-            "  {} cached, {} from doc comments, {} skipped, {} need API calls",
-            cached,
-            doc_extracted,
-            skipped,
-            batch_items.len()
-        );
-    }
+    tracing::info!(
+        cached,
+        doc_extracted,
+        skipped,
+        api_needed = batch_items.len(),
+        "Summary scan complete"
+    );
 
     // Phase 2: Submit batch to Claude API (or resume a pending one)
     let api_generated = if batch_items.is_empty() {
         // No new items needed, but check if a previous batch is still pending
         match store.get_pending_batch_id() {
             Ok(Some(pending)) => {
-                if !quiet {
-                    eprintln!("Resuming pending batch {}", pending);
-                }
-                resume_or_fetch_batch(&client, store, &pending, quiet)?
+                tracing::info!(batch_id = %pending, "Resuming pending batch");
+                let count = resume_or_fetch_batch(&client, store, &pending, quiet)?;
+                tracing::info!(
+                    count,
+                    "Fetched pending batch results — new chunks will be processed on next run"
+                );
+                count
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to read pending batch ID");
@@ -509,70 +527,50 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         let batch_id = match store.get_pending_batch_id() {
             Ok(Some(pending)) => {
                 // Verify it's still valid (not expired/canceled)
-                if !quiet {
-                    eprint!("Found pending batch {}, checking status...", pending);
-                }
+                tracing::info!(batch_id = %pending, "Found pending batch, checking status");
                 match client.check_batch_status(&pending) {
                     Ok(status) if status == "in_progress" || status == "finalizing" => {
-                        if !quiet {
-                            eprint!(" still processing, resuming\nWaiting for results");
-                        }
+                        tracing::info!(batch_id = %pending, status = %status, "Pending batch still processing, resuming");
+                        pending
+                    }
+                    Ok(status) if status == "created" => {
+                        // Batch queued but not started yet — wait for it
+                        tracing::info!(batch_id = %pending, "Pending batch still queued, waiting");
                         pending
                     }
                     Ok(status) if status == "ended" => {
-                        if !quiet {
-                            eprintln!(" completed, fetching results");
-                        }
+                        tracing::info!(batch_id = %pending, "Pending batch completed, fetching results");
                         pending
                     }
                     _ => {
-                        // Stale/failed batch — submit fresh
-                        if !quiet {
-                            eprintln!(" stale, submitting new batch");
-                            eprint!("Submitting batch of {} to Claude API", batch_items.len());
-                        }
-                        let id = client
-                            .submit_batch(&batch_items)
-                            .context("Failed to submit summary batch")?;
+                        tracing::warn!(old_batch = %pending, "Pending batch status unknown, submitting fresh — old batch results may be lost");
+                        tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
+                        let id = client.submit_batch(&batch_items)?;
                         if let Err(e) = store.set_pending_batch_id(Some(&id)) {
                             tracing::warn!(error = %e, "Failed to store pending batch ID");
                         }
-                        if !quiet {
-                            eprint!(" (batch {})\nWaiting for results", id);
-                        }
+                        tracing::info!(batch_id = %id, "Batch submitted, waiting for results");
                         id
                     }
                 }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to read pending batch ID");
-                if !quiet {
-                    eprint!("Submitting batch of {} to Claude API", batch_items.len());
-                }
-                let id = client
-                    .submit_batch(&batch_items)
-                    .context("Failed to submit summary batch")?;
+                tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
+                let id = client.submit_batch(&batch_items)?;
                 if let Err(e) = store.set_pending_batch_id(Some(&id)) {
                     tracing::warn!(error = %e, "Failed to store pending batch ID");
                 }
-                if !quiet {
-                    eprint!(" (batch {})\nWaiting for results", id);
-                }
+                tracing::info!(batch_id = %id, "Batch submitted, waiting for results");
                 id
             }
             _ => {
-                if !quiet {
-                    eprint!("Submitting batch of {} to Claude API", batch_items.len());
-                }
-                let id = client
-                    .submit_batch(&batch_items)
-                    .context("Failed to submit summary batch")?;
+                tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
+                let id = client.submit_batch(&batch_items)?;
                 if let Err(e) = store.set_pending_batch_id(Some(&id)) {
                     tracing::warn!(error = %e, "Failed to store pending batch ID");
                 }
-                if !quiet {
-                    eprint!(" (batch {})\nWaiting for results", id);
-                }
+                tracing::info!(batch_id = %id, "Batch submitted, waiting for results");
                 id
             }
         };
@@ -587,12 +585,6 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         skipped,
         "LLM summary pass complete"
     );
-    if !quiet {
-        eprintln!(
-            "LLM summaries: {} from API, {} from doc comments, {} cached, {} skipped",
-            api_generated, doc_extracted, cached, skipped
-        );
-    }
 
     Ok(api_generated + doc_extracted)
 }

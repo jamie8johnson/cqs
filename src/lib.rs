@@ -127,7 +127,7 @@ pub use onboard::{
     onboard, onboard_to_json, OnboardEntry, OnboardResult, OnboardSummary, TestEntry, TypeInfo,
     DEFAULT_ONBOARD_DEPTH,
 };
-pub use project::{search_across_projects, ProjectRegistry};
+pub use project::{search_across_projects, ProjectError, ProjectRegistry};
 pub use related::{find_related, RelatedFunction, RelatedResult};
 pub use scout::{
     scout, scout_to_json, scout_with_options, ChunkRole, FileGroup, ScoutChunk, ScoutOptions,
@@ -211,18 +211,27 @@ pub fn is_test_chunk(name: &str, file: &str) -> bool {
     // Name-based patterns (language-agnostic)
     let name_match = name.starts_with("test_")
         || name.starts_with("Test")
+        || name.starts_with("spec_")
         || name.ends_with("_test")
+        || name.ends_with("_spec")
         || name.contains("_test_")
         || name.contains(".test");
     if name_match {
         return true;
     }
+    // File-based patterns (by filename, not full path)
+    let filename = file.rsplit('/').next().unwrap_or(file);
+    if filename.contains("_test.")
+        || filename.contains(".test.")
+        || filename.contains(".spec.")
+        || filename.contains("_spec.")
+        || filename.starts_with("test_")
+    {
+        return true;
+    }
     // Path-based patterns (mirrors TEST_PATH_PATTERNS in store/calls.rs)
     file.contains("/tests/")
         || file.starts_with("tests/")
-        || file.contains("_test.")
-        || file.contains(".test.")
-        || file.contains(".spec.")
         || file.ends_with("_test.go")
         || file.ends_with("_test.py")
 }
@@ -714,5 +723,13 @@ mentions = ["store.rs"]
             files.is_empty(),
             "Should return empty for directory with no supported files"
         );
+    }
+
+    #[test]
+    fn is_test_chunk_spec_patterns() {
+        assert!(is_test_chunk("spec_helper", "src/spec_helper.rb"));
+        assert!(is_test_chunk("user_spec", "spec/user_spec.rb"));
+        assert!(is_test_chunk("normal_fn", "tests/test_main.py"));
+        assert!(!is_test_chunk("inspector", "src/inspect.rs"));
     }
 }
