@@ -241,8 +241,9 @@ impl CagraIndex {
         // IMPORTANT: host arrays must outlive device tensors — ManagedTensor::to_device()
         // copies data to GPU but the DLTensor shape pointer still references the host
         // ndarray's internal shape storage. Dropping the host array = dangling shape pointer.
-        let neighbors_host: Array2<u32> = Array2::zeros((1, k));
-        let distances_host: Array2<f32> = Array2::zeros((1, k));
+        // RM-12: Allocate once and reuse for both to_device() and to_host().
+        let mut neighbors_host: Array2<u32> = Array2::zeros((1, k));
+        let mut distances_host: Array2<f32> = Array2::zeros((1, k));
 
         // Copy to device (shape pointers reference host arrays above)
         let query_device = match cuvs::ManagedTensor::from(&query_host).to_device(&resources) {
@@ -304,15 +305,12 @@ impl CagraIndex {
             return Vec::new();
         }
 
-        // Copy results back to host
-        let mut neighbors_result: Array2<u32> = Array2::zeros((1, k));
-        let mut distances_result: Array2<f32> = Array2::zeros((1, k));
-
-        if let Err(e) = neighbors_device.to_host(&resources, &mut neighbors_result) {
+        // Copy results back to host — reuse the same arrays allocated for to_device() (RM-12)
+        if let Err(e) = neighbors_device.to_host(&resources, &mut neighbors_host) {
             tracing::error!("Failed to copy neighbors from device: {}", e);
             return Vec::new();
         }
-        if let Err(e) = distances_device.to_host(&resources, &mut distances_result) {
+        if let Err(e) = distances_device.to_host(&resources, &mut distances_host) {
             tracing::error!("Failed to copy distances from device: {}", e);
             return Vec::new();
         }
@@ -322,8 +320,8 @@ impl CagraIndex {
 
         // Convert results
         let mut results = Vec::with_capacity(k);
-        let neighbor_row = neighbors_result.row(0);
-        let distance_row = distances_result.row(0);
+        let neighbor_row = neighbors_host.row(0);
+        let distance_row = distances_host.row(0);
 
         for i in 0..k {
             let idx = neighbor_row[i] as usize;

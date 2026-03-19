@@ -353,11 +353,9 @@ fn process_file_changes(
             for (file, mtime) in pre_mtimes {
                 last_indexed_mtime.insert(file, mtime);
             }
-            // Prune entries for deleted files periodically (every 100 reindex cycles)
-            // to prevent unbounded growth. Avoids O(files) exists() calls on every cycle.
-            if last_indexed_mtime.len() > 10_000
-                || (last_indexed_mtime.len() > 1_000 && files.len() == 1)
-            {
+            // RM-17: Prune entries for deleted files when >1,000 entries regardless
+            // of batch size. The files.len() == 1 guard was overly conservative.
+            if last_indexed_mtime.len() > 10_000 || last_indexed_mtime.len() > 1_000 {
                 last_indexed_mtime.retain(|f, _| root.join(f).exists());
             }
             if !quiet {
