@@ -381,6 +381,28 @@ fn build_bm25_corpus(repo_path: &Path, parser: &Parser) -> Vec<(String, String)>
         };
 
         for chunk in &chunks {
+            // Only callable chunks from programming languages as negatives.
+            // Config files (TOML, YAML, JSON, INI) and docs (Markdown) produce
+            // chunks that are too easy to discriminate — the base model already
+            // handles code-vs-prose distinction. Training budget should go toward
+            // hard negatives: similar-looking code functions with different purposes.
+            if !chunk.chunk_type.is_callable() {
+                continue;
+            }
+            if matches!(
+                chunk.language,
+                Language::Toml
+                    | Language::Yaml
+                    | Language::Json
+                    | Language::Ini
+                    | Language::Markdown
+                    | Language::Xml
+                    | Language::Html
+                    | Language::Css
+                    | Language::Latex
+            ) {
+                continue;
+            }
             let hash = blake3::hash(chunk.content.as_bytes()).to_hex().to_string();
             docs.push((hash, chunk.content.clone()));
         }

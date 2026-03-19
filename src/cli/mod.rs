@@ -914,7 +914,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             dedup_cap,
             resume,
             verbose,
-        }) => cmd_train_data(
+        }) => cmd_train_data(cqs::train_data::TrainDataConfig {
             repos,
             output,
             max_commits,
@@ -923,7 +923,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             dedup_cap,
             resume,
             verbose,
-        ),
+        }),
         None => match &cli.query {
             Some(q) => cmd_query(&cli, q),
             None => {

@@ -2,65 +2,61 @@
 
 ## Right Now
 
-**SQ-9 complete + audit P1-P4 done (2026-03-19).** Notes removed from search, 769→768-dim, schema v15. See ROADMAP.md "v1.1.0 Release Plan" for remaining work.
+**v1.1.0 released. Starting `cqs train-data` implementation (SQ-7 prep) (2026-03-19).**
 
-### Done this session (2026-03-18/19)
-- Full 14-category audit: 99 findings, 88 unique after consolidation
-- P1: 15/15 fixed (PR #614)
-- P2: 17/17 fixed (PR #615)
-- P3: 31/39 fixed (PR #616), 7 deferred, 1 wontfix
-- P4 test coverage: 49 new tests (PR #617), 1706 total
-- Search defaults to project-only, `--include-refs` for cross-index (PR #618)
-- Comprehensive docs overhaul (PR #619)
-- SQ-9 Phase 1a dispatched (in progress)
+### Done this session
+- Full 14-category audit: 88 findings, P1-P4 all addressed
+- 10 PRs merged (#614-#623)
+- v1.1.0 released (crates.io + GitHub + 3 platform binaries)
+- SQ-9 complete: notes removed from search, 769→768-dim, schema v15
+- `cqs train-data` spec written and reviewed (3 rounds)
+- LoRA training env installed (conda cqs-train, PyTorch 2.10 + A6000)
 
-### Work Order (see ROADMAP.md for details)
-1. ~~SQ-9~~ ✅ DONE
-2. P3 deferred (EX-6/7, CQ-13, PERF-11/13/16)
-3. P4 refactors (search.rs split, enrichment/ORT extraction, PERF-12, CQ-11, EX-8)
-4. Release v1.1.0
+### In Progress
+- `cqs train-data` command — spec at `docs/superpowers/specs/2026-03-19-train-data-design.md`
+- Need implementation plan then execution
 
-### Branch
-`sq9-notes-simplification` — Phase 1a agent running
+### Key Decisions
+- BM25 hard negatives (with IDF), not same-file negatives
+- Use `git show {commit}:{path}` for commit-time content, not HEAD
+- Query normalization: strip conventional commit prefixes + action verbs
+- Content hash guard on negatives (BLAKE3)
+- Stream JSONL output, checkpoint after each commit
+- New `Parser::parse_source()` API required
 
 ## Pending Changes
 
-ROADMAP.md has v1.1.0 release plan (uncommitted on current branch).
+Uncommitted: spec doc + ROADMAP on main. Push in next PR.
 
 ## Parked
 
 - **SQ-3: Code-specific embedding model** — UniXcoder, CodeBERT
-- **SQ-7: LoRA fine-tune E5 on A6000** — Training data: hard eval + holdout + synthetic pairs
+- **SQ-8: LLM doc comment generation** — write back to source
 - **Post-index name matching** — fuzzy cross-doc references
 - **ref install** — #255
 
+## Upstream Tracking
+
+- cuVS PR #1839 (search &self): merged, expected v26.04.00 (April)
+- cuVS PR #1840 (CAGRA serialize): open, may land v26.04.00
+- cuVS #1277 (CUDA 13 Rust): stalled
+- Audit cuVS + ort bindings: planned post-release
+
 ## Open Issues
 
-### External/Waiting
 - #106: ort stable (rc.12)
-- #63: paste dep unmaintained (RUSTSEC-2024-0436)
-
-### Feature
+- #63: paste dep unmaintained
 - #255: Pre-built reference packages
-
-### Audit
 - #389: CAGRA CPU-side dataset retention
-
-### Red Team (unfixed, accepted/deferred)
-- RT-DATA-3: HNSW orphan accumulation in watch mode (medium — no deletion API)
-- RT-DATA-5: Batch OnceLock stale cache (medium — by design, restart to refresh)
 
 ## Architecture
 
-- Version: 1.0.13 (v1.1.0 in progress)
+- Version: 1.1.0 (released)
 - MSRV: 1.93
-- Schema: v15 (768-dim, notes embedding deprecated)
-- Embeddings: 768-dim (E5-base-v2, sentiment dimension removed in SQ-9)
-- HNSW index: chunks only
+- Schema: v15 (768-dim)
+- Embeddings: 768-dim E5-base-v2
 - 51 languages, 16 ChunkType variants
-- Tests: 1706 pass (with gpu-index)
-- ORT: 1.24.2 (ort crate 2.0.0-rc.12)
-- Error types: ProjectError, LlmError, ConfigError (thiserror in library, anyhow in CLI)
-- Search: project-only by default, --include-refs for references
-- CUDA: 13 (cuVS) + 12 (ORT)
-- Release targets: Linux x86_64, macOS ARM64, Windows x86_64
+- Tests: ~1694
+- Search: project-only by default, --include-refs
+- File structure: search/ (3), embedder/ (2), cli/enrichment.rs, cli/args.rs, test_helpers.rs
+- Training env: conda cqs-train (PyTorch 2.10, sentence-transformers 5.3, peft 0.18, A6000 48GB)

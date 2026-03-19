@@ -1,27 +1,8 @@
-use std::path::PathBuf;
-
 use anyhow::Result;
 
-pub fn cmd_train_data(
-    repos: Vec<PathBuf>,
-    output: PathBuf,
-    max_commits: usize,
-    min_msg_len: usize,
-    max_files: usize,
-    dedup_cap: usize,
-    resume: bool,
-    verbose: bool,
-) -> Result<()> {
-    let config = cqs::train_data::TrainDataConfig {
-        repos,
-        output,
-        max_commits,
-        min_msg_len,
-        max_files,
-        dedup_cap,
-        resume,
-        verbose,
-    };
+use cqs::train_data::TrainDataConfig;
+
+pub fn cmd_train_data(config: TrainDataConfig) -> Result<()> {
     let stats = cqs::train_data::generate_training_data(&config).map_err(|e| anyhow::anyhow!(e))?;
 
     println!(

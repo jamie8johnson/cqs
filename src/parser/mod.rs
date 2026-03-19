@@ -195,15 +195,33 @@ impl Parser {
         let language = Language::from_extension(&ext)
             .ok_or_else(|| ParserError::UnsupportedFileType(ext.to_string()))?;
 
+        self.parse_source(&source, language, path)
+    }
+
+    /// Parse in-memory source code and extract code chunks.
+    ///
+    /// Like `parse_file`, but operates on already-read source content with a
+    /// known language. The `path` is used only for chunk origin metadata
+    /// (`Chunk.file` field), not for filesystem access.
+    ///
+    /// Used by `train_data` to parse `git show` output without writing temp files.
+    pub fn parse_source(
+        &self,
+        source: &str,
+        language: Language,
+        path: &Path,
+    ) -> Result<Vec<Chunk>, ParserError> {
+        let _span = tracing::info_span!("parse_source", path = %path.display()).entered();
+
         // Grammar-less languages use custom parsers
         if language.def().grammar.is_none() {
             return match language {
-                Language::Aspx => crate::parser::aspx::parse_aspx_chunks(&source, path, self),
+                Language::Aspx => crate::parser::aspx::parse_aspx_chunks(source, path, self),
                 _ => {
                     // Markdown (and any future grammar-less language)
-                    let mut chunks = crate::parser::markdown::parse_markdown_chunks(&source, path)?;
-                    let fenced = crate::parser::markdown::extract_fenced_blocks(&source);
-                    chunks.extend(self.parse_fenced_blocks(&fenced, &source, path));
+                    let mut chunks = crate::parser::markdown::parse_markdown_chunks(source, path)?;
+                    let fenced = crate::parser::markdown::extract_fenced_blocks(source);
+                    chunks.extend(self.parse_fenced_blocks(&fenced, source, path));
                     Ok(chunks)
                 }
             };
@@ -216,7 +234,7 @@ impl Parser {
             .map_err(|e| ParserError::ParseFailed(format!("{}", e)))?;
 
         let tree = parser
-            .parse(&source, None)
+            .parse(source, None)
             .ok_or_else(|| ParserError::ParseFailed(path.display().to_string()))?;
 
         // Get or compile query (lazy initialization)
@@ -228,7 +246,7 @@ impl Parser {
         let mut chunks = Vec::new();
 
         while let Some(m) = matches.next() {
-            match self.extract_chunk(&source, m, query, language, path) {
+            match self.extract_chunk(source, m, query, language, path) {
                 Ok(mut chunk) => {
                     // Skip chunks over 100KB (large functions are handled by windowing in the pipeline)
                     if chunk.content.len() > MAX_CHUNK_BYTES {
@@ -243,8 +261,7 @@ impl Parser {
                     // Apply post-process hook (e.g., HCL block reclassification)
                     if let Some(post_process) = language.def().post_process_chunk {
                         if let Some(node) = extract_definition_node(m, query) {
-                            if !post_process(&mut chunk.name, &mut chunk.chunk_type, node, &source)
-                            {
+                            if !post_process(&mut chunk.name, &mut chunk.chunk_type, node, source) {
                                 tracing::debug!(
                                     name = %chunk.name,
                                     file = %path.display(),
@@ -269,14 +286,14 @@ impl Parser {
             drop(matches);
             drop(cursor);
 
-            let groups = injection::find_injection_ranges(&tree, &source, injections);
+            let groups = injection::find_injection_ranges(&tree, source, injections);
 
             // Free outer tree/parser memory before inner parse allocations
             drop(tree);
             drop(parser);
 
             for group in &groups {
-                match self.parse_injected_chunks(&source, path, group, 0) {
+                match self.parse_injected_chunks(source, path, group, 0) {
                     Ok(inner_chunks) if !inner_chunks.is_empty() => {
                         let before = chunks.len();
                         // Remove outer chunks that overlap with injection containers
@@ -743,4 +760,21 @@ pub(crate) fn extract_definition_node<'c, 't>(
             .and_then(|idx| m.captures.iter().find(|c| c.index == idx))
             .map(|c| c.node)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_source_extracts_functions() {
+        let parser = Parser::new().unwrap();
+        let source = "fn hello() { println!(\"hi\"); }\nfn world() { }";
+        let chunks = parser
+            .parse_source(source, Language::Rust, Path::new("test.rs"))
+            .unwrap();
+        assert!(chunks.len() >= 2);
+        assert!(chunks.iter().any(|c| c.name == "hello"));
+        assert!(chunks.iter().any(|c| c.name == "world"));
+    }
 }

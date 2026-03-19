@@ -59,6 +59,7 @@ pub mod note;
 pub mod parser;
 pub mod reference;
 pub mod store;
+pub mod train_data;
 
 pub mod ci;
 pub mod health;
