@@ -16,7 +16,7 @@ pub(crate) use commands::{dispatch, BatchInput};
 pub(crate) use pipeline::{execute_pipeline, has_pipe_token};
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,7 +76,8 @@ pub(crate) struct BatchContext {
     embedder: OnceLock<Embedder>,
     hnsw: OnceLock<Option<Box<dyn VectorIndex>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
-    refs: RefCell<HashMap<String, ReferenceIndex>>,
+    // LRU-capped at 4 entries — each ReferenceIndex holds Store + HNSW (50-200MB)
+    refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
     file_set: OnceLock<HashSet<PathBuf>>,
@@ -159,7 +160,7 @@ impl BatchContext {
     /// not all references.
     pub fn get_ref(&self, name: &str) -> Result<()> {
         let refs = self.refs.borrow();
-        if refs.contains_key(name) {
+        if refs.contains(name) {
             return Ok(());
         }
         drop(refs);
@@ -186,7 +187,7 @@ impl BatchContext {
                 name
             )
         })?;
-        self.refs.borrow_mut().insert(name.to_string(), found);
+        self.refs.borrow_mut().put(name.to_string(), found);
         Ok(())
     }
 
@@ -233,11 +234,13 @@ impl BatchContext {
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
     ///
     /// Returns `None` if the reference hasn't been loaded yet.
-    pub fn borrow_ref(&self, name: &str) -> Option<std::cell::Ref<'_, ReferenceIndex>> {
-        let map = self.refs.borrow();
-        if map.contains_key(name) {
-            Some(std::cell::Ref::map(map, |m| {
-                m.get(name).expect("checked contains_key above")
+    /// Uses `borrow_mut` because `LruCache::get()` promotes the entry (marks
+    /// as recently used), which requires `&mut self`.
+    pub fn borrow_ref(&self, name: &str) -> Option<std::cell::RefMut<'_, ReferenceIndex>> {
+        let cache = self.refs.borrow_mut();
+        if cache.contains(name) {
+            Some(std::cell::RefMut::map(cache, |m| {
+                m.get_mut(name).expect("checked contains above")
             }))
         } else {
             None
@@ -364,7 +367,7 @@ pub(crate) fn create_context() -> Result<BatchContext> {
         store,
         embedder: OnceLock::new(),
         hnsw: OnceLock::new(),
-        refs: RefCell::new(HashMap::new()),
+        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap())),
         root,
         cqs_dir,
         file_set: OnceLock::new(),
