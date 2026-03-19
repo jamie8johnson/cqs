@@ -130,9 +130,9 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
     let embedder: OnceCell<Embedder> = OnceCell::new();
 
-    // Open store once and reuse across all reindex operations.
-    // Store uses connection pooling internally, so this is efficient.
-    let store = Store::open(&index_path)
+    // Open store and reuse across reindex operations within a cycle.
+    // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
+    let mut store = Store::open(&index_path)
         .with_context(|| format!("Failed to open store at {}", index_path.display()))?;
 
     // Track last-indexed mtime per file to skip duplicate WSL/NTFS events.
@@ -207,6 +207,14 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                         pending_notes = false;
                         process_note_changes(&root, &store, cli.quiet);
                     }
+
+                    // DS-9: Re-open Store to clear stale OnceLock caches
+                    // (call_graph_cache, test_chunks_cache). The documented contract
+                    // in store/mod.rs requires re-opening after index changes.
+                    drop(store);
+                    store = Store::open(&index_path).with_context(|| {
+                        format!("Failed to re-open store at {}", index_path.display())
+                    })?;
 
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
                     drop(lock);
