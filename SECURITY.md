@@ -140,7 +140,7 @@ This blocks:
 ## Index Storage
 
 - Stored in `.cqs/index.db` (SQLite with WAL mode)
-- Contains: code chunks, embeddings (769-dim vectors), file metadata
+- Contains: code chunks, embeddings (768-dim vectors), file metadata
 - Add `.cqs/` to `.gitignore` to avoid committing
 - Database is **not encrypted** - it contains your code
 

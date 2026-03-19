@@ -22,7 +22,7 @@ pub trait VectorIndex: Send + Sync {
     /// Search for nearest neighbors
     ///
     /// # Arguments
-    /// * `query` - Query embedding (769-dim: 768 model + 1 sentiment)
+    /// * `query` - Query embedding (768-dim E5-base-v2)
     /// * `k` - Maximum number of results to return
     ///
     /// # Returns
@@ -114,7 +114,7 @@ mod tests {
                 score: 0.7,
             },
         ]);
-        let query = Embedding::new(vec![0.0; 769]);
+        let query = Embedding::new(vec![0.0; 768]);
         let results = index.search(&query, 2);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].id, "a");

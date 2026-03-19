@@ -98,8 +98,6 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
         name_boost: cli.name_boost,
         query_text: query.to_string(),
         enable_rrf: !cli.semantic_only, // RRF on by default, disable with --semantic-only
-        note_weight: cli.note_weight,
-        note_only: cli.note_only,
         enable_demotion: !cli.no_demote,
         ..Default::default()
     };
@@ -107,9 +105,6 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
 
     // --ref scoped search: skip project index, search only the named reference
     if let Some(ref ref_name) = cli.ref_name {
-        if cli.note_only {
-            bail!("--note-only cannot be used with --ref (notes only exist in the project index)");
-        }
         return cmd_query_ref_only(
             cli,
             ref_name,
@@ -150,9 +145,6 @@ fn cmd_query_project(
     let index = crate::cli::build_vector_index(store, cqs_dir)?;
 
     let audit_mode = cqs::audit::load_audit_state(cqs_dir);
-    if audit_mode.is_active() && cli.note_only {
-        bail!("--note-only is unavailable during audit mode");
-    }
 
     let search_limit = if cli.pattern.is_some() {
         effective_limit * 3
@@ -193,7 +185,6 @@ fn cmd_query_project(
                 UnifiedResult::Code(sr) => {
                     pat.matches(&sr.chunk.content, &sr.chunk.name, Some(sr.chunk.language))
                 }
-                UnifiedResult::Note(_) => false,
             })
             .collect();
         filtered.truncate(cli.limit);
@@ -237,9 +228,9 @@ fn cmd_query_project(
     if !cli.quiet && !cli.no_stale_check {
         let origins: Vec<&str> = results
             .iter()
-            .filter_map(|r| match r {
-                UnifiedResult::Code(sr) => Some(sr.chunk.file.to_str().unwrap_or("")),
-                UnifiedResult::Note(_) => None,
+            .map(|r| {
+                let UnifiedResult::Code(sr) = r;
+                sr.chunk.file.to_str().unwrap_or("")
             })
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
@@ -365,7 +356,6 @@ fn token_pack_results<T>(
 fn unified_text(r: &UnifiedResult) -> &str {
     match r {
         UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
-        UnifiedResult::Note(nr) => nr.note.text.as_str(),
     }
 }
 
@@ -373,27 +363,21 @@ fn unified_text(r: &UnifiedResult) -> &str {
 fn unified_score(r: &UnifiedResult) -> f32 {
     match r {
         UnifiedResult::Code(sr) => sr.score,
-        UnifiedResult::Note(nr) => nr.score,
     }
 }
 
-/// Re-rank unified results using cross-encoder scoring
-///
-/// Extracts `Code` results, reranks them, preserves `Note` results at the end.
+/// Re-rank unified results using cross-encoder scoring.
 fn rerank_unified(
     query: &str,
     results: Vec<UnifiedResult>,
     limit: usize,
 ) -> Result<Vec<UnifiedResult>> {
-    let mut code_results: Vec<cqs::store::SearchResult> = Vec::new();
-    let mut note_results: Vec<UnifiedResult> = Vec::new();
-
-    for r in results {
-        match r {
-            UnifiedResult::Code(sr) => code_results.push(sr),
-            note @ UnifiedResult::Note(_) => note_results.push(note),
-        }
-    }
+    let mut code_results: Vec<cqs::store::SearchResult> = results
+        .into_iter()
+        .map(|r| match r {
+            UnifiedResult::Code(sr) => sr,
+        })
+        .collect();
 
     if code_results.len() > 1 {
         let reranker =
@@ -403,10 +387,7 @@ fn rerank_unified(
             .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
     }
 
-    let mut out: Vec<UnifiedResult> = code_results.into_iter().map(UnifiedResult::Code).collect();
-    out.extend(note_results);
-    out.truncate(limit);
-    Ok(out)
+    Ok(code_results.into_iter().map(UnifiedResult::Code).collect())
 }
 
 /// Name-only search: find by function/struct name, no embedding needed
@@ -604,7 +585,6 @@ fn resolve_parent_context(
         .iter()
         .filter_map(|r| match r {
             UnifiedResult::Code(sr) => sr.chunk.parent_id.clone(),
-            UnifiedResult::Note(_) => None,
         })
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
@@ -626,10 +606,7 @@ fn resolve_parent_context(
 
     // For each result with parent_id, resolve the parent content
     for result in results {
-        let sr = match result {
-            UnifiedResult::Code(sr) => sr,
-            UnifiedResult::Note(_) => continue,
-        };
+        let UnifiedResult::Code(sr) = result;
         let parent_id = match &sr.chunk.parent_id {
             Some(id) => id,
             None => continue,

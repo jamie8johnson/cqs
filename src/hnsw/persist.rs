@@ -701,7 +701,7 @@ mod tests {
         std::fs::write(&graph_path, b"dummy").unwrap();
 
         // id_map claims 2 vectors, but data file is far larger than
-        // 2 * 769 * 4 * 2 = 12,304 bytes would allow
+        // 2 * 768 * 4 * 2 = 12,288 bytes would allow
         std::fs::write(&ids_path, r#"["a","b"]"#).unwrap();
         let f = std::fs::File::create(&data_path).unwrap();
         f.set_len(1_000_000).unwrap(); // ~1MB >> 12KB limit

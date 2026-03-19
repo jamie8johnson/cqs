@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (769-dim: 768 model + sentiment). 90.9% Recall@1 on confusable function retrieval.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (768-dim). 90.9% Recall@1 on confusable function retrieval.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -200,9 +200,9 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     }
 }
 
-/// Embedding dimension: 768 from E5-base-v2 model + 1 sentiment dimension.
+/// Embedding dimension: 768 from E5-base-v2 model.
 /// Single source of truth — all modules import this constant.
-pub const EMBEDDING_DIM: usize = 769;
+pub const EMBEDDING_DIM: usize = 768;
 
 /// Unified test-chunk detection heuristic.
 ///
@@ -289,15 +289,14 @@ pub fn rel_display(path: &Path, root: &Path) -> String {
 
 // ============ Note Indexing Helper ============
 
-/// Index notes into the database (embed and store)
+/// Index notes into the database (store without embeddings)
 ///
 /// Shared logic used by CLI commands.
-/// Embeds notes using the provided embedder and stores them with sentiment.
+/// Stores notes in the database for mention-based lookup (SQ-9: note embeddings removed).
 ///
 /// # Arguments
 /// * `notes` - Notes to index
 /// * `notes_path` - Path to notes file (for mtime tracking)
-/// * `embedder` - Embedder for creating embeddings
 /// * `store` - Store for persisting notes
 ///
 /// # Returns
@@ -305,7 +304,6 @@ pub fn rel_display(path: &Path, root: &Path) -> String {
 pub fn index_notes(
     notes: &[note::Note],
     notes_path: &Path,
-    embedder: &Embedder,
     store: &Store,
 ) -> anyhow::Result<usize> {
     let _span =
@@ -315,18 +313,6 @@ pub fn index_notes(
     if notes.is_empty() {
         return Ok(0);
     }
-
-    // Embed note content with sentiment prefix
-    let texts: Vec<String> = notes.iter().map(|n| n.embedding_text()).collect();
-    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    let base_embeddings = embedder.embed_documents(&text_refs)?;
-
-    // Add sentiment as 769th dimension
-    let embeddings_with_sentiment: Vec<embedder::Embedding> = base_embeddings
-        .into_iter()
-        .zip(notes.iter())
-        .map(|(emb, note)| emb.with_sentiment(note.sentiment()))
-        .collect();
 
     // Get file mtime
     let file_mtime = notes_path
@@ -348,12 +334,7 @@ pub fn index_notes(
         .unwrap_or(0);
 
     // Atomically replace notes (delete old + insert new in single transaction)
-    let note_embeddings: Vec<_> = notes
-        .iter()
-        .cloned()
-        .zip(embeddings_with_sentiment)
-        .collect();
-    store.replace_notes_for_file(&note_embeddings, notes_path, file_mtime)?;
+    store.replace_notes_for_file(notes, notes_path, file_mtime)?;
 
     Ok(notes.len())
 }
@@ -454,7 +435,6 @@ pub fn enumerate_files(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     #[test]
     fn test_is_test_chunk_name_patterns() {
@@ -551,14 +531,12 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_index_notes_empty_returns_zero() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(dir.path(), "# empty notes file\n");
         let notes: Vec<note::Note> = Vec::new();
 
-        let embedder = Embedder::new().unwrap();
-        let count = index_notes(&notes, &notes_path, &embedder, &store).unwrap();
+        let count = index_notes(&notes, &notes_path, &store).unwrap();
         assert_eq!(count, 0);
 
         // Verify no notes in store
@@ -567,7 +545,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_index_notes_stores_notes() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(
@@ -600,8 +577,7 @@ mentions = ["store.rs"]
             },
         ];
 
-        let embedder = Embedder::new().unwrap();
-        let count = index_notes(&notes, &notes_path, &embedder, &store).unwrap();
+        let count = index_notes(&notes, &notes_path, &store).unwrap();
         assert_eq!(count, 2);
 
         // Verify notes are stored
@@ -616,8 +592,7 @@ mentions = ["store.rs"]
     }
 
     #[test]
-    #[serial]
-    fn test_index_notes_sentiment_dimension() {
+    fn test_index_notes_stores_note_sentiment() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(dir.path(), "");
 
@@ -628,18 +603,14 @@ mentions = ["store.rs"]
             mentions: vec!["lib.rs".to_string()],
         }];
 
-        let embedder = Embedder::new().unwrap();
-        let count = index_notes(&notes, &notes_path, &embedder, &store).unwrap();
+        let count = index_notes(&notes, &notes_path, &store).unwrap();
         assert_eq!(count, 1);
 
-        // Search notes with a dummy query embedding to verify they're retrievable
-        let query = embedder.embed_query("error handling issue").unwrap();
-        let results = store.search_notes(&query, 5, 0.0).unwrap();
-        assert!(!results.is_empty(), "Should find indexed note via search");
-
-        // Verify the stored embedding has 769 dimensions (768 model + 1 sentiment)
-        // by checking the note is retrievable — search_notes uses the full 769-dim vector
-        assert_eq!(results[0].note.text, "Serious issue with error handling");
+        // Verify the note is retrievable via list_notes_summaries
+        let summaries = store.list_notes_summaries().unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].text, "Serious issue with error handling");
+        assert!((summaries[0].sentiment - (-1.0)).abs() < f32::EPSILON);
     }
 
     // ─── resolve_index_dir tests (TC-4) ──────────────────────────────────

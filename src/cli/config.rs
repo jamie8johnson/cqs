@@ -18,8 +18,6 @@ use super::Cli;
 pub(crate) const DEFAULT_LIMIT: usize = 5;
 pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
 pub(crate) const DEFAULT_NAME_BOOST: f32 = 0.2;
-pub(crate) const DEFAULT_NOTE_WEIGHT: f32 = 1.0;
-
 /// Find project root by looking for common markers.
 ///
 /// For Cargo projects, detects workspace roots: if a `Cargo.toml` is found,
@@ -153,16 +151,6 @@ pub(super) fn apply_config_defaults(cli: &mut Cli, config: &cqs::config::Config)
     if !cli.verbose {
         if let Some(true) = config.verbose {
             cli.verbose = true;
-        }
-    }
-    if (cli.note_weight - DEFAULT_NOTE_WEIGHT).abs() < f32::EPSILON {
-        if let Some(note_weight) = config.note_weight {
-            cli.note_weight = note_weight;
-        }
-    }
-    if !cli.note_only {
-        if let Some(true) = config.note_only {
-            cli.note_only = true;
         }
     }
     if !cli.no_stale_check {

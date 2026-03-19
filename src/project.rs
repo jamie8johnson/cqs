@@ -438,8 +438,8 @@ mod tests {
             parent_type_name: None,
         };
 
-        // Create a simple embedding (769-dim: 768 model + 1 sentiment)
-        let embedding = crate::Embedding::new(vec![0.1; 769]);
+        // Create a simple embedding (768-dim E5-base-v2)
+        let embedding = crate::Embedding::new(vec![0.1; 768]);
         store.upsert_chunk(&chunk, &embedding, None).unwrap();
         drop(store);
 

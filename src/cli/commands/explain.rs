@@ -74,10 +74,7 @@ pub(crate) fn build_explain_data(
     // Get similar (top 3) using embedding
     let similar = match store.get_chunk_with_embedding(&chunk.id)? {
         Some((_, embedding)) => {
-            let filter = SearchFilter {
-                note_weight: 0.0,
-                ..Default::default()
-            };
+            let filter = SearchFilter::default();
             // Use caller-provided index or load fresh
             let owned_index;
             let idx: Option<&dyn VectorIndex> = match index {

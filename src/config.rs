@@ -103,10 +103,6 @@ pub struct Config {
     pub quiet: Option<bool>,
     /// Enable verbose mode by default
     pub verbose: Option<bool>,
-    /// Default note weight for unified search (overridden by --note-weight)
-    pub note_weight: Option<f32>,
-    /// Default note-only mode (overridden by --note-only)
-    pub note_only: Option<bool>,
     /// Disable staleness checks (useful on NFS or slow filesystems)
     pub stale_check: Option<bool>,
     /// HNSW search width (higher = more accurate but slower, default 100)
@@ -204,9 +200,6 @@ impl Config {
         if let Some(ref mut nb) = self.name_boost {
             clamp_config_f32(nb, "name_boost", 0.0, 1.0);
         }
-        if let Some(ref mut nw) = self.note_weight {
-            clamp_config_f32(nw, "note_weight", 0.0, 1.0);
-        }
         if let Some(ref mut ef) = self.ef_search {
             clamp_config_usize(ef, "ef_search", 10, 1000);
         }
@@ -286,8 +279,6 @@ impl Config {
             name_boost: other.name_boost.or(self.name_boost),
             quiet: other.quiet.or(self.quiet),
             verbose: other.verbose.or(self.verbose),
-            note_weight: other.note_weight.or(self.note_weight),
-            note_only: other.note_only.or(self.note_only),
             stale_check: other.stale_check.or(self.stale_check),
             ef_search: other.ef_search.or(self.ef_search),
             references: refs,

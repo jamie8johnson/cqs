@@ -257,8 +257,7 @@ fn index_notes_from_file(root: &Path, store: &Store, force: bool) -> Result<(usi
                 return Ok((0, false));
             }
 
-            let embedder = Embedder::new()?;
-            let count = cqs::index_notes(&notes, &notes_path, &embedder, store)?;
+            let count = cqs::index_notes(&notes, &notes_path, store)?;
             Ok((count, false))
         }
         Err(e) => {

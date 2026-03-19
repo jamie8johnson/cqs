@@ -330,13 +330,8 @@ fn test_review_diff_with_relevant_notes() {
         sentiment: -0.5,
         mentions: vec!["math.rs".to_string()],
     };
-    let note_embedding = mock_embedding(0.5);
     store
-        .upsert_notes_batch(
-            &[(note, note_embedding)],
-            std::path::Path::new("notes.toml"),
-            12345,
-        )
+        .upsert_notes_batch(&[note], std::path::Path::new("notes.toml"), 12345)
         .unwrap();
 
     // Verify the note was stored

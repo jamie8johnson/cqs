@@ -238,7 +238,6 @@ mod tests {
         let mut v = vec![0.0f32; 768];
         let idx = (seed.abs() as usize) % 768;
         v[idx] = 1.0;
-        v.push(0.0); // sentiment dimension
         Embedding::new(v)
     }
 
@@ -309,7 +308,6 @@ mod tests {
         // Drift = 1 - 0.707 ≈ 0.293
         let mut ref_v = vec![0.0f32; 768];
         ref_v[0] = 1.0;
-        ref_v.push(0.0);
         let emb_ref = Embedding::new(ref_v);
 
         let mut proj_v = vec![0.0f32; 768];
@@ -318,7 +316,6 @@ mod tests {
         let norm = (2.0f32).sqrt();
         proj_v[0] /= norm;
         proj_v[1] /= norm;
-        proj_v.push(0.0);
         let emb_proj = Embedding::new(proj_v);
 
         let chunk = make_chunk("process_data", "src/lib.rs", Language::Rust);

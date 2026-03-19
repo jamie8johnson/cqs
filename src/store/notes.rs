@@ -1,15 +1,11 @@
-//! Note CRUD operations and search
+//! Note CRUD operations
 
 use std::path::Path;
 
 use sqlx::Row;
 
-use super::helpers::{
-    embedding_slice, embedding_to_bytes, NoteSearchResult, NoteStats, NoteSummary, StoreError,
-};
+use super::helpers::{NoteStats, NoteSummary, StoreError};
 use super::Store;
-use crate::embedder::Embedding;
-use crate::math::cosine_similarity;
 use crate::nl::normalize_for_fts;
 use crate::note::Note;
 use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
@@ -18,13 +14,15 @@ use crate::note::{SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
 async fn insert_note_with_fts(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     note: &Note,
-    embedding: &Embedding,
     source_str: &str,
     file_mtime: i64,
     now: &str,
 ) -> Result<(), StoreError> {
     let mentions_json = serde_json::to_string(&note.mentions)?;
 
+    // Write empty blob for embedding column (SQ-9: note embeddings removed).
+    // Column retained for SQLite compatibility (no DROP COLUMN in older versions).
+    let empty_blob: &[u8] = &[];
     sqlx::query(
         "INSERT OR REPLACE INTO notes (id, text, sentiment, mentions, embedding, source_file, file_mtime, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -33,7 +31,7 @@ async fn insert_note_with_fts(
     .bind(&note.text)
     .bind(note.sentiment)
     .bind(&mentions_json)
-    .bind(embedding_to_bytes(embedding)?)
+    .bind(empty_blob)
     .bind(source_str)
     .bind(file_mtime)
     .bind(now)
@@ -56,48 +54,11 @@ async fn insert_note_with_fts(
     Ok(())
 }
 
-/// Score a note row and return (NoteSummary, score) if it meets the threshold.
-///
-/// Shared scoring logic between brute-force search and ID-based search.
-fn score_note_row(
-    row: &sqlx::sqlite::SqliteRow,
-    query: &Embedding,
-    threshold: f32,
-) -> Option<(NoteSummary, f32)> {
-    let id: String = row.get(0);
-    let text: String = row.get(1);
-    let sentiment: f64 = row.get(2);
-    let mentions_json: String = row.get(3);
-    let embedding_bytes: Vec<u8> = row.get(4);
-
-    let mentions: Vec<String> = serde_json::from_str(&mentions_json).unwrap_or_else(|e| {
-        tracing::warn!(note_id = %id, error = %e, "Failed to deserialize note mentions, using empty list");
-        Vec::new()
-    });
-
-    let embedding = embedding_slice(&embedding_bytes)?;
-    let score = cosine_similarity(query.as_slice(), embedding)?;
-
-    if score >= threshold {
-        Some((
-            NoteSummary {
-                id,
-                text,
-                sentiment: sentiment as f32,
-                mentions,
-            },
-            score,
-        ))
-    } else {
-        None
-    }
-}
-
 impl Store {
     /// Insert or update notes in batch
     pub fn upsert_notes_batch(
         &self,
-        notes: &[(Note, Embedding)],
+        notes: &[Note],
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
@@ -113,70 +74,13 @@ impl Store {
             let mut tx = self.pool.begin().await?;
 
             let now = chrono::Utc::now().to_rfc3339();
-            for (note, embedding) in notes {
-                insert_note_with_fts(&mut tx, note, embedding, &source_str, file_mtime, &now)
-                    .await?;
+            for note in notes {
+                insert_note_with_fts(&mut tx, note, &source_str, file_mtime, &now).await?;
             }
 
             tx.commit().await?;
             self.invalidate_notes_cache();
             Ok(notes.len())
-        })
-    }
-
-    /// Search notes by embedding similarity
-    ///
-    /// Note: This performs brute-force O(n) similarity search over all notes.
-    /// For large note collections, prefer using the unified HNSW index which
-    /// includes notes with `note:` prefix for efficient ANN search.
-    ///
-    /// The query is limited to MAX_NOTES_SCAN (1000) to prevent OOM on very
-    /// large collections. If you have more notes, use the unified search.
-    pub fn search_notes(
-        &self,
-        query: &Embedding,
-        limit: usize,
-        threshold: f32,
-    ) -> Result<Vec<NoteSearchResult>, StoreError> {
-        let _span = tracing::info_span!("search_notes", limit, threshold).entered();
-        // Limit scan to prevent OOM - notes in large collections should use HNSW
-        const MAX_NOTES_SCAN: i64 = 1000;
-
-        tracing::debug!(
-            limit,
-            threshold,
-            max_scan = MAX_NOTES_SCAN,
-            "searching notes"
-        );
-
-        self.rt.block_on(async {
-            // Use LIMIT to avoid loading unbounded data
-            let rows: Vec<_> =
-                sqlx::query("SELECT id, text, sentiment, mentions, embedding FROM notes LIMIT ?1")
-                    .bind(MAX_NOTES_SCAN)
-                    .fetch_all(&self.pool)
-                    .await?;
-
-            let scanned = rows.len();
-            let mut scored: Vec<(NoteSummary, f32)> = rows
-                .iter()
-                .filter_map(|row| score_note_row(row, query, threshold))
-                .collect();
-
-            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-            scored.truncate(limit);
-
-            if scanned == MAX_NOTES_SCAN as usize {
-                tracing::warn!(
-                    "Note search limit reached ({}). Consider using unified HNSW search.",
-                    MAX_NOTES_SCAN
-                );
-            }
-
-            Ok(scored
-                .into_iter()
-                .map(|(note, score)| NoteSearchResult { note, score })
-                .collect())
         })
     }
 
@@ -186,7 +90,7 @@ impl Store {
     /// data loss if the process crashes mid-operation.
     pub fn replace_notes_for_file(
         &self,
-        notes: &[(Note, Embedding)],
+        notes: &[Note],
         source_file: &Path,
         file_mtime: i64,
     ) -> Result<usize, StoreError> {
@@ -217,9 +121,8 @@ impl Store {
 
             // Step 2: Insert new notes + FTS
             let now = chrono::Utc::now().to_rfc3339();
-            for (note, embedding) in notes {
-                insert_note_with_fts(&mut tx, note, embedding, &source_str, file_mtime, &now)
-                    .await?;
+            for note in notes {
+                insert_note_with_fts(&mut tx, note, &source_str, file_mtime, &now).await?;
             }
 
             tx.commit().await?;
@@ -330,35 +233,10 @@ impl Store {
                 .collect())
         })
     }
-
-    /// Get all note embeddings for HNSW index building.
-    ///
-    /// Returns (id, embedding) pairs with `note:` prefix on IDs to distinguish from chunks.
-    pub fn note_embeddings(&self) -> Result<Vec<(String, Embedding)>, StoreError> {
-        let _span = tracing::debug_span!("note_embeddings").entered();
-        self.rt.block_on(async {
-            let rows: Vec<_> = sqlx::query("SELECT id, embedding FROM notes")
-                .fetch_all(&self.pool)
-                .await?;
-
-            let results: Vec<(String, Embedding)> = rows
-                .into_iter()
-                .filter_map(|row| {
-                    let id: String = row.get(0);
-                    let bytes: Vec<u8> = row.get(1);
-                    super::helpers::bytes_to_embedding(&bytes)
-                        .map(|emb| (format!("note:{}", id), Embedding::new(emb)))
-                })
-                .collect();
-
-            Ok(results)
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::embedder::Embedding;
     use crate::note::{Note, SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
     use crate::store::helpers::ModelInfo;
     use crate::store::Store;
@@ -370,18 +248,6 @@ mod tests {
         let store = Store::open(&db_path).unwrap();
         store.init(&ModelInfo::default()).unwrap();
         (store, dir)
-    }
-
-    fn mock_embedding(seed: f32) -> Embedding {
-        let mut v = vec![seed; 768];
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut v {
-                *x /= norm;
-            }
-        }
-        v.push(0.0); // sentiment dimension
-        Embedding::new(v)
     }
 
     fn make_note(id: &str, text: &str, sentiment: f32) -> Note {
@@ -413,14 +279,14 @@ mod tests {
 
         // Insert 2 notes
         let notes = vec![
-            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
-            (make_note("n2", "second", 0.0), mock_embedding(2.0)),
+            make_note("n1", "first", 0.0),
+            make_note("n2", "second", 0.0),
         ];
         store.upsert_notes_batch(&notes, source, 100).unwrap();
         assert_eq!(store.note_count().unwrap(), 2);
 
         // Replace with 1 note
-        let replacement = vec![(make_note("n3", "replacement", 0.0), mock_embedding(3.0))];
+        let replacement = vec![make_note("n3", "replacement", 0.0)];
         store
             .replace_notes_for_file(&replacement, source, 200)
             .unwrap();
@@ -433,8 +299,8 @@ mod tests {
         let source = Path::new("/tmp/notes.toml");
 
         let notes = vec![
-            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
-            (make_note("n2", "second", 0.5), mock_embedding(2.0)),
+            make_note("n1", "first", 0.0),
+            make_note("n2", "second", 0.5),
         ];
         store.upsert_notes_batch(&notes, source, 100).unwrap();
         assert_eq!(store.note_count().unwrap(), 2);
@@ -452,7 +318,7 @@ mod tests {
         std::fs::write(&notes_file, "# empty").unwrap();
 
         // Insert a note with an old mtime (0) so it's stale
-        let notes = vec![(make_note("n1", "old note", 0.0), mock_embedding(1.0))];
+        let notes = vec![make_note("n1", "old note", 0.0)];
         store.upsert_notes_batch(&notes, &notes_file, 0).unwrap();
 
         // Should return Some(current_mtime) because stored mtime (0) < file mtime
@@ -480,7 +346,7 @@ mod tests {
             .as_secs() as i64;
 
         // Insert with the current mtime
-        let notes = vec![(make_note("n1", "current note", 0.0), mock_embedding(1.0))];
+        let notes = vec![make_note("n1", "current note", 0.0)];
         store
             .upsert_notes_batch(&notes, &notes_file, current_mtime)
             .unwrap();
@@ -494,31 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn test_note_embeddings_roundtrip() {
-        let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/notes.toml");
-
-        let notes = vec![
-            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
-            (make_note("n2", "second", 0.5), mock_embedding(2.0)),
-        ];
-        store.upsert_notes_batch(&notes, source, 100).unwrap();
-
-        let embeddings = store.note_embeddings().unwrap();
-        assert_eq!(embeddings.len(), 2);
-
-        // IDs must have "note:" prefix
-        for (id, emb) in &embeddings {
-            assert!(
-                id.starts_with("note:"),
-                "ID should have note: prefix, got {}",
-                id
-            );
-            assert_eq!(emb.as_slice().len(), 769, "Embedding should be 769-dim");
-        }
-    }
-
-    #[test]
     fn test_note_count() {
         let (store, _dir) = setup_store();
         let source = Path::new("/tmp/notes.toml");
@@ -526,9 +367,9 @@ mod tests {
         assert_eq!(store.note_count().unwrap(), 0);
 
         let notes = vec![
-            (make_note("n1", "first", 0.0), mock_embedding(1.0)),
-            (make_note("n2", "second", -0.5), mock_embedding(2.0)),
-            (make_note("n3", "third", 1.0), mock_embedding(3.0)),
+            make_note("n1", "first", 0.0),
+            make_note("n2", "second", -0.5),
+            make_note("n3", "third", 1.0),
         ];
         store.upsert_notes_batch(&notes, source, 100).unwrap();
         assert_eq!(store.note_count().unwrap(), 3);
@@ -541,9 +382,9 @@ mod tests {
 
         // -1 = warning, 0 = neutral, 0.5 = pattern
         let notes = vec![
-            (make_note("n1", "pain point", -1.0), mock_embedding(1.0)),
-            (make_note("n2", "neutral obs", 0.0), mock_embedding(2.0)),
-            (make_note("n3", "good pattern", 0.5), mock_embedding(3.0)),
+            make_note("n1", "pain point", -1.0),
+            make_note("n2", "neutral obs", 0.0),
+            make_note("n3", "good pattern", 0.5),
         ];
         store.upsert_notes_batch(&notes, source, 100).unwrap();
 
@@ -551,39 +392,5 @@ mod tests {
         assert_eq!(stats.total, 3);
         assert_eq!(stats.warnings, 1, "Only -1 should count as warning");
         assert_eq!(stats.patterns, 1, "Only 0.5 should count as pattern");
-    }
-
-    #[test]
-    fn test_search_notes_sorted() {
-        let (store, _dir) = setup_store();
-        let source = Path::new("/tmp/notes.toml");
-
-        // Use distinct seeds so cosine similarities differ
-        let notes = vec![
-            (make_note("n1", "alpha", 0.0), mock_embedding(1.0)),
-            (make_note("n2", "beta", 0.0), mock_embedding(2.0)),
-            (make_note("n3", "gamma", 0.0), mock_embedding(3.0)),
-        ];
-        store.upsert_notes_batch(&notes, source, 100).unwrap();
-
-        // Search with a query close to seed 1.0
-        let query = mock_embedding(1.0);
-        let results = store.search_notes(&query, 10, 0.0).unwrap();
-
-        assert!(!results.is_empty(), "Should find at least one result");
-        // Verify descending score order
-        for w in results.windows(2) {
-            assert!(
-                w[0].score >= w[1].score,
-                "Results should be sorted descending by score: {} < {}",
-                w[0].score,
-                w[1].score
-            );
-        }
-        // The best match should be the note with the same seed
-        assert_eq!(
-            results[0].note.id, "n1",
-            "Closest embedding should rank first"
-        );
     }
 }

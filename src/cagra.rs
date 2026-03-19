@@ -327,11 +327,8 @@ impl CagraIndex {
             let idx = neighbor_row[i] as usize;
             if idx < self.id_map.len() {
                 // CAGRA uses squared L2 distance. For unit-norm vectors: d = 2 - 2*cos_sim,
-                // so cos_sim = 1 - d/2. Note: cqs embeddings are 769-dim (768 + sentiment).
-                // The sentiment dimension breaks the unit-norm assumption, introducing a small
-                // scoring bias proportional to sentiment magnitude. This diverges from HNSW
-                // (DistCosine, normalizes internally) and brute-force (dot product). For
-                // sentiment=0 (the common case), all three backends agree. See audit AC-8.
+                // so cos_sim = 1 - d/2. Vectors are 768-dim unit-norm E5-base-v2 embeddings,
+                // so all three backends (CAGRA, HNSW, brute-force) agree on scoring.
                 let dist = distance_row[i];
                 let score = 1.0 - dist / 2.0;
                 results.push(IndexResult {
@@ -758,7 +755,7 @@ mod tests {
 
     #[test]
     fn test_oom_guard_arithmetic() {
-        // Verify the OOM guard threshold: 2GB limit / (769 dims * 4 bytes) ≈ 698K chunks
+        // Verify the OOM guard threshold: 2GB limit / (768 dims * 4 bytes) ≈ 699K chunks
         const MAX_CAGRA_CPU_BYTES: usize = 2 * 1024 * 1024 * 1024;
         let max_chunks = MAX_CAGRA_CPU_BYTES / (EMBEDDING_DIM * 4);
 

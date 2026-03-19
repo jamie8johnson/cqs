@@ -183,14 +183,6 @@ pub struct Cli {
     #[arg(long, default_value = "0.2")]
     name_boost: f32,
 
-    /// Weight for note scores in results (0.0-1.0, lower = notes rank below code)
-    #[arg(long, default_value = "1.0")]
-    note_weight: f32,
-
-    /// Search notes only (skip code results)
-    #[arg(long)]
-    note_only: bool,
-
     /// Filter by language
     #[arg(short = 'l', long)]
     lang: Option<String>,
@@ -1695,8 +1687,6 @@ mod tests {
             quiet: Some(true),
             verbose: Some(true),
             references: vec![],
-            note_weight: None,
-            note_only: None,
             stale_check: None,
             ef_search: None,
         };
@@ -1719,8 +1709,6 @@ mod tests {
             quiet: Some(true),
             verbose: Some(true),
             references: vec![],
-            note_weight: None,
-            note_only: None,
             stale_check: None,
             ef_search: None,
         };

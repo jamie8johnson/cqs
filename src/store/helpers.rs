@@ -13,12 +13,13 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v14: Current (llm_summaries table for SQ-6)
+/// - v15: Current (768-dim embeddings — dropped sentiment dimension, SQ-9)
+/// - v14: llm_summaries table for SQ-6
 /// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
 /// - v12: parent_type_name column for method→class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 14;
+pub const CURRENT_SCHEMA_VERSION: i32 = 15;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
@@ -373,6 +374,9 @@ pub struct NoteSummary {
 }
 
 /// A note search result with similarity score
+///
+/// No longer surfaced in unified search results (SQ-9).
+/// `search_notes()` was removed; this type is retained for backward compatibility.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct NoteSearchResult {
     /// The matching note
@@ -380,20 +384,6 @@ pub struct NoteSearchResult {
     pub note: NoteSummary,
     /// Similarity score (0.0 to 1.0)
     pub score: f32,
-}
-
-impl NoteSearchResult {
-    /// Serialize to JSON with consistent field order.
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "note",
-            "id": self.note.id,
-            "text": self.note.text,
-            "sentiment": self.note.sentiment,
-            "mentions": self.note.mentions,
-            "score": self.score,
-        })
-    }
 }
 
 /// A file in the index whose content has changed on disk
@@ -431,16 +421,14 @@ pub struct ParentContext {
     pub line_end: u32,
 }
 
-/// Unified search result (code chunk or note)
+/// Unified search result (code-only after SQ-9 Phase 1).
 ///
-/// Search can return both code chunks and notes. This enum allows
-/// handling them uniformly while preserving type-specific data.
+/// Wraps a `SearchResult` to maintain API compatibility with callers
+/// that previously handled both code and note results.
 #[derive(Debug, Clone)]
 pub enum UnifiedResult {
     /// A code chunk search result
     Code(SearchResult),
-    /// A note search result
-    Note(NoteSearchResult),
 }
 
 impl UnifiedResult {
@@ -448,13 +436,10 @@ impl UnifiedResult {
     pub fn score(&self) -> f32 {
         match self {
             UnifiedResult::Code(r) => r.score,
-            UnifiedResult::Note(r) => r.score,
         }
     }
 
     /// Serialize to JSON with consistent field order.
-    ///
-    /// Code results include `"type": "code"` prefix; note results include `"type": "note"`.
     pub fn to_json(&self) -> serde_json::Value {
         match self {
             UnifiedResult::Code(r) => {
@@ -462,7 +447,6 @@ impl UnifiedResult {
                 json["type"] = serde_json::json!("code");
                 json
             }
-            UnifiedResult::Note(r) => r.to_json(),
         }
     }
 
@@ -474,7 +458,6 @@ impl UnifiedResult {
                 json["type"] = serde_json::json!("code");
                 json
             }
-            UnifiedResult::Note(r) => r.to_json(),
         }
     }
 }
@@ -507,14 +490,6 @@ pub struct SearchFilter {
     /// using the formula: score = Σ 1/(k + rank), where k=60.
     /// This typically improves recall for identifier-heavy queries.
     pub enable_rrf: bool,
-    /// Weight multiplier for note scores in unified search (0.0-1.0)
-    ///
-    /// 1.0 = notes scored equally with code (default)
-    /// 0.5 = notes scored at half weight
-    /// 0.0 = notes excluded from results
-    pub note_weight: f32,
-    /// When true, return only notes (skip code search entirely)
-    pub note_only: bool,
     /// Apply search-time demotion for test functions and underscore-prefixed names.
     ///
     /// Test functions (`test_*`, `Test*`) get 0.90x multiplier.
@@ -536,8 +511,6 @@ impl Default for SearchFilter {
             name_boost: 0.0,
             query_text: String::new(),
             enable_rrf: false,
-            note_weight: 1.0, // Notes weighted equally by default
-            note_only: false,
             enable_demotion: true, // Demote test functions by default
         }
     }
@@ -569,19 +542,6 @@ impl SearchFilter {
                 "name_boost must be between 0.0 and 1.0, got {}",
                 self.name_boost
             ));
-        }
-
-        // note_weight must be in [0.0, 1.0] (NaN-safe)
-        if !(0.0..=1.0).contains(&self.note_weight) {
-            return Err(format!(
-                "note_weight must be between 0.0 and 1.0, got {}",
-                self.note_weight
-            ));
-        }
-
-        // note_only with note_weight=0 is contradictory
-        if self.note_only && self.note_weight == 0.0 {
-            return Err("note_only=true with note_weight=0.0 is contradictory".to_string());
         }
 
         // query_text required when name_boost > 0 or enable_rrf
@@ -641,7 +601,7 @@ impl Default for ModelInfo {
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
-            dimensions: 769,          // 768 from model + 1 sentiment
+            dimensions: 768,          // E5-base-v2
             version: "2".to_string(), // E5-base-v2
         }
     }
@@ -787,7 +747,7 @@ pub(crate) fn make_placeholders(n: usize) -> String {
 
 /// Convert embedding to bytes for storage.
 ///
-/// Returns an error if embedding is not exactly 769 dimensions (768 model + 1 sentiment).
+/// Returns an error if embedding is not exactly 768 dimensions.
 /// Storing wrong-sized embeddings would corrupt the index.
 pub fn embedding_to_bytes(embedding: &Embedding) -> Result<Vec<u8>, StoreError> {
     if embedding.len() != EXPECTED_DIMENSIONS as usize {
@@ -819,7 +779,7 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 
 /// Convert embedding bytes to owned Vec (when ownership needed)
 ///
-/// Returns None if byte length doesn't match expected embedding size (769 * 4 bytes).
+/// Returns None if byte length doesn't match expected embedding size (768 * 4 bytes).
 /// This prevents silently using corrupted/truncated embeddings.
 /// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
 pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {

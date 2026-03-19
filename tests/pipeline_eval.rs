@@ -159,7 +159,7 @@ fn test_pipeline_scoring() {
             let embeddings = embedder
                 .embed_documents(&[&text])
                 .expect("Failed to embed chunk");
-            let embedding = embeddings.into_iter().next().unwrap().with_sentiment(0.0);
+            let embedding = embeddings.into_iter().next().unwrap();
             store
                 .upsert_chunk(chunk, &embedding, None)
                 .expect("Failed to store chunk");
@@ -180,7 +180,7 @@ fn test_pipeline_scoring() {
                 let embeddings = embedder
                     .embed_documents(&[&text])
                     .expect("Failed to embed chunk");
-                let embedding = embeddings.into_iter().next().unwrap().with_sentiment(0.0);
+                let embedding = embeddings.into_iter().next().unwrap();
                 store
                     .upsert_chunk(chunk, &embedding, None)
                     .expect("Failed to store chunk");
@@ -633,7 +633,7 @@ fn test_holdout_eval() {
                 let embeddings = embedder
                     .embed_documents(&[&text])
                     .expect("Failed to embed chunk");
-                let embedding = embeddings.into_iter().next().unwrap().with_sentiment(0.0);
+                let embedding = embeddings.into_iter().next().unwrap();
                 store
                     .upsert_chunk(chunk, &embedding, None)
                     .expect("Failed to store chunk");
@@ -765,7 +765,7 @@ fn test_stress_eval() {
                 let embeddings = embedder
                     .embed_documents(&[&text])
                     .expect("Failed to embed chunk");
-                let embedding = embeddings.into_iter().next().unwrap().with_sentiment(0.0);
+                let embedding = embeddings.into_iter().next().unwrap();
                 store
                     .upsert_chunk(chunk, &embedding, None)
                     .expect("Failed to store chunk");
@@ -825,7 +825,7 @@ fn test_stress_eval() {
                             .embed_documents(&refs)
                             .expect("Failed to embed batch");
                         for (c, emb) in batch_chunks.drain(..).zip(embeddings) {
-                            let emb = emb.with_sentiment(0.0);
+                            let emb = emb;
                             store.upsert_chunk(&c, &emb, None).ok();
                         }
                         batch_texts.clear();
@@ -844,7 +844,7 @@ fn test_stress_eval() {
             .embed_documents(&refs)
             .expect("Failed to embed batch");
         for (c, emb) in batch_chunks.drain(..).zip(embeddings) {
-            let emb = emb.with_sentiment(0.0);
+            let emb = emb;
             store.upsert_chunk(&c, &emb, None).ok();
         }
     }
@@ -887,7 +887,7 @@ fn test_stress_eval() {
                     let embs = embedder
                         .embed_documents(&[&nl_with_summary])
                         .expect("embed");
-                    let emb = embs.into_iter().next().unwrap().with_sentiment(0.0);
+                    let emb = embs.into_iter().next().unwrap();
                     batch_updates.push((cs.id.clone(), emb));
                 }
             }

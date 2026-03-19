@@ -51,7 +51,7 @@ fn test_recall_at_5() {
             let embeddings = embedder
                 .embed_documents(&[&text])
                 .expect("Failed to embed chunk");
-            let embedding = embeddings.into_iter().next().unwrap().with_sentiment(0.0);
+            let embedding = embeddings.into_iter().next().unwrap();
 
             // Store chunk (no mtime since these are test fixtures)
             store

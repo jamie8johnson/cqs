@@ -1,10 +1,10 @@
 //! Notes tests (T4, T5, T6)
 //!
-//! Tests for note_embeddings and note_stats.
+//! Tests for note_stats and note CRUD.
 
 mod common;
 
-use common::{mock_embedding, TestStore};
+use common::TestStore;
 use cqs::note::Note;
 use std::path::PathBuf;
 
@@ -16,52 +16,6 @@ fn test_note(id: &str, text: &str, sentiment: f32) -> Note {
         sentiment,
         mentions: vec![],
     }
-}
-
-// ===== note_embeddings tests =====
-
-#[test]
-fn test_note_embeddings_empty() {
-    let store = TestStore::new();
-
-    let embeddings = store.note_embeddings().unwrap();
-    assert!(
-        embeddings.is_empty(),
-        "Empty store should have no note embeddings"
-    );
-}
-
-#[test]
-fn test_note_embeddings_returns_prefixed_ids() {
-    let store = TestStore::new();
-
-    let note1 = test_note("abc123", "First note", 0.0);
-    let note2 = test_note("xyz789", "Second note", 0.5);
-
-    store
-        .upsert_notes_batch(
-            &[(note1, mock_embedding(1.0)), (note2, mock_embedding(2.0))],
-            &PathBuf::from("notes.toml"),
-            12345,
-        )
-        .unwrap();
-
-    let embeddings = store.note_embeddings().unwrap();
-    assert_eq!(embeddings.len(), 2);
-
-    // All IDs should have "note:" prefix
-    for (id, _emb) in &embeddings {
-        assert!(
-            id.starts_with("note:"),
-            "Note embedding ID should have 'note:' prefix, got: {}",
-            id
-        );
-    }
-
-    // Check specific IDs
-    let ids: Vec<_> = embeddings.iter().map(|(id, _)| id.as_str()).collect();
-    assert!(ids.contains(&"note:abc123"));
-    assert!(ids.contains(&"note:xyz789"));
 }
 
 // ===== note_stats tests =====
@@ -99,15 +53,8 @@ fn test_note_round_trip() {
         mentions: vec!["src/gather.rs".to_string()],
     };
 
-    let emb1 = mock_embedding(1.0);
-    let emb2 = mock_embedding(2.0);
-
     let count = store
-        .upsert_notes_batch(
-            &[(note1, emb1.clone()), (note2, emb2.clone())],
-            &PathBuf::from("docs/notes.toml"),
-            99999,
-        )
+        .upsert_notes_batch(&[note1, note2], &PathBuf::from("docs/notes.toml"), 99999)
         .unwrap();
     assert_eq!(count, 2, "Should have upserted 2 notes");
 
@@ -121,37 +68,38 @@ fn test_note_round_trip() {
     assert_eq!(stats.warnings, 1, "-0.5 should be a warning");
     assert_eq!(stats.patterns, 1, "0.5 should be a pattern");
 
-    // Verify round-trip via search - search with emb1 should find note1 with high score
-    let results = store.search_notes(&emb1, 10, 0.0).unwrap();
-    assert_eq!(results.len(), 2, "Should find both notes");
+    // Verify round-trip via list_notes_summaries
+    let summaries = store.list_notes_summaries().unwrap();
+    assert_eq!(summaries.len(), 2, "Should find both notes");
 
-    // The top result should be the one matching emb1's direction
-    let top = &results[0];
-    assert_eq!(top.note.id, "rt1");
-    assert_eq!(top.note.text, "Watch out for race conditions in indexer");
+    // Find rt1 in summaries
+    let rt1 = summaries
+        .iter()
+        .find(|s| s.id == "rt1")
+        .expect("rt1 should exist");
+    assert_eq!(rt1.text, "Watch out for race conditions in indexer");
     assert!(
-        (top.note.sentiment - (-0.5)).abs() < f32::EPSILON,
+        (rt1.sentiment - (-0.5)).abs() < f32::EPSILON,
         "Sentiment should survive round-trip"
     );
     assert_eq!(
-        top.note.mentions,
+        rt1.mentions,
         vec!["src/indexer.rs", "Store::upsert_chunk"],
         "Mentions should survive round-trip"
     );
 
     // Verify second note too
-    let second = &results[1];
-    assert_eq!(second.note.id, "rt2");
-    assert_eq!(
-        second.note.text,
-        "BFS expansion pattern works well for gather"
-    );
+    let rt2 = summaries
+        .iter()
+        .find(|s| s.id == "rt2")
+        .expect("rt2 should exist");
+    assert_eq!(rt2.text, "BFS expansion pattern works well for gather");
     assert!(
-        (second.note.sentiment - 0.5).abs() < f32::EPSILON,
+        (rt2.sentiment - 0.5).abs() < f32::EPSILON,
         "Sentiment should survive round-trip"
     );
     assert_eq!(
-        second.note.mentions,
+        rt2.mentions,
         vec!["src/gather.rs"],
         "Mentions should survive round-trip"
     );
@@ -166,15 +114,12 @@ fn test_note_stats_sentiments() {
     // Patterns: sentiment > 0.3
     // Neutral: -0.3 <= sentiment <= 0.3
     let notes = vec![
-        (test_note("1", "Warning 1", -1.0), mock_embedding(1.0)), // warning
-        (test_note("2", "Warning 2", -0.5), mock_embedding(1.0)), // warning
-        (test_note("3", "Neutral", 0.0), mock_embedding(1.0)),    // neutral
-        (
-            test_note("4", "Slightly positive", 0.2),
-            mock_embedding(1.0),
-        ), // neutral (within threshold)
-        (test_note("5", "Pattern 1", 0.5), mock_embedding(1.0)),  // pattern
-        (test_note("6", "Pattern 2", 1.0), mock_embedding(1.0)),  // pattern
+        test_note("1", "Warning 1", -1.0),        // warning
+        test_note("2", "Warning 2", -0.5),        // warning
+        test_note("3", "Neutral", 0.0),           // neutral
+        test_note("4", "Slightly positive", 0.2), // neutral (within threshold)
+        test_note("5", "Pattern 1", 0.5),         // pattern
+        test_note("6", "Pattern 2", 1.0),         // pattern
     ];
 
     store

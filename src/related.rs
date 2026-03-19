@@ -183,10 +183,9 @@ mod tests {
         (store, dir)
     }
 
-    /// Build a normalized embedding vector of 769 dimensions with `seed` repeated.
+    /// Build a normalized embedding vector of 768 dimensions with `seed` repeated.
     fn mock_embedding(seed: f32) -> crate::Embedding {
         let mut v = vec![seed; 768];
-        v.push(0.0); // sentiment slot
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         if norm > 0.0 {
             for x in &mut v {

@@ -205,7 +205,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
 
                     if pending_notes {
                         pending_notes = false;
-                        process_note_changes(&root, &store, &embedder, cli.quiet);
+                        process_note_changes(&root, &store, cli.quiet);
                     }
 
                     // DS-1: Release lock after all reindex work (including HNSW rebuild)
@@ -456,16 +456,12 @@ fn process_file_changes(
     }
 }
 
-/// Process notes.toml changes: parse and re-embed notes.
-fn process_note_changes(root: &Path, store: &Store, embedder: &OnceCell<Embedder>, quiet: bool) {
+/// Process notes.toml changes: parse and store notes (no embedding needed, SQ-9).
+fn process_note_changes(root: &Path, store: &Store, quiet: bool) {
     if !quiet {
         println!("\nNotes changed, reindexing...");
     }
-    let emb = match try_init_embedder(embedder) {
-        Some(e) => e,
-        None => return,
-    };
-    match reindex_notes(root, store, emb, quiet) {
+    match reindex_notes(root, store, quiet) {
         Ok(count) => {
             if !quiet {
                 println!("Indexed {} note(s)", count);
@@ -562,11 +558,7 @@ fn reindex_files(
             .map(|(_, c)| generate_nl_description(c))
             .collect();
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        embedder
-            .embed_documents(&text_refs)?
-            .into_iter()
-            .map(|e| e.with_sentiment(0.0))
-            .collect()
+        embedder.embed_documents(&text_refs)?.into_iter().collect()
     };
 
     // Merge cached and new embeddings in original chunk order
@@ -647,7 +639,7 @@ fn reindex_files(
 }
 
 /// Reindex notes from docs/notes.toml
-fn reindex_notes(root: &Path, store: &Store, embedder: &Embedder, quiet: bool) -> Result<usize> {
+fn reindex_notes(root: &Path, store: &Store, quiet: bool) -> Result<usize> {
     let _span = info_span!("reindex_notes").entered();
 
     let notes_path = root.join("docs/notes.toml");
@@ -660,7 +652,7 @@ fn reindex_notes(root: &Path, store: &Store, embedder: &Embedder, quiet: bool) -
         return Ok(0);
     }
 
-    let count = cqs::index_notes(&notes, &notes_path, embedder, store)?;
+    let count = cqs::index_notes(&notes, &notes_path, store)?;
 
     if !quiet {
         let ns = store.note_stats()?;

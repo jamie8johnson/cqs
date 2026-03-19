@@ -86,8 +86,7 @@ fn apply_suggestions(
 
     // Re-index notes
     let notes = cqs::parse_notes(&notes_path)?;
-    let embedder = cqs::Embedder::new()?;
-    cqs::index_notes(&notes, &notes_path, &embedder, store)?;
+    cqs::index_notes(&notes, &notes_path, store)?;
 
     Ok(())
 }

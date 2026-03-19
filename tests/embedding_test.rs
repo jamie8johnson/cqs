@@ -119,9 +119,8 @@ fn test_embed_query_has_sentiment_dim() {
         .embed_query("search for functions")
         .expect("embed_query failed");
 
-    // embed_query appends sentiment (0.0) as 769th dim
+    // embed_query returns 768-dim E5-base-v2 embedding
     assert_eq!(query.len(), EMBEDDING_DIM);
-    assert_eq!(query.sentiment(), Some(0.0));
 }
 
 #[test]

@@ -126,27 +126,22 @@ pub(super) fn dispatch_search(
 
     // Re-rank if requested
     let results = if params.rerank && results.len() > 1 {
-        let mut code_results = Vec::new();
-        let mut note_results = Vec::new();
-        for r in results {
-            match r {
-                cqs::store::UnifiedResult::Code(sr) => code_results.push(sr),
-                note @ cqs::store::UnifiedResult::Note(_) => note_results.push(note),
-            }
-        }
+        let mut code_results: Vec<cqs::store::SearchResult> = results
+            .into_iter()
+            .map(|r| match r {
+                cqs::store::UnifiedResult::Code(sr) => sr,
+            })
+            .collect();
         if code_results.len() > 1 {
             let reranker = ctx.reranker()?;
             reranker
                 .rerank(&params.query, &mut code_results, limit)
                 .map_err(|e| anyhow::anyhow!("Reranking failed: {e}"))?;
         }
-        let mut out: Vec<cqs::store::UnifiedResult> = code_results
+        code_results
             .into_iter()
             .map(cqs::store::UnifiedResult::Code)
-            .collect();
-        out.extend(note_results);
-        out.truncate(limit);
-        out
+            .collect()
     } else {
         results
     };
@@ -158,7 +153,6 @@ pub(super) fn dispatch_search(
             .iter()
             .map(|r| match r {
                 cqs::store::UnifiedResult::Code(sr) => sr.chunk.content.as_str(),
-                cqs::store::UnifiedResult::Note(nr) => nr.note.text.as_str(),
             })
             .collect();
         let counts = crate::cli::commands::count_tokens_batch(embedder, &texts);
@@ -169,7 +163,6 @@ pub(super) fn dispatch_search(
             crate::cli::commands::JSON_OVERHEAD_PER_RESULT,
             |r| match r {
                 cqs::store::UnifiedResult::Code(sr) => sr.score,
-                cqs::store::UnifiedResult::Note(nr) => nr.score,
             },
         );
         (packed, Some((used, budget)))
@@ -187,12 +180,6 @@ pub(super) fn dispatch_search(
                         serde_json::json!({"error": "serialization failed", "name": sr.chunk.name})
                     })
             }
-            cqs::store::UnifiedResult::Note(nr) => serde_json::json!({
-                "type": "note",
-                "text": nr.note.text,
-                "score": nr.score,
-                "sentiment": nr.note.sentiment,
-            }),
         })
         .collect();
 
@@ -315,10 +302,7 @@ pub(super) fn dispatch_similar(
         .get_chunk_with_embedding(&chunk.id)?
         .ok_or_else(|| anyhow::anyhow!("Could not load embedding for '{}'", chunk.name))?;
 
-    let filter = cqs::SearchFilter {
-        note_weight: 0.0,
-        ..Default::default()
-    };
+    let filter = cqs::SearchFilter::default();
 
     let index = ctx.vector_index()?;
     let results = ctx.store.search_filtered_with_index(

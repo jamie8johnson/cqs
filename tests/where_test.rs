@@ -67,14 +67,9 @@ fn test_suggest_placement_returns_results_for_similar_code() {
     ];
 
     // Embed each chunk with the real embedder for realistic similarity.
-    // embed_documents returns 768-dim; add neutral sentiment for 769-dim.
     let contents: Vec<&str> = chunks.iter().map(|c| c.content.as_str()).collect();
     let embeddings = embedder.embed_documents(&contents).unwrap();
-    let pairs: Vec<_> = chunks
-        .iter()
-        .cloned()
-        .zip(embeddings.into_iter().map(|e| e.with_sentiment(0.0)))
-        .collect();
+    let pairs: Vec<_> = chunks.iter().cloned().zip(embeddings).collect();
     store.upsert_chunks_batch(&pairs, Some(12345)).unwrap();
 
     // Ask for placement of a config-related function

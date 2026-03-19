@@ -13,7 +13,7 @@ cqs processes your code locally by default. With `--llm-summaries`, function cod
 When you run `cqs index`, the following is stored in `.cqs/index.db`:
 
 - Code chunks (functions, methods, documentation sections)
-- Embedding vectors (769-dimensional floats: 768 from E5-base-v2 + 1 sentiment dimension)
+- Embedding vectors (768-dimensional floats from E5-base-v2)
 - File paths and line numbers
 - File modification times
 

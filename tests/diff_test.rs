@@ -28,7 +28,7 @@ fn test_semantic_diff_basic() {
         for x in &mut v {
             *x /= norm;
         }
-        v.push(0.0); // 769th sentiment dim
+        // 768-dim normalized embedding
         cqs::Embedding::new(v)
     };
 

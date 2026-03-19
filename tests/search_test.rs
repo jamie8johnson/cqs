@@ -72,17 +72,16 @@ fn insert_chunks(store: &TestStore, chunks: &[cqs::Chunk], seed: f32) -> Vec<Str
     chunks.iter().map(|c| c.id.clone()).collect()
 }
 
-/// Insert a note and return its ID
-fn insert_note(store: &TestStore, id: &str, text: &str, sentiment: f32, seed: f32) {
+/// Insert a note
+fn insert_note(store: &TestStore, id: &str, text: &str, sentiment: f32) {
     let note = Note {
         id: id.to_string(),
         text: text.to_string(),
         sentiment,
         mentions: vec![],
     };
-    let emb = mock_embedding(seed);
     store
-        .upsert_notes_batch(&[(note, emb)], &PathBuf::from("notes.toml"), 12345)
+        .upsert_notes_batch(&[note], &PathBuf::from("notes.toml"), 12345)
         .unwrap();
 }
 
@@ -209,20 +208,20 @@ fn test_search_filtered_with_index_falls_back_without_index() {
     assert_eq!(results.len(), 1);
 }
 
-// ===== #36: search_unified_with_index =====
+// ===== #36: search_unified_with_index (SQ-9: code-only) =====
 
 #[test]
-fn test_search_unified_with_index_returns_both() {
+fn test_search_unified_with_index_returns_code_only() {
     let store = TestStore::new();
     let c1 = test_chunk("unified_fn", "fn unified_fn() { code }");
     let ids = insert_chunks(&store, &[c1], 1.0);
 
-    insert_note(&store, "note1", "Important pattern", 0.5, 1.0);
+    insert_note(&store, "note1", "Important pattern", 0.5);
 
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
 
-    // Mock index returns both chunk and note
+    // Mock index returns chunk and legacy note: prefixed entry
     let mock = MockIndex::new(vec![
         IndexResult {
             id: ids[0].clone(),
@@ -239,10 +238,12 @@ fn test_search_unified_with_index_returns_both() {
         .unwrap();
 
     let has_code = results.iter().any(|r| matches!(r, UnifiedResult::Code(_)));
-    let has_note = results.iter().any(|r| matches!(r, UnifiedResult::Note(_)));
-
     assert!(has_code, "Should include code results");
-    assert!(has_note, "Should include note results");
+    // Notes no longer appear in unified results (SQ-9)
+    assert!(
+        results.iter().all(|r| matches!(r, UnifiedResult::Code(_))),
+        "All results should be code"
+    );
 }
 
 #[test]
@@ -251,42 +252,23 @@ fn test_search_unified_without_index() {
     let c1 = test_chunk("no_idx_fn", "fn no_idx_fn() { stuff }");
     insert_chunks(&store, &[c1], 1.0);
 
-    insert_note(&store, "note2", "Another note", 0.0, 1.0);
+    insert_note(&store, "note2", "Another note", 0.0);
 
     let query = mock_embedding(1.0);
     let filter = SearchFilter::default();
 
-    // No index — brute-force for both
+    // No index -- brute-force
     let results = store
         .search_unified_with_index(&query, &filter, 10, 0.0, None)
         .unwrap();
 
     let has_code = results.iter().any(|r| matches!(r, UnifiedResult::Code(_)));
-    let has_note = results.iter().any(|r| matches!(r, UnifiedResult::Note(_)));
-
     assert!(has_code, "Should include code from brute-force");
-    assert!(has_note, "Should include notes from brute-force");
-}
-
-#[test]
-fn test_search_unified_note_weight_zero_excludes_notes() {
-    let store = TestStore::new();
-    let c1 = test_chunk("weighted_fn", "fn weighted_fn() { w }");
-    insert_chunks(&store, &[c1], 1.0);
-    insert_note(&store, "note3", "Excluded note", 0.0, 1.0);
-
-    let query = mock_embedding(1.0);
-    let filter = SearchFilter {
-        note_weight: 0.0,
-        ..Default::default()
-    };
-
-    let results = store
-        .search_unified_with_index(&query, &filter, 10, 0.0, None)
-        .unwrap();
-
-    let has_note = results.iter().any(|r| matches!(r, UnifiedResult::Note(_)));
-    assert!(!has_note, "note_weight=0 should exclude notes");
+    // Notes no longer appear in unified results (SQ-9)
+    assert!(
+        results.iter().all(|r| matches!(r, UnifiedResult::Code(_))),
+        "All results should be code"
+    );
 }
 
 // ===== #37: search_filtered with glob =====
@@ -332,63 +314,6 @@ fn test_search_filtered_language() {
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].chunk.name, "rust_fn");
-}
-
-// ===== #37: brute-force note search =====
-
-#[test]
-fn test_search_notes_brute_force() {
-    let store = TestStore::new();
-    insert_note(&store, "n1", "First note about errors", -0.5, 1.0);
-    insert_note(&store, "n2", "Second note about patterns", 0.5, 1.0);
-    insert_note(&store, "n3", "Unrelated note", 0.0, -1.0);
-
-    let query = mock_embedding(1.0);
-    let results = store.search_notes(&query, 10, 0.0).unwrap();
-
-    // n1 and n2 have same direction as query, n3 is opposite
-    assert!(results.len() >= 2, "Should find at least 2 matching notes");
-
-    // Check ordering (highest score first)
-    for window in results.windows(2) {
-        assert!(
-            window[0].score >= window[1].score,
-            "Results should be sorted by score"
-        );
-    }
-}
-
-#[test]
-fn test_search_notes_brute_force_threshold() {
-    let store = TestStore::new();
-    insert_note(&store, "n1", "Matching note", 0.0, 1.0);
-    insert_note(&store, "n2", "Opposite note", 0.0, -1.0);
-
-    let query = mock_embedding(1.0);
-    let results = store.search_notes(&query, 10, 0.9).unwrap();
-
-    // Only n1 should match (same direction), n2 is opposite
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].note.id, "n1");
-}
-
-#[test]
-fn test_search_notes_brute_force_limit() {
-    let store = TestStore::new();
-    for i in 0..10 {
-        insert_note(
-            &store,
-            &format!("n{}", i),
-            &format!("Note number {}", i),
-            0.0,
-            1.0,
-        );
-    }
-
-    let query = mock_embedding(1.0);
-    let results = store.search_notes(&query, 3, 0.0).unwrap();
-
-    assert_eq!(results.len(), 3, "Should respect limit");
 }
 
 // ===== #37: search_by_name FTS =====
