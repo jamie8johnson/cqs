@@ -27,7 +27,7 @@ pub struct DeadFunction {
 /// Confidence level for dead code detection.
 ///
 /// Ordered from least to most confident, enabling `>=` filtering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, clap::ValueEnum)]
 pub enum DeadConfidence {
     /// Likely a false positive (methods, functions in active files)
     Low,

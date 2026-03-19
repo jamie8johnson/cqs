@@ -4,7 +4,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use super::BatchContext;
-use crate::cli::{parse_nonzero_usize, DeadConfidenceLevel};
+use cqs::store::DeadConfidence;
+
+use crate::cli::parse_nonzero_usize;
 
 use super::handlers;
 
@@ -157,7 +159,7 @@ pub(crate) enum BatchCmd {
         include_pub: bool,
         /// Minimum confidence level
         #[arg(long, default_value = "low")]
-        min_confidence: DeadConfidenceLevel,
+        min_confidence: DeadConfidence,
     },
     /// Find related functions by co-occurrence
     Related {
@@ -490,7 +492,7 @@ mod tests {
                 ref min_confidence,
             } => {
                 assert!(include_pub);
-                assert!(matches!(min_confidence, DeadConfidenceLevel::High));
+                assert!(matches!(min_confidence, DeadConfidence::High));
             }
             _ => panic!("Expected Dead command"),
         }

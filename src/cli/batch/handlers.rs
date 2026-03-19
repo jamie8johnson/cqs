@@ -7,7 +7,9 @@ use anyhow::{Context, Result};
 use super::commands::BatchInput;
 use super::types::ChunkOutput;
 use super::BatchContext;
-use crate::cli::{validate_finite_f32, DeadConfidenceLevel};
+use cqs::store::DeadConfidence;
+
+use crate::cli::validate_finite_f32;
 use cqs::normalize_path;
 
 // ─── Handlers ────────────────────────────────────────────────────────────────
@@ -679,20 +681,19 @@ pub(super) fn dispatch_trace(
 pub(super) fn dispatch_dead(
     ctx: &BatchContext,
     include_pub: bool,
-    min_confidence: &DeadConfidenceLevel,
+    min_confidence: &DeadConfidence,
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_dead").entered();
 
-    let min_level: cqs::store::DeadConfidence = min_confidence.into();
     let (confident, possibly_pub) = ctx.store.find_dead_code(include_pub)?;
 
     let confident: Vec<_> = confident
         .into_iter()
-        .filter(|d| d.confidence >= min_level)
+        .filter(|d| d.confidence >= *min_confidence)
         .collect();
     let possibly_pub: Vec<_> = possibly_pub
         .into_iter()
-        .filter(|d| d.confidence >= min_level)
+        .filter(|d| d.confidence >= *min_confidence)
         .collect();
 
     let format_dead = |dead: &cqs::store::DeadFunction| {
