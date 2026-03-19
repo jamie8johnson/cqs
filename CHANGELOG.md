@@ -7,13 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-03-19
+
+### Breaking Changes
+- **Schema v15:** Reindex required after upgrading (`cqs index --force`). Embeddings changed from 769-dim to 768-dim.
+- **Notes removed from search results:** `--note-weight` and `--note-only` flags removed. Notes still boost code rankings and appear in `cqs read` output.
+- **Search defaults to project-only:** Use `--include-refs` to include configured references. `--ref name` unchanged.
+
+### Added
+- `--include-refs` flag for cross-reference search
+- `LlmConfig` with env/config overrides: `CQS_LLM_MODEL`, `CQS_API_BASE`, `CQS_LLM_MAX_TOKENS`
+- `define_patterns!` macro for Pattern enum (EX-6)
+- `capture` field in `define_chunk_types!` — generates `capture_name_to_chunk_type()` (EX-7)
+- Shared test fixtures module (`src/test_helpers.rs`)
+- Shared CLI/batch arg structs via `#[command(flatten)]` (EX-8)
+- `ScoringConfig` struct consolidates 9 search scoring constants (EX-11)
+- 49 new tests (TC-8 through TC-16): LLM store, migrations, dirty flag, pagination, notes, cache, open_readonly, watch events, extract_first_sentence
+- CAGRA distance conversion now correct — vectors are truly unit-norm after sentiment removal
+
+### Changed
+- 768-dim embeddings (was 769 — sentiment dimension removed)
+- `ProjectError`, `LlmError`, `ConfigError` typed error enums replace `anyhow` in library code
+- `Store::open_with_config` deduplicates open/open_readonly
+- Watch mode re-opens Store after reindex (clears stale OnceLock caches)
+- BatchContext reference cache uses LRU eviction (cap 4)
+- ORT provider functions gated on `target_os = "linux"` (was `cfg(unix)`)
+- Notes use `normalize_path` for consistent storage
+- 13 PathBuf fields use `serialize_path_normalized` for consistent JSON
+- `search.rs` split into `search/` module (scoring.rs, query.rs, mod.rs)
+- `embedder.rs` split into `embedder/` module (mod.rs, provider.rs)
+- Enrichment pass extracted from `pipeline.rs` into `enrichment.rs`
+- LLM summaries now use Batches API for throughput (no RPM limit, 50% discount) (#605)
+
 ### Fixed
+- **Security:** API key leak via crafted batch_id (SEC-5/6), HNSW bincode OOM (SEC-7), atexit deadlock (SEC-8), batch OOM (SEC-9)
+- **Robustness:** CJK byte slice panic (RB-7), SQL parser non-ASCII panic (RB-8/9), CAGRA k=0 (RB-11), byte_offset bounds (RB-10)
+- **Data safety:** HNSW dirty flag crash protection (DS-11), atomic audit writes (DS-8), batch resume (DS-7/10)
+- **Error handling:** Client::new returns Result (EH-8), pending batch errors logged (EH-10), swallowed errors surfaced (EH-11/16)
+- **Observability:** 19 tracing sites converted to structured fields, 4 missing spans added
+- **Algorithm:** waterfall_pack overshoot capped (AC-7)
+- **Performance:** eq_ignore_ascii_case in search filter, content truncate before clone, MODEL.to_string() hoisted, integrity_check(1) replaces quick_check
+- **Docs:** Schema version, --json vs --format json, SECURITY/PRIVACY for --llm-summaries, GPU section updated
+- Dead code removed: NlTemplate variants, get_by_content_hash, get_enrichment_hash
+- DeadConfidence/DeadConfidenceLevel consolidated into one enum
+- Pattern enum and ChunkType checklist updated for macro consolidation
 - CAGRA use-after-free on shape pointers — host ndarrays dropped while device tensors referenced them (#613)
 - ORT CUDA provider path resolution — dladdr returns argv[0] on glibc, ORT falls back to CWD (#613)
 - LLM batch resume on interrupt — persist batch_id in SQLite metadata, resume polling on restart (#613)
-
-### Changed
-- LLM summaries now use Batches API for throughput (no RPM limit, 50% discount) (#605)
 
 ## [1.0.13] - 2026-03-16
 
