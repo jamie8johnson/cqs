@@ -1089,3 +1089,63 @@ fn test_check_origins_stale_across_batch_boundary() {
         stale.len()
     );
 }
+
+// ===== Store::open_readonly Tests (TC-13) =====
+
+#[test]
+fn test_open_readonly_on_initialized_store() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("readonly.db");
+
+    // Create and initialize a store, then drop it
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+    }
+
+    // Reopen as read-only
+    let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
+    let stats = ro.stats().unwrap();
+    assert_eq!(stats.total_chunks, 0);
+    assert_eq!(stats.schema_version, 14);
+    assert_eq!(stats.model_name, "intfloat/e5-base-v2");
+}
+
+#[test]
+fn test_open_readonly_on_missing_file_fails() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let result = cqs::store::Store::open_readonly(&dir.path().join("nonexistent.db"));
+    assert!(result.is_err(), "open_readonly on missing file should fail");
+}
+
+#[test]
+fn test_open_readonly_preserves_data() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db_path = dir.path().join("readonly_data.db");
+
+    // Create store, insert chunks, drop
+    {
+        let store = cqs::store::Store::open(&db_path).unwrap();
+        store.init(&cqs::store::ModelInfo::default()).unwrap();
+
+        let chunk = test_chunk("preserved_fn", "fn preserved_fn() { 42 }");
+        let emb = mock_embedding(1.0);
+        store.upsert_chunk(&chunk, &emb, Some(12345)).unwrap();
+    }
+
+    // Reopen read-only and verify data is present
+    let ro = cqs::store::Store::open_readonly(&db_path).unwrap();
+    let stats = ro.stats().unwrap();
+    assert_eq!(
+        stats.total_chunks, 1,
+        "Chunk should be visible in read-only mode"
+    );
+    assert_eq!(stats.total_files, 1);
+
+    // Search should find the chunk
+    let results = ro
+        .search_embedding_only(&mock_embedding(1.0), 5, 0.0)
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].chunk.name, "preserved_fn");
+}
