@@ -346,7 +346,9 @@ fn resume_or_fetch_batch(
     }
 
     // Clear pending batch marker
-    store.set_pending_batch_id(None).ok();
+    if let Err(e) = store.set_pending_batch_id(None) {
+        tracing::warn!(error = %e, "Failed to clear pending batch ID");
+    }
 
     Ok(count)
 }
@@ -489,62 +491,90 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
     // Phase 2: Submit batch to Claude API (or resume a pending one)
     let api_generated = if batch_items.is_empty() {
         // No new items needed, but check if a previous batch is still pending
-        if let Ok(Some(pending)) = store.get_pending_batch_id() {
-            if !quiet {
-                eprintln!("Resuming pending batch {}", pending);
+        match store.get_pending_batch_id() {
+            Ok(Some(pending)) => {
+                if !quiet {
+                    eprintln!("Resuming pending batch {}", pending);
+                }
+                resume_or_fetch_batch(&client, store, &pending, quiet)?
             }
-            resume_or_fetch_batch(&client, store, &pending, quiet)?
-        } else {
-            0
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read pending batch ID");
+                0
+            }
+            _ => 0,
         }
     } else {
         // Check for a pending batch from a previous interrupted run
-        let batch_id = if let Ok(Some(pending)) = store.get_pending_batch_id() {
-            // Verify it's still valid (not expired/canceled)
-            if !quiet {
-                eprint!("Found pending batch {}, checking status...", pending);
-            }
-            match client.check_batch_status(&pending) {
-                Ok(status) if status == "in_progress" || status == "finalizing" => {
-                    if !quiet {
-                        eprint!(" still processing, resuming\nWaiting for results");
-                    }
-                    pending
+        let batch_id = match store.get_pending_batch_id() {
+            Ok(Some(pending)) => {
+                // Verify it's still valid (not expired/canceled)
+                if !quiet {
+                    eprint!("Found pending batch {}, checking status...", pending);
                 }
-                Ok(status) if status == "ended" => {
-                    if !quiet {
-                        eprintln!(" completed, fetching results");
+                match client.check_batch_status(&pending) {
+                    Ok(status) if status == "in_progress" || status == "finalizing" => {
+                        if !quiet {
+                            eprint!(" still processing, resuming\nWaiting for results");
+                        }
+                        pending
                     }
-                    pending
+                    Ok(status) if status == "ended" => {
+                        if !quiet {
+                            eprintln!(" completed, fetching results");
+                        }
+                        pending
+                    }
+                    _ => {
+                        // Stale/failed batch — submit fresh
+                        if !quiet {
+                            eprintln!(" stale, submitting new batch");
+                            eprint!("Submitting batch of {} to Claude API", batch_items.len());
+                        }
+                        let id = client
+                            .submit_batch(&batch_items)
+                            .context("Failed to submit summary batch")?;
+                        if let Err(e) = store.set_pending_batch_id(Some(&id)) {
+                            tracing::warn!(error = %e, "Failed to store pending batch ID");
+                        }
+                        if !quiet {
+                            eprint!(" (batch {})\nWaiting for results", id);
+                        }
+                        id
+                    }
                 }
-                _ => {
-                    // Stale/failed batch — submit fresh
-                    if !quiet {
-                        eprintln!(" stale, submitting new batch");
-                        eprint!("Submitting batch of {} to Claude API", batch_items.len());
-                    }
-                    let id = client
-                        .submit_batch(&batch_items)
-                        .context("Failed to submit summary batch")?;
-                    store.set_pending_batch_id(Some(&id)).ok();
-                    if !quiet {
-                        eprint!(" (batch {})\nWaiting for results", id);
-                    }
-                    id
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to read pending batch ID");
+                if !quiet {
+                    eprint!("Submitting batch of {} to Claude API", batch_items.len());
                 }
+                let id = client
+                    .submit_batch(&batch_items)
+                    .context("Failed to submit summary batch")?;
+                if let Err(e) = store.set_pending_batch_id(Some(&id)) {
+                    tracing::warn!(error = %e, "Failed to store pending batch ID");
+                }
+                if !quiet {
+                    eprint!(" (batch {})\nWaiting for results", id);
+                }
+                id
             }
-        } else {
-            if !quiet {
-                eprint!("Submitting batch of {} to Claude API", batch_items.len());
+            _ => {
+                if !quiet {
+                    eprint!("Submitting batch of {} to Claude API", batch_items.len());
+                }
+                let id = client
+                    .submit_batch(&batch_items)
+                    .context("Failed to submit summary batch")?;
+                if let Err(e) = store.set_pending_batch_id(Some(&id)) {
+                    tracing::warn!(error = %e, "Failed to store pending batch ID");
+                }
+                if !quiet {
+                    eprint!(" (batch {})\nWaiting for results", id);
+                }
+                id
             }
-            let id = client
-                .submit_batch(&batch_items)
-                .context("Failed to submit summary batch")?;
-            store.set_pending_batch_id(Some(&id)).ok();
-            if !quiet {
-                eprint!(" (batch {})\nWaiting for results", id);
-            }
-            id
         };
 
         resume_or_fetch_batch(&client, store, &batch_id, quiet)?
