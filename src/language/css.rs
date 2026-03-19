@@ -50,11 +50,13 @@ fn post_process_css(
             // so extract a summary from the source text
             let text = node.utf8_text(source.as_bytes()).unwrap_or("");
             // Extract the condition: @media (max-width: 600px) → "(max-width: 600px)"
-            if let Some(start) = text.find('(') {
-                if let Some(end) = text.find('{') {
-                    let condition = text[start..end].trim();
-                    if !condition.is_empty() {
-                        *name = format!("@media {condition}");
+            if let Some(brace) = text.find('{') {
+                // Extract everything between @media and { as the query
+                let after_media = if text.starts_with("@media") { 6 } else { 0 };
+                if after_media < brace {
+                    let query = text[after_media..brace].trim();
+                    if !query.is_empty() {
+                        *name = format!("@media {query}");
                         return true;
                     }
                 }

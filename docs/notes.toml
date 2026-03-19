@@ -1016,3 +1016,20 @@ mentions = [
     "llm.rs",
     "store",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "CSS parser panic at css.rs:55 — slice bounds error on @media print block in redis/deps CSS. Triggered during train-data generation. Needs investigation."
+mentions = [
+    "css.rs",
+    "parser",
+]
+
+[[note]]
+sentiment = 0.5
+text = "LoRA training running: 183k triplets, 3 epochs, ~6 hrs on A6000. Baseline R@1=89.1%, TypeScript weakest at 0.758. CSS parser panic fixed (css.rs:55 @media print). 19 repos, 12 languages in training data."
+mentions = [
+    "train_lora.py",
+    "model_eval.rs",
+    "css.rs",
+]

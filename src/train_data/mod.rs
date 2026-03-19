@@ -219,21 +219,32 @@ pub fn generate_training_data(config: &TrainDataConfig) -> Result<TrainDataStats
                     Err(_) => continue,   // file doesn't exist at this commit
                 };
 
-                // Parse to get function spans
-                let chunks =
-                    match parser.parse_source(&content, language, Path::new(&diff_file.path)) {
-                        Ok(c) => c,
-                        Err(e) => {
-                            tracing::debug!(
-                                file = %diff_file.path,
-                                sha = %commit.sha,
-                                error = %e,
-                                "Parse failed"
-                            );
-                            stats.parse_failures += 1;
-                            continue;
-                        }
-                    };
+                // Parse to get function spans (catch panics from malformed content)
+                let parse_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    parser.parse_source(&content, language, Path::new(&diff_file.path))
+                }));
+                let chunks = match parse_result {
+                    Ok(Ok(c)) => c,
+                    Ok(Err(e)) => {
+                        tracing::debug!(
+                            file = %diff_file.path,
+                            sha = %commit.sha,
+                            error = %e,
+                            "Parse failed"
+                        );
+                        stats.parse_failures += 1;
+                        continue;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            file = %diff_file.path,
+                            sha = %commit.sha,
+                            "Parse panicked — skipping"
+                        );
+                        stats.parse_failures += 1;
+                        continue;
+                    }
+                };
 
                 let functions: Vec<FunctionSpan> = chunks_to_function_spans(&chunks);
                 let changed = find_changed_functions(&diff_file.hunks, &functions);
@@ -374,10 +385,13 @@ fn build_bm25_corpus(repo_path: &Path, parser: &Parser) -> Vec<(String, String)>
             continue;
         }
 
-        // Parse file
-        let chunks = match parser.parse_file(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        // Parse file (catch panics from malformed content)
+        let path_owned = path.to_path_buf();
+        let chunks = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parser.parse_file(&path_owned)
+        })) {
+            Ok(Ok(c)) => c,
+            Ok(Err(_)) | Err(_) => continue,
         };
 
         for chunk in &chunks {

@@ -2,61 +2,59 @@
 
 ## Right Now
 
-**v1.1.0 released. Starting `cqs train-data` implementation (SQ-7 prep) (2026-03-19).**
+**SQ-7: LoRA training running on A6000 (2026-03-19).** 3 epochs, ~6 hours, finishes ~12:30am. Background task `b8xwgmkri`.
+
+### Training details
+- Data: 183,586 triplets from 19 repos (12 languages), ~/training-data/training_data.jsonl (1.5 GB)
+- Model: E5-base-v2 + LoRA rank 16 (2.7M trainable / 112M total = 2.39%)
+- Config: 3 epochs, batch 32, lr 2e-5, warmup 0.1, fp16
+- Output: ~/training-data/e5-code-search-lora/ (adapter + merged model + ONNX)
+- Script: ~/training-data/train_lora.py
+
+### Eval baseline (hard eval)
+| Model | R@1 | R@5 | MRR | NDCG@10 |
+|-------|-----|-----|-----|---------|
+| E5-base-v2 | 89.1% | 98.2% | 0.934 | 0.950 |
+| jina-v2-base-code | 80.0% | 96.4% | 0.874 | 0.905 |
+
+Per-language (E5-base-v2): Rust 0.955, Python 1.000, **TypeScript 0.758**, JavaScript 0.955, Go 1.000
+
+### After training completes
+1. Verify ONNX export in ~/training-data/e5-code-search-lora/onnx/
+2. Run hard eval with fine-tuned model — compare R@1, MRR, per-language
+3. If improvement: `hf upload jamie8johnson/e5-base-v2-code-search ./e5-code-search-lora/onnx/`
+4. Update cqs model URL + hash, PR, release v1.1.1
+
+### Also pending
+- CSS parser fix committed but not pushed (css.rs:55 @media print panic)
+- ROADMAP.md has SQ-7 updates (uncommitted)
+- Cargo.toml description still says "Local ML" (fix in next release)
 
 ### Done this session
-- Full 14-category audit: 88 findings, P1-P4 all addressed
-- 10 PRs merged (#614-#623)
-- v1.1.0 released (crates.io + GitHub + 3 platform binaries)
-- SQ-9 complete: notes removed from search, 769→768-dim, schema v15
-- `cqs train-data` spec written and reviewed (3 rounds)
-- LoRA training env installed (conda cqs-train, PyTorch 2.10 + A6000)
-
-### In Progress
-- `cqs train-data` command — spec at `docs/superpowers/specs/2026-03-19-train-data-design.md`
-- Need implementation plan then execution
-
-### Key Decisions
-- BM25 hard negatives (with IDF), not same-file negatives
-- Use `git show {commit}:{path}` for commit-time content, not HEAD
-- Query normalization: strip conventional commit prefixes + action verbs
-- Content hash guard on negatives (BLAKE3)
-- Stream JSONL output, checkpoint after each commit
-- New `Parser::parse_source()` API required
-
-## Pending Changes
-
-Uncommitted: spec doc + ROADMAP on main. Push in next PR.
+- Full 14-category audit: 88 findings fixed (PRs #614-#617)
+- SQ-9: notes simplified, 769→768-dim, schema v15 (PR #620)
+- P3 deferred + P4 refactors (PRs #621-#622)
+- v1.1.0 released (PR #623)
+- `cqs train-data` command (PR #624)
+- Training data generated: 186k triplets, 19 repos, 12 languages
+- LoRA training started
 
 ## Parked
 
-- **SQ-3: Code-specific embedding model** — UniXcoder, CodeBERT
-- **SQ-8: LLM doc comment generation** — write back to source
+- **SQ-3: Code-specific embedding model** — evaluate after LoRA results
+- **SQ-8: LLM doc comment generation** — post-training
 - **Post-index name matching** — fuzzy cross-doc references
-- **ref install** — #255
 
 ## Upstream Tracking
 
-- cuVS PR #1839 (search &self): merged, expected v26.04.00 (April)
-- cuVS PR #1840 (CAGRA serialize): open, may land v26.04.00
-- cuVS #1277 (CUDA 13 Rust): stalled
-- Audit cuVS + ort bindings: planned post-release
-
-## Open Issues
-
-- #106: ort stable (rc.12)
-- #63: paste dep unmaintained
-- #255: Pre-built reference packages
-- #389: CAGRA CPU-side dataset retention
+- cuVS PR #1839 (search &self): merged, expected v26.04.00
+- cuVS PR #1840 (CAGRA serialize): open
+- Audit cuVS + ort: planned
 
 ## Architecture
 
-- Version: 1.1.0 (released)
-- MSRV: 1.93
+- Version: 1.1.0 (v1.1.1 pending after LoRA)
 - Schema: v15 (768-dim)
-- Embeddings: 768-dim E5-base-v2
-- 51 languages, 16 ChunkType variants
-- Tests: ~1694
-- Search: project-only by default, --include-refs
-- File structure: search/ (3), embedder/ (2), cli/enrichment.rs, cli/args.rs, test_helpers.rs
-- Training env: conda cqs-train (PyTorch 2.10, sentence-transformers 5.3, peft 0.18, A6000 48GB)
+- Embeddings: 768-dim E5-base-v2 (LoRA fine-tuning in progress)
+- Tests: ~1734
+- Training env: conda cqs-train, A6000 48GB, PyTorch 2.10
