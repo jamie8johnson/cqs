@@ -48,45 +48,45 @@ Date: 2026-03-18. 99 findings across 14 categories, 3 batches.
 
 | # | Finding | Category | Location | Status |
 |---|---------|----------|----------|--------|
-| 1 | AD-13: `OnboardEntry.language` String → Language enum | API Design | onboard.rs:57 | |
-| 2 | AD-14: `DiffEntry`/`DiffResult` missing Serialize/Clone | API Design | diff.rs:14,27 | |
-| 3 | AD-15: `TestSuggestion.suggested_file` String → PathBuf | API Design | impact/types.rs:120 | |
-| 4 | AD-17: `ChunkIdentity.origin` String → PathBuf | API Design | store/helpers.rs:335 | |
-| 5 | AD-18: `StaleFile.origin` String → PathBuf | API Design | store/helpers.rs:402 | |
-| 6 | AD-19: `SuggestedNote` missing Serialize/Clone | API Design | suggest.rs:24 | |
-| 7 | AD-20: Inconsistent Clone derives across 13+ result types | API Design | multiple | |
-| 8 | AD-21: `GatherDirection` missing Serialize | API Design | gather.rs:89 | |
-| 9 | AD-22: `ReferenceIndex` missing Debug | API Design | reference.rs:17 | |
-| 10 | CQ-9: `get_enrichment_hash` dead code (zero callers) | Code Quality | store/chunks.rs:162 | |
-| 11 | CQ-10: `NlTemplate` 7 unused variants | Code Quality | nl.rs:238 | |
-| 12 | CQ-12: `get_by_content_hash` superseded by batch variant | Code Quality | store/chunks.rs:620 | |
-| 13 | CQ-13: Test fixture `setup_store()`/`mock_embedding()` copy-pasted 4+ times | Code Quality | search.rs, chunks.rs, calls.rs, etc. | |
-| 14 | CQ-14: `update_embeddings_batch` strict subset of `_with_hashes` variant | Code Quality | store/chunks.rs:83,122 | |
-| 15 | OB-9: 14 `tracing::warn!` calls use positional format instead of structured | Observability | multiple (14 sites) | |
-| 16 | OB-10: `embed_documents` missing outer span for multi-batch | Observability | embedder.rs:400 | |
-| 17 | OB-11: `HnswIndex::search` missing tracing span | Observability | hnsw/search.rs:24 | |
-| 18 | OB-12: `set_hnsw_dirty().ok()` — missing warn on failure (7 sites) | Observability | watch.rs, gc.rs, index.rs | |
-| 19 | OB-13: `index_notes` uses info! but no info_span! | Observability | lib.rs:291 | |
-| 20 | OB-14: `review.rs` warn via pre-formatted message string | Observability | review.rs:136,149 | |
-| 21 | DOC-12: SECURITY.md Write Access missing `.cqs.toml` and `projects.toml` | Documentation | SECURITY.md:63 | |
-| 22 | DOC-14: README missing `--llm-summaries` flag | Documentation | README.md:476 | |
-| 23 | EH-11: `get_summaries_by_hashes` error swallowed in enrichment | Error Handling | pipeline.rs:996 | |
-| 24 | EH-16: `convert_directory` ignores top-level `read_dir` failure | Error Handling | convert/mod.rs:333 | |
-| 25 | PB-10: symlink path comparison without canonicalization | Platform | embedder.rs:783 | |
-| 26 | PB-12: `ref list --json` uses `to_string_lossy` without normalize | Platform | reference.rs:183 | |
-| 27 | EX-6: `Pattern` enum 4 manual sync points | Extensibility | structural.rs:10 | |
-| 28 | EX-7: `capture_name_to_chunk_type` manual sync point | Extensibility | parser/types.rs:18 | |
-| 29 | PERF-11: `upsert_summaries_batch` per-row INSERT | Performance | store/chunks.rs:258 | |
-| 30 | PERF-13: `llm_summary_pass` clones full content per chunk | Performance | llm.rs:434 | |
-| 31 | PERF-15: `apply_parent_boost` clones strings into HashMap | Performance | search.rs:534 | |
-| 32 | PERF-16: `MODEL.to_string()` allocated per batch item | Performance | llm.rs:135 | |
-| 33 | PERF-17: per-candidate `.to_lowercase()` in filter check | Performance | search.rs:1057 | |
-| 34 | PERF-18: summaries fetched per page without caching | Performance | pipeline.rs:994 | |
-| 35 | RM-11: `embed_documents` prefixed copy of all strings upfront | Resource Mgmt | embedder.rs:402 | |
-| 36 | RM-12: CAGRA redundant host array allocation per search | Resource Mgmt | cagra.rs:240 | |
-| 37 | RM-16: HNSW id_map serialized to in-memory JSON string | Resource Mgmt | hnsw/persist.rs:189 | |
-| 38 | RM-17: watch mode mtime pruning skips multi-file batches | Resource Mgmt | watch.rs:355 | |
-| 39 | RM-14: `Store::open` multi-threaded tokio with all cores | Resource Mgmt | store/mod.rs:221 | |
+| 1 | AD-13: `OnboardEntry.language` String → Language enum | API Design | onboard.rs:57 | ✅ fixed |
+| 2 | AD-14: `DiffEntry`/`DiffResult` missing Serialize/Clone | API Design | diff.rs:14,27 | ✅ fixed |
+| 3 | AD-15: `TestSuggestion.suggested_file` String → PathBuf | API Design | impact/types.rs:120 | ✅ fixed |
+| 4 | AD-17: `ChunkIdentity.origin` String → PathBuf | API Design | store/helpers.rs:335 | ✅ fixed |
+| 5 | AD-18: `StaleFile.origin` String → PathBuf | API Design | store/helpers.rs:402 | ✅ fixed |
+| 6 | AD-19: `SuggestedNote` missing Serialize/Clone | API Design | suggest.rs:24 | ✅ fixed |
+| 7 | AD-20: Inconsistent Clone derives across 13+ result types | API Design | multiple | ✅ fixed |
+| 8 | AD-21: `GatherDirection` missing Serialize | API Design | gather.rs:89 | ✅ fixed |
+| 9 | AD-22: `ReferenceIndex` missing Debug | API Design | reference.rs:17 | ✅ fixed |
+| 10 | CQ-9: `get_enrichment_hash` dead code (zero callers) | Code Quality | store/chunks.rs:162 | ✅ already removed |
+| 11 | CQ-10: `NlTemplate` 7 unused variants | Code Quality | nl.rs:238 | ✅ fixed |
+| 12 | CQ-12: `get_by_content_hash` superseded by batch variant | Code Quality | store/chunks.rs:620 | ✅ fixed |
+| 13 | CQ-13: Test fixture `setup_store()`/`mock_embedding()` copy-pasted 4+ times | Code Quality | search.rs, chunks.rs, calls.rs, etc. | deferred |
+| 14 | CQ-14: `update_embeddings_batch` strict subset of `_with_hashes` variant | Code Quality | store/chunks.rs:83,122 | ✅ already delegated |
+| 15 | OB-9: 14 `tracing::warn!` calls use positional format instead of structured | Observability | multiple (14 sites) | ✅ fixed |
+| 16 | OB-10: `embed_documents` missing outer span for multi-batch | Observability | embedder.rs:400 | ✅ fixed |
+| 17 | OB-11: `HnswIndex::search` missing tracing span | Observability | hnsw/search.rs:24 | ✅ fixed |
+| 18 | OB-12: `set_hnsw_dirty().ok()` — missing warn on failure (7 sites) | Observability | watch.rs, gc.rs, index.rs | ✅ fixed |
+| 19 | OB-13: `index_notes` uses info! but no info_span! | Observability | lib.rs:291 | ✅ fixed |
+| 20 | OB-14: `review.rs` warn via pre-formatted message string | Observability | review.rs:136,149 | ✅ fixed |
+| 21 | DOC-12: SECURITY.md Write Access missing `.cqs.toml` and `projects.toml` | Documentation | SECURITY.md:63 | ✅ fixed |
+| 22 | DOC-14: README missing `--llm-summaries` flag | Documentation | README.md:476 | ✅ fixed |
+| 23 | EH-11: `get_summaries_by_hashes` error swallowed in enrichment | Error Handling | pipeline.rs:996 | ✅ fixed |
+| 24 | EH-16: `convert_directory` ignores top-level `read_dir` failure | Error Handling | convert/mod.rs:333 | ✅ fixed |
+| 25 | PB-10: symlink path comparison without canonicalization | Platform | embedder.rs:783 | ✅ fixed |
+| 26 | PB-12: `ref list --json` uses `to_string_lossy` without normalize | Platform | reference.rs:183 | ✅ fixed |
+| 27 | EX-6: `Pattern` enum 4 manual sync points | Extensibility | structural.rs:10 | deferred |
+| 28 | EX-7: `capture_name_to_chunk_type` manual sync point | Extensibility | parser/types.rs:18 | deferred |
+| 29 | PERF-11: `upsert_summaries_batch` per-row INSERT | Performance | store/chunks.rs:258 | deferred |
+| 30 | PERF-13: `llm_summary_pass` clones full content per chunk | Performance | llm.rs:434 | deferred |
+| 31 | PERF-15: `apply_parent_boost` clones strings into HashMap | Performance | search.rs:534 | wontfix (borrow conflict, negligible savings) |
+| 32 | PERF-16: `MODEL.to_string()` allocated per batch item | Performance | llm.rs:135 | deferred |
+| 33 | PERF-17: per-candidate `.to_lowercase()` in filter check | Performance | search.rs:1057 | ✅ fixed |
+| 34 | PERF-18: summaries fetched per page without caching | Performance | pipeline.rs:994 | ✅ already pre-fetched |
+| 35 | RM-11: `embed_documents` prefixed copy of all strings upfront | Resource Mgmt | embedder.rs:402 | ✅ already per-batch |
+| 36 | RM-12: CAGRA redundant host array allocation per search | Resource Mgmt | cagra.rs:240 | ✅ fixed |
+| 37 | RM-16: HNSW id_map serialized to in-memory JSON string | Resource Mgmt | hnsw/persist.rs:189 | ✅ already streaming |
+| 38 | RM-17: watch mode mtime pruning skips multi-file batches | Resource Mgmt | watch.rs:355 | ✅ fixed |
+| 39 | RM-14: `Store::open` multi-threaded tokio with all cores | Resource Mgmt | store/mod.rs:221 | ✅ fixed |
 
 ## P4: Hard or Low Impact — Create Issues
 
