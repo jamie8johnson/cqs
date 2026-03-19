@@ -29,6 +29,12 @@ pub struct Client {
     api_key: String,
 }
 
+fn is_valid_batch_id(id: &str) -> bool {
+    id.starts_with("msgbatch_")
+        && id.len() < 100
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
 // --- Messages API types ---
 
 #[derive(Serialize)]
@@ -103,6 +109,7 @@ impl Client {
         Self {
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(60))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .expect("Failed to create HTTP client"),
             api_key: api_key.to_string(),
@@ -172,6 +179,9 @@ impl Client {
 
     /// Check the current status of a batch without polling.
     fn check_batch_status(&self, batch_id: &str) -> Result<String> {
+        if !is_valid_batch_id(batch_id) {
+            bail!("Invalid batch ID format: {}", batch_id);
+        }
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
         let response = self
             .http
@@ -192,6 +202,9 @@ impl Client {
 
     /// Poll until a batch completes. Returns when status is "ended".
     fn wait_for_batch(&self, batch_id: &str, quiet: bool) -> Result<()> {
+        if !is_valid_batch_id(batch_id) {
+            bail!("Invalid batch ID format: {}", batch_id);
+        }
         let url = format!("{}/messages/batches/{}", API_BASE, batch_id);
         loop {
             let response = self
@@ -237,6 +250,9 @@ impl Client {
     ///
     /// Returns a map from custom_id to summary text.
     fn fetch_batch_results(&self, batch_id: &str) -> Result<HashMap<String, String>> {
+        if !is_valid_batch_id(batch_id) {
+            bail!("Invalid batch ID format: {}", batch_id);
+        }
         let url = format!("{}/messages/batches/{}/results", API_BASE, batch_id);
         let response = self
             .http
@@ -609,5 +625,22 @@ mod tests {
         let content: String = std::iter::repeat('あ').take(2667).collect();
         let prompt = Client::build_prompt(&content, "function", "rust");
         assert!(prompt.len() <= 8100);
+    }
+
+    #[test]
+    fn is_valid_batch_id_accepts_real_ids() {
+        assert!(is_valid_batch_id("msgbatch_abc123"));
+        assert!(is_valid_batch_id("msgbatch_0123456789abcdef_ABCDEF"));
+    }
+
+    #[test]
+    fn is_valid_batch_id_rejects_crafted() {
+        assert!(!is_valid_batch_id("../../v1/complete"));
+        assert!(!is_valid_batch_id("msgbatch_abc?redirect=evil.com"));
+        assert!(!is_valid_batch_id(""));
+        assert!(!is_valid_batch_id("not_a_batch"));
+        assert!(!is_valid_batch_id(
+            &("msgbatch_".to_string() + &"a".repeat(200))
+        ));
     }
 }
