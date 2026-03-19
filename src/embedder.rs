@@ -676,7 +676,7 @@ fn verify_checksum(path: &Path, expected: &str) -> Result<(), EmbedderError> {
 /// Strategy: compute the same directory ORT will search (from argv[0]),
 /// and create symlinks from the ORT cache there. Symlinks are cleaned up
 /// on process exit.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn ensure_ort_provider_libs() {
     let ort_lib_dir = match find_ort_provider_dir() {
         Some(d) => d,
@@ -720,7 +720,7 @@ fn ensure_ort_provider_libs() {
 ///
 /// Reproduces ORT's logic: `dladdr` returns `dli_fname = argv[0]` (glibc),
 /// then `std::filesystem::absolute(dli_fname).remove_filename()`.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn ort_runtime_search_dir() -> Option<PathBuf> {
     // Read argv[0] the same way glibc's dladdr does
     let cmdline = std::fs::read("/proc/self/cmdline").ok()?;
@@ -739,7 +739,7 @@ fn ort_runtime_search_dir() -> Option<PathBuf> {
 }
 
 /// Find the ORT provider library cache directory
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn find_ort_provider_dir() -> Option<PathBuf> {
     let cache_dir = dirs::cache_dir()?;
     let triplet = match (std::env::consts::ARCH, std::env::consts::OS) {
@@ -765,7 +765,7 @@ fn find_ort_provider_dir() -> Option<PathBuf> {
 }
 
 /// Find a writable directory from LD_LIBRARY_PATH (excluding the ORT cache)
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn find_ld_library_dir(ort_lib_dir: &Path) -> Option<PathBuf> {
     let ld_path = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
     let ort_cache_str = ort_lib_dir.to_string_lossy();
@@ -776,7 +776,7 @@ fn find_ld_library_dir(ort_lib_dir: &Path) -> Option<PathBuf> {
 }
 
 /// Create symlinks for provider libraries in the target directory
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
     for lib in libs {
         let src = src_dir.join(lib);
@@ -802,7 +802,7 @@ fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
 
 /// Register atexit cleanup for provider symlinks.
 /// Uses Mutex to support paths from multiple directories.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn register_provider_cleanup(paths: Vec<PathBuf>) {
     use std::sync::Mutex;
 
@@ -829,8 +829,8 @@ fn register_provider_cleanup(paths: Vec<PathBuf>) {
     });
 }
 
-/// No-op on non-Unix platforms (CUDA provider libs handled differently)
-#[cfg(not(unix))]
+/// No-op on non-Linux platforms (CUDA provider libs handled differently)
+#[cfg(not(target_os = "linux"))]
 fn ensure_ort_provider_libs() {
     // No-op: Windows and other platforms find CUDA/TensorRT provider libraries
     // via PATH, so no symlinking is needed. The Unix version symlinks .so files
