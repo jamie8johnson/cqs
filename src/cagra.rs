@@ -328,8 +328,12 @@ impl CagraIndex {
         for i in 0..k {
             let idx = neighbor_row[i] as usize;
             if idx < self.id_map.len() {
-                // CAGRA returns L2 distance for normalized vectors
-                // L2 distance for normalized: d = 2 - 2*cos_sim, so cos_sim = 1 - d/2
+                // CAGRA uses squared L2 distance. For unit-norm vectors: d = 2 - 2*cos_sim,
+                // so cos_sim = 1 - d/2. Note: cqs embeddings are 769-dim (768 + sentiment).
+                // The sentiment dimension breaks the unit-norm assumption, introducing a small
+                // scoring bias proportional to sentiment magnitude. This diverges from HNSW
+                // (DistCosine, normalizes internally) and brute-force (dot product). For
+                // sentiment=0 (the common case), all three backends agree. See audit AC-8.
                 let dist = distance_row[i];
                 let score = 1.0 - dist / 2.0;
                 results.push(IndexResult {
