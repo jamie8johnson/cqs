@@ -238,17 +238,8 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use crate::note::{Note, SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD};
-    use crate::store::helpers::ModelInfo;
-    use crate::store::Store;
+    use crate::test_helpers::setup_store;
     use std::path::Path;
-
-    fn setup_store() -> (Store, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
-        let store = Store::open(&db_path).unwrap();
-        store.init(&ModelInfo::default()).unwrap();
-        (store, dir)
-    }
 
     fn make_note(id: &str, text: &str, sentiment: f32) -> Note {
         Note {

@@ -1268,15 +1268,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::helpers::ModelInfo;
-
-    fn setup_store() -> (Store, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
-        let store = Store::open(&db_path).unwrap();
-        store.init(&ModelInfo::default()).unwrap();
-        (store, dir)
-    }
+    use crate::test_helpers::setup_store;
 
     fn seed_call_graph(store: &Store) {
         // A calls B and C; B calls C; D calls B

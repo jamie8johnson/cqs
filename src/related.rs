@@ -172,28 +172,9 @@ fn find_type_overlap(
 mod tests {
     use super::*;
     use crate::language::{ChunkType, Language};
-    use crate::store::ModelInfo;
     use std::path::Path;
 
-    fn setup_store() -> (crate::Store, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
-        let store = crate::Store::open(&db_path).unwrap();
-        store.init(&ModelInfo::default()).unwrap();
-        (store, dir)
-    }
-
-    /// Build a normalized embedding vector of 768 dimensions with `seed` repeated.
-    fn mock_embedding(seed: f32) -> crate::Embedding {
-        let mut v = vec![seed; 768];
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut v {
-                *x /= norm;
-            }
-        }
-        crate::Embedding::new(v)
-    }
+    use crate::test_helpers::{mock_embedding, setup_store};
 
     fn make_chunk(name: &str, file: &str, chunk_type: ChunkType) -> crate::parser::Chunk {
         let content = format!("fn {}() {{ /* body */ }}", name);

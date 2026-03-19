@@ -92,6 +92,9 @@ pub(crate) mod structural;
 pub(crate) mod task;
 pub(crate) mod where_to_add;
 
+#[cfg(test)]
+pub mod test_helpers;
+
 #[cfg(feature = "gpu-index")]
 pub mod cagra;
 
@@ -516,13 +519,7 @@ mod tests {
 
     // ─── index_notes tests ──────────────────────────────────────────────────
 
-    fn setup_store_for_notes() -> (store::Store, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
-        let store = store::Store::open(&db_path).unwrap();
-        store.init(&store::ModelInfo::default()).unwrap();
-        (store, dir)
-    }
+    use crate::test_helpers::setup_store;
 
     fn make_notes_file(dir: &std::path::Path, content: &str) -> PathBuf {
         let path = dir.join("notes.toml");
@@ -532,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_index_notes_empty_returns_zero() {
-        let (store, dir) = setup_store_for_notes();
+        let (store, dir) = setup_store();
         let notes_path = make_notes_file(dir.path(), "# empty notes file\n");
         let notes: Vec<note::Note> = Vec::new();
 
@@ -546,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_index_notes_stores_notes() {
-        let (store, dir) = setup_store_for_notes();
+        let (store, dir) = setup_store();
         let notes_path = make_notes_file(
             dir.path(),
             r#"
@@ -593,7 +590,7 @@ mentions = ["store.rs"]
 
     #[test]
     fn test_index_notes_stores_note_sentiment() {
-        let (store, dir) = setup_store_for_notes();
+        let (store, dir) = setup_store();
         let notes_path = make_notes_file(dir.path(), "");
 
         let notes = vec![note::Note {

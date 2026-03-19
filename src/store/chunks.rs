@@ -1558,29 +1558,8 @@ impl<'a> std::iter::FusedIterator for EmbeddingBatchIterator<'a> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedder::Embedding;
     use crate::parser::{Chunk, ChunkType, Language};
-    use crate::store::helpers::ModelInfo;
-    use crate::store::Store;
-
-    fn setup_store() -> (Store, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
-        let store = Store::open(&db_path).unwrap();
-        store.init(&ModelInfo::default()).unwrap();
-        (store, dir)
-    }
-
-    fn mock_embedding(seed: f32) -> Embedding {
-        let mut v = vec![seed; 768];
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut v {
-                *x /= norm;
-            }
-        }
-        Embedding::new(v)
-    }
+    use crate::test_helpers::{mock_embedding, setup_store};
 
     fn make_chunk(name: &str, file: &str) -> Chunk {
         let content = format!("fn {}() {{ /* body */ }}", name);

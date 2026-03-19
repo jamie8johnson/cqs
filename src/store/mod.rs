@@ -1174,13 +1174,7 @@ mod tests {
 
     // ===== TC-8: pending batch ID =====
 
-    fn setup_store() -> (Store, tempfile::TempDir) {
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("index.db");
-        let store = Store::open(&db_path).unwrap();
-        store.init(&helpers::ModelInfo::default()).unwrap();
-        (store, dir)
-    }
+    use crate::test_helpers::setup_store;
 
     #[test]
     fn test_pending_batch_roundtrip() {
