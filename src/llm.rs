@@ -106,15 +106,15 @@ struct ApiErrorDetail {
 }
 
 impl Client {
-    pub fn new(api_key: &str) -> Self {
-        Self {
+    pub fn new(api_key: &str) -> Result<Self> {
+        Ok(Self {
             http: reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(60))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .expect("Failed to create HTTP client"),
+                .context("Failed to create HTTP client")?,
             api_key: api_key.to_string(),
-        }
+        })
     }
 
     /// Build the prompt for a code chunk.
@@ -370,7 +370,7 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
 
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .context("--llm-summaries requires ANTHROPIC_API_KEY environment variable")?;
-    let client = Client::new(&api_key);
+    let client = Client::new(&api_key).context("Failed to create API client")?;
 
     let mut doc_extracted = 0usize;
     let mut cached = 0usize;
