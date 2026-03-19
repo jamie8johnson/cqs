@@ -343,7 +343,10 @@ fn process_file_changes(
     // stale. Self-heals after HNSW rebuild. Acceptable for a dev tool.
     //
     // Mark HNSW dirty before writing chunks (RT-DATA-6).
-    store.set_hnsw_dirty(true).ok();
+    if let Err(e) = store.set_hnsw_dirty(true) {
+        tracing::warn!(error = %e, "Cannot set HNSW dirty flag — skipping reindex to prevent stale index on crash");
+        return;
+    }
     match reindex_files(root, store, &files, parser, emb, quiet) {
         Ok((count, content_hashes)) => {
             // Record mtimes to skip duplicate events
@@ -375,7 +378,9 @@ fn process_file_changes(
                         let n = index.len();
                         *hnsw_index = Some(index);
                         *incremental_count = 0;
-                        store.set_hnsw_dirty(false).ok(); // RT-DATA-6
+                        if let Err(e) = store.set_hnsw_dirty(false) {
+                            tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
+                        }
                         info!(vectors = n, "HNSW index rebuilt (full)");
                         if !quiet {
                             println!("  HNSW index: {} vectors (full rebuild)", n);
@@ -416,7 +421,9 @@ fn process_file_changes(
                                     if let Err(e) = index.save(cqs_dir, "index") {
                                         warn!(error = %e, "Failed to save HNSW after incremental insert");
                                     } else {
-                                        store.set_hnsw_dirty(false).ok(); // RT-DATA-6
+                                        if let Err(e) = store.set_hnsw_dirty(false) {
+                                            tracing::warn!(error = %e, "Failed to clear HNSW dirty flag — unnecessary rebuild on next load");
+                                        }
                                     }
                                     info!(
                                         inserted = n,
