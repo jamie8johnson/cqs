@@ -1,5 +1,6 @@
 //! CLI implementation for cq
 
+pub(crate) mod args;
 pub(crate) mod batch;
 mod chat;
 mod commands;
@@ -434,20 +435,11 @@ enum Commands {
     },
     /// Impact analysis: what breaks if you change a function
     Impact {
-        /// Function name or file:function
-        name: String,
-        /// Caller depth (1=direct, 2+=transitive)
-        #[arg(long, default_value = "1")]
-        depth: usize,
+        #[command(flatten)]
+        args: args::ImpactArgs,
         /// Output format: text, json, mermaid
         #[arg(long, default_value = "text")]
         format: OutputFormat,
-        /// Suggest tests for untested callers
-        #[arg(long)]
-        suggest_tests: bool,
-        /// Include type-impacted functions (via shared type dependencies)
-        #[arg(long)]
-        include_types: bool,
     },
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
@@ -521,52 +513,24 @@ enum Commands {
     },
     /// What do I need to know to work on this file
     Context {
-        /// File path relative to project root
-        path: String,
+        #[command(flatten)]
+        args: args::ContextArgs,
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// Return summary counts instead of full details
-        #[arg(long)]
-        summary: bool,
-        /// Signatures-only TOC with caller/callee counts (no code bodies)
-        #[arg(long)]
-        compact: bool,
-        /// Maximum token budget (includes chunk content within budget)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// Find functions with no callers (dead code detection)
     Dead {
+        #[command(flatten)]
+        args: args::DeadArgs,
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// Include public API functions in the main list
-        #[arg(long)]
-        include_pub: bool,
-        /// Minimum confidence level to report
-        #[arg(long, default_value = "low")]
-        min_confidence: cqs::store::DeadConfidence,
     },
     /// Gather minimal code context to answer a question
     Gather {
-        /// Search query / question
-        query: String,
-        /// Call graph expansion depth (0=seeds only, max 5)
-        #[arg(long, default_value = "1")]
-        expand: usize,
-        /// Expansion direction: both, callers, callees
-        #[arg(long, default_value = "both")]
-        direction: cqs::GatherDirection,
-        /// Max chunks to return
-        #[arg(short = 'n', long, default_value = "10")]
-        limit: usize,
-        /// Maximum token budget (overrides --limit with token-based packing)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-        /// Cross-index gather: seed from reference, bridge into project code
-        #[arg(long = "ref")]
-        ref_name: Option<String>,
+        #[command(flatten)]
+        args: args::GatherArgs,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -653,17 +617,11 @@ enum Commands {
     },
     /// Pre-investigation dashboard: search, group, count callers/tests, check staleness
     Scout {
-        /// Search query to investigate
-        query: String,
-        /// Max file groups to return
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
+        #[command(flatten)]
+        args: args::ScoutArgs,
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// Maximum token budget (includes chunk content within budget)
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
     },
     /// Task planning with template classification: classify + scout + checklist
     Plan {
@@ -805,12 +763,15 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             json,
         }) => cmd_similar(&cli, target, limit, threshold, json),
         Some(Commands::Impact {
-            ref name,
-            depth,
+            ref args,
             ref format,
-            suggest_tests,
-            include_types,
-        }) => cmd_impact(name, depth, format, suggest_tests, include_types),
+        }) => cmd_impact(
+            &args.name,
+            args.depth,
+            format,
+            args.suggest_tests,
+            args.include_types,
+        ),
         Some(Commands::ImpactDiff {
             ref base,
             stdin,
@@ -840,34 +801,25 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             depth,
             json,
         }) => cmd_test_map(name, depth, json),
-        Some(Commands::Context {
-            ref path,
-            json,
-            summary,
-            compact,
-            tokens,
-        }) => cmd_context(&cli, path, json, summary, compact, tokens),
-        Some(Commands::Dead {
-            json,
-            include_pub,
-            ref min_confidence,
-        }) => cmd_dead(&cli, json, include_pub, *min_confidence),
-        Some(Commands::Gather {
-            ref query,
-            expand,
-            direction,
-            limit,
-            tokens,
-            ref ref_name,
-            json,
-        }) => cmd_gather(
+        Some(Commands::Context { ref args, json }) => cmd_context(
             &cli,
-            query,
-            expand,
-            direction,
-            limit,
-            tokens,
-            ref_name.as_deref(),
+            &args.path,
+            json,
+            args.summary,
+            args.compact,
+            args.tokens,
+        ),
+        Some(Commands::Dead { ref args, json }) => {
+            cmd_dead(&cli, json, args.include_pub, args.min_confidence)
+        }
+        Some(Commands::Gather { ref args, json }) => cmd_gather(
+            &cli,
+            &args.query,
+            args.expand,
+            args.direction,
+            args.limit,
+            args.tokens,
+            args.ref_name.as_deref(),
             json,
         ),
         Some(Commands::Project { ref subcmd }) => cmd_project(subcmd),
@@ -895,12 +847,9 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             limit,
             json,
         }) => cmd_where(description, limit, json),
-        Some(Commands::Scout {
-            ref query,
-            limit,
-            json,
-            tokens,
-        }) => cmd_scout(&cli, query, limit, json, tokens),
+        Some(Commands::Scout { ref args, json }) => {
+            cmd_scout(&cli, &args.query, args.limit, json, args.tokens)
+        }
         Some(Commands::Plan {
             ref description,
             limit,
@@ -1406,8 +1355,8 @@ mod tests {
         let cli =
             Cli::try_parse_from(["cqs", "gather", "alarm config", "--tokens", "4000"]).unwrap();
         match cli.command {
-            Some(Commands::Gather { tokens, .. }) => {
-                assert_eq!(tokens, Some(4000));
+            Some(Commands::Gather { ref args, .. }) => {
+                assert_eq!(args.tokens, Some(4000));
             }
             _ => panic!("Expected Gather command"),
         }
@@ -1417,8 +1366,8 @@ mod tests {
     fn test_cmd_gather_no_tokens_flag() {
         let cli = Cli::try_parse_from(["cqs", "gather", "alarm config"]).unwrap();
         match cli.command {
-            Some(Commands::Gather { tokens, .. }) => {
-                assert!(tokens.is_none());
+            Some(Commands::Gather { ref args, .. }) => {
+                assert!(args.tokens.is_none());
             }
             _ => panic!("Expected Gather command"),
         }
@@ -1431,14 +1380,9 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Gather {
-                tokens,
-                limit,
-                json,
-                ..
-            }) => {
-                assert_eq!(tokens, Some(8000));
-                assert_eq!(limit, 20);
+            Some(Commands::Gather { ref args, json, .. }) => {
+                assert_eq!(args.tokens, Some(8000));
+                assert_eq!(args.limit, 20);
                 assert!(json);
             }
             _ => panic!("Expected Gather command"),
@@ -1451,8 +1395,8 @@ mod tests {
     fn test_cmd_gather_ref_flag() {
         let cli = Cli::try_parse_from(["cqs", "gather", "alarm config", "--ref", "aveva"]).unwrap();
         match cli.command {
-            Some(Commands::Gather { ref_name, .. }) => {
-                assert_eq!(ref_name, Some("aveva".to_string()));
+            Some(Commands::Gather { ref args, .. }) => {
+                assert_eq!(args.ref_name, Some("aveva".to_string()));
             }
             _ => panic!("Expected Gather command"),
         }
@@ -1462,8 +1406,8 @@ mod tests {
     fn test_cmd_gather_ref_not_set() {
         let cli = Cli::try_parse_from(["cqs", "gather", "alarm config"]).unwrap();
         match cli.command {
-            Some(Commands::Gather { ref_name, .. }) => {
-                assert!(ref_name.is_none());
+            Some(Commands::Gather { ref args, .. }) => {
+                assert!(args.ref_name.is_none());
             }
             _ => panic!("Expected Gather command"),
         }
@@ -1483,14 +1427,9 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Commands::Gather {
-                ref_name,
-                tokens,
-                json,
-                ..
-            }) => {
-                assert_eq!(ref_name, Some("aveva".to_string()));
-                assert_eq!(tokens, Some(4000));
+            Some(Commands::Gather { ref args, json, .. }) => {
+                assert_eq!(args.ref_name, Some("aveva".to_string()));
+                assert_eq!(args.tokens, Some(4000));
                 assert!(json);
             }
             _ => panic!("Expected Gather command"),
@@ -1550,7 +1489,7 @@ mod tests {
         let cli =
             Cli::try_parse_from(["cqs", "context", "src/lib.rs", "--tokens", "4000"]).unwrap();
         match cli.command {
-            Some(Commands::Context { tokens, .. }) => assert_eq!(tokens, Some(4000)),
+            Some(Commands::Context { ref args, .. }) => assert_eq!(args.tokens, Some(4000)),
             _ => panic!("Expected Context command"),
         }
     }
@@ -1559,7 +1498,7 @@ mod tests {
     fn test_cli_context_tokens_not_set() {
         let cli = Cli::try_parse_from(["cqs", "context", "src/lib.rs"]).unwrap();
         match cli.command {
-            Some(Commands::Context { tokens, .. }) => assert!(tokens.is_none()),
+            Some(Commands::Context { ref args, .. }) => assert!(args.tokens.is_none()),
             _ => panic!("Expected Context command"),
         }
     }
@@ -1579,7 +1518,7 @@ mod tests {
         let cli = Cli::try_parse_from(["cqs", "scout", "add token budgeting", "--tokens", "8000"])
             .unwrap();
         match cli.command {
-            Some(Commands::Scout { tokens, .. }) => assert_eq!(tokens, Some(8000)),
+            Some(Commands::Scout { ref args, .. }) => assert_eq!(args.tokens, Some(8000)),
             _ => panic!("Expected Scout command"),
         }
     }
@@ -1689,6 +1628,9 @@ mod tests {
             references: vec![],
             stale_check: None,
             ef_search: None,
+            llm_model: None,
+            llm_api_base: None,
+            llm_max_tokens: None,
         };
         apply_config_defaults(&mut cli, &config);
 
@@ -1711,6 +1653,9 @@ mod tests {
             references: vec![],
             stale_check: None,
             ef_search: None,
+            llm_model: None,
+            llm_api_base: None,
+            llm_max_tokens: None,
         };
         apply_config_defaults(&mut cli, &config);
 

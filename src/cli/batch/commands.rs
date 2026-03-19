@@ -4,8 +4,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use super::BatchContext;
-use cqs::store::DeadConfidence;
 
+use crate::cli::args::{ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs};
 use crate::cli::parse_nonzero_usize;
 
 use super::handlers;
@@ -101,37 +101,13 @@ pub(crate) enum BatchCmd {
     },
     /// Smart context assembly
     Gather {
-        /// Search query
-        query: String,
-        /// Call graph expansion depth (0-5)
-        #[arg(long, default_value = "1")]
-        expand: usize,
-        /// Direction: both, callers, callees
-        #[arg(long, default_value = "both")]
-        direction: cqs::GatherDirection,
-        /// Max chunks
-        #[arg(short = 'n', long, default_value = "10")]
-        limit: usize,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
-        /// Cross-index gather from reference
-        #[arg(long = "ref")]
-        ref_name: Option<String>,
+        #[command(flatten)]
+        args: GatherArgs,
     },
     /// Impact analysis
     Impact {
-        /// Function name or file:function
-        name: String,
-        /// Caller depth (1=direct, 2+=transitive)
-        #[arg(long, default_value = "1")]
-        depth: usize,
-        /// Suggest tests for untested callers
-        #[arg(long)]
-        suggest_tests: bool,
-        /// Include type-impacted functions
-        #[arg(long)]
-        include_types: bool,
+        #[command(flatten)]
+        args: ImpactArgs,
     },
     /// Map function to tests
     #[command(name = "test-map")]
@@ -154,12 +130,8 @@ pub(crate) enum BatchCmd {
     },
     /// Find dead code
     Dead {
-        /// Include public API functions
-        #[arg(long)]
-        include_pub: bool,
-        /// Minimum confidence level
-        #[arg(long, default_value = "low")]
-        min_confidence: DeadConfidence,
+        #[command(flatten)]
+        args: DeadArgs,
     },
     /// Find related functions by co-occurrence
     Related {
@@ -171,17 +143,8 @@ pub(crate) enum BatchCmd {
     },
     /// Module-level context for a file
     Context {
-        /// File path relative to project root
-        path: String,
-        /// Return summary counts
-        #[arg(long)]
-        summary: bool,
-        /// Signatures-only TOC
-        #[arg(long)]
-        compact: bool,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: ContextArgs,
     },
     /// Index statistics
     Stats,
@@ -198,14 +161,8 @@ pub(crate) enum BatchCmd {
     },
     /// Pre-investigation dashboard
     Scout {
-        /// Task description
-        query: String,
-        /// Max results
-        #[arg(short = 'n', long, default_value = "5")]
-        limit: usize,
-        /// Maximum token budget
-        #[arg(long, value_parser = parse_nonzero_usize)]
-        tokens: Option<usize>,
+        #[command(flatten)]
+        args: ScoutArgs,
     },
     /// Suggest where to add new code
     Where {
@@ -335,56 +292,44 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             limit,
             threshold,
         } => handlers::dispatch_similar(ctx, &target, limit, threshold),
-        BatchCmd::Gather {
-            query,
-            expand,
-            direction,
-            limit,
-            tokens,
-            ref_name,
-        } => handlers::dispatch_gather(
+        BatchCmd::Gather { args } => handlers::dispatch_gather(
             ctx,
-            &query,
-            expand,
-            direction,
-            limit,
-            tokens,
-            ref_name.as_deref(),
+            &args.query,
+            args.expand,
+            args.direction,
+            args.limit,
+            args.tokens,
+            args.ref_name.as_deref(),
         ),
-        BatchCmd::Impact {
-            name,
-            depth,
-            suggest_tests,
-            include_types,
-        } => handlers::dispatch_impact(ctx, &name, depth, suggest_tests, include_types),
+        BatchCmd::Impact { args } => handlers::dispatch_impact(
+            ctx,
+            &args.name,
+            args.depth,
+            args.suggest_tests,
+            args.include_types,
+        ),
         BatchCmd::TestMap { name, depth } => handlers::dispatch_test_map(ctx, &name, depth),
         BatchCmd::Trace {
             source,
             target,
             max_depth,
         } => handlers::dispatch_trace(ctx, &source, &target, max_depth as usize),
-        BatchCmd::Dead {
-            include_pub,
-            min_confidence,
-        } => handlers::dispatch_dead(ctx, include_pub, &min_confidence),
+        BatchCmd::Dead { args } => {
+            handlers::dispatch_dead(ctx, args.include_pub, &args.min_confidence)
+        }
         BatchCmd::Related { name, limit } => handlers::dispatch_related(ctx, &name, limit),
-        BatchCmd::Context {
-            path,
-            summary,
-            compact,
-            tokens,
-        } => handlers::dispatch_context(ctx, &path, summary, compact, tokens),
+        BatchCmd::Context { args } => {
+            handlers::dispatch_context(ctx, &args.path, args.summary, args.compact, args.tokens)
+        }
         BatchCmd::Stats => handlers::dispatch_stats(ctx),
         BatchCmd::Onboard {
             query,
             depth,
             tokens,
         } => handlers::dispatch_onboard(ctx, &query, depth, tokens),
-        BatchCmd::Scout {
-            query,
-            limit,
-            tokens,
-        } => handlers::dispatch_scout(ctx, &query, limit, tokens),
+        BatchCmd::Scout { args } => {
+            handlers::dispatch_scout(ctx, &args.query, args.limit, args.tokens)
+        }
         BatchCmd::Where { description, limit } => {
             handlers::dispatch_where(ctx, &description, limit)
         }
@@ -469,13 +414,9 @@ mod tests {
         let input =
             BatchInput::try_parse_from(["gather", "alarm config", "--ref", "aveva"]).unwrap();
         match input.cmd {
-            BatchCmd::Gather {
-                ref query,
-                ref ref_name,
-                ..
-            } => {
-                assert_eq!(query, "alarm config");
-                assert_eq!(ref_name.as_deref(), Some("aveva"));
+            BatchCmd::Gather { ref args } => {
+                assert_eq!(args.query, "alarm config");
+                assert_eq!(args.ref_name.as_deref(), Some("aveva"));
             }
             _ => panic!("Expected Gather command"),
         }
@@ -487,12 +428,12 @@ mod tests {
             BatchInput::try_parse_from(["dead", "--min-confidence", "high", "--include-pub"])
                 .unwrap();
         match input.cmd {
-            BatchCmd::Dead {
-                include_pub,
-                ref min_confidence,
-            } => {
-                assert!(include_pub);
-                assert!(matches!(min_confidence, DeadConfidence::High));
+            BatchCmd::Dead { ref args } => {
+                assert!(args.include_pub);
+                assert!(matches!(
+                    args.min_confidence,
+                    cqs::store::DeadConfidence::High
+                ));
             }
             _ => panic!("Expected Dead command"),
         }
@@ -525,15 +466,10 @@ mod tests {
     fn test_parse_context() {
         let input = BatchInput::try_parse_from(["context", "src/lib.rs", "--compact"]).unwrap();
         match input.cmd {
-            BatchCmd::Context {
-                ref path,
-                compact,
-                summary,
-                ..
-            } => {
-                assert_eq!(path, "src/lib.rs");
-                assert!(compact);
-                assert!(!summary);
+            BatchCmd::Context { ref args } => {
+                assert_eq!(args.path, "src/lib.rs");
+                assert!(args.compact);
+                assert!(!args.summary);
             }
             _ => panic!("Expected Context command"),
         }
@@ -551,16 +487,11 @@ mod tests {
             BatchInput::try_parse_from(["impact", "foo", "--depth", "3", "--suggest-tests"])
                 .unwrap();
         match input.cmd {
-            BatchCmd::Impact {
-                ref name,
-                depth,
-                suggest_tests,
-                include_types,
-            } => {
-                assert_eq!(name, "foo");
-                assert_eq!(depth, 3);
-                assert!(suggest_tests);
-                assert!(!include_types);
+            BatchCmd::Impact { ref args } => {
+                assert_eq!(args.name, "foo");
+                assert_eq!(args.depth, 3);
+                assert!(args.suggest_tests);
+                assert!(!args.include_types);
             }
             _ => panic!("Expected Impact command"),
         }
@@ -570,11 +501,9 @@ mod tests {
     fn test_parse_scout() {
         let input = BatchInput::try_parse_from(["scout", "error handling"]).unwrap();
         match input.cmd {
-            BatchCmd::Scout {
-                ref query, limit, ..
-            } => {
-                assert_eq!(query, "error handling");
-                assert_eq!(limit, 5); // default
+            BatchCmd::Scout { ref args } => {
+                assert_eq!(args.query, "error handling");
+                assert_eq!(args.limit, 5); // default
             }
             _ => panic!("Expected Scout command"),
         }
@@ -592,14 +521,10 @@ mod tests {
         ])
         .unwrap();
         match input.cmd {
-            BatchCmd::Scout {
-                ref query,
-                limit,
-                tokens,
-            } => {
-                assert_eq!(query, "error handling");
-                assert_eq!(limit, 20);
-                assert_eq!(tokens, Some(2000));
+            BatchCmd::Scout { ref args } => {
+                assert_eq!(args.query, "error handling");
+                assert_eq!(args.limit, 20);
+                assert_eq!(args.tokens, Some(2000));
             }
             _ => panic!("Expected Scout command"),
         }
