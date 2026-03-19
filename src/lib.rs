@@ -1,15 +1,20 @@
-//! # cqs - Semantic Code Search
+//! # cqs - Code Intelligence and RAG for AI Agents
 //!
-//! Local semantic search for code using ML embeddings.
-//! Find functions by what they do, not just their names.
+//! Semantic search, call graph analysis, impact tracing, type dependencies, and smart
+//! context assembly — all in single tool calls. Local ML embeddings, GPU-accelerated.
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Uses E5-base-v2 embeddings (769-dim: 768 model + sentiment)
+//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (769-dim: 768 model + sentiment). 90.9% Recall@1 on confusable function retrieval.
+//! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
+//! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
+//! - **Type dependencies**: Who uses this type? What types does this function use?
+//! - **Smart context assembly**: `gather` (search + BFS expansion), `task` (scout + gather + impact + placement), `scout` (pre-investigation dashboard)
+//! - **Diff review & CI**: Structured risk analysis, dead code detection in diffs, gating pipeline
+//! - **Batch & chat modes**: Persistent session with pipeline syntax (`search "error" | callers | test-map`)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
-//! - **Multi-language**: Rust, Python, TypeScript, JavaScript, Go, C, C++, Java, C#, F#, PowerShell, Scala, Ruby, Bash, HCL, Kotlin, Swift, Objective-C, SQL, Protobuf, GraphQL, PHP, Lua, Zig, R, YAML, TOML, Elixir, Erlang, Gleam, Haskell, Julia, OCaml, CSS, Perl, HTML, JSON, XML, INI, Nix, Make, LaTeX, Solidity, CUDA, GLSL, Svelte, Razor, VB.NET, Vue, ASP.NET Web Forms, Markdown (51 languages)
+//! - **Multi-language**: 51 languages with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
-//! - **CLI tools**: Call graph, impact analysis, test mapping, dead code detection
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
 //!
 //! ## Quick Start

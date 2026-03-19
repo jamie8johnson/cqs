@@ -113,6 +113,11 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
   - **CLI:** `cqs index --improve-docs` (separate from `--llm-summaries`). Default behavior: write generated comments back to source files. `--dry-run` to preview. `cqs read` shows generated docs as virtual comments when `--improve-docs` hasn't written back yet.
   - **Prioritization:** `is_callable()` functions first, sorted by: no doc > thin doc > adequate doc. Use content length and doc/content ratio as heuristics.
   - **Cost:** Higher than summaries (~5-10x output tokens). Batch API 50% discount helps. Cache by content_hash — pay once per function body.
+- [ ] SQ-9: Simplify notes + embeddings architecture.
+  - **Notes as annotations, not search targets:** Remove notes from unified search results (burns 40% of slots on metadata). Drop `search_notes()`, `note_embeddings()`, brute-force cosine scan, unified slot allocation, `note_weight`/`note_only` flags. Keep: mention-based boost on code scoring, `cqs read` injection, `cqs notes list/add/remove`, review/health inputs.
+  - **Drop sentiment dimension (769→768-dim):** With note embeddings gone, every vector has sentiment=0.0 — dead weight. Revert to pure 768-dim E5-base-v2 output. Fixes AC-8 (CAGRA distance conversion divergence — all vectors become truly unit-norm). Simplifies embedding pipeline (no sentiment append/strip).
+  - **Schema migration:** Dimension change requires reindex. Update `EMBEDDING_DIM` constant, HNSW build, CAGRA build, brute-force cosine, all embedding serialization.
+  - **Docs update:** README, PRIVACY.md, SECURITY.md, CLAUDE.md, CONTRIBUTING.md, lib.rs — all reference 769-dim, update to 768.
 - [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
   - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
   - **LoRA:** Low-Rank Adaptation — freezes base weights, trains ~0.5-2M adapter params (vs 110M full). Adapter is ~10-50MB.
