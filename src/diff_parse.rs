@@ -15,6 +15,7 @@ static HUNK_RE: LazyLock<Regex> =
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffHunk {
     /// Relative file path (from `+++ b/...`)
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Start line in the new version (1-based)
     pub start: u32,

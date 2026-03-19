@@ -40,6 +40,7 @@ pub struct ReviewResult {
 #[derive(Debug, serde::Serialize)]
 pub struct ReviewedFunction {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line_start: u32,
     pub risk: RiskScore,

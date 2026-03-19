@@ -59,6 +59,7 @@ pub struct ScoutChunk {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileGroup {
     /// File path
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Aggregate relevance score
     pub relevance_score: f32,

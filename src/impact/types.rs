@@ -10,6 +10,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CallerDetail {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub call_line: u32,
@@ -20,6 +21,7 @@ pub struct CallerDetail {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TestInfo {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub call_depth: usize,
@@ -41,6 +43,7 @@ impl TestInfo {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TransitiveCaller {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub depth: usize,
@@ -50,6 +53,7 @@ pub struct TransitiveCaller {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TypeImpacted {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub shared_types: Vec<String>,
@@ -80,6 +84,7 @@ pub struct FunctionHints {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChangedFunction {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line_start: u32,
 }
@@ -88,6 +93,7 @@ pub struct ChangedFunction {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DiffTestInfo {
     pub name: String,
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     pub line: u32,
     pub via: String,

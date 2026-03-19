@@ -36,6 +36,7 @@ pub struct LocalPatterns {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FileSuggestion {
     /// File path
+    #[serde(serialize_with = "crate::serialize_path_normalized")]
     pub file: PathBuf,
     /// Aggregate relevance score
     pub score: f32,
