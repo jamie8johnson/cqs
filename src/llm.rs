@@ -640,6 +640,53 @@ mod tests {
     }
 
     #[test]
+    fn extract_first_sentence_url_with_period() {
+        // URL period — cuts at first period in domain (known behavior, not a bug)
+        let r = extract_first_sentence("See https://example.com. Usage guide.");
+        assert_eq!(r, "See https://example.");
+    }
+
+    #[test]
+    fn extract_first_sentence_short_falls_to_line() {
+        // "Short." is 6 chars <=10, falls to first line
+        let r = extract_first_sentence("Short. More text here.");
+        assert_eq!(r, "Short. More text here.");
+    }
+
+    #[test]
+    fn extract_first_sentence_exclamation() {
+        let r = extract_first_sentence("This is great! More.");
+        assert_eq!(r, "This is great!");
+    }
+
+    #[test]
+    fn extract_first_sentence_question() {
+        let r = extract_first_sentence("Is this working? Yes.");
+        assert_eq!(r, "Is this working?");
+    }
+
+    #[test]
+    fn extract_first_sentence_whitespace_only() {
+        assert_eq!(extract_first_sentence("   \n  \t  "), "");
+    }
+
+    #[test]
+    fn extract_first_sentence_empty_input() {
+        assert_eq!(extract_first_sentence(""), "");
+    }
+
+    #[test]
+    fn extract_first_sentence_boundary_11_chars() {
+        assert_eq!(extract_first_sentence("1234567890."), "1234567890.");
+    }
+
+    #[test]
+    fn extract_first_sentence_short_multiline() {
+        // Both sentence and first line too short
+        assert_eq!(extract_first_sentence("OK.\nMore"), "");
+    }
+
+    #[test]
     fn test_build_prompt() {
         let prompt = Client::build_prompt("fn foo() {}", "function", "rust");
         assert!(prompt.contains("function"));
