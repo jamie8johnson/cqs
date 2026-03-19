@@ -30,7 +30,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 
 ## Architecture
 
-cqs runs entirely locally. No telemetry, no external API calls during operation.
+cqs runs locally by default. No telemetry. The optional `--llm-summaries` flag sends function code to the Anthropic API (see below).
 
 ## Network Requests
 
@@ -44,7 +44,13 @@ The only network activity is:
   - Model: `ms-marco-MiniLM-L-6-v2` (cross-encoder)
   - One-time download, cached in `~/.cache/huggingface/`
 
-No other network requests are made. Search, indexing, and all other operations are offline.
+- **LLM summaries** (`cqs index --llm-summaries`): Sends function code to the Anthropic API
+
+| Flag | Endpoint | Data Sent | Notes |
+|------|----------|-----------|-------|
+| `--llm-summaries` | api.anthropic.com | Function bodies (up to 8000 chars), chunk type, language | Requires `ANTHROPIC_API_KEY`. Opt-in via `cqs index --llm-summaries` |
+
+No other network requests are made. Without `--llm-summaries`, all operations are offline.
 
 ## Filesystem Access
 

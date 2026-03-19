@@ -2,7 +2,7 @@
 
 ## Data Stays Local
 
-cqs processes your code entirely on your machine. Nothing is transmitted externally.
+cqs processes your code locally by default. With `--llm-summaries`, function code is sent to Anthropic's API for one-sentence summary generation. See [Anthropic's privacy policy](https://www.anthropic.com/privacy). Without this flag, nothing is transmitted externally.
 
 - **No telemetry**: We collect no usage data
 - **No analytics**: No tracking of any kind
