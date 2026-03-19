@@ -569,9 +569,14 @@ Cold latency includes process startup, model init, and DB open. Batch mode (`cqs
 
 ## GPU Acceleration (Optional)
 
-cqs works on CPU out of the box. GPU provides 5-7x speedup on embedding. To enable:
+cqs works on CPU out of the box. GPU acceleration has two independent components:
 
-### Linux
+- **Embedding (ORT CUDA)**: 5-7x embedding speedup. Works with `cargo install cqs` -- just needs CUDA 12 runtime and cuDNN.
+- **Index (CAGRA)**: GPU-accelerated nearest neighbor search via cuVS. Requires `cargo install cqs --features gpu-index` plus the cuVS conda package.
+
+You can use either or both.
+
+### Embedding GPU (CUDA 12 + cuDNN)
 
 ```bash
 # Add NVIDIA CUDA repo
@@ -579,7 +584,7 @@ wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt update
 
-# Install CUDA runtime and cuDNN 9
+# Install CUDA 12 runtime and cuDNN 9
 sudo apt install cuda-cudart-12-6 libcublas-12-6 libcudnn9-cuda-12
 ```
 
@@ -588,17 +593,32 @@ Set library path:
 export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 ```
 
+### CAGRA GPU Index (Optional, requires conda)
+
+CAGRA uses cuVS for GPU-accelerated approximate nearest neighbor search. This requires the `gpu-index` feature flag and the cuVS library from conda:
+
+```bash
+conda install -c rapidsai -c conda-forge libcuvs
+cargo install cqs --features gpu-index
+```
+
+Building from source:
+```bash
+cargo build --release --features gpu-index
+```
+
 ### WSL2
 
 Same as Linux, plus:
 - Requires NVIDIA GPU driver on Windows host
 - Add `/usr/lib/wsl/lib` to `LD_LIBRARY_PATH`
+- Dual CUDA setup: CUDA 12 (system, for ORT embedding) and CUDA 13 (conda, for cuVS). Both coexist via `LD_LIBRARY_PATH` ordering -- conda paths first for cuVS, system paths for ORT.
 - Tested working with RTX A6000, CUDA 13.1 driver, cuDNN 9.19
 
 ### Verify
 
 ```bash
-cqs doctor  # Shows execution provider (CUDA or CPU)
+cqs doctor  # Shows execution provider (CUDA or CPU) and CAGRA availability
 ```
 
 ## Contributing
