@@ -352,6 +352,316 @@ mod tests {
     }
 
     #[test]
+    fn test_migrate_v12_to_v13() {
+        // Full migration test: set up a v12 schema, run migration, verify enrichment_hash + hnsw_dirty
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Create v12 schema: chunks WITHOUT enrichment_hash, metadata WITHOUT hnsw_dirty
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    doc TEXT,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    source_mtime INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    parent_id TEXT,
+                    window_idx INTEGER,
+                    parent_type_name TEXT
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '12')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Run migration from v12 to v13
+            migrate(&pool, 12, 13).await.unwrap();
+
+            // Verify enrichment_hash column exists by inserting a row that uses it
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at, enrichment_hash) \
+                 VALUES ('test', 'file:test.rs', 'file', 'rust', 'function', 'test_fn', \
+                 '', 'fn test() {}', 'abc123', 0, 1, X'00', '2026-01-01', '2026-01-01', 'hash123')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Verify hnsw_dirty metadata key exists with value '0'
+            let dirty: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'hnsw_dirty'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(dirty.0, "0");
+
+            // Verify schema_version was updated to 13
+            let version: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(version.0, "13");
+        });
+    }
+
+    #[test]
+    fn test_migrate_v13_to_v14() {
+        // Full migration test: set up a v13 schema, run migration, verify llm_summaries table
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Create v13 schema: chunks WITH enrichment_hash, metadata WITH hnsw_dirty
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    doc TEXT,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    source_mtime INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    parent_id TEXT,
+                    window_idx INTEGER,
+                    parent_type_name TEXT,
+                    enrichment_hash TEXT
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '13')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('hnsw_dirty', '0')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Verify llm_summaries does NOT exist before migration
+            let table_check: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_summaries'",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            assert!(table_check.is_none(), "llm_summaries should not exist yet");
+
+            // Run migration from v13 to v14
+            migrate(&pool, 13, 14).await.unwrap();
+
+            // Verify llm_summaries table exists
+            let table_check: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_summaries'",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            assert!(
+                table_check.is_some(),
+                "llm_summaries should exist after migration"
+            );
+
+            // Verify we can insert into llm_summaries
+            sqlx::query(
+                "INSERT INTO llm_summaries (content_hash, summary, model, created_at) \
+                 VALUES ('abc123', 'Test summary', 'claude-4', '2026-01-01')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Verify schema_version was updated to 14
+            let version: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(version.0, "14");
+        });
+    }
+
+    #[test]
+    fn test_migrate_v12_to_v14_full_chain() {
+        // Full chain migration: v12 → v13 → v14 in one call
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Create v12 schema: chunks WITHOUT enrichment_hash, no hnsw_dirty
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    doc TEXT,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    source_mtime INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    parent_id TEXT,
+                    window_idx INTEGER,
+                    parent_type_name TEXT
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '12')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Run full chain migration from v12 to v14
+            migrate(&pool, 12, 14).await.unwrap();
+
+            // Verify enrichment_hash column exists (from v12→v13)
+            sqlx::query(
+                "INSERT INTO chunks (id, origin, source_type, language, chunk_type, name, \
+                 signature, content, content_hash, line_start, line_end, embedding, \
+                 created_at, updated_at, enrichment_hash) \
+                 VALUES ('test', 'file:test.rs', 'file', 'rust', 'function', 'test_fn', \
+                 '', 'fn test() {}', 'abc123', 0, 1, X'00', '2026-01-01', '2026-01-01', 'hash123')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Verify llm_summaries table exists (from v13→v14)
+            let table_check: Option<(String,)> = sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='llm_summaries'",
+            )
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+            assert!(
+                table_check.is_some(),
+                "llm_summaries should exist after full chain migration"
+            );
+
+            // Verify schema_version was updated to 14
+            let version: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(version.0, "14");
+        });
+    }
+
+    #[test]
     fn test_migrate_unsupported_version_range() {
         // Migration from an unsupported range should fail with MigrationNotSupported
         let rt = tokio::runtime::Builder::new_current_thread()
