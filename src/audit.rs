@@ -123,12 +123,24 @@ pub fn save_audit_state(cqs_dir: &Path, mode: &AuditMode) -> Result<()> {
     }
 
     if let Err(rename_err) = std::fs::rename(&tmp_path, &path) {
-        if let Err(copy_err) = std::fs::copy(&tmp_path, &path) {
+        // Cross-device fallback: copy to same-dir temp, then rename (atomic)
+        let dest_dir = path.parent().unwrap_or(std::path::Path::new("."));
+        let dest_tmp = dest_dir.join(format!(".audit.{:016x}.tmp", suffix));
+        if let Err(copy_err) = std::fs::copy(&tmp_path, &dest_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
             anyhow::bail!(
                 "rename failed ({}), copy fallback failed: {}",
                 rename_err,
                 copy_err
+            );
+        }
+        if let Err(rename2_err) = std::fs::rename(&dest_tmp, &path) {
+            let _ = std::fs::remove_file(&dest_tmp);
+            let _ = std::fs::remove_file(&tmp_path);
+            anyhow::bail!(
+                "rename failed ({}), fallback rename failed: {}",
+                rename_err,
+                rename2_err
             );
         }
         let _ = std::fs::remove_file(&tmp_path);
