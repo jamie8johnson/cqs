@@ -64,7 +64,7 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-**Key commands** (most support `--json`; `impact`, `review`, `ci`, and `trace` use `--format json` instead):
+**Key commands** (most support `--json`; `impact`, `review`, `ci`, and `trace` use `--format json` instead). Search is project-only by default — use `--include-refs` for cross-index, or `--ref <name>` for a specific reference:
 - `cqs read <path>` — file contents with notes injected as comments. Use instead of raw `Read` for indexed source files.
 - `cqs read --focus <function>` — focused read: function + type dependencies only. Saves tokens.
 - `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.

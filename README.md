@@ -198,6 +198,37 @@ cqs drift old-version --min-drift 0.1          # only significant changes
 cqs drift old-version --lang rust --limit 20   # scoped + limited
 ```
 
+## Planning & Orientation
+
+```bash
+# Task planning: classify task type, scout, generate checklist
+cqs plan "add retry logic to search"    # 11 task-type templates
+cqs plan "fix timeout bug" --json       # JSON output
+
+# Implementation brief: scout + gather + impact + placement + notes in one call
+cqs task "add rate limiting"            # waterfall token budgeting
+cqs task "refactor error handling" --tokens 4000
+
+# Guided codebase tour: entry point, call chain, callers, key types, tests
+cqs onboard "how search works"
+cqs onboard "error handling" --tokens 3000
+
+# Semantic git blame: who changed a function, when, and why
+cqs blame search_filtered               # last change + commit message
+cqs blame search_filtered --callers     # include affected callers
+```
+
+## Interactive & Batch Modes
+
+```bash
+# Interactive REPL with readline, history, tab completion
+cqs chat
+
+# Batch mode: stdin commands, JSONL output, pipeline syntax
+cqs batch
+echo 'search "error handling" | callers | test-map' | cqs batch
+```
+
 ## Code Intelligence
 
 ```bash
@@ -321,17 +352,13 @@ cqs ref update tokio                       # Re-index from source
 cqs ref remove tokio                       # Remove reference and index files
 ```
 
-Once added, all searches automatically include reference results:
+Searches are project-only by default. Use `--include-refs` to also search references, or `--ref` to search a specific one:
 
 ```bash
-cqs "spawn async task"    # Finds results in project AND tokio reference
-```
-
-To search only a specific reference (skipping the project index):
-
-```bash
-cqs "query" --ref tokio          # Search only the tokio reference index
-cqs "spawn" --ref tokio --json   # JSON output, ref-only search
+cqs "spawn async task"                  # Searches project only (default)
+cqs "spawn async task" --include-refs   # Also searches configured references
+cqs "spawn async task" --ref tokio      # Searches only the tokio reference
+cqs "spawn" --ref tokio --json          # JSON output, ref-only search
 ```
 
 Reference results are ranked with a weight multiplier (default 0.8) so project results naturally appear first at equal similarity.
@@ -371,7 +398,8 @@ Use `cqs` for semantic search, call graph analysis, and code intelligence instea
 - Assemble context efficiently (one call instead of 5-10 file reads)
 
 Key commands (most support `--json`; `impact`, `review`, `ci`, and `trace` use `--format json` instead):
-- `cqs "query"` - semantic search (hybrid RRF by default)
+- `cqs "query"` - semantic search (hybrid RRF by default, project-only)
+- `cqs "query" --include-refs` - also search configured reference indexes
 - `cqs "name" --name-only` - definition lookup (fast, no embedding)
 - `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
 - `cqs "query" --rerank` - cross-encoder re-ranking (slower, more accurate)
@@ -398,6 +426,7 @@ Key commands (most support `--json`; `impact`, `review`, `ci`, and `trace` use `
 - `cqs related <function>` - co-occurrence: shared callers, callees, types
 - `cqs where "description"` - suggest where to add new code
 - `cqs scout "task"` - pre-investigation dashboard: search + callers + tests + staleness + notes
+- `cqs plan "description"` - task planning: classify into 11 task-type templates + scout + checklist
 - `cqs task "description"` - implementation brief: scout + gather + impact + placement + notes in one call
 - `cqs onboard "concept"` - guided tour: entry point, call chain, callers, key types, tests
 - `cqs review` - diff review: impact-diff + notes + risk scoring. `--base`, `--format json`
@@ -413,7 +442,7 @@ Key commands (most support `--json`; `impact`, `review`, `ci`, and `trace` use `
 - `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
-- `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell)
+- `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
 
 Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after significant changes.
 ```
