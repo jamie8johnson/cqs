@@ -128,7 +128,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Conventions:**
 - Name teams by purpose: `audit-batch-1`, `feat-streaming`, `refactor-errors`
-- Use `haiku` for simple/mechanical tasks, `sonnet` for judgment-heavy work, `opus` for complex reasoning
+- Use `opus` for all agent dispatches
 - Always clean up teams when done (`Teammate cleanup`)
 - Teammates can't see your text output — use `SendMessage` to communicate
 
@@ -142,7 +142,7 @@ Use teams when dispatching 2+ agents that need coordination. Teams provide task 
 
 **Teammate prompts must be self-contained.** Include file paths, context, and acceptance criteria. Teammates start with zero context — they can't see your conversation.
 
-**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes`.
+**Every agent prompt MUST include cqs tool instructions.** Agents can't use cqs unless told how. Include the key commands: `search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, plan, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes, blame, doctor, index, stats`.
 
 ## Code Audit
 
@@ -231,7 +231,7 @@ powershell.exe -Command 'gh pr merge N --squash --delete-branch'
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
 * `docs/notes.toml` -- observations with sentiment (indexed by cqs)
 
-**Use `cqs notes add` to add notes** — it indexes immediately. Direct file edits require `cqs watch` or `cqs index` to become searchable.
+**Use `cqs notes add` to add notes** — it is available immediately. Direct file edits require `cqs index` to sync to SQLite. Sentiment affects code search rankings: positive boosts mentioned code, negative demotes it.
 
 ```bash
 cqs notes add "note text" --sentiment -0.5 --mentions file.rs,concept

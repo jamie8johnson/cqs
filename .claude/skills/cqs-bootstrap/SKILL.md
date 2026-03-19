@@ -142,7 +142,7 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-**Key commands** (all support `--json`):
+**Key commands** (most support `--json`; `impact`, `review`, `ci`, and `trace` use `--format json` instead):
 - `cqs read <path>` — file with notes injected. Use instead of raw `Read` for indexed source files.
 - `cqs read --focus <function>` — function + type dependencies only. Saves tokens.
 - `cqs explain <function>` — function card: signature, callers, callees, similar.
@@ -195,13 +195,13 @@ After: `cqs audit-mode off` or let it auto-expire (30 min default).
 * `PROJECT_CONTINUITY.md` -- right now, parked, blockers, open questions, pending
 * `docs/notes.toml` -- observations with sentiment (indexed by cqs)
 
-**Use `cqs notes add` to add notes** — it indexes immediately. Direct file edits require `cqs index` to become searchable.
+**Use `cqs notes add` to add notes** — it is available immediately. Direct file edits require `cqs index` to sync to SQLite.
 
 **Sentiment is DISCRETE** — only 5 valid values: -1, -0.5, 0, 0.5, 1
 
 ## Agent Teams
 
-When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes) in every agent prompt.
+Use opus for all agent dispatches. When spawning agents (via Task tool), always include cqs tool instructions in the agent prompt. Agents start with zero context — they can't use cqs unless told how. Include the key commands block (search, read, read --focus, callers, callees, explain, similar, gather, impact, impact-diff, test-map, trace, context, dead, scout, task, plan, onboard, where, deps, related, diff, drift, batch, review, ci, health, suggest, stale, gc, convert, ref, notes, blame, doctor, index, stats) in every agent prompt.
 ```
 
 ### Phase 6: Verify
