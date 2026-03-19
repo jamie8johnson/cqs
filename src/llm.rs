@@ -154,12 +154,13 @@ impl Client {
     /// `items` is a list of (custom_id, content, chunk_type, language).
     /// Returns the batch ID for polling.
     fn submit_batch(&self, items: &[(String, String, String, String)]) -> Result<String, LlmError> {
+        let model = MODEL.to_string();
         let requests: Vec<BatchItem> = items
             .iter()
             .map(|(id, content, chunk_type, language)| BatchItem {
                 custom_id: id.clone(),
                 params: MessagesRequest {
-                    model: MODEL.to_string(),
+                    model: model.clone(),
                     max_tokens: MAX_TOKENS,
                     messages: vec![ChatMessage {
                         role: "user".to_string(),
@@ -361,9 +362,10 @@ fn resume_or_fetch_batch(
     let results = client.fetch_batch_results(batch_id)?;
 
     // Store API-generated summaries
+    let model = MODEL.to_string();
     let api_summaries: Vec<(String, String, String)> = results
         .into_iter()
-        .map(|(hash, summary)| (hash, summary, MODEL.to_string()))
+        .map(|(hash, summary)| (hash, summary, model.clone()))
         .collect();
     let count = api_summaries.len();
     if !api_summaries.is_empty() {
@@ -471,7 +473,11 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize, LlmError> {
             if queued_hashes.insert(cs.content_hash.clone()) {
                 batch_items.push((
                     cs.content_hash.clone(),
-                    cs.content.clone(),
+                    if cs.content.len() > MAX_CONTENT_CHARS {
+                        cs.content[..cs.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
+                    } else {
+                        cs.content.clone()
+                    },
                     cs.chunk_type.to_string(),
                     cs.language.to_string(),
                 ));
