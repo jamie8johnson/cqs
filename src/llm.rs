@@ -20,6 +20,7 @@ const MODEL: &str = "claude-haiku-4-5";
 const MAX_TOKENS: u32 = 100;
 const MAX_CONTENT_CHARS: usize = 8000;
 const MIN_CONTENT_CHARS: usize = 50;
+const MAX_BATCH_SIZE: usize = 10_000;
 /// Poll interval for batch completion
 const BATCH_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -393,6 +394,7 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
         );
     }
 
+    let mut batch_full = false;
     loop {
         let (chunks, next) = store
             .chunks_paged(cursor, PAGE_SIZE)
@@ -452,7 +454,18 @@ pub fn llm_summary_pass(store: &Store, quiet: bool) -> Result<usize> {
                     cs.chunk_type.to_string(),
                     cs.language.to_string(),
                 ));
+                if batch_items.len() >= MAX_BATCH_SIZE {
+                    batch_full = true;
+                    break;
+                }
             }
+        }
+        if batch_full {
+            tracing::info!(
+                max = MAX_BATCH_SIZE,
+                "Batch size limit reached, submitting partial batch"
+            );
+            break;
         }
     }
 
