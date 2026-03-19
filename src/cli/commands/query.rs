@@ -228,8 +228,9 @@ fn cmd_query_project(
     if !cli.quiet && !cli.no_stale_check {
         let origins: Vec<&str> = results
             .iter()
-            .filter_map(|r| match r {
-                UnifiedResult::Code(sr) => Some(sr.chunk.file.to_str().unwrap_or("")),
+            .map(|r| {
+                let UnifiedResult::Code(sr) = r;
+                sr.chunk.file.to_str().unwrap_or("")
             })
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
@@ -605,9 +606,7 @@ fn resolve_parent_context(
 
     // For each result with parent_id, resolve the parent content
     for result in results {
-        let sr = match result {
-            UnifiedResult::Code(sr) => sr,
-        };
+        let UnifiedResult::Code(sr) = result;
         let parent_id = match &sr.chunk.parent_id {
             Some(id) => id,
             None => continue,
