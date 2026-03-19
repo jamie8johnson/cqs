@@ -16,7 +16,7 @@ impl HnswIndex {
     /// and behavior - use whichever is more convenient at the call site.
     ///
     /// # Arguments
-    /// * `query` - Query embedding (769-dim: 768 model + 1 sentiment)
+    /// * `query` - Query embedding (768-dim E5-base-v2)
     /// * `k` - Maximum number of results to return
     ///
     /// # Returns

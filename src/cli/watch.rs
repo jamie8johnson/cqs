@@ -558,11 +558,7 @@ fn reindex_files(
             .map(|(_, c)| generate_nl_description(c))
             .collect();
         let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-        embedder
-            .embed_documents(&text_refs)?
-            .into_iter()
-            .map(|e| e.with_sentiment(0.0))
-            .collect()
+        embedder.embed_documents(&text_refs)?.into_iter().collect()
     };
 
     // Merge cached and new embeddings in original chunk order

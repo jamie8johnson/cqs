@@ -1527,7 +1527,6 @@ mod tests {
                     *x /= norm;
                 }
             }
-            v.push(0.0);
             Embedding::new(v)
         }
 
@@ -2051,7 +2050,7 @@ mod tests {
 
     // ===== score_candidate tests =====
 
-    /// Build a normalized 769-dim test vector (768 base + 1 sentiment) for score_candidate tests.
+    /// Build a normalized 768-dim test vector for score_candidate tests.
     fn test_embedding(seed: f32) -> Vec<f32> {
         let mut v = vec![seed; 768];
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -2060,7 +2059,6 @@ mod tests {
                 *x /= norm;
             }
         }
-        v.push(0.0); // sentiment dimension
         v
     }
 

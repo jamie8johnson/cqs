@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (769-dim: 768 model + sentiment). 90.9% Recall@1 on confusable function retrieval.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (768-dim). 90.9% Recall@1 on confusable function retrieval.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -200,9 +200,9 @@ pub fn resolve_index_dir(project_root: &Path) -> PathBuf {
     }
 }
 
-/// Embedding dimension: 768 from E5-base-v2 model + 1 sentiment dimension.
+/// Embedding dimension: 768 from E5-base-v2 model.
 /// Single source of truth — all modules import this constant.
-pub const EMBEDDING_DIM: usize = 769;
+pub const EMBEDDING_DIM: usize = 768;
 
 /// Unified test-chunk detection heuristic.
 ///
@@ -592,7 +592,7 @@ mentions = ["store.rs"]
     }
 
     #[test]
-    fn test_index_notes_stores_with_sentiment() {
+    fn test_index_notes_stores_note_sentiment() {
         let (store, dir) = setup_store_for_notes();
         let notes_path = make_notes_file(dir.path(), "");
 

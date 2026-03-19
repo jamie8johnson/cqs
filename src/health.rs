@@ -179,7 +179,7 @@ mod tests {
     }
 
     fn mock_embedding() -> Embedding {
-        Embedding::new(vec![0.0; 769])
+        Embedding::new(vec![0.0; 768])
     }
 
     #[test]

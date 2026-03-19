@@ -13,12 +13,13 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v14: Current (llm_summaries table for SQ-6)
+/// - v15: Current (768-dim embeddings — dropped sentiment dimension, SQ-9)
+/// - v14: llm_summaries table for SQ-6
 /// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
 /// - v12: parent_type_name column for method→class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 14;
+pub const CURRENT_SCHEMA_VERSION: i32 = 15;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
@@ -600,7 +601,7 @@ impl Default for ModelInfo {
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
-            dimensions: 769,          // 768 from model + 1 sentiment
+            dimensions: 768,          // E5-base-v2
             version: "2".to_string(), // E5-base-v2
         }
     }
@@ -746,7 +747,7 @@ pub(crate) fn make_placeholders(n: usize) -> String {
 
 /// Convert embedding to bytes for storage.
 ///
-/// Returns an error if embedding is not exactly 769 dimensions (768 model + 1 sentiment).
+/// Returns an error if embedding is not exactly 768 dimensions.
 /// Storing wrong-sized embeddings would corrupt the index.
 pub fn embedding_to_bytes(embedding: &Embedding) -> Result<Vec<u8>, StoreError> {
     if embedding.len() != EXPECTED_DIMENSIONS as usize {
@@ -778,7 +779,7 @@ pub fn embedding_slice(bytes: &[u8]) -> Option<&[f32]> {
 
 /// Convert embedding bytes to owned Vec (when ownership needed)
 ///
-/// Returns None if byte length doesn't match expected embedding size (769 * 4 bytes).
+/// Returns None if byte length doesn't match expected embedding size (768 * 4 bytes).
 /// This prevents silently using corrupted/truncated embeddings.
 /// Uses trace level logging consistent with embedding_slice() since both are called on hot paths.
 pub fn bytes_to_embedding(bytes: &[u8]) -> Option<Vec<f32>> {

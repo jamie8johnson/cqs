@@ -424,7 +424,7 @@ mod tests {
                 parent_type_name: None,
             };
             store
-                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 768]), Some(1000))
                 .unwrap();
         }
 
@@ -475,7 +475,7 @@ mod tests {
             parent_type_name: None,
         };
         store
-            .upsert_chunk(&target, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+            .upsert_chunk(&target, &crate::Embedding::new(vec![0.0; 768]), Some(1000))
             .unwrap();
 
         // Insert 6 callers that each call hot_function (>= HOTSPOT_MIN_CALLERS)
@@ -502,7 +502,7 @@ mod tests {
                 parent_type_name: None,
             };
             store
-                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 768]), Some(1000))
                 .unwrap();
 
             store
@@ -571,7 +571,7 @@ mod tests {
             parent_type_name: None,
         };
         store
-            .upsert_chunk(&target, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+            .upsert_chunk(&target, &crate::Embedding::new(vec![0.0; 768]), Some(1000))
             .unwrap();
 
         // Insert 6 non-test callers — gives caller_count = 6
@@ -597,7 +597,7 @@ mod tests {
                 parent_type_name: None,
             };
             store
-                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 769]), Some(1000))
+                .upsert_chunk(&chunk, &crate::Embedding::new(vec![0.0; 768]), Some(1000))
                 .unwrap();
 
             store
@@ -642,7 +642,7 @@ mod tests {
         store
             .upsert_chunk(
                 &test_chunk,
-                &crate::Embedding::new(vec![0.0; 769]),
+                &crate::Embedding::new(vec![0.0; 768]),
                 Some(1000),
             )
             .unwrap();

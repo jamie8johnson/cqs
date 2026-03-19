@@ -1461,7 +1461,7 @@ mod tests {
         let (store, _dir) = setup_store();
 
         // Insert chunks for known entry points
-        let emb = crate::embedder::Embedding::new(vec![0.0; 769]);
+        let emb = crate::embedder::Embedding::new(vec![0.0; 768]);
         for name in &["main", "init", "handler", "middleware"] {
             let chunk = crate::parser::Chunk {
                 id: format!("src/app.rs:1:{name}"),
@@ -1504,7 +1504,7 @@ mod tests {
         let (store, _dir) = setup_store();
 
         // Insert a function and a method, both uncalled
-        let emb = crate::embedder::Embedding::new(vec![0.0; 769]);
+        let emb = crate::embedder::Embedding::new(vec![0.0; 768]);
 
         let func_chunk = crate::parser::Chunk {
             id: "src/orphan.rs:1:func_hash".to_string(),

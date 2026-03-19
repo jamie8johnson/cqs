@@ -6,7 +6,7 @@ use cqs::embedder::Embedding;
 use cqs::hnsw::HnswIndex;
 use tempfile::TempDir;
 
-const EMBEDDING_DIM: usize = 769;
+const EMBEDDING_DIM: usize = 768;
 
 fn make_embedding(seed: u32) -> Embedding {
     let mut v = vec![0.0f32; EMBEDDING_DIM];
@@ -163,7 +163,7 @@ fn test_id_map_size_mismatch_rejected() {
 #[test]
 fn test_dimension_mismatch_rejected() {
     // Try to build with wrong dimension embedding
-    let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 769
+    let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 768
     let embeddings = vec![("wrong".to_string(), wrong_dim)];
 
     let result = HnswIndex::build(embeddings);
@@ -204,7 +204,7 @@ fn test_build_batched_dimension_mismatch() {
         ("good2".to_string(), make_embedding(2)),
     ];
 
-    let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 769
+    let wrong_dim = Embedding::new(vec![1.0; 100]); // Should be 768
     let bad_batch: Vec<(String, Embedding)> = vec![("bad".to_string(), wrong_dim)];
 
     let batches: Vec<Result<Vec<(String, Embedding)>, &str>> = vec![Ok(good_batch), Ok(bad_batch)];

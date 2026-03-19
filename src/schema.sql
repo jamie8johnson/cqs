@@ -1,4 +1,4 @@
--- cq index schema v14
+-- cq index schema v15
 -- v10: Generalized for multiple sources (filesystem, SQL Server, etc.)
 --   file → origin (unique identifier like "file:src/main.rs" or "mssql:server/db/dbo.MyProc")
 --   file_mtime → source_mtime (nullable for sources without mtime)
@@ -92,13 +92,13 @@ CREATE INDEX IF NOT EXISTS idx_type_edges_source ON type_edges(source_chunk_id);
 CREATE INDEX IF NOT EXISTS idx_type_edges_target ON type_edges(target_type_name);
 
 -- Notes: unified memory entries (sentiment-based, replaces deprecated hunches/scars)
--- Sentiment field bakes valence into similarity search via 769th embedding dimension
+-- Embedding column retained for schema compatibility, new notes store empty blobs (SQ-9)
 CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,           -- "note:0", "note:1", etc.
     text TEXT NOT NULL,            -- the note content
     sentiment REAL NOT NULL,       -- -1.0 to +1.0 (negative=warning, positive=pattern)
     mentions TEXT,                 -- JSON array of mentioned paths/functions
-    embedding BLOB NOT NULL,       -- 769-dim (768 model + sentiment)
+    embedding BLOB NOT NULL,       -- legacy: was 769-dim, now empty blob (SQ-9)
     source_file TEXT NOT NULL,     -- path to notes.toml
     file_mtime INTEGER NOT NULL,
     created_at TEXT NOT NULL,

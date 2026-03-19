@@ -82,7 +82,7 @@ pub fn test_chunk(name: &str, content: &str) -> Chunk {
     }
 }
 
-/// Create a mock 769-dim embedding (768 model + 1 sentiment)
+/// Create a mock 768-dim embedding (E5-base-v2)
 ///
 /// The seed value determines the direction of the embedding vector.
 /// Same seed = same direction = high similarity.
@@ -96,7 +96,5 @@ pub fn mock_embedding(seed: f32) -> Embedding {
             *x /= norm;
         }
     }
-    // Add sentiment dimension (769th)
-    v.push(0.0);
     Embedding::new(v)
 }

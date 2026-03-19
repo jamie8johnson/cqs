@@ -68,6 +68,7 @@ async fn run_migration(
         (11, 12) => migrate_v11_to_v12(conn).await,
         (12, 13) => migrate_v12_to_v13(conn).await,
         (13, 14) => migrate_v13_to_v14(conn).await,
+        (14, 15) => migrate_v14_to_v15(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -167,6 +168,28 @@ async fn migrate_v13_to_v14(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v14 to v15: 768-dim embeddings (SQ-9)
+///
+/// Dropped the sentiment dimension — embeddings are now pure 768-dim E5-base-v2 output.
+/// - Updates dimensions metadata from 769 to 768
+/// - Sets hnsw_dirty to trigger HNSW rebuild (old index has 769-dim vectors)
+/// - Notes embedding column is left as-is (we write empty blobs now, old data is harmless)
+async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query("UPDATE metadata SET value = '768' WHERE key = 'dimensions'")
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("UPDATE metadata SET value = '1' WHERE key = 'hnsw_dirty'")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!(
+        "Updated dimensions to 768 and marked HNSW dirty. \
+         Run 'cqs index --force' to rebuild with 768-dim embeddings."
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,7 +207,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 14);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 15);
     }
 
     #[test]
@@ -208,7 +231,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 14, 14).await;
+            let result = migrate(&pool, 15, 15).await;
             assert!(result.is_ok(), "same-version migration should be no-op");
         });
     }
@@ -234,10 +257,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            let result = migrate(&pool, 14, 13).await;
+            let result = migrate(&pool, 15, 14).await;
             assert!(result.is_err(), "downgrade should fail");
             match result.unwrap_err() {
-                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 14),
+                StoreError::SchemaNewerThanCq(v) => assert_eq!(v, 15),
                 other => panic!("Expected SchemaNewerThanCq, got: {:?}", other),
             }
         });
@@ -557,6 +580,120 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(version.0, "14");
+        });
+    }
+
+    #[test]
+    fn test_migrate_v14_to_v15() {
+        // Full migration test: set up a v14 schema, run migration, verify dimensions + hnsw_dirty
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Create v14 schema: chunks WITH enrichment_hash, llm_summaries table
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    signature TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    doc TEXT,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    embedding BLOB NOT NULL,
+                    source_mtime INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    parent_id TEXT,
+                    window_idx INTEGER,
+                    parent_type_name TEXT,
+                    enrichment_hash TEXT
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS llm_summaries (
+                    content_hash TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '14')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('dimensions', '769')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('hnsw_dirty', '0')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Run migration from v14 to v15
+            migrate(&pool, 14, 15).await.unwrap();
+
+            // Verify dimensions updated to 768
+            let dims: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'dimensions'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(dims.0, "768", "dimensions should be updated to 768");
+
+            // Verify hnsw_dirty set to 1 (triggers rebuild)
+            let dirty: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'hnsw_dirty'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(dirty.0, "1", "hnsw_dirty should be set to 1");
+
+            // Verify schema_version was updated to 15
+            let version: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(version.0, "15");
         });
     }
 

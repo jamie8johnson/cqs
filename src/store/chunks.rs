@@ -1579,7 +1579,6 @@ mod tests {
                 *x /= norm;
             }
         }
-        v.push(0.0);
         Embedding::new(v)
     }
 

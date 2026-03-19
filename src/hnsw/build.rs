@@ -17,7 +17,7 @@ impl HnswIndex {
     /// # When to use `build` vs `build_batched`
     ///
     /// - **`build`**: Use when all embeddings fit comfortably in memory (<50k chunks,
-    ///   ~150MB for 50k x 769 x 4 bytes). Slightly higher graph quality since all
+    ///   ~150MB for 50k x 768 x 4 bytes). Slightly higher graph quality since all
     ///   vectors are available during construction.
     ///
     /// - **`build_batched`**: Use for large indexes (>50k chunks) or memory-constrained

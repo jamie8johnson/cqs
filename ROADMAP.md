@@ -125,6 +125,36 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
   - **Deployment:** Upload merged ONNX to HuggingFace (`jamie8johnson/e5-base-v2-code-search`), cqs downloads it instead of base E5. Or upload LoRA adapter separately for A/B testing.
   - **Why:** E5-base-v2 is a general NL model — prose (README/CHANGELOG) naturally scores higher than generated code NL descriptions. LoRA teaches the model that "parse config file" should match `fn parse_config()` better than a README paragraph about configuration. This is the real fix for code-vs-doc ranking.
 
+### v1.1.0 Release Plan
+
+**Execution order:**
+
+1. **SQ-9: Notes simplification + 769→768-dim** (in progress — plan at `docs/superpowers/plans/2026-03-19-sq9-notes-simplification.md`)
+   - Phase 1: Remove notes from search results
+   - Phase 2: Drop sentiment dimension (769→768)
+   - Phase 3: Schema v15 migration + reindex required
+2. **P3 deferred audit fixes:** EX-6/EX-7 (Pattern/ChunkType macros), CQ-13 (shared test fixtures), PERF-11/13/16 (batch INSERT, llm allocations)
+3. **P4 refactors:**
+   - PERF-12: CAGRA lazy rebuild (stop rebuilding index after every search)
+   - CQ-11: Extract `Store::open_with_config()` (80% duplication between open/open_readonly)
+   - EX-8: Shared CLI/batch arg structs via `#[command(flatten)]`
+   - Split `search.rs` (2576 lines) → `search/` module (scoring, finalize, orchestration)
+   - Extract enrichment pass from `cli/pipeline.rs` into own file
+   - Extract ORT provider setup from `embedder.rs` into own module
+   - DS-9: Watch mode Store re-open (OnceLock cache staleness)
+   - RM-18: BatchContext reference LRU eviction
+   - EX-9: LLM config env/config overrides (CQS_LLM_MODEL, CQS_API_BASE)
+   - EX-11: Consolidate search scoring constants into ScoringConfig
+4. **Release v1.1.0** — doc fixes:
+   - "Local ML" → "Local-first ML, GPU-accelerated, optional LLM enrichment" in repo description
+   - README pipeline: add Enrich step, fix dimensions, fix Describe
+   - CLAUDE.md: fix notes wording ("available immediately" not "indexes immediately"), opus-only agents, complete agent command list
+   - CLAUDE.md agent tools: add `plan, blame, doctor, index, stats, batch` — drop `chat, completions, init, watch`
+   - Bootstrap skill: sync agent tools list, fix `--json`/`--format json`, add `--include-refs`, add missing skills, opus-only
+   - All 769→768 dimension references across README, PRIVACY, SECURITY, CONTRIBUTING, CLAUDE.md, lib.rs
+   - Re-run eval benchmarks or qualify numbers with measured version
+   - Update Cargo.toml version to 1.1.0
+
 ### Parked
 
 - **MCP server** — re-add as slim read-only wrapper when CLI features are rock solid. Architecture proven clean (removed in v0.10.0 with zero core changes).

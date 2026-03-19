@@ -522,8 +522,7 @@ fn gpu_embed_stage(
         let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
         match embedder.embed_documents(&text_refs) {
             Ok(embs) => {
-                let new_embeddings: Vec<Embedding> =
-                    embs.into_iter().map(|e| e.with_sentiment(0.0)).collect();
+                let new_embeddings: Vec<Embedding> = embs;
                 let cached_count = prepared.cached.len();
                 let mut chunk_embeddings = prepared.cached;
                 chunk_embeddings.extend(prepared.to_embed.into_iter().zip(new_embeddings));
@@ -620,9 +619,6 @@ fn cpu_embed_stage(
         } else {
             let text_refs: Vec<&str> = prepared.texts.iter().map(|s| s.as_str()).collect();
             emb.embed_documents(&text_refs)?
-                .into_iter()
-                .map(|e| e.with_sentiment(0.0))
-                .collect()
         };
 
         let embedded_batch = create_embedded_batch(
@@ -1144,12 +1140,11 @@ fn flush_enrichment_batch(
         embeddings.len()
     );
 
-    // embed_documents returns 768-dim; add neutral sentiment for 769-dim
     // Build updates from batch without draining — only clear after successful write
     let updates: Vec<(String, Embedding, Option<String>)> = batch
         .iter()
         .zip(embeddings)
-        .map(|((id, _, hash), emb)| (id.clone(), emb.with_sentiment(0.0), Some(hash.clone())))
+        .map(|((id, _, hash), emb)| (id.clone(), emb, Some(hash.clone())))
         .collect();
 
     store
@@ -1205,7 +1200,7 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_all_cached() {
         let chunk = make_test_chunk("c1", "fn foo() {}");
-        let emb = Embedding::new(vec![0.0; 769]);
+        let emb = Embedding::new(vec![0.0; 768]);
         let cached = vec![(chunk, emb)];
 
         let batch = create_embedded_batch(
@@ -1223,7 +1218,7 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_all_new() {
         let chunk = make_test_chunk("c1", "fn foo() {}");
-        let emb = Embedding::new(vec![1.0; 769]);
+        let emb = Embedding::new(vec![1.0; 768]);
 
         let batch = create_embedded_batch(
             vec![],
@@ -1240,9 +1235,9 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_mixed() {
         let cached_chunk = make_test_chunk("c1", "fn foo() {}");
-        let cached_emb = Embedding::new(vec![0.0; 769]);
+        let cached_emb = Embedding::new(vec![0.0; 768]);
         let new_chunk = make_test_chunk("c2", "fn bar() {}");
-        let new_emb = Embedding::new(vec![1.0; 769]);
+        let new_emb = Embedding::new(vec![1.0; 768]);
 
         let batch = create_embedded_batch(
             vec![(cached_chunk, cached_emb)],
@@ -1271,11 +1266,11 @@ mod tests {
     #[test]
     fn test_create_embedded_batch_preserves_order() {
         let c1 = make_test_chunk("c1", "fn first() {}");
-        let e1 = Embedding::new(vec![1.0; 769]);
+        let e1 = Embedding::new(vec![1.0; 768]);
         let c2 = make_test_chunk("c2", "fn second() {}");
-        let e2 = Embedding::new(vec![2.0; 769]);
+        let e2 = Embedding::new(vec![2.0; 768]);
         let c3 = make_test_chunk("c3", "fn third() {}");
-        let e3 = Embedding::new(vec![3.0; 769]);
+        let e3 = Embedding::new(vec![3.0; 768]);
 
         let batch = create_embedded_batch(
             vec![(c1, e1)],

@@ -47,17 +47,14 @@ fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
     EmbedderError::InferenceFailed(e.to_string())
 }
 
-/// A 769-dimensional L2-normalized embedding vector
+/// A 768-dimensional L2-normalized embedding vector
 ///
-/// Embeddings are produced by E5-base-v2 (768-dim) with an
-/// optional 769th dimension for sentiment (-1.0 to +1.0).
+/// Embeddings are produced by E5-base-v2 (768-dim).
 /// Can be compared using cosine similarity (dot product for normalized vectors).
 #[derive(Debug, Clone)]
 pub struct Embedding(Vec<f32>);
 
-/// Standard embedding dimension from model
-pub const MODEL_DIM: usize = 768;
-/// Full embedding dimension with sentiment — re-exported from crate root
+/// Full embedding dimension — re-exported from crate root
 pub use crate::EMBEDDING_DIM;
 
 /// Error returned when creating an embedding with invalid dimensions
@@ -65,7 +62,7 @@ pub use crate::EMBEDDING_DIM;
 pub struct EmbeddingDimensionError {
     /// The actual dimension provided
     pub actual: usize,
-    /// The expected dimension (769)
+    /// The expected dimension (768)
     pub expected: usize,
 }
 
@@ -84,10 +81,10 @@ impl std::error::Error for EmbeddingDimensionError {}
 impl Embedding {
     /// Create a new embedding from raw vector data.
     ///
-    /// Logs a warning if the dimension doesn't match the expected 769.
+    /// Logs a warning if the dimension doesn't match the expected 768.
     /// For strict validation, use `try_new()` which returns an error.
     pub fn new(data: Vec<f32>) -> Self {
-        if data.len() != crate::EMBEDDING_DIM && data.len() != MODEL_DIM {
+        if data.len() != crate::EMBEDDING_DIM {
             tracing::warn!(
                 expected = crate::EMBEDDING_DIM,
                 actual = data.len(),
@@ -99,17 +96,17 @@ impl Embedding {
 
     /// Create a new embedding with dimension validation.
     ///
-    /// Returns `Err` if the vector is not exactly 769 dimensions.
+    /// Returns `Err` if the vector is not exactly 768 dimensions.
     /// Use this when constructing embeddings from untrusted sources.
     ///
     /// # Example
     /// ```
     /// use cqs::embedder::Embedding;
     ///
-    /// let valid = Embedding::try_new(vec![0.5; 769]);
+    /// let valid = Embedding::try_new(vec![0.5; 768]);
     /// assert!(valid.is_ok());
     ///
-    /// let invalid = Embedding::try_new(vec![0.5; 768]);
+    /// let invalid = Embedding::try_new(vec![0.5; 100]);
     /// assert!(invalid.is_err());
     /// ```
     pub fn try_new(data: Vec<f32>) -> Result<Self, EmbeddingDimensionError> {
@@ -120,31 +117,6 @@ impl Embedding {
             });
         }
         Ok(Self(data))
-    }
-
-    /// Append sentiment as 769th dimension
-    ///
-    /// Converts a 768-dim model embedding to 769-dim with sentiment.
-    /// Sentiment should be -1.0 (negative) to +1.0 (positive).
-    pub fn with_sentiment(mut self, sentiment: f32) -> Self {
-        if self.0.len() != MODEL_DIM {
-            tracing::warn!(
-                actual = self.0.len(),
-                expected = MODEL_DIM,
-                "Unexpected embedding dimension in with_sentiment"
-            );
-        }
-        self.0.push(sentiment.clamp(-1.0, 1.0));
-        self
-    }
-
-    /// Get the sentiment (769th dimension) if present
-    pub fn sentiment(&self) -> Option<f32> {
-        if self.0.len() == EMBEDDING_DIM {
-            Some(self.0[MODEL_DIM])
-        } else {
-            None
-        }
     }
 
     /// Get the embedding as a slice
@@ -164,7 +136,7 @@ impl Embedding {
 
     /// Get the dimension of the embedding.
     ///
-    /// Returns 769 for cqs embeddings (768 from E5-base-v2 + 1 sentiment dimension).
+    /// Returns 768 for cqs embeddings (E5-base-v2).
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -210,7 +182,7 @@ impl std::fmt::Display for ExecutionProvider {
 ///
 /// let embedder = Embedder::new()?;
 /// let embedding = embedder.embed_query("parse configuration file")?;
-/// println!("Embedding dimension: {}", embedding.len()); // 769
+/// println!("Embedding dimension: {}", embedding.len()); // 768
 /// # Ok::<(), anyhow::Error>(())
 /// ```
 pub struct Embedder {
@@ -445,8 +417,7 @@ impl Embedder {
             EmbedderError::InferenceFailed("embed_batch returned empty result".to_string())
         })?;
 
-        // Add neutral sentiment (0.0) as 769th dimension
-        let embedding = base_embedding.with_sentiment(0.0);
+        let embedding = base_embedding;
 
         // Store in cache (idempotent - duplicate puts for same key are harmless)
         {
@@ -945,8 +916,8 @@ mod tests {
 
     #[test]
     fn test_embedding_len() {
-        let emb = Embedding::new(vec![1.0; MODEL_DIM]);
-        assert_eq!(emb.len(), MODEL_DIM);
+        let emb = Embedding::new(vec![1.0; EMBEDDING_DIM]);
+        assert_eq!(emb.len(), EMBEDDING_DIM);
     }
 
     #[test]
@@ -956,35 +927,6 @@ mod tests {
 
         let non_empty = Embedding::new(vec![1.0; EMBEDDING_DIM]);
         assert!(!non_empty.is_empty());
-    }
-
-    #[test]
-    fn test_embedding_with_sentiment() {
-        let emb = Embedding::new(vec![0.5; MODEL_DIM]);
-        let emb_with_sentiment = emb.with_sentiment(0.8);
-
-        assert_eq!(emb_with_sentiment.len(), EMBEDDING_DIM);
-        assert_eq!(emb_with_sentiment.sentiment(), Some(0.8));
-    }
-
-    #[test]
-    fn test_embedding_sentiment_clamped() {
-        // Sentiment > 1.0 should be clamped
-        let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(2.0);
-        assert_eq!(emb.sentiment(), Some(1.0));
-
-        // Sentiment < -1.0 should be clamped
-        let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(-2.0);
-        assert_eq!(emb.sentiment(), Some(-1.0));
-    }
-
-    #[test]
-    fn test_embedding_sentiment_none_without_769_dims() {
-        let emb = Embedding::new(vec![0.5; MODEL_DIM]);
-        assert_eq!(emb.sentiment(), None);
-
-        let emb = Embedding::new(vec![]);
-        assert_eq!(emb.sentiment(), None);
     }
 
     #[test]
@@ -1055,9 +997,7 @@ mod tests {
 
     #[test]
     fn test_model_dimensions() {
-        assert_eq!(MODEL_DIM, 768);
-        assert_eq!(EMBEDDING_DIM, 769);
-        assert_eq!(EMBEDDING_DIM, MODEL_DIM + 1);
+        assert_eq!(EMBEDDING_DIM, 768);
     }
 
     // ===== pad_2d_i64 tests =====
@@ -1172,23 +1112,14 @@ mod tests {
                 prop_assert!(dot > 0.0, "Direction should be preserved");
             }
 
-            /// Property: sentiment clamping keeps values in [-1, 1]
-            #[test]
-            fn prop_sentiment_clamped(sentiment in -10.0f32..10.0f32) {
-                let emb = Embedding::new(vec![0.5; MODEL_DIM]).with_sentiment(sentiment);
-                if let Some(s) = emb.sentiment() {
-                    prop_assert!((-1.0..=1.0).contains(&s), "Sentiment {} out of range", s);
-                }
-            }
-
             /// Property: Embedding length is preserved through operations
             #[test]
             fn prop_embedding_length_preserved(use_model_dim in proptest::bool::ANY) {
-                let len = if use_model_dim { MODEL_DIM } else { EMBEDDING_DIM };
-                let emb = Embedding::new(vec![0.5; len]);
-                prop_assert_eq!(emb.len(), len);
-                prop_assert_eq!(emb.as_slice().len(), len);
-                prop_assert_eq!(emb.as_vec().len(), len);
+                let _ = use_model_dim; // single dimension now
+                let emb = Embedding::new(vec![0.5; EMBEDDING_DIM]);
+                prop_assert_eq!(emb.len(), EMBEDDING_DIM);
+                prop_assert_eq!(emb.as_slice().len(), EMBEDDING_DIM);
+                prop_assert_eq!(emb.as_vec().len(), EMBEDDING_DIM);
             }
         }
     }
