@@ -214,40 +214,96 @@ pub struct Store {
     test_chunks_cache: std::sync::OnceLock<Vec<ChunkSummary>>,
 }
 
+/// Internal configuration for [`Store::open_with_config`].
+///
+/// Captures the five parameters that differ between read-write and read-only
+/// opens so the shared connection/pool/validation logic lives in one place.
+struct StoreOpenConfig {
+    read_only: bool,
+    use_current_thread: bool,
+    max_connections: u32,
+    mmap_size: &'static str,
+    cache_size: &'static str,
+}
+
 impl Store {
     /// Open an existing index with connection pooling
     pub fn open(path: &Path) -> Result<Self, StoreError> {
-        let _span = tracing::info_span!("store_open", path = %path.display()).entered();
-        // RM-14: Limit tokio threads to match the 4-connection pool size
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(4)
-            .enable_all()
-            .build()?;
+        Self::open_with_config(
+            path,
+            StoreOpenConfig {
+                read_only: false,
+                use_current_thread: false,
+                max_connections: 4,
+                mmap_size: "268435456", // 256MB
+                cache_size: "-16384",   // 16MB
+            },
+        )
+    }
+
+    /// Open an existing index in read-only mode with reduced resources.
+    ///
+    /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
+    /// Suitable for reference stores and background builds that only read data.
+    pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_config(
+            path,
+            StoreOpenConfig {
+                read_only: true,
+                use_current_thread: true,
+                max_connections: 1,
+                mmap_size: "67108864", // 64MB
+                cache_size: "-4096",   // 4MB
+            },
+        )
+    }
+
+    /// Shared open logic for both read-write and read-only modes.
+    fn open_with_config(path: &Path, config: StoreOpenConfig) -> Result<Self, StoreError> {
+        let mode = if config.read_only { "readonly" } else { "open" };
+        let _span = tracing::info_span!("store_open", %mode, path = %path.display()).entered();
+
+        // Build runtime: multi-thread for write (RM-14: match pool size),
+        // current-thread for read-only (minimal overhead).
+        let rt = if config.use_current_thread {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+        } else {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(config.max_connections as usize)
+                .enable_all()
+                .build()?
+        };
 
         // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
         // special characters in paths (spaces, #, ?, %, unicode).
-        let connect_opts = SqliteConnectOptions::new()
+        let mut connect_opts = SqliteConnectOptions::new()
             .filename(path)
-            .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5))
             .synchronous(SqliteSynchronous::Normal)
-            .pragma("mmap_size", "268435456") // 256MB memory-mapped I/O
+            .pragma("mmap_size", config.mmap_size)
             .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
 
-        // SQLite connection pool with WAL mode for concurrent reads
+        if config.read_only {
+            connect_opts = connect_opts.read_only(true);
+        } else {
+            connect_opts = connect_opts.create_if_missing(true);
+        }
+
+        // Build cache_size PRAGMA string once for the after_connect closure.
+        let cache_pragma = format!("PRAGMA cache_size = {}", config.cache_size);
+
         let pool = rt.block_on(async {
             SqlitePoolOptions::new()
-                .max_connections(4) // 4 = typical CLI parallelism (index, search, watch)
-                .idle_timeout(std::time::Duration::from_secs(300)) // Close idle connections after 5 min
-                .after_connect(|conn, _meta| {
+                .max_connections(config.max_connections)
+                .idle_timeout(std::time::Duration::from_secs(300))
+                .after_connect(move |conn, _meta| {
+                    let pragma = cache_pragma.clone();
                     Box::pin(async move {
-                        // 16MB page cache per connection (negative = KB, -16384 = 16MB)
-                        sqlx::query("PRAGMA cache_size = -16384")
-                            .execute(&mut *conn)
-                            .await?;
-                        // Keep temp tables in memory
+                        sqlx::query(&pragma).execute(&mut *conn).await?;
                         sqlx::query("PRAGMA temp_store = MEMORY")
                             .execute(&mut *conn)
                             .await?;
@@ -267,17 +323,14 @@ impl Store {
             test_chunks_cache: std::sync::OnceLock::new(),
         };
 
-        // Set restrictive permissions on database files (Unix only)
-        // These files contain code embeddings - not secrets, but defense-in-depth
+        // Set restrictive permissions on database files (Unix only, write mode only)
         #[cfg(unix)]
-        {
+        if !config.read_only {
             use std::os::unix::fs::PermissionsExt;
             let restrictive = std::fs::Permissions::from_mode(0o600);
-            // Main database file
             if let Err(e) = std::fs::set_permissions(path, restrictive.clone()) {
                 tracing::debug!(path = %path.display(), error = %e, "Failed to set permissions");
             }
-            // WAL and SHM files (may not exist yet, ignore errors)
             let wal_path = path.with_extension("db-wal");
             let shm_path = path.with_extension("db-shm");
             if let Err(e) = std::fs::set_permissions(&wal_path, restrictive.clone()) {
@@ -288,7 +341,11 @@ impl Store {
             }
         }
 
-        tracing::info!(path = %path.display(), "Database connected");
+        tracing::info!(
+            path = %path.display(),
+            read_only = config.read_only,
+            "Database connected"
+        );
 
         // Quick integrity check — catches B-tree corruption early
         store.rt.block_on(async {
@@ -304,83 +361,7 @@ impl Store {
         // Check model version BEFORE schema migration — if model mismatches,
         // we don't want to commit a schema upgrade on a DB we'll reject anyway
         store.check_model_version()?;
-        // Check schema version compatibility (may run migrations)
         store.check_schema_version(path)?;
-        // Warn if index was created by different cqs version
-        store.check_cq_version();
-
-        Ok(store)
-    }
-
-    /// Open an existing index in read-only mode with reduced resources.
-    ///
-    /// Uses minimal connection pool, smaller cache, and single-threaded runtime.
-    /// Suitable for reference stores and background builds that only read data.
-    pub fn open_readonly(path: &Path) -> Result<Self, StoreError> {
-        let _span = tracing::info_span!("store_open_readonly", path = %path.display()).entered();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-
-        // Use SqliteConnectOptions::filename() to avoid URL parsing issues with
-        // special characters in paths (spaces, #, ?, %, unicode).
-        let connect_opts = SqliteConnectOptions::new()
-            .filename(path)
-            .read_only(true)
-            .foreign_keys(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .busy_timeout(std::time::Duration::from_secs(5))
-            .synchronous(SqliteSynchronous::Normal)
-            .pragma("mmap_size", "67108864") // 64MB mmap (reduced from 256MB)
-            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));
-
-        let pool = rt.block_on(async {
-            SqlitePoolOptions::new()
-                .max_connections(1)
-                .idle_timeout(std::time::Duration::from_secs(300))
-                .after_connect(|conn, _meta| {
-                    Box::pin(async move {
-                        // 4MB page cache (reduced from 16MB)
-                        sqlx::query("PRAGMA cache_size = -4096")
-                            .execute(&mut *conn)
-                            .await?;
-                        // Keep temp tables in memory
-                        sqlx::query("PRAGMA temp_store = MEMORY")
-                            .execute(&mut *conn)
-                            .await?;
-                        Ok(())
-                    })
-                })
-                .connect_with(connect_opts)
-                .await
-        })?;
-
-        let store = Self {
-            pool,
-            rt,
-            closed: AtomicBool::new(false),
-            notes_summaries_cache: RwLock::new(None),
-            call_graph_cache: std::sync::OnceLock::new(),
-            test_chunks_cache: std::sync::OnceLock::new(),
-        };
-
-        // Skip permissions setting (read-only, no file creation)
-
-        tracing::info!(path = %path.display(), "Database connected (read-only)");
-
-        // Quick integrity check — catches B-tree corruption early
-        store.rt.block_on(async {
-            let result: (String,) = sqlx::query_as("PRAGMA integrity_check(1)")
-                .fetch_one(&store.pool)
-                .await?;
-            if result.0 != "ok" {
-                return Err(StoreError::Corruption(result.0));
-            }
-            Ok::<_, StoreError>(())
-        })?;
-
-        store.check_schema_version(path)?;
-        store.check_model_version()?;
         store.check_cq_version();
 
         Ok(store)
