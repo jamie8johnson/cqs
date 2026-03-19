@@ -477,10 +477,11 @@ Keep index fresh: run `cqs watch` in a background terminal, or `cqs index` after
 By default, `cqs index` respects `.gitignore` rules:
 
 ```bash
-cqs index              # Respects .gitignore
-cqs index --no-ignore  # Index everything
-cqs index --force      # Re-index all files
-cqs index --dry-run    # Show what would be indexed
+cqs index                  # Respects .gitignore
+cqs index --no-ignore      # Index everything
+cqs index --force          # Re-index all files
+cqs index --dry-run        # Show what would be indexed
+cqs index --llm-summaries  # Generate LLM summaries (requires ANTHROPIC_API_KEY)
 ```
 
 ## How It Works

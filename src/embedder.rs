@@ -399,13 +399,14 @@ impl Embedder {
     /// Large inputs are processed in batches of 64 to cap GPU memory usage.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Embedding>, EmbedderError> {
         const MAX_BATCH: usize = 64;
-        let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
-        if prefixed.len() <= MAX_BATCH {
+        if texts.len() <= MAX_BATCH {
+            let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {}", t)).collect();
             return self.embed_batch(&prefixed);
         }
-        let mut all = Vec::with_capacity(prefixed.len());
-        for chunk in prefixed.chunks(MAX_BATCH) {
-            all.extend(self.embed_batch(chunk)?);
+        let mut all = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(MAX_BATCH) {
+            let prefixed: Vec<String> = chunk.iter().map(|t| format!("passage: {}", t)).collect();
+            all.extend(self.embed_batch(&prefixed)?);
         }
         Ok(all)
     }
@@ -786,9 +787,13 @@ fn symlink_providers(src_dir: &Path, target_dir: &Path, libs: &[&str]) {
             continue;
         }
 
-        // Skip if symlink already points to the right place
+        // Skip if symlink already points to the right place.
+        // Canonicalize both paths so relative vs absolute and symlink chains
+        // don't cause false mismatches (PB-10).
         if let Ok(existing) = std::fs::read_link(&dst) {
-            if existing == src {
+            let existing_canon = dunce::canonicalize(&existing).unwrap_or(existing);
+            let src_canon = dunce::canonicalize(&src).unwrap_or_else(|_| src.clone());
+            if existing_canon == src_canon {
                 continue;
             }
             let _ = std::fs::remove_file(&dst);

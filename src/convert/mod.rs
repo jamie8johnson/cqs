@@ -330,18 +330,23 @@ fn convert_directory(dir: &Path, opts: &ConvertOptions) -> anyhow::Result<Vec<Co
 
     // Find immediate subdirectories that are web help sites
     let mut webhelp_dirs: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.filter_map(|e| match e {
-            Ok(entry) => Some(entry),
-            Err(err) => {
-                tracing::warn!(error = %err, "Skipping directory entry due to read_dir error");
-                None
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.filter_map(|e| match e {
+                Ok(entry) => Some(entry),
+                Err(err) => {
+                    tracing::warn!(error = %err, "Skipping directory entry due to read_dir error");
+                    None
+                }
+            }) {
+                let path = entry.path();
+                if path.is_dir() && webhelp::is_webhelp_dir(&path) {
+                    webhelp_dirs.push(path);
+                }
             }
-        }) {
-            let path = entry.path();
-            if path.is_dir() && webhelp::is_webhelp_dir(&path) {
-                webhelp_dirs.push(path);
-            }
+        }
+        Err(e) => {
+            tracing::warn!(dir = %dir.display(), error = %e, "Failed to read directory for webhelp detection");
         }
     }
 

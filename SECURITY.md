@@ -76,6 +76,8 @@ No other network requests are made. Without `--llm-summaries`, all operations ar
 | `.cqs/index.lock` | Process lock file | `cqs watch` |
 | `.cqs/audit-mode.json` | Audit mode state (on/off, expiry) | `cqs audit-mode on`, `cqs audit-mode off` |
 | `docs/notes.toml` | Developer notes | `cqs notes add`, `cqs notes update`, `cqs notes remove` |
+| `.cqs.toml` | Reference configuration | `cqs ref add`, `cqs ref remove` |
+| `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
 
 ### Process Operations

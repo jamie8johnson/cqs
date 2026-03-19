@@ -991,9 +991,13 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
             // Pre-fetch LLM summaries for this page (SQ-6)
             let content_hashes: Vec<&str> =
                 chunks.iter().map(|c| c.content_hash.as_str()).collect();
-            let page_summaries = store
-                .get_summaries_by_hashes(&content_hashes)
-                .unwrap_or_default();
+            let page_summaries = match store.get_summaries_by_hashes(&content_hashes) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to fetch LLM summaries for enrichment page");
+                    HashMap::new()
+                }
+            };
 
             for cs in &chunks {
                 progress.inc(1);
