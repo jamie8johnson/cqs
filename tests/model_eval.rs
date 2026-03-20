@@ -1209,6 +1209,270 @@ fn test_hard_model_comparison() {
     eprintln!();
 }
 
+// ===== Reranker eval - cross-encoder second pass =====
+
+#[test]
+#[ignore] // Slow - downloads models. Run with: cargo test reranker -- --ignored --nocapture
+fn test_hard_reranker_comparison() {
+    use cqs::parser::ChunkType;
+    use cqs::reranker::Reranker;
+    use cqs::store::SearchResult;
+    use std::path::PathBuf;
+
+    let parser = Parser::new().expect("Failed to initialize parser");
+    let e5_config = &MODELS[0]; // E5-base-v2 (production model)
+
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    // Parse original + hard fixtures
+    struct ChunkDesc {
+        name: String,
+        language: Language,
+        nl_text: String,
+        content: String,
+    }
+
+    let mut chunk_descs: Vec<ChunkDesc> = Vec::new();
+    for lang in &languages {
+        let path = fixture_path(*lang);
+        let chunks = parser
+            .parse_file(&path)
+            .expect("Failed to parse original fixture");
+        for chunk in &chunks {
+            let nl = generate_nl_description(chunk);
+            chunk_descs.push(ChunkDesc {
+                name: chunk.name.clone(),
+                language: *lang,
+                nl_text: nl,
+                content: chunk.content.clone(),
+            });
+        }
+        let hard_path = hard_fixture_path(*lang);
+        if hard_path.exists() {
+            let chunks = parser
+                .parse_file(&hard_path)
+                .expect("Failed to parse hard fixture");
+            for chunk in &chunks {
+                let nl = generate_nl_description(chunk);
+                chunk_descs.push(ChunkDesc {
+                    name: chunk.name.clone(),
+                    language: *lang,
+                    nl_text: nl,
+                    content: chunk.content.clone(),
+                });
+            }
+        }
+    }
+    eprintln!(
+        "Parsed {} chunks from original + hard fixtures\n",
+        chunk_descs.len()
+    );
+
+    // Embed with E5-base-v2
+    eprintln!("--- E5-base-v2 embedding ---");
+    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+
+    eprintln!("  Embedding {} chunks...", chunk_descs.len());
+    let nl_texts: Vec<&str> = chunk_descs.iter().map(|c| c.nl_text.as_str()).collect();
+    let mut all_embeddings: Vec<Vec<f32>> = Vec::new();
+    for batch in nl_texts.chunks(16) {
+        let embs = embedder.embed_documents(batch).expect("Embedding failed");
+        all_embeddings.extend(embs);
+    }
+    assert_eq!(
+        all_embeddings.len(),
+        chunk_descs.len(),
+        "Embedding count mismatch"
+    );
+
+    let indexed: Vec<IndexedChunk> = chunk_descs
+        .iter()
+        .zip(all_embeddings.into_iter())
+        .map(|(desc, emb)| IndexedChunk {
+            name: desc.name.clone(),
+            language: desc.language,
+            embedding: emb,
+        })
+        .collect();
+
+    // Pre-embed all queries
+    eprintln!("  Embedding {} queries...", HARD_EVAL_CASES.len());
+    let query_embeddings: Vec<Vec<f32>> = HARD_EVAL_CASES
+        .iter()
+        .map(|case| {
+            embedder
+                .embed_query(case.query)
+                .expect("Query embed failed")
+        })
+        .collect();
+
+    // Load reranker
+    eprintln!("\n--- Loading reranker ---");
+    let reranker = Reranker::new().expect("Failed to create reranker");
+
+    // For each query: get top-20 by embedding, then rerank
+    const CANDIDATE_K: usize = 20;
+    let mut emb_reciprocal_ranks: Vec<f64> = Vec::new();
+    let mut rerank_reciprocal_ranks: Vec<f64> = Vec::new();
+    let mut emb_r1 = 0usize;
+    let mut rerank_r1 = 0usize;
+    let mut emb_ndcg_sum = 0.0f64;
+    let mut rerank_ndcg_sum = 0.0f64;
+
+    eprintln!(
+        "\n  Evaluating {} queries (top-{} candidates):\n",
+        HARD_EVAL_CASES.len(),
+        CANDIDATE_K
+    );
+
+    for (case, query_embedding) in HARD_EVAL_CASES.iter().zip(query_embeddings.iter()) {
+        // Step 1: Embedding retrieval — top-K candidates by cosine similarity
+        let mut scored: Vec<(usize, f32)> = indexed
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.language == case.language)
+            .map(|(i, c)| (i, cosine_similarity(query_embedding, &c.embedding)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(CANDIDATE_K);
+
+        // Embedding-only rank
+        let emb_rank = scored
+            .iter()
+            .position(|(i, _)| {
+                let name = &indexed[*i].name;
+                name == case.expected_name || case.also_accept.contains(&name.as_str())
+            })
+            .map(|pos| pos + 1);
+
+        let emb_rr = emb_rank.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+        emb_reciprocal_ranks.push(emb_rr);
+        if emb_rank == Some(1) {
+            emb_r1 += 1;
+        }
+        emb_ndcg_sum += emb_rank
+            .map(|r| 1.0 / (r as f64 + 1.0).log2())
+            .unwrap_or(0.0);
+
+        // Step 2: Rerank candidates with cross-encoder
+        // Build SearchResult objects for the reranker API
+        let mut search_results: Vec<SearchResult> = scored
+            .iter()
+            .map(|(i, score)| {
+                let desc = &chunk_descs[*i];
+                SearchResult {
+                    chunk: cqs::store::ChunkSummary {
+                        id: format!("eval-{}", i),
+                        file: PathBuf::from("eval_fixture"),
+                        language: desc.language,
+                        chunk_type: ChunkType::Function,
+                        name: desc.name.clone(),
+                        signature: String::new(),
+                        content: desc.content.clone(),
+                        doc: None,
+                        line_start: 0,
+                        line_end: 0,
+                        content_hash: String::new(),
+                        window_idx: None,
+                        parent_id: None,
+                        parent_type_name: None,
+                    },
+                    score: *score,
+                }
+            })
+            .collect();
+
+        // Use NL descriptions as passages for the cross-encoder
+        let passage_texts: Vec<&str> = scored
+            .iter()
+            .map(|(i, _)| chunk_descs[*i].nl_text.as_str())
+            .collect();
+
+        reranker
+            .rerank_with_passages(case.query, &mut search_results, &passage_texts, CANDIDATE_K)
+            .expect("Reranking failed");
+
+        // Reranked rank
+        let rerank_rank = search_results
+            .iter()
+            .position(|r| {
+                r.chunk.name == case.expected_name
+                    || case.also_accept.contains(&r.chunk.name.as_str())
+            })
+            .map(|pos| pos + 1);
+
+        let rerank_rr = rerank_rank.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+        rerank_reciprocal_ranks.push(rerank_rr);
+        if rerank_rank == Some(1) {
+            rerank_r1 += 1;
+        }
+        rerank_ndcg_sum += rerank_rank
+            .map(|r| 1.0 / (r as f64 + 1.0).log2())
+            .unwrap_or(0.0);
+
+        // Per-query output
+        let emb_rank_str = emb_rank
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "miss".to_string());
+        let rerank_rank_str = rerank_rank
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "miss".to_string());
+        let delta = match (emb_rank, rerank_rank) {
+            (Some(e), Some(r)) if r < e => format!(" (+{})", e - r),
+            (Some(e), Some(r)) if r > e => format!(" (-{})", r - e),
+            (None, Some(_)) => " (rescued)".to_string(),
+            (Some(_), None) => " (lost)".to_string(),
+            _ => String::new(),
+        };
+        eprintln!(
+            "  [{:?}] \"{}\" -> exp: {}, emb: {}, rerank: {}{}",
+            case.language, case.query, case.expected_name, emb_rank_str, rerank_rank_str, delta
+        );
+    }
+
+    let n = HARD_EVAL_CASES.len() as f64;
+    let emb_mrr = emb_reciprocal_ranks.iter().sum::<f64>() / n;
+    let rerank_mrr = rerank_reciprocal_ranks.iter().sum::<f64>() / n;
+    let emb_r1_pct = emb_r1 as f64 / n * 100.0;
+    let rerank_r1_pct = rerank_r1 as f64 / n * 100.0;
+    let emb_ndcg = emb_ndcg_sum / n;
+    let rerank_ndcg = rerank_ndcg_sum / n;
+
+    // Comparison table
+    eprintln!(
+        "\n=== Reranker Impact (top-{} candidates, {} queries) ===\n",
+        CANDIDATE_K,
+        HARD_EVAL_CASES.len()
+    );
+    eprintln!(
+        "{:<25} {:>10} {:>10} {:>10}",
+        "Method", "Recall@1", "MRR", "NDCG@10"
+    );
+    eprintln!("{}", "-".repeat(58));
+    eprintln!(
+        "{:<25} {:>9.1}% {:>10.4} {:>10.4}",
+        "Embedding only", emb_r1_pct, emb_mrr, emb_ndcg
+    );
+    eprintln!(
+        "{:<25} {:>9.1}% {:>10.4} {:>10.4}",
+        "Embedding + Reranker", rerank_r1_pct, rerank_mrr, rerank_ndcg
+    );
+    eprintln!(
+        "{:<25} {:>+9.1}% {:>+10.4} {:>+10.4}",
+        "Delta",
+        rerank_r1_pct - emb_r1_pct,
+        rerank_mrr - emb_mrr,
+        rerank_ndcg - emb_ndcg
+    );
+    eprintln!();
+}
+
 /// Quick test to verify ONNX op graph for CUDA compatibility
 /// Checks if a model has rotary embedding ops that would cause CPU fallback
 #[test]
