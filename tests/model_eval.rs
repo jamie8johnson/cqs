@@ -1757,3 +1757,379 @@ mod metric_tests {
         assert!((cosine_similarity(&a, &b)).abs() < 1e-6);
     }
 }
+
+// ===== Experiment 6: Weighted Multi-Signal Fusion Sweep =====
+
+struct SweepChunk {
+    name: String,
+    language: Language,
+    content: String,
+    nl_text: String,
+}
+
+struct ScoringResult {
+    label: String,
+    r1: f64,
+    mrr: f64,
+    ndcg10: f64,
+}
+
+/// Simple name matching mirroring the production NameMatcher tiers.
+fn name_match_score(query: &str, chunk_name: &str) -> f32 {
+    let q = query.to_lowercase();
+    let n = chunk_name.to_lowercase();
+    let q_words: Vec<String> = split_name_words(&q);
+    let n_words: Vec<String> = split_name_words(&n);
+
+    if q == n {
+        return 1.0;
+    }
+    if n.contains(&q) {
+        return 0.8;
+    }
+    if q.contains(&n) {
+        return 0.6;
+    }
+    if !q_words.is_empty() && !n_words.is_empty() {
+        let overlap = q_words.iter().filter(|w| n_words.contains(w)).count();
+        if overlap > 0 {
+            let total = q_words.len().max(n_words.len());
+            return (overlap as f32 / total as f32) * 0.5;
+        }
+    }
+    0.0
+}
+
+fn split_name_words(name: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !current.is_empty() {
+                words.push(current.clone());
+                current.clear();
+            }
+        } else if ch.is_uppercase() && !current.is_empty() {
+            words.push(current.clone());
+            current.clear();
+            current.push(ch.to_lowercase().next().unwrap_or(ch));
+        } else {
+            current.push(ch.to_lowercase().next().unwrap_or(ch));
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+fn keyword_score(query: &str, chunk_name: &str, chunk_content: &str) -> f32 {
+    let query_terms: Vec<&str> = query.split_whitespace().collect();
+    if query_terms.is_empty() {
+        return 0.0;
+    }
+    let combined = format!("{} {}", chunk_name, chunk_content).to_lowercase();
+    let hits: usize = query_terms
+        .iter()
+        .filter(|term| combined.contains(&term.to_lowercase()))
+        .count();
+    hits as f32 / query_terms.len() as f32
+}
+
+fn rrf_merge(
+    semantic_ranking: &[(usize, f32)],
+    keyword_ranking: &[(usize, f32)],
+    k: f32,
+    semantic_weight: f32,
+    keyword_weight: f32,
+) -> Vec<(usize, f32)> {
+    let mut scores: HashMap<usize, f32> = HashMap::new();
+    for (rank, &(idx, _)) in semantic_ranking.iter().enumerate() {
+        *scores.entry(idx).or_insert(0.0) += semantic_weight / (k + rank as f32 + 1.0);
+    }
+    for (rank, &(idx, _)) in keyword_ranking.iter().enumerate() {
+        *scores.entry(idx).or_insert(0.0) += keyword_weight / (k + rank as f32 + 1.0);
+    }
+    let mut sorted: Vec<(usize, f32)> = scores.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
+    sorted
+}
+
+fn weighted_score(emb: f32, nm: f32, kw: f32, name_boost: f32, kw_boost: f32) -> f32 {
+    (1.0 - name_boost - kw_boost) * emb + name_boost * nm + kw_boost * kw
+}
+
+#[test]
+#[ignore] // Slow: downloads model, embeds corpus
+fn test_weight_sweep() {
+    let parser = Parser::new().expect("Failed to init parser");
+    let e5_config = &MODELS[0];
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    let mut chunks: Vec<SweepChunk> = Vec::new();
+    for lang in &languages {
+        for path in [fixture_path(*lang), hard_fixture_path(*lang)] {
+            if !path.exists() {
+                continue;
+            }
+            let parsed = parser.parse_file(&path).expect("Failed to parse fixture");
+            for chunk in &parsed {
+                chunks.push(SweepChunk {
+                    name: chunk.name.clone(),
+                    language: *lang,
+                    content: chunk.content.clone(),
+                    nl_text: generate_nl_description(chunk),
+                });
+            }
+        }
+    }
+    eprintln!("Parsed {} chunks\n", chunks.len());
+
+    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5");
+    let nl_refs: Vec<&str> = chunks.iter().map(|c| c.nl_text.as_str()).collect();
+    let mut all_embs: Vec<Vec<f32>> = Vec::new();
+    for batch in nl_refs.chunks(16) {
+        all_embs.extend(embedder.embed_documents(batch).expect("Embed failed"));
+    }
+    let query_embs: Vec<Vec<f32>> = HARD_EVAL_CASES
+        .iter()
+        .map(|c| embedder.embed_query(c.query).expect("Query embed failed"))
+        .collect();
+    eprintln!(
+        "Embedded {} chunks + {} queries\n",
+        all_embs.len(),
+        query_embs.len()
+    );
+
+    let mut results: Vec<ScoringResult> = Vec::new();
+
+    results.push(eval_sweep(
+        "Embedding only",
+        &chunks,
+        &all_embs,
+        &query_embs,
+        0.0,
+        0.0,
+        false,
+        60.0,
+        1.0,
+        1.0,
+    ));
+    for nb in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40] {
+        results.push(eval_sweep(
+            &format!("name_boost={nb:.2}"),
+            &chunks,
+            &all_embs,
+            &query_embs,
+            nb,
+            0.0,
+            false,
+            60.0,
+            1.0,
+            1.0,
+        ));
+    }
+    for kb in [0.05, 0.10, 0.15, 0.20] {
+        results.push(eval_sweep(
+            &format!("kw_boost={kb:.2}"),
+            &chunks,
+            &all_embs,
+            &query_embs,
+            0.0,
+            kb,
+            false,
+            60.0,
+            1.0,
+            1.0,
+        ));
+    }
+    for nb in [0.05, 0.10, 0.15] {
+        for kb in [0.05, 0.10, 0.15] {
+            results.push(eval_sweep(
+                &format!("nb={nb:.2}+kb={kb:.2}"),
+                &chunks,
+                &all_embs,
+                &query_embs,
+                nb,
+                kb,
+                false,
+                60.0,
+                1.0,
+                1.0,
+            ));
+        }
+    }
+    for k in [20.0, 40.0, 60.0, 80.0] {
+        results.push(eval_sweep(
+            &format!("RRF k={k:.0} (1:1)"),
+            &chunks,
+            &all_embs,
+            &query_embs,
+            0.0,
+            0.0,
+            true,
+            k,
+            1.0,
+            1.0,
+        ));
+    }
+    for (sw, kw) in [(2.0, 1.0), (3.0, 1.0), (1.0, 2.0)] {
+        results.push(eval_sweep(
+            &format!("RRF k=60 ({sw}:{kw})"),
+            &chunks,
+            &all_embs,
+            &query_embs,
+            0.0,
+            0.0,
+            true,
+            60.0,
+            sw,
+            kw,
+        ));
+    }
+    for nb in [0.10, 0.20] {
+        results.push(eval_sweep(
+            &format!("RRF k=60 + nb={nb:.2}"),
+            &chunks,
+            &all_embs,
+            &query_embs,
+            nb,
+            0.0,
+            true,
+            60.0,
+            1.0,
+            1.0,
+        ));
+    }
+
+    eprintln!(
+        "\n=== Weight Sweep Results ({} queries, {} configs) ===\n",
+        HARD_EVAL_CASES.len(),
+        results.len()
+    );
+    eprintln!(
+        "{:<30} {:>10} {:>10} {:>10} {:>8}",
+        "Config", "Recall@1", "MRR", "NDCG@10", "Delta"
+    );
+    eprintln!("{}", "-".repeat(72));
+
+    let baseline_mrr = results[0].mrr;
+    for r in &results {
+        let delta = r.mrr - baseline_mrr;
+        let marker = if delta > 0.001 {
+            " +"
+        } else if delta < -0.001 {
+            " -"
+        } else {
+            "  "
+        };
+        eprintln!(
+            "{:<30} {:>9.1}% {:>10.4} {:>10.4} {:>+7.4}{}",
+            r.label,
+            r.r1 * 100.0,
+            r.mrr,
+            r.ndcg10,
+            delta,
+            marker
+        );
+    }
+
+    let best = results
+        .iter()
+        .max_by(|a, b| a.mrr.total_cmp(&b.mrr))
+        .unwrap();
+    eprintln!(
+        "\nBest: {} (MRR={:.4}, R@1={:.1}%)",
+        best.label,
+        best.mrr,
+        best.r1 * 100.0
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_sweep(
+    label: &str,
+    chunks: &[SweepChunk],
+    all_embs: &[Vec<f32>],
+    query_embs: &[Vec<f32>],
+    name_boost: f32,
+    kw_boost: f32,
+    use_rrf: bool,
+    rrf_k: f32,
+    semantic_weight: f32,
+    keyword_weight: f32,
+) -> ScoringResult {
+    let mut r1 = 0usize;
+    let mut rr_sum = 0.0f64;
+    let mut ndcg_sum = 0.0f64;
+    let n = HARD_EVAL_CASES.len();
+
+    for (case, q_emb) in HARD_EVAL_CASES.iter().zip(query_embs.iter()) {
+        let candidates: Vec<(usize, f32, f32, f32)> = chunks
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.language == case.language)
+            .map(|(i, c)| {
+                let emb = cosine_similarity(q_emb, &all_embs[i]);
+                let nm = name_match_score(case.query, &c.name);
+                let kw = keyword_score(case.query, &c.name, &c.content);
+                (i, emb, nm, kw)
+            })
+            .collect();
+
+        let ranked: Vec<(usize, f32)> = if use_rrf {
+            let mut sem: Vec<(usize, f32)> = candidates
+                .iter()
+                .map(|&(i, emb, nm, _)| {
+                    (
+                        i,
+                        if name_boost > 0.0 {
+                            (1.0 - name_boost) * emb + name_boost * nm
+                        } else {
+                            emb
+                        },
+                    )
+                })
+                .collect();
+            sem.sort_by(|a, b| b.1.total_cmp(&a.1));
+            let mut kw: Vec<(usize, f32)> =
+                candidates.iter().map(|&(i, _, _, kw)| (i, kw)).collect();
+            kw.sort_by(|a, b| b.1.total_cmp(&a.1));
+            rrf_merge(&sem, &kw, rrf_k, semantic_weight, keyword_weight)
+        } else {
+            let mut scored: Vec<(usize, f32)> = candidates
+                .iter()
+                .map(|&(i, emb, nm, kw)| (i, weighted_score(emb, nm, kw, name_boost, kw_boost)))
+                .collect();
+            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+            scored
+        };
+
+        let rank = ranked
+            .iter()
+            .position(|(i, _)| {
+                chunks[*i].name == case.expected_name
+                    || case.also_accept.contains(&chunks[*i].name.as_str())
+            })
+            .map(|p| p + 1);
+
+        if rank == Some(1) {
+            r1 += 1;
+        }
+        rr_sum += rank.map(|r| 1.0 / r as f64).unwrap_or(0.0);
+        ndcg_sum += rank.map(|r| 1.0 / (r as f64 + 1.0).log2()).unwrap_or(0.0);
+    }
+
+    ScoringResult {
+        label: label.to_string(),
+        r1: r1 as f64 / n as f64,
+        mrr: rr_sum / n as f64,
+        ndcg10: ndcg_sum / n as f64,
+    }
+}
