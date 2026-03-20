@@ -10,15 +10,95 @@
 
 mod eval_common;
 
-use cqs::embedder::Embedder;
-use cqs::generate_nl_description;
+use cqs::embedder::{Embedder, Embedding};
 use cqs::hnsw::HnswIndex;
 use cqs::parser::{Language, Parser};
 use cqs::store::{ModelInfo, SearchFilter, Store};
 use cqs::VectorIndex;
+use cqs::{generate_nl_description, generate_nl_with_call_context, CallContext};
 use eval_common::{fixture_path, hard_fixture_path, EvalCase, HARD_EVAL_CASES, HOLDOUT_EVAL_CASES};
 use std::collections::HashMap;
 use tempfile::TempDir;
+
+/// Simplified call graph enrichment for stress eval.
+/// Re-embeds chunks that have callers/callees in the function_calls table.
+fn enrich_with_call_context(store: &Store, embedder: &Embedder) -> usize {
+    let stats = store.stats().expect("stats");
+    let total_chunks = stats.total_chunks as f32;
+    if total_chunks < 1.0 {
+        return 0;
+    }
+
+    let callee_freq = store.callee_caller_counts().unwrap_or_default();
+    let callee_doc_freq: HashMap<String, f32> = callee_freq
+        .into_iter()
+        .map(|(name, count)| (name, count as f32 / total_chunks))
+        .collect();
+
+    let identities = store.all_chunk_identities().unwrap_or_default();
+    let all_names: Vec<&str> = identities.iter().map(|ci| ci.name.as_str()).collect();
+    let callers_map = store.get_callers_full_batch(&all_names).unwrap_or_default();
+    let callees_map = store.get_callees_full_batch(&all_names).unwrap_or_default();
+
+    let mut enriched = 0usize;
+    let mut cursor = 0i64;
+
+    loop {
+        let (chunks, next) = store.chunks_paged(cursor, 500).expect("paged");
+        if chunks.is_empty() {
+            break;
+        }
+        cursor = next;
+
+        let mut batch: Vec<(String, String)> = Vec::new();
+        for cs in &chunks {
+            let callers = callers_map.get(&cs.name);
+            let callees = callees_map.get(&cs.name);
+            if !callers.is_some_and(|v| !v.is_empty()) && !callees.is_some_and(|v| !v.is_empty()) {
+                continue;
+            }
+
+            let ctx = CallContext {
+                callers: callers
+                    .map(|v| v.iter().map(|c| c.name.clone()).collect())
+                    .unwrap_or_default(),
+                callees: callees
+                    .map(|v| v.iter().map(|(name, _)| name.clone()).collect())
+                    .unwrap_or_default(),
+            };
+
+            let chunk: cqs::parser::Chunk = (&*cs).into();
+            let nl = generate_nl_with_call_context(&chunk, &ctx, &callee_doc_freq, 5, 5);
+            batch.push((cs.id.clone(), nl));
+
+            if batch.len() >= 64 {
+                let texts: Vec<&str> = batch.iter().map(|(_, nl)| nl.as_str()).collect();
+                let embs = embedder.embed_documents(&texts).expect("embed");
+                let updates: Vec<(String, Embedding)> = batch
+                    .drain(..)
+                    .zip(embs)
+                    .map(|((id, _), emb)| (id, emb))
+                    .collect();
+                store.update_embeddings_batch(&updates).expect("update");
+                enriched += updates.len();
+            }
+        }
+
+        if !batch.is_empty() {
+            let texts: Vec<&str> = batch.iter().map(|(_, nl)| nl.as_str()).collect();
+            let embs = embedder.embed_documents(&texts).expect("embed");
+            let updates: Vec<(String, Embedding)> = batch
+                .drain(..)
+                .zip(embs)
+                .map(|((id, _), emb)| (id, emb))
+                .collect();
+            store.update_embeddings_batch(&updates).expect("update");
+            enriched += updates.len();
+        }
+    }
+
+    enriched
+}
 
 /// Languages tested in the pipeline eval
 const LANGUAGES: [Language; 5] = [
@@ -751,7 +831,7 @@ fn test_stress_eval() {
     let store = Store::open(&db_path).unwrap();
     store.init(&ModelInfo::default()).unwrap();
 
-    // 1. Index eval fixtures (same as holdout)
+    // 1. Index eval fixtures (same as holdout) — with relationships for call graph enrichment
     eprintln!("=== Indexing eval fixtures ===");
     let mut fixture_chunks = 0;
     for lang in LANGUAGES {
@@ -759,7 +839,9 @@ fn test_stress_eval() {
             if !path.exists() {
                 continue;
             }
-            let chunks = parser.parse_file(&path).expect("Failed to parse fixture");
+            let (chunks, calls, _type_edges) = parser
+                .parse_file_all(&path)
+                .expect("Failed to parse fixture");
             for chunk in &chunks {
                 let text = generate_nl_description(chunk);
                 let embeddings = embedder
@@ -770,6 +852,11 @@ fn test_stress_eval() {
                     .upsert_chunk(chunk, &embedding, None)
                     .expect("Failed to store chunk");
                 fixture_chunks += 1;
+            }
+            if !calls.is_empty() {
+                store
+                    .upsert_function_calls(&path, &calls)
+                    .expect("Failed to store calls");
             }
         }
     }
@@ -812,7 +899,10 @@ fn test_stress_eval() {
                 continue;
             }
 
-            if let Ok(chunks) = parser.parse_file(path) {
+            if let Ok((chunks, calls, _type_edges)) = parser.parse_file_all(path) {
+                if !calls.is_empty() {
+                    store.upsert_function_calls(path, &calls).ok();
+                }
                 for chunk in &chunks {
                     batch_texts.push(generate_nl_description(chunk));
                     batch_chunks.push(chunk.clone());
@@ -825,7 +915,6 @@ fn test_stress_eval() {
                             .embed_documents(&refs)
                             .expect("Failed to embed batch");
                         for (c, emb) in batch_chunks.drain(..).zip(embeddings) {
-                            let emb = emb;
                             store.upsert_chunk(&c, &emb, None).ok();
                         }
                         batch_texts.clear();
@@ -904,6 +993,11 @@ fn test_stress_eval() {
         eprintln!("  Re-embedded {} chunks with summaries", re_embedded);
     }
 
+    // Call graph enrichment (two-pass re-embedding)
+    eprintln!("Running call graph enrichment...");
+    let enriched = enrich_with_call_context(&store, &embedder);
+    eprintln!("  Enriched {} chunks with call context\n", enriched);
+
     // Build HNSW index
     eprintln!("Building HNSW index...");
     let hnsw = HnswIndex::build_batched(store.embedding_batches(10_000), total as usize)
@@ -939,6 +1033,7 @@ fn test_stress_eval() {
                 name_boost: boost,
                 query_text: case.query.to_string(),
                 enable_demotion: true,
+                enable_rrf: true,
                 ..Default::default()
             };
             let results = store
