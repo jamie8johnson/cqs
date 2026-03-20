@@ -280,6 +280,14 @@ enum Commands {
         #[cfg(feature = "llm-summaries")]
         #[arg(long)]
         llm_summaries: bool,
+        /// Generate and write back doc comments for undocumented functions (requires --llm-summaries)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        improve_docs: bool,
+        /// Maximum number of functions to generate docs for (used with --improve-docs)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        max_docs: Option<usize>,
     },
     /// Show index statistics
     Stats {
@@ -726,12 +734,32 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             no_ignore,
             #[cfg(feature = "llm-summaries")]
             llm_summaries,
+            #[cfg(feature = "llm-summaries")]
+            improve_docs,
+            #[cfg(feature = "llm-summaries")]
+            max_docs,
         }) => {
             #[cfg(feature = "llm-summaries")]
             let use_llm = llm_summaries;
             #[cfg(not(feature = "llm-summaries"))]
             let use_llm = false;
-            cmd_index(&cli, force, dry_run, no_ignore, use_llm)
+            #[cfg(feature = "llm-summaries")]
+            let use_improve_docs = improve_docs;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_improve_docs = false;
+            #[cfg(feature = "llm-summaries")]
+            let use_max_docs = max_docs;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_max_docs: Option<usize> = None;
+            cmd_index(
+                &cli,
+                force,
+                dry_run,
+                no_ignore,
+                use_llm,
+                use_improve_docs,
+                use_max_docs,
+            )
         }
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),
         Some(Commands::Watch {
