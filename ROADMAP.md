@@ -110,12 +110,13 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [x] SQ-9: Simplify notes + embeddings architecture. Done in v1.1.0 — notes as annotations, 769→768-dim, schema v15→v16.
 - [x] SQ-11: Type-aware embeddings (PR #630). Append full signature to NL. +3.6pp R@1, TS MRR +0.068.
 - [x] SQ-12: Index-time HyDE query predictions (PR #631). `--hyde-queries` flag, Batches API, purpose="hyde".
-- [x] SQ-7: LoRA fine-tuning of E5-base-v2. **Result: regresses hard eval, improves CoIR.**
-  - v1-v3: all regressed on hard eval (70-73% R@1 vs 89% baseline). Catastrophic forgetting on confusable pairs.
-  - v3 on CoIR CodeSearchNet: +4.3pp NDCG@10 (0.627→0.671). Every language improved. Go +7.8pp.
-  - v3 on CoIR cosqa (transfer): +0.5pp NDCG@10. Genuine transfer, not just CSN memorization.
-  - v4 training (200k CSN, 3ep) in progress — expect further gains.
-  - **Key insight:** Different eval regimes surface different quality dimensions. Paper story.
+- [x] SQ-7: LoRA fine-tuning of E5-base-v2. **Ship as default embedding model.**
+  - v1-v3 regressed hard eval (adversarial confusable pairs — not realistic usage).
+  - v3 on CoIR: +4.3pp NDCG@10, +0.5pp cosqa transfer. Real queries are diverse like CoIR, not adversarial.
+  - v4 training (200k CSN, 3ep) in progress. v5 planned (full 1.7M, 1ep).
+  - **Plan:** Upload best merged ONNX to HuggingFace as default model. Env var override to fall back to base E5.
+  - Hard eval regression is acceptable — the adversarial scenario (6 confusable sorting functions) almost never happens in real usage.
+  - **Training plan (v5):** 1.7M CSN, checkpoint after each epoch. Eval at epoch 1 (~5.5 hrs), decide whether to continue to epoch 2-3 by resuming from checkpoint. Avoids 16-hour blind run.
 
 - [x] SQ-10: Fine-tune code-specific cross-encoder reranker. **Result: REGRESSION.**
   - Trained on 50k CSN + 7.5k docstring pairs, 3 epochs. ONNX at jamie8johnson/code-reranker-v1.
@@ -172,9 +173,19 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 - **Refining embeddings with PEFT** (arXiv 2405.04126) — LoRA on CodeT5+. Closest to our approach.
 - **Lore** (arXiv 2603.15566) — git commit messages as structured knowledge for AI agents.
 
+### Production Stack (what ships in cqs)
+
+| Layer | Feature | Status | Cost | Impact |
+|-------|---------|--------|------|--------|
+| 1 | Type-aware signatures (SQ-11) | Shipped (PR #630) | Free | +3.6pp R@1 |
+| 2 | Call graph enrichment (SQ-4) | Shipped (v1.0.7) | Free | 63% of chunks enriched |
+| 3 | LLM summaries (SQ-6) | Shipped (v1.0.14) | ~$0.15/3k fn | High for undocumented code |
+| 4 | **LoRA embedding model** | **Next: ship as default** | Free (baked in) | +4.3pp CoIR NDCG@10 |
+| 5 | Hyde predictions (SQ-12) | Shipped, optional | ~$0.15/3k fn | Optional enrichment |
+
 ### Paper thesis
 
-"Different evaluation regimes surface different quality dimensions. Adversarial evals (confusable function pairs) test precision — type-aware embeddings dominate. Realistic benchmarks (CoIR) test recall and ranking — LoRA fine-tuning dominates. A layered architecture lets practitioners choose the right combination for their use case."
+"Different evaluation regimes surface different quality dimensions. Adversarial evals (confusable function pairs) test precision — type-aware embeddings dominate. Realistic benchmarks (CoIR) test recall and ranking — LoRA fine-tuning dominates. A layered architecture — signatures for precision, LoRA for recall, LLM enrichment for coverage — lets a 110M model compete with specialized models 3-20x larger."
 
 ### v1.1.0 Release Plan
 
