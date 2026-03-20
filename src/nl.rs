@@ -271,12 +271,14 @@ pub fn generate_nl_with_call_context(
         max_callers,
         max_callees,
         None,
+        None,
     )
 }
 
 /// Generate NL with call context and optional LLM summary (SQ-6).
 ///
 /// If a summary is provided, it's prepended to the NL for maximum embedding weight.
+/// If hyde predictions are provided, they're appended as query terms (SQ-12).
 pub fn generate_nl_with_call_context_and_summary(
     chunk: &Chunk,
     ctx: &CallContext,
@@ -284,6 +286,7 @@ pub fn generate_nl_with_call_context_and_summary(
     max_callers: usize,
     max_callees: usize,
     summary: Option<&str>,
+    hyde: Option<&str>,
 ) -> String {
     let base = generate_nl_description(chunk);
 
@@ -328,8 +331,26 @@ pub fn generate_nl_with_call_context_and_summary(
     };
 
     // Prepend LLM summary if available (SQ-6)
-    match summary {
+    let nl = match summary {
         Some(s) if !s.is_empty() => format!("{} {}", s, nl),
+        _ => nl,
+    };
+
+    // Append hyde query predictions (SQ-12)
+    match hyde {
+        Some(h) if !h.is_empty() => {
+            let queries: String = h
+                .lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ");
+            if queries.is_empty() {
+                nl
+            } else {
+                format!("{}. Queries: {}", nl, queries)
+            }
+        }
         _ => nl,
     }
 }
