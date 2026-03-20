@@ -106,24 +106,16 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [x] SQ-4: Call-graph-enriched embeddings — two-pass index with IDF callee filtering. 63% of chunks enriched (v1.0.7).
 - [x] SQ-5: Module-level context in NL — filename stems with generic filter (11 stems: mod, index, lib, main, utils, helpers, common, types, config, constants, init). Regresses fixture eval ~3pp but improves real queries — shipped in v1.0.9.
 - [x] SQ-6: LLM-generated function summaries — one-sentence purpose summary per function via small LLM at index time. Cached, regenerated on content change. Breaks local-only constraint; high accuracy. Batch resume on interrupt (v1.0.14).
-- [ ] SQ-8: LLM doc comment generation — augment thin doc comments and generate docs for undocumented functions.
-  - **Augment existing:** Functions with thin docs (one-liner, param-list-only) get doc + body sent to Claude for an improved version.
-  - **Generate new:** Functions with `doc: None` get full doc comments generated from the function body.
-  - **Infrastructure:** Reuses `llm_summary_pass` paging, Batches API, content_hash caching. Different system prompt, higher `MAX_TOKENS` (500-1000 vs 100 for summaries). Separate model/source tag in `llm_summaries` to distinguish summary vs generated-doc.
-  - **CLI:** `cqs index --improve-docs` (separate from `--llm-summaries`). Default behavior: write generated comments back to source files. `--dry-run` to preview. `cqs read` shows generated docs as virtual comments when `--improve-docs` hasn't written back yet.
-  - **Prioritization:** `is_callable()` functions first, sorted by: no doc > thin doc > adequate doc. Use content length and doc/content ratio as heuristics.
-  - **Cost:** Higher than summaries (~5-10x output tokens). Batch API 50% discount helps. Cache by content_hash — pay once per function body.
-- [ ] SQ-9: Simplify notes + embeddings architecture.
-  - **Notes as annotations, not search targets:** Remove notes from unified search results (burns 40% of slots on metadata). Drop `search_notes()`, `note_embeddings()`, brute-force cosine scan, unified slot allocation, `note_weight`/`note_only` flags. Keep: mention-based boost on code scoring, `cqs read` injection, `cqs notes list/add/remove`, review/health inputs.
-  - **Drop sentiment dimension (769→768-dim):** With note embeddings gone, every vector has sentiment=0.0 — dead weight. Revert to pure 768-dim E5-base-v2 output. Fixes AC-8 (CAGRA distance conversion divergence — all vectors become truly unit-norm). Simplifies embedding pipeline (no sentiment append/strip).
-  - **Schema migration:** Dimension change requires reindex. Update `EMBEDDING_DIM` constant, HNSW build, CAGRA build, brute-force cosine, all embedding serialization.
-  - **Docs update:** README, PRIVACY.md, SECURITY.md, CLAUDE.md, CONTRIBUTING.md, lib.rs — all reference 769-dim, update to 768.
-- [ ] SQ-7: Fine-tune E5-base-v2 with LoRA on code search pairs.
-  - **Hardware:** A6000 (48GB VRAM), can fine-tune in hours
-  - **LoRA:** Low-Rank Adaptation — freezes base weights, trains ~0.5-2M adapter params (vs 110M full). Adapter is ~10-50MB.
-  - **Training data:** hard eval (55 queries) + holdout (143 queries) + synthetic pairs from cqs/aveva codebases
-  - **Deployment:** Upload merged ONNX to HuggingFace (`jamie8johnson/e5-base-v2-code-search`), cqs downloads it instead of base E5. Or upload LoRA adapter separately for A/B testing.
-  - **Why:** E5-base-v2 is a general NL model — prose (README/CHANGELOG) naturally scores higher than generated code NL descriptions. LoRA teaches the model that "parse config file" should match `fn parse_config()` better than a README paragraph about configuration. This is the real fix for code-vs-doc ranking.
+- [x] SQ-8: LLM doc comment generation (PR #627). `--improve-docs` flag, per-language DocWriter, bottom-up source rewriting.
+- [x] SQ-9: Simplify notes + embeddings architecture. Done in v1.1.0 — notes as annotations, 769→768-dim, schema v15→v16.
+- [x] SQ-11: Type-aware embeddings (PR #630). Append full signature to NL. +3.6pp R@1, TS MRR +0.068.
+- [x] SQ-12: Index-time HyDE query predictions (PR #631). `--hyde-queries` flag, Batches API, purpose="hyde".
+- [x] SQ-7: LoRA fine-tuning of E5-base-v2. **Result: regresses hard eval, improves CoIR.**
+  - v1-v3: all regressed on hard eval (70-73% R@1 vs 89% baseline). Catastrophic forgetting on confusable pairs.
+  - v3 on CoIR CodeSearchNet: +4.3pp NDCG@10 (0.627→0.671). Every language improved. Go +7.8pp.
+  - v3 on CoIR cosqa (transfer): +0.5pp NDCG@10. Genuine transfer, not just CSN memorization.
+  - v4 training (200k CSN, 3ep) in progress — expect further gains.
+  - **Key insight:** Different eval regimes surface different quality dimensions. Paper story.
 
 - [x] SQ-10: Fine-tune code-specific cross-encoder reranker. **Result: REGRESSION.**
   - Trained on 50k CSN + 7.5k docstring pairs, 3 epochs. ONNX at jamie8johnson/code-reranker-v1.
@@ -134,33 +126,55 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 
 ### Potential quality improvements (research backlog)
 
-Ranked by difficulty / likely impact. Experiments 1-6 (LoRA, LLM docs on eval, reranker, weight sweep) all confirmed embedding-only is near-optimal on hard eval. Future work should add new signal, not tune existing weights.
+Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. Key lesson: different techniques help different eval regimes.
 
 | # | Approach | Difficulty | Impact | Status |
 |---|----------|-----------|--------|--------|
-| 1 | **Weighted multi-signal fusion** | Easy (days) | None | **Done (Exp 6)** — all 30 configs regress. Embedding-only is optimal. |
-| 2 | **Type-aware embeddings** | Easy (hours) | Medium | Prepend type signatures before embedding. One-line chunk formatting change. |
-| 3 | **Hard negative reranker (V2)** | Medium (days) | Medium-High | V1 failed (random negs too easy). BM25 top-k negatives may fix it. |
-| 4 | **HyDE (query expansion)** | Medium (days) | High | LLM generates hypothetical code from query, embed that. Latency cost. |
-| 5 | **ColBERT late interaction** | Hard (weeks) | High | Token-level matching. New index structure. Best precision, biggest lift. |
+| 1 | **Weighted multi-signal fusion** | Easy | None (hard eval) | **Done (Exp 6)** — all 30 configs regress on hard eval |
+| 2 | **Type-aware embeddings (SQ-11)** | Easy | +3.6pp R@1 | **Done (Exp 7, PR #630)** — first positive result. TS MRR +0.068. |
+| 3 | **HyDE query predictions (SQ-12)** | Medium | Mixed | **Done (PR #631)** — shipped as `--hyde-queries`. Mixed on hard eval, neutral on stress eval. Untested on CoIR. |
+| 4 | **LoRA fine-tuning (SQ-7)** | Medium | +4.3pp CoIR | **Done (v3)** — regresses hard eval but +4.3pp on CoIR. v4 training. |
+| 5 | **Hard negative reranker (V2)** | Medium | Unknown | V1 failed (random negs). BM25 top-k negatives may fix. Untested on CoIR. |
+| 6 | **ColBERT late interaction** | Hard | Potentially high | Token-level matching. New index structure. Not started. |
 
 **Other ideas (lower priority):**
-- **Query expansion** — expand "parse config" → "parse config file toml yaml settings read load deserialize" before searching. Synonym table or small LLM. Cheap, helps recall on vague queries. No model changes.
-- **SPLADE (sparse learned retrieval)** — trained sparse representations that learn which terms matter. Could replace/augment FTS5 keyword matching. Research effort.
-- **GNN on call graph** — embed functions by position in call graph, not just content. Functions that call each other cluster together. Practical variant: pre-compute graph-aware embeddings at index time (Parse → E5 embed → GNN propagate → store). No runtime graph lookups needed. Marginal over SQ-4 text enrichment unless targeting structural queries ("function connecting HTTP to database"). PyTorch Geometric + A6000. Main complexity: incremental updates in watch mode (neighbor re-propagation).
+- **Query expansion** — synonym table or small LLM. Cheap recall boost. No model changes.
+- **SPLADE** — sparse learned retrieval. Could replace/augment FTS5.
+- **GNN on call graph** — embed by call graph position. Marginal over SQ-4 text enrichment.
+- **Full 1.7M LoRA** — train on entire CodeSearchNet (not subset). v4 uses 200k.
+
+### CoIR Benchmark Progress
+
+**CoIR** (ACL 2025): 10 datasets, 8 tasks, 14 languages, 2M docs. Standard code retrieval benchmark.
+
+**Results (CodeSearchNet, 6 languages):**
+
+| Config | Avg NDCG@10 | vs Base | Leaderboard context |
+|--------|-------------|---------|---------------------|
+| Base E5-base-v2 | 0.627 | — | #7 on leaderboard (50.9 overall) |
+| E5 + NL enrichment | 0.626 | -0.001 | Heuristic too crude for CoIR |
+| **E5 + LoRA v3** | **0.671** | **+0.043** | Approaching #5-6 territory |
+| E5 + LoRA v4 | TRAINING | — | 200k CSN, 3ep (expect further gains) |
+
+**Transfer (cosqa, out-of-distribution):** LoRA v3 +0.5pp NDCG@10. Genuine transfer.
+
+**Leaderboard targets:** #1 SFR-Code-2B (67.41 avg, 2B params), #2 CodeSage-large-v2 (64.18 avg, 94.26 CSN), #5 Voyage-Code-002 (56.26 avg, 81.79 CSN).
+
+**Remaining:** v4 eval, reranker configs, cosqa/stackoverflow transfer, full 10-task run for leaderboard.
 
 ### Literature survey (before paper)
 
-Deep dive into current code search/retrieval landscape. Identify benchmarks, baselines, and positioning for our paper.
+- **CoIR benchmark** — running, first results in. Adapter at `~/training-data/run_coir.py`.
+- **CoRNStack** — large-scale contrastive training, claims SOTA. Compare methodology.
+- **CodeXEmbed** (COLM 2025) — generalist code embedding family.
+- **C2LLM** (arXiv 2512.21332) — contrastive code LLMs (0.5B, 7B).
+- **CodeCSE** (arXiv 2407.06360) — multilingual code/comment sentence embeddings.
+- **Refining embeddings with PEFT** (arXiv 2405.04126) — LoRA on CodeT5+. Closest to our approach.
+- **Lore** (arXiv 2603.15566) — git commit messages as structured knowledge for AI agents.
 
-- **CoIR benchmark** (pip install coir-eval, installed in cqs-train env) — the standard eval suite for code retrieval. 10 datasets, 8 tasks, 14 languages, 2M docs. ACL 2025 main. Run on base E5, LoRA, and LoRA+LLM for the paper. Same leaderboard as CoRNStack/CodeXEmbed.
-- **CoRNStack** (gangiswag.github.io/cornstack) — large-scale contrastive training data for code retrieval, claims SOTA. Uses curated paired data, not git history. Read methodology, compare against their CodeSearchNet/AdvTest numbers.
-- **CodeXEmbed** (COLM 2025) — generalist code embedding family. Understand their architecture and eval setup.
-- **C2LLM** (arXiv 2512.21332) — contrastive code LLMs for retrieval. 0.5B and 7B models. Check if they release eval code.
-- **CodeCSE** (arXiv 2407.06360) — multilingual code/comment sentence embeddings. Contrastive learning approach.
-- **Refining embeddings with PEFT** (arXiv 2405.04126) — LoRA on CodeT5+ for code search. Closest to our approach but uses CodeSearchNet, not git history.
-- **CodeSearchNet benchmark** — the standard eval. Understand tasks, metrics, languages covered. Consider evaluating cqs against it.
-- **Lore** (arXiv 2603.15566) — repurposing git commit messages as structured knowledge for AI agents. Complementary to our work.
+### Paper thesis
+
+"Different evaluation regimes surface different quality dimensions. Adversarial evals (confusable function pairs) test precision — type-aware embeddings dominate. Realistic benchmarks (CoIR) test recall and ranking — LoRA fine-tuning dominates. A layered architecture lets practitioners choose the right combination for their use case."
 
 ### v1.1.0 Release Plan
 

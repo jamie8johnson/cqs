@@ -1054,3 +1054,24 @@ mentions = [
 sentiment = 1.0
 text = "SQ-11 type-aware embeddings: appending full signature to NL descriptions is the first positive result in 7 experiments. R@1 87.3%→90.9%, TS MRR 0.746→0.814. Prepending is worse — early tokens matter more for E5."
 mentions = ["nl.rs"]
+
+[[note]]
+sentiment = 0.0
+text = "SQ-12 hyde stress eval: neutral/slightly negative on unbalanced corpus. Both fixture and noise functions get predictions, so relative ranking unchanged. Hyde helps query-document gap, not signal-to-noise ratio."
+mentions = [
+    "llm.rs",
+    "pipeline_eval.rs",
+]
+
+[[note]]
+sentiment = 1.0
+text = "CoIR confirms eval regime hypothesis: LoRA v3 regressed -16pp on hard eval but gives +4.3pp NDCG@10 on CoIR CodeSearchNet. Biggest gains on weakest languages (Go +7.8pp, Ruby +5.6pp)."
+mentions = [
+    "llm.rs",
+    "model_eval.rs",
+]
+
+[[note]]
+sentiment = 0.5
+text = "CoIR cosqa transfer test: LoRA v3 gives +0.005 NDCG@10 on out-of-distribution task. Small but genuine transfer — not just CSN memorization."
+mentions = ["llm.rs"]
