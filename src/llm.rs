@@ -208,6 +208,26 @@ impl Client {
         )
     }
 
+    /// Build the prompt for HyDE query prediction.
+    ///
+    /// Given a function's content, signature, and language, produces a prompt that
+    /// asks the LLM to generate 3-5 search queries a developer would use to find
+    /// this function.
+    fn build_hyde_prompt(content: &str, signature: &str, language: &str) -> String {
+        let truncated = if content.len() > MAX_CONTENT_CHARS {
+            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        } else {
+            content
+        };
+        format!(
+            "You are a code search query predictor. Given a function, output 3-5 short search \
+             queries a developer would type to find this function. One query per line. No \
+             numbering, no explanation. Queries should be natural language, not code.\n\n\
+             Language: {}\nSignature: {}\n\n{}",
+            language, signature, truncated
+        )
+    }
+
     /// Submit a batch of summary requests to the Batches API.
     ///
     /// `items` is a list of (custom_id, content, chunk_type, language).
@@ -469,6 +489,65 @@ impl Client {
         tracing::info!(batch_id = %batch.id, count = items.len(), "Doc batch submitted");
         Ok(batch.id)
     }
+
+    /// Submit a batch of HyDE query prediction requests to the Batches API.
+    ///
+    /// Like `submit_doc_batch` but uses `build_hyde_prompt` instead of `build_doc_prompt`.
+    /// `items` is a list of (custom_id, content, signature, language).
+    /// Returns the batch ID for polling.
+    fn submit_hyde_batch(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        let model = self.llm_config.model.clone();
+        let requests: Vec<BatchItem> = items
+            .iter()
+            .map(|(id, content, signature, language)| BatchItem {
+                custom_id: id.clone(),
+                params: MessagesRequest {
+                    model: model.clone(),
+                    max_tokens,
+                    messages: vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: Self::build_hyde_prompt(content, signature, language),
+                    }],
+                },
+            })
+            .collect();
+
+        let url = format!("{}/messages/batches", self.llm_config.api_base);
+        let response = self
+            .http
+            .post(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .header("content-type", "application/json")
+            .json(&BatchRequest { requests })
+            .send()?;
+
+        let status = response.status();
+        if status == 401 {
+            return Err(LlmError::Api {
+                status: 401,
+                message: "Invalid ANTHROPIC_API_KEY (401 Unauthorized)".to_string(),
+            });
+        }
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            let message = serde_json::from_str::<ApiError>(&body)
+                .map(|err| format!("Hyde batch submission failed: {}", err.error.message))
+                .unwrap_or_else(|_| format!("Hyde batch submission failed: HTTP {status}: {body}"));
+            return Err(LlmError::Api {
+                status: status.as_u16(),
+                message,
+            });
+        }
+
+        let batch: BatchResponse = response.json()?;
+        tracing::info!(batch_id = %batch.id, count = items.len(), "Hyde batch submitted");
+        Ok(batch.id)
+    }
 }
 
 /// Wait for a batch to complete, fetch results, store them, and clear the pending marker.
@@ -501,6 +580,41 @@ fn resume_or_fetch_batch(
     // Clear pending batch marker
     if let Err(e) = store.set_pending_batch_id(None) {
         tracing::warn!(error = %e, "Failed to clear pending batch ID");
+    }
+
+    Ok(count)
+}
+
+/// Wait for a HyDE batch to complete, fetch results, store them, and clear the pending marker.
+fn resume_or_fetch_hyde_batch(
+    client: &Client,
+    store: &Store,
+    batch_id: &str,
+    quiet: bool,
+) -> Result<usize, LlmError> {
+    client.wait_for_batch(batch_id, quiet)?;
+
+    if !quiet {
+        // Newline after progress dots
+        eprintln!();
+    }
+
+    let results = client.fetch_batch_results(batch_id)?;
+
+    // Store API-generated HyDE predictions
+    let model = client.llm_config.model.clone();
+    let api_summaries: Vec<(String, String, String, String)> = results
+        .into_iter()
+        .map(|(hash, summary)| (hash, summary, model.clone(), "hyde".to_string()))
+        .collect();
+    let count = api_summaries.len();
+    if !api_summaries.is_empty() {
+        store.upsert_summaries_batch(&api_summaries)?;
+    }
+
+    // Clear pending batch marker
+    if let Err(e) = store.set_pending_hyde_batch_id(None) {
+        tracing::warn!(error = %e, "Failed to clear pending hyde batch ID");
     }
 
     Ok(count)
