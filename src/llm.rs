@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+use crate::store::ChunkSummary;
 use crate::Store;
 
 /// Typed error for LLM operations (EH-14).
@@ -179,13 +180,45 @@ impl Client {
         )
     }
 
+    /// Build the prompt for generating a doc comment for a code chunk.
+    ///
+    /// Unlike `build_prompt` (one-sentence summary), this generates a full documentation
+    /// comment with language-specific conventions (Rust `# Arguments`/`# Returns`, Python
+    /// Google-style docstrings, Go function-name-first, etc.).
+    fn build_doc_prompt(content: &str, chunk_type: &str, language: &str) -> String {
+        let truncated = if content.len() > MAX_CONTENT_CHARS {
+            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        } else {
+            content
+        };
+
+        let appendix = match language {
+            "rust" => "\n\nUse `# Arguments`, `# Returns`, `# Errors`, `# Panics` sections as appropriate.",
+            "python" => "\n\nFormat as a Google-style docstring (Args/Returns/Raises sections).",
+            "go" => "\n\nStart with the function name per Go conventions.",
+            _ => "",
+        };
+
+        format!(
+            "Write a concise doc comment for this {}. \
+             Describe what it does, its parameters, and return value. \
+             Output only the doc text, no code fences or comment markers.{}\n\n\
+             ```{}\n{}\n```",
+            chunk_type, appendix, language, truncated
+        )
+    }
+
     /// Submit a batch of summary requests to the Batches API.
     ///
     /// `items` is a list of (custom_id, content, chunk_type, language).
+    /// `max_tokens` controls the per-request token limit.
     /// Returns the batch ID for polling.
-    fn submit_batch(&self, items: &[(String, String, String, String)]) -> Result<String, LlmError> {
+    fn submit_batch(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
         let model = self.llm_config.model.clone();
-        let max_tokens = self.llm_config.max_tokens;
         let requests: Vec<BatchItem> = items
             .iter()
             .map(|(id, content, chunk_type, language)| BatchItem {
@@ -355,7 +388,7 @@ impl Client {
                                 .and_then(|b| b.text);
                             if let Some(s) = text {
                                 let trimmed = s.trim().to_string();
-                                if !trimmed.is_empty() && trimmed.len() < 500 {
+                                if !trimmed.is_empty() {
                                     results.insert(result.custom_id, trimmed);
                                 }
                             }
@@ -377,6 +410,65 @@ impl Client {
         tracing::info!(batch_id, succeeded = results.len(), "Batch results fetched");
         Ok(results)
     }
+
+    /// Submit a batch of doc-comment requests to the Batches API.
+    ///
+    /// Like `submit_batch` but uses `build_doc_prompt` instead of `build_prompt`.
+    /// `items` is a list of (custom_id, content, chunk_type, language).
+    /// Returns the batch ID for polling.
+    fn submit_doc_batch(
+        &self,
+        items: &[(String, String, String, String)],
+        max_tokens: u32,
+    ) -> Result<String, LlmError> {
+        let model = self.llm_config.model.clone();
+        let requests: Vec<BatchItem> = items
+            .iter()
+            .map(|(id, content, chunk_type, language)| BatchItem {
+                custom_id: id.clone(),
+                params: MessagesRequest {
+                    model: model.clone(),
+                    max_tokens,
+                    messages: vec![ChatMessage {
+                        role: "user".to_string(),
+                        content: Self::build_doc_prompt(content, chunk_type, language),
+                    }],
+                },
+            })
+            .collect();
+
+        let url = format!("{}/messages/batches", self.llm_config.api_base);
+        let response = self
+            .http
+            .post(&url)
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", API_VERSION)
+            .header("content-type", "application/json")
+            .json(&BatchRequest { requests })
+            .send()?;
+
+        let status = response.status();
+        if status == 401 {
+            return Err(LlmError::Api {
+                status: 401,
+                message: "Invalid ANTHROPIC_API_KEY (401 Unauthorized)".to_string(),
+            });
+        }
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            let message = serde_json::from_str::<ApiError>(&body)
+                .map(|err| format!("Doc batch submission failed: {}", err.error.message))
+                .unwrap_or_else(|_| format!("Doc batch submission failed: HTTP {status}: {body}"));
+            return Err(LlmError::Api {
+                status: status.as_u16(),
+                message,
+            });
+        }
+
+        let batch: BatchResponse = response.json()?;
+        tracing::info!(batch_id = %batch.id, count = items.len(), "Doc batch submitted");
+        Ok(batch.id)
+    }
 }
 
 /// Wait for a batch to complete, fetch results, store them, and clear the pending marker.
@@ -397,9 +489,9 @@ fn resume_or_fetch_batch(
 
     // Store API-generated summaries
     let model = client.llm_config.model.clone();
-    let api_summaries: Vec<(String, String, String)> = results
+    let api_summaries: Vec<(String, String, String, String)> = results
         .into_iter()
-        .map(|(hash, summary)| (hash, summary, model.clone()))
+        .map(|(hash, summary)| (hash, summary, model.clone(), "summary".to_string()))
         .collect();
     let count = api_summaries.len();
     if !api_summaries.is_empty() {
@@ -458,7 +550,7 @@ pub fn llm_summary_pass(
 
     // Phase 1: Collect chunks needing summaries
     // Store doc-comment summaries immediately, collect API-needing chunks
-    let mut to_store: Vec<(String, String, String)> = Vec::new();
+    let mut to_store: Vec<(String, String, String, String)> = Vec::new();
     // (custom_id=content_hash, content, chunk_type, language) for batch API
     let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
     // Track content_hashes already queued to avoid duplicate custom_ids in batch
@@ -476,7 +568,7 @@ pub fn llm_summary_pass(
         cursor = next;
 
         let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store.get_summaries_by_hashes(&hashes)?;
+        let existing = store.get_summaries_by_hashes(&hashes, "summary")?;
 
         for cs in &chunks {
             if existing.contains_key(&cs.content_hash) {
@@ -508,6 +600,7 @@ pub fn llm_summary_pass(
                             cs.content_hash.clone(),
                             first_sentence,
                             "doc-comment".to_string(),
+                            "summary".to_string(),
                         ));
                         doc_extracted += 1;
                         continue;
@@ -597,7 +690,7 @@ pub fn llm_summary_pass(
                     _ => {
                         tracing::warn!(old_batch = %pending, "Pending batch status unknown, submitting fresh — old batch results may be lost");
                         tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
-                        let id = client.submit_batch(&batch_items)?;
+                        let id = client.submit_batch(&batch_items, client.llm_config.max_tokens)?;
                         if let Err(e) = store.set_pending_batch_id(Some(&id)) {
                             tracing::warn!(error = %e, "Failed to store pending batch ID");
                         }
@@ -609,7 +702,7 @@ pub fn llm_summary_pass(
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to read pending batch ID");
                 tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
-                let id = client.submit_batch(&batch_items)?;
+                let id = client.submit_batch(&batch_items, client.llm_config.max_tokens)?;
                 if let Err(e) = store.set_pending_batch_id(Some(&id)) {
                     tracing::warn!(error = %e, "Failed to store pending batch ID");
                 }
@@ -618,7 +711,7 @@ pub fn llm_summary_pass(
             }
             _ => {
                 tracing::info!(count = batch_items.len(), "Submitting batch to Claude API");
-                let id = client.submit_batch(&batch_items)?;
+                let id = client.submit_batch(&batch_items, client.llm_config.max_tokens)?;
                 if let Err(e) = store.set_pending_batch_id(Some(&id)) {
                     tracing::warn!(error = %e, "Failed to store pending batch ID");
                 }
@@ -658,9 +751,337 @@ fn extract_first_sentence(doc: &str) -> String {
     }
 }
 
+/// Signal words that indicate an intentional doc comment, even if short.
+///
+/// These words (case-insensitive) mark comments that carry meaningful safety,
+/// maintenance, or deprecation signals. A short doc containing any of these
+/// should be preserved rather than replaced by LLM-generated text.
+const SIGNAL_WORDS: &[&str] = &[
+    "SAFETY",
+    "UNSAFE",
+    "INVARIANT",
+    "TODO",
+    "FIXME",
+    "HACK",
+    "NOTE",
+    "XXX",
+    "BUG",
+    "DEPRECATED",
+    "SECURITY",
+    "WARN",
+];
+
+/// Determine whether a chunk needs an LLM-generated doc comment.
+///
+/// Returns `true` when the chunk is a callable (function/method/property/macro),
+/// is the first window (or not windowed), and has either no doc comment or a
+/// "thin" doc (fewer than 30 characters with no signal words).
+pub fn needs_doc_comment(chunk: &ChunkSummary) -> bool {
+    // Only callable types get doc comments
+    if !chunk.chunk_type.is_callable() {
+        return false;
+    }
+
+    // Only first window (or non-windowed)
+    if chunk.window_idx.is_some_and(|idx| idx > 0) {
+        return false;
+    }
+
+    match &chunk.doc {
+        None => true,
+        Some(doc) => {
+            let trimmed = doc.trim();
+            if trimmed.is_empty() {
+                return true;
+            }
+            // Adequate doc — no replacement needed
+            if trimmed.len() >= 30 {
+                return false;
+            }
+            // Thin doc — check for signal words before replacing
+            let upper = trimmed.to_uppercase();
+            !SIGNAL_WORDS.iter().any(|w| upper.contains(w))
+        }
+    }
+}
+
+/// Wait for a doc batch to complete, fetch results, store them, and clear the pending marker.
+fn resume_or_fetch_doc_batch(
+    client: &Client,
+    store: &Store,
+    batch_id: &str,
+    quiet: bool,
+) -> Result<HashMap<String, String>, LlmError> {
+    client.wait_for_batch(batch_id, quiet)?;
+
+    if !quiet {
+        eprintln!();
+    }
+
+    let results = client.fetch_batch_results(batch_id)?;
+
+    // Cache doc-comment results
+    let model = client.llm_config.model.clone();
+    let to_store: Vec<(String, String, String, String)> = results
+        .iter()
+        .map(|(hash, doc)| {
+            (
+                hash.clone(),
+                doc.clone(),
+                model.clone(),
+                "doc-comment".to_string(),
+            )
+        })
+        .collect();
+    if !to_store.is_empty() {
+        store.upsert_summaries_batch(&to_store)?;
+    }
+
+    // Clear pending doc batch marker
+    if let Err(e) = store.set_pending_doc_batch_id(None) {
+        tracing::warn!(error = %e, "Failed to clear pending doc batch ID");
+    }
+
+    Ok(results)
+}
+
+/// Run the LLM doc-comment generation pass using the Batches API.
+///
+/// Scans all indexed chunks, selects those needing doc comments (via `needs_doc_comment`),
+/// checks the cache, submits uncached candidates as a batch to Claude with `build_doc_prompt`,
+/// and returns the results. Cached results are returned without an API call.
+///
+/// `max_docs` limits how many functions to process (0 = unlimited).
+pub fn doc_comment_pass(
+    store: &Store,
+    config: &crate::config::Config,
+    max_docs: usize,
+) -> Result<Vec<crate::doc_writer::DocCommentResult>, LlmError> {
+    let _span = tracing::info_span!("doc_comment_pass").entered();
+
+    let llm_config = LlmConfig::resolve(config);
+    tracing::info!(
+        model = %llm_config.model,
+        api_base = %llm_config.api_base,
+        "Doc comment pass starting"
+    );
+
+    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+        LlmError::ApiKeyMissing(
+            "--improve-docs requires ANTHROPIC_API_KEY environment variable".to_string(),
+        )
+    })?;
+    let client = Client::new(&api_key, llm_config)?;
+
+    // Phase 1: Collect candidates
+    let mut candidates: Vec<ChunkSummary> = Vec::new();
+    let mut cursor = 0i64;
+    const PAGE_SIZE: usize = 500;
+
+    let stats = store.stats()?;
+    tracing::info!(
+        chunks = stats.total_chunks,
+        "Scanning for doc comment candidates"
+    );
+
+    loop {
+        let (chunks, next) = store.chunks_paged(cursor, PAGE_SIZE)?;
+        if chunks.is_empty() {
+            break;
+        }
+        cursor = next;
+
+        for cs in chunks {
+            if needs_doc_comment(&cs) {
+                candidates.push(cs);
+            }
+        }
+    }
+
+    tracing::info!(
+        candidates = candidates.len(),
+        "Doc comment candidates found"
+    );
+
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Check cache — filter out already-generated docs
+    let hashes: Vec<&str> = candidates.iter().map(|c| c.content_hash.as_str()).collect();
+    let cached = store.get_summaries_by_hashes(&hashes, "doc-comment")?;
+
+    // Split into cached hits and uncached misses
+    let mut cached_results: Vec<(&ChunkSummary, String)> = Vec::new();
+    let mut uncached: Vec<&ChunkSummary> = Vec::new();
+
+    for c in &candidates {
+        if let Some(doc) = cached.get(&c.content_hash) {
+            cached_results.push((c, doc.clone()));
+        } else {
+            uncached.push(c);
+        }
+    }
+
+    tracing::info!(
+        cached = cached_results.len(),
+        uncached = uncached.len(),
+        "Cache check complete"
+    );
+
+    // Sort: no doc first, then thin doc, by content length descending (meatier functions first)
+    uncached.sort_by(|a, b| {
+        let a_no_doc = a.doc.as_ref().is_none_or(|d| d.trim().is_empty());
+        let b_no_doc = b.doc.as_ref().is_none_or(|d| d.trim().is_empty());
+        // no-doc before thin-doc
+        b_no_doc
+            .cmp(&a_no_doc)
+            .then_with(|| b.content.len().cmp(&a.content.len()))
+    });
+
+    // Apply max_docs cap (across cached + uncached)
+    let total_available = cached_results.len() + uncached.len();
+    let effective_cap = if max_docs == 0 {
+        total_available
+    } else {
+        max_docs
+    };
+
+    // Cached results count toward the cap first
+    let cached_to_use = cached_results.len().min(effective_cap);
+    let uncached_cap = effective_cap.saturating_sub(cached_to_use);
+    uncached.truncate(uncached_cap);
+
+    // Phase 2: Submit batch for uncached candidates (or resume pending)
+    let api_results: HashMap<String, String> = if uncached.is_empty() {
+        // Check for pending batch from previous interrupted run
+        match store.get_pending_doc_batch_id() {
+            Ok(Some(pending)) => {
+                tracing::info!(batch_id = %pending, "Resuming pending doc batch");
+                resume_or_fetch_doc_batch(&client, store, &pending, false)?
+            }
+            _ => HashMap::new(),
+        }
+    } else {
+        // Build batch items
+        let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
+        let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for cs in &uncached {
+            if queued_hashes.insert(cs.content_hash.clone()) {
+                let content = if cs.content.len() > MAX_CONTENT_CHARS {
+                    cs.content[..cs.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
+                } else {
+                    cs.content.clone()
+                };
+                batch_items.push((
+                    cs.content_hash.clone(),
+                    content,
+                    cs.chunk_type.to_string(),
+                    cs.language.to_string(),
+                ));
+                if batch_items.len() >= MAX_BATCH_SIZE {
+                    break;
+                }
+            }
+        }
+
+        // Check for pending batch
+        let batch_id = match store.get_pending_doc_batch_id() {
+            Ok(Some(pending)) => {
+                tracing::info!(batch_id = %pending, "Found pending doc batch, checking status");
+                match client.check_batch_status(&pending) {
+                    Ok(status)
+                        if status == "in_progress"
+                            || status == "finalizing"
+                            || status == "created"
+                            || status == "ended" =>
+                    {
+                        tracing::info!(batch_id = %pending, status = %status, "Resuming pending doc batch");
+                        pending
+                    }
+                    _ => {
+                        tracing::info!(
+                            count = batch_items.len(),
+                            "Submitting doc batch to Claude API"
+                        );
+                        let id = client.submit_doc_batch(&batch_items, 800)?;
+                        if let Err(e) = store.set_pending_doc_batch_id(Some(&id)) {
+                            tracing::warn!(error = %e, "Failed to store pending doc batch ID");
+                        }
+                        id
+                    }
+                }
+            }
+            _ => {
+                tracing::info!(
+                    count = batch_items.len(),
+                    "Submitting doc batch to Claude API"
+                );
+                let id = client.submit_doc_batch(&batch_items, 800)?;
+                if let Err(e) = store.set_pending_doc_batch_id(Some(&id)) {
+                    tracing::warn!(error = %e, "Failed to store pending doc batch ID");
+                }
+                id
+            }
+        };
+
+        resume_or_fetch_doc_batch(&client, store, &batch_id, false)?
+    };
+
+    // Phase 3: Build results from cached + API responses
+    // Deduplicate by content_hash: multiple chunks can share the same hash
+    // (windowed chunks, same function body). One doc comment per unique function.
+    let mut results: Vec<crate::doc_writer::DocCommentResult> = Vec::new();
+    let mut seen_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for (cs, doc) in cached_results.iter().take(cached_to_use) {
+        if !seen_hashes.insert(cs.content_hash.clone()) {
+            continue;
+        }
+        results.push(crate::doc_writer::DocCommentResult {
+            file: cs.file.clone(),
+            function_name: cs.name.clone(),
+            content_hash: cs.content_hash.clone(),
+            generated_doc: doc.clone(),
+            language: cs.language,
+            line_start: cs.line_start as usize,
+            had_existing_doc: cs.doc.as_ref().is_some_and(|d| !d.trim().is_empty()),
+        });
+    }
+
+    for cs in &uncached {
+        if seen_hashes.contains(&cs.content_hash) {
+            continue;
+        }
+        if let Some(doc) = api_results.get(&cs.content_hash) {
+            seen_hashes.insert(cs.content_hash.clone());
+            results.push(crate::doc_writer::DocCommentResult {
+                file: cs.file.clone(),
+                function_name: cs.name.clone(),
+                content_hash: cs.content_hash.clone(),
+                generated_doc: doc.clone(),
+                language: cs.language,
+                line_start: cs.line_start as usize,
+                had_existing_doc: cs.doc.as_ref().is_some_and(|d| !d.trim().is_empty()),
+            });
+        }
+    }
+
+    tracing::info!(
+        total = results.len(),
+        cached = cached_to_use,
+        api_generated = api_results.len(),
+        "Doc comment pass complete"
+    );
+
+    Ok(results)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::{ChunkType, Language};
 
     #[test]
     fn test_extract_first_sentence_period() {
@@ -840,5 +1261,182 @@ mod tests {
 
         // Invalid env var should fall through to config value
         assert_eq!(llm.max_tokens, 300);
+    }
+
+    // ===== needs_doc_comment tests =====
+
+    /// Helper: build a minimal ChunkSummary with the given fields.
+    fn make_chunk(
+        chunk_type: ChunkType,
+        doc: Option<&str>,
+        window_idx: Option<i32>,
+    ) -> ChunkSummary {
+        ChunkSummary {
+            id: "test::func".to_string(),
+            file: std::path::PathBuf::from("src/test.rs"),
+            language: Language::Rust,
+            chunk_type,
+            name: "test_func".to_string(),
+            signature: "fn test_func()".to_string(),
+            content: "fn test_func() { todo!() }".to_string(),
+            doc: doc.map(|s| s.to_string()),
+            line_start: 1,
+            line_end: 3,
+            content_hash: "abc123".to_string(),
+            window_idx,
+            parent_id: None,
+            parent_type_name: None,
+        }
+    }
+
+    #[test]
+    fn test_needs_doc_comment_no_doc() {
+        let chunk = make_chunk(ChunkType::Function, None, None);
+        assert!(needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_thin() {
+        // Doc under 30 chars with no signal words
+        let chunk = make_chunk(ChunkType::Function, Some("A short doc"), None);
+        assert!(needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_signal_words() {
+        // Thin doc but contains SAFETY signal word — preserve it
+        let chunk = make_chunk(ChunkType::Function, Some("/// SAFETY: requires lock"), None);
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_adequate() {
+        // Doc >= 30 chars — no replacement needed
+        let chunk = make_chunk(
+            ChunkType::Function,
+            Some("Parse a configuration file from disk and validate all fields."),
+            None,
+        );
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_not_callable() {
+        // Struct/Enum are not callable — should return false
+        let chunk = make_chunk(ChunkType::Struct, None, None);
+        assert!(!needs_doc_comment(&chunk));
+
+        let chunk = make_chunk(ChunkType::Enum, None, None);
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_window_idx_nonzero() {
+        // Non-first window — skip
+        let chunk = make_chunk(ChunkType::Function, None, Some(1));
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_window_idx_zero() {
+        // First window — should be considered
+        let chunk = make_chunk(ChunkType::Function, None, Some(0));
+        assert!(needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_empty_doc() {
+        // Empty string doc — same as no doc
+        let chunk = make_chunk(ChunkType::Function, Some(""), None);
+        assert!(needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_whitespace_doc() {
+        // Whitespace-only doc — same as no doc
+        let chunk = make_chunk(ChunkType::Function, Some("   \n  "), None);
+        assert!(needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_method() {
+        // Method is callable — should be considered
+        let chunk = make_chunk(ChunkType::Method, None, None);
+        assert!(needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_signal_word_case_insensitive() {
+        // Signal words are case-insensitive
+        let chunk = make_chunk(ChunkType::Function, Some("todo: fix this"), None);
+        assert!(!needs_doc_comment(&chunk));
+
+        let chunk = make_chunk(ChunkType::Function, Some("Deprecated"), None);
+        assert!(!needs_doc_comment(&chunk));
+
+        let chunk = make_chunk(ChunkType::Function, Some("FIXME later"), None);
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_all_signal_words() {
+        for word in SIGNAL_WORDS {
+            let doc = format!("Has {}", word);
+            let chunk = make_chunk(ChunkType::Function, Some(&doc), None);
+            assert!(
+                !needs_doc_comment(&chunk),
+                "Signal word '{}' should prevent replacement",
+                word
+            );
+        }
+    }
+
+    // ===== build_doc_prompt tests =====
+
+    #[test]
+    fn test_build_doc_prompt_rust() {
+        let prompt =
+            Client::build_doc_prompt("fn foo() -> Result<(), Error> {}", "function", "rust");
+        assert!(prompt.contains("doc comment"));
+        assert!(prompt.contains("```rust"));
+        assert!(prompt.contains("# Arguments"));
+        assert!(prompt.contains("# Returns"));
+        assert!(prompt.contains("# Errors"));
+        assert!(prompt.contains("# Panics"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_python() {
+        let prompt = Client::build_doc_prompt("def foo(x: int) -> str:", "function", "python");
+        assert!(prompt.contains("doc comment"));
+        assert!(prompt.contains("```python"));
+        assert!(prompt.contains("Google-style docstring"));
+        assert!(prompt.contains("Args/Returns/Raises"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_go() {
+        let prompt = Client::build_doc_prompt("func Foo() error {}", "function", "go");
+        assert!(prompt.contains("doc comment"));
+        assert!(prompt.contains("```go"));
+        assert!(prompt.contains("function name per Go conventions"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_default() {
+        let prompt = Client::build_doc_prompt("function foo() {}", "function", "javascript");
+        assert!(prompt.contains("doc comment"));
+        assert!(prompt.contains("```javascript"));
+        // No language-specific appendix
+        assert!(!prompt.contains("# Arguments"));
+        assert!(!prompt.contains("Google-style"));
+        assert!(!prompt.contains("Go conventions"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_truncation() {
+        let long = "x".repeat(10000);
+        let prompt = Client::build_doc_prompt(&long, "function", "rust");
+        assert!(prompt.len() < 10000 + 300);
     }
 }

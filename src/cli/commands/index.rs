@@ -27,8 +27,19 @@ pub(crate) fn cmd_index(
     no_ignore: bool,
     #[allow(unused_variables)] // used only with llm-summaries feature
     llm_summaries: bool,
+    #[allow(unused_variables)] // used only with llm-summaries feature
+    improve_docs: bool,
+    #[allow(unused_variables)] // used only with llm-summaries feature
+    max_docs: Option<usize>,
 ) -> Result<()> {
     reset_interrupted();
+
+    // Validate: --improve-docs requires --llm-summaries
+    #[cfg(feature = "llm-summaries")]
+    if improve_docs && !llm_summaries {
+        anyhow::bail!("--improve-docs requires --llm-summaries");
+    }
+
     let root = find_project_root();
     let cqs_dir = cqs::resolve_index_dir(&root);
     let index_path = cqs_dir.join("index.db");
@@ -158,6 +169,47 @@ pub(crate) fn cmd_index(
             .context("LLM summary pass failed")?;
         if !cli.quiet && count > 0 {
             println!("  LLM summaries: {} new", count);
+        }
+    }
+
+    // Doc comment generation pass: generate and write back doc comments
+    #[cfg(feature = "llm-summaries")]
+    if !check_interrupted() && improve_docs {
+        if !cli.quiet {
+            println!("Generating doc comments...");
+        }
+        let config = cqs::config::Config::load(&root);
+        let doc_results = cqs::llm::doc_comment_pass(&store, &config, max_docs.unwrap_or(0))
+            .context("Doc comment generation failed")?;
+
+        if !doc_results.is_empty() {
+            // Group by file and write back
+            use std::collections::HashMap;
+            let mut by_file: HashMap<std::path::PathBuf, Vec<_>> = HashMap::new();
+            for r in doc_results {
+                by_file.entry(r.file.clone()).or_default().push(r);
+            }
+            let doc_parser = CqParser::new()?;
+            let mut total = 0;
+            for (path, edits) in &by_file {
+                match cqs::doc_writer::rewriter::rewrite_file(path, edits, &doc_parser) {
+                    Ok(n) => total += n,
+                    Err(e) => tracing::warn!(
+                        file = %path.display(),
+                        error = %e,
+                        "Doc write-back failed"
+                    ),
+                }
+            }
+            if !cli.quiet {
+                println!(
+                    "  Doc comments: {} functions across {} files",
+                    total,
+                    by_file.len()
+                );
+            }
+        } else if !cli.quiet {
+            println!("  Doc comments: 0 candidates");
         }
     }
 

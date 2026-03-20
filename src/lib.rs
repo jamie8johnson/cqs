@@ -85,6 +85,8 @@ pub(crate) mod related;
 pub(crate) mod review;
 pub use review::{review_diff, ReviewNoteEntry, ReviewResult};
 #[cfg(feature = "llm-summaries")]
+pub mod doc_writer;
+#[cfg(feature = "llm-summaries")]
 pub mod llm;
 pub mod plan;
 pub(crate) mod scout;

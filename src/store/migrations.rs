@@ -69,6 +69,7 @@ async fn run_migration(
         (12, 13) => migrate_v12_to_v13(conn).await,
         (13, 14) => migrate_v13_to_v14(conn).await,
         (14, 15) => migrate_v14_to_v15(conn).await,
+        (15, 16) => migrate_v15_to_v16(conn).await,
         _ => Err(StoreError::MigrationNotSupported(from, to)),
     }
 }
@@ -190,6 +191,44 @@ async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
     Ok(())
 }
 
+/// Migrate from v15 to v16: composite PK on llm_summaries (content_hash, purpose)
+///
+/// Recreates llm_summaries with a composite primary key so the same content_hash
+/// can have multiple summaries for different purposes (e.g., 'summary', 'doc-comment').
+/// Existing rows get purpose='summary' as the default.
+async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
+    sqlx::query(
+        "CREATE TABLE llm_summaries_v2 (
+            content_hash TEXT NOT NULL,
+            purpose TEXT NOT NULL DEFAULT 'summary',
+            summary TEXT NOT NULL,
+            model TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (content_hash, purpose)
+        )",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO llm_summaries_v2 (content_hash, purpose, summary, model, created_at) \
+         SELECT content_hash, 'summary', summary, model, created_at FROM llm_summaries",
+    )
+    .execute(&mut *conn)
+    .await?;
+
+    sqlx::query("DROP TABLE llm_summaries")
+        .execute(&mut *conn)
+        .await?;
+
+    sqlx::query("ALTER TABLE llm_summaries_v2 RENAME TO llm_summaries")
+        .execute(&mut *conn)
+        .await?;
+
+    tracing::info!("Recreated llm_summaries with composite PK (content_hash, purpose).");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,7 +246,7 @@ mod tests {
     #[test]
     fn test_current_schema_version_documented() {
         // Ensure the current version matches what we document
-        assert_eq!(CURRENT_SCHEMA_VERSION, 15);
+        assert_eq!(CURRENT_SCHEMA_VERSION, 16);
     }
 
     #[test]
@@ -694,6 +733,111 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(version.0, "15");
+        });
+    }
+
+    #[test]
+    fn test_migrate_v15_to_v16() {
+        // Full migration test: set up a v15 schema, run migration, verify composite PK
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test.db");
+
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+
+            // Create v15 schema with llm_summaries (single PK on content_hash)
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS llm_summaries (
+                    content_hash TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            sqlx::query("INSERT INTO metadata (key, value) VALUES ('schema_version', '15')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            // Insert two test summaries
+            sqlx::query(
+                "INSERT INTO llm_summaries (content_hash, summary, model, created_at) \
+                 VALUES ('hash_a', 'Summary A', 'claude-4', '2026-01-01')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO llm_summaries (content_hash, summary, model, created_at) \
+                 VALUES ('hash_b', 'Summary B', 'claude-4', '2026-01-02')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Run migration from v15 to v16
+            migrate(&pool, 15, 16).await.unwrap();
+
+            // Verify existing rows have purpose='summary'
+            let count: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM llm_summaries WHERE purpose = 'summary'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                count.0, 2,
+                "both existing rows should have purpose='summary'"
+            );
+
+            // Verify composite PK: same content_hash with different purpose should succeed
+            sqlx::query(
+                "INSERT INTO llm_summaries (content_hash, purpose, summary, model, created_at) \
+                 VALUES ('hash_a', 'doc-comment', 'Doc comment A', 'claude-4', '2026-01-03')",
+            )
+            .execute(&pool)
+            .await
+            .expect("inserting same content_hash with different purpose should succeed");
+
+            // Verify we now have 3 rows total
+            let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_summaries")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(count.0, 3, "should have 3 rows after inserting doc-comment");
+
+            // Verify schema_version was updated to 16
+            let version: (String,) =
+                sqlx::query_as("SELECT value FROM metadata WHERE key = 'schema_version'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(version.0, "16");
         });
     }
 

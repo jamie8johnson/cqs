@@ -187,17 +187,19 @@ impl Store {
     /// Get LLM summaries for a batch of content hashes.
     ///
     /// Returns a map from content_hash to summary text. Only includes hashes
-    /// that have summaries in the llm_summaries table.
+    /// that have summaries in the llm_summaries table matching the given purpose.
     pub fn get_summaries_by_hashes(
         &self,
         content_hashes: &[&str],
+        purpose: &str,
     ) -> Result<std::collections::HashMap<String, String>, StoreError> {
         if content_hashes.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
         self.rt.block_on(async {
             let mut result = std::collections::HashMap::new();
-            for batch in content_hashes.chunks(500) {
+            // Reserve one param slot for purpose, so 499 per batch
+            for batch in content_hashes.chunks(499) {
                 let placeholders: String = batch
                     .iter()
                     .enumerate()
@@ -205,13 +207,15 @@ impl Store {
                     .collect::<Vec<_>>()
                     .join(",");
                 let sql = format!(
-                    "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({})",
-                    placeholders
+                    "SELECT content_hash, summary FROM llm_summaries WHERE content_hash IN ({}) AND purpose = ?{}",
+                    placeholders,
+                    batch.len() + 1
                 );
                 let mut query = sqlx::query_as::<_, (String, String)>(&sql);
                 for hash in batch {
                     query = query.bind(*hash);
                 }
+                query = query.bind(purpose);
                 let rows = query.fetch_all(&self.pool).await?;
                 for (hash, summary) in rows {
                     result.insert(hash, summary);
@@ -223,10 +227,10 @@ impl Store {
 
     /// Insert or update LLM summaries in batch.
     ///
-    /// Each entry is (content_hash, summary, model).
+    /// Each entry is (content_hash, summary, model, purpose).
     pub fn upsert_summaries_batch(
         &self,
-        summaries: &[(String, String, String)],
+        summaries: &[(String, String, String, String)],
     ) -> Result<usize, StoreError> {
         if summaries.is_empty() {
             return Ok(0);
@@ -234,17 +238,21 @@ impl Store {
         let now = chrono::Utc::now().to_rfc3339();
         self.rt.block_on(async {
             let mut tx = self.pool.begin().await?;
-            const BATCH_SIZE: usize = 166; // 166 * 4 params = 664 < 999
+            const BATCH_SIZE: usize = 132; // 132 * 5 params = 660 < 999
             for batch in summaries.chunks(BATCH_SIZE) {
                 let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(
-                    "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, created_at)",
+                    "INSERT OR REPLACE INTO llm_summaries (content_hash, summary, model, purpose, created_at)",
                 );
-                qb.push_values(batch.iter(), |mut b, (hash, summary, model)| {
-                    b.push_bind(hash)
-                        .push_bind(summary)
-                        .push_bind(model)
-                        .push_bind(&now);
-                });
+                qb.push_values(
+                    batch.iter(),
+                    |mut b, (hash, summary, model, purpose)| {
+                        b.push_bind(hash)
+                            .push_bind(summary)
+                            .push_bind(model)
+                            .push_bind(purpose)
+                            .push_bind(&now);
+                    },
+                );
                 qb.build().execute(&mut *tx).await?;
             }
             tx.commit().await?;
@@ -258,12 +266,15 @@ impl Store {
     /// enrichment pass to avoid per-page summary fetches.
     pub fn get_all_summaries(
         &self,
+        purpose: &str,
     ) -> Result<std::collections::HashMap<String, String>, StoreError> {
         self.rt.block_on(async {
-            let rows: Vec<(String, String)> =
-                sqlx::query_as("SELECT content_hash, summary FROM llm_summaries")
-                    .fetch_all(&self.pool)
-                    .await?;
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT content_hash, summary FROM llm_summaries WHERE purpose = ?1",
+            )
+            .bind(purpose)
+            .fetch_all(&self.pool)
+            .await?;
             Ok(rows.into_iter().collect())
         })
     }
@@ -1491,6 +1502,17 @@ struct EmbeddingBatchIterator<'a> {
 impl<'a> Iterator for EmbeddingBatchIterator<'a> {
     type Item = Result<Vec<(String, Embedding)>, StoreError>;
 
+    /// Advances the iterator to the next batch of embedding records from the database.
+    ///
+    /// Fetches a batch of chunks from the database ordered by rowid, deserializes their embeddings, and returns them as a vector of (id, embedding) pairs. Automatically handles pagination by tracking the last rowid and fetching subsequent batches on subsequent calls. Skips batches where all rows fail deserialization and continues to the next batch.
+    ///
+    /// # Returns
+    ///
+    /// `Option<Result<Vec<(String, Embedding)>, Error>>` - Some(Ok(batch)) with the next batch of embeddings, Some(Err(e)) if a database error occurs, or None when all records have been consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query fails or if the connection pool encounters an error.
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.done {
@@ -2066,7 +2088,7 @@ mod tests {
     #[test]
     fn test_get_summaries_empty_input() {
         let (store, _dir) = setup_store();
-        let result = store.get_summaries_by_hashes(&[]).unwrap();
+        let result = store.get_summaries_by_hashes(&[], "summary").unwrap();
         assert!(result.is_empty());
     }
 
@@ -2078,22 +2100,25 @@ mod tests {
                 "hash_a".to_string(),
                 "summary A".to_string(),
                 "model-1".to_string(),
+                "summary".to_string(),
             ),
             (
                 "hash_b".to_string(),
                 "summary B".to_string(),
                 "model-1".to_string(),
+                "summary".to_string(),
             ),
             (
                 "hash_c".to_string(),
                 "summary C".to_string(),
                 "model-1".to_string(),
+                "summary".to_string(),
             ),
         ];
         store.upsert_summaries_batch(&summaries).unwrap();
 
         let result = store
-            .get_summaries_by_hashes(&["hash_a", "hash_b", "hash_c"])
+            .get_summaries_by_hashes(&["hash_a", "hash_b", "hash_c"], "summary")
             .unwrap();
         assert_eq!(result.len(), 3);
         assert_eq!(result["hash_a"], "summary A");
@@ -2105,7 +2130,7 @@ mod tests {
     fn test_get_summaries_missing_keys() {
         let (store, _dir) = setup_store();
         let result = store
-            .get_summaries_by_hashes(&["nonexistent_1", "nonexistent_2"])
+            .get_summaries_by_hashes(&["nonexistent_1", "nonexistent_2"], "summary")
             .unwrap();
         assert!(result.is_empty());
     }
@@ -2114,15 +2139,30 @@ mod tests {
     fn test_get_summaries_mixed() {
         let (store, _dir) = setup_store();
         let summaries = vec![
-            ("h1".to_string(), "s1".to_string(), "m".to_string()),
-            ("h2".to_string(), "s2".to_string(), "m".to_string()),
-            ("h3".to_string(), "s3".to_string(), "m".to_string()),
+            (
+                "h1".to_string(),
+                "s1".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
+            (
+                "h2".to_string(),
+                "s2".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
+            (
+                "h3".to_string(),
+                "s3".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
         ];
         store.upsert_summaries_batch(&summaries).unwrap();
 
         // Query 5 hashes, only 3 exist
         let result = store
-            .get_summaries_by_hashes(&["h1", "h2", "h3", "h4", "h5"])
+            .get_summaries_by_hashes(&["h1", "h2", "h3", "h4", "h5"], "summary")
             .unwrap();
         assert_eq!(result.len(), 3);
         assert!(result.contains_key("h1"));
@@ -2142,20 +2182,30 @@ mod tests {
     fn test_upsert_summaries_overwrites() {
         let (store, _dir) = setup_store();
         store
-            .upsert_summaries_batch(&[("h1".to_string(), "first".to_string(), "m".to_string())])
+            .upsert_summaries_batch(&[(
+                "h1".to_string(),
+                "first".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            )])
             .unwrap();
         store
-            .upsert_summaries_batch(&[("h1".to_string(), "second".to_string(), "m".to_string())])
+            .upsert_summaries_batch(&[(
+                "h1".to_string(),
+                "second".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            )])
             .unwrap();
 
-        let result = store.get_summaries_by_hashes(&["h1"]).unwrap();
+        let result = store.get_summaries_by_hashes(&["h1"], "summary").unwrap();
         assert_eq!(result["h1"], "second");
     }
 
     #[test]
     fn test_get_all_summaries_empty() {
         let (store, _dir) = setup_store();
-        let result = store.get_all_summaries().unwrap();
+        let result = store.get_all_summaries("summary").unwrap();
         assert!(result.is_empty());
     }
 
@@ -2163,13 +2213,28 @@ mod tests {
     fn test_get_all_summaries_all() {
         let (store, _dir) = setup_store();
         let summaries = vec![
-            ("ha".to_string(), "sa".to_string(), "m".to_string()),
-            ("hb".to_string(), "sb".to_string(), "m".to_string()),
-            ("hc".to_string(), "sc".to_string(), "m".to_string()),
+            (
+                "ha".to_string(),
+                "sa".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
+            (
+                "hb".to_string(),
+                "sb".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
+            (
+                "hc".to_string(),
+                "sc".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
         ];
         store.upsert_summaries_batch(&summaries).unwrap();
 
-        let all = store.get_all_summaries().unwrap();
+        let all = store.get_all_summaries("summary").unwrap();
         assert_eq!(all.len(), 3);
         assert_eq!(all["ha"], "sa");
         assert_eq!(all["hb"], "sb");
@@ -2190,8 +2255,18 @@ mod tests {
 
         // Insert summaries matching those content_hashes
         let summaries = vec![
-            (c1.content_hash, "summary a".to_string(), "m".to_string()),
-            (c2.content_hash, "summary b".to_string(), "m".to_string()),
+            (
+                c1.content_hash,
+                "summary a".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
+            (
+                c2.content_hash,
+                "summary b".to_string(),
+                "m".to_string(),
+                "summary".to_string(),
+            ),
         ];
         store.upsert_summaries_batch(&summaries).unwrap();
 
@@ -2199,7 +2274,7 @@ mod tests {
         assert_eq!(pruned, 0);
 
         // All summaries survive
-        let all = store.get_all_summaries().unwrap();
+        let all = store.get_all_summaries("summary").unwrap();
         assert_eq!(all.len(), 2);
     }
 
@@ -2220,27 +2295,77 @@ mod tests {
                 c1.content_hash.clone(),
                 "matching".to_string(),
                 "m".to_string(),
+                "summary".to_string(),
             ),
             (
                 "orphan_hash_1".to_string(),
                 "orphan 1".to_string(),
                 "m".to_string(),
+                "summary".to_string(),
             ),
             (
                 "orphan_hash_2".to_string(),
                 "orphan 2".to_string(),
                 "m".to_string(),
+                "summary".to_string(),
             ),
         ];
         store.upsert_summaries_batch(&summaries).unwrap();
-        assert_eq!(store.get_all_summaries().unwrap().len(), 3);
+        assert_eq!(store.get_all_summaries("summary").unwrap().len(), 3);
 
         let pruned = store.prune_orphan_summaries().unwrap();
         assert_eq!(pruned, 2);
 
-        let remaining = store.get_all_summaries().unwrap();
+        let remaining = store.get_all_summaries("summary").unwrap();
         assert_eq!(remaining.len(), 1);
         assert!(remaining.contains_key(&c1.content_hash));
+    }
+
+    // ===== TC-SQ8: purpose coexistence =====
+
+    #[test]
+    fn test_summaries_different_purposes_coexist() {
+        let (store, _dir) = setup_store();
+
+        // Insert same content_hash with two different purposes
+        let summaries = vec![
+            (
+                "shared_hash".to_string(),
+                "This function parses config files.".to_string(),
+                "model-1".to_string(),
+                "summary".to_string(),
+            ),
+            (
+                "shared_hash".to_string(),
+                "/// Parses configuration from TOML files.\n/// Returns a Config struct."
+                    .to_string(),
+                "model-1".to_string(),
+                "doc-comment".to_string(),
+            ),
+        ];
+        store.upsert_summaries_batch(&summaries).unwrap();
+
+        // Each purpose returns only its own entry
+        let by_summary = store
+            .get_summaries_by_hashes(&["shared_hash"], "summary")
+            .unwrap();
+        assert_eq!(by_summary.len(), 1);
+        assert_eq!(
+            by_summary["shared_hash"],
+            "This function parses config files."
+        );
+
+        let by_doc = store
+            .get_summaries_by_hashes(&["shared_hash"], "doc-comment")
+            .unwrap();
+        assert_eq!(by_doc.len(), 1);
+        assert!(by_doc["shared_hash"].contains("Parses configuration"));
+
+        // get_all_summaries also filters by purpose
+        let all_summary = store.get_all_summaries("summary").unwrap();
+        assert_eq!(all_summary.len(), 1);
+        let all_doc = store.get_all_summaries("doc-comment").unwrap();
+        assert_eq!(all_doc.len(), 1);
     }
 
     // ===== TC-11: chunks_paged =====
