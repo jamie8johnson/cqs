@@ -16,9 +16,19 @@ use ort::session::Session;
 use crate::embedder::{create_session, pad_2d_i64, select_provider, ExecutionProvider};
 use crate::store::SearchResult;
 
-const MODEL_REPO: &str = "cross-encoder/ms-marco-MiniLM-L-6-v2";
+const DEFAULT_MODEL_REPO: &str = "cross-encoder/ms-marco-MiniLM-L-6-v2";
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
+
+fn model_repo() -> String {
+    match std::env::var("CQS_RERANKER_MODEL") {
+        Ok(repo) => {
+            tracing::info!(model = %repo, "Using custom reranker model");
+            repo
+        }
+        Err(_) => DEFAULT_MODEL_REPO.to_string(),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum RerankerError {
@@ -207,7 +217,7 @@ impl Reranker {
             use hf_hub::api::sync::Api;
 
             let api = Api::new().map_err(|e| RerankerError::ModelDownload(e.to_string()))?;
-            let repo = api.model(MODEL_REPO.to_string());
+            let repo = api.model(model_repo());
 
             let model_path = repo
                 .get(MODEL_FILE)
