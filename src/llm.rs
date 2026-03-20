@@ -397,9 +397,9 @@ fn resume_or_fetch_batch(
 
     // Store API-generated summaries
     let model = client.llm_config.model.clone();
-    let api_summaries: Vec<(String, String, String)> = results
+    let api_summaries: Vec<(String, String, String, String)> = results
         .into_iter()
-        .map(|(hash, summary)| (hash, summary, model.clone()))
+        .map(|(hash, summary)| (hash, summary, model.clone(), "summary".to_string()))
         .collect();
     let count = api_summaries.len();
     if !api_summaries.is_empty() {
@@ -458,7 +458,7 @@ pub fn llm_summary_pass(
 
     // Phase 1: Collect chunks needing summaries
     // Store doc-comment summaries immediately, collect API-needing chunks
-    let mut to_store: Vec<(String, String, String)> = Vec::new();
+    let mut to_store: Vec<(String, String, String, String)> = Vec::new();
     // (custom_id=content_hash, content, chunk_type, language) for batch API
     let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
     // Track content_hashes already queued to avoid duplicate custom_ids in batch
@@ -476,7 +476,7 @@ pub fn llm_summary_pass(
         cursor = next;
 
         let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-        let existing = store.get_summaries_by_hashes(&hashes)?;
+        let existing = store.get_summaries_by_hashes(&hashes, "summary")?;
 
         for cs in &chunks {
             if existing.contains_key(&cs.content_hash) {
@@ -508,6 +508,7 @@ pub fn llm_summary_pass(
                             cs.content_hash.clone(),
                             first_sentence,
                             "doc-comment".to_string(),
+                            "summary".to_string(),
                         ));
                         doc_extracted += 1;
                         continue;

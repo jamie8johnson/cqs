@@ -87,7 +87,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
     // Pre-fetch all LLM summaries once before the page loop (PERF-18).
     // Single query instead of per-page batched fetches.
-    let all_summaries = match store.get_all_summaries() {
+    let all_summaries = match store.get_all_summaries("summary") {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to pre-fetch LLM summaries for enrichment");

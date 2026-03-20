@@ -877,7 +877,9 @@ fn test_stress_eval() {
             cursor = next;
 
             let hashes: Vec<&str> = chunks.iter().map(|c| c.content_hash.as_str()).collect();
-            let summaries = store.get_summaries_by_hashes(&hashes).unwrap_or_default();
+            let summaries = store
+                .get_summaries_by_hashes(&hashes, "summary")
+                .unwrap_or_default();
 
             let mut batch_updates: Vec<(String, cqs::Embedding)> = Vec::new();
             for cs in &chunks {
