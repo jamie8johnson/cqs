@@ -410,8 +410,12 @@ pub fn rewrite_file(
 /// Write bytes to a file atomically: write to a temp file in the same
 /// directory, then rename. Falls back to direct write on cross-device errors.
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     let dir = path.parent().unwrap_or(Path::new("."));
-    let temp_path = dir.join(format!(".cqs-doc-{}.tmp", std::process::id()));
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = dir.join(format!(".cqs-doc-{}-{}.tmp", std::process::id(), n));
 
     std::fs::write(&temp_path, data)?;
 
