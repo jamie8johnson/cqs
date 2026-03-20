@@ -1041,3 +1041,11 @@ mentions = [
     "search",
     "reranker.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "SQ-10 reranker: both web-trained and code-trained cross-encoders hurt code search. Web-trained -10.9pp R@1, code-trained -81.8pp (catastrophic). Random same-language negatives too easy; model likely collapsed. E5-base-v2 embedding-only is near-optimal."
+mentions = [
+    "reranker.rs",
+    "model_eval.rs",
+]
