@@ -4,6 +4,7 @@
 //! source file rewriting for LLM-generated documentation.
 
 pub mod formats;
+pub mod rewriter;
 
 use std::path::PathBuf;
 
