@@ -1758,6 +1758,155 @@ mod metric_tests {
     }
 }
 
+// ===== Experiment 7: Type-Aware Embeddings =====
+//
+// Test whether prepending function signatures to NL descriptions
+// improves discrimination between confusable functions.
+
+#[test]
+#[ignore] // Slow: downloads model, embeds corpus
+fn test_type_aware_embeddings() {
+    let parser = Parser::new().expect("Failed to init parser");
+    let e5_config = &MODELS[0];
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    struct TypeAwareChunk {
+        name: String,
+        language: Language,
+        nl_base: String,
+        nl_sig_prepend: String,
+        nl_sig_append: String,
+        signature: String,
+    }
+
+    let mut chunks: Vec<TypeAwareChunk> = Vec::new();
+    for lang in &languages {
+        for path in [fixture_path(*lang), hard_fixture_path(*lang)] {
+            if !path.exists() {
+                continue;
+            }
+            let parsed = parser.parse_file(&path).expect("Parse failed");
+            for chunk in &parsed {
+                let base_nl = generate_nl_description(chunk);
+                let sig = &chunk.signature;
+
+                // Variant 1: prepend signature
+                let sig_prepend = if sig.is_empty() {
+                    base_nl.clone()
+                } else {
+                    format!("{}. {}", sig, base_nl)
+                };
+
+                // Variant 2: append signature
+                let sig_append = if sig.is_empty() {
+                    base_nl.clone()
+                } else {
+                    format!("{}. Signature: {}", base_nl, sig)
+                };
+
+                chunks.push(TypeAwareChunk {
+                    name: chunk.name.clone(),
+                    language: *lang,
+                    nl_base: base_nl,
+                    nl_sig_prepend: sig_prepend,
+                    nl_sig_append: sig_append,
+                    signature: sig.clone(),
+                });
+            }
+        }
+    }
+    eprintln!("Parsed {} chunks\n", chunks.len());
+
+    // Show sample NL descriptions for comparison
+    if let Some(c) = chunks
+        .iter()
+        .find(|c| c.name == "merge_sort" && c.language == Language::Rust)
+    {
+        eprintln!("Sample (merge_sort Rust):");
+        eprintln!("  Base:    {}", &c.nl_base[..c.nl_base.len().min(150)]);
+        eprintln!(
+            "  Prepend: {}",
+            &c.nl_sig_prepend[..c.nl_sig_prepend.len().min(150)]
+        );
+        eprintln!("  Sig:     {}", c.signature);
+        eprintln!();
+    }
+
+    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5");
+
+    // Embed all three variants
+    let configs: Vec<(&str, Box<dyn Fn(&TypeAwareChunk) -> &str>)> = vec![
+        (
+            "Base (no signature)",
+            Box::new(|c: &TypeAwareChunk| c.nl_base.as_str()),
+        ),
+        (
+            "Signature prepended",
+            Box::new(|c: &TypeAwareChunk| c.nl_sig_prepend.as_str()),
+        ),
+        (
+            "Signature appended",
+            Box::new(|c: &TypeAwareChunk| c.nl_sig_append.as_str()),
+        ),
+    ];
+
+    // Pre-embed queries (same across all configs)
+    let query_embs: Vec<Vec<f32>> = HARD_EVAL_CASES
+        .iter()
+        .map(|c| embedder.embed_query(c.query).expect("Query embed failed"))
+        .collect();
+
+    eprintln!(
+        "=== Type-Aware Embedding Results ({} queries) ===\n",
+        HARD_EVAL_CASES.len()
+    );
+    eprintln!(
+        "{:<25} {:>10} {:>10} {:>10}",
+        "Config", "Recall@1", "MRR", "NDCG@10"
+    );
+    eprintln!("{}", "-".repeat(58));
+
+    for (label, nl_fn) in &configs {
+        let texts: Vec<&str> = chunks.iter().map(|c| nl_fn(c)).collect();
+        let mut embs: Vec<Vec<f32>> = Vec::new();
+        for batch in texts.chunks(16) {
+            embs.extend(embedder.embed_documents(batch).expect("Embed failed"));
+        }
+
+        let indexed: Vec<IndexedChunk> = chunks
+            .iter()
+            .zip(embs.into_iter())
+            .map(|(c, e)| IndexedChunk {
+                name: c.name.clone(),
+                language: c.language,
+                embedding: e,
+            })
+            .collect();
+
+        let (r1_hits, r1_total) = compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embs, 1);
+        let (mrr, per_lang_mrr) = compute_mrr(&indexed, HARD_EVAL_CASES, &query_embs);
+        let ndcg = compute_ndcg_at_k(&indexed, HARD_EVAL_CASES, &query_embs, 10);
+        let r1_pct = r1_hits as f64 / r1_total as f64 * 100.0;
+
+        eprintln!(
+            "{:<25} {:>9.1}% {:>10.4} {:>10.4}",
+            label, r1_pct, mrr, ndcg
+        );
+
+        // Per-language detail
+        for (lang, lang_mrr, count) in &per_lang_mrr {
+            eprintln!("  {:?}: MRR {:.4} ({} queries)", lang, lang_mrr, count);
+        }
+        eprintln!();
+    }
+}
+
 // ===== Experiment 6: Weighted Multi-Signal Fusion Sweep =====
 
 struct SweepChunk {

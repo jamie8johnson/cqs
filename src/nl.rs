@@ -499,6 +499,14 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
+    // Type-aware: append full signature for richer type discrimination (SQ-11).
+    // Placed last so doc/name tokens retain positional priority in embedding.
+    // The full signature captures generic bounds (T: Ord), lifetimes, and
+    // complete parameter types that the extracted params/return lose.
+    if !chunk.signature.is_empty() {
+        parts.push(format!("Signature: {}", chunk.signature));
+    }
+
     parts.join(". ")
 }
 
