@@ -2,44 +2,34 @@
 
 ## Right Now
 
-**Pivoted from LoRA to SQ-8 + SQ-10 (2026-03-19).** Three LoRA experiments all regressed. E5-base-v2 is near-optimal with our NL pipeline. Next: improve descriptions (SQ-8) and reranking (SQ-10).
+**SQ-8: --improve-docs implementation (2026-03-19).** Spec finalized after 3 review rounds. Writing implementation plan next.
 
-### LoRA results (see ~/training-data/RESEARCH_LOG.md)
-| Experiment | R@1 | MRR | Verdict |
-|-----------|-----|-----|---------|
-| Baseline (E5-base-v2) | 89.1% | 0.934 | — |
-| v1: commit msgs, 3ep | 70.9% | 0.800 | Regression |
-| v2: commit msgs, 1ep/5e-6 | 69.1% | 0.798 | Regression |
-| v3: docstrings+CSN, 1ep | 72.7% | 0.829 | Regression (best of 3) |
+### Spec
+`docs/superpowers/specs/2026-03-19-improve-docs-design.md`
 
-### Next session priorities
-1. **SQ-8:** LLM doc generation (`--improve-docs`) — richer descriptions
-2. **SQ-10:** Fine-tune code reranker on CodeSearchNet (1.7M pairs ready)
-3. **Reranking default for `--json`** — agents get best results automatically
+Key decisions:
+- `--improve-docs` is modifier to `--llm-summaries` (requires it)
+- Two separate Batches API passes (summaries then doc comments)
+- Schema v16: composite PK (content_hash, purpose) on llm_summaries
+- Re-parse files at write-back time (no doc line ranges in DB)
+- Per-language DocWriter: 11 explicit formats + `// ` default for remaining 40
+- Bottom-up insertion, leaf-only, decorator-aware
+- Python docstrings inside function body
+- `--dry-run` and `--max-docs N` flags
+- `submit_batch` needs max_tokens override param
+- `fetch_batch_results` 500-char ceiling needs removing for doc comments
 
-### Infrastructure preserved
-- Training env: conda cqs-train (PyTorch 2.10, A6000 48GB)
-- Training data: ~/training-data/ (186k commit triplets, 7.5k docstring pairs, 1.7M CodeSearchNet)
-- Training repos: ~/training-repos/ (19 repos, 12 languages)
-- HuggingFace: jamie8johnson, hf CLI authenticated
-- CoIR benchmark: installed in cqs-train env
-- Research log: ~/training-data/RESEARCH_LOG.md
-
-### Done this session (2026-03-18/19)
-- Full audit: 88 findings, 12 PRs merged (#614-#625)
-- v1.1.0 released
-- SQ-9: notes simplification + 768-dim
-- P3 deferred + P4 refactors + file splits
-- `cqs train-data` command
-- 3 LoRA experiments (all regressed → pivoted)
-- CSS parser @media print fix
-- 19 training repos cloned, CodeSearchNet downloaded
-- Research log started
+### Done this session
+- Merged LoRA research state update (PR #626)
+- 3 LoRA experiments (all regressed) → pivoted to SQ-8 + SQ-10
+- SQ-8 spec: 3 design rounds + 3 review rounds, all issues addressed
+- Research log at ~/training-data/RESEARCH_LOG.md
 
 ## Parked
 
 - **SQ-7 LoRA:** revisit if we switch base model (SQ-3)
-- **SQ-3:** Code-specific base model (CodeBERT, UniXcoder, Nomic-embed-code)
+- **SQ-10:** Fine-tune code reranker (after SQ-8)
+- **SQ-3:** Code-specific base model
 - **Post-index name matching** — fuzzy cross-doc references
 
 ## Upstream Tracking
@@ -51,7 +41,8 @@
 ## Architecture
 
 - Version: 1.1.0
-- Schema: v15 (768-dim)
-- Embeddings: 768-dim E5-base-v2 (base model, no fine-tuning)
+- Schema: v15 (v16 planned for SQ-8)
+- Embeddings: 768-dim E5-base-v2 (no fine-tuning)
 - Tests: ~1734
-- File structure: search/ (3), embedder/ (2), cli/enrichment.rs, cli/args.rs, train_data/ (6), test_helpers.rs
+- Training env: conda cqs-train, A6000 48GB (preserved for SQ-10 reranker)
+- Training data: ~/training-data/ (1.7M CodeSearchNet pairs for SQ-10)
