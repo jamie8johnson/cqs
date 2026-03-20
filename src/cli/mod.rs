@@ -288,6 +288,14 @@ enum Commands {
         #[cfg(feature = "llm-summaries")]
         #[arg(long)]
         max_docs: Option<usize>,
+        /// Generate hyde query predictions for functions (requires ANTHROPIC_API_KEY)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        hyde_queries: bool,
+        /// Maximum number of functions to generate hyde predictions for
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        max_hyde: Option<usize>,
     },
     /// Show index statistics
     Stats {
@@ -738,6 +746,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             improve_docs,
             #[cfg(feature = "llm-summaries")]
             max_docs,
+            #[cfg(feature = "llm-summaries")]
+            hyde_queries,
+            #[cfg(feature = "llm-summaries")]
+            max_hyde,
         }) => {
             #[cfg(feature = "llm-summaries")]
             let use_llm = llm_summaries;
@@ -751,6 +763,14 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             let use_max_docs = max_docs;
             #[cfg(not(feature = "llm-summaries"))]
             let use_max_docs: Option<usize> = None;
+            #[cfg(feature = "llm-summaries")]
+            let use_hyde = hyde_queries;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_hyde = false;
+            #[cfg(feature = "llm-summaries")]
+            let use_max_hyde = max_hyde;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_max_hyde: Option<usize> = None;
             cmd_index(
                 &cli,
                 force,
@@ -759,6 +779,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 use_llm,
                 use_improve_docs,
                 use_max_docs,
+                use_hyde,
+                use_max_hyde,
             )
         }
         Some(Commands::Stats { json }) => cmd_stats(&cli, json),

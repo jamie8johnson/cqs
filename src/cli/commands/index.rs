@@ -31,6 +31,10 @@ pub(crate) fn cmd_index(
     improve_docs: bool,
     #[allow(unused_variables)] // used only with llm-summaries feature
     max_docs: Option<usize>,
+    #[allow(unused_variables)] // used only with llm-summaries feature
+    hyde_queries: bool,
+    #[allow(unused_variables)] // used only with llm-summaries feature
+    max_hyde: Option<usize>,
 ) -> Result<()> {
     reset_interrupted();
 
@@ -210,6 +214,20 @@ pub(crate) fn cmd_index(
             }
         } else if !cli.quiet {
             println!("  Doc comments: 0 candidates");
+        }
+    }
+
+    // HyDE query prediction pass: generate hypothetical queries for functions
+    #[cfg(feature = "llm-summaries")]
+    if !check_interrupted() && hyde_queries {
+        if !cli.quiet {
+            println!("Generating hyde query predictions...");
+        }
+        let config = cqs::config::Config::load(&root);
+        let count = cqs::llm::hyde_query_pass(&store, cli.quiet, &config, max_hyde.unwrap_or(0))
+            .context("Hyde query prediction pass failed")?;
+        if !cli.quiet && count > 0 {
+            println!("  Hyde predictions: {} new", count);
         }
     }
 
