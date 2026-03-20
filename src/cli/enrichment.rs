@@ -95,6 +95,14 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
         }
     };
 
+    let all_hyde = match store.get_all_summaries("hyde") {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to pre-fetch hyde predictions for enrichment");
+            HashMap::new()
+        }
+    };
+
     // Wrap loop in closure so progress bar is always cleaned up on error
     let result: Result<usize> = (|| {
         loop {
@@ -121,17 +129,21 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                 let has_callers = callers.is_some_and(|v| !v.is_empty());
                 let has_callees = callees.is_some_and(|v| !v.is_empty());
                 let summary = all_summaries.get(&cs.content_hash).map(|s| s.as_str());
+                let hyde = all_hyde.get(&cs.content_hash).map(|s| s.as_str());
 
-                // Skip chunks with nothing to add: no call context AND no summary
-                if !has_callers && !has_callees && summary.is_none() {
+                // Skip chunks with nothing to add: no call context, no summary, no hyde
+                if !has_callers && !has_callees && summary.is_none() && hyde.is_none() {
                     continue;
                 }
 
                 // Skip ambiguous names — functions like `new`, `parse`, `build`
                 // appear in multiple chunks and would get merged callers from
                 // unrelated functions. (RB-B1)
-                // But still process if they have a summary (summary doesn't depend on call graph)
-                if name_file_count.get(&cs.name).copied().unwrap_or(0) > 1 && summary.is_none() {
+                // But still process if they have a summary or hyde (neither depends on call graph)
+                if name_file_count.get(&cs.name).copied().unwrap_or(0) > 1
+                    && summary.is_none()
+                    && hyde.is_none()
+                {
                     continue;
                 }
 
@@ -146,7 +158,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
                 // Compute enrichment hash from post-filtered call context + summary (RT-DATA-2, SQ-6).
                 let enrichment_hash =
-                    compute_enrichment_hash_with_summary(&ctx, &callee_doc_freq, summary);
+                    compute_enrichment_hash_with_summary(&ctx, &callee_doc_freq, summary, hyde);
 
                 // Skip if already enriched with the same call context + summary
                 if let Some(stored) = stored_hashes.get(&cs.id) {
@@ -164,6 +176,7 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                     5, // max callers
                     5, // max callees
                     summary,
+                    hyde,
                 );
 
                 embed_batch.push((cs.id.clone(), enriched_nl, enrichment_hash));
@@ -210,6 +223,7 @@ fn compute_enrichment_hash_with_summary(
     ctx: &cqs::CallContext,
     callee_doc_freq: &HashMap<String, f32>,
     summary: Option<&str>,
+    hyde: Option<&str>,
 ) -> String {
     use std::fmt::Write;
     let mut input = String::new();
@@ -233,6 +247,10 @@ fn compute_enrichment_hash_with_summary(
 
     if let Some(s) = summary {
         let _ = write!(input, "s:{s}");
+    }
+
+    if let Some(h) = hyde {
+        let _ = write!(input, "h:{h}");
     }
 
     let hash = blake3::hash(input.as_bytes());
