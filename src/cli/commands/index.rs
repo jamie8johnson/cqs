@@ -20,6 +20,7 @@ use crate::cli::{
 ///
 /// Parses source files, generates embeddings, and stores them in the index database.
 /// Uses incremental indexing by default (only re-embeds changed files).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_index(
     cli: &Cli,
     force: bool,
