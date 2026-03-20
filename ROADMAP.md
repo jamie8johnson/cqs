@@ -125,23 +125,28 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
   - **Deployment:** Upload merged ONNX to HuggingFace (`jamie8johnson/e5-base-v2-code-search`), cqs downloads it instead of base E5. Or upload LoRA adapter separately for A/B testing.
   - **Why:** E5-base-v2 is a general NL model — prose (README/CHANGELOG) naturally scores higher than generated code NL descriptions. LoRA teaches the model that "parse config file" should match `fn parse_config()` better than a README paragraph about configuration. This is the real fix for code-vs-doc ranking.
 
-- [ ] SQ-10: Fine-tune code-specific cross-encoder reranker.
-  - Base: `cross-encoder/ms-marco-MiniLM-L-6-v2` (our current reranker, 22M params)
-  - Training data: 1.7M CodeSearchNet pairs with binary labels (match/non-match)
-  - Infrastructure: same conda env, same A6000, ~30 min training
-  - Export to ONNX, drop into `src/reranker.rs` (same ORT loading path)
-  - Also make reranking default for `--json` output (agents don't care about 500ms latency)
-  - Stacks with LoRA embeddings: better recall (embeddings) + better precision (reranker)
+- [x] SQ-10: Fine-tune code-specific cross-encoder reranker. **Result: REGRESSION.**
+  - Trained on 50k CSN + 7.5k docstring pairs, 3 epochs. ONNX at jamie8johnson/code-reranker-v1.
+  - Web-trained reranker: -10.9pp R@1. Code-trained: -81.8pp (catastrophic collapse).
+  - Root cause: random same-language negatives too easy for cross-encoders.
+  - Infrastructure kept: `CQS_RERANKER_MODEL` env var, eval harness in model_eval.rs.
+  - Do NOT make reranking default. Revisit with hard negatives (V2) if warranted.
 
 ### Potential quality improvements (research backlog)
 
-Roughly ordered by effort/impact ratio:
+Ranked by difficulty / likely impact. Experiments 1-6 (LoRA, LLM docs on eval, reranker, weight sweep) all confirmed embedding-only is near-optimal on hard eval. Future work should add new signal, not tune existing weights.
 
+| # | Approach | Difficulty | Impact | Status |
+|---|----------|-----------|--------|--------|
+| 1 | **Weighted multi-signal fusion** | Easy (days) | None | **Done (Exp 6)** — all 30 configs regress. Embedding-only is optimal. |
+| 2 | **Type-aware embeddings** | Easy (hours) | Medium | Prepend type signatures before embedding. One-line chunk formatting change. |
+| 3 | **Hard negative reranker (V2)** | Medium (days) | Medium-High | V1 failed (random negs too easy). BM25 top-k negatives may fix it. |
+| 4 | **HyDE (query expansion)** | Medium (days) | High | LLM generates hypothetical code from query, embed that. Latency cost. |
+| 5 | **ColBERT late interaction** | Hard (weeks) | High | Token-level matching. New index structure. Best precision, biggest lift. |
+
+**Other ideas (lower priority):**
 - **Query expansion** — expand "parse config" → "parse config file toml yaml settings read load deserialize" before searching. Synonym table or small LLM. Cheap, helps recall on vague queries. No model changes.
-- **HyDE (Hypothetical Document Embeddings)** — given a query, LLM generates a hypothetical function, embed that instead of the query. Dramatic improvement on vague queries. One LLM call per search (expensive for interactive, fine for agents).
 - **SPLADE (sparse learned retrieval)** — trained sparse representations that learn which terms matter. Could replace/augment FTS5 keyword matching. Research effort.
-- **ColBERT late interaction** — per-token vectors instead of single-vector per document. Fine-grained matching, much better for long functions. Major architecture change (storage + search path).
-- **Type-aware embeddings** — encode type signatures separately. "function returning Result<Config>" matches on return type. Novel, potentially paper-worthy.
 - **GNN on call graph** — embed functions by position in call graph, not just content. Functions that call each other cluster together. Practical variant: pre-compute graph-aware embeddings at index time (Parse → E5 embed → GNN propagate → store). No runtime graph lookups needed. Marginal over SQ-4 text enrichment unless targeting structural queries ("function connecting HTTP to database"). PyTorch Geometric + A6000. Main complexity: incremental updates in watch mode (neighbor re-propagation).
 
 ### Literature survey (before paper)
