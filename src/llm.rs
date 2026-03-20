@@ -931,8 +931,8 @@ pub fn doc_comment_pass(
 
     // Sort: no doc first, then thin doc, by content length descending (meatier functions first)
     uncached.sort_by(|a, b| {
-        let a_no_doc = a.doc.as_ref().map_or(true, |d| d.trim().is_empty());
-        let b_no_doc = b.doc.as_ref().map_or(true, |d| d.trim().is_empty());
+        let a_no_doc = a.doc.as_ref().is_none_or(|d| d.trim().is_empty());
+        let b_no_doc = b.doc.as_ref().is_none_or(|d| d.trim().is_empty());
         // no-doc before thin-doc
         b_no_doc
             .cmp(&a_no_doc)
@@ -1030,9 +1030,15 @@ pub fn doc_comment_pass(
     };
 
     // Phase 3: Build results from cached + API responses
+    // Deduplicate by content_hash: multiple chunks can share the same hash
+    // (windowed chunks, same function body). One doc comment per unique function.
     let mut results: Vec<crate::doc_writer::DocCommentResult> = Vec::new();
+    let mut seen_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (cs, doc) in cached_results.iter().take(cached_to_use) {
+        if !seen_hashes.insert(cs.content_hash.clone()) {
+            continue;
+        }
         results.push(crate::doc_writer::DocCommentResult {
             file: cs.file.clone(),
             function_name: cs.name.clone(),
@@ -1045,7 +1051,11 @@ pub fn doc_comment_pass(
     }
 
     for cs in &uncached {
+        if seen_hashes.contains(&cs.content_hash) {
+            continue;
+        }
         if let Some(doc) = api_results.get(&cs.content_hash) {
+            seen_hashes.insert(cs.content_hash.clone());
             results.push(crate::doc_writer::DocCommentResult {
                 file: cs.file.clone(),
                 function_name: cs.name.clone(),

@@ -1502,6 +1502,17 @@ struct EmbeddingBatchIterator<'a> {
 impl<'a> Iterator for EmbeddingBatchIterator<'a> {
     type Item = Result<Vec<(String, Embedding)>, StoreError>;
 
+    /// Advances the iterator to the next batch of embedding records from the database.
+    ///
+    /// Fetches a batch of chunks from the database ordered by rowid, deserializes their embeddings, and returns them as a vector of (id, embedding) pairs. Automatically handles pagination by tracking the last rowid and fetching subsequent batches on subsequent calls. Skips batches where all rows fail deserialization and continues to the next batch.
+    ///
+    /// # Returns
+    ///
+    /// `Option<Result<Vec<(String, Embedding)>, Error>>` - Some(Ok(batch)) with the next batch of embeddings, Some(Err(e)) if a database error occurs, or None when all records have been consumed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a database error if the query fails or if the connection pool encounters an error.
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.done {

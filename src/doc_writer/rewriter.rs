@@ -134,8 +134,8 @@ pub fn detect_existing_doc_range(
             }
 
             // Multi-line: find closing delimiter
-            for end_idx in (idx + 1)..file_lines.len() {
-                if file_lines[end_idx].trim().ends_with(delimiter) {
+            for (end_idx, line) in file_lines.iter().enumerate().skip(idx + 1) {
+                if line.trim().ends_with(delimiter) {
                     return Some(idx..end_idx + 1);
                 }
             }
@@ -274,6 +274,23 @@ pub fn rewrite_file(
         let insertion_line = find_insertion_point(line_start, &file_lines, language);
 
         let existing_range = detect_existing_doc_range(insertion_line, &file_lines, language);
+
+        // Skip if function already has an adequate doc comment (>= 30 chars)
+        // This prevents re-writing docs on every run when the cache still has the entry
+        if let Some(ref range) = existing_range {
+            let existing_doc: String = file_lines[range.clone()]
+                .iter()
+                .map(|l| l.trim())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if existing_doc.len() >= 30 {
+                tracing::debug!(
+                    function = %edit.function_name,
+                    "Function already has adequate doc, skipping"
+                );
+                continue;
+            }
+        }
 
         // Detect indentation from the chunk's first line
         let chunk_line_idx = line_start.saturating_sub(1); // 0-based
