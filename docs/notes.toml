@@ -1033,3 +1033,11 @@ mentions = [
     "model_eval.rs",
     "css.rs",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "Reranking should be default for --json output (agent use). Agents want best results, don't care about 500ms latency. Interactive stays fast. Add to next PR."
+mentions = [
+    "search",
+    "reranker.rs",
+]

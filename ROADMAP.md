@@ -125,6 +125,38 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
   - **Deployment:** Upload merged ONNX to HuggingFace (`jamie8johnson/e5-base-v2-code-search`), cqs downloads it instead of base E5. Or upload LoRA adapter separately for A/B testing.
   - **Why:** E5-base-v2 is a general NL model — prose (README/CHANGELOG) naturally scores higher than generated code NL descriptions. LoRA teaches the model that "parse config file" should match `fn parse_config()` better than a README paragraph about configuration. This is the real fix for code-vs-doc ranking.
 
+- [ ] SQ-10: Fine-tune code-specific cross-encoder reranker.
+  - Base: `cross-encoder/ms-marco-MiniLM-L-6-v2` (our current reranker, 22M params)
+  - Training data: 1.7M CodeSearchNet pairs with binary labels (match/non-match)
+  - Infrastructure: same conda env, same A6000, ~30 min training
+  - Export to ONNX, drop into `src/reranker.rs` (same ORT loading path)
+  - Also make reranking default for `--json` output (agents don't care about 500ms latency)
+  - Stacks with LoRA embeddings: better recall (embeddings) + better precision (reranker)
+
+### Potential quality improvements (research backlog)
+
+Roughly ordered by effort/impact ratio:
+
+- **Query expansion** — expand "parse config" → "parse config file toml yaml settings read load deserialize" before searching. Synonym table or small LLM. Cheap, helps recall on vague queries. No model changes.
+- **HyDE (Hypothetical Document Embeddings)** — given a query, LLM generates a hypothetical function, embed that instead of the query. Dramatic improvement on vague queries. One LLM call per search (expensive for interactive, fine for agents).
+- **SPLADE (sparse learned retrieval)** — trained sparse representations that learn which terms matter. Could replace/augment FTS5 keyword matching. Research effort.
+- **ColBERT late interaction** — per-token vectors instead of single-vector per document. Fine-grained matching, much better for long functions. Major architecture change (storage + search path).
+- **Type-aware embeddings** — encode type signatures separately. "function returning Result<Config>" matches on return type. Novel, potentially paper-worthy.
+- **GNN on call graph** — embed functions by position in call graph, not just content. Functions that call each other cluster together. Practical variant: pre-compute graph-aware embeddings at index time (Parse → E5 embed → GNN propagate → store). No runtime graph lookups needed. Marginal over SQ-4 text enrichment unless targeting structural queries ("function connecting HTTP to database"). PyTorch Geometric + A6000. Main complexity: incremental updates in watch mode (neighbor re-propagation).
+
+### Literature survey (before paper)
+
+Deep dive into current code search/retrieval landscape. Identify benchmarks, baselines, and positioning for our paper.
+
+- **CoIR benchmark** (pip install coir-eval, installed in cqs-train env) — the standard eval suite for code retrieval. 10 datasets, 8 tasks, 14 languages, 2M docs. ACL 2025 main. Run on base E5, LoRA, and LoRA+LLM for the paper. Same leaderboard as CoRNStack/CodeXEmbed.
+- **CoRNStack** (gangiswag.github.io/cornstack) — large-scale contrastive training data for code retrieval, claims SOTA. Uses curated paired data, not git history. Read methodology, compare against their CodeSearchNet/AdvTest numbers.
+- **CodeXEmbed** (COLM 2025) — generalist code embedding family. Understand their architecture and eval setup.
+- **C2LLM** (arXiv 2512.21332) — contrastive code LLMs for retrieval. 0.5B and 7B models. Check if they release eval code.
+- **CodeCSE** (arXiv 2407.06360) — multilingual code/comment sentence embeddings. Contrastive learning approach.
+- **Refining embeddings with PEFT** (arXiv 2405.04126) — LoRA on CodeT5+ for code search. Closest to our approach but uses CodeSearchNet, not git history.
+- **CodeSearchNet benchmark** — the standard eval. Understand tasks, metrics, languages covered. Consider evaluating cqs against it.
+- **Lore** (arXiv 2603.15566) — repurposing git commit messages as structured knowledge for AI agents. Complementary to our work.
+
 ### v1.1.0 Release Plan
 
 **Execution order:**
