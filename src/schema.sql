@@ -1,4 +1,4 @@
--- cq index schema v15
+-- cq index schema v16
 -- v10: Generalized for multiple sources (filesystem, SQL Server, etc.)
 --   file → origin (unique identifier like "file:src/main.rs" or "mssql:server/db/dbo.MyProc")
 --   file_mtime → source_mtime (nullable for sources without mtime)
@@ -114,12 +114,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
     tokenize='unicode61'
 );
 
--- LLM-generated summaries cache (SQ-6)
--- Keyed by content_hash so summaries survive chunk deletion and --force rebuilds.
--- Same code = same summary regardless of file location.
+-- LLM-generated summaries cache (SQ-6, v16: composite PK)
+-- Keyed by (content_hash, purpose) so the same code can have multiple summary types
+-- (e.g., 'summary', 'doc-comment'). Summaries survive chunk deletion and --force rebuilds.
 CREATE TABLE IF NOT EXISTS llm_summaries (
-    content_hash TEXT PRIMARY KEY,
+    content_hash TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT 'summary',
     summary TEXT NOT NULL,
     model TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (content_hash, purpose)
 );

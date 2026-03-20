@@ -13,13 +13,14 @@ use crate::parser::{Chunk, ChunkType, Language};
 /// against the stored version and returns StoreError::SchemaMismatch if different.
 ///
 /// History:
-/// - v15: Current (768-dim embeddings — dropped sentiment dimension, SQ-9)
+/// - v16: Current (composite PK on llm_summaries: content_hash + purpose)
+/// - v15: 768-dim embeddings — dropped sentiment dimension (SQ-9)
 /// - v14: llm_summaries table for SQ-6
 /// - v13: enrichment_hash for idempotent enrichment, hnsw_dirty flag
 /// - v12: parent_type_name column for method→class association
 /// - v11: type_edges table for type-level dependency tracking
 /// - v10: sentiment in embeddings, call graph, notes
-pub const CURRENT_SCHEMA_VERSION: i32 = 15;
+pub const CURRENT_SCHEMA_VERSION: i32 = 16;
 pub const MODEL_NAME: &str = "intfloat/e5-base-v2";
 /// Expected embedding dimensions — derived from crate::EMBEDDING_DIM
 pub const EXPECTED_DIMENSIONS: u32 = crate::EMBEDDING_DIM as u32;
