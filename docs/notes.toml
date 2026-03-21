@@ -1075,3 +1075,13 @@ mentions = [
 sentiment = 0.5
 text = "CoIR cosqa transfer test: LoRA v3 gives +0.005 NDCG@10 on out-of-distribution task. Small but genuine transfer — not just CSN memorization."
 mentions = ["llm.rs"]
+
+[[note]]
+sentiment = -0.5
+text = "CodeSage-large-v2 gets 20% R@1 on hard eval despite 94.26 on CSN. Code-native model can't parse NL queries. CSN benchmark flatters code models — real NL→code search needs NL understanding. E5-base-v2 is the right base."
+mentions = ["embedder"]
+
+[[note]]
+sentiment = 0.0
+text = "LoRA rank 16 may be the bottleneck, not data size or epochs. CSN and CosQA both approaching asymptote at rank 16. Rank sweep (32/64) running to test if higher capacity raises the ceiling."
+mentions = ["embedder"]

@@ -138,11 +138,20 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 | 5 | **Hard negative reranker (V2)** | Medium | Unknown | V1 failed (random negs). BM25 top-k negatives may fix. Untested on CoIR. |
 | 6 | **ColBERT late interaction** | Hard | Potentially high | Token-level matching. New index structure. Not started. |
 
+**Evaluated and rejected:**
+- **CodeSage-large-v2** — 94.26 on CSN but 20% R@1 on hard eval. Code-native model can't parse NL queries.
+- **Consistency filtering** — CSN is already clean (0 pairs filtered). LoRA regressions aren't from noise.
+- **Mixed LoRA (v6)** — CSN+CosQA+SO training dilutes CSN signal without improving CosQA. Our docstring pairs > CoIR training splits.
+
+**In progress:**
+- **Sample size sweep** — 10k/25k/50k/100k/200k CSN + docstrings at 1ep. Finding optimal training set size.
+- **Discriminating descriptions** — change LLM summary prompt from generic ("sorts an array") to distinguishing ("stable sort preserving relative order, recursive divide-and-conquer"). May fix the LLM enrichment regression on hard eval.
+
 **Other ideas (lower priority):**
 - **Query expansion** — synonym table or small LLM. Cheap recall boost. No model changes.
 - **SPLADE** — sparse learned retrieval. Could replace/augment FTS5.
 - **GNN on call graph** — embed by call graph position. Marginal over SQ-4 text enrichment.
-- **Full 1.7M LoRA** — train on entire CodeSearchNet (not subset). v4 uses 200k.
+- **Mixed LoRA** — train on CSN + cosqa + SO for generalist adapter (prevents over-specialization).
 
 ### CoIR Benchmark Progress
 
