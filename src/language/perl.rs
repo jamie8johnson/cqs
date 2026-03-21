@@ -131,6 +131,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a Perl subroutine and verifies it is correctly identified as a function chunk.
+    /// 
+    /// This test function writes a Perl subroutine definition to a temporary file, parses the file using the Parser, and asserts that the subroutine named "add" is recognized as a Function chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This is a test function that asserts parse results.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the file cannot be parsed, the "add" subroutine is not found in the parsed chunks, or the chunk type is not Function.
 
     #[test]
     fn parse_perl_subroutine() {
@@ -146,6 +161,19 @@ sub add {
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Parses a Perl package definition and verifies that the parser correctly identifies it as a module chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no arguments. It creates a temporary Perl file containing a simple Calculator package with an `add` subroutine, then uses a `Parser` to extract code chunks from the file.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. This is a test function that asserts the parser successfully identifies the "Calculator" package as a `Module` chunk type.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, or the "Calculator" module chunk is not found in the parsed results.
 
     #[test]
     fn parse_perl_package() {
@@ -167,6 +195,26 @@ sub add {
             .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
         assert!(pkg.is_some(), "Should find 'Calculator' package as Module");
     }
+    /// Parses Perl subroutine code and verifies that function calls within the subroutine are correctly extracted by the parser.
+    /// 
+    /// This is a test function that creates a temporary Perl file containing a subroutine with multiple function calls, parses it using the Parser, locates the specific subroutine chunk, extracts the function calls from it, and asserts that the expected function names are identified.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function returns `()` and is intended to be run as a test assertion.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file creation fails
+    /// - Parser initialization fails
+    /// - File parsing fails
+    /// - The "process" subroutine is not found in the parsed chunks
+    /// - The expected "transform" function call is not found in the extracted calls
 
     #[test]
     fn parse_perl_calls() {

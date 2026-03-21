@@ -258,6 +258,16 @@ mod tests {
     use crate::impact::RiskScore;
     use crate::note::path_matches_mention;
 
+    /// Creates a mock ReviewedFunction with minimal default values for testing purposes.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name to assign to the reviewed function
+    /// * `level` - The RiskLevel to use for both risk_level and blast_radius
+    ///
+    /// # Returns
+    ///
+    /// A ReviewedFunction instance with the provided name and risk level, hardcoded file path of "src/lib.rs", line_start of 1, and all numeric risk scores initialized to zero.
     fn mock_reviewed(name: &str, level: RiskLevel) -> ReviewedFunction {
         ReviewedFunction {
             name: name.to_string(),

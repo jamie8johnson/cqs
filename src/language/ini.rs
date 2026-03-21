@@ -22,6 +22,15 @@ const DOC_NODES: &[&str] = &["comment"];
 
 const STOPWORDS: &[&str] = &["true", "false", "yes", "no", "on", "off"];
 
+/// Extracts the return type from a function signature.
+/// 
+/// # Arguments
+/// 
+/// * `_signature` - A function signature string (unused, as INI format does not support functions)
+/// 
+/// # Returns
+/// 
+/// Returns `None`, as INI files do not contain function definitions or return types.
 fn extract_return(_signature: &str) -> Option<String> {
     // INI has no functions or return types
     None
@@ -73,6 +82,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Tests that the parser correctly identifies INI file sections as Module chunks.
+    /// 
+    /// This test verifies that when parsing an INI configuration file with multiple named sections (e.g., `[database]`, `[server]`), each section is properly recognized and represented as a Module-type chunk with the correct section name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts on parsing results and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create, fails to parse the temporary file, or if either the "database" or "server" sections are not found with ChunkType::Module.
 
     #[test]
     fn parse_ini_sections() {
@@ -99,6 +123,13 @@ port = 8080
             names
         );
     }
+    /// Parses an INI configuration file and verifies that a debug property setting is correctly identified.
+    /// 
+    /// This test function creates a temporary INI file with app configuration settings, parses it using the Parser, and asserts that the debug property is found and correctly typed as a Property chunk.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, fails to parse the temporary file, or if the debug property is not found in the parsed chunks with the expected Property chunk type.
 
     #[test]
     fn parse_ini_settings() {
@@ -118,6 +149,19 @@ log_level = info
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
+    /// Verifies that the parser correctly handles INI files without extracting any function calls.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser extracts any calls from an INI file chunk, indicating incorrect parsing behavior.
 
     #[test]
     fn parse_ini_no_calls() {

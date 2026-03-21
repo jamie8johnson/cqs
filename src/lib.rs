@@ -528,6 +528,20 @@ mod tests {
 
     use crate::test_helpers::setup_store;
 
+    /// Creates a notes file in the specified directory with the given content.
+    ///
+    /// # Arguments
+    ///
+    /// * `dir` - The directory path where the notes file will be created
+    /// * `content` - The content to write to the notes.toml file
+    ///
+    /// # Returns
+    ///
+    /// Returns a `PathBuf` pointing to the created notes.toml file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the file write operation fails.
     fn make_notes_file(dir: &std::path::Path, content: &str) -> PathBuf {
         let path = dir.join("notes.toml");
         std::fs::write(&path, content).unwrap();
@@ -706,6 +720,19 @@ mentions = ["store.rs"]
             "Should return empty for directory with no supported files"
         );
     }
+    /// Verifies that the `is_test_chunk` function correctly identifies test files based on filename patterns.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no arguments.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing. This is a test function that validates the behavior of `is_test_chunk` through assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any assertion fails, indicating that `is_test_chunk` does not correctly identify test files or non-test files according to expected patterns.
 
     #[test]
     fn is_test_chunk_spec_patterns() {

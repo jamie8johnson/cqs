@@ -115,6 +115,15 @@ impl TypeEdgeKind {
 }
 
 impl std::fmt::Display for TypeEdgeKind {
+    /// Formats the value using the given formatter by writing its string representation.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the string representation to
+    ///
+    /// # Returns
+    ///
+    /// A `Result` indicating whether the formatting operation succeeded or failed
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
@@ -122,6 +131,15 @@ impl std::fmt::Display for TypeEdgeKind {
 
 impl std::str::FromStr for TypeEdgeKind {
     type Err = String;
+    /// Parses a string into a TypeEdgeKind variant.
+    ///
+    /// # Arguments
+    ///
+    /// * `s` - A string slice representing a TypeEdgeKind. Valid values are "Param", "Return", "Field", "Impl", "Bound", and "Alias".
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(TypeEdgeKind)` if the string matches a valid variant, or `Err(String)` with an error message if the string is unrecognized.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Param" => Ok(TypeEdgeKind::Param),
@@ -166,6 +184,19 @@ pub struct ChunkTypeRefs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Tests that all TypeEdgeKind variants can be converted to strings and parsed back to equal values.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that operates on hardcoded TypeEdgeKind variants.
+    ///
+    /// # Returns
+    ///
+    /// None.
+    ///
+    /// # Panics
+    ///
+    /// Panics if parsing a stringified TypeEdgeKind fails or if a round-trip conversion does not produce an equal value.
 
     #[test]
     fn type_edge_kind_round_trip() {

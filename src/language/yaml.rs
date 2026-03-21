@@ -21,6 +21,15 @@ const STOPWORDS: &[&str] = &[
     "true", "false", "null", "yes", "no", "on", "off",
 ];
 
+/// Extracts the return type from a function signature.
+/// 
+/// # Arguments
+/// 
+/// * `_signature` - A function signature string to parse (unused for YAML as it has no function types)
+/// 
+/// # Returns
+/// 
+/// Returns `None` as YAML does not support function signatures or return type annotations.
 fn extract_return(_signature: &str) -> Option<String> {
     // YAML has no functions or return types
     None
@@ -96,6 +105,17 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a YAML file and verifies that top-level keys are correctly extracted by the parser.
+    /// 
+    /// This is a unit test that creates a temporary YAML file with service configuration data, parses it using the Parser, and asserts that the resulting chunks contain the expected top-level keys ("name" and "version").
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, the file cannot be parsed, or if the expected "name" or "version" keys are not found in the parsed chunks.
 
     #[test]
     fn parse_yaml_top_level_keys() {
@@ -120,6 +140,19 @@ dependencies:
             names
         );
     }
+    /// Tests that the parser correctly identifies YAML configuration sections as Property chunk types.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a unit test function.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts on parser behavior and panics if assertions fail.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the 'server' chunk is not found in the parsed output or if the chunk type is not ChunkType::Property.
 
     #[test]
     fn parse_yaml_chunk_type() {
@@ -134,6 +167,19 @@ dependencies:
         assert!(server.is_some(), "Expected 'server' chunk");
         assert_eq!(server.unwrap().chunk_type, ChunkType::Property);
     }
+    /// Verifies that parsing a YAML configuration file containing no function calls produces empty call extraction results.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the YAML file contains any extracted function calls, indicating the parser incorrectly identified calls in static configuration data.
 
     #[test]
     fn parse_yaml_no_calls() {

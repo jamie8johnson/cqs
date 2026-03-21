@@ -38,6 +38,15 @@ const STOPWORDS: &[&str] = &[
     "c", "list", "data", "frame", "matrix", "vector", "length", "nrow", "ncol",
 ];
 
+/// Extracts the return type from an R function signature.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A string slice representing an R function signature
+/// 
+/// # Returns
+/// 
+/// Returns `None` as R functions do not have type annotations in their signatures, so no return type information can be extracted.
 fn extract_return(_signature: &str) -> Option<String> {
     // R has no type annotations in signatures
     None
@@ -89,6 +98,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses an R function definition using the arrow assignment operator and verifies the parser correctly identifies it as a function chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to parse the temporary file, if the "greet" function chunk is not found in the parsed output, or if the chunk type is not identified as a Function.
 
     #[test]
     fn parse_r_function_arrow() {
@@ -103,6 +125,19 @@ greet <- function(name) {
         let func = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Verifies that the parser correctly identifies and extracts multiple function definitions from an R source file.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing; this is a unit test that uses assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the assertions fail, indicating that the parser did not correctly identify the "add" or "multiply" functions in the parsed chunks.
 
     #[test]
     fn parse_r_multiple_functions() {
@@ -121,6 +156,19 @@ multiply <- function(a, b) {
         assert!(chunks.iter().any(|c| c.name == "add"));
         assert!(chunks.iter().any(|c| c.name == "multiply"));
     }
+    /// Parses R function definitions and extracts function calls within them, verifying that the parser correctly identifies called functions.
+    /// 
+    /// # Arguments
+    /// 
+    /// No parameters. This is a test function that uses hardcoded R code.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This function performs assertions to verify parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if temporary file creation fails, if parsing the R file fails, if the expected function "process_data" is not found in parsed chunks, or if the extracted function calls do not contain the expected "print" call.
 
     #[test]
     fn parse_r_calls() {

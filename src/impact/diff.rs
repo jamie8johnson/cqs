@@ -232,6 +232,19 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    /// Creates a test Store instance with a temporary database directory.
+    ///
+    /// This function initializes a new Store with a temporary directory and default ModelInfo configuration. The temporary directory is returned alongside the Store to ensure the database persists for the duration of the test.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - A newly initialized Store instance
+    /// - The TempDir holding the temporary database file
+    ///
+    /// # Panics
+    ///
+    /// Panics if temporary directory creation fails, if opening the Store fails, or if Store initialization fails.
     fn make_test_store() -> (crate::Store, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("index.db");
@@ -240,6 +253,19 @@ mod tests {
         (store, dir)
     }
 
+    /// Creates a ChunkSummary for a Rust function with basic initialization.
+    ///
+    /// Constructs a ChunkSummary struct with default values for a Rust function chunk. The function sets up metadata like the function name, file path, and line information, while leaving content and documentation fields empty for later population.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function, used for both the id and name fields
+    /// * `file` - The file path where the function is located
+    /// * `line_start` - The starting line number of the function
+    ///
+    /// # Returns
+    ///
+    /// A new ChunkSummary struct with language set to Rust, chunk_type set to Function, line_end calculated as line_start + 5, and other fields initialized to empty or default values.
     fn make_chunk_summary(name: &str, file: &str, line_start: u32) -> ChunkSummary {
         ChunkSummary {
             id: name.to_string(),
@@ -259,6 +285,17 @@ mod tests {
         }
     }
 
+    /// Creates a `ChangedFunction` struct from the provided function metadata.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function
+    /// * `file` - The file path where the function is defined
+    /// * `line_start` - The starting line number of the function in the file
+    ///
+    /// # Returns
+    ///
+    /// A `ChangedFunction` struct containing the provided function name, file path, and line number information.
     fn make_changed(name: &str, file: &str, line_start: u32) -> ChangedFunction {
         ChangedFunction {
             name: name.to_string(),
@@ -267,6 +304,11 @@ mod tests {
         }
     }
 
+    /// Constructs an empty call graph with no edges or nodes.
+    ///
+    /// # Returns
+    ///
+    /// A new `CallGraph` instance with empty forward and reverse adjacency maps, ready to have nodes and edges added to it.
     fn make_empty_graph() -> CallGraph {
         CallGraph {
             forward: HashMap::new(),

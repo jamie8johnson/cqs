@@ -39,7 +39,22 @@ impl Store {
         self.search_filtered(query, &SearchFilter::default(), limit, threshold)
     }
 
-    /// Search with filters
+    /// Searches for embeddings matching a query with optional filtering and ranking.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The embedding vector to search for
+    /// * `filter` - Search filter configuration including path patterns, RRF settings, and demotion rules
+    /// * `limit` - Maximum number of results to return
+    /// * `threshold` - Minimum similarity score threshold for results
+    ///
+    /// # Returns
+    ///
+    /// A vector of search results ranked by relevance, containing up to `limit` entries that exceed the similarity threshold.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError` if loading cached note summaries fails or if the underlying search operation encounters a storage error.
     pub fn search_filtered(
         &self,
         query: &Embedding,
@@ -419,6 +434,18 @@ mod tests {
     use crate::test_helpers::{mock_embedding, setup_store};
     use std::path::PathBuf;
 
+    /// Constructs a mock `Chunk` with the provided metadata and a placeholder function body.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function chunk.
+    /// * `file` - The file path where the chunk is located.
+    /// * `lang` - The programming language of the chunk.
+    /// * `chunk_type` - The type classification of the chunk.
+    ///
+    /// # Returns
+    ///
+    /// A new `Chunk` struct with a generated ID based on the file path and content hash, mock function signature and content, and default values for other fields.
     fn make_chunk(
         name: &str,
         file: &str,

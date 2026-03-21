@@ -487,6 +487,16 @@ mod tests {
         dir
     }
 
+    /// Executes a git command in the specified repository directory.
+    ///
+    /// # Arguments
+    ///
+    /// * `repo` - The path to the git repository where the command should be executed
+    /// * `args` - The git subcommand and arguments to execute
+    ///
+    /// # Panics
+    ///
+    /// Panics if the git command fails or returns a non-zero exit status. The panic message includes the attempted git arguments and the stderr output from the failed command.
     fn run_git(repo: &Path, args: &[&str]) {
         let output = Command::new("git")
             .args(["-C"])
@@ -501,6 +511,26 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    /// Generates and validates training data from a test repository, verifying that the training data generation process correctly produces triplet data in JSONL format.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is an integration test that creates its own test fixtures.
+    ///
+    /// # Returns
+    ///
+    /// None. This function performs assertions to validate the training data generation process.
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The test repository creation fails
+    /// - The temporary output directory creation fails
+    /// - Training data generation fails unexpectedly
+    /// - The generated JSONL output file cannot be read
+    /// - Any line in the JSONL output is not valid JSON
+    /// - Required fields ("query", "positive", "negative") are missing from generated triplets
+    /// - Statistical assertions fail (zero triplets generated, unexpected repo/commit counts)
 
     #[test]
     fn integration_generate_training_data() {
@@ -581,6 +611,19 @@ mod tests {
             checkpoint_path.display()
         );
     }
+    /// Verifies that resuming training data generation does not produce duplicate entries.
+    ///
+    /// # Arguments
+    ///
+    /// This is an integration test with no parameters.
+    ///
+    /// # Description
+    ///
+    /// Creates a test repository and generates training data in two runs: an initial run followed by a resumed run. Validates that the resumed run produces no new triplets and that the output file contains the same number of lines as after the first run, ensuring no duplicates are created when resuming from a checkpoint.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the training data generation fails, if file operations fail, or if assertions about duplicate prevention are violated.
 
     #[test]
     fn integration_resume_produces_no_duplicates() {
@@ -639,6 +682,19 @@ mod tests {
             "First run should have produced triplets"
         );
     }
+    /// Tests that the training data generation correctly skips directories that are not Git repositories.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no parameters. It creates temporary directories and a configuration for testing purposes.
+    ///
+    /// # Returns
+    ///
+    /// This function returns nothing. It performs assertions to verify that when `generate_training_data` is called on a non-Git repository directory, it processes 0 repositories and generates 0 triplets.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the temporary directory creation fails, if `generate_training_data` returns an error, or if the assertions about processed repositories or triplets fail.
 
     #[test]
     fn skips_non_git_repos() {
@@ -661,6 +717,19 @@ mod tests {
         assert_eq!(stats.repos_processed, 0);
         assert_eq!(stats.total_triplets, 0);
     }
+    /// Verifies that the dedup_cap parameter correctly limits the number of triplets generated per unique function content.
+    ///
+    /// # Arguments
+    ///
+    /// This is a test function with no parameters.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing. The function performs assertions to validate the deduplication cap behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that the capped deduplication (cap=1) produced more triplets than the uncapped version (cap=100), which would indicate incorrect deduplication behavior.
 
     #[test]
     fn dedup_cap_limits_triplets() {

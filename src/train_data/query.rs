@@ -57,6 +57,21 @@ pub fn normalize_query(msg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Strips conventional commit prefixes from query strings and normalizes them to lowercase.
+    ///
+    /// This function tests that the `normalize_query` function properly removes conventional commit type prefixes (such as "fix:", "feat:", "feat!:") from the beginning of query strings, handling various cases including scope notation and breaking change indicators. The resulting normalized query contains only the commit message body in lowercase.
+    ///
+    /// # Arguments
+    ///
+    /// None - this is a test function that implicitly tests the `normalize_query` function.
+    ///
+    /// # Returns
+    ///
+    /// None - this is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the assertions fail, indicating that `normalize_query` does not properly strip conventional commit prefixes or normalize to lowercase as expected.
 
     #[test]
     fn strip_conventional_commit_prefix() {
@@ -67,6 +82,19 @@ mod tests {
         assert_eq!(normalize_query("feat!: breaking change"), "breaking change");
         assert_eq!(normalize_query("FIX: case insensitive"), "case insensitive");
     }
+    /// Removes common leading verbs from query strings to normalize them for comparison or processing.
+    ///
+    /// # Arguments
+    ///
+    /// None. This function tests the `normalize_query` function with predefined inputs.
+    ///
+    /// # Returns
+    ///
+    /// None. This is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any assertion fails, indicating that `normalize_query` did not correctly remove leading verbs like "add", "implement", or "wip" from the input strings.
 
     #[test]
     fn strip_leading_verb() {
@@ -80,12 +108,38 @@ mod tests {
         );
         assert_eq!(normalize_query("wip config changes"), "config changes");
     }
+    /// Normalizes a query string by removing leading/trailing whitespace and stripping out pull request references (text in parentheses or preceded by `#`).
+    ///
+    /// # Arguments
+    ///
+    /// None - this is a test function that validates the `normalize_query` function.
+    ///
+    /// # Returns
+    ///
+    /// None - this test function asserts expected behavior through assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any assertion fails, indicating that `normalize_query` did not produce the expected normalized output.
 
     #[test]
     fn strip_trailing_pr_reference() {
         assert_eq!(normalize_query("fix timeout (#234)"), "timeout");
         assert_eq!(normalize_query("update config #123"), "config");
     }
+    /// Verifies that normalize_query correctly strips commit type prefixes, scope annotations, and issue references from a commit message, returning only the meaningful content.
+    ///
+    /// # Arguments
+    ///
+    /// None - this is a test function that uses a hardcoded input.
+    ///
+    /// # Returns
+    ///
+    /// None - this is a test function that asserts the expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that normalize_query did not correctly process the commit message format "fix(parser): add timeout handling (#456)" into "timeout handling".
 
     #[test]
     fn combined_stripping() {
@@ -94,12 +148,36 @@ mod tests {
             "timeout handling"
         );
     }
+    /// This is a test function, not a function that requires a doc comment. However, if documentation were needed, it would be:
+    ///
+    /// Tests that `normalize_query` returns the original input string when the result after stripping would be empty or when the input contains no special markers.
+    ///
+    /// # Arguments
+    ///
+    /// No parameters.
+    ///
+    /// # Returns
+    ///
+    /// No return value; this is a test assertion function.
 
     #[test]
     fn empty_after_strip_returns_original() {
         assert_eq!(normalize_query("fix:"), "fix:");
         assert_eq!(normalize_query("wip"), "wip");
     }
+    /// Tests that the normalize_query function correctly handles queries that contain no leading or trailing whitespace, returning the input string unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// None - this is a test function with no parameters.
+    ///
+    /// # Returns
+    ///
+    /// None - this is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that normalize_query did not return the expected unmodified string.
 
     #[test]
     fn no_stripping_needed() {

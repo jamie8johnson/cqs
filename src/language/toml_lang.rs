@@ -70,6 +70,17 @@ fn post_process_toml(
     true
 }
 
+/// Extracts the return type from a function signature.
+/// 
+/// This function is a no-op for TOML content, as TOML has no function or return type syntax.
+/// 
+/// # Arguments
+/// 
+/// * `_signature` - A function signature string (unused for TOML)
+/// 
+/// # Returns
+/// 
+/// Always returns `None`, as TOML does not support function definitions or return type annotations.
 fn extract_return(_signature: &str) -> Option<String> {
     // TOML has no functions or return types
     None
@@ -121,6 +132,17 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a TOML file and verifies that the parser correctly identifies table sections.
+    /// 
+    /// This is a test function that creates a temporary TOML file with package and dependencies tables, parses it using the Parser, and asserts that both expected table names are present in the parsed chunks.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This function is a test that asserts expected parsing behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, fails to parse the file, or if the expected "package" or "dependencies" tables are not found in the parsed chunks.
 
     #[test]
     fn parse_toml_table() {
@@ -147,6 +169,19 @@ serde = "1.0"
             names
         );
     }
+    /// Tests that the parser correctly identifies and classifies TOML configuration chunks by their type. Specifically verifies that a `[server]` section is recognized as a Property chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. Returns unit type `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to parse the temporary TOML file, if the 'server' chunk is not found in the parsed results, or if the chunk type is not `ChunkType::Property`.
 
     #[test]
     fn parse_toml_chunk_type() {
@@ -162,6 +197,21 @@ port = 8080
         assert!(server.is_some(), "Expected 'server' chunk");
         assert_eq!(server.unwrap().chunk_type, ChunkType::Property);
     }
+    /// Parses a TOML file and verifies that no function calls are extracted from it.
+    /// 
+    /// Creates a temporary TOML configuration file containing database settings, parses it using the Parser, and asserts that no calls are found in any of the resulting chunks. This is a unit test that validates the parser correctly handles TOML content without interpreting configuration values as function calls.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function returns `()` and is intended to be run as a test.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if `Parser::new()` fails, if parsing the temporary file fails, or if any extracted chunks contain function calls when none are expected.
 
     #[test]
     fn parse_toml_no_calls() {

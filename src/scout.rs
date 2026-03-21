@@ -110,6 +110,11 @@ pub struct ScoutOptions {
 }
 
 impl Default for ScoutOptions {
+    /// Creates a new instance with default configuration values.
+    ///
+    /// # Returns
+    ///
+    /// A `Self` instance initialized with default search limit, search threshold, and minimum gap ratio constants.
     fn default() -> Self {
         Self {
             search_limit: DEFAULT_SCOUT_SEARCH_LIMIT,
@@ -531,6 +536,17 @@ mod tests {
         );
     }
 
+    /// Creates a mock SearchResult for testing purposes with the specified name, file path, and relevance score.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The identifier and name of the code chunk
+    /// * `file` - The file path as a string where the chunk is located
+    /// * `score` - The relevance score as a floating-point number
+    ///
+    /// # Returns
+    ///
+    /// A SearchResult containing a ChunkSummary with default/placeholder values for a Rust function chunk and the provided score.
     fn mock_result(name: &str, file: &str, score: f32) -> crate::store::SearchResult {
         crate::store::SearchResult {
             chunk: ChunkSummary {

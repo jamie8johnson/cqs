@@ -89,6 +89,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Tests that the parser correctly identifies and classifies a Ruby class definition.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Ruby source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts parsing behavior and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a temporary file, parse the file, find a "Calculator" chunk, or if the chunk type is not `ChunkType::Class`.
 
     #[test]
     fn parse_ruby_class() {
@@ -105,6 +118,19 @@ end
         let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
+    /// Parses a Ruby module definition and verifies the parser correctly identifies it as a Module chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, if the parser fails to parse the file, if the "Helpers" module chunk is not found in the parsed results, or if the chunk type is not Module.
 
     #[test]
     fn parse_ruby_module() {
@@ -121,6 +147,19 @@ end
         let module = chunks.iter().find(|c| c.name == "Helpers").unwrap();
         assert_eq!(module.chunk_type, ChunkType::Module);
     }
+    /// Parses a Ruby file containing a standalone method and verifies it is correctly identified as a function chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "standalone_method" chunk is not found, or the chunk type is not `ChunkType::Function`.
 
     #[test]
     fn parse_ruby_method() {
@@ -135,6 +174,24 @@ end
         let func = chunks.iter().find(|c| c.name == "standalone_method").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Verifies that the parser correctly identifies and classifies singleton methods defined on a Ruby class using the `def self.method_name` syntax.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Ruby source code.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - Temporary file creation fails
+    /// - Parser initialization fails
+    /// - File parsing fails
+    /// - A chunk named "bar" is not found in the parsed results
+    /// - The found chunk is not classified as a `ChunkType::Method`
 
     #[test]
     fn parse_ruby_singleton_method() {
@@ -151,6 +208,19 @@ end
         let method = chunks.iter().find(|c| c.name == "bar").unwrap();
         assert_eq!(method.chunk_type, ChunkType::Method);
     }
+    /// Parses a Ruby class containing a method and verifies the method chunk is correctly identified with its parent class.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. Asserts that a method named "add" is parsed as a Method chunk type with parent class "Calculator".
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "add" method chunk is not found, or any assertion fails.
 
     #[test]
     fn parse_ruby_method_in_class() {
@@ -168,6 +238,24 @@ end
         assert_eq!(method.chunk_type, ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
     }
+    /// Parses a Ruby method defined within a module and verifies it is correctly identified with its parent module name.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. Uses assertions to verify parsing behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - Temporary file creation fails
+    /// - Parser initialization fails
+    /// - File parsing fails
+    /// - The expected method "capitalize_all" is not found in parsed chunks
+    /// - Assertions about chunk type or parent module name fail
 
     #[test]
     fn parse_ruby_method_in_module() {
@@ -185,6 +273,21 @@ end
         assert_eq!(method.chunk_type, ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("StringUtils"));
     }
+    /// Parses a Ruby constant definition and verifies it is correctly identified as a Constant chunk type.
+    /// 
+    /// This is a test function that creates a temporary Ruby file containing a constant assignment, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts on the parse results and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the file cannot be parsed, the "MAX_RETRIES" chunk is not found in the parse results, or the chunk type is not `ChunkType::Constant`.
 
     #[test]
     fn parse_ruby_constant() {
@@ -195,6 +298,21 @@ end
         let c = chunks.iter().find(|c| c.name == "MAX_RETRIES").unwrap();
         assert_eq!(c.chunk_type, ChunkType::Constant);
     }
+    /// Parses a Ruby function and extracts method calls from its body to verify that specific function calls are properly identified.
+    /// 
+    /// This test function creates a temporary Ruby file containing a `process` function that calls `transform` and `puts` methods, parses the file, locates the `process` function chunk, extracts all method calls from it, and verifies that both expected calls are present in the extracted results.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded Ruby source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and will panic if the expected method calls are not found.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser initialization fails, the file parsing fails, the `process` function chunk is not found, or if either the `transform` or `puts` method calls are not extracted from the function.
 
     #[test]
     fn parse_ruby_calls() {

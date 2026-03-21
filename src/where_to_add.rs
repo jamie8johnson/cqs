@@ -92,6 +92,11 @@ pub struct PlacementOptions {
 }
 
 impl Default for PlacementOptions {
+    /// Creates a new instance with default configuration values for placement search parameters.
+    ///
+    /// # Returns
+    ///
+    /// A new `Self` instance with `search_limit` set to `DEFAULT_PLACEMENT_SEARCH_LIMIT`, `search_threshold` set to `DEFAULT_PLACEMENT_SEARCH_THRESHOLD`, `max_imports` set to `MAX_IMPORT_COUNT`, and `query_embedding` set to `None`.
     fn default() -> Self {
         Self {
             search_limit: DEFAULT_PLACEMENT_SEARCH_LIMIT,
@@ -721,6 +726,16 @@ mod tests {
     use super::*;
     use crate::parser::ChunkType;
 
+    /// Creates a ChunkSummary struct with test data for a function code chunk.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the function chunk
+    /// * `sig` - The function signature string
+    /// * `content` - The function body content
+    /// * `lang` - The programming language of the chunk
+    ///
+    /// # Returns
+    /// A ChunkSummary struct populated with the provided parameters and default test values (file path "src/test.rs", lines 1-10, chunk_type as Function, and empty/None fields for doc, parent_id, parent_type_name, content_hash, and window_idx).
     fn make_chunk(name: &str, sig: &str, content: &str, lang: Language) -> ChunkSummary {
         ChunkSummary {
             id: format!("id-{name}"),

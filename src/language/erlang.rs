@@ -88,6 +88,15 @@ fn post_process_erlang(
     true
 }
 
+/// Extracts the return type from an Erlang function signature.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A function signature string to parse
+/// 
+/// # Returns
+/// 
+/// Returns `None` because Erlang is dynamically typed and function signatures do not include explicit return type annotations.
 fn extract_return(_signature: &str) -> Option<String> {
     // Erlang is dynamically typed — no return types in function heads
     None
@@ -153,6 +162,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses an Erlang module file and verifies that function chunks are correctly identified.
+    /// 
+    /// This test function writes a temporary Erlang module file containing a `greet/1` function, parses it using the Parser, and asserts that the resulting chunks include a function chunk with the name "greet" and type `ChunkType::Function`.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None (unit type)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, if parsing fails, if no chunk named "greet" is found in the parsed output, or if the found chunk's type is not `ChunkType::Function`.
 
     #[test]
     fn parse_erlang_function() {
@@ -169,6 +193,21 @@ greet(Name) ->
         let func = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Parses an Erlang module file and verifies that the parser correctly identifies the module chunk.
+    /// 
+    /// This function creates a temporary Erlang file containing a simple calculator module with an `add/2` export, parses it using the `Parser`, and asserts that the resulting chunks contain a module chunk named "calculator".
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that panics on assertion failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a new instance, fails to parse the temporary file, or fails to find a chunk with name "calculator" and type `ChunkType::Module`.
 
     #[test]
     fn parse_erlang_module() {
@@ -186,6 +225,19 @@ add(A, B) -> A + B.
             .find(|c| c.name == "calculator" && c.chunk_type == ChunkType::Module);
         assert!(module.is_some(), "Should find 'calculator' module");
     }
+    /// Parses an Erlang source file containing a record definition and verifies that the parser correctly identifies the record as a struct chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing; this is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, or if the 'state' record/struct chunk is not found in the parsed output.
 
     #[test]
     fn parse_erlang_record() {
@@ -203,6 +255,13 @@ init() -> #state{count = 0, name = "test"}.
             .find(|c| c.name == "state" && c.chunk_type == ChunkType::Struct);
         assert!(record.is_some(), "Should find 'state' record/struct");
     }
+    /// Parses an Erlang module and verifies that function calls within a chunk are correctly extracted.
+    /// 
+    /// This integration test writes a temporary Erlang file containing a module with a `process/1` function that calls `helper/1`, then parses the file and extracts function calls from the `process` chunk. It asserts that the `helper` function is correctly identified as a callee.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser cannot be initialized, the file cannot be parsed, the `process` chunk cannot be found, or if the extracted calls do not contain the expected `helper` function call.
 
     #[test]
     fn parse_erlang_calls() {

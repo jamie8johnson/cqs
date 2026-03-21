@@ -52,6 +52,15 @@ mod tests {
     }
 
     impl MockIndex {
+        /// Creates a new instance with an empty results vector and a specified size capacity.
+        ///
+        /// # Arguments
+        ///
+        /// * `size` - The maximum capacity or size limit for this instance
+        ///
+        /// # Returns
+        ///
+        /// A new `Self` instance with an empty results vector and the given size value
         fn new(size: usize) -> Self {
             Self {
                 results: Vec::new(),
@@ -59,6 +68,15 @@ mod tests {
             }
         }
 
+        /// Creates a new instance with the given index results.
+        ///
+        /// # Arguments
+        ///
+        /// * `results` - A vector of IndexResult items to store in this instance
+        ///
+        /// # Returns
+        ///
+        /// A new Self instance initialized with the provided results and their count.
         fn with_results(results: Vec<IndexResult>) -> Self {
             let size = results.len();
             Self { results, size }
@@ -66,14 +84,34 @@ mod tests {
     }
 
     impl VectorIndex for MockIndex {
+        /// Retrieves the top k search results from the stored results.
+        ///
+        /// # Arguments
+        ///
+        /// * `_query` - An embedding query (unused in this implementation)
+        /// * `k` - The number of top results to return
+        ///
+        /// # Returns
+        ///
+        /// A vector of up to k `IndexResult` items, cloned from the internal results storage.
         fn search(&self, _query: &Embedding, k: usize) -> Vec<IndexResult> {
             self.results.iter().take(k).cloned().collect()
         }
 
+        /// Returns the number of elements currently stored in the collection.
+        ///
+        /// # Returns
+        ///
+        /// The total count of elements in the collection as a `usize`.
         fn len(&self) -> usize {
             self.size
         }
 
+        /// Returns the name of this mock object.
+        ///
+        /// # Returns
+        ///
+        /// A static string slice containing the name "Mock".
         fn name(&self) -> &'static str {
             "Mock"
         }

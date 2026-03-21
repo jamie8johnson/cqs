@@ -7,6 +7,19 @@ use cqs::{analyze_impact, impact_to_json, impact_to_mermaid, suggest_tests};
 use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
+/// Analyzes the impact of changes to a specified target and outputs the results in the requested format.
+///
+/// # Arguments
+///
+/// * `name` - The name of the target to analyze
+/// * `depth` - The maximum depth for the impact analysis, clamped between 1 and 10
+/// * `format` - The output format (Mermaid diagram or JSON)
+/// * `do_suggest_tests` - Whether to generate test suggestions for affected code
+/// * `include_types` - Whether to include type information in the analysis
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful analysis and output, or an error if the project cannot be opened, the target cannot be resolved, or the impact analysis fails.
 pub(crate) fn cmd_impact(
     name: &str,
     depth: usize,

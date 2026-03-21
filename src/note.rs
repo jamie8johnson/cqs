@@ -90,7 +90,11 @@ impl Note {
         format!("{}{}", prefix, self.text)
     }
 
-    /// Get the sentiment value
+    /// Returns the sentiment score of this analysis result.
+    ///
+    /// # Returns
+    ///
+    /// A floating-point value representing the sentiment score, typically in the range [-1.0, 1.0] where negative values indicate negative sentiment, zero indicates neutral sentiment, and positive values indicate positive sentiment.
     pub fn sentiment(&self) -> f32 {
         self.sentiment
     }

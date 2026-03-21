@@ -100,6 +100,17 @@ const STOPWORDS: &[&str] = &[
     "as", "in", "true", "false", "some", "none", "ok", "err",
 ];
 
+/// Extracts the return type from a function signature and formats it as a documentation string.
+/// 
+/// Parses a function signature to find the return type annotation (after `->`) and returns a formatted string describing the return type. If no return type is specified or the annotation is empty, returns `None`.
+/// 
+/// # Arguments
+/// 
+/// `signature` - A function signature string that may contain a return type annotation.
+/// 
+/// # Returns
+/// 
+/// `Some(String)` containing the formatted return type description if a non-empty return type annotation is found; `None` if no return type annotation exists or if the annotation is empty.
 fn extract_return(signature: &str) -> Option<String> {
     if let Some(arrow) = signature.find("->") {
         let ret = signature[arrow + 2..].trim();
@@ -222,6 +233,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a Rust type alias definition and verifies it is correctly identified as a TypeAlias chunk.
+    /// 
+    /// This test function creates a temporary Rust file containing a type alias declaration, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize or parse the file
+    /// - No chunk named "Result" is found in the parsed output
+    /// - The chunk type is not ChunkType::TypeAlias
 
     #[test]
     fn parse_rust_type_alias() {

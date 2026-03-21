@@ -36,6 +36,11 @@ const PIPEABLE_NAMES: &[&str] = &[
     "scout",
 ];
 
+/// Returns a comma-separated string of all command names that support piping.
+///
+/// # Returns
+///
+/// A `String` containing the names of pipeable commands joined by ", ".
 fn pipeable_command_names() -> String {
     PIPEABLE_NAMES.join(", ")
 }

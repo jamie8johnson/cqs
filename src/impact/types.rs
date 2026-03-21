@@ -143,6 +143,15 @@ pub enum RiskLevel {
 }
 
 impl std::fmt::Display for RiskLevel {
+    /// Formats the RiskLevel enum variant as a human-readable string.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the output to.
+    ///
+    /// # Returns
+    ///
+    /// A `std::fmt::Result` indicating whether the formatting operation succeeded.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RiskLevel::High => write!(f, "high"),

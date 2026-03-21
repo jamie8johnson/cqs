@@ -30,6 +30,25 @@ pub fn html_to_markdown(source: &str) -> Result<String> {
 /// Maximum file size for conversion (100 MB)
 const MAX_CONVERT_FILE_SIZE: u64 = 100 * 1024 * 1024;
 
+/// Converts an HTML file to Markdown format.
+///
+/// Reads the HTML file from the specified path and converts its contents to Markdown. The file size must not exceed the configured maximum limit.
+///
+/// # Arguments
+///
+/// * `path` - Path to the HTML file to convert
+///
+/// # Returns
+///
+/// Returns a `Result` containing the converted Markdown string, or an error if the file cannot be read or converted.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// * The file cannot be accessed or its metadata cannot be retrieved
+/// * The file exceeds the maximum allowed file size
+/// * The file cannot be read as UTF-8 text
+/// * The HTML to Markdown conversion fails
 pub fn html_file_to_markdown(path: &Path) -> Result<String> {
     let _span = tracing::info_span!("html_file_to_markdown", path = %path.display()).entered();
     let meta = std::fs::metadata(path)

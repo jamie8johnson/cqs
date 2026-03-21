@@ -70,6 +70,24 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a bash function definition and verifies the parser correctly identifies it as a function chunk.
+    /// 
+    /// This test function creates a temporary bash file containing a function definition, parses it using the Parser, and asserts that the resulting chunk has the correct name ("foo") and type (Function).
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following assertions fail:
+    /// - The parsed chunks list contains exactly one element
+    /// - The chunk name is "foo"
+    /// - The chunk type is ChunkType::Function
 
     #[test]
     fn parse_bash_function() {
@@ -85,6 +103,21 @@ function foo() {
         assert_eq!(chunks[0].name, "foo");
         assert_eq!(chunks[0].chunk_type, ChunkType::Function);
     }
+    /// Parses a short bash function definition and verifies the parser correctly identifies it.
+    /// 
+    /// This is a unit test that validates the parser's ability to extract and classify a simple bash function. It creates a temporary shell file containing a basic function definition, parses it, and asserts that exactly one chunk is returned with the correct name ("foo") and type (Function).
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function returns `()` and is used for assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any assertion fails, indicating the parser did not correctly identify the bash function name, type, or chunk count.
 
     #[test]
     fn parse_bash_function_short() {
@@ -100,6 +133,24 @@ foo() {
         assert_eq!(chunks[0].name, "foo");
         assert_eq!(chunks[0].chunk_type, ChunkType::Function);
     }
+    /// Parses a Bash script containing a function with multiple command calls and verifies that the parser correctly extracts all invoked commands (echo, grep, run_tests) from the function chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Bash script content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to verify parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following conditions fail:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize
+    /// - The parser fails to parse the file
+    /// - The "deploy" function chunk is not found
+    /// - The extracted calls do not include "echo", "grep", or "run_tests" commands
 
     #[test]
     fn parse_bash_calls() {
@@ -124,6 +175,23 @@ function deploy() {
             names
         );
     }
+    /// Verifies that the parser correctly identifies and extracts a multi-line Bash function definition from a shell script file.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any assertion fails, including:
+    /// - If the parser does not extract exactly one chunk from the file
+    /// - If the extracted chunk name is not "setup_env"
+    /// - If the chunk content does not contain "local env_name"
+    /// - If file creation or parsing operations fail
 
     #[test]
     fn parse_bash_multiline() {
@@ -145,6 +213,19 @@ function setup_env() {
         assert_eq!(chunks[0].name, "setup_env");
         assert!(chunks[0].content.contains("local env_name"));
     }
+    /// Verifies that the parser correctly identifies nested function calls within a bash function definition. Creates a temporary bash file containing a `build` function that calls `compile_sources`, `run_tests`, and `package_artifacts`, parses it, and asserts that the extracted calls match the expected function names.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and returns `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, if the parser fails to initialize or parse the file, if the expected number of chunks is not found, if the `build` function chunk is not found, or if the expected function calls are not present in the extracted calls.
 
     #[test]
     fn parse_bash_nested_calls() {
@@ -177,6 +258,19 @@ function compile_sources() {
             names
         );
     }
+    /// Verifies that the parser does not extract any code chunks from a Bash script containing only standalone commands and comments outside of any function definitions.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters. It creates a temporary Bash script file containing standalone echo and ls commands along with comments.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. This is a test function that verifies parser behavior through assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser extracts any chunks from the script, indicating incorrect behavior in treating bare commands as non-extractable code chunks.
 
     #[test]
     fn parse_bash_no_chunks_outside_function() {
@@ -195,6 +289,24 @@ ls -la
             chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
+    /// Verifies that the parser correctly extracts doc comments from Bash functions.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing (`()`). This is a test assertion function.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser initialization fails
+    /// - The file cannot be parsed
+    /// - A function named "deploy" is not found in the parsed chunks
+    /// - The doc comment does not contain the text "Deploy"
 
     #[test]
     fn parse_bash_doc_comment() {

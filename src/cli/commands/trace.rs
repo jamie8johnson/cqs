@@ -10,6 +10,25 @@ use cqs::Store;
 use super::resolve::resolve_target;
 use crate::cli::OutputFormat;
 
+/// Traces the dependency path from a source code chunk to a target code chunk, displaying the results in the specified format.
+///
+/// # Arguments
+///
+/// * `source` - The source code chunk identifier to start tracing from
+/// * `target` - The target code chunk identifier to trace to
+/// * `max_depth` - The maximum depth to traverse when searching for a path
+/// * `format` - The output format for the trace results (JSON, Mermaid, or plain text)
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful trace completion, or an `Err` if the project store cannot be opened, targets cannot be resolved, or output serialization fails.
+///
+/// # Errors
+///
+/// This function returns an error if:
+/// - The project store cannot be opened or read
+/// - The source or target identifiers cannot be resolved to valid chunks
+/// - JSON serialization fails (when using JSON format)
 pub(crate) fn cmd_trace(
     source: &str,
     target: &str,

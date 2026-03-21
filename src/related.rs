@@ -176,6 +176,19 @@ mod tests {
 
     use crate::test_helpers::{mock_embedding, setup_store};
 
+    /// Creates a mock Rust function chunk for testing purposes.
+    ///
+    /// This function generates a `Chunk` struct representing a Rust function with placeholder content and a blake3 hash-based identifier. It's useful for creating test data without parsing actual source files.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function
+    /// * `file` - The file path where the function is located
+    /// * `chunk_type` - The type classification of this chunk
+    ///
+    /// # Returns
+    ///
+    /// A `crate::parser::Chunk` struct with all fields populated, including a generated function signature, placeholder content, and a hash-based ID.
     fn make_chunk(name: &str, file: &str, chunk_type: ChunkType) -> crate::parser::Chunk {
         let content = format!("fn {}() {{ /* body */ }}", name);
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();

@@ -160,7 +160,17 @@ impl Store {
         })
     }
 
-    /// Get note count
+    /// Retrieves the total count of notes stored in the database.
+    ///
+    /// This method executes a SQL COUNT query against the notes table and returns the total number of notes. If no notes exist, it returns 0.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing the count of notes as a `u64`, or a `StoreError` if the database query fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` if the database query encounters an error or the connection fails.
     pub fn note_count(&self) -> Result<u64, StoreError> {
         let _span = tracing::debug_span!("note_count").entered();
         self.rt.block_on(async {
@@ -241,6 +251,17 @@ mod tests {
     use crate::test_helpers::setup_store;
     use std::path::Path;
 
+    /// Creates a new Note with the specified id, text, and sentiment.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - A string slice representing the unique identifier for the note
+    /// * `text` - A string slice containing the note's content
+    /// * `sentiment` - A floating-point value representing the sentiment score of the note
+    ///
+    /// # Returns
+    ///
+    /// A new `Note` struct initialized with the provided id, text, and sentiment, and an empty mentions vector.
     fn make_note(id: &str, text: &str, sentiment: f32) -> Note {
         Note {
             id: id.to_string(),
@@ -249,6 +270,13 @@ mod tests {
             mentions: vec![],
         }
     }
+    /// Verifies that sentiment thresholds are positioned correctly between discrete sentiment values to ensure proper classification boundaries.
+    ///
+    /// This test function asserts that the negative sentiment threshold falls strictly between -0.5 and 0, and the positive sentiment threshold falls strictly between 0 and 0.5. This positioning ensures that discrete sentiment values are classified into their intended categories (negative, neutral, or positive) without ambiguity.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either threshold assertion fails, indicating that sentiment thresholds are not properly configured for the discrete sentiment value system.
 
     #[test]
     fn sentiment_thresholds_match_discrete_values() {

@@ -7,6 +7,26 @@ use cqs::Embedder;
 use cqs::{gather, gather_cross_index_with_index, normalize_path, GatherDirection, GatherOptions};
 
 use crate::cli::staleness;
+/// Gathers semantically similar code chunks from the project based on a query embedding.
+///
+/// # Arguments
+///
+/// * `cli` - CLI context
+/// * `query` - The search query string
+/// * `expand` - Expansion depth for gathering context (0-5)
+/// * `direction` - Direction to gather (up/down/both in the code structure)
+/// * `limit` - Maximum number of chunks to return
+/// * `max_tokens` - Optional token budget; if set, performs token-aware packing to stay within limit
+/// * `ref_name` - Optional reference name; if provided, performs cross-index gathering seeded from that reference
+/// * `json` - Whether to output results as JSON
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if project opening, embedding generation, or gathering fails.
+///
+/// # Errors
+///
+/// Fails if the project store cannot be opened, embeddings cannot be generated, vector index cannot be built, or the gathering operation encounters an error.
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_gather(

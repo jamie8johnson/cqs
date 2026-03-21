@@ -305,6 +305,16 @@ mod tests {
     use crate::store::NoteSummary;
     use std::path::PathBuf;
 
+    /// Creates a ScoutChunk with the given name and role, initializing it with default values for a function.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function chunk
+    /// * `role` - The ChunkRole indicating the function's purpose or category
+    ///
+    /// # Returns
+    ///
+    /// A ScoutChunk instance with the specified name and role, along with predefined values: Function type, empty parameter signature, line 1 as start, caller count of 3, test count of 1, and search score of 0.8.
     fn make_scout_chunk(name: &str, role: ChunkRole) -> ScoutChunk {
         ScoutChunk {
             name: name.to_string(),
@@ -318,6 +328,18 @@ mod tests {
         }
     }
 
+    /// Constructs a `ScoutResult` from a vector of chunk names and their roles.
+    ///
+    /// # Arguments
+    ///
+    /// * `chunks` - A vector of tuples containing chunk names and their associated roles
+    ///
+    /// # Returns
+    ///
+    /// A `ScoutResult` containing:
+    /// - A single file group for "src/lib.rs" with the provided chunks
+    /// - A test note summary mentioning the file
+    /// - A summary with the total function count and zeroed test/stale metrics
     fn make_scout_result(chunks: Vec<(&str, ChunkRole)>) -> ScoutResult {
         let scout_chunks: Vec<ScoutChunk> = chunks
             .iter()

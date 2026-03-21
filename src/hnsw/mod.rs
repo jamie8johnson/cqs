@@ -273,18 +273,43 @@ pub(crate) fn prepare_index_data(
 }
 
 impl VectorIndex for HnswIndex {
+    /// Searches the index for the k nearest neighbors to the given query embedding.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The query embedding to search for
+    /// * `k` - The number of nearest neighbors to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of `IndexResult` items containing the k nearest neighbors, ordered by similarity (closest first).
     fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
         self.search(query, k)
     }
 
+    /// Returns the number of elements in the collection.
+    ///
+    /// # Returns
+    ///
+    /// The count of elements currently stored in this collection.
     fn len(&self) -> usize {
         self.len()
     }
 
+    /// Checks whether this collection is empty.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the collection contains no elements, `false` otherwise.
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
 
+    /// Returns the name of this index type.
+    ///
+    /// # Returns
+    ///
+    /// A static string slice containing the name "HNSW" (Hierarchical Navigable Small World).
     fn name(&self) -> &'static str {
         "HNSW"
     }
@@ -311,7 +336,29 @@ pub(crate) fn make_test_embedding(seed: u32) -> Embedding {
 mod send_sync_tests {
     use super::*;
 
+    /// Asserts at compile time that the generic type `T` implements the `Send` trait.
+    ///
+    /// This function is a compile-time assertion utility that verifies a type is safe to send across thread boundaries. It produces no runtime code and will fail to compile if `T` does not implement `Send`.
+    ///
+    /// # Arguments
+    ///
+    /// * `T` - The type to check for `Send` trait implementation
+    ///
+    /// # Panics
+    ///
+    /// This function does not panic. If the type does not implement `Send`, compilation will fail with a trait bound error.
     fn assert_send<T: Send>() {}
+    /// Asserts that a type `T` implements the `Sync` trait at compile time.
+    ///
+    /// This function is used for compile-time verification that a type is thread-safe for sharing across threads. It performs no runtime work and is typically called within tests or compile-time assertions to ensure type safety properties.
+    ///
+    /// # Arguments
+    ///
+    /// * `T` - A generic type parameter that must implement the `Sync` trait
+    ///
+    /// # Compile-time Behavior
+    ///
+    /// This function will fail to compile if `T` does not implement `Sync`, providing immediate feedback about thread-safety violations.
     fn assert_sync<T: Sync>() {}
 
     #[test]

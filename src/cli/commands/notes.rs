@@ -68,7 +68,18 @@ pub(crate) enum NotesCommand {
     },
 }
 
-/// Handle notes subcommands
+/// Dispatches notes subcommands to their respective handlers.
+///
+/// Routes a notes command to the appropriate handler function based on the subcommand variant (List, Add, Update, or Remove), enabling management of application notes.
+///
+/// # Arguments
+///
+/// * `cli` - The CLI context containing configuration and application state.
+/// * `subcmd` - The notes subcommand to execute, which can be List, Add, Update, or Remove.
+///
+/// # Returns
+///
+/// Returns `Result<()>` indicating success or failure of the executed subcommand.
 pub(crate) fn cmd_notes(cli: &Cli, subcmd: &NotesCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_notes").entered();
     match subcmd {
@@ -149,7 +160,28 @@ fn ensure_notes_file(root: &std::path::Path) -> Result<PathBuf> {
     Ok(notes_path)
 }
 
-/// Add a note
+/// Adds a new note entry to the project's notes file with sentiment analysis and optional mention tracking.
+///
+/// # Arguments
+///
+/// * `cli` - CLI context for output formatting preferences
+/// * `text` - The note content (must be non-empty and ≤2000 bytes)
+/// * `sentiment` - Sentiment score between -1.0 and 1.0 (will be clamped)
+/// * `mentions` - Optional list of mentioned items or people to associate with the note
+/// * `no_reindex` - If true, skips reindexing the notes file after adding the entry
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful note addition, or an error if validation fails or file operations fail.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// * Note text is empty
+/// * Note text exceeds 2000 bytes
+/// * The notes file cannot be found or created
+/// * The notes file cannot be written to
+/// * Reindexing fails (unless `no_reindex` is true)
 fn cmd_notes_add(
     cli: &Cli,
     text: &str,
@@ -233,7 +265,28 @@ fn cmd_notes_add(
     Ok(())
 }
 
-/// Update a note
+/// Updates an existing note with new text, sentiment score, and/or mentions.
+///
+/// # Arguments
+///
+/// * `cli` - CLI context
+/// * `text` - The text of the note to update (used to identify which note)
+/// * `new_text` - Optional replacement text for the note
+/// * `new_sentiment` - Optional sentiment score (-1.0 to 1.0) for the note
+/// * `new_mentions` - Optional list of mentions to associate with the note
+/// * `no_reindex` - If true, skips reindexing after the update
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful update, or an error if validation fails or the note is not found.
+///
+/// # Errors
+///
+/// * If `text` is empty
+/// * If none of the update fields (new_text, new_sentiment, new_mentions) are provided
+/// * If `new_text` is empty or exceeds 2000 bytes
+/// * If no notes.toml file exists in the project
+/// * If no note with matching text is found
 fn cmd_notes_update(
     cli: &Cli,
     text: &str,
@@ -329,7 +382,25 @@ fn cmd_notes_update(
     Ok(())
 }
 
-/// Remove a note
+/// Removes a note from the notes file by matching its text content.
+///
+/// # Arguments
+///
+/// * `cli` - CLI configuration for output formatting
+/// * `text` - The text content of the note to remove
+/// * `no_reindex` - If true, skips reindexing notes after removal
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful removal, or an error if the note cannot be found, the notes file doesn't exist, or file operations fail.
+///
+/// # Errors
+///
+/// * If `text` is empty
+/// * If `docs/notes.toml` does not exist
+/// * If no note with matching text is found
+/// * If rewriting the notes file fails
+/// * If reindexing fails (unless `no_reindex` is true)
 fn cmd_notes_remove(cli: &Cli, text: &str, no_reindex: bool) -> Result<()> {
     if text.is_empty() {
         bail!("Note text cannot be empty");

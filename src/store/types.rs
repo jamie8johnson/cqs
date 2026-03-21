@@ -394,7 +394,17 @@ impl Store {
 
     // ============ Type Edge Statistics ============
 
-    /// Get type edge statistics.
+    /// Retrieves statistics about type edges in the store.
+    ///
+    /// Queries the database to obtain the total count of type edges and the number of distinct target type names, then returns these metrics as a TypeEdgeStats struct.
+    ///
+    /// # Returns
+    ///
+    /// A Result containing TypeEdgeStats with the total number of edges and count of unique types, or a StoreError if the database query fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns StoreError if the database query cannot be executed or the connection fails.
     pub fn type_edge_stats(&self) -> Result<TypeEdgeStats, StoreError> {
         let _span = tracing::debug_span!("type_edge_stats").entered();
         tracing::debug!("querying type edge stats");
@@ -540,6 +550,13 @@ mod tests {
         });
     }
 
+    /// Creates a vector of type references for testing purposes.
+    ///
+    /// This function constructs and returns a hardcoded collection of `TypeRef` objects representing different kinds of type relationships: a parameter type, a return type, and a field type. Each reference includes the type name, line number where it appears, and the kind of relationship it represents.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<TypeRef>` containing three type reference entries with predefined values for testing or demonstration purposes.
     fn make_type_refs() -> Vec<TypeRef> {
         vec![
             TypeRef {

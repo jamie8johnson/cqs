@@ -442,6 +442,20 @@ mod tests {
     use crate::doc_writer::DocCommentResult;
     use crate::language::Language;
 
+    /// Constructs a DocCommentResult containing metadata about a generated documentation comment.
+    ///
+    /// # Arguments
+    ///
+    /// * `file` - The path to the source file being documented
+    /// * `function_name` - The name of the function for which documentation was generated
+    /// * `generated_doc` - The content of the generated documentation comment
+    /// * `language` - The programming language of the source file
+    /// * `line_start` - The line number where the documentation comment begins
+    /// * `had_existing_doc` - Whether the function previously had documentation
+    ///
+    /// # Returns
+    ///
+    /// A new `DocCommentResult` struct populated with the provided arguments and a placeholder content hash.
     fn make_edit(
         file: &Path,
         function_name: &str,

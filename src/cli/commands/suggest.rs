@@ -3,6 +3,22 @@
 use anyhow::Result;
 use colored::Colorize;
 
+/// Generates and optionally applies code quality suggestions for the current project.
+///
+/// Analyzes the codebase to produce a list of suggestions for improvement. Can output results in JSON format or human-readable text, and optionally apply the suggestions to project files.
+///
+/// # Arguments
+///
+/// * `json` - If true, output suggestions in JSON format; otherwise use human-readable text
+/// * `apply` - If true, apply the suggestions to the codebase; if false, perform a dry-run display only
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if project opening, suggestion generation, or application fails.
+///
+/// # Errors
+///
+/// Returns an error if the project store cannot be opened, suggestion generation fails, or applying suggestions encounters an error.
 pub(crate) fn cmd_suggest(json: bool, apply: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_suggest", apply).entered();
 
@@ -64,6 +80,23 @@ pub(crate) fn cmd_suggest(json: bool, apply: bool) -> Result<()> {
     Ok(())
 }
 
+/// Applies suggested notes to the notes file and re-indexes them in the store.
+///
+/// This function takes a collection of suggested notes, converts them into note entries, appends them to the notes.toml file, and then re-indexes all notes in the store to reflect the changes.
+///
+/// # Arguments
+///
+/// * `suggestions` - A slice of suggested notes to apply
+/// * `root` - The root directory path where docs/notes.toml is located
+/// * `store` - The store instance used to index the notes
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if file operations or indexing fail.
+///
+/// # Errors
+///
+/// Returns an error if the notes file cannot be read, written, parsed, or if indexing the notes fails.
 fn apply_suggestions(
     suggestions: &[cqs::suggest::SuggestedNote],
     root: &std::path::Path,

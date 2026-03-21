@@ -187,6 +187,13 @@ struct TokenizeIdentifierIter<'a> {
 impl<'a> Iterator for TokenizeIdentifierIter<'a> {
     type Item = String;
 
+    /// Retrieves the next token from the input string.
+    ///
+    /// Splits the input into tokens by treating underscores, hyphens, and spaces as delimiters. CJK (Chinese, Japanese, Korean) characters are emitted as individual tokens. Uppercase letters trigger token boundaries and are converted to lowercase. All other characters are converted to lowercase and accumulated into the current token.
+    ///
+    /// # Returns
+    ///
+    /// `Some(String)` containing the next token, or `None` if no more tokens are available.
     fn next(&mut self) -> Option<Self::Item> {
         if self.done {
             return None;
@@ -1172,6 +1179,17 @@ mod tests {
 
     // ===== Markdown NL tests =====
 
+    /// Creates a test Chunk representing a markdown section with the specified content, signature, and name.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The text content of the section chunk
+    /// * `signature` - The signature or identifier for the section
+    /// * `name` - The display name of the section
+    ///
+    /// # Returns
+    ///
+    /// A `Chunk` struct configured as a Markdown section chunk with predefined test values for file path, language, line numbers, and content hash.
     fn make_section_chunk(content: &str, signature: &str, name: &str) -> Chunk {
         Chunk {
             id: "test.md:1:abcd1234".to_string(),

@@ -57,6 +57,15 @@ const STOPWORDS: &[&str] = &[
     "nonlocal",
 ];
 
+/// Extracts the return type from a function signature and formats it as a descriptive string.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A function signature string that may contain a return type annotation following "->".
+/// 
+/// # Returns
+/// 
+/// Returns `Some(String)` containing a formatted description like "Returns <type>" if a return type is found and non-empty. Returns `None` if no return type annotation exists or if the return type is empty.
 fn extract_return(signature: &str) -> Option<String> {
     if let Some(arrow) = signature.rfind("->") {
         let ret = signature[arrow + 2..].trim().trim_end_matches(':');

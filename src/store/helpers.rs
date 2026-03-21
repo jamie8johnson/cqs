@@ -174,6 +174,15 @@ pub struct ChunkSummary {
 }
 
 impl From<&ChunkSummary> for Chunk {
+    /// Converts a ChunkSummary reference into Self by cloning its fields and converting the window_idx to u32 if present.
+    ///
+    /// # Arguments
+    ///
+    /// * `cs` - A reference to the ChunkSummary to convert from
+    ///
+    /// # Returns
+    ///
+    /// A new instance of Self with all fields copied or cloned from the ChunkSummary, with window_idx mapped to u32 if it exists.
     fn from(cs: &ChunkSummary) -> Self {
         Self {
             id: cs.id.clone(),
@@ -195,6 +204,16 @@ impl From<&ChunkSummary> for Chunk {
 }
 
 impl From<ChunkRow> for ChunkSummary {
+    /// Converts a database row into a ChunkSummary, parsing string fields into their proper types with sensible defaults.
+    ///
+    /// # Arguments
+    /// * `row` - A ChunkRow containing raw data retrieved from the database
+    ///
+    /// # Returns
+    /// A ChunkSummary with all fields populated from the row data.
+    ///
+    /// # Behavior
+    /// Parses the `language` field as a Language enum, defaulting to Rust if parsing fails. Parses the `chunk_type` field as a ChunkType enum, defaulting to Function if parsing fails. Both parse failures are logged as warnings with the chunk ID and stored value. The `origin` field is converted to a PathBuf for the file path.
     fn from(row: ChunkRow) -> Self {
         let language = row.language.parse().unwrap_or_else(|_| {
             tracing::warn!(
@@ -433,7 +452,11 @@ pub enum UnifiedResult {
 }
 
 impl UnifiedResult {
-    /// Get the similarity score
+    /// Retrieves the score from the unified result.
+    ///
+    /// # Returns
+    ///
+    /// Returns the f32 score value contained within the result.
     pub fn score(&self) -> f32 {
         match self {
             UnifiedResult::Code(r) => r.score,
@@ -504,6 +527,13 @@ pub struct SearchFilter {
 pub const DEFAULT_NAME_BOOST: f32 = 0.2;
 
 impl Default for SearchFilter {
+    /// Creates a new `SearchQuery` with default values.
+    ///
+    /// Initializes a search query with empty/default settings: no language filters, no chunk type filters, no path patterns, zero name boost, empty query text, reciprocal rank fusion disabled, and demotion of test functions enabled.
+    ///
+    /// # Returns
+    ///
+    /// A new `SearchQuery` instance with all fields set to their default values.
     fn default() -> Self {
         Self {
             languages: None,
@@ -599,6 +629,14 @@ pub struct ModelInfo {
 }
 
 impl Default for ModelInfo {
+    /// Creates a default ModelInfo instance with predefined values for E5-base-v2.
+    ///
+    /// # Returns
+    ///
+    /// A new `ModelInfo` struct initialized with:
+    /// - `name`: The default model name constant
+    /// - `dimensions`: 768 (embedding dimension for E5-base-v2)
+    /// - `version`: "2" (E5-base-v2 version)
     fn default() -> Self {
         ModelInfo {
             name: MODEL_NAME.to_string(),
@@ -922,6 +960,16 @@ mod tests {
 
     // ===== parent_id exposure tests =====
 
+    /// Creates a ChunkSummary representing a Rust function with the given name and optional parent.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function to create a chunk for
+    /// * `parent_id` - Optional ID of the parent chunk, if this function is nested
+    ///
+    /// # Returns
+    ///
+    /// A ChunkSummary struct populated with default values for a Rust function, including an auto-generated ID based on the name, file path, and function signature.
     fn make_chunk(name: &str, parent_id: Option<&str>) -> ChunkSummary {
         ChunkSummary {
             id: format!("id-{}", name),

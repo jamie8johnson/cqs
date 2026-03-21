@@ -6,6 +6,28 @@ use cqs::ci::{run_ci_analysis, GateThreshold};
 use cqs::ReviewResult;
 use cqs::RiskLevel;
 
+/// Executes CI analysis on code changes and outputs a review report.
+///
+/// # Arguments
+///
+/// * `base` - Optional base Git reference for computing the diff. If not provided, defaults to a standard base.
+/// * `from_stdin` - If true, reads the diff from standard input; otherwise runs `git diff` against the base reference.
+/// * `format` - Output format for the report (text or JSON; mermaid is not supported).
+/// * `gate` - Gate level threshold (high, medium, or off) for review severity filtering.
+/// * `max_tokens` - Optional token budget to limit the review output size.
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the analysis completes successfully and output is generated, or `Err` if any step fails.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// * Mermaid output format is requested (unsupported for CI).
+/// * The project store cannot be opened.
+/// * Git diff execution fails (when not reading from stdin).
+/// * The CI analysis fails.
+/// * Serialization to JSON fails (when JSON format is requested).
 pub(crate) fn cmd_ci(
     base: Option<&str>,
     from_stdin: bool,
@@ -128,6 +150,21 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     used
 }
 
+/// Displays a formatted CI report summary to stdout with color-coded output.
+///
+/// # Arguments
+///
+/// * `report` - The CI report containing gate pass/fail status and risk assessment
+/// * `_root` - The root path (currently unused)
+/// * `token_count_used` - Optional count of tokens consumed
+/// * `max_tokens` - Optional maximum token budget
+///
+/// # Description
+///
+/// Outputs a colored summary including:
+/// - Gate status (pass/fail) with threshold information and failure reasons
+/// - Overall risk level (high/medium/low) with appropriate color coding
+/// - Token usage information if both used and max counts are provided
 fn display_ci_text(
     report: &cqs::ci::CiReport,
     _root: &std::path::Path,

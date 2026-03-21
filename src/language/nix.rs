@@ -187,6 +187,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a Nix file containing a function binding and verifies the parser correctly identifies the function name and type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts parsing results and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a new instance, parse the temporary file, or if the expected function binding "mkHello" is not found in the parsed chunks or has an incorrect chunk type.
 
     #[test]
     fn parse_nix_function_binding() {
@@ -208,6 +221,26 @@ mod tests {
         let func = chunks.iter().find(|c| c.name == "mkHello").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Parses a Nix attribute set binding and verifies the parser correctly identifies nested structures.
+    /// 
+    /// This is a unit test function that validates the parser's ability to handle Nix attribute set syntax with nested configuration objects. It creates a temporary Nix file containing an attribute set with a nested `config` structure, parses it, and asserts that the parser correctly identifies `config` as a chunk of type `Struct`.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function returns `()` and is intended for testing purposes.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize
+    /// - The file fails to parse
+    /// - The `config` chunk is not found in the parsed results
+    /// - The `config` chunk's type is not `ChunkType::Struct`
 
     #[test]
     fn parse_nix_attrset_binding() {
@@ -231,6 +264,21 @@ mod tests {
         let cfg = chunks.iter().find(|c| c.name == "config").unwrap();
         assert_eq!(cfg.chunk_type, ChunkType::Struct);
     }
+    /// Parses a Nix file containing function definitions and validates the extraction of function calls from those definitions.
+    /// 
+    /// This test function creates a temporary Nix file with sample code containing package definitions and function calls, parses it using the Parser, and verifies that both top-level chunks (like `myPackage` and `greet`) are correctly identified and that function calls within those chunks (such as `builtins.trace` and `lib.concatStrings`) are properly extracted.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Nix code content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. Assertions validate the parsing and call extraction behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, if parsing fails, if expected chunks are not found, or if function calls are not extracted from the `greet` function as expected.
 
     #[test]
     fn parse_nix_calls() {
@@ -267,6 +315,19 @@ mod tests {
     }
 
     // --- Injection tests ---
+    /// Verifies that the parser correctly identifies and extracts bash injection chunks from Nix derivation files while preserving the outer Nix binding chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Nix content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create chunks, if file operations fail, or if the expected Nix chunk is not found in the parsed output.
 
     #[test]
     fn parse_nix_shell_injection() {
@@ -299,6 +360,15 @@ mod tests {
             chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
         );
     }
+    /// Tests that the parser correctly skips indented multi-line strings in Nix files that are not in shell contexts. Verifies that non-shell indented strings (such as descriptions) are not extracted as Bash code chunks.
+    /// 
+    /// # Returns
+    /// 
+    /// Panics if any Bash language chunks are extracted from the Nix file, indicating that non-shell indented strings were incorrectly parsed as shell code.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file creation fails, the parser initialization fails, file parsing fails, or if non-shell indented strings are incorrectly identified as Bash chunks.
 
     #[test]
     fn parse_nix_non_shell_skipped() {
@@ -330,6 +400,17 @@ mod tests {
             bash_chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
+    /// Verifies that Nix files without indented strings are parsed entirely as Nix code without any string injection.
+    /// 
+    /// This test ensures that the parser does not incorrectly inject string language markers in Nix files that contain only standard expressions and configuration without indented multi-line strings.
+    /// 
+    /// # Arguments
+    /// 
+    /// None (test function with no parameters)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, or if any parsed chunk is not identified as Nix language.
 
     #[test]
     fn parse_nix_without_strings_unchanged() {
@@ -355,6 +436,25 @@ mod tests {
             );
         }
     }
+    /// Parses a Nix file containing a recursive attribute set and verifies the parser correctly identifies the nested `helpers` structure.
+    /// 
+    /// This test validates that the parser can handle Nix `rec` (recursive) attribute sets, where nested definitions can reference each other. It writes a temporary Nix file, parses it, and asserts that the `helpers` chunk is identified as a struct type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function returns `()` and performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser fails to initialize or parse the file
+    /// - The `helpers` chunk is not found in the parsed chunks
+    /// - The `helpers` chunk is not of type `ChunkType::Struct`
 
     #[test]
     fn parse_nix_rec_attrset() {

@@ -37,26 +37,82 @@ pub struct GatherOptions {
 }
 
 impl GatherOptions {
+    /// Sets the maximum depth for expanding nested structures in output.
+    ///
+    /// # Arguments
+    ///
+    /// * `depth` - The maximum nesting level to expand before truncating or summarizing nested content.
+    ///
+    /// # Returns
+    ///
+    /// Returns `self` to allow method chaining.
     pub fn with_expand_depth(mut self, depth: usize) -> Self {
         self.expand_depth = depth;
         self
     }
+    /// Sets the direction for gathering operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `direction` - The direction to use when gathering data
+    ///
+    /// # Returns
+    ///
+    /// Returns `self` to allow method chaining.
     pub fn with_direction(mut self, direction: GatherDirection) -> Self {
         self.direction = direction;
         self
     }
+    /// Sets the maximum number of items to process.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The maximum number of items to process
+    ///
+    /// # Returns
+    ///
+    /// Returns `self` to allow method chaining.
     pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit;
         self
     }
+    /// Sets the maximum number of seeds to process.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - The maximum number of seeds to process
+    ///
+    /// # Returns
+    ///
+    /// Returns `self` to allow method chaining.
     pub fn with_seed_limit(mut self, limit: usize) -> Self {
         self.seed_limit = limit;
         self
     }
+    /// Sets the seed threshold for this builder and returns self for method chaining.
+    ///
+    /// # Arguments
+    ///
+    /// * `threshold` - The seed threshold value (typically between 0.0 and 1.0) used to filter seeds during processing
+    ///
+    /// # Returns
+    ///
+    /// Returns `Self` to allow for method chaining in builder pattern style construction.
     pub fn with_seed_threshold(mut self, threshold: f32) -> Self {
         self.seed_threshold = threshold;
         self
     }
+    /// Sets the decay factor for this builder, clamping the value to the range [0.0, 1.0].
+    ///
+    /// If the provided factor is not a finite number (NaN or infinite), the current decay factor is preserved unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `factor` - The decay factor to set, typically a value between 0.0 and 1.0
+    ///
+    /// # Returns
+    ///
+    /// Returns `self` to allow for method chaining.
     pub fn with_decay_factor(mut self, factor: f32) -> Self {
         self.decay_factor = if factor.is_finite() {
             factor.clamp(0.0, 1.0)
@@ -65,6 +121,15 @@ impl GatherOptions {
         };
         self
     }
+    /// Sets the maximum number of nodes that can be expanded during search.
+    ///
+    /// # Arguments
+    ///
+    /// * `max` - The maximum number of nodes to expand. When the search expands more nodes than this limit, it will stop exploring further branches.
+    ///
+    /// # Returns
+    ///
+    /// Returns `self` to allow method chaining.
     pub fn with_max_expanded_nodes(mut self, max: usize) -> Self {
         self.max_expanded_nodes = max;
         self
@@ -72,6 +137,13 @@ impl GatherOptions {
 }
 
 impl Default for GatherOptions {
+    /// Creates a new instance with default configuration values for graph traversal and expansion.
+    ///
+    /// The default settings prioritize balanced exploration with a depth of 1, bidirectional search, a limit of 10 results, and a decay factor of 0.8 to gradually reduce node relevance as distance increases.
+    ///
+    /// # Returns
+    ///
+    /// A new `Self` instance initialized with sensible defaults for graph expansion operations.
     fn default() -> Self {
         Self {
             expand_depth: 1,
@@ -95,6 +167,17 @@ pub enum GatherDirection {
 
 impl std::str::FromStr for GatherDirection {
     type Err = String;
+    /// Parses a string into a direction value.
+    ///
+    /// Converts a string representation into the corresponding direction variant. Valid inputs are "both", "callers", or "callees" (case-sensitive).
+    ///
+    /// # Arguments
+    ///
+    /// * `s` - A string slice to parse as a direction
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(Self)` with the parsed direction variant if the input is valid, or `Err(String)` with a descriptive error message if the input is not recognized.
     fn from_str(s: &str) -> std::result::Result<Self, String> {
         match s {
             "both" => Ok(Self::Both),
@@ -631,6 +714,18 @@ fn get_neighbors(graph: &CallGraph, name: &str, direction: GatherDirection) -> V
 mod tests {
     use super::*;
 
+    /// Constructs a sample call graph representing function call relationships.
+    ///
+    /// Creates a CallGraph with both forward and reverse call mappings. The forward map tracks which functions each function calls, while the reverse map tracks which functions call each function.
+    ///
+    /// The example graph has the following structure:
+    /// - Function A calls B and C
+    /// - Function B calls D
+    /// - Function C and D are called by A and B respectively
+    ///
+    /// # Returns
+    ///
+    /// A CallGraph containing the forward and reverse call mappings for the sample graph.
     fn make_graph() -> CallGraph {
         let mut forward = HashMap::new();
         let mut reverse = HashMap::new();

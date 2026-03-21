@@ -68,6 +68,15 @@ fn post_process_css(
     true
 }
 
+/// Extracts the return type from a function signature.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A function signature string to parse
+/// 
+/// # Returns
+/// 
+/// Returns `None` as CSS does not support function return types. Always returns `None` regardless of input.
 fn extract_return(_signature: &str) -> Option<String> {
     // CSS has no functions or return types
     None
@@ -100,6 +109,11 @@ static DEFINITION: LanguageDef = LanguageDef {
     injections: &[],
 };
 
+/// Returns a reference to the static language definition.
+/// 
+/// # Returns
+/// 
+/// A static reference to a `LanguageDef` containing the language definition configuration.
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
 }
@@ -110,6 +124,20 @@ mod tests {
     use crate::parser::{ChunkType, Parser};
     use std::io::Write;
 
+    /// Creates a temporary file with the specified content and file extension.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `content` - The text content to write to the temporary file
+    /// * `ext` - The file extension (without the leading dot)
+    /// 
+    /// # Returns
+    /// 
+    /// A `NamedTempFile` handle to the created temporary file with the content written and flushed to disk.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created or if writing/flushing the content fails.
     fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
         let mut f = tempfile::Builder::new()
             .suffix(&format!(".{}", ext))
@@ -119,6 +147,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a CSS rule set from a temporary file and verifies the parser correctly identifies the `.container` selector.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts on the parsing results.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the `.container` rule set is not found in the parsed chunks, or if temporary file creation or parsing operations fail.
 
     #[test]
     fn parse_css_rule_set() {
@@ -136,6 +177,21 @@ mod tests {
             .find(|c| c.name.contains("container") && c.chunk_type == ChunkType::Property);
         assert!(rule.is_some(), "Should find '.container' rule set");
     }
+    /// Parses a CSS file containing keyframe animations and verifies that the keyframes are correctly identified as a Section chunk.
+    /// 
+    /// This test function writes a temporary CSS file with a `@keyframes spin` animation rule, parses it using the Parser, and asserts that the resulting chunks contain a Section chunk named "spin". It validates the parser's ability to recognize and categorize CSS keyframe definitions.
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, if parsing fails, or if the "spin" keyframes chunk is not found in the parsed output with the correct name and ChunkType::Section.
 
     #[test]
     fn parse_css_keyframes() {
@@ -153,6 +209,21 @@ mod tests {
             .find(|c| c.name == "spin" && c.chunk_type == ChunkType::Section);
         assert!(kf.is_some(), "Should find 'spin' keyframes as Section");
     }
+    /// Verifies that the CSS parser correctly identifies that a CSS file contains no function calls.
+    /// 
+    /// This test parses a CSS file containing basic style rules and confirms that the `extract_calls_from_chunk` method returns an empty list, ensuring the parser does not incorrectly detect spurious function calls in standard CSS syntax.
+    /// 
+    /// # Arguments
+    /// 
+    /// No arguments; this is a test function.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing; this function asserts on parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, or if any CSS chunks are incorrectly identified as containing function calls.
 
     #[test]
     fn parse_css_no_calls() {

@@ -5,6 +5,22 @@ use anyhow::Result;
 use cqs::ReviewResult;
 use cqs::RiskLevel;
 
+/// Performs a code review of uncommitted changes, analyzing how they impact indexed functions.
+///
+/// # Arguments
+///
+/// * `base` - Optional git reference (branch, commit) to compare against; if `None`, compares against HEAD
+/// * `from_stdin` - If `true`, reads diff from standard input; if `false`, runs `git diff` against the base reference
+/// * `format` - Output format for the review results (text or JSON; mermaid is not supported)
+/// * `max_tokens` - Optional token budget to limit the size of callers and test lists in the output
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion, printing the review results to stdout in the specified format. Returns an error if the project store cannot be opened, diff generation fails, or review processing encounters an issue.
+///
+/// # Errors
+///
+/// Returns an error if mermaid output format is requested, if the project store cannot be opened, if reading from stdin or running git diff fails, or if the review analysis fails.
 pub(crate) fn cmd_review(
     base: Option<&str>,
     from_stdin: bool,
@@ -129,6 +145,19 @@ fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> u
     used
 }
 
+/// Creates and returns a JSON object representing an empty code review with no findings.
+///
+/// This function constructs a default review structure containing empty arrays for changed functions, affected callers, and affected tests, along with empty risk assessments and a null stale warning field.
+///
+/// # Returns
+///
+/// A `serde_json::Value` containing a JSON object with the following fields:
+/// - `changed_functions`: empty array
+/// - `affected_callers`: empty array
+/// - `affected_tests`: empty array
+/// - `relevant_notes`: empty array
+/// - `risk_summary`: object with zero counts for high, medium, and low risk items, and overall risk set to "low"
+/// - `stale_warning`: null value
 fn empty_review_json() -> serde_json::Value {
     serde_json::json!({
         "changed_functions": [],
@@ -140,6 +169,18 @@ fn empty_review_json() -> serde_json::Value {
     })
 }
 
+/// Displays a formatted review report to the console with risk assessment details, token usage information, stale file warnings, and changed functions.
+///
+/// # Arguments
+///
+/// * `review` - The review result containing risk summary and analysis data
+/// * `_root` - The root path (currently unused)
+/// * `token_count_used` - Optional token count consumed during analysis
+/// * `max_tokens` - Optional maximum token budget
+///
+/// # Returns
+///
+/// None. Output is printed to stdout and stderr.
 fn display_review_text(
     review: &ReviewResult,
     _root: &std::path::Path,

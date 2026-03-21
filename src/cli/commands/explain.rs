@@ -255,6 +255,22 @@ pub(crate) fn explain_to_json(data: &ExplainData, root: &Path) -> serde_json::Va
 
 // ─── CLI command ────────────────────────────────────────────────────────────
 
+/// Generates and displays an explanation of a specified target (function, type, etc.) from the project codebase.
+///
+/// # Arguments
+///
+/// * `cli` - CLI configuration containing quiet and staleness check settings
+/// * `target` - The name or identifier of the target to explain
+/// * `json` - If true, output the explanation in JSON format; otherwise, format for terminal display
+/// * `max_tokens` - Optional maximum number of tokens to use for the explanation
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful explanation generation and display, or an error if the project store cannot be opened, explanation data cannot be built, or JSON serialization fails.
+///
+/// # Errors
+///
+/// Returns an error if opening the project store fails, building explanation data fails, or JSON serialization fails during output.
 pub(crate) fn cmd_explain(
     cli: &crate::cli::Cli,
     target: &str,
@@ -283,6 +299,16 @@ pub(crate) fn cmd_explain(
     Ok(())
 }
 
+/// Prints formatted information about a code chunk to the terminal, including its name, type, language, file location, line numbers, caller/test counts, signature, and documentation. Highlights missing callers or tests in yellow.
+///
+/// # Arguments
+///
+/// * `data` - Contains chunk metadata, token information, hints, and optional content to display
+/// * `root` - Root path used to compute relative file paths for display
+///
+/// # Returns
+///
+/// None (prints to stdout)
 fn print_explain_terminal(data: &ExplainData, root: &Path) {
     use colored::Colorize;
 

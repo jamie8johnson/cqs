@@ -178,6 +178,11 @@ mod tests {
         }
     }
 
+    /// Creates a mock embedding vector for testing purposes.
+    ///
+    /// # Returns
+    ///
+    /// An `Embedding` instance containing a 768-dimensional vector of zeros.
     fn mock_embedding() -> Embedding {
         Embedding::new(vec![0.0; 768])
     }

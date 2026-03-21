@@ -492,6 +492,20 @@ mod tests {
         }
     }
 
+    /// Creates a temporary file with the specified content and file extension.
+    ///
+    /// # Arguments
+    ///
+    /// * `content` - The string content to write to the temporary file
+    /// * `ext` - The file extension (without the leading dot) to append to the temporary filename
+    ///
+    /// # Returns
+    ///
+    /// A `NamedTempFile` representing the created temporary file with the content written and flushed to disk.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the temporary file cannot be created or if writing/flushing the content fails.
     fn write_temp_file(content: &str, ext: &str) -> NamedTempFile {
         let mut file = tempfile::Builder::new()
             .suffix(&format!(".{}", ext))

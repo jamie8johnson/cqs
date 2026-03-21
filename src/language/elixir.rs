@@ -162,6 +162,13 @@ fn post_process_elixir(
     true
 }
 
+/// Attempts to extract a return type annotation from a function signature.
+/// 
+/// # Arguments
+/// * `_signature` - A function signature string to parse
+/// 
+/// # Returns
+/// Returns `Option<String>` containing the extracted return type, or `None` if no return type annotation exists. In Elixir, this always returns `None` since the language does not support return type annotations in function signatures.
 fn extract_return(_signature: &str) -> Option<String> {
     // Elixir is dynamically typed — no return type annotations in signatures
     None
@@ -220,6 +227,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses an Elixir source file and verifies that a function definition is correctly identified.
+    /// 
+    /// This test function writes a sample Elixir module containing a `greet` function to a temporary file, parses the file using the Parser, and asserts that the resulting chunks contain a function chunk with the name "greet" and correct chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, if parsing fails, if the "greet" function chunk is not found, or if the chunk type is not `ChunkType::Function`.
 
     #[test]
     fn parse_elixir_function() {
@@ -236,6 +258,21 @@ end
         let func = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Parses an Elixir module definition and verifies that the parser correctly identifies the module chunk.
+    /// 
+    /// This test function creates a temporary Elixir file containing a module definition, parses it using the Parser, and asserts that the resulting chunks contain the expected module with the correct name and type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function is a test that asserts expected behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a new instance, fails to parse the file, or fails to find the expected 'MyApp.Users' module chunk in the parsed results.
 
     #[test]
     fn parse_elixir_module() {
@@ -254,6 +291,19 @@ end
             .find(|c| c.name == "MyApp.Users" && c.chunk_type == ChunkType::Module);
         assert!(module.is_some(), "Should find 'MyApp.Users' module");
     }
+    /// Verifies that the parser correctly identifies and extracts Elixir protocol definitions as interface chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no arguments. It creates its own test content and temporary file internally.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. This is a test assertion function that validates parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create an instance, fails to parse the temporary file, or fails to find the 'Printable' protocol as an Interface chunk in the parsed output.
 
     #[test]
     fn parse_elixir_protocol() {
@@ -270,6 +320,19 @@ end
             .find(|c| c.name == "Printable" && c.chunk_type == ChunkType::Interface);
         assert!(proto.is_some(), "Should find 'Printable' protocol/interface");
     }
+    /// Parses an Elixir file containing a macro definition and verifies that the macro is correctly identified and extracted.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded Elixir source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize or parse the file, or if the expected 'my_if' macro chunk is not found in the parsed output.
 
     #[test]
     fn parse_elixir_macro() {
@@ -293,6 +356,21 @@ end
             .find(|c| c.name == "my_if" && c.chunk_type == ChunkType::Macro);
         assert!(mac.is_some(), "Should find 'my_if' macro");
     }
+    /// Parses Elixir function calls and verifies that function references are correctly extracted from piped expressions.
+    /// 
+    /// This test function creates a temporary Elixir file containing a module with a `process` function that uses the pipe operator to chain calls to `String.trim()`, `transform()`, and `IO.puts()`. It then parses the file, extracts the `process` function chunk, and verifies that the call to `transform()` is correctly identified in the extracted calls list.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded Elixir source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, fails to parse the file, fails to find the "process" function chunk, or if the extracted calls do not include a reference to the "transform" function.
 
     #[test]
     fn parse_elixir_calls() {

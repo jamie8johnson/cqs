@@ -53,6 +53,17 @@ struct ChunkKey {
 }
 
 impl From<&ChunkIdentity> for ChunkKey {
+    /// Converts a ChunkIdentity reference into a ChunkKey.
+    ///
+    /// This method creates a new ChunkKey by extracting and transforming the relevant fields from a ChunkIdentity. The file path is converted to an owned string, while the name and chunk_type are cloned directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `c` - A reference to the ChunkIdentity to convert
+    ///
+    /// # Returns
+    ///
+    /// A new ChunkKey containing the origin (file path), name, and chunk_type from the source ChunkIdentity.
     fn from(c: &ChunkIdentity) -> Self {
         ChunkKey {
             origin: c.file.to_string_lossy().into_owned(),

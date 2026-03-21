@@ -493,18 +493,45 @@ struct OrderedFloat(f32);
 impl Eq for OrderedFloat {}
 
 impl PartialOrd for OrderedFloat {
+    /// Compares two values and returns an ordering, wrapped in `Option`.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The value to compare against
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Ordering)` indicating whether `self` is less than, equal to, or greater than `other`.
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for OrderedFloat {
+    /// Compares two values using total ordering on their inner floating-point values.
+    ///
+    /// # Arguments
+    ///
+    /// * `other` - The value to compare against
+    ///
+    /// # Returns
+    ///
+    /// An `Ordering` indicating whether `self` is less than, equal to, or greater than `other`. Uses total ordering semantics where NaN values are comparable.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.total_cmp(&other.0)
     }
 }
 
 impl BoundedScoreHeap {
+    /// Creates a new bounded priority queue with the specified capacity.
+    ///
+    /// # Arguments
+    ///
+    /// * `capacity` - The maximum number of elements the queue can hold
+    ///
+    /// # Returns
+    ///
+    /// A new `BoundedPriorityQueue` instance with the given capacity. The internal heap is pre-allocated with space for `capacity + 1` elements.
     pub fn new(capacity: usize) -> Self {
         Self {
             heap: BinaryHeap::with_capacity(capacity + 1),
@@ -703,6 +730,16 @@ mod tests {
 
     // ===== note_boost tests =====
 
+    /// Creates a test `NoteSummary` with the provided sentiment score and mentions.
+    ///
+    /// # Arguments
+    ///
+    /// * `sentiment` - A floating-point sentiment score to assign to the note.
+    /// * `mentions` - A slice of string references representing entities or topics mentioned in the note.
+    ///
+    /// # Returns
+    ///
+    /// A `NoteSummary` struct with a fixed test ID ("note:test"), fixed test text ("test note"), the provided sentiment score, and the mentions converted to owned `String` values.
     fn make_note(sentiment: f32, mentions: &[&str]) -> NoteSummary {
         NoteSummary {
             id: "note:test".to_string(),
@@ -919,6 +956,18 @@ mod tests {
 
     // ===== parent_boost tests =====
 
+    /// Constructs a test SearchResult with minimal required fields populated.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The identifier used for the chunk's id and name
+    /// * `chunk_type` - The type classification of the code chunk
+    /// * `parent_type_name` - Optional name of the parent type or scope
+    /// * `score` - The relevance score for this search result
+    ///
+    /// # Returns
+    ///
+    /// A SearchResult containing a ChunkSummary with test defaults (TypeScript language, test.ts file, lines 1-10) and the provided score.
     fn make_result(
         name: &str,
         chunk_type: ChunkType,

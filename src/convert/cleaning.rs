@@ -398,6 +398,11 @@ fn rule_blank_lines(lines: &mut Vec<String>, _ctx: &CleaningContext) -> usize {
 mod tests {
     use super::*;
 
+    /// Creates a new CleaningContext with default values.
+    ///
+    /// # Returns
+    ///
+    /// A CleaningContext instance with an empty document title.
     fn ctx() -> CleaningContext {
         CleaningContext {
             doc_title: String::new(),

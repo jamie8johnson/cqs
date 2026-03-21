@@ -7,6 +7,19 @@ use colored::Colorize;
 
 use cqs::Parser;
 
+/// Performs a health check on the codebase indexing system and displays the results.
+///
+/// # Arguments
+///
+/// * `json` - If true, outputs the health report in JSON format; otherwise displays a formatted dashboard view
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful health check completion, or an error if the project store cannot be opened, files cannot be enumerated, the health check fails, or JSON serialization fails (when `json` is true).
+///
+/// # Errors
+///
+/// Fails if the project store cannot be opened, file enumeration fails, the health check encounters issues, or JSON formatting operations fail.
 pub(crate) fn cmd_health(json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_health").entered();
 

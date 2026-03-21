@@ -84,6 +84,17 @@ const STOPWORDS: &[&str] = &[
     "import", "package", "void", "int", "boolean", "string", "true", "false", "null",
 ];
 
+/// Extracts the return type from a Java method signature and formats it as a documentation string.
+/// 
+/// Parses a Java method signature to identify the return type by finding the opening parenthesis and analyzing the words preceding it. The return type is assumed to be the second-to-last word before the parenthesis (the last word being the method name). Filters out Java modifiers and keywords that are not actual return types.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A Java method signature string (e.g., "public int add(int a, int b)")
+/// 
+/// # Returns
+/// 
+/// `Some(String)` containing a formatted return type description if a valid return type is found, or `None` if the signature cannot be parsed or the return type is a modifier/keyword rather than an actual type.
 fn extract_return(signature: &str) -> Option<String> {
     // Java: return type is before the method name, similar to C
     // e.g., "public int add(int a, int b)" or "private static String getName()"
@@ -166,6 +177,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a Java annotation type definition and verifies it is correctly identified as an interface chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to parse the file, the "Inject" annotation is not found in the parsed chunks, or the chunk type is not `ChunkType::Interface`.
 
     #[test]
     fn parse_java_annotation_type() {
@@ -180,6 +204,15 @@ public @interface Inject {
         let ann = chunks.iter().find(|c| c.name == "Inject").unwrap();
         assert_eq!(ann.chunk_type, ChunkType::Interface);
     }
+    /// Verifies that Java class fields are correctly parsed as Property chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, the "name" field is not found in parsed chunks, the "MAX_SIZE" constant is not found in parsed chunks, or if the chunk types are not ChunkType::Property.
 
     #[test]
     fn parse_java_field_as_property() {

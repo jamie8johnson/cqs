@@ -4,6 +4,23 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
+/// Converts documents at the specified path to a supported output format.
+///
+/// # Arguments
+///
+/// * `path` - Path to a file or directory containing documents to convert
+/// * `output` - Optional output directory; defaults to the source directory (or parent directory if source is a file)
+/// * `overwrite` - Whether to overwrite existing output files
+/// * `dry_run` - If true, simulates the conversion without writing files
+/// * `clean_tags` - Optional comma-separated list of tags to remove from converted documents
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion, or an error if the path doesn't exist or conversion fails.
+///
+/// # Errors
+///
+/// Returns an error if the specified path is not found or if the conversion process encounters an error.
 pub fn cmd_convert(
     path: &str,
     output: Option<&str>,

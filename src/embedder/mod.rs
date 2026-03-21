@@ -19,6 +19,16 @@ const DEFAULT_MODEL_REPO: &str = "jamie8johnson/e5-base-v2-code-search";
 const MODEL_FILE: &str = "model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
+/// Retrieves the embedding model repository URL from the environment or returns a default value.
+///
+/// # Returns
+///
+/// A `String` containing the embedding model repository URL. Returns the value of the `CQS_EMBEDDING_MODEL` environment variable if set, otherwise returns the default model repository.
+/// Retrieves the embedding model repository URL from the environment or returns a default value.
+///
+/// # Returns
+///
+/// A `String` containing the embedding model repository URL. Returns the value of the `CQS_EMBEDDING_MODEL` environment variable if set, otherwise returns the default model repository string.
 fn model_repo() -> String {
     std::env::var("CQS_EMBEDDING_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_REPO.to_string())
 }
@@ -75,6 +85,17 @@ pub struct EmbeddingDimensionError {
 }
 
 impl std::fmt::Display for EmbeddingDimensionError {
+    /// Formats the embedding dimension mismatch error for display.
+    ///
+    /// This method implements the Display trait to produce a human-readable error message indicating a mismatch between expected and actual embedding dimensions.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the error message to
+    ///
+    /// # Returns
+    ///
+    /// Returns `std::fmt::Result` indicating whether the formatting operation succeeded.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -167,6 +188,13 @@ pub enum ExecutionProvider {
 }
 
 impl std::fmt::Display for ExecutionProvider {
+    /// Formats the ExecutionProvider variant as a human-readable string.
+    ///
+    /// # Arguments
+    /// * `f` - The formatter to write the formatted output to
+    ///
+    /// # Returns
+    /// A `std::fmt::Result` indicating whether the formatting operation succeeded
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ExecutionProvider::CUDA { device_id } => write!(f, "CUDA (device {})", device_id),
@@ -286,7 +314,19 @@ impl Embedder {
         })
     }
 
-    /// Count tokens in a text
+    /// Counts the number of tokens in the given text using the configured tokenizer.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - The text string to tokenize and count
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(usize)` containing the number of tokens in the text, or `Err(EmbedderError)` if tokenization fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmbedderError::TokenizerError` if the tokenizer is unavailable or if encoding the text fails.
     pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
         let encoding = self
             .tokenizer()?
@@ -465,6 +505,21 @@ impl Embedder {
         Ok(())
     }
 
+    /// Generates embeddings for a batch of text inputs.
+    ///
+    /// This method tokenizes the input texts, prepares them as padded tensors suitable for the ONNX model, and runs inference to produce embedding vectors. Texts are padded to the maximum length within the batch (up to the model's configured maximum length).
+    ///
+    /// # Arguments
+    ///
+    /// * `texts` - A slice of strings to embed
+    ///
+    /// # Returns
+    ///
+    /// Returns a vector of embeddings, one per input text. Returns an error if tokenization fails or the embedding model cannot be run.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmbedderError::TokenizerError` if tokenization of the batch fails.
     fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbedderError> {
         use ort::value::Tensor;
 

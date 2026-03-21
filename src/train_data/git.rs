@@ -268,6 +268,13 @@ mod tests {
 
         dir
     }
+    /// Verifies that `git_log` correctly retrieves commit information from a test repository.
+    ///
+    /// Creates a temporary test repository, calls `git_log` with offset 0, and asserts that the returned commits list is non-empty and contains valid commit data (non-empty SHA, message, and date fields).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the assertions fail, indicating that `git_log` did not return expected commit data or the test repository could not be created.
 
     #[test]
     fn git_log_on_test_repo() {
@@ -278,6 +285,18 @@ mod tests {
         assert!(!commits[0].message.is_empty());
         assert!(!commits[0].date.is_empty());
     }
+    /// Tests that the git_log function correctly respects the max_commits parameter to limit the number of returned commits.
+    ///
+    /// # Arguments
+    ///
+    /// This is a test function with no parameters.
+    ///
+    /// # Behavior
+    ///
+    /// Creates a test repository with multiple commits, then verifies that:
+    /// - git_log with max_commits=0 returns all commits (2 in this case)
+    /// - git_log with max_commits=1 returns only 1 commit
+    /// - The returned commit matches the most recent commit from the full log
 
     #[test]
     fn git_log_respects_max_commits() {
@@ -290,6 +309,19 @@ mod tests {
         // Most recent commit first
         assert_eq!(limited[0].sha, all[0].sha);
     }
+    /// Tests that `git_log` returns commit dates in ISO 8601 format.
+    ///
+    /// # Arguments
+    ///
+    /// This is a test function with no parameters.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing. This is a test function that asserts the date format of git commits contains either 'T' or '-' characters, which are present in ISO 8601 formatted dates (e.g., 2026-03-19T14:30:00+00:00).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that `git_log` did not return dates in the expected ISO 8601 format.
 
     #[test]
     fn git_log_returns_iso_date() {
@@ -302,6 +334,13 @@ mod tests {
             commits[0].date
         );
     }
+    /// Tests the git_diff_tree function with a test repository containing a committed change.
+    ///
+    /// Creates a test repository with a change, retrieves the most recent commit, and generates a diff tree for that commit. Asserts that the diff output contains references to the modified file (test.rs) and includes standard unified diff hunk headers (@@).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test repository creation fails, git_log returns an error, git_diff_tree returns an error, or if the generated diff does not contain the expected file reference or hunk headers.
 
     #[test]
     fn git_diff_tree_on_test_repo() {
@@ -311,6 +350,19 @@ mod tests {
         assert!(diff.contains("test.rs"), "diff should reference test.rs");
         assert!(diff.contains("@@"), "diff should contain hunk headers");
     }
+    /// Verifies that `git_diff_tree` correctly generates a diff for the initial commit in a repository.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no parameters. It creates a test repository internally.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing. This is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the initial commit diff does not contain a reference to "test.rs".
 
     #[test]
     fn git_diff_tree_initial_commit() {
@@ -323,6 +375,24 @@ mod tests {
             "initial commit diff should reference test.rs"
         );
     }
+    /// Test function that verifies `git_show` correctly retrieves file content from a git repository.
+    ///
+    /// # Arguments
+    ///
+    /// None. This function creates its own test repository and uses hardcoded test data.
+    ///
+    /// # Returns
+    ///
+    /// None. This function is a test assertion function that panics if assertions fail.
+    ///
+    /// # Panics
+    ///
+    /// Panics if:
+    /// - The test repository creation fails
+    /// - `git_log` fails to retrieve commits
+    /// - `git_show` fails to retrieve file content
+    /// - The returned content is `None`
+    /// - The file content does not contain the expected string "fn hello"
 
     #[test]
     fn git_show_returns_content() {
@@ -332,6 +402,15 @@ mod tests {
         assert!(content.is_some());
         assert!(content.unwrap().contains("fn hello"));
     }
+    /// Tests that `git_show` returns an error when attempting to retrieve a nonexistent file from a git commit.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no parameters. It creates its own temporary test repository internally.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the test repository cannot be created, if `git_log` fails unexpectedly, or if the commits list is empty.
 
     #[test]
     fn git_show_nonexistent_file_errors() {
@@ -340,12 +419,31 @@ mod tests {
         let result = git_show(dir.path(), &commits[0].sha, "nonexistent.rs");
         assert!(result.is_err(), "Should error for nonexistent file");
     }
+    /// Tests that a normally cloned repository is not detected as shallow.
+    ///
+    /// # Arguments
+    /// None
+    ///
+    /// # Returns
+    /// None (unit test)
+    ///
+    /// # Panics
+    /// Panics if the assertion fails, indicating the repository was incorrectly identified as shallow.
 
     #[test]
     fn is_shallow_on_normal_repo() {
         let dir = create_test_repo();
         assert!(!is_shallow(dir.path()));
     }
+    /// Tests that `is_shallow` returns false for a nonexistent repository path instead of panicking.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that uses hardcoded paths.
+    ///
+    /// # Returns
+    ///
+    /// Nothing. This is a test that asserts `is_shallow` returns `false` when given a nonexistent path.
 
     #[test]
     fn is_shallow_on_nonexistent_path() {

@@ -5,6 +5,23 @@ use colored::Colorize;
 
 use cqs::{scout, scout_to_json, Embedder};
 
+/// Executes the scout command to find relevant code chunks for a task.
+///
+/// # Arguments
+///
+/// * `_cli` - CLI context (unused)
+/// * `task` - The task description to search for relevant code chunks
+/// * `limit` - Maximum number of file groups to return (clamped to 1-10)
+/// * `json` - Whether to output results in JSON format
+/// * `max_tokens` - Optional token budget for limiting result content size
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if project store access, embedder initialization, or scouting fails.
+///
+/// # Errors
+///
+/// Fails if the project store cannot be opened, embedder cannot be initialized, or the scout operation encounters an error. Warnings are logged if batch-fetching chunk content fails during token packing.
 pub(crate) fn cmd_scout(
     _cli: &crate::cli::Cli,
     task: &str,
