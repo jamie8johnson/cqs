@@ -146,12 +146,15 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 - **Consistency filtering** — CSN is already clean (0 pairs filtered). LoRA regressions aren't from noise.
 - **Mixed LoRA (v6)** — CSN+CosQA+SO training dilutes CSN signal without improving CosQA. Our docstring pairs > CoIR training splits.
 
-**In progress:**
-- **Full CoIR pipeline run** — LoRA v3 + NL enrichment on all 10 tasks. Leaderboard position estimate.
-- **v5 → default** — convert and upload to HuggingFace, switch default model
+**Done:**
+- Full CoIR pipeline run — enrichment hurts (-4.5pp). Product feature, not benchmark trick.
+- v5 → default — ONNX converted, uploaded to HuggingFace, model card updated.
 
-**Untested:**
-- **166k, 2 epochs** — midpoint between v5 (1ep, good transfer) and v4 (3ep, over-specialized). May find sweet spot.
+**Next (training improvements, prioritized):**
+1. **Hard negative mining** — CoRNStack recipe. +9.4pp potential. Extend `filter_csn.py`.
+2. **Expand training languages** — Rust, C++, TypeScript from public repos. CSN only has 6 languages, our users need more. Mine with `cqs train-data`, consistency-filter with v5.
+3. **Language-specific LoRA adapters** — LoRACode (ICLR 2025). Route by detected language.
+4. **166k, 2 epochs** — midpoint between v5 (1ep) and v4 (3ep, over-specialized).
 
 **Done:**
 - Sample size sweep (10k/50k/166k at 1ep) — 166k is optimal, more data at 1ep beats less data
@@ -183,7 +186,7 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 
 **Leaderboard (13 models):** #1 SFR-Code-2B (67.41, 2B), #2 CodeSage-large-v2 (64.18, 1.3B), #5 Voyage-Code-002 (56.26), #6 E5-Mistral (55.18, 7B), **#7 E5-base-v2 (50.9, 110M)**.
 
-**In progress:** Full 10-task pipeline run (LoRA v3 + NL enrichment). See `docs/research-log.md`.
+See `docs/research-log.md` for full experiment history and next steps.
 
 ### Literature survey (before paper)
 

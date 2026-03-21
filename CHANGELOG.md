@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-03-21
+
+### Added
+- **`--improve-all` flag** for `cqs index --improve-docs` — regenerates doc comments for all callable functions, not just undocumented ones. Skips test functions (`#[test]`, `test_` prefix) and non-source files.
+- **`is_source_file()` filter** — prevents doc comment injection into markdown, TOML, YAML, and config files.
+- **`docs/research-log.md`** — consolidated research log with all 11 embedding experiments, verified CoIR metrics, and leaderboard analysis.
+
+### Changed
+- **Default embedding model upgraded to LoRA v5** (166k samples/1ep) on HuggingFace. +1.2pp CSN NDCG@10 and +1.4pp CosQA transfer vs previous v3 (50k/1ep).
+- **Eval metrics improved**: Recall@1 90.9% → 92.7%, NDCG@10 0.951 → 0.965 (hard eval, DocFirst template) after doc comment enrichment of 629 functions across 182 source files.
+
+### Fixed
+- **Windows build**: removed `libc::EXDEV` reference in `doc_writer/rewriter.rs` that broke x86_64-pc-windows-msvc compilation. Replaced with platform-independent rename fallback.
+- **Clippy**: `map_or` → `is_none_or`, empty lines between doc comments and attributes.
+
+### Security
+- Bumped `aws-lc-sys` 0.38.0 → 0.39.0 (CRL scope check logic error + X.509 name constraints bypass)
+- Bumped `aws-lc-rs` 1.16.1 → 1.16.2
+
 ## [1.2.0] - 2026-03-21
 
 ### Added
