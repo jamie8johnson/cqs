@@ -13,14 +13,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
-// Model configuration - E5-base-v2 (full CUDA coverage, no rotary embedding fallback)
-const MODEL_REPO: &str = "intfloat/e5-base-v2";
-const MODEL_FILE: &str = "onnx/model.onnx";
-const TOKENIZER_FILE: &str = "onnx/tokenizer.json";
+// Model configuration - LoRA v3 fine-tuned E5-base-v2 for code search (SQ-7).
+// Override with CQS_EMBEDDING_MODEL env var to use a different model.
+const DEFAULT_MODEL_REPO: &str = "jamie8johnson/e5-base-v2-code-search";
+const MODEL_FILE: &str = "model.onnx";
+const TOKENIZER_FILE: &str = "tokenizer.json";
 
-// blake3 checksums for model verification (empty = skip validation)
-const MODEL_BLAKE3: &str = "5ca98b5db8c2d0e354163bff1160e4ca67b48e51e724d7b4a621270552fd5c04";
-const TOKENIZER_BLAKE3: &str = "6e933bf59db40b8b2a0de480fe5006662770757e1e1671eb7e48ff6a5f00b0b4";
+fn model_repo() -> String {
+    std::env::var("CQS_EMBEDDING_MODEL").unwrap_or_else(|_| DEFAULT_MODEL_REPO.to_string())
+}
+
+// blake3 checksums — empty to skip validation (model changes with LoRA updates)
+const MODEL_BLAKE3: &str = "";
+const TOKENIZER_BLAKE3: &str = "";
 
 #[derive(Error, Debug)]
 pub enum EmbedderError {
@@ -588,7 +593,7 @@ fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
     use hf_hub::api::sync::Api;
 
     let api = Api::new().map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
-    let repo = api.model(MODEL_REPO.to_string());
+    let repo = api.model(model_repo());
 
     let model_path = repo
         .get(MODEL_FILE)

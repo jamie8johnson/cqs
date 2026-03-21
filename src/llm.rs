@@ -177,8 +177,10 @@ impl Client {
             content
         };
         format!(
-            "Summarize this {} in one sentence. Focus on what it does, not how.\n\n```{}\n{}\n```",
-            chunk_type, language, truncated
+            "Describe what makes this {} unique and distinguishable from similar {}s. \
+             Focus on the specific algorithm, approach, or behavioral characteristics \
+             that distinguish it. One sentence only. Be specific, not generic.\n\n```{}\n{}\n```",
+            chunk_type, chunk_type, language, truncated
         )
     }
 
@@ -1492,7 +1494,7 @@ mod tests {
     fn build_prompt_multibyte_no_panic() {
         let content: String = std::iter::repeat('あ').take(2667).collect();
         let prompt = Client::build_prompt(&content, "function", "rust");
-        assert!(prompt.len() <= 8100);
+        assert!(prompt.len() <= 8300); // discriminating prompt is slightly longer
     }
 
     #[test]
