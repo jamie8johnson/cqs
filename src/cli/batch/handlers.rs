@@ -486,7 +486,6 @@ pub(super) fn dispatch_similar(
 /// # Errors
 ///
 /// Returns an error if embedding fails, the reference index is not loaded, vector index access fails, or the gather operation fails.
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn dispatch_gather(
     ctx: &BatchContext,

@@ -1122,7 +1122,7 @@ pub fn doc_comment_pass(
             if improve_all {
                 // In improve-all mode, include all callable non-test source chunks
                 if cs.chunk_type.is_callable()
-                    && cs.window_idx.map_or(true, |idx| idx == 0)
+                    && cs.window_idx.is_none_or(|idx| idx == 0)
                     && !is_test_chunk(&cs)
                     && is_source_file(&cs)
                 {

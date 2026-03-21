@@ -27,7 +27,6 @@ use crate::cli::staleness;
 /// # Errors
 ///
 /// Fails if the project store cannot be opened, embeddings cannot be generated, vector index cannot be built, or the gathering operation encounters an error.
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cmd_gather(
     cli: &crate::cli::Cli,
