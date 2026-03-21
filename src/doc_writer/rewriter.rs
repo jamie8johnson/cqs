@@ -421,14 +421,11 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
 
     match std::fs::rename(&temp_path, path) {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            // Cross-device: fall back to direct write
+        Err(_) => {
+            // Rename can fail cross-device (EXDEV on Unix, ERROR_NOT_SAME_DEVICE on Windows)
+            // or for other transient reasons. Fall back to direct write.
             let _ = std::fs::remove_file(&temp_path);
             std::fs::write(path, data)
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
         }
     }
 }
