@@ -2,51 +2,48 @@
 
 ## Right Now
 
-**Full 1.7M CSN + docs / 1ep training (2026-03-20).** Background task: `b4ijaon3b`. ~5.5 hours.
+**Discriminating descriptions proven (+16pp over raw code). Ready to ship (2026-03-20).**
 
-### Rank sweep result: flat
-Rank 32 = rank 16 within noise. Bottleneck is data, not model capacity.
+### What to ship
+1. **v3 LoRA** as default embedding model (15 min training, +4.4pp CSN)
+2. **Discriminating prompt** for SQ-6 summaries (change `build_prompt` in `llm.rs`)
+3. **Fix `run_hard_eval.py` parser** — regex misses ~30 functions vs tree-sitter
 
-### Complete Results Matrix (all rank 16, 1ep unless noted)
+### Description Experiment Results
 
-| Config | CSN NDCG@10 | CosQA NDCG@10 | Notes |
-|--------|------------|---------------|-------|
+| Config | R@1 | MRR | vs Raw |
+|--------|-----|-----|--------|
+| Raw code | 47.3% | 0.673 | — |
+| Generic descriptions | 60.0% | 0.726 | +12.7pp |
+| Discriminating | 63.6% | 0.763 | +16.3pp |
+| Contrastive (top-5 neighbors) | 65.5% | 0.769 | +18.2pp |
+
+Ship discriminating (simple, cheap). Contrastive is future optimization.
+
+### Complete LoRA Results
+
+| Config | CSN | CosQA | Training |
+|--------|-----|-------|----------|
 | Base E5 | 0.627 | 0.329 | — |
-| 10k+docs | 0.671 | 0.327 | |
-| 50k+docs (v3) | 0.671 | 0.334 | |
-| 75k+docs | 0.675 | 0.341 | |
-| 200k+docs | 0.680 | 0.353 | Best at 200k |
-| 200k rank 32 | 0.682 | 0.351 | Rank doesn't help |
-| 200k no docs (v5) | 0.683 | 0.348 | Docs help CosQA |
-| 200k 3ep no docs (v4) | 0.695 | 0.304 | More epochs kills CosQA |
-| 73k mixed (v6) | 0.644 | 0.332 | Mixed data dilutes signal |
-| **1.7M+docs/1ep** | **TRAINING** | | **~5.5 hrs** |
+| **v3 (50k+docs/1ep)** | **0.671** | **0.334** | **15 min** |
+| 200k+docs/1ep | 0.680 | 0.353 | 40 min |
+| Rank 32 | 0.682 | 0.351 | 40 min (flat) |
 
-### After training
-1. Eval on CSN + CosQA
-2. If good: try 2ep, then 3ep
-3. Ship best model
-4. Discriminating descriptions experiment ($0.10)
-5. Custom training data from popular repos
-
-### Key learnings
-- Hard eval penalizes any training — not useful for production decisions
-- CSN + CosQA are the metrics that matter
-- More data monotonically improves real metrics
-- Rank 16 is sufficient — data is the bottleneck
-- Docstrings anchor generalization (help CosQA)
-- CSN data is clean (filtering removed nothing)
-- CodeSage-large-v2 fails NL queries (20% R@1)
+### Key decisions
+- E5 stays as base model (CodeSage fails NL queries)
+- v3 LoRA: best value for effort
+- Discriminating prompt: biggest bang for buck of any experiment
+- Hard eval deprioritized (measures E5 perturbation, not production quality)
+- Rank not the bottleneck — data is
 
 ## Parked
-
-- v1.1.0 release — after LoRA ships
-- Full 10-task CoIR — for paper
-- Custom training data from popular repos
-- Discriminating LLM descriptions
+- v1.1.0 release — after LoRA + prompt ship
+- Contrastive descriptions (two-pass, future optimization)
+- Language-balanced training data from popular repos
+- Full 10-task CoIR for paper
+- 1.7M LoRA run (killed — diminishing returns)
 
 ## Architecture
-
 - Version: 1.1.0, Schema: v16
 - Embeddings: 768-dim E5-base-v2 + signatures (SQ-11)
 - LLM: summaries (SQ-6), doc comments (SQ-8), hyde (SQ-12)
