@@ -2,60 +2,52 @@
 
 ## Right Now
 
-**LoRA eval complete. Ready to commit/PR/merge, then queue v5 overnight (2026-03-20).**
+**Full 1.7M CSN + docs / 1ep training (2026-03-20).** Background task: `b4ijaon3b`. ~5.5 hours.
 
-### Key Finding: v4 Over-Specializes
-- v4 (200k/3ep): CSN +6.8pp but cosqa **-2.5pp** (transfer regression)
-- v3 (50k/1ep): CSN +4.3pp AND cosqa +0.5pp (helps both)
-- **Production choice: v3.** Light LoRA that doesn't over-specialize.
-- v4/v5 are for paper benchmarks only.
+### Rank sweep result: flat
+Rank 32 = rank 16 within noise. Bottleneck is data, not model capacity.
 
-### CoIR Results (all configs)
+### Complete Results Matrix (all rank 16, 1ep unless noted)
 
-| Config | CSN NDCG@10 | cosqa NDCG@10 | Production? |
-|--------|------------|---------------|-------------|
-| Base E5 | 0.627 | 0.329 | Current default |
-| **v3 (50k/1ep)** | **0.671** | **0.334** | **Ship as default** |
-| v4 (200k/3ep) | 0.695 | 0.304 | Paper only |
+| Config | CSN NDCG@10 | CosQA NDCG@10 | Notes |
+|--------|------------|---------------|-------|
+| Base E5 | 0.627 | 0.329 | — |
+| 10k+docs | 0.671 | 0.327 | |
+| 50k+docs (v3) | 0.671 | 0.334 | |
+| 75k+docs | 0.675 | 0.341 | |
+| 200k+docs | 0.680 | 0.353 | Best at 200k |
+| 200k rank 32 | 0.682 | 0.351 | Rank doesn't help |
+| 200k no docs (v5) | 0.683 | 0.348 | Docs help CosQA |
+| 200k 3ep no docs (v4) | 0.695 | 0.304 | More epochs kills CosQA |
+| 73k mixed (v6) | 0.644 | 0.332 | Mixed data dilutes signal |
+| **1.7M+docs/1ep** | **TRAINING** | | **~5.5 hrs** |
 
-### Before v5 training
-1. Commit + PR + merge docs/research updates
-2. Queue v5: 1.7M CSN, 1 epoch, ~5.5 hrs overnight, checkpoint each epoch
+### After training
+1. Eval on CSN + CosQA
+2. If good: try 2ep, then 3ep
+3. Ship best model
+4. Discriminating descriptions experiment ($0.10)
+5. Custom training data from popular repos
 
-### Done this session (2026-03-20)
-- PRs #628-632 merged
-- 8 hard eval experiments + stress eval
-- CoIR: base, v3, v4 on CSN + cosqa transfer tests
-- LoRA v4 trained (200k/3ep) — over-specializes on CSN
-- Fixed run_coir.py output clobbering
-- Research log fully updated
-
-### Production Stack
-1. Type-aware signatures (SQ-11) — shipped, free
-2. Call graph enrichment (SQ-4) — shipped, free
-3. LLM summaries (SQ-6) — shipped, optional
-4. **LoRA v3 — ship as default** (light touch, helps everywhere)
-5. Hyde predictions (SQ-12) — shipped, optional
+### Key learnings
+- Hard eval penalizes any training — not useful for production decisions
+- CSN + CosQA are the metrics that matter
+- More data monotonically improves real metrics
+- Rank 16 is sufficient — data is the bottleneck
+- Docstrings anchor generalization (help CosQA)
+- CSN data is clean (filtering removed nothing)
+- CodeSage-large-v2 fails NL queries (20% R@1)
 
 ## Parked
 
-- **v1.1.0 release** — after LoRA ships
-- **v5 training** — 1.7M/1ep overnight, for paper CSN numbers
-- **Mixed LoRA** — train on CSN + cosqa + SO for production-quality generalist adapter
-- **Full 10-task CoIR** — for leaderboard avg
-- **Post-index name matching** — fuzzy cross-doc references
-
-## Upstream Tracking
-
-- cuVS PR #1839 (search &self): merged, expected v26.04.00
-- cuVS PR #1840 (CAGRA serialize): open
+- v1.1.0 release — after LoRA ships
+- Full 10-task CoIR — for paper
+- Custom training data from popular repos
+- Discriminating LLM descriptions
 
 ## Architecture
 
-- Version: 1.1.0
-- Schema: v16
-- Embeddings: 768-dim E5-base-v2 + signatures (SQ-11). LoRA v3 shipping as default.
+- Version: 1.1.0, Schema: v16
+- Embeddings: 768-dim E5-base-v2 + signatures (SQ-11)
 - LLM: summaries (SQ-6), doc comments (SQ-8), hyde (SQ-12)
 - Tests: 1265 lib pass
-- Training: ~/training-data/ (CSN 1.7M, LoRA v1-v4, CoIR results)
-- Research log: ~/training-data/RESEARCH_LOG.md
