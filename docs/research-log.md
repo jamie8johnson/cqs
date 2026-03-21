@@ -105,13 +105,21 @@ Per-language NDCG@10 (verified from `~/training-data/coir-results/`):
    - `filter_csn.py` already exists for consistency filtering (ran it — 0 pairs filtered, CSN is clean). Need to extend with hard negative mining.
    - CoRNStack's data is open source at github.com/gangiswag/cornstack — could use their pre-mined negatives directly.
 
-2. **Language-specific LoRA adapters** — LoRACode (ICLR 2025, arXiv 2503.05315) found language-specific adapters massively outperform task-specific. Up to 86.7% MRR improvement. Our v5 trains one adapter across all 6 langs. Routing by detected language could be a big win.
+2. **Expand training languages: Rust, C++, TypeScript** — CSN only covers Go/Java/JS/Ruby/Python/PHP. Our users search Rust/C++/TS heavily but the model has zero fine-tuning signal for those. Plan:
+   - Mine docstring-function pairs from popular public repos (tokio, servo, llvm, chromium, TypeScript compiler, deno)
+   - Use `cqs train-data` to extract triplets from git history of those repos
+   - Consistency-filter with v5 model (remove noisy pairs where cosine sim < threshold)
+   - Add to training set alongside CSN data, retrain
+   - Eval on hard eval (which includes Rust/TS queries) and CoIR
+   - Risk: dilution (v6-mixed showed CSN+CosQA+SO hurts). Mitigation: filter aggressively, keep CSN as majority.
 
-3. **166k / 2 epochs** — quick sanity check. Does CosQA degrade gradually or cliff at 3ep?
+3. **Language-specific LoRA adapters** — LoRACode (ICLR 2025, arXiv 2503.05315) found language-specific adapters massively outperform task-specific. Up to 86.7% MRR improvement. Our v5 trains one adapter across all 6 langs. Routing by detected language could be a big win.
 
-4. **Full 10-task CoIR for v5** — only CSN + CosQA tested. 8 tasks unknown. Free to run.
+4. **166k / 2 epochs** — quick sanity check. Does CosQA degrade gradually or cliff at 3ep?
 
-5. **Knowledge distillation from CodeSage-large** — use 1.3B model as teacher, train E5 to match its similarity scores. More complex to implement.
+5. **Full 10-task CoIR for v5** — only CSN + CosQA tested. 8 tasks unknown. Free to run.
+
+6. **Knowledge distillation from CodeSage-large** — use 1.3B model as teacher, train E5 to match its similarity scores. More complex to implement.
 
 **Why hard negatives are the priority:**
 - CoRNStack's ablation is definitive: consistency filtering (+6.6pp) only helps noisy data (The Stack). CSN is already clean — confirmed by our `filter_csn.py` run (0 pairs filtered, same 1.71M lines). But hard negative mining (+9.4pp) works regardless of data quality. It forces the model to learn fine-grained semantic differences instead of surface-level language patterns.

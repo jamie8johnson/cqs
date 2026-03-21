@@ -1109,3 +1109,19 @@ mentions = [
     "llm.rs",
     "doc_writer",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "v5 LoRA (166k/1ep) beats v3 (50k/1ep) on both CSN (+1.2pp) and CosQA (+1.4pp). Shipping decision for v3 was made before v5 results existed. Always wait for full eval before shipping."
+mentions = [
+    "llm.rs",
+    "run_coir.py",
+]
+
+[[note]]
+sentiment = 0.0
+text = "Pipeline NL enrichment helps in-product (+1.8pp R@1) but hurts on CoIR benchmark (-4.5pp). Enrichment shifts passage text away from training distribution. Benchmark numbers must use raw model, not enriched text."
+mentions = [
+    "run_coir.py",
+    "nl.rs",
+]
