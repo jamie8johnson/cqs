@@ -542,9 +542,25 @@ impl HnswIndex {
         struct CountVisitor;
         impl<'de> Visitor<'de> for CountVisitor {
             type Value = usize;
+            /// Writes a human-readable description of the expected type to the given formatter.
+            ///
+            /// # Arguments
+            ///
+            /// * `f` - The formatter to write the description to
+            ///
+            /// # Returns
+            ///
+            /// A `fmt::Result` indicating whether the write operation succeeded
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(f, "an array")
             }
+            /// Counts the number of elements in a sequence by iterating through all elements.
+            ///
+            /// # Arguments
+            /// * `seq` - A sequence accessor that provides access to elements in the sequence
+            ///
+            /// # Returns
+            /// Returns `Ok(count)` where `count` is the total number of elements in the sequence, or an error if deserialization fails during iteration.
             fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<usize, A::Error> {
                 let mut count = 0usize;
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {

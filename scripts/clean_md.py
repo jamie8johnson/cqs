@@ -347,6 +347,20 @@ def process_path(path: Path) -> List[Tuple[Path, dict]]:
 
 
 def main():
+    """
+    Parses command-line arguments and executes the PDF markdown cleaning workflow.
+    
+    This is the entry point for the markdown cleaning utility. It accepts a file or directory path, processes markdown files to remove PDF conversion artifacts, and prints a detailed summary of the cleaning results including line counts and removal statistics by rule.
+    
+    Args:
+        None. Command-line arguments are parsed from sys.argv.
+    
+    Returns:
+        None. Prints processing results to stdout and exits with status code 1 if no files were processed, otherwise exits with status code 0.
+    
+    Raises:
+        SystemExit: Raised with exit code 1 if no markdown files were processed.
+    """
     parser = argparse.ArgumentParser(
         description='Clean PDF-converted markdown files by removing conversion artifacts.'
     )

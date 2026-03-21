@@ -876,59 +876,169 @@ mod tests {
 
     mod chunk_within_container_tests {
         use super::*;
+        /// Tests that a chunk fully contained within a container range is correctly identified.
+        ///
+        /// # Arguments
+        ///
+        /// This function takes no arguments. It tests the internal logic of `chunk_within_container`.
+        ///
+        /// # Returns
+        ///
+        /// Returns nothing. This is a test function that asserts expected behavior.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the assertion fails, indicating that `chunk_within_container` did not correctly identify that lines 5-10 are fully contained within the container range 3-15.
 
         #[test]
         fn fully_contained() {
             // Chunk lines 5-10 inside container 3-15
             assert!(chunk_within_container(5, 10, &[(3, 15)]));
         }
+        /// Tests that a chunk is correctly identified as being within a container when the chunk boundaries exactly match the container boundaries.
+        ///
+        /// # Arguments
+        ///
+        /// This is a test function with no parameters.
+        ///
+        /// # Returns
+        ///
+        /// Returns nothing. Panics if the assertion fails.
+        ///
+        /// # Panics
+        ///
+        /// Panics if `chunk_within_container(3, 15, &[(3, 15)])` returns false, indicating the function failed to recognize an exact boundary match.
 
         #[test]
         fn exact_match() {
             // Chunk exactly matches container boundaries
             assert!(chunk_within_container(3, 15, &[(3, 15)]));
         }
+        /// Verifies that a chunk positioned at the exact start boundary of a container is correctly identified as being within that container.
+        ///
+        /// # Arguments
+        ///
+        /// None. This is a test helper function that uses hardcoded values.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the assertion fails, indicating that a chunk at position 3 with size 10 is not recognized as being within the container range (3, 15).
 
         #[test]
         fn start_boundary() {
             // Chunk starts at container start
             assert!(chunk_within_container(3, 10, &[(3, 15)]));
         }
+        /// Verifies that a chunk is correctly identified as being within a container when the chunk's end boundary aligns with the container's end boundary.
+        ///
+        /// # Arguments
+        ///
+        /// No parameters. This is a test assertion function.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the assertion fails, indicating that a chunk from position 10 to 15 is not correctly recognized as being within a container spanning from position 3 to 15.
 
         #[test]
         fn end_boundary() {
             // Chunk ends at container end
             assert!(chunk_within_container(10, 15, &[(3, 15)]));
         }
+        /// Tests that a chunk positioned entirely before a container is correctly identified as not contained within it.
+        ///
+        /// # Arguments
+        /// * `1` - chunk start position
+        /// * `2` - chunk end position
+        /// * `&[(3, 15)]` - container ranges to check against
+        ///
+        /// # Returns
+        /// Asserts that `chunk_within_container` returns `false` when the chunk (1-2) ends before the container (3-15) begins.
 
         #[test]
         fn not_contained_before() {
             // Chunk entirely before container
             assert!(!chunk_within_container(1, 2, &[(3, 15)]));
         }
+        /// Tests that a chunk positioned entirely after a container is correctly identified as not contained within it.
+        ///
+        /// # Arguments
+        ///
+        /// This is a test function with no parameters.
+        ///
+        /// # Returns
+        ///
+        /// This test function returns nothing. It asserts that `chunk_within_container(16, 20, &[(3, 15)])` returns `false`, indicating that a chunk from position 16-20 is not contained within a container spanning positions 3-15.
 
         #[test]
         fn not_contained_after() {
             // Chunk entirely after container
             assert!(!chunk_within_container(16, 20, &[(3, 15)]));
         }
+        /// Verifies that a chunk is not considered contained within a container when the chunk's start position precedes the container's start position, even if their ranges overlap.
+        ///
+        /// # Arguments
+        /// * `1` - The start position of the chunk
+        /// * `5` - The end position of the chunk
+        /// * `&[(3, 15)]` - A slice containing one container with start position 3 and end position 15
+        ///
+        /// # Returns
+        /// Asserts that `chunk_within_container` returns `false`, indicating the chunk (1-5) is not strictly contained within the container (3-15).
 
         #[test]
         fn partial_overlap_start() {
             // Chunk starts before container — NOT contained (strict containment)
             assert!(!chunk_within_container(1, 5, &[(3, 15)]));
         }
+        /// Verifies that a chunk is not considered contained within a container when the chunk partially overlaps the end of a container range.
+        ///
+        /// # Arguments
+        ///
+        /// This function takes no arguments. It is a test that internally uses hardcoded values:
+        /// - Chunk start position: 10
+        /// - Chunk end position: 20
+        /// - Container range: (3, 15)
+        ///
+        /// # Returns
+        ///
+        /// This function returns nothing. It asserts that `chunk_within_container(10, 20, &[(3, 15)])` returns `false`.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the assertion fails, indicating the `chunk_within_container` function incorrectly identified a partially overlapping chunk as contained.
 
         #[test]
         fn partial_overlap_end() {
             // Chunk ends after container — NOT contained
             assert!(!chunk_within_container(10, 20, &[(3, 15)]));
         }
+        /// Tests that `chunk_within_container` returns `false` when given an empty container list.
+        ///
+        /// # Arguments
+        ///
+        /// * `chunk_within_container` - The function being tested
+        /// * `5` - A chunk identifier
+        /// * `10` - A size or offset value
+        /// * `&[]` - An empty slice of containers
+        ///
+        /// # Returns
+        ///
+        /// `false` - Confirms that no chunk can exist within an empty container collection
 
         #[test]
         fn empty_containers() {
             assert!(!chunk_within_container(5, 10, &[]));
         }
+        /// Verifies that the `chunk_within_container` function correctly identifies whether a chunk range is contained within any of multiple containers.
+        ///
+        /// # Arguments
+        ///
+        /// This is a test function with no parameters. It uses hardcoded test data including:
+        /// - A vector of container ranges as tuples of (start, end)
+        /// - Chunk ranges to test against the containers
+        ///
+        /// # Returns
+        ///
+        /// Returns nothing. Assertions validate that chunks fully contained within a container return true, and chunks not contained in any container return false.
 
         #[test]
         fn multiple_containers() {
@@ -938,6 +1048,16 @@ mod tests {
             // Not in any container
             assert!(!chunk_within_container(5, 8, &containers));
         }
+        /// This function tests the `chunk_within_container` function's behavior when checking if a single-line chunk (where start equals end) falls within a container's line range. It verifies that a chunk at line 5 is correctly identified as within a container spanning lines 3-15, and that a chunk at line 2 is correctly identified as outside that range.
+        ///
+        /// # Arguments
+        /// None
+        ///
+        /// # Returns
+        /// None (test function that uses assertions)
+        ///
+        /// # Panics
+        /// Panics if either assertion fails, indicating the `chunk_within_container` function does not correctly handle single-line chunks.
 
         #[test]
         fn single_line_chunk() {

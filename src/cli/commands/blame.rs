@@ -197,6 +197,18 @@ pub(crate) fn blame_to_json(data: &BlameData, root: &Path) -> serde_json::Value 
 
 // ─── Terminal output ─────────────────────────────────────────────────────────
 
+/// Prints formatted blame information for a code chunk to the terminal with syntax highlighting.
+///
+/// Displays the chunk's location (file, function name, line range), its signature, git commit history (hash, date, author, message), and a list of callers with their locations. If no git history exists for the line range, displays a message indicating this. Relative file paths are computed with respect to the provided root directory.
+///
+/// # Arguments
+///
+/// * `data` - BlameData containing the code chunk, commit history, and callers
+/// * `root` - Root path used to compute relative display paths for files
+///
+/// # Returns
+///
+/// Returns nothing; outputs directly to stdout using println!
 fn print_blame_terminal(data: &BlameData, root: &Path) {
     let file = rel_display(&data.chunk.file, root);
     println!(
@@ -243,6 +255,18 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 
 // ─── CLI command ─────────────────────────────────────────────────────────────
 
+/// Generates and displays blame information for a specified target, showing the call chain and responsibility for code.
+///
+/// # Arguments
+///
+/// * `target` - The target identifier to analyze
+/// * `json` - If true, outputs blame data as formatted JSON; otherwise displays as terminal output
+/// * `depth` - The maximum depth of the call chain to traverse
+/// * `show_callers` - If true, includes caller information in the blame analysis
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful execution, or an `Err` if the project store cannot be opened, blame data cannot be built, or JSON serialization fails.
 pub(crate) fn cmd_blame(target: &str, json: bool, depth: usize, show_callers: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_blame", target).entered();
 

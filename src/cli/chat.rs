@@ -23,6 +23,19 @@ struct ChatHelper {
 impl Completer for ChatHelper {
     type Candidate = Pair;
 
+    /// Provides command name autocompletion for the interactive shell.
+    ///
+    /// Filters the available commands to find those matching the prefix at the current cursor position. Only completes command names (first token); if the line contains a space, no completions are returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - The full input line being edited
+    /// * `pos` - The cursor position within the line
+    /// * `_ctx` - Rustyline context (unused)
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing the start position for replacement (0 if completions found, otherwise `pos`) and a vector of completion candidates as `Pair` objects with matching command names.
     fn complete(
         &self,
         line: &str,
@@ -97,6 +110,23 @@ fn command_names() -> Vec<String> {
 
 // ─── REPL ────────────────────────────────────────────────────────────────────
 
+/// Starts an interactive chat session with command-line interface for querying.
+///
+/// # Arguments
+///
+/// None. Uses internal context and configuration.
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion of the chat session, or an error if context creation or editor initialization fails.
+///
+/// # Errors
+///
+/// Returns an error if the CQS context cannot be created or if the rustyline editor cannot be initialized.
+///
+/// # Panics
+///
+/// Panics if the history size configuration (1000) is invalid, though this should never occur with a valid u64 value.
 pub(crate) fn cmd_chat() -> Result<()> {
     let _span = tracing::info_span!("cmd_chat").entered();
 

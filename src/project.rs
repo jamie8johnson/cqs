@@ -143,7 +143,19 @@ impl ProjectRegistry {
         self.save()
     }
 
-    /// Remove a project by name
+    /// Removes a project by name from the collection and persists the changes to storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the project to remove
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(true)` if a project with the given name was found and removed, or `Ok(false)` if no matching project exists. Returns `Err(ProjectError)` if saving the updated collection to storage fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ProjectError` if the save operation fails while persisting the removal to storage.
     pub fn remove(&mut self, name: &str) -> Result<bool, ProjectError> {
         let before = self.project.len();
         self.project.retain(|p| p.name != name);
@@ -154,7 +166,15 @@ impl ProjectRegistry {
         Ok(removed)
     }
 
-    /// Get a project by name
+    /// Retrieves a project entry by name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the project to look up.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(&ProjectEntry)` if a project with the given name exists, or `None` if no matching project is found.
     pub fn get(&self, name: &str) -> Option<&ProjectEntry> {
         self.project.iter().find(|p| p.name == name)
     }

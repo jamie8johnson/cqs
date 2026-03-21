@@ -28,6 +28,15 @@ pub struct ReferenceIndex {
 }
 
 impl std::fmt::Debug for ReferenceIndex {
+    /// Formats a ReferenceIndex for debugging output.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the debug representation to
+    ///
+    /// # Returns
+    ///
+    /// A Result indicating whether formatting succeeded or failed
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReferenceIndex")
             .field("name", &self.name)
@@ -251,6 +260,16 @@ mod tests {
     use super::*;
     use crate::store::ChunkSummary;
 
+    /// Constructs a `SearchResult` for a Rust function code chunk with the given name and relevance score.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The function name used to populate the chunk ID, file path, and function signature
+    /// * `score` - The relevance score assigned to the search result
+    ///
+    /// # Returns
+    ///
+    /// A `SearchResult` containing a `ChunkSummary` representing a Rust function located at `src/{name}.rs` with minimal metadata and the provided score.
     fn make_code_result(name: &str, score: f32) -> SearchResult {
         SearchResult {
             chunk: ChunkSummary {

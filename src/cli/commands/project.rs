@@ -42,6 +42,19 @@ pub(crate) enum ProjectCommand {
     },
 }
 
+/// Handles project management subcommands for registering, listing, and removing projects.
+///
+/// # Arguments
+///
+/// * `subcmd` - The project subcommand to execute, which can be register, list, or remove
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful execution of the subcommand.
+///
+/// # Errors
+///
+/// Returns an error if project registry loading/saving fails, or if removing a project fails.
 pub(crate) fn cmd_project(subcmd: &ProjectCommand) -> Result<()> {
     let _span = tracing::info_span!("cmd_project").entered();
     match subcmd {

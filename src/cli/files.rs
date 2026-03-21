@@ -24,6 +24,17 @@ fn process_exists(pid: u32) -> bool {
     // sending any signal.
     i32::try_from(pid).is_ok_and(|p| unsafe { libc::kill(p, 0) == 0 })
 }
+/// Checks whether a process with the given PID exists on Windows.
+///
+/// Uses the `tasklist` command with PID filtering to determine if a process is currently running.
+///
+/// # Arguments
+///
+/// * `pid` - The process ID to check for existence
+///
+/// # Returns
+///
+/// `true` if a process with the given PID exists, `false` otherwise. Returns `false` if the `tasklist` command fails to execute.
 
 #[cfg(windows)]
 fn process_exists(pid: u32) -> bool {

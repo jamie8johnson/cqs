@@ -144,7 +144,11 @@ impl CagraIndex {
         self.id_map.len()
     }
 
-    /// Check if index is empty
+    /// Checks whether this collection contains any elements.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if the collection is empty, `false` otherwise.
     pub fn is_empty(&self) -> bool {
         self.id_map.is_empty()
     }
@@ -352,6 +356,15 @@ struct IndexRebuilder<'a> {
 
 #[cfg(feature = "gpu-index")]
 impl<'a> Drop for IndexRebuilder<'a> {
+    /// Performs cleanup when this object is dropped.
+    ///
+    /// Ensures that the CAGRA index is rebuilt with the current resources before the object is destroyed.
+    ///
+    /// # Arguments
+    /// * `&mut self` - A mutable reference to self
+    ///
+    /// # Panics
+    /// Panics if index rebuilding fails or if resources are in an invalid state.
     fn drop(&mut self) {
         self.cagra.ensure_index_rebuilt(self.resources);
     }
@@ -359,18 +372,42 @@ impl<'a> Drop for IndexRebuilder<'a> {
 
 #[cfg(feature = "gpu-index")]
 impl VectorIndex for CagraIndex {
+    /// Searches the index for the k nearest neighbors to the given query embedding.
+    ///
+    /// # Arguments
+    ///
+    /// * `query` - The embedding vector to search for
+    /// * `k` - The number of nearest neighbors to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of IndexResult entries representing the k nearest neighbors found in the index, ordered by similarity/distance.
     fn search(&self, query: &Embedding, k: usize) -> Vec<IndexResult> {
         CagraIndex::search(self, query, k)
     }
 
+    /// Returns the number of vectors in the index.
+    ///
+    /// # Returns
+    ///
+    /// The total count of vectors currently stored in the index.
     fn len(&self) -> usize {
         CagraIndex::len(self)
     }
 
+    /// Checks whether the index is empty.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if the index contains no elements, `false` otherwise.
     fn is_empty(&self) -> bool {
         CagraIndex::is_empty(self)
     }
 
+    /// Returns the name identifier for the CAGRA index.
+    ///
+    /// # Returns
+    /// A static string slice containing "CAGRA", the name of this index type.
     fn name(&self) -> &'static str {
         "CAGRA"
     }
@@ -505,6 +542,17 @@ mod tests {
     /// Serialize GPU tests — concurrent CUDA contexts cause SIGSEGV
     static GPU_LOCK: Mutex<()> = Mutex::new(());
 
+    /// Generates a normalized embedding vector from a seed value.
+    ///
+    /// Creates a deterministic embedding by computing sine-based values for each dimension using the provided seed, then normalizes the resulting vector to unit length.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - A 32-bit unsigned integer used to generate deterministic embedding values
+    ///
+    /// # Returns
+    ///
+    /// An `Embedding` containing a normalized vector of dimension `EMBEDDING_DIM` with values derived from the seed
     fn make_embedding(seed: u32) -> Embedding {
         let mut v = vec![0.0f32; EMBEDDING_DIM];
         for (i, val) in v.iter_mut().enumerate() {
@@ -517,6 +565,11 @@ mod tests {
         Embedding::new(v)
     }
 
+    /// Checks if a GPU is available for CAGRA operations.
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if a GPU is available, `false` otherwise. When a GPU is not available, prints a message to stderr and returns `false`.
     fn require_gpu() -> bool {
         if !CagraIndex::gpu_available() {
             eprintln!("Skipping CAGRA test: no GPU available");
@@ -525,6 +578,19 @@ mod tests {
         true
     }
 
+    /// Builds a test CAGRA search index with synthetic embeddings.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - The number of embeddings to generate and index
+    ///
+    /// # Returns
+    ///
+    /// A `CagraIndex` containing `n` synthetic embeddings with keys formatted as "chunk_0", "chunk_1", etc.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the index build operation fails.
     fn build_test_index(n: u32) -> CagraIndex {
         let embeddings: Vec<(String, Embedding)> = (0..n)
             .map(|i| (format!("chunk_{}", i), make_embedding(i)))

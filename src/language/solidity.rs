@@ -85,6 +85,17 @@ const STOPWORDS: &[&str] = &[
     "true", "false", "msg", "block", "tx",
 ];
 
+/// Extracts the return type information from a Solidity function signature.
+/// 
+/// Parses a Solidity function signature to find the `returns` clause and extracts the return type specification. Tokenizes the return type declaration and formats it as a human-readable string.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A Solidity function signature string (e.g., "function add(uint a, uint b) public pure returns (uint)")
+/// 
+/// # Returns
+/// 
+/// `Some(String)` containing the formatted return type as "Returns <type>" if a `returns` clause exists and contains a non-empty type specification, or `None` if no `returns` clause is found or it is empty.
 fn extract_return(signature: &str) -> Option<String> {
     // Solidity: returns (...) at end of function signature
     // e.g., "function add(uint a, uint b) public pure returns (uint)"
@@ -154,6 +165,25 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a Solidity smart contract file and verifies correct identification of contract classes and their methods.
+    /// 
+    /// This is a test function that creates a temporary Solidity source file containing a simple token contract, parses it using the Parser, and asserts that the parser correctly identifies the Token contract as a Class chunk type and the transfer function as a Method chunk type belonging to the Token contract.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. The function uses hardcoded Solidity contract content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any assertion fails, including:
+    /// - If the parser fails to initialize or parse the file
+    /// - If the Token contract chunk is not found
+    /// - If the transfer method chunk is not found
+    /// - If chunk types or parent type names do not match expected values
 
     #[test]
     fn parse_solidity_contract() {
@@ -179,6 +209,25 @@ contract Token {
         assert_eq!(func.chunk_type, ChunkType::Method);
         assert_eq!(func.parent_type_name.as_deref(), Some("Token"));
     }
+    /// Parses a Solidity interface definition and verifies correct extraction of interface metadata.
+    /// 
+    /// This test function writes a temporary Solidity file containing an ERC20 interface definition, parses it using the Parser, and asserts that the resulting chunks correctly identify the interface with its proper type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded Solidity interface content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions rather than returning values.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following assertions fail:
+    /// - Parser initialization fails
+    /// - File parsing fails
+    /// - The "IERC20" interface is not found in parsed chunks
+    /// - The chunk type is not `ChunkType::Interface`
 
     #[test]
     fn parse_solidity_interface() {
@@ -194,6 +243,25 @@ interface IERC20 {
         let iface = chunks.iter().find(|c| c.name == "IERC20").unwrap();
         assert_eq!(iface.chunk_type, ChunkType::Interface);
     }
+    /// Parses a Solidity contract and extracts function calls from a specific function.
+    /// 
+    /// This test function creates a temporary Solidity file containing a contract with a `doWork()` function that makes two calls (`token.transfer()` and `require()`). It then parses the file, locates the `doWork` function, extracts all external calls from it, and verifies that both `transfer` and `require` calls are correctly identified.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None (test function with assertions)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser fails to initialize or parse the file
+    /// - The `doWork` function is not found in the parsed chunks
+    /// - The expected function calls (`transfer` or `require`) are not found in the extracted calls
 
     #[test]
     fn parse_solidity_calls() {
@@ -214,6 +282,21 @@ contract Caller {
         assert!(names.contains(&"transfer"), "Expected transfer, got: {:?}", names);
         assert!(names.contains(&"require"), "Expected require, got: {:?}", names);
     }
+    /// Parses Solidity struct and enum declarations and verifies they are correctly identified.
+    /// 
+    /// This is a test function that creates a temporary Solidity file containing a struct definition and an enum definition, parses it using the Parser, and asserts that both constructs are correctly recognized with their appropriate chunk types.
+    /// 
+    /// # Arguments
+    /// 
+    /// None (test function).
+    /// 
+    /// # Returns
+    /// 
+    /// None (test function that asserts expected behavior).
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if parsing the file fails, if the "Position" struct or "Status" enum chunks are not found, or if the chunk types do not match the expected values.
 
     #[test]
     fn parse_solidity_struct_and_enum() {

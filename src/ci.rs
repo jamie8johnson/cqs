@@ -198,6 +198,19 @@ fn empty_review() -> ReviewResult {
 mod tests {
     use super::*;
 
+    /// Creates a risk summary from counts of high, medium, and low priority items.
+    ///
+    /// Determines the overall risk level based on the presence of high-priority items first, then medium-priority items, with low as the default. All counts are included in the returned summary regardless of the overall level.
+    ///
+    /// # Arguments
+    ///
+    /// * `high` - Number of high-priority risk items
+    /// * `medium` - Number of medium-priority risk items
+    /// * `low` - Number of low-priority risk items
+    ///
+    /// # Returns
+    ///
+    /// A `RiskSummary` containing the item counts and computed overall risk level.
     fn make_summary(high: usize, medium: usize, low: usize) -> RiskSummary {
         let overall = if high > 0 {
             RiskLevel::High

@@ -610,6 +610,11 @@ impl Parser {
         Ok((chunks, call_results, type_results))
     }
 
+    /// Retrieves the list of file extensions supported by the language registry.
+    ///
+    /// # Returns
+    ///
+    /// A vector of supported file extensions as static string slices (e.g., "rs", "py", "js").
     pub fn supported_extensions(&self) -> Vec<&'static str> {
         crate::language::REGISTRY.supported_extensions().collect()
     }
@@ -765,6 +770,21 @@ pub(crate) fn extract_definition_node<'c, 't>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Verifies that the Parser correctly extracts function definitions from Rust source code.
+    ///
+    /// This is a unit test that validates the `parse_source` method's ability to identify and parse individual functions from a source file. It tests parsing a Rust snippet containing two function definitions and asserts that both functions are extracted as separate chunks with their correct names.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that creates its own test data internally.
+    ///
+    /// # Returns
+    ///
+    /// None. This function performs assertions and will panic if any assertion fails.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parser initialization fails, if source parsing fails, or if any of the assertions about extracted chunks fail (incorrect count, missing function names).
 
     #[test]
     fn parse_source_extracts_functions() {

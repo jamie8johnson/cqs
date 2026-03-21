@@ -5,6 +5,21 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::resolve::resolve_target;
 
+/// Builds a dependency map of test chunks that can reach a specified target, performing a reverse breadth-first search through the call graph up to a maximum depth.
+///
+/// # Arguments
+///
+/// * `name` - The name of the target chunk to find tests for
+/// * `max_depth` - Maximum depth to traverse in the call graph (0 means only direct callers)
+/// * `json` - Whether to output results in JSON format
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if the project store cannot be opened, the target cannot be resolved, or the call graph/test chunks cannot be loaded.
+///
+/// # Errors
+///
+/// Fails if the project store cannot be opened, the target name cannot be resolved, the call graph cannot be loaded, or test chunks cannot be found.
 pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_test_map", name).entered();
     let (store, root, _) = crate::cli::open_project_store()?;

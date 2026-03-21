@@ -134,6 +134,15 @@ const COMMON_TYPES: &[&str] = &[
     "CancellationToken",
 ];
 
+/// Extracts the return type annotation from an F# function signature and formats it as a documentation string.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - An F# function signature string (e.g., "let processData (input: string) : int =")
+/// 
+/// # Returns
+/// 
+/// Returns `Some(String)` containing a formatted return type description (e.g., "Returns int") if a non-unit return type annotation exists after the last colon outside of parentheses. Returns `None` if no '=' is found, no return type annotation exists, the return type is empty, or the return type is "unit".
 fn extract_return(signature: &str) -> Option<String> {
     // F#: optional return type annotation after last ':' before '='
     // e.g., "let processData (input: string) : int =" → "int"
@@ -245,6 +254,25 @@ mod tests {
         );
         assert_eq!(extract_return("let doSomething () : unit ="), None);
     }
+    /// Parses an F# function definition and verifies the parser correctly identifies it as a function chunk.
+    /// 
+    /// This is a test function that creates a temporary F# file containing a simple function definition, parses it using the Parser, and asserts that the resulting chunk has the correct name and type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None (unit type)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize or parse the file
+    /// - No chunk named "add" is found in the parsed results
+    /// - The chunk type is not Function
 
     #[test]
     fn parse_fsharp_function() {
@@ -255,6 +283,21 @@ mod tests {
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, crate::parser::ChunkType::Function);
     }
+    /// Parses an F# record type definition and verifies it is correctly identified as a struct chunk.
+    /// 
+    /// This test function writes an F# record definition to a temporary file, parses it using the Parser, and asserts that the resulting chunk for the "Person" record is recognized with the correct ChunkType::Struct classification.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded F# source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, if parsing fails, if the "Person" chunk is not found in the parsed results, or if the chunk_type is not ChunkType::Struct.
 
     #[test]
     fn parse_fsharp_record() {
@@ -270,6 +313,19 @@ type Person = {
         let record = chunks.iter().find(|c| c.name == "Person").unwrap();
         assert_eq!(record.chunk_type, crate::parser::ChunkType::Struct);
     }
+    /// Verifies that the parser correctly recognizes F# discriminated unions as enum chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "Shape" chunk is not found in the parsed output, or the chunk type is not `ChunkType::Enum`.
 
     #[test]
     fn parse_fsharp_discriminated_union() {
@@ -284,6 +340,24 @@ type Shape =
         let du = chunks.iter().find(|c| c.name == "Shape").unwrap();
         assert_eq!(du.chunk_type, crate::parser::ChunkType::Enum);
     }
+    /// Verifies that the parser correctly identifies and extracts F# class and method definitions from source code.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded F# source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to parse the file
+    /// - The "Calculator" class chunk is not found
+    /// - The "Add" method chunk is not found
+    /// - Any of the assertions about chunk types or parent relationships fail
 
     #[test]
     fn parse_fsharp_class_and_method() {
@@ -301,6 +375,21 @@ type Calculator() =
         assert_eq!(method.chunk_type, crate::parser::ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
     }
+    /// Verifies that F# abstract type definitions without the [<Interface>] attribute are correctly parsed as Class chunks.
+    /// 
+    /// This test validates the parser's handling of F# interface-like types that lack explicit [<Interface>] attributes. F# allows abstract classes and interfaces to be defined identically in syntax, and tree-sitter-fsharp parses unattributed abstract types as anonymous type definitions (Class). The test writes a temporary F# file containing an abstract member definition and confirms the resulting parsed chunk is classified as a Class type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data and parser instance.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts on the parser output and returns unit.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if file creation fails, parsing fails, the "ILogger" chunk is not found, or the assertion on chunk type fails.
 
     #[test]
     fn parse_fsharp_interface() {
@@ -319,6 +408,24 @@ type ILogger =
         // Without [<Interface>] attribute, tree-sitter classifies as anon_type_defn → Class
         assert_eq!(iface.chunk_type, crate::parser::ChunkType::Class);
     }
+    /// Parses an F# module definition and verifies the parser correctly identifies it as a Module chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function performs assertions and returns unit `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser cannot be instantiated
+    /// - The file cannot be parsed
+    /// - A chunk named "Helpers" is not found in the parsed output
+    /// - The "Helpers" chunk is not identified as a Module type
 
     #[test]
     fn parse_fsharp_module() {
@@ -332,6 +439,25 @@ module Helpers =
         let module = chunks.iter().find(|c| c.name == "Helpers").unwrap();
         assert_eq!(module.chunk_type, crate::parser::ChunkType::Module);
     }
+    /// Verifies that F# type abbreviations are correctly parsed as type aliases.
+    /// 
+    /// This test function writes a temporary F# file containing a type abbreviation (e.g., `type Callback = int -> string`), parses it using the Parser, and asserts that the resulting chunk is correctly identified as a TypeAlias with the expected name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. Returns unit `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser fails to parse the file
+    /// - A chunk named "Callback" is not found in the parsed output
+    /// - The parsed chunk's type is not `ChunkType::TypeAlias`
 
     #[test]
     fn parse_fsharp_type_abbreviation() {
@@ -345,6 +471,21 @@ module Helpers =
         let ta = chunks.iter().find(|c| c.name == "Callback").unwrap();
         assert_eq!(ta.chunk_type, crate::parser::ChunkType::TypeAlias);
     }
+    /// Parses F# method calls and verifies that function call extraction correctly identifies dot notation calls.
+    /// 
+    /// This test function creates a parser and processes F# code containing string and integer operations, then validates that the `Trim` and `Parse` method calls are properly extracted from the parsed content.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a standalone test function that uses hardcoded F# source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the extracted function calls do not contain the expected "Trim" or "Parse" method names, indicating the parser failed to correctly identify dot notation calls in F# code.
 
     #[test]
     fn parse_fsharp_calls() {

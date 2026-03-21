@@ -12,7 +12,23 @@ use cqs::parse_duration;
 use crate::cli::find_project_root;
 use crate::cli::AuditModeState;
 
-/// Handle audit-mode command
+/// Manages and queries the audit mode state for a project.
+///
+/// When called without a state argument, displays the current audit mode status (active/inactive, expiration time). When called with a state argument, enables or disables audit mode with an optional expiration duration.
+///
+/// # Arguments
+///
+/// * `state` - Optional audit mode state to set (`On` or `Off`). If `None`, queries and displays current state.
+/// * `expires` - Duration string specifying when audit mode expires (e.g., "24h", "7d"). Only used when enabling audit mode.
+/// * `json` - If `true`, outputs status as formatted JSON; otherwise uses human-readable text format.
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if the project has no `.cqs` directory, parsing fails, or file I/O operations fail.
+///
+/// # Errors
+///
+/// Fails if no `.cqs` directory is found, the expiration duration cannot be parsed, or reading/writing audit state files fails.
 pub(crate) fn cmd_audit_mode(
     state: Option<&AuditModeState>,
     expires: &str,

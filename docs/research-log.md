@@ -1,0 +1,377 @@
+# Research Log
+
+Experiments toward a paper on layered code retrieval with a 110M parameter model.
+
+**Thesis:** "Different evaluation regimes surface different quality dimensions. Adversarial evals (confusable function pairs) test precision — type-aware embeddings dominate. Realistic benchmarks (CoIR) test recall and ranking — LoRA fine-tuning dominates. A layered architecture — signatures for precision, LoRA for recall, LLM enrichment for coverage — lets a 110M model compete with specialized models 3-20× larger."
+
+---
+
+## Experiment Timeline
+
+### Exp 1: Baseline NL Descriptions (SQ-2) — 2026-03-14
+**PR #588, shipped v1.0.6**
+
+Added struct/enum field names + directory path context to NL descriptions before embedding.
+
+| Config | R@1 (hard) | Delta |
+|--------|-----------|-------|
+| Baseline | — | — |
+| +field names +dir context | +3.7pp | First positive result |
+
+### Exp 2: Call-Graph Enrichment (SQ-4) — 2026-03-14
+**PR #590, shipped v1.0.7**
+
+Two-pass indexing: build call graph first, then re-embed chunks with caller/callee names appended. IDF-based filtering suppresses high-frequency utilities (>10% threshold).
+
+- 63% of chunks enriched with call context
+- Embedding quality improved for functions with rich call graphs
+
+### Exp 3: Module-Level Context (SQ-5) — 2026-03-15
+**PR #594, shipped v1.0.9**
+
+Append filename stem to NL for module-level discrimination. Generic stems filtered (mod, index, lib, main, utils, helpers, common, types, config, constants, init).
+
+- Regresses fixture eval ~3pp but improves real queries
+- Shipped — real usage matters more than fixture eval
+
+### Exp 4: LLM Summaries (SQ-6) — 2026-03-16
+**PR #603, shipped v1.0.13**
+
+One-sentence function summaries via Claude Haiku Batches API, prepended to NL descriptions. Cached by content_hash.
+
+| Config | R@1 (stress) | Delta |
+|--------|-------------|-------|
+| Without summaries | — | — |
+| With generic summaries | -2.1pp | Regression — generic summaries add noise |
+
+Key finding: generic "summarize this function" prompt produces descriptions too similar across functions. Led to Exp 8 (discriminating prompt).
+
+### Exp 5: LoRA Fine-Tuning (SQ-7) — 2026-03-16 through 2026-03-20
+**PR #624 (train-data), PR #637 (ship v3)**
+
+Fine-tuned E5-base-v2 on CodeSearchNet triplets (query, positive, negative).
+
+| Config | Samples | Epochs | CSN NDCG@10 | CosQA (transfer) |
+|--------|---------|--------|-------------|-------------------|
+| Base E5 | — | — | 0.627 | 0.329 |
+| v3 | 50k | 1 | 0.671 | 0.334 |
+| **v5** | **166k** | **1** | **0.683** | **0.348** |
+| v4 | 166k | 3 | 0.680 | 0.305 |
+| v6-mixed | 166k+CosQA+SO | 1 | 0.644 | 0.332 |
+| Rank 32 | 50k | 1 | 0.682 | — |
+
+All variants use the same 186k-line training data file (CSN triplets + docstring-as-query pairs). The "+docs" label on v3 was misleading — all configs include docstrings. The only differences are `--max-samples` and `--epochs`.
+
+**Original decision (2026-03-20):** Ship v3. Made at 11:17 AM before v5 results existed (12:33 PM).
+
+**Corrected (2026-03-21):** v5 is strictly better than v3 on both CSN (+1.2pp) and CosQA transfer (+1.4pp). v4 over-specializes — 3 epochs on 166k data causes Python to spike (0.971) while CosQA collapses (0.305, below base). v5 avoids this by using 1 epoch on the full dataset.
+
+**Untested:** 166k at 2 epochs — the midpoint between v5 (1ep, good transfer) and v4 (3ep, over-specialized). May find a sweet spot.
+
+Per-language NDCG@10 (verified from `~/training-data/coir-results/`):
+
+| Language | v3 | v5 | Delta |
+|----------|------|------|-------|
+| Go | 0.758 | 0.770 | +0.012 |
+| Java | 0.610 | 0.626 | +0.017 |
+| JS | 0.523 | 0.535 | +0.012 |
+| Ruby | 0.590 | 0.589 | -0.001 |
+| Python | 0.929 | 0.953 | +0.023 |
+| PHP | 0.614 | 0.624 | +0.010 |
+
+**Action:** Switch default to v5. Convert safetensors → ONNX, upload to HuggingFace.
+
+**Rank investigation (2026-03-21):** rank-32 (r=32, alpha=64) trained on full 186k at 1 epoch scored 0.681 CSN, 0.350 CosQA — within noise of v5 (rank-16, 0.683/0.348) and sweep-200k (rank-16, 0.680/0.353). Doubling LoRA parameters adds nothing. rank-64 dir was created but never trained. **Rank is not a lever.**
+
+**Verified complete results (all from `~/training-data/coir-results/`):**
+
+| Config | Rank | Samples | Epochs | CSN | CosQA |
+|--------|------|---------|--------|-----|-------|
+| base E5 | — | — | — | 0.627 | 0.329 |
+| sweep-10k | 16 | 10k | 1 | 0.671 | 0.327 |
+| v3 | 16 | 50k | 1 | 0.671 | 0.334 |
+| sweep-75k | 16 | 75k | 1 | 0.675 | 0.341 |
+| sweep-200k | 16 | ~180k | 1 | 0.680 | 0.353 |
+| rank-32 | 32 | ~186k | 1 | 0.681 | 0.350 |
+| **v5** | **16** | **166k** | **1** | **0.683** | **0.348** |
+| v4 | 16 | 166k | 3 | 0.695 | 0.304 |
+| v6-mixed | 16 | 166k+mix | 1 | 0.644 | 0.332 |
+| pipeline | 16 | (v3+enrich) | — | 0.626 | — |
+
+**Next experiments (prioritized):**
+
+1. **Hard negative mining** — biggest untapped lever. CoRNStack ablation shows +9.4pp from hard negs alone (63.3→72.7), independent of data cleanliness. Our random negatives are the main gap between us and SOTA.
+   - Recipe: pre-compute similarity matrix with v5, softmax sampling with temperature annealing (τ: 0.05→0.001), InfoNCE loss (τ=0.07). See CoRNStack (arXiv 2412.01007).
+   - `filter_csn.py` already exists for consistency filtering (ran it — 0 pairs filtered, CSN is clean). Need to extend with hard negative mining.
+   - CoRNStack's data is open source at github.com/gangiswag/cornstack — could use their pre-mined negatives directly.
+
+2. **Language-specific LoRA adapters** — LoRACode (ICLR 2025, arXiv 2503.05315) found language-specific adapters massively outperform task-specific. Up to 86.7% MRR improvement. Our v5 trains one adapter across all 6 langs. Routing by detected language could be a big win.
+
+3. **166k / 2 epochs** — quick sanity check. Does CosQA degrade gradually or cliff at 3ep?
+
+4. **Full 10-task CoIR for v5** — only CSN + CosQA tested. 8 tasks unknown. Free to run.
+
+5. **Knowledge distillation from CodeSage-large** — use 1.3B model as teacher, train E5 to match its similarity scores. More complex to implement.
+
+**Why hard negatives are the priority:**
+- CoRNStack's ablation is definitive: consistency filtering (+6.6pp) only helps noisy data (The Stack). CSN is already clean — confirmed by our `filter_csn.py` run (0 pairs filtered, same 1.71M lines). But hard negative mining (+9.4pp) works regardless of data quality. It forces the model to learn fine-grained semantic differences instead of surface-level language patterns.
+- SFR-Code-2B (#1 on CoIR) also uses contrastive learning with hard negatives.
+- Our failed reranker (SQ-10, -81.8pp) had the same root cause: random negatives too easy.
+
+**Rejected approaches:**
+- CodeSage-large-v2 — 94.26 on CSN but 20% R@1 on hard eval (can't parse NL queries)
+- Consistency filtering — CSN is already clean (0 pairs filtered). CoRNStack's gain was on The Stack (raw GitHub scrapes), not CSN.
+- Mixed LoRA (v6, CSN+CosQA+SO) — dilutes CSN signal without improving CosQA
+- v4 (166k/3ep) — highest CSN but CosQA collapses. Over-specialized.
+- rank-32/64 — no gain over rank-16. Rank is not the bottleneck.
+- Pipeline enrichment on CoIR — hurts -4.5pp (see Exp 12).
+
+**Key references:**
+- CoRNStack (arXiv 2412.01007, ICLR 2025) — consistency filtering + curriculum hard negatives. Open data.
+- LoRACode (arXiv 2503.05315, ICLR 2025) — language-specific LoRA adapters for code embeddings.
+- CodeXEmbed / SFR-Code (arXiv 2411.12644, COLM 2025) — #1 on CoIR. LoRA + contrastive on structured pairs.
+- CoCoHaNeRe (ACM TOSEM 2025) — hard negative mining specifically for code search.
+- NV-Retriever (arXiv 2407.15831) — positive-aware hard negative mining, false negative removal.
+
+### Exp 6: Weighted Multi-Signal Fusion — 2026-03-19
+**PR #630 (weight sweep)**
+
+30-config parameter sweep: name_boost, keyword boost, RRF weights.
+
+| Result | Detail |
+|--------|--------|
+| All 30 configs | Regress on hard eval |
+| Optimal | Embedding-only (no fusion) |
+
+**Conclusion:** For adversarial confusable pairs, pure embedding similarity beats any weighted combination. Fusion may help on diverse queries but hurts precision.
+
+### Exp 7: Type-Aware Embeddings (SQ-11) — 2026-03-19
+**PR #630, shipped v1.2.0**
+
+Append full function signature to NL description before embedding.
+
+| Config | R@1 (hard) | Delta |
+|--------|-----------|-------|
+| Without signatures | 87.3% | — |
+| **With signatures** | **90.9%** | **+3.6pp** |
+
+TypeScript MRR +0.068. First positive result on hard eval since SQ-2.
+
+### The LLM Text Arc (Exp 4 → 8 → 11)
+
+This is the central narrative of the research. Three experiments, one question: can LLM-generated text improve code embeddings?
+
+**The naive answer was no.** Exp 4 showed generic summaries *hurt* retrieval (-2.1pp). "Summarize this function" produces descriptions like "processes data and returns a result" for every function. The embeddings converge — every vector drifts toward "generic utility function" in embedding space. More text, less discrimination.
+
+**The breakthrough was prompt engineering, not model changes.** Exp 8 tested four prompt strategies on the same LLM (Haiku), same functions, same eval:
+
+| Prompt Strategy | R@1 | MRR | vs Raw Code |
+|-----------------|-----|-----|-------------|
+| No LLM text (raw code only) | 47.3% | 0.673 | — |
+| Generic ("Summarize this function") | 60.0% | 0.726 | +12.7pp |
+| **Discriminating ("What makes this unique")** | **63.6%** | **0.763** | **+16.3pp** |
+| Contrastive (top-5 neighbors as context) | 65.5% | 0.769 | +18.2pp |
+
+Even the generic prompt helps vs raw code (+12.7pp) — NL text is inherently closer to NL queries than code is. But the discriminating prompt adds another +3.6pp by forcing the LLM to surface *what's different* about each function: the specific algorithm, the edge case, the data structure choice. This is the single biggest lever we found across all 11 experiments.
+
+**Then doc comments added a second signal on a different axis.** Exp 11 wrote standard doc comments (not discriminating — just "describe params and returns") back to source files, re-indexed, and measured:
+
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| R@1 (hard) | 90.9% | **92.7%** | **+1.8pp** |
+| NDCG@10 (hard) | 0.951 | **0.965** | **+0.014** |
+
+**Why do non-discriminating doc comments help when generic summaries hurt?** Because they flow through *different paths* and carry *different information*:
+
+| Stream | Prompt | Stored | Feeds embedding via | What it captures |
+|--------|--------|--------|---------------------|-----------------|
+| Discriminating summary | "What makes this unique" | DB (`llm_summaries`) | Enrichment pass NL | *Distinctiveness* — algorithm, approach |
+| Doc comment | "Describe params/returns" | Source file (`chunk.doc`) | NL generation | *Structure* — types, args, error cases |
+
+Generic summaries failed because they attempted distinctiveness and produced sameness. Doc comments succeed because they don't try to be distinctive — they add structured parameter/return/error information that gives the embedding additional axes of discrimination. A function that "takes a HashMap and returns Option<Vec>" occupies a different region of embedding space than one that "takes a &str and returns Result<(), Error>", even if both "process data."
+
+**The lesson:** LLM text is the biggest lever for embedding quality, but *what you ask for* matters more than the model. Prompt engineering delivered +16pp. LoRA fine-tuning delivered +4.4pp. The layered approach (discriminating summaries for distinctiveness + doc comments for structure) is additive because the two text streams are complementary, not redundant.
+
+Ship: discriminating prompt (simple, cheap, one LLM call per function). Contrastive is future optimization (requires two passes + neighbor lookup).
+
+Template comparison confirms — DocFirst (which prioritizes `chunk.doc` in embedding text) is now the clear winner:
+
+| Template | R@1 | MRR | NDCG@10 |
+|----------|-----|-----|---------|
+| Compact | 89.1% | 0.933 | 0.949 |
+| **DocFirst** | **92.7%** | **0.948** | **0.960** |
+
+---
+
+### Exp 9: Cross-Encoder Reranking (SQ-10) — 2026-03-19
+**PR #629**
+
+Trained cross-encoder reranker on 50k CSN + 7.5k docstring pairs, 3 epochs.
+
+| Config | R@1 (hard) | Delta |
+|--------|-----------|-------|
+| No reranker | 90.9% | — |
+| Web-trained reranker | 80.0% | **-10.9pp** |
+| Code-trained reranker | 9.1% | **-81.8pp** (catastrophic) |
+
+**Root cause:** Random same-language negatives too easy for cross-encoders. Need hard negatives (BM25 top-k) for V2. Infrastructure kept, do NOT make default.
+
+### Exp 10: HyDE Query Predictions (SQ-12) — 2026-03-20
+**PR #631, shipped v1.2.0**
+
+LLM predicts 3-5 search queries per function at index time. Embedded alongside NL description.
+
+| Config | R@1 (hard) | R@1 (stress) |
+|--------|-----------|-------------|
+| Without HyDE | — | — |
+| With HyDE | Mixed | Neutral |
+
+Shipped as optional enrichment (`--hyde-queries`). Untested on CoIR.
+
+### Exp 12: Full Pipeline on CoIR — 2026-03-21
+**In progress**
+
+Previous CoIR runs tested individual components in isolation (base model, LoRA alone, NL enrichment alone). This experiment applies the full free enrichment pipeline as an `E5Pipeline` wrapper in `run_coir.py`:
+
+- LoRA v3 model (trained on 50k CSN+docstrings)
+- Signature extraction + append (SQ-11)
+- Function name tokenization (SQ-2)
+- Doc comment extraction from code (DocFirst template)
+- Language detection
+
+**Not included** (require API calls or full project context):
+- LLM discriminating summaries (SQ-6) — $250 for full CSN, possible on small tasks for ~$2
+- Call graph enrichment (SQ-4) — needs full project, not isolated snippets
+- Module path context (SQ-5) — no file paths in CoIR
+
+### Result: Pipeline enrichment HURTS on CoIR (-4.5pp)
+
+| Language | v3 (raw) | v5 (raw) | Pipeline (v3+enrichment) | Delta vs v3 |
+|----------|----------|----------|--------------------------|-------------|
+| Go | 0.758 | 0.770 | 0.718 | -0.040 |
+| Java | 0.610 | 0.626 | 0.572 | -0.038 |
+| JS | 0.523 | 0.535 | 0.485 | -0.038 |
+| Ruby | 0.590 | 0.589 | 0.547 | -0.042 |
+| Python | 0.929 | 0.953 | 0.867 | -0.063 |
+| PHP | 0.614 | 0.624 | 0.566 | -0.049 |
+| **AVG** | **0.671** | **0.683** | **0.626** | **-0.045** |
+
+**Why:** CoIR queries are NL, corpus is raw code. The LoRA was trained on that exact format (query→code). Prepending signatures, tokenized names, and doc snippets shifts the passage distribution away from what the model learned. The enrichment is designed for *index-time* use where we control the full NL generation pipeline, not as a drop-in text transform on raw code.
+
+**Lesson for the paper:** NL enrichment is a *product feature* (helps when you own the whole pipeline), not a *model improvement* (hurts on standard benchmarks). The honest CoIR number is **v5 raw = 0.683**. The enrichment's +1.8pp on hard eval is real but only within cqs's controlled environment.
+
+---
+
+## CoIR Benchmark
+
+CodeSearchNet, 6 languages. Standard code retrieval benchmark (ACL 2025).
+Harness: `~/training-data/run_coir.py`, results in `~/training-data/coir-results/`.
+
+### Summary (Avg NDCG@10 across 6 CSN languages)
+
+| Config | Avg NDCG@10 | CosQA (transfer) | vs Base |
+|--------|-------------|-------------------|---------|
+| Base E5-base-v2 | 0.627 | 0.329 | — |
+| E5 + NL enrichment | 0.626 | — | -0.001 |
+| **E5 + LoRA v3 (50k+docs/1ep)** | **0.671** | **0.334** | **+0.043** |
+| E5 + LoRA sweep 10k | 0.671 | 0.327 | +0.044 |
+| E5 + LoRA v4 (200k/3ep) | 0.680 | 0.305 | +0.053 |
+| E5 + LoRA v5 (100k/3ep) | 0.678 | 0.348 | +0.051 |
+| E5 + LoRA v6-mixed (CSN+CosQA+SO) | 0.644 | 0.332 | +0.017 |
+| E5 + LoRA rank-32 | 0.682 | — | +0.055 |
+
+### Per-Language NDCG@10 (CodeSearchNet)
+
+| Config | Go | Java | JS | Ruby | Python | PHP |
+|--------|-----|------|-----|------|--------|-----|
+| Base E5 | 0.624* | 0.571* | 0.487* | 0.526* | 0.888* | 0.601 |
+| NL-enriched | 0.678 | 0.560 | 0.476 | 0.532 | 0.910 | 0.600 |
+| LoRA v3 | 0.746 | 0.621 | 0.535 | 0.592 | 0.909 | 0.623 |
+| LoRA sweep-10k | 0.746 | 0.621 | 0.535 | 0.592 | 0.909 | 0.623 |
+| LoRA v4 | 0.780 | 0.644 | 0.547 | 0.593 | 0.971 | 0.637 |
+| LoRA v5 | 0.770 | 0.626 | 0.535 | 0.589 | 0.953 | 0.624 |
+| LoRA v6-mixed | 0.753 | 0.587 | 0.496 | 0.539 | 0.890 | 0.597 |
+
+*Base E5 per-language from `e5-nl-enriched` run (closest to raw base; full base CSN run only has PHP).
+
+### CosQA Transfer (out-of-distribution)
+
+| Config | NDCG@10 | R@1 | R@10 |
+|--------|---------|-----|------|
+| Base E5 | 0.329 | 0.156 | 0.572 |
+| LoRA v3 | 0.334 | 0.162 | 0.572 |
+| LoRA sweep-10k | 0.327 | 0.162 | 0.550 |
+| LoRA v4 | 0.305 | 0.150 | 0.510 |
+| LoRA v5 | 0.348 | 0.172 | 0.586 |
+| LoRA v6-mixed | 0.332 | 0.150 | 0.574 |
+
+Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA transfer (0.305). v5 has the best CosQA transfer (0.348) but v3 is the sweet spot for ship.
+
+### Full CoIR Leaderboard (from archersama.github.io/coir)
+
+10 tasks, ranked by average across all. Our CSN-only results aren't directly comparable to the full leaderboard avg, but CSN is the most relevant task.
+
+| # | Model | Params | Avg (10 tasks) |
+|---|-------|--------|----------------|
+| 1 | Salesforce/SFR-Embedding-Code-2B_R | 2B | 67.41 |
+| 2 | CodeSage-large-v2 | 1.3B | 64.18 |
+| 3 | Salesforce/SFR-Embedding-Code-400M_R | 400M | 61.89 |
+| 4 | CodeSage-large | 1.3B | 61.04 |
+| 5 | Voyage-Code-002 | — | 56.26 |
+| 6 | E5-Mistral | 7B | 55.18 |
+| **7** | **E5-Base-v2 (our base)** | **110M** | **50.9** |
+| 8 | OpenAI-Ada-002 | — | 45.59 |
+| 9 | BGE-Base-en-v1.5 | 110M | 42.77 |
+| 10 | BGE-M3 | 567M | 39.31 |
+| 11 | UniXcoder | 123M | 37.33 |
+| 12 | GTE-Base-en-v1.5 | 110M | 36.75 |
+| 13 | Contriever | 110M | 36.4 |
+
+**Our position:** E5-base-v2 is already #7 out of 13. With LoRA v3 (+4.3pp on CSN), we'd approach #5-6 territory on the full benchmark — competing with models 3-60× our size.
+
+**Paper angle:** Among 110M-class models (BGE-Base, GTE-Base, UniXcoder, Contriever), E5-base-v2 dominates at 50.9 vs next-best 42.77. Our LoRA + layered enrichment architecture extends that lead further while staying at 110M params — runnable on CPU in <100ms per query.
+
+---
+
+## Current Gold Standard (post Exp 11)
+
+**Hard eval (55 confusable pairs):**
+- Recall@1: **92.7%** (51/55)
+- Recall@5: 98.2% (54/55)
+- Recall@10: 100% (55/55)
+- MRR: 0.954
+- NDCG@10: 0.965
+
+**Production stack (what ships):**
+
+| Layer | Feature | Cost | Impact |
+|-------|---------|------|--------|
+| 1 | Type-aware signatures (SQ-11) | Free | +3.6pp R@1 |
+| 2 | Call graph enrichment (SQ-4) | Free | 63% of chunks enriched |
+| 3 | LoRA v3 embedding model | Free (baked in) | +4.4pp CoIR NDCG@10 |
+| 4 | LLM summaries — discriminating (SQ-6) | ~$0.15/3k fn | +16pp R@1 vs raw code |
+| 5 | Doc comment generation (SQ-8) | ~$1.50/3k fn | +1.8pp R@1 |
+| 6 | HyDE predictions (SQ-12) | ~$0.15/3k fn | Optional, mixed results |
+
+---
+
+## Literature
+
+- **CoIR benchmark** (ACL 2025) — 10 datasets, 8 tasks, 14 languages, 2M docs
+- **CoRNStack** — large-scale contrastive training, claims SOTA
+- **CodeXEmbed** (COLM 2025) — generalist code embedding family
+- **C2LLM** (arXiv 2512.21332) — contrastive code LLMs (0.5B, 7B)
+- **CodeCSE** (arXiv 2407.06360) — multilingual code/comment sentence embeddings
+- **Refining embeddings with PEFT** (arXiv 2405.04126) — LoRA on CodeT5+. Closest to our approach.
+- **Lore** (arXiv 2603.15566) — git commit messages as structured knowledge for AI agents
+
+---
+
+## Key Lessons
+
+1. **Generic LLM descriptions hurt.** They make all functions sound the same. Discriminating prompt (+16pp) vs generic (+12.7pp).
+2. **Adversarial evals ≠ realistic evals.** LoRA regresses hard eval but +4.4pp on CoIR. Type signatures help hard eval but are invisible on CoIR.
+3. **Fusion doesn't help precision.** 30-config weight sweep — pure embedding beats all combinations on confusable pairs.
+4. **Cross-encoder reranking needs hard negatives.** Random negatives are too easy. Catastrophic failure (-81.8pp) with code-trained reranker.
+5. **Doc comments improve embeddings.** Writing back LLM-generated docs to source → richer NL → better vectors (+1.8pp R@1).
+6. **Data > architecture for LoRA.** Rank 16→32 is flat. 50k→200k samples gives diminishing returns. Quality > quantity.

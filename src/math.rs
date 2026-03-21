@@ -68,10 +68,29 @@ pub fn full_cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
 
+    /// Creates a vector embedding by repeating a single float value 768 times.
+    ///
+    /// # Arguments
+    ///
+    /// * `val` - The float value to repeat in the embedding vector
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<f32>` of length 768 where every element equals `val`
     fn make_embedding(val: f32) -> Vec<f32> {
         vec![val; 768]
     }
 
+    /// Creates a one-hot encoded embedding vector of dimension 768.
+    ///
+    /// # Arguments
+    /// * `idx` - The index position where the value should be set to 1.0
+    ///
+    /// # Returns
+    /// A vector of 768 f32 values with all elements initialized to 0.0 except at position `idx` which is set to 1.0.
+    ///
+    /// # Panics
+    /// Panics if `idx` >= 768.
     fn make_unit_embedding(idx: usize) -> Vec<f32> {
         let mut v = vec![0.0; 768];
         v[idx] = 1.0;

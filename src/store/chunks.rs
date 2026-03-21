@@ -1583,6 +1583,16 @@ mod tests {
     use crate::parser::{Chunk, ChunkType, Language};
     use crate::test_helpers::{mock_embedding, setup_store};
 
+    /// Creates a mock Rust function chunk with generated content and hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The name of the function to use in the generated signature and content
+    /// * `file` - The file path where this chunk is located
+    ///
+    /// # Returns
+    ///
+    /// A `Chunk` struct representing a Rust function with auto-generated content, a BLAKE3 hash-based ID, and default metadata.
     fn make_chunk(name: &str, file: &str) -> Chunk {
         let content = format!("fn {}() {{ /* body */ }}", name);
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();

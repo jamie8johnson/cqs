@@ -63,6 +63,17 @@ const STOPWORDS: &[&str] = &[
     "implementation", "protocol", "end", "optional", "required", "import", "include",
 ];
 
+/// Extracts the return type from a function signature.
+/// 
+/// Currently returns `None` for all inputs as Objective-C method signatures use `- (ReturnType)methodName` syntax that is not amenable to simple text-based extraction.
+/// 
+/// # Arguments
+/// 
+/// * `_signature` - A function signature string to parse
+/// 
+/// # Returns
+/// 
+/// `None` in all cases, as return type extraction is not yet implemented.
 fn extract_return(_signature: &str) -> Option<String> {
     // ObjC methods use `- (ReturnType)methodName` syntax which doesn't lend itself
     // to simple text-based extraction. Return None.
@@ -117,6 +128,26 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses an Objective-C class interface definition and verifies the resulting chunk metadata.
+    /// 
+    /// This test function creates a temporary Objective-C file containing a `Person` class interface with a property and method, parses it using the `Parser`, and asserts that the parser correctly identifies the class chunk with the expected type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and returns `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser initialization fails
+    /// - File parsing fails
+    /// - No chunk named "Person" is found in the parsed results
+    /// - The identified chunk's type is not `ChunkType::Class`
 
     #[test]
     fn parse_objc_class_interface() {
@@ -132,6 +163,19 @@ mod tests {
         let class = chunks.iter().find(|c| c.name == "Person").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
+    /// Parses an Objective-C protocol definition and verifies it is correctly identified as an interface chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no arguments.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing; this is a test function that asserts correct parsing behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "Drawable" protocol is not found in parsed chunks, or the chunk type is not `ChunkType::Interface`.
 
     #[test]
     fn parse_objc_protocol() {
@@ -146,6 +190,21 @@ mod tests {
         let proto = chunks.iter().find(|c| c.name == "Drawable").unwrap();
         assert_eq!(proto.chunk_type, ChunkType::Interface);
     }
+    /// Parses an Objective-C file and verifies that both instance and class methods are correctly identified.
+    /// 
+    /// This test function writes a temporary Objective-C interface file containing instance and class method declarations, parses it using the Parser, and asserts that both methods are recognized with the correct chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function.
+    /// 
+    /// # Returns
+    /// 
+    /// None - performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to initialize or parse the file, or if the expected methods are not found or have incorrect chunk types.
 
     #[test]
     fn parse_objc_method_declaration() {
@@ -163,6 +222,21 @@ mod tests {
         let class_method = chunks.iter().find(|c| c.name == "shared").unwrap();
         assert_eq!(class_method.chunk_type, ChunkType::Method);
     }
+    /// Parses an Objective-C method definition and verifies correct extraction.
+    /// 
+    /// This test function creates a temporary Objective-C file containing a simple method implementation, parses it, and asserts that the method is correctly identified and classified as a Method chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, the "greet" method is not found in parsed chunks, or the method's chunk_type is not ChunkType::Method.
 
     #[test]
     fn parse_objc_method_definition() {
@@ -181,6 +255,17 @@ mod tests {
         let method = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(method.chunk_type, ChunkType::Method);
     }
+    /// Parses an Objective-C free function and verifies it is correctly identified as a Function chunk type.
+    /// 
+    /// This test function creates a temporary Objective-C file containing a simple free function, parses it using the Parser, and asserts that the resulting chunk is properly recognized as a Function with the correct name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses internal test utilities.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, parsing fails, the "freeFunc" chunk is not found in the parsed results, or the chunk type assertion fails.
 
     #[test]
     fn parse_objc_free_function() {
@@ -191,6 +276,21 @@ mod tests {
         let func = chunks.iter().find(|c| c.name == "freeFunc").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Parses Objective-C property declarations and verifies they are correctly identified as Property chunk types.
+    /// 
+    /// This is a test function that validates the parser's ability to recognize and extract both pointer-based properties (with copy semantics) and value-based properties from an Objective-C interface definition.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None (unit type). The function asserts on parsing results and panics if assertions fail.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create, the file fails to parse, or if expected properties named "name" or "count" are not found in the parsed chunks, or if they are not identified as Property chunk types.
 
     #[test]
     fn parse_objc_property() {
@@ -208,6 +308,21 @@ mod tests {
         let val_prop = chunks.iter().find(|c| c.name == "count").unwrap();
         assert_eq!(val_prop.chunk_type, ChunkType::Property);
     }
+    /// Parses Objective-C source code and extracts function and method calls, verifying that both message sends and C function calls are correctly identified.
+    /// 
+    /// This is a test function that validates the parser's ability to detect calls within Objective-C code, including instance method invocations (e.g., `[self greet]`) and standard C function calls (e.g., `free(ptr)`).
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This function uses hardcoded Objective-C source content for testing purposes.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the expected method calls ("greet" and "free") are not found in the extracted calls, indicating a failure in the parser's call extraction logic.
 
     #[test]
     fn parse_objc_calls() {

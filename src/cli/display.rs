@@ -453,6 +453,19 @@ mod tests {
 
     // ===== read_context_lines tests (P3-14, P3-18) =====
 
+    /// Creates a temporary directory and file with the specified content for testing purposes.
+    ///
+    /// # Arguments
+    ///
+    /// * `lines` - A slice of string references to write as lines in the test file, joined by newlines.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing the temporary directory handle and the path to the created test file.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the temporary directory cannot be created or if writing to the file fails.
     fn write_test_file(lines: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("test.rs");

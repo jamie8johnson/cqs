@@ -78,6 +78,28 @@ use std::sync::LazyLock;
 //
 // Adding a language = one new line here + a language module file + Cargo.toml.
 // ---------------------------------------------------------------------------
+/// Defines a set of supported programming languages with feature-gating and serialization support.
+///
+/// # Arguments
+///
+/// - `$variant`: The enum variant name for each language
+/// - `$doc`: Optional documentation comments for each variant
+/// - `$name`: The string representation of each language (used for display and parsing)
+/// - `$feature`: The cargo feature flag that gates each language module
+/// - `$module`: The module name containing language-specific implementation
+///
+/// # Returns
+///
+/// Expands to:
+/// - A `Language` enum with all variants, deriving `Debug`, `Clone`, `Copy`, `PartialEq`, `Eq`, `Hash`, and serde serialization
+/// - `Display` implementation converting enum variants to their string names
+/// - `FromStr` implementation parsing case-insensitive strings to enum variants
+/// - `Language::all_variants()` method returning a static slice of all language variants
+/// - Feature-gated module imports for each language
+///
+/// # Panics
+///
+/// Calling methods on a language variant whose feature flag is disabled may panic; use `is_enabled()` to check first.
 macro_rules! define_languages {
     (
         $(
@@ -309,6 +331,25 @@ pub enum SignatureStyle {
 // Adding a chunk type = one new line here. Display, FromStr, ALL, capture
 // mapping, and error messages stay in sync automatically.
 // ---------------------------------------------------------------------------
+/// Defines a ChunkType enum and associated utilities for parsing and working with code element types.
+///
+/// # Arguments
+///
+/// - `$variant`: The name of each enum variant representing a chunk type.
+/// - `$doc`: Optional doc comment strings for each variant.
+/// - `$name`: The string literal name corresponding to each variant.
+/// - `$capture`: Optional capture group identifier for each chunk type (unused in macro expansion).
+///
+/// # Returns
+///
+/// Generates:
+/// - A `ChunkType` enum with all specified variants, deriving Debug, Clone, Copy, PartialEq, Eq, Hash, and Serialize.
+/// - An `impl ChunkType` block providing:
+///   - `all`: A constant array of all ChunkType variants.
+///   - `valid_names()`: Returns a static slice of all valid chunk type name strings.
+/// - A `Display` implementation that formats ChunkType variants as their string names.
+/// - A `ParseChunkTypeError` struct for representing invalid chunk type parse attempts.
+/// - A `Display` implementation for `ParseChunkTypeError` showing the invalid input and listing valid options.
 macro_rules! define_chunk_types {
     (
         $(
@@ -478,6 +519,17 @@ pub struct ParseLanguageError {
 }
 
 impl std::fmt::Display for ParseLanguageError {
+    /// Formats the error message for an unknown language variant.
+    ///
+    /// This method implements the Display trait to produce a human-readable error message that shows the invalid language input and lists all valid language options.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the error message to
+    ///
+    /// # Returns
+    ///
+    /// A `std::fmt::Result` indicating whether the formatting succeeded
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -499,6 +551,13 @@ pub struct LanguageRegistry {
 }
 
 impl LanguageRegistry {
+    /// Registers a language definition in the registry.
+    ///
+    /// This method stores the language definition by its name and associates all of its file extensions with it for later lookup.
+    ///
+    /// # Arguments
+    ///
+    /// * `def` - A static reference to a `LanguageDef` containing the language metadata and file extensions to register.
     fn register(&mut self, def: &'static LanguageDef) {
         self.by_name.insert(def.name, def);
         for ext in def.extensions {

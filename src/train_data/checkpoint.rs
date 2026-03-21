@@ -69,6 +69,13 @@ pub fn truncate_incomplete_line(path: &Path) -> Result<(), TrainDataError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Tests the checkpoint serialization and deserialization roundtrip.
+    ///
+    /// Creates a temporary directory, writes a checkpoint with a repository path and commit hash, reads it back, and verifies the data matches what was written.
+    ///
+    /// # Panics
+    ///
+    /// Panics if temporary directory creation fails, checkpoint writing fails, or checkpoint reading fails.
 
     #[test]
     fn checkpoint_roundtrip() {
@@ -78,6 +85,19 @@ mod tests {
         let map = read_checkpoints(&path).unwrap();
         assert_eq!(map.get("/repo/cqs"), Some(&"abc123".to_string()));
     }
+    /// Tests that writing checkpoints for the same repository path overwrites the existing checkpoint with the new value. Verifies that when multiple checkpoints are written for the same repository path, only the latest checkpoint is retained when read back.
+    ///
+    /// # Arguments
+    ///
+    /// None - this is a test function that creates its own test data.
+    ///
+    /// # Returns
+    ///
+    /// None - this is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any assertion fails or if temporary file operations fail.
 
     #[test]
     fn checkpoint_updates_existing_repo() {
@@ -88,6 +108,19 @@ mod tests {
         let map = read_checkpoints(&path).unwrap();
         assert_eq!(map.get("/repo/a"), Some(&"sha2".to_string()));
     }
+    /// Tests that multiple repository checkpoints can be written to and read from a single checkpoint file. Writes checkpoints for two different repositories with different SHAs to a file, then verifies that reading the file returns both checkpoints in a map with the correct count.
+    ///
+    /// # Arguments
+    ///
+    /// None (this is a test function)
+    ///
+    /// # Returns
+    ///
+    /// None (assertions validate correctness)
+    ///
+    /// # Panics
+    ///
+    /// Panics if any checkpoint operations fail or if the number of checkpoints read does not equal 2.
 
     #[test]
     fn checkpoint_multiple_repos() {
@@ -98,6 +131,19 @@ mod tests {
         let map = read_checkpoints(&path).unwrap();
         assert_eq!(map.len(), 2);
     }
+    /// Tests the `truncate_incomplete_line` function by creating a temporary JSONL file with a complete JSON object followed by an incomplete one, verifying that the incomplete line is removed.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that creates its own test data.
+    ///
+    /// # Returns
+    ///
+    /// None. This function asserts expected behavior but does not return a value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the following operations fail: temporary directory creation, file writing, the `truncate_incomplete_line` function, file reading, or the assertion that the file contains only the complete JSON line.
 
     #[test]
     fn truncate_incomplete_jsonl() {
@@ -108,6 +154,21 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "{\"complete\":true}\n");
     }
+    /// Tests that truncate_incomplete_line leaves a complete JSONL file unchanged.
+    ///
+    /// Creates a temporary file with two complete JSON lines, calls truncate_incomplete_line on it, and verifies the file content remains unmodified since all lines are properly terminated with newlines.
+    ///
+    /// # Arguments
+    ///
+    /// None.
+    ///
+    /// # Returns
+    ///
+    /// None (unit test).
+    ///
+    /// # Panics
+    ///
+    /// Panics if temporary directory creation, file operations, or assertions fail.
 
     #[test]
     fn truncate_complete_file_unchanged() {
@@ -118,6 +179,19 @@ mod tests {
         let content = std::fs::read_to_string(&path).unwrap();
         assert_eq!(content, "{\"a\":1}\n{\"b\":2}\n");
     }
+    /// Tests that reading checkpoints from a non-existent path returns an empty map instead of failing.
+    ///
+    /// # Arguments
+    ///
+    /// None
+    ///
+    /// # Returns
+    ///
+    /// Unit type. This is a test function that asserts behavior rather than returning a meaningful value.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that reading from a non-existent checkpoint path did not return an empty map as expected.
 
     #[test]
     fn read_nonexistent_checkpoint_returns_empty() {

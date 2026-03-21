@@ -126,6 +126,17 @@ fn markdown_passthrough(path: &Path) -> anyhow::Result<String> {
 
 #[cfg(feature = "convert")]
 impl std::fmt::Display for DocFormat {
+    /// Formats the enum variant as a human-readable string.
+    ///
+    /// This method implements the Display trait by looking up the variant in a format table and writing its corresponding display name to the formatter. If the variant is not found in the table, it defaults to "Unknown".
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the display name into
+    ///
+    /// # Returns
+    ///
+    /// A `std::fmt::Result` indicating whether the formatting succeeded or failed.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = FORMAT_TABLE
             .iter()

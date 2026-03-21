@@ -911,6 +911,22 @@ mod tests {
     use super::*;
     use cqs::language::{ChunkType, Language};
 
+    /// Creates a test Chunk with minimal configuration for testing purposes.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - A string identifier for the chunk, used as both the chunk ID and name
+    /// * `content` - The source code content to be stored in the chunk
+    ///
+    /// # Returns
+    ///
+    /// A new `Chunk` instance with:
+    /// - File path set to "test.rs"
+    /// - Language set to Rust
+    /// - Chunk type set to Function
+    /// - Content hash computed from the provided content
+    /// - Line range from 1 to 10
+    /// - All optional fields set to None or empty
     fn make_test_chunk(id: &str, content: &str) -> Chunk {
         Chunk {
             id: id.to_string(),

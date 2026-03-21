@@ -168,6 +168,17 @@ fn register_provider_cleanup(paths: Vec<PathBuf>) {
     // Register atexit handler only once
     static REGISTERED: std::sync::Once = std::sync::Once::new();
     REGISTERED.call_once(|| {
+        /// Cleans up temporary files and symlinks registered for deletion during program termination.
+        ///
+        /// This function is registered as an exit handler and removes any files that were added to the cleanup list during execution. It safely iterates through registered paths, verifying each is a symlink before attempting deletion, and silently ignores any removal failures.
+        ///
+        /// # Arguments
+        ///
+        /// None. Accesses a global `CLEANUP_PATHS` collection to determine which files to remove.
+        ///
+        /// # Returns
+        ///
+        /// Nothing. This is an extern "C" function with no return value, suitable for use as an exit handler.
         extern "C" fn cleanup() {
             // Note: remove_file may allocate. Acceptable for CLI tool that exits normally.
             if let Ok(paths) = CLEANUP_PATHS.lock() {

@@ -18,6 +18,25 @@ use crate::language::Language;
 // in sync automatically. Behavioral methods (`matches`, per-pattern fns)
 // remain hand-written below.
 // ---------------------------------------------------------------------------
+/// Generates a `Pattern` enum with associated trait implementations for parsing and displaying structural patterns.
+///
+/// # Arguments
+///
+/// - `$variant`: Identifier for each enum variant
+/// - `$name`: String literal for the primary name of the pattern
+/// - `$alias`: Optional string literals for alternative names that map to the same variant
+///
+/// # Returns
+///
+/// Expands to:
+/// - A `Pattern` enum with all specified variants
+/// - `Display` impl that maps variants to their primary names
+/// - `FromStr` impl that parses primary names and aliases (case-sensitive) into variants
+/// - `all_names()` method returning a slice of all primary pattern names
+///
+/// # Errors
+///
+/// The `FromStr` implementation returns an error with a helpful message listing all valid pattern names when an unknown string is parsed.
 macro_rules! define_patterns {
     ( $( $variant:ident => $name:expr $(, aliases = [ $($alias:expr),* ])? ; )* ) => {
         /// Known structural patterns
@@ -140,7 +159,18 @@ fn matches_error_swallow(content: &str, language: Option<Language>) -> bool {
     }
 }
 
-/// Async code patterns
+/// Determines whether the given content contains asynchronous programming constructs for the specified language.
+///
+/// Checks for language-specific async syntax patterns. For recognized languages (Rust, Python, TypeScript, JavaScript, Go), it searches for language-specific async keywords and operators. For unknown or unspecified languages, it performs a generic search for "async" or "await".
+///
+/// # Arguments
+///
+/// * `content` - The source code string to analyze
+/// * `language` - Optional language identifier to determine which async patterns to search for
+///
+/// # Returns
+///
+/// `true` if the content contains async programming constructs for the given language, `false` otherwise.
 fn matches_async(content: &str, language: Option<Language>) -> bool {
     match language {
         Some(Language::Rust) => content.contains("async fn") || content.contains(".await"),
@@ -155,7 +185,16 @@ fn matches_async(content: &str, language: Option<Language>) -> bool {
     }
 }
 
-/// Mutex/lock patterns
+/// Determines whether code content contains mutex or synchronization lock patterns based on the specified programming language.
+///
+/// # Arguments
+///
+/// * `content` - A string slice containing the code to analyze
+/// * `language` - An optional Language enum specifying the programming language. If None, performs a generic case-insensitive search
+///
+/// # Returns
+///
+/// Returns `true` if the content contains language-specific mutex or lock patterns, `false` otherwise.
 fn matches_mutex(content: &str, language: Option<Language>) -> bool {
     match language {
         Some(Language::Rust) => {

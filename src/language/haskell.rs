@@ -181,6 +181,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a Haskell function definition from a temporary file and verifies the parser correctly identifies it as a function chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data internally.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser cannot be initialized, file parsing fails, the "greet" function chunk is not found, or the chunk type is not identified as a Function.
 
     #[test]
     fn parse_haskell_function() {
@@ -194,6 +207,21 @@ greet name = "Hello, " ++ name
         let func = chunks.iter().find(|c| c.name == "greet").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Parses a Haskell data type definition and verifies it is correctly identified as an enum chunk.
+    /// 
+    /// This test function writes a Haskell data type definition to a temporary file, parses it using the Parser, and asserts that the resulting chunks contain a Color data type recognized as an Enum chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the Color data type is not found in the parsed chunks or if it is not identified as an Enum chunk type.
 
     #[test]
     fn parse_haskell_data_type() {
@@ -208,6 +236,21 @@ data Color = Red | Green | Blue
             .find(|c| c.name == "Color" && c.chunk_type == ChunkType::Enum);
         assert!(dt.is_some(), "Should find 'Color' data type as Enum");
     }
+    /// Verifies that the parser correctly identifies Haskell typeclasses as traits.
+    /// 
+    /// This function tests the parser's ability to recognize a Haskell typeclass definition (using the `class` keyword) and classify it as a `ChunkType::Trait` chunk with the appropriate name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and returns unit type `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to find a chunk named "Printable" with type `ChunkType::Trait`, or if any of the underlying operations (`write_temp_file`, `Parser::new`, or `parse_file`) fail.
 
     #[test]
     fn parse_haskell_typeclass() {
@@ -223,6 +266,19 @@ class Printable a where
             .find(|c| c.name == "Printable" && c.chunk_type == ChunkType::Trait);
         assert!(tc.is_some(), "Should find 'Printable' typeclass as Trait");
     }
+    /// Parses a Haskell file containing a data type definition and a Show instance, verifying that the instance is correctly identified as an Object chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Haskell source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to initialize, file parsing fails, or the Show instance is not found as an Object chunk in the parsed results.
 
     #[test]
     fn parse_haskell_instance() {
@@ -242,6 +298,25 @@ instance Show Color where
             .find(|c| c.name == "Show" && c.chunk_type == ChunkType::Object);
         assert!(inst.is_some(), "Should find 'Show' instance as Object");
     }
+    /// Parses a Haskell source file and verifies that function calls are correctly extracted from a code chunk.
+    /// 
+    /// This test function creates a temporary Haskell file containing a `process` function with multiple function calls, parses it using the Parser, locates the `process` chunk, extracts all function calls from it, and asserts that the expected `putStrLn` call is present in the extracted calls.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates all necessary test data internally.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and returns unit type.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser fails to initialize or parse the file
+    /// - The `process` chunk is not found in the parsed chunks
+    /// - The extracted function calls do not contain the expected `putStrLn` call
 
     #[test]
     fn parse_haskell_calls() {

@@ -199,6 +199,15 @@ fn extract_element_text(node: tree_sitter::Node, source: &str) -> Option<String>
     None
 }
 
+/// Extracts the return type from a function signature.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A string slice containing a function signature to parse
+/// 
+/// # Returns
+/// 
+/// Returns `None` if no return type can be extracted (e.g., for HTML which has no functions or return types).
 fn extract_return(_signature: &str) -> Option<String> {
     // HTML has no functions or return types
     None
@@ -310,6 +319,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Verifies that HTML heading elements (h1, h2) are correctly parsed as Section chunks.
+    /// 
+    /// This is a test function that creates a temporary HTML file containing headings and paragraph text, parses it using the Parser, and asserts that both h1 and h2 headings are extracted as chunks with ChunkType::Section and their text content as the chunk name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function returns `()` and uses assertions to verify expected behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, or if the expected Section chunks with the correct names are not found in the parsed output.
 
     #[test]
     fn parse_html_heading_as_section() {
@@ -332,6 +356,21 @@ mod tests {
             names
         );
     }
+    /// Verifies that an HTML file with a script tag is correctly parsed as a Module chunk with the appropriate script name.
+    /// 
+    /// This is a test function that validates the parser's ability to extract external script references from HTML files and classify them as module chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function asserts test conditions and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to find a Module-type chunk in the parsed HTML, or if the script chunk name does not contain "app.js".
 
     #[test]
     fn parse_html_script_as_module() {
@@ -353,6 +392,19 @@ mod tests {
         );
         assert!(script.unwrap().name.contains("app.js"));
     }
+    /// Verifies that HTML landmark elements (nav, main, article) are correctly parsed as Section chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function asserts test conditions and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to identify a nav element with id "main-nav" as a Section chunk type, or if file creation or parsing operations fail.
 
     #[test]
     fn parse_html_landmark_as_section() {
@@ -375,6 +427,19 @@ mod tests {
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
+    /// Verifies that the parser correctly filters out HTML noise elements (structural tags like div, span, p) when parsing HTML content, leaving no content chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing (unit type). This function validates parser behavior through assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, or if noise elements are not properly filtered (i.e., if the parsed chunks are not empty).
 
     #[test]
     fn parse_html_noise_filtered() {
@@ -393,6 +458,17 @@ mod tests {
             chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
+    /// Verifies that an HTML div element with an id attribute is correctly parsed as a Property chunk with the id included in its name.
+    /// 
+    /// This test creates a temporary HTML file containing a div with id="app", parses it using the Parser, and asserts that the resulting chunks contain a Property-type chunk named "div#app". It validates that the parser properly preserves and formats element IDs in chunk names.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, fails to parse the file, or if the expected "div#app" Property chunk is not found in the parsed results.
 
     #[test]
     fn parse_html_div_with_id_kept() {
@@ -412,6 +488,19 @@ mod tests {
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
+    /// Verifies that the HTML parser correctly identifies chunks with no function calls.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing (unit type).
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, or if any HTML chunk is incorrectly identified as containing function calls.
 
     #[test]
     fn parse_html_no_calls() {
@@ -432,6 +521,29 @@ mod tests {
     }
 
     // --- Multi-grammar injection tests ---
+    /// Verifies that the parser correctly extracts JavaScript functions from HTML script tags and preserves other HTML content.
+    /// 
+    /// This integration test writes HTML containing embedded JavaScript functions to a temporary file, parses it, and validates that:
+    /// - JavaScript functions (`handleclick` and `setuplisteners`) are extracted as separate chunks
+    /// - Extracted functions are correctly identified with JavaScript language type
+    /// - Extracted functions are marked as function chunk types
+    /// - Non-JavaScript HTML elements remain in the parsed output
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded HTML content.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser fails to initialize or parse the file
+    /// - Expected JavaScript functions are not found in the parsed chunks
+    /// - Extracted functions do not have the correct language or chunk type
 
     #[test]
     fn parse_html_with_script_extracts_js_functions() {
@@ -489,6 +601,22 @@ function setupListeners() {
             "Script Module chunk should be replaced by JS functions"
         );
     }
+    /// Verifies that the parser correctly extracts CSS rules from HTML `<style>` blocks and converts them into separate CSS chunks while preserving other HTML content.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on internally created test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - CSS chunks are not extracted from the `<style>` block
+    /// - A Style Module chunk with name "style" still exists after parsing (indicating CSS injection failed)
+    /// - An HTML heading section with name "Page" is not found in the parsed chunks
 
     #[test]
     fn parse_html_with_style_extracts_css_rules() {
@@ -531,6 +659,17 @@ function setupListeners() {
             "Expected HTML heading 'Page'"
         );
     }
+    /// Parses an HTML file containing a TypeScript script block and verifies that TypeScript functions are correctly extracted.
+    /// 
+    /// This test function creates a temporary HTML file with an embedded TypeScript script, parses it using the Parser, and asserts that the resulting chunks contain the expected TypeScript function with correct language classification.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. This is a test function that asserts the parser correctly identifies and extracts TypeScript code blocks from HTML files.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to extract the TypeScript function "typedFunction", or if file operations fail during temporary file creation.
 
     #[test]
     fn parse_html_with_typescript_script() {
@@ -558,6 +697,21 @@ function typedFunction(x: number): string {
             chunks.iter().map(|c| (&c.name, &c.language)).collect::<Vec<_>>()
         );
     }
+    /// Verifies that parsing HTML with an external script tag (no inline content) preserves the Module chunk in the parsed output.
+    /// 
+    /// This is a test function that validates parser behavior when encountering `<script src="...">` tags without raw text content. It writes HTML content to a temporary file, parses it, and asserts that a Module chunk is present in the results.
+    /// 
+    /// # Arguments
+    /// 
+    /// None (test function with no parameters)
+    /// 
+    /// # Returns
+    /// 
+    /// None (test function that asserts conditions)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if no Module chunk is found in the parsed output, indicating that the parser incorrectly removed the Module chunk when processing an empty script tag.
 
     #[test]
     fn parse_html_with_empty_script_keeps_module() {
@@ -579,6 +733,19 @@ function typedFunction(x: number): string {
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
+    /// Verifies that the parser correctly extracts and identifies multiple JavaScript functions from separate `<script>` tags within an HTML file.
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function asserts on parse results and panics if assertions fail.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to extract functions named "first" or "second" from the HTML file, or if either script block is not identified as JavaScript language.
 
     #[test]
     fn parse_html_with_multiple_scripts() {
@@ -613,6 +780,15 @@ function second() { return 2; }
             js_names
         );
     }
+    /// Verifies that parsing HTML with a whitespace-only script tag preserves the Module chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// This is a test function with no parameters.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create, fails to parse the temporary HTML file, or if no Module chunk type is found in the parsed output. The assertion message includes details about the actual chunks encountered.
 
     #[test]
     fn parse_html_with_whitespace_only_script_keeps_module() {
@@ -629,6 +805,23 @@ function second() { return 2; }
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
+    /// Tests that HTML parsing correctly identifies and extracts HTML chunks from a file containing only structural elements (nav, headings) without any script injections or dynamic content.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on internally created test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that asserts expected behavior rather than returning a value.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The parser fails to initialize
+    /// - The temporary HTML file cannot be parsed
+    /// - Any parsed chunk has a language type other than HTML
+    /// - Expected chunks with names "Welcome", "About", or containing "main-nav" are not found in the results
 
     #[test]
     fn parse_html_without_script_unchanged() {
@@ -661,6 +854,24 @@ function second() { return 2; }
         assert!(chunks.iter().any(|c| c.name == "About"));
         assert!(chunks.iter().any(|c| c.name.contains("main-nav")));
     }
+    /// Tests that the parser correctly builds a call graph from injected HTML content containing JavaScript function calls. Verifies that a `caller` function is recognized and its calls to `helper` and `other` functions are properly recorded in the resulting call graph.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None (unit test function)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize
+    /// - The parser fails to parse the file
+    /// - No call graph entry is found for the `caller` function
+    /// - The `caller` function does not have calls to both `helper` and `other` functions
 
     #[test]
     fn injection_call_graph() {
@@ -706,6 +917,21 @@ function helper() {
             call_names
         );
     }
+    /// Verifies that HTML script tags with `type="text/typescript"` are correctly parsed as TypeScript code.
+    /// 
+    /// This test creates an HTML file containing a TypeScript function within a script tag marked with `type="text/typescript"`, parses the file, and asserts that the parser correctly identifies and extracts the TypeScript code with the function name intact.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on internally generated test data.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This is a test function that uses assertions to verify parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to recognize the script tag as TypeScript or if the expected TypeScript function is not found in the parsed chunks.
 
     #[test]
     fn parse_html_with_type_text_typescript() {
@@ -737,6 +963,23 @@ function typedFunc(x: number): string {
                 .collect::<Vec<_>>()
         );
     }
+    /// Verifies that the parser correctly extracts type references from TypeScript code injected within HTML script tags.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following conditions are not met:
+    /// - The parser successfully parses the test HTML file
+    /// - Type information for the "process" function is extracted
+    /// - The "Config" type reference is found in the process function's type references
+    /// - The "StoreError" type reference is found in the process function's type references
 
     #[test]
     fn injection_type_refs_extracted() {
@@ -774,6 +1017,19 @@ function process(config: Config): StoreError {
             refs
         );
     }
+    /// Verifies that the parser gracefully handles malformed HTML with an unclosed `<script>` tag through error recovery.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to recover from the malformed HTML or if the expected HTML heading is not present in the parsed chunks.
 
     #[test]
     fn parse_html_with_unclosed_script() {
@@ -798,6 +1054,13 @@ function broken() { return 1; }
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }
+    /// Tests that injection ranges are empty for languages without injection rules.
+    /// 
+    /// Verifies that parsing a Rust source file returns an empty injection range, since Rust has no defined injection rules. Creates a temporary Rust file, parses it, and asserts that exactly one chunk is returned with the correct language type.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, or file parsing fails.
 
     #[test]
     fn injection_ranges_empty_for_non_injection_language() {

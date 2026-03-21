@@ -140,6 +140,15 @@ fn post_process_kotlin(
     true
 }
 
+/// Extracts the return type from a Kotlin function signature and formats it as a documentation string.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A Kotlin function signature string to parse for return type information
+/// 
+/// # Returns
+/// 
+/// Returns `Some(String)` containing a formatted return type description (e.g., "Returns SomeType") if a non-Unit return type is found after the closing parenthesis and colon. Returns `None` if no closing parenthesis exists, no colon is present, the return type is empty, or the return type is "Unit".
 fn extract_return(signature: &str) -> Option<String> {
     // Kotlin: fun name(params): ReturnType { ... }
     // Look for `: ReturnType` after last `)` and before `{` or `=`
@@ -226,6 +235,19 @@ mod tests {
             Some("Returns string".to_string())
         );
     }
+    /// Parses a Kotlin data class definition and verifies the parser correctly identifies it as a class chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts the parse results and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to parse the file, the "Person" class chunk is not found in the results, or the chunk type is not `ChunkType::Class`.
 
     #[test]
     fn parse_kotlin_data_class() {
@@ -238,6 +260,19 @@ data class Person(val name: String, val age: Int)
         let class = chunks.iter().find(|c| c.name == "Person").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
+    /// Parses a Kotlin interface definition and verifies it is correctly identified as an interface chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "Printable" interface is not found in parsed chunks, or the chunk type assertion fails.
 
     #[test]
     fn parse_kotlin_interface() {
@@ -253,6 +288,19 @@ interface Printable {
         let iface = chunks.iter().find(|c| c.name == "Printable").unwrap();
         assert_eq!(iface.chunk_type, ChunkType::Interface);
     }
+    /// Parses a Kotlin enum class definition and verifies it is correctly identified as an Enum chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// No parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// No return value. This is a test function that asserts the parser correctly identifies a Kotlin enum class named "Color" with ChunkType::Enum.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "Color" enum is not found in parsed chunks, or the chunk type assertion fails.
 
     #[test]
     fn parse_kotlin_enum_class() {
@@ -267,6 +315,25 @@ enum class Color {
         let e = chunks.iter().find(|c| c.name == "Color").unwrap();
         assert_eq!(e.chunk_type, ChunkType::Enum);
     }
+    /// Parses a Kotlin object declaration and verifies it is correctly identified as an Object chunk type.
+    /// 
+    /// This is a test function that creates a temporary Kotlin file containing a singleton object definition, parses it using the Parser, and asserts that the resulting chunk has the name "Singleton" and chunk type of Object.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a standalone test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function returns unit type `()` and is intended to be run as a test.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following assertions fail:
+    /// - Creating the temporary file fails
+    /// - Parsing the file fails
+    /// - No chunk named "Singleton" is found in the parsed results
+    /// - The chunk type is not `ChunkType::Object`
 
     #[test]
     fn parse_kotlin_object() {
@@ -281,6 +348,24 @@ object Singleton {
         let obj = chunks.iter().find(|c| c.name == "Singleton").unwrap();
         assert_eq!(obj.chunk_type, ChunkType::Object);
     }
+    /// Tests that the parser correctly identifies and classifies a Kotlin function definition.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded Kotlin source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. Returns `()`.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - Creating a temporary file fails
+    /// - Initializing the parser fails
+    /// - Parsing the file fails
+    /// - No function chunk named "add" is found in the parsed results
+    /// - The parsed chunk is not classified as a `ChunkType::Function`
 
     #[test]
     fn parse_kotlin_function() {
@@ -295,6 +380,26 @@ fun add(a: Int, b: Int): Int {
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Verifies that the parser correctly identifies and classifies Kotlin type alias declarations.
+    /// 
+    /// This test function creates a temporary Kotlin file containing a type alias definition, parses it using the Parser, and validates that the resulting chunk has the correct name ("StringMap") and type (TypeAlias).
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that operates on hardcoded test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that uses assertions to verify parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following conditions are not met:
+    /// - Failed to create a temporary file
+    /// - Failed to create a Parser instance
+    /// - Failed to parse the file
+    /// - No chunk with name "StringMap" is found in the parsed results
+    /// - The found chunk's type is not ChunkType::TypeAlias
 
     #[test]
     fn parse_kotlin_typealias() {
@@ -305,6 +410,21 @@ fun add(a: Int, b: Int): Int {
         let ta = chunks.iter().find(|c| c.name == "StringMap").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
+    /// Parses a Kotlin file and verifies that function calls are correctly extracted from code chunks.
+    /// 
+    /// This test function writes a temporary Kotlin file containing a `process` function, parses it to extract code chunks, and validates that the parser correctly identifies all function calls (specifically `parseInt` and `println`) made within the function.
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser initialization fails, file parsing fails, the `process` function chunk is not found, or if the expected function calls (`parseInt` or `println`) are not found in the extracted calls list.
 
     #[test]
     fn parse_kotlin_calls() {
@@ -333,6 +453,21 @@ fun process(input: String): Int {
             names
         );
     }
+    /// Verifies that the parser correctly identifies and classifies Kotlin property declarations as Property chunks.
+    /// 
+    /// This is a test function that validates the parser's ability to recognize both immutable (`val`) and mutable (`var`) Kotlin properties, extract their names, and assign them the correct chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions that will panic on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a temporary file, fails to parse the file, fails to find expected property chunks by name, or if the parsed chunks do not have the `ChunkType::Property` type.
 
     #[test]
     fn parse_kotlin_property() {
@@ -348,6 +483,25 @@ var counter: Int = 0
         let var_chunk = chunks.iter().find(|c| c.name == "counter").unwrap();
         assert_eq!(var_chunk.chunk_type, ChunkType::Property);
     }
+    /// Parses a Kotlin method defined within a class and verifies correct identification.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This is a test function that verifies parsing behavior through assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following occur:
+    /// - Temporary file creation fails
+    /// - Parser initialization fails
+    /// - File parsing fails
+    /// - The "add" method chunk is not found in parsed results
+    /// - The parsed method's chunk type is not `Method`
+    /// - The parsed method's parent type name is not "Calculator"
 
     #[test]
     fn parse_kotlin_method_in_class() {
@@ -365,6 +519,23 @@ class Calculator {
         assert_eq!(method.chunk_type, ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
     }
+    /// Verifies that the parser correctly identifies and classifies a Kotlin sealed class definition.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no arguments. It creates a temporary Kotlin file containing a sealed class with nested data class variants (Success and Error), then parses the file using the Parser.
+    /// 
+    /// # Returns
+    /// 
+    /// This function returns nothing (unit type). It performs assertions to verify parsing behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize or parse the file
+    /// - A chunk named "Result" is not found in the parsed output
+    /// - The parsed chunk's type is not classified as `ChunkType::Class`
 
     #[test]
     fn parse_kotlin_sealed_class() {

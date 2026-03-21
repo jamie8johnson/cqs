@@ -31,6 +31,8 @@ pub(crate) fn cmd_index(
     #[allow(unused_variables)] // used only with llm-summaries feature
     improve_docs: bool,
     #[allow(unused_variables)] // used only with llm-summaries feature
+    improve_all: bool,
+    #[allow(unused_variables)] // used only with llm-summaries feature
     max_docs: Option<usize>,
     #[allow(unused_variables)] // used only with llm-summaries feature
     hyde_queries: bool,
@@ -43,6 +45,10 @@ pub(crate) fn cmd_index(
     #[cfg(feature = "llm-summaries")]
     if improve_docs && !llm_summaries {
         anyhow::bail!("--improve-docs requires --llm-summaries");
+    }
+    #[cfg(feature = "llm-summaries")]
+    if improve_all && !improve_docs {
+        anyhow::bail!("--improve-all requires --improve-docs");
     }
 
     let root = find_project_root();
@@ -184,8 +190,9 @@ pub(crate) fn cmd_index(
             println!("Generating doc comments...");
         }
         let config = cqs::config::Config::load(&root);
-        let doc_results = cqs::llm::doc_comment_pass(&store, &config, max_docs.unwrap_or(0))
-            .context("Doc comment generation failed")?;
+        let doc_results =
+            cqs::llm::doc_comment_pass(&store, &config, max_docs.unwrap_or(0), improve_all)
+                .context("Doc comment generation failed")?;
 
         if !doc_results.is_empty() {
             // Group by file and write back

@@ -421,14 +421,11 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), std::io::Error> {
 
     match std::fs::rename(&temp_path, path) {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            // Cross-device: fall back to direct write
+        Err(_) => {
+            // Rename can fail cross-device (EXDEV on Unix, ERROR_NOT_SAME_DEVICE on Windows)
+            // or for other transient reasons. Fall back to direct write.
             let _ = std::fs::remove_file(&temp_path);
             std::fs::write(path, data)
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp_path);
-            Err(e)
         }
     }
 }
@@ -442,6 +439,20 @@ mod tests {
     use crate::doc_writer::DocCommentResult;
     use crate::language::Language;
 
+    /// Constructs a DocCommentResult containing metadata about a generated documentation comment.
+    ///
+    /// # Arguments
+    ///
+    /// * `file` - The path to the source file being documented
+    /// * `function_name` - The name of the function for which documentation was generated
+    /// * `generated_doc` - The content of the generated documentation comment
+    /// * `language` - The programming language of the source file
+    /// * `line_start` - The line number where the documentation comment begins
+    /// * `had_existing_doc` - Whether the function previously had documentation
+    ///
+    /// # Returns
+    ///
+    /// A new `DocCommentResult` struct populated with the provided arguments and a placeholder content hash.
     fn make_edit(
         file: &Path,
         function_name: &str,

@@ -158,6 +158,19 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses an OCaml source file containing a function definition and verifies that the parser correctly identifies it as a function chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, the file cannot be parsed, the "add" function is not found in the parsed chunks, or the chunk type is not identified as a Function.
 
     #[test]
     fn parse_ocaml_function() {
@@ -170,6 +183,21 @@ let add x y = x + y
         let func = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(func.chunk_type, ChunkType::Function);
     }
+    /// Tests parsing of OCaml variant type definitions and verifies they are correctly identified as Enum chunks.
+    /// 
+    /// This test writes a temporary OCaml file containing a variant type definition with three constructors (Red, Green, Blue), parses it using the Parser, and asserts that the resulting chunk is found with the correct name and type classification.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the 'color' variant type is not found in the parsed chunks or if it is not classified as an Enum chunk type.
 
     #[test]
     fn parse_ocaml_type_variant() {
@@ -184,6 +212,19 @@ type color = Red | Green | Blue
             .find(|c| c.name == "color" && c.chunk_type == ChunkType::Enum);
         assert!(dt.is_some(), "Should find 'color' variant type as Enum");
     }
+    /// Parses an OCaml record type definition and verifies it is correctly recognized as a Struct chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no arguments.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. This is a test function that performs assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to parse the temporary file, if the file writing fails, or if the 'point' record type is not found in the parsed chunks as a Struct chunk type.
 
     #[test]
     fn parse_ocaml_type_record() {
@@ -201,6 +242,19 @@ type point = {
             .find(|c| c.name == "point" && c.chunk_type == ChunkType::Struct);
         assert!(dt.is_some(), "Should find 'point' record type as Struct");
     }
+    /// Parses an OCaml module definition and verifies that the parser correctly identifies and extracts the module chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, fails to parse the temporary file, or if the "Calculator" module is not found in the parsed chunks.
 
     #[test]
     fn parse_ocaml_module() {
@@ -217,6 +271,24 @@ end
             .find(|c| c.name == "Calculator" && c.chunk_type == ChunkType::Module);
         assert!(module.is_some(), "Should find 'Calculator' module");
     }
+    /// Parses an OCaml source file and verifies that function calls within a specific function are correctly extracted.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be created
+    /// - The parser fails to initialize
+    /// - The file cannot be parsed
+    /// - The "process" function is not found in the parsed chunks
+    /// - The "validate" function call is not found in the extracted calls
 
     #[test]
     fn parse_ocaml_calls() {

@@ -5,6 +5,23 @@ use colored::Colorize;
 
 use cqs::{onboard, onboard_to_json, Embedder};
 
+/// Onboards a new concept into the codebase by analyzing its structure and dependencies.
+///
+/// # Arguments
+///
+/// * `_cli` - CLI context
+/// * `concept` - The concept name to onboard
+/// * `depth` - Maximum depth for exploring related code (clamped to 1-5)
+/// * `json` - Whether to output results in JSON format
+/// * `max_tokens` - Optional token budget for limiting output size
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful onboarding, or an error if project loading, embedding, or serialization fails.
+///
+/// # Errors
+///
+/// Returns an error if the project store cannot be opened, the embedder cannot be initialized, onboarding fails, or JSON serialization fails.
 pub(crate) fn cmd_onboard(
     _cli: &crate::cli::Cli,
     concept: &str,
@@ -195,6 +212,14 @@ pub(crate) fn cmd_onboard(
     Ok(())
 }
 
+/// Prints a formatted display of a single onboard entry to stdout.
+///
+/// Displays the entry's file path (relative to root), line number, name, signature, and up to the first 20 lines of content. If content exceeds 20 lines, shows a count of remaining lines.
+///
+/// # Arguments
+///
+/// * `entry` - The onboard entry to display
+/// * `root` - The root path used to compute relative file paths
 fn print_entry(entry: &cqs::OnboardEntry, root: &std::path::Path) {
     let rel = cqs::rel_display(&entry.file, root);
     println!(

@@ -101,6 +101,17 @@ const COMMON_TYPES: &[&str] = &[
     "HttpContext", "IConfiguration",
 ];
 
+/// Extracts the return type from a C# method signature and formats it as documentation text.
+/// 
+/// Parses a C# method signature to identify and extract the return type, skipping access modifiers and keywords like `static`, `async`, and `virtual`. The return type is the second-to-last word before the opening parenthesis of the parameter list.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A C# method signature string, e.g., `"public async Task<int> GetValue(...)"`
+/// 
+/// # Returns
+/// 
+/// Returns `Some(String)` containing the formatted return type as `"Returns <type>"` if a valid return type is found. Returns `None` if the signature cannot be parsed, has fewer than two words before the opening parenthesis, or the extracted type is a modifier keyword or `void`.
 fn extract_return(signature: &str) -> Option<String> {
     // C#: return type before method name, like Java
     // e.g., "public async Task<int> GetValue(..." → "Task<int>"

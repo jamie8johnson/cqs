@@ -82,6 +82,15 @@ pub struct Client {
     llm_config: LlmConfig,
 }
 
+/// Validates whether a string is a properly formatted batch ID.
+///
+/// # Arguments
+///
+/// * `id` - The string to validate as a batch ID
+///
+/// # Returns
+///
+/// Returns `true` if the ID starts with "msgbatch_", is less than 100 characters long, and contains only ASCII alphanumeric characters or underscores. Returns `false` otherwise.
 fn is_valid_batch_id(id: &str) -> bool {
     id.starts_with("msgbatch_")
         && id.len() < 100
@@ -158,6 +167,22 @@ struct ApiErrorDetail {
 }
 
 impl Client {
+    /// Creates a new LLM client instance with the specified API key and configuration.
+    ///
+    /// Initializes an HTTP client with a 60-second timeout and disables automatic redirect following. The API key is stored for use in subsequent requests.
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - The API key for authenticating requests to the LLM service
+    /// * `llm_config` - Configuration settings for the LLM client behavior
+    ///
+    /// # Returns
+    ///
+    /// A new `Self` instance ready to make LLM requests, or an `LlmError` if the HTTP client initialization fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying HTTP client cannot be constructed.
     pub fn new(api_key: &str, llm_config: LlmConfig) -> Result<Self, LlmError> {
         Ok(Self {
             http: reqwest::blocking::Client::builder()
@@ -894,6 +919,83 @@ const SIGNAL_WORDS: &[&str] = &[
 /// Returns `true` when the chunk is a callable (function/method/property/macro),
 /// is the first window (or not windowed), and has either no doc comment or a
 /// "thin" doc (fewer than 30 characters with no signal words).
+/// Check if a chunk should be skipped for doc comment generation.
+///
+/// Skips test functions (by name or file path) and non-source files
+/// (docs, config, markdown) that may contain code-like chunks but
+/// shouldn't have doc comments injected.
+fn is_test_chunk(chunk: &ChunkSummary) -> bool {
+    let path = chunk.file.to_string_lossy();
+    chunk.name.starts_with("test_")
+        || path.contains("/tests/")
+        || path.starts_with("tests/")
+        || path.ends_with("_test.rs")
+        || path.ends_with("_tests.rs")
+        || chunk.content.contains("#[test]")
+        || chunk.content.contains("#[cfg(test)]")
+}
+
+/// Check if a chunk is in a writable source file (not docs, config, etc.).
+fn is_source_file(chunk: &ChunkSummary) -> bool {
+    let path = chunk.file.to_string_lossy();
+    // Only write docs to actual source code files
+    let src_extensions = [
+        ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".cpp", ".h", ".hpp", ".java",
+        ".cs", ".fs", ".kt", ".swift", ".rb", ".scala", ".php", ".lua", ".zig", ".jl", ".ex",
+        ".exs", ".erl", ".hs", ".ml", ".mli", ".gleam", ".r", ".pl", ".pm", ".sh", ".bash", ".ps1",
+        ".sql", ".sol", ".cu", ".glsl", ".svelte", ".vue", ".vb",
+    ];
+    // Exclude docs/, config files, markdown, toml, yaml, json, xml, etc.
+    if path.starts_with("docs/") || path.contains("/docs/") {
+        return false;
+    }
+    src_extensions.iter().any(|ext| path.ends_with(ext))
+}
+
+/// Determines whether a code chunk needs a documentation comment.
+///
+/// Returns `true` if the chunk should have a doc comment generated or replaced. A chunk needs a doc comment if it is a callable type, appears in the first window (or is non-windowed), and either has no existing doc comment, has only whitespace, has fewer than 30 characters, or lacks signal words indicating adequate documentation.
+///
+/// # Arguments
+///
+/// * `chunk` - A reference to the `ChunkSummary` to evaluate
+///
+/// # Returns
+///
+/// `true` if the chunk needs a doc comment, `false` otherwise
+/// Determines whether a code chunk requires a documentation comment.
+///
+/// Returns `true` if a doc comment is needed or should be regenerated, `false` if the chunk already has adequate documentation.
+///
+/// # Arguments
+///
+/// * `chunk` - A summary of the code chunk to evaluate
+///
+/// # Returns
+///
+/// `true` if the chunk needs a doc comment (is callable, in the first window, not a test, and lacks adequate documentation); `false` otherwise.
+/// Determines whether a code chunk needs a documentation comment.
+///
+/// A chunk is considered to need a doc comment if it is a callable type, is not a subsequent window, is not a test function, and either lacks documentation or has inadequate documentation (less than 30 characters without signal words).
+///
+/// # Arguments
+///
+/// * `chunk` - A reference to the ChunkSummary to evaluate
+///
+/// # Returns
+///
+/// `true` if the chunk should have a doc comment added or improved; `false` if it already has adequate documentation or should not be documented
+/// Determines whether a code chunk needs a generated documentation comment.
+///
+/// Returns true if the chunk is a callable, non-test item from a source file that either lacks documentation or has inadequate documentation (less than 30 characters and no signal words like "TODO" or "FIXME"). Only the first window of windowed chunks is considered eligible.
+///
+/// # Arguments
+///
+/// * `chunk` - A reference to the ChunkSummary to evaluate
+///
+/// # Returns
+///
+/// true if the chunk should receive a generated doc comment, false otherwise
 pub fn needs_doc_comment(chunk: &ChunkSummary) -> bool {
     // Only callable types get doc comments
     if !chunk.chunk_type.is_callable() {
@@ -902,6 +1004,11 @@ pub fn needs_doc_comment(chunk: &ChunkSummary) -> bool {
 
     // Only first window (or non-windowed)
     if chunk.window_idx.is_some_and(|idx| idx > 0) {
+        return false;
+    }
+
+    // Skip test functions and non-source files
+    if is_test_chunk(chunk) || !is_source_file(chunk) {
         return false;
     }
 
@@ -970,10 +1077,12 @@ fn resume_or_fetch_doc_batch(
 /// and returns the results. Cached results are returned without an API call.
 ///
 /// `max_docs` limits how many functions to process (0 = unlimited).
+/// `improve_all` regenerates docs for all functions, even those with existing adequate docs.
 pub fn doc_comment_pass(
     store: &Store,
     config: &crate::config::Config,
     max_docs: usize,
+    improve_all: bool,
 ) -> Result<Vec<crate::doc_writer::DocCommentResult>, LlmError> {
     let _span = tracing::info_span!("doc_comment_pass").entered();
 
@@ -1010,7 +1119,16 @@ pub fn doc_comment_pass(
         cursor = next;
 
         for cs in chunks {
-            if needs_doc_comment(&cs) {
+            if improve_all {
+                // In improve-all mode, include all callable non-test source chunks
+                if cs.chunk_type.is_callable()
+                    && cs.window_idx.is_none_or(|idx| idx == 0)
+                    && !is_test_chunk(&cs)
+                    && is_source_file(&cs)
+                {
+                    candidates.push(cs);
+                }
+            } else if needs_doc_comment(&cs) {
                 candidates.push(cs);
             }
         }
@@ -1426,6 +1544,19 @@ mod tests {
             "Parse a config file."
         );
     }
+    /// Extracts the first sentence from text, stopping at the first period encountered, even if it occurs within a URL.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes a string slice containing text that may include URLs and multiple sentences.
+    ///
+    /// # Returns
+    ///
+    /// Returns a string slice containing the text up to and including the first period found, regardless of whether that period is part of a URL domain or a sentence terminator.
+    ///
+    /// # Notes
+    ///
+    /// This function has known behavior where periods within domain names will cause extraction to stop prematurely. For example, "See https://example.com. Usage guide." will extract only "See https://example." rather than the complete first sentence.
 
     #[test]
     fn extract_first_sentence_url_with_period() {
@@ -1433,6 +1564,15 @@ mod tests {
         let r = extract_first_sentence("See https://example.com. Usage guide.");
         assert_eq!(r, "See https://example.");
     }
+    /// Extracts the first sentence from a text string, or returns the entire text if the first sentence is short enough to fit on one line.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - A string slice containing the text to process
+    ///
+    /// # Returns
+    ///
+    /// A string containing either the first sentence (if it exceeds a length threshold) or the complete input text if the first sentence is short enough to fit on a single line.
 
     #[test]
     fn extract_first_sentence_short_falls_to_line() {
@@ -1440,33 +1580,101 @@ mod tests {
         let r = extract_first_sentence("Short. More text here.");
         assert_eq!(r, "Short. More text here.");
     }
+    /// This function tests the `extract_first_sentence` utility by verifying it correctly identifies and returns the first sentence when it ends with an exclamation mark. It passes a string containing an exclamation-terminated sentence followed by additional text, and asserts that only the first sentence including the exclamation mark is returned.
+    ///
+    /// # Arguments
+    ///
+    /// None
+    ///
+    /// # Returns
+    ///
+    /// None (unit type). This is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating `extract_first_sentence` did not return the expected first sentence "This is great!"
 
     #[test]
     fn extract_first_sentence_exclamation() {
         let r = extract_first_sentence("This is great! More.");
         assert_eq!(r, "This is great!");
     }
+    /// Extracts the first sentence from a given text string.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - A string slice containing the text to process
+    ///
+    /// # Returns
+    ///
+    /// A string containing the first sentence, terminated by a period, question mark, or exclamation mark.
 
     #[test]
     fn extract_first_sentence_question() {
         let r = extract_first_sentence("Is this working? Yes.");
         assert_eq!(r, "Is this working?");
     }
+    /// Verifies that extracting the first sentence from a string containing only whitespace returns an empty string.
+    ///
+    /// # Arguments
+    ///
+    /// This is a test function with no parameters.
+    ///
+    /// # Returns
+    ///
+    /// This function returns nothing; it asserts the expected behavior of `extract_first_sentence`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `extract_first_sentence("   \n  \t  ")` does not return an empty string.
 
     #[test]
     fn extract_first_sentence_whitespace_only() {
         assert_eq!(extract_first_sentence("   \n  \t  "), "");
     }
+    /// Verifies that extracting the first sentence from an empty string returns an empty string.
+    ///
+    /// This is a unit test function that validates the behavior of the `extract_first_sentence` function when given an empty input.
+    ///
+    /// # Arguments
+    ///
+    /// None (this is a test function with no parameters)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that `extract_first_sentence("")` does not return an empty string as expected.
 
     #[test]
     fn extract_first_sentence_empty_input() {
         assert_eq!(extract_first_sentence(""), "");
     }
+    /// Extracts the first sentence from a text string, stopping at the first sentence-ending punctuation mark.
+    ///
+    /// # Arguments
+    ///
+    /// * `text` - A string slice containing the text to process
+    ///
+    /// # Returns
+    ///
+    /// A string slice containing the first sentence, including the punctuation mark that terminates it. If no sentence boundary is found, returns the entire input string.
 
     #[test]
     fn extract_first_sentence_boundary_11_chars() {
         assert_eq!(extract_first_sentence("1234567890."), "1234567890.");
     }
+    /// Verifies that `extract_first_sentence` returns an empty string when both the complete sentence and the first line are too short to meet minimum length requirements.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that validates the behavior of `extract_first_sentence` with a multiline input containing a short sentence followed by additional text.
+    ///
+    /// # Returns
+    ///
+    /// None. This is a test function that uses assertions to verify expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that `extract_first_sentence("OK.\nMore")` does not return an empty string as expected.
 
     #[test]
     fn extract_first_sentence_short_multiline() {
@@ -1489,6 +1697,32 @@ mod tests {
         // Prompt should contain truncated content
         assert!(prompt.len() < 10000 + 200); // prompt overhead + truncated
     }
+    /// Verifies that building a prompt with multibyte characters respects the maximum length constraint without panicking.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no arguments. It creates an internal test string containing 2667 multibyte Japanese characters ('あ').
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing. This is a test function that asserts the prompt length stays within the 8100-byte limit.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the generated prompt exceeds 8100 bytes in length, indicating a failure of the length constraint validation.
+    /// Verifies that `Client::build_prompt` respects byte length limits when processing multibyte UTF-8 characters.
+    ///
+    /// # Arguments
+    ///
+    /// This is a test function with no parameters.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing; this is a unit test that validates the prompt building behavior through assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the generated prompt exceeds 8300 bytes, indicating that multibyte character handling is not properly constraining the prompt size.
 
     #[test]
     fn build_prompt_multibyte_no_panic() {
@@ -1496,12 +1730,28 @@ mod tests {
         let prompt = Client::build_prompt(&content, "function", "rust");
         assert!(prompt.len() <= 8300); // discriminating prompt is slightly longer
     }
+    /// Tests that the `is_valid_batch_id` function correctly accepts valid batch IDs.
+    ///
+    /// This test verifies that the function returns `true` for properly formatted batch IDs that start with the "msgbatch_" prefix followed by valid alphanumeric characters.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either assertion fails, indicating that `is_valid_batch_id` incorrectly rejected a valid batch ID format.
 
     #[test]
     fn is_valid_batch_id_accepts_real_ids() {
         assert!(is_valid_batch_id("msgbatch_abc123"));
         assert!(is_valid_batch_id("msgbatch_0123456789abcdef_ABCDEF"));
     }
+    /// Tests that `is_valid_batch_id` properly rejects invalid and maliciously crafted batch IDs.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that validates the behavior of `is_valid_batch_id` by asserting it returns `false` for various invalid inputs including path traversal attempts, IDs with query parameters, empty strings, incorrectly formatted IDs, and excessively long IDs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any assertion fails, indicating that `is_valid_batch_id` did not correctly reject the invalid inputs.
 
     #[test]
     fn is_valid_batch_id_rejects_crafted() {
@@ -1513,6 +1763,19 @@ mod tests {
             &("msgbatch_".to_string() + &"a".repeat(200))
         ));
     }
+    /// Verifies that LlmConfig resolves to expected default values when initialized from an empty configuration.
+    ///
+    /// # Arguments
+    ///
+    /// This function takes no arguments.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing. This is a test function that asserts expected default values for LlmConfig fields (api_base, model, and max_tokens).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the three assertions fail, indicating that LlmConfig::resolve did not produce the expected default values.
 
     #[test]
     fn llm_config_defaults_from_empty_config() {
@@ -1522,6 +1785,13 @@ mod tests {
         assert_eq!(llm.model, MODEL);
         assert_eq!(llm.max_tokens, MAX_TOKENS);
     }
+    /// Tests that `LlmConfig::resolve()` correctly populates LLM configuration fields from a `Config` struct.
+    ///
+    /// Verifies that when `Config` contains `llm_model`, `llm_api_base`, and `llm_max_tokens` values, the resulting `LlmConfig` instance has those values properly assigned to its corresponding fields.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any of the assertions fail, indicating that `LlmConfig::resolve()` did not correctly map the configuration values.
 
     #[test]
     fn llm_config_from_config_file_fields() {
@@ -1536,6 +1806,17 @@ mod tests {
         assert_eq!(llm.api_base, "https://custom.api/v1");
         assert_eq!(llm.max_tokens, 200);
     }
+    /// Verifies that environment variables override corresponding LLM configuration values from a config file.
+    ///
+    /// Sets environment variables for the LLM model, API base URL, and max tokens, then resolves an LlmConfig from a Config struct that contains different values. Asserts that the resolved configuration uses the environment variable values rather than the config file values, confirming that environment variables take precedence.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that creates its own test data.
+    ///
+    /// # Returns
+    ///
+    /// None. This function performs assertions and returns `()`.
 
     #[test]
     fn llm_config_env_overrides_config_file() {
@@ -1562,6 +1843,19 @@ mod tests {
         assert_eq!(llm.api_base, "https://from-env/v1");
         assert_eq!(llm.max_tokens, 500);
     }
+    /// Tests that an invalid LLM max tokens environment variable falls back to the configuration value.
+    ///
+    /// # Arguments
+    ///
+    /// None. This is a test function that uses internal state.
+    ///
+    /// # Returns
+    ///
+    /// None. This is a test function that asserts expected behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that invalid environment variables are not properly ignored in favor of the configured value.
 
     #[test]
     fn llm_config_invalid_max_tokens_env_falls_through() {
@@ -1587,13 +1881,13 @@ mod tests {
         window_idx: Option<i32>,
     ) -> ChunkSummary {
         ChunkSummary {
-            id: "test::func".to_string(),
-            file: std::path::PathBuf::from("src/test.rs"),
+            id: "mod::my_func".to_string(),
+            file: std::path::PathBuf::from("src/lib.rs"),
             language: Language::Rust,
             chunk_type,
-            name: "test_func".to_string(),
-            signature: "fn test_func()".to_string(),
-            content: "fn test_func() { todo!() }".to_string(),
+            name: "my_func".to_string(),
+            signature: "fn my_func()".to_string(),
+            content: "fn my_func() { todo!() }".to_string(),
             doc: doc.map(|s| s.to_string()),
             line_start: 1,
             line_end: 3,
@@ -1704,6 +1998,45 @@ mod tests {
                 word
             );
         }
+    }
+
+    // ===== test function skip tests =====
+
+    #[test]
+    fn test_needs_doc_comment_skips_test_prefix() {
+        let mut chunk = make_chunk(ChunkType::Function, None, None);
+        chunk.name = "test_something".to_string();
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_skips_tests_dir() {
+        let mut chunk = make_chunk(ChunkType::Function, None, None);
+        chunk.file = std::path::PathBuf::from("tests/integration.rs");
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_skips_test_rs_suffix() {
+        let mut chunk = make_chunk(ChunkType::Function, None, None);
+        chunk.file = std::path::PathBuf::from("src/store_test.rs");
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_skips_test_attr_in_content() {
+        let mut chunk = make_chunk(ChunkType::Function, None, None);
+        chunk.name = "parse_source_extracts_functions".to_string();
+        chunk.content = "#[test]\nfn parse_source_extracts_functions() { }".to_string();
+        assert!(!needs_doc_comment(&chunk));
+    }
+
+    #[test]
+    fn test_needs_doc_comment_skips_cfg_test_in_content() {
+        let mut chunk = make_chunk(ChunkType::Function, None, None);
+        chunk.name = "my_module_tests".to_string();
+        chunk.content = "#[cfg(test)]\nmod tests { }".to_string();
+        assert!(!needs_doc_comment(&chunk));
     }
 
     // ===== build_doc_prompt tests =====

@@ -1,6 +1,21 @@
 use cqs::embedder::Embedder;
 use std::time::Instant;
 
+/// Entry point that benchmarks an embedder's initialization, warmup, and embedding performance.
+///
+/// Initializes an embedder instance, measures warmup time, then times individual query embeddings and batch document embeddings at different scales (10 and 50 documents). Prints timing results for each operation.
+///
+/// # Arguments
+///
+/// None
+///
+/// # Returns
+///
+/// None (returns unit type)
+///
+/// # Panics
+///
+/// Panics if embedder initialization, warmup, or any embedding operation fails (via `unwrap()` calls).
 fn main() {
     println!("Initializing embedder...");
     let start = Instant::now();

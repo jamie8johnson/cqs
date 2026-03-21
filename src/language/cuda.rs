@@ -130,6 +130,17 @@ const STOPWORDS: &[&str] = &[
     "cudaMalloc", "cudaFree", "cudaMemcpy",
 ];
 
+/// Extracts and formats the return type from a function signature.
+/// 
+/// This function handles both C++ trailing return type syntax (after `->`) and C-style prefix return types (before the function name). It tokenizes the extracted return type and formats it as a documentation string.
+/// 
+/// # Arguments
+/// 
+/// `signature` - A function signature string to parse for return type information.
+/// 
+/// # Returns
+/// 
+/// Returns `Some(String)` containing a formatted return type description (e.g., "returns int") if a non-void return type is found, or `None` if no return type is present or the return type is void.
 fn extract_return(signature: &str) -> Option<String> {
     // Reuse C++ trailing return type logic
     if let Some(paren) = signature.rfind(')') {
@@ -244,6 +255,21 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Parses a CUDA kernel function from a temporary file and verifies the parser correctly identifies it as a function chunk.
+    /// 
+    /// This test creates a temporary CUDA file containing a `vectorAdd` kernel, parses it using the Parser, and asserts that the resulting chunk has the correct name and type (Function).
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function performs assertions and panics on failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to parse the file, the `vectorAdd` chunk is not found in the parsed results, or the chunk type is not `ChunkType::Function`.
 
     #[test]
     fn parse_cuda_kernel() {
@@ -261,6 +287,19 @@ __global__ void vectorAdd(float *a, float *b, float *c, int n) {
         let kernel = chunks.iter().find(|c| c.name == "vectorAdd").unwrap();
         assert_eq!(kernel.chunk_type, ChunkType::Function);
     }
+    /// Parses a CUDA struct definition from a temporary file and verifies the parser correctly identifies it as a struct chunk.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data internally.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, parsing the file fails, the "DeviceConfig" struct cannot be found in the parsed chunks, or the chunk type assertion fails.
 
     #[test]
     fn parse_cuda_struct() {
@@ -277,6 +316,13 @@ struct DeviceConfig {
         let s = chunks.iter().find(|c| c.name == "DeviceConfig").unwrap();
         assert_eq!(s.chunk_type, ChunkType::Struct);
     }
+    /// Parses a CUDA source file and verifies that function calls within a kernel launch function are correctly extracted.
+    /// 
+    /// This is a unit test that writes a temporary CUDA file containing a launch function with memory allocation, kernel invocation, synchronization, and deallocation calls. It then parses the file, locates the launch function, extracts all function calls from it, and asserts that the expected CUDA runtime calls (cudaMalloc and cudaFree) are present in the extracted calls.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the file cannot be parsed, the launch function is not found in the parsed chunks, or if the expected CUDA runtime function calls are not found in the extracted calls.
 
     #[test]
     fn parse_cuda_calls() {

@@ -334,7 +334,23 @@ impl Store {
         })
     }
 
-    /// Get call graph statistics
+    /// Retrieves aggregated statistics about function calls from the database.
+    ///
+    /// Queries the calls table to obtain the total number of calls and the count of distinct callees, returning this information as a CallStats structure.
+    ///
+    /// # Arguments
+    ///
+    /// * `&self` - A reference to the store instance containing the database connection pool and async runtime.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `Result` containing:
+    /// * `Ok(CallStats)` - A struct with `total_calls` (total number of recorded calls) and `unique_callees` (number of distinct functions called).
+    /// * `Err(StoreError)` - If the database query fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError` if the SQL query execution fails or if database connectivity issues occur.
     pub fn call_stats(&self) -> Result<CallStats, StoreError> {
         let _span = tracing::debug_span!("call_stats").entered();
         self.rt.block_on(async {
@@ -1270,6 +1286,17 @@ mod tests {
     use super::*;
     use crate::test_helpers::setup_store;
 
+    /// Initializes the store with a predefined call graph for testing purposes.
+    ///
+    /// Creates a test call graph where function A calls B and C, B calls C, and D calls B, then inserts it into the store for the file "src/test.rs".
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The store instance to populate with the test call graph data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the `upsert_function_calls` operation fails (via `unwrap()`).
     fn seed_call_graph(store: &Store) {
         // A calls B and C; B calls C; D calls B
         let calls = vec![

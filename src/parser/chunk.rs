@@ -6,6 +6,23 @@ use super::types::{Chunk, ChunkType, Language, ParserError, SignatureStyle};
 use super::Parser;
 
 impl Parser {
+    /// Extracts a code chunk from a source file using Tree-sitter query matches.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The source code text to extract from
+    /// * `m` - The Tree-sitter query match containing captured nodes
+    /// * `query` - The Tree-sitter query that produced the match
+    /// * `language` - The programming language of the source
+    /// * `path` - The file path being parsed
+    ///
+    /// # Returns
+    ///
+    /// A `Chunk` containing the extracted code definition (function, struct, class, enum, trait, interface, constant, section, property, delegate, event, module, macro, object, or typealias) along with its metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ParserError::ParseFailed` if no definition capture is found in the match, or if required captures are missing.
     pub(crate) fn extract_chunk(
         &self,
         source: &str,
@@ -122,6 +139,25 @@ impl Parser {
     }
 }
 
+/// Extracts a function or method signature from source code content based on the language's signature style.
+///
+/// # Arguments
+///
+/// * `content` - The source code content to extract the signature from
+/// * `language` - The programming language, which determines the signature extraction style
+///
+/// # Returns
+///
+/// A `String` containing the extracted signature. The signature is determined by the language's signature style:
+/// - `UntilBrace`: text up to the first `{`
+/// - `UntilColon`: text up to the first `:`
+/// - `FirstLine`: text up to the first newline
+/// - `UntilAs`: text up to a word boundary followed by the keyword "as" (case-insensitive)
+/// - `Bread`: returns the full content (for markdown, typically unused)
+///
+/// # Panics
+///
+/// Panics if the signature style is not one of the above variants (incomplete pattern match).
 pub(crate) fn extract_signature(content: &str, language: Language) -> String {
     let sig_end = match language.def().signature_style {
         SignatureStyle::UntilBrace => content.find('{').unwrap_or(content.len()),
@@ -156,6 +192,19 @@ pub(crate) fn extract_signature(content: &str, language: Language) -> String {
     sig.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Extracts documentation comments associated with a syntax node.
+///
+/// Searches backwards through sibling nodes to find documentation comments matching the language's doc node types. Skips over non-doc comments and stops at the first non-comment node. For Python, also checks for a docstring as the first statement in the node's body if no preceding comments are found.
+///
+/// # Arguments
+///
+/// * `node` - The syntax tree node to extract documentation for
+/// * `source` - The source code text containing the node
+/// * `language` - The programming language context used to identify doc comment node types
+///
+/// # Returns
+///
+/// Returns `Some(String)` containing the extracted documentation comment(s) joined by newlines, or `None` if no documentation is found.
 fn extract_doc_comment(
     node: tree_sitter::Node,
     source: &str,
@@ -235,6 +284,19 @@ fn extract_name_fallback(content: &str) -> Option<String> {
     None
 }
 
+/// Infers whether a syntax tree node represents a function or method, and determines the parent type for methods.
+///
+/// # Arguments
+///
+/// * `node` - The syntax tree node to analyze
+/// * `language` - The programming language definition for the node
+/// * `source` - The source code text for extracting type information
+///
+/// # Returns
+///
+/// A tuple containing:
+/// * `ChunkType` - Either `Function` or `Method`
+/// * `Option<String>` - The parent type name if the node is a method, `None` otherwise
 fn infer_chunk_type(
     node: tree_sitter::Node,
     language: Language,
@@ -388,6 +450,19 @@ mod tests {
             let sig = extract_signature(content, Language::Rust);
             assert_eq!(sig, "fn abstract_decl()");
         }
+        /// Verifies that extract_signature correctly preserves Unicode characters in SQL VIEW names and stops before the AS keyword.
+        ///
+        /// # Arguments
+        ///
+        /// This is a test function with no parameters.
+        ///
+        /// # Returns
+        ///
+        /// Returns nothing; this is a test assertion function.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the extracted signature does not contain the Unicode character "ß" in "straße" or if it incorrectly includes the "AS" keyword.
 
         #[test]
         fn extract_signature_until_as_preserves_unicode() {
@@ -941,6 +1016,19 @@ public class Calculator {
             assert!(chunks[0].parent_type_name.is_none());
         }
     }
+    /// Validates that `extract_name_fallback` correctly identifies function names containing Unicode characters that appear before SQL keywords.
+    ///
+    /// # Arguments
+    ///
+    /// This is a test function with no parameters.
+    ///
+    /// # Returns
+    ///
+    /// Returns nothing (`()`). The function validates behavior through assertions.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the assertion fails, indicating that `extract_name_fallback` did not correctly extract "café_func" from a CREATE FUNCTION statement containing Unicode characters.
 
     #[test]
     fn extract_name_fallback_with_unicode_before_keyword() {

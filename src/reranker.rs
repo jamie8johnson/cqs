@@ -20,6 +20,11 @@ const DEFAULT_MODEL_REPO: &str = "cross-encoder/ms-marco-MiniLM-L-6-v2";
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
+/// Retrieves the reranker model repository path from the environment or returns the default.
+///
+/// # Returns
+///
+/// A string containing the model repository path. If the `CQS_RERANKER_MODEL` environment variable is set, returns its value; otherwise returns the default model repository.
 fn model_repo() -> String {
     match std::env::var("CQS_RERANKER_MODEL") {
         Ok(repo) => {
@@ -267,6 +272,17 @@ impl Reranker {
     }
 }
 
+/// Computes the sigmoid activation function.
+///
+/// The sigmoid function maps any input value to a range between 0 and 1, making it useful for neural networks and probability calculations. It is defined as 1 / (1 + e^(-x)).
+///
+/// # Arguments
+///
+/// * `x` - The input value
+///
+/// # Returns
+///
+/// The sigmoid of x, a value in the range (0, 1)
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + (-x).exp())
 }

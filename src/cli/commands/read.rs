@@ -265,7 +265,23 @@ pub(crate) fn build_focused_output(
 
 // ─── CLI commands ───────────────────────────────────────────────────────────
 
-/// Handle read command
+/// Reads and displays the content of a file, optionally with enriched metadata.
+///
+/// Loads a file from the project, prepends a note header containing audit state and documentation notes, and outputs the result in either plain text or JSON format. If a focus parameter is provided, delegates to focused read mode instead.
+///
+/// # Arguments
+///
+/// * `path` - The relative path to the file to read within the project
+/// * `focus` - Optional focus identifier that triggers focused read mode
+/// * `json` - Whether to output as formatted JSON instead of plain text
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or an error if the file cannot be found, read, or parsed.
+///
+/// # Errors
+///
+/// Returns an error if the project root cannot be found, the file cannot be read, notes.toml cannot be parsed (though this is logged as a warning and continues), or JSON serialization fails.
 pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_read", path).entered();
 
@@ -311,6 +327,20 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
     Ok(())
 }
 
+/// Reads and displays focused content from a project store, optionally outputting as JSON.
+///
+/// # Arguments
+///
+/// * `focus` - The identifier or path of the focused item to read
+/// * `json` - If true, output the result as formatted JSON; otherwise output plain text
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful read and output, or an error if the project store cannot be opened or content cannot be built.
+///
+/// # Errors
+///
+/// Returns an error if opening the project store fails or if building the focused output fails. JSON serialization errors are also propagated.
 fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_read_focused", %focus).entered();
 

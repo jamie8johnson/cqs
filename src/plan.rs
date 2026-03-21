@@ -342,7 +342,19 @@ fn classify(description: &str) -> usize {
     best_idx
 }
 
-/// Get a template by index.
+/// Retrieves a task template by index.
+///
+/// # Arguments
+///
+/// * `idx` - The index of the template to retrieve from the templates collection.
+///
+/// # Returns
+///
+/// A reference to the `TaskTemplate` at the specified index.
+///
+/// # Panics
+///
+/// Panics if `idx` is out of bounds for the `TEMPLATES` array.
 pub fn get_template(idx: usize) -> &'static TaskTemplate {
     &TEMPLATES[idx].template
 }

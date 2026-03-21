@@ -55,6 +55,23 @@ fn try_init_embedder(embedder: &OnceCell<Embedder>) -> Option<&Embedder> {
     }
 }
 
+/// Watches the project for file changes and updates the code search index incrementally.
+///
+/// # Arguments
+///
+/// * `cli` - Command-line interface context
+/// * `debounce_ms` - Debounce interval in milliseconds for file change events
+/// * `no_ignore` - If true, ignores `.gitignore` rules (not yet implemented)
+/// * `poll` - If true, uses polling instead of inotify for file system monitoring
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion, or an error if the index doesn't exist or watch setup fails.
+///
+/// # Errors
+///
+/// * If the project index is not found (user should run `cqs index` first)
+/// * If setting up file system watching fails
 pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_watch", debounce_ms, poll).entered();
     if no_ignore {

@@ -433,6 +433,24 @@ impl Store {
         })
     }
 
+    /// Validates and optionally migrates the database schema version to match the current expected version.
+    ///
+    /// Queries the metadata table for the stored schema version and compares it against the current version. If the stored version is older, attempts to migrate the schema. Returns an error if the stored version is newer than the current version (indicating the database is incompatible), if the schema is corrupted, or if migration fails without a supported migration path.
+    ///
+    /// # Arguments
+    ///
+    /// `path` - The file path to the database, used for error reporting.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if the schema version is valid and matches the current version, or if migration succeeds. Returns `Err(StoreError)` if the schema is newer than supported, corrupted, or migration fails.
+    ///
+    /// # Errors
+    ///
+    /// - `StoreError::SchemaNewerThanCq` - The stored schema version is newer than the current version.
+    /// - `StoreError::Corruption` - The stored schema version is not a valid integer.
+    /// - `StoreError::SchemaMismatch` - Schema migration is not supported for the version difference.
+    /// - Other `StoreError` variants from database access or migration failures.
     fn check_schema_version(&self, path: &Path) -> Result<(), StoreError> {
         let path_str = path.display().to_string();
         self.rt.block_on(async {
@@ -483,6 +501,21 @@ impl Store {
         })
     }
 
+    /// Validates that the stored model name and embedding dimensions match the expected values.
+    ///
+    /// This method checks the metadata table in the database to ensure compatibility between the current application and previously stored data. It verifies both the model name and the embedding vector dimensions.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Ok(())` if validation passes or if the metadata table doesn't exist yet. Returns `Err(StoreError)` if the stored model name or dimensions don't match the expected values, or if a database error occurs.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StoreError::ModelMismatch` if the stored model name differs from the expected `MODEL_NAME`.
+    ///
+    /// Returns `StoreError::DimensionMismatch` if the stored embedding dimensions differ from `EXPECTED_DIMENSIONS`.
+    ///
+    /// Returns other `StoreError` variants if database access fails.
     fn check_model_version(&self) -> Result<(), StoreError> {
         self.rt.block_on(async {
             // Check model name
@@ -530,6 +563,17 @@ impl Store {
         })
     }
 
+    /// Checks if the stored CQL version in the metadata table matches the current application version.
+    ///
+    /// Retrieves the `cq_version` value from the metadata table and compares it against the current package version. If versions differ, logs an informational message. Errors during version retrieval are logged at debug level but do not propagate, allowing the application to continue.
+    ///
+    /// # Arguments
+    ///
+    /// `&self` - Reference to the store instance with access to the database pool and runtime.
+    ///
+    /// # Errors
+    ///
+    /// Errors are caught and logged but not propagated. Database query failures are logged at debug level.
     fn check_cq_version(&self) {
         if let Err(e) = self.rt.block_on(async {
             let row: Option<(String,)> =
@@ -938,6 +982,19 @@ impl Store {
 }
 
 impl Drop for Store {
+    /// Performs a best-effort WAL (Write-Ahead Logging) checkpoint when the Store is dropped to prevent accumulation of large WAL files.
+    ///
+    /// # Arguments
+    ///
+    /// * `&mut self` - A mutable reference to the Store instance being dropped
+    ///
+    /// # Returns
+    ///
+    /// Nothing. Errors during checkpoint are logged as warnings but not propagated, as Drop implementations cannot fail.
+    ///
+    /// # Panics
+    ///
+    /// Does not panic. Uses `catch_unwind` to safely handle potential panics from `block_on` when called from within an async context (e.g., dropping Store inside a tokio runtime).
     fn drop(&mut self) {
         if self.closed.load(Ordering::Acquire) {
             return; // Already checkpointed in close()

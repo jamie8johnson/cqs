@@ -67,6 +67,11 @@ pub struct ReferenceConfig {
     pub weight: f32,
 }
 
+/// Returns the default reference weight used for normalization calculations.
+///
+/// # Returns
+///
+/// A floating-point value of 0.8 representing the standard reference weight.
 fn default_ref_weight() -> f32 {
     0.8
 }

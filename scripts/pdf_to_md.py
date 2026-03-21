@@ -28,6 +28,20 @@ finally:
 
 
 def main():
+    """
+    Converts a PDF file to Markdown format and outputs the result to a file or standard output.
+    
+    This function reads a PDF file specified as a command-line argument, converts it to Markdown using pymupdf4llm, and writes the output either to a specified file or prints it to stdout. It suppresses library warnings and validates that the input file exists before processing.
+    
+    Args:
+        None. Parameters are read from sys.argv command-line arguments.
+    
+    Returns:
+        None. Outputs converted Markdown either to a file or to stdout, and prints status messages to stderr.
+    
+    Raises:
+        SystemExit: If fewer than 2 command-line arguments are provided (missing input PDF path), or if the specified input PDF file does not exist.
+    """
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <input.pdf> [output.md]", file=sys.stderr)
         sys.exit(1)

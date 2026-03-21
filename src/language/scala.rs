@@ -99,6 +99,17 @@ const COMMON_TYPES: &[&str] = &[
     "Iterator", "Iterable", "Ordering",
 ];
 
+/// Extracts the return type from a Scala function signature and formats it as a documentation string.
+/// 
+/// Parses a Scala function signature to find the return type annotation (the type following `:` after the parameter list and before `=` or `{`), then formats it as a "Returns {type}" string suitable for documentation.
+/// 
+/// # Arguments
+/// 
+/// `signature` - A Scala function signature string, e.g., `def foo(x: Int): String = ...`
+/// 
+/// # Returns
+/// 
+/// `Some(String)` containing the formatted return type documentation (e.g., "Returns String"), or `None` if no return type annotation is found or the signature is malformed.
 fn extract_return(signature: &str) -> Option<String> {
     // Scala: def foo(x: Int): String = ...
     // Look for `: ReturnType` after last `)` and before `=` or `{`
@@ -185,6 +196,26 @@ mod tests {
         );
         assert_eq!(extract_return("def noReturn() {"), None);
     }
+    /// Parses a Scala class definition and verifies the parser correctly identifies it as a class chunk.
+    /// 
+    /// This is a unit test function that creates a temporary file containing a simple Scala class definition, parses it using the Parser, and asserts that the resulting chunks contain a class chunk named "Calculator" with the correct chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This function takes no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This function returns unit type `()` and is intended to be run as a test.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The Parser fails to initialize
+    /// - The file parsing fails
+    /// - No chunk named "Calculator" is found in the parsed chunks
+    /// - The found chunk's type is not `ChunkType::Class`
 
     #[test]
     fn parse_scala_class() {
@@ -201,6 +232,13 @@ class Calculator {
         let class = chunks.iter().find(|c| c.name == "Calculator").unwrap();
         assert_eq!(class.chunk_type, ChunkType::Class);
     }
+    /// Tests parsing of a Scala object definition from a temporary file.
+    /// 
+    /// This test function creates a temporary Scala file containing an object declaration with a method, parses it using the Parser, and verifies that the resulting chunk is correctly identified as an Object type with the name "Main".
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the file cannot be parsed, or the "Main" object chunk is not found in the parsed results.
 
     #[test]
     fn parse_scala_object() {
@@ -217,6 +255,21 @@ object Main {
         let obj = chunks.iter().find(|c| c.name == "Main").unwrap();
         assert_eq!(obj.chunk_type, ChunkType::Object);
     }
+    /// Parses a Scala trait definition and verifies correct extraction of trait metadata.
+    /// 
+    /// This test function creates a temporary Scala file containing a trait definition, parses it using the Parser, and asserts that the resulting chunk is correctly identified as a trait with the expected name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None - this is a test function with no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// None - this function performs assertions and returns unit type.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, if parsing fails, if the "Printable" trait chunk is not found in the parsed results, or if the chunk type is not `ChunkType::Trait`.
 
     #[test]
     fn parse_scala_trait() {
@@ -231,6 +284,17 @@ trait Printable {
         let t = chunks.iter().find(|c| c.name == "Printable").unwrap();
         assert_eq!(t.chunk_type, ChunkType::Trait);
     }
+    /// Parses a Scala file containing a type alias definition and verifies that the parser correctly identifies it.
+    /// 
+    /// This test function writes a Scala type alias (`type StringMap = Map[String, String]`) to a temporary file, parses it using the Parser, and asserts that the resulting chunk is recognized as a TypeAlias with the correct name.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to parse the file, the "StringMap" chunk is not found in the parsed results, or the chunk type is not TypeAlias.
 
     #[test]
     fn parse_scala_type_alias() {
@@ -241,6 +305,19 @@ trait Printable {
         let ta = chunks.iter().find(|c| c.name == "StringMap").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
     }
+    /// Verifies that the parser correctly identifies a Scala method defined within a class.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no parameters. It creates a temporary Scala file containing a Calculator class with an add method, then parses it to verify the method is correctly recognized.
+    /// 
+    /// # Returns
+    /// 
+    /// Returns nothing. This is a test function that asserts the parser correctly identifies the method's chunk type as Method and its parent class as Calculator.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to parse the file, the "add" method is not found in the parsed chunks, or if the assertions about the method's chunk type or parent class name fail.
 
     #[test]
     fn parse_scala_method_in_class() {
@@ -258,6 +335,19 @@ class Calculator {
         assert_eq!(method.chunk_type, ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
     }
+    /// Parses a Scala file containing a value constant declaration and verifies it is correctly identified as a Constant chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, the "maxRetries" chunk is not found, or the chunk type assertion fails.
 
     #[test]
     fn parse_scala_val_const() {
@@ -272,6 +362,19 @@ object Config {
         let val_chunk = chunks.iter().find(|c| c.name == "maxRetries").unwrap();
         assert_eq!(val_chunk.chunk_type, ChunkType::Constant);
     }
+    /// Parses a Scala source file and verifies that function calls are correctly extracted from code chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// This function returns nothing and is used as a test case.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be created, the parser fails to initialize or parse the file, the "process" function chunk is not found, or if the expected function calls "transform" or "println" are not extracted from the chunk.
 
     #[test]
     fn parse_scala_calls() {

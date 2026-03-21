@@ -99,12 +99,35 @@ mod tests {
     }
 
     impl EnvGuard {
+        /// Sets an environment variable and returns a guard that restores the previous value.
+        ///
+        /// This method temporarily modifies an environment variable and returns an `EnvGuard` that will restore the original value when dropped. Useful for testing code that depends on environment variables.
+        ///
+        /// # Arguments
+        ///
+        /// * `key` - The name of the environment variable to set
+        /// * `val` - The new value to assign to the environment variable
+        ///
+        /// # Returns
+        ///
+        /// An `EnvGuard` instance that stores the previous value of the environment variable and will restore it upon being dropped.
         fn set(key: &'static str, val: &str) -> Self {
             let prev = std::env::var(key).ok();
             std::env::set_var(key, val);
             EnvGuard { key, prev }
         }
 
+        /// Temporarily removes an environment variable and returns a guard that restores it.
+        ///
+        /// This method removes the environment variable specified by `key` and captures its previous value. When the returned `EnvGuard` is dropped, it automatically restores the variable to its previous state, or removes it if it didn't exist before.
+        ///
+        /// # Arguments
+        ///
+        /// * `key` - The name of the environment variable to remove.
+        ///
+        /// # Returns
+        ///
+        /// An `EnvGuard` that, when dropped, restores the environment variable to its previous value or removes it if it was not previously set.
         fn unset(key: &'static str) -> Self {
             let prev = std::env::var(key).ok();
             std::env::remove_var(key);
@@ -113,6 +136,19 @@ mod tests {
     }
 
     impl Drop for EnvGuard {
+        /// Restores the previous environment variable state when this guard is dropped.
+        ///
+        /// # Arguments
+        ///
+        /// `&mut self` - A mutable reference to the environment variable guard
+        ///
+        /// # Returns
+        ///
+        /// Nothing
+        ///
+        /// # Description
+        ///
+        /// If a previous value existed before this guard was created, it is restored. Otherwise, the environment variable is removed entirely. This implements automatic cleanup of environment variable changes through Rust's drop semantics.
         fn drop(&mut self) {
             match &self.prev {
                 Some(v) => std::env::set_var(self.key, v),

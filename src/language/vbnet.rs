@@ -159,6 +159,17 @@ fn post_process_vbnet(
     true
 }
 
+/// Extracts the return type from a VB.NET function signature and formats it as a documentation string.
+/// 
+/// Parses a VB.NET function signature to find the return type specified after the closing parenthesis with the "As" keyword. If found, tokenizes and formats the return type as a "Returns" statement.
+/// 
+/// # Arguments
+/// 
+/// * `signature` - A VB.NET function signature string to parse
+/// 
+/// # Returns
+/// 
+/// `Some(String)` containing the formatted return type as "Returns {type}" if a return type is found after "As" keyword, or `None` if no return type is present or the signature format is invalid.
 fn extract_return(signature: &str) -> Option<String> {
     // VB.NET: Function Name(...) As ReturnType
     // Look for "As" after the closing paren
@@ -229,6 +240,23 @@ mod tests {
         f.flush().unwrap();
         f
     }
+    /// Tests that the parser correctly identifies and categorizes VB.NET class definitions and their methods.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded VB.NET source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions to validate parser behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if any of the following assertions fail:
+    /// - The parser fails to identify the "Calculator" class chunk
+    /// - The parser fails to identify the "New" constructor method chunk
+    /// - The parser fails to identify the "Add" method chunk
+    /// - The parser fails to identify the "Reset" method chunk
 
     #[test]
     fn parse_vbnet_class_with_methods() {
@@ -278,6 +306,11 @@ End Class
             names
         );
     }
+    /// Tests the parser's ability to correctly parse VB.NET module structures, including module declarations, subroutines, and functions. Creates a temporary VB.NET file containing a module with a Main subroutine and an Add function, parses it using the Parser, and verifies that all three top-level definitions (Program module, Main sub, and Add function) are correctly identified and extracted as chunks with their respective names.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the Parser fails to initialize, if file parsing fails, or if any of the expected module/method names are not found in the parsed chunks.
 
     #[test]
     fn parse_vbnet_module() {
@@ -301,6 +334,13 @@ End Module
         assert!(names.contains(&"Main"), "Expected 'Main' method, got: {:?}", names);
         assert!(names.contains(&"Add"), "Expected 'Add' method, got: {:?}", names);
     }
+    /// Verifies that the parser correctly identifies and extracts VB.NET interface definitions.
+    /// 
+    /// This test creates a temporary VB.NET file containing an interface declaration with a method and property, parses it, and asserts that the parser successfully recognizes the interface by name and type.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a new instance, fails to parse the temporary file, or if the parsed chunks do not contain an interface named "IPayable" with type `ChunkType::Interface`.
 
     #[test]
     fn parse_vbnet_interface() {
@@ -324,6 +364,19 @@ End Interface
             names
         );
     }
+    /// Tests that the parser correctly identifies and extracts VB.NET structure definitions. Writes a temporary VB.NET file containing a Point structure with properties and a constructor, parses it, and verifies that the resulting chunks include a struct chunk named "Point" with the correct chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None (test function)
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to identify the "Point" structure as a ChunkType::Struct, or if file creation/parsing operations fail.
 
     #[test]
     fn parse_vbnet_structure() {
@@ -352,6 +405,17 @@ End Structure
             names
         );
     }
+    /// Parses a Visual Basic .NET enum definition and verifies correct parsing.
+    /// 
+    /// This test function creates a temporary VB.NET file containing an enum declaration with three named members, parses it using the Parser, and asserts that the resulting chunks contain an enum named "Status" with the correct ChunkType.
+    /// 
+    /// # Arguments
+    /// 
+    /// No parameters.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, if the "Status" enum is not found in the parsed chunks, or if the parsed chunk's type is not ChunkType::Enum.
 
     #[test]
     fn parse_vbnet_enum() {
@@ -369,6 +433,19 @@ End Enum
         assert!(en.is_some(), "Expected 'Status' enum");
         assert_eq!(en.unwrap().chunk_type, ChunkType::Enum);
     }
+    /// Parses a VB.NET property definition and verifies that the parser correctly identifies it as a Property chunk type.
+    /// 
+    /// # Arguments
+    /// 
+    /// This function takes no parameters.
+    /// 
+    /// # Returns
+    /// 
+    /// This function returns nothing (`()`). It validates parsing behavior through assertions.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to create a new instance, fails to parse the temporary file, or if the parsed chunks do not contain a chunk named "Name" with type `ChunkType::Property`.
 
     #[test]
     fn parse_vbnet_property() {
@@ -400,6 +477,21 @@ End Class
             names
         );
     }
+    /// Verifies that the parser correctly identifies and categorizes VB.NET delegates and events.
+    /// 
+    /// This test parses a VB.NET source file containing a delegate declaration and an event, then asserts that both are properly recognized and classified with their respective chunk types (Delegate and Event).
+    /// 
+    /// # Arguments
+    /// 
+    /// None
+    /// 
+    /// # Returns
+    /// 
+    /// None
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to identify the "NotifyHandler" delegate or the "OnNotify" event, or if either has an incorrect chunk type assignment.
 
     #[test]
     fn parse_vbnet_delegate_event() {
@@ -428,6 +520,26 @@ End Class
             names
         );
     }
+    /// Parses a VB.NET source file to extract and verify its call graph.
+    /// 
+    /// Creates a temporary VB.NET file containing a simple program with a Main subroutine that instantiates a Calculator object and calls its Add method, then writes the result to the console. Uses the Parser to extract the call graph from the file and validates that the Main function correctly identifies calls to Add and WriteLine.
+    /// 
+    /// # Arguments
+    /// 
+    /// None.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This is a test function that asserts expected behavior.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if:
+    /// - The temporary file cannot be written
+    /// - The parser fails to initialize or parse the file
+    /// - The 'Main' function is not found in the call graph
+    /// - The 'Add' method call is not identified in Main's callees
+    /// - The 'WriteLine' method call is not identified in Main's callees
 
     #[test]
     fn parse_vbnet_call_graph() {
@@ -460,6 +572,19 @@ End Module
             callee_names
         );
     }
+    /// Verifies that the parser correctly identifies and extracts a VB.NET function with parameterized generic types.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded VB.NET source code.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function performs assertions and panics on test failure.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the temporary file cannot be written, the parser fails to initialize, file parsing fails, or the expected "Process" function is not found in the parsed chunks.
 
     #[test]
     fn parse_vbnet_type_refs() {
@@ -476,6 +601,19 @@ End Class
         let func = chunks.iter().find(|c| c.name == "Process");
         assert!(func.is_some(), "Expected 'Process' function");
     }
+    /// Tests that parsing a VB.NET file containing only comments, options, and imports produces no code chunks. Verifies that the parser correctly ignores non-code declarations and returns an empty set of Class, Method, and Function chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test file and parser.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts expectations and panics if they are not met.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser produces any Class, Method, or Function chunks from a file containing only comments, options, and imports statements.
 
     #[test]
     fn parse_vbnet_no_code() {
@@ -499,6 +637,21 @@ Imports System
             code_chunks.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
+    /// Parses a VB.NET class with field declarations and verifies that private and shared fields are correctly identified.
+    /// 
+    /// This is a test function that creates a temporary VB.NET file containing a class with field declarations, parses it, and asserts that the expected field names are extracted from the parsed chunks.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that creates its own test data.
+    /// 
+    /// # Returns
+    /// 
+    /// None. This function asserts conditions and panics if assertions fail.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if the parser fails to initialize, if file parsing fails, or if the expected field name `_timeout` is not found in the parsed chunks.
 
     #[test]
     fn parse_vbnet_field_declaration() {
@@ -518,6 +671,21 @@ End Class
             names
         );
     }
+    /// Parses and validates the `extract_return` function's ability to identify return types from VB.NET method signatures.
+    /// 
+    /// # Arguments
+    /// 
+    /// None. This is a test function that uses hardcoded VB.NET function signatures.
+    /// 
+    /// # Returns
+    /// 
+    /// Nothing. This function performs assertions to verify the correctness of the `extract_return` function.
+    /// 
+    /// # Panics
+    /// 
+    /// Panics if assertions fail, specifically:
+    /// - When `extract_return` does not return `Some("Returns string")` for a Function with return type String
+    /// - When `extract_return` does not return `None` for a Sub procedure (which has no return type)
 
     #[test]
     fn parse_vbnet_return_extraction() {
