@@ -673,6 +673,7 @@ fn store_stage(
     let mut total_cached = 0;
     let mut total_type_edges = 0;
     let mut total_calls = 0;
+    let mut deferred_type_edges: Vec<(PathBuf, Vec<ChunkTypeRefs>)> = Vec::new();
 
     for batch in embed_rx {
         if check_interrupted() {
@@ -730,18 +731,14 @@ fn store_stage(
             }
         }
 
-        // Store type edges extracted during parsing
-        for (file, chunk_type_refs) in &batch.relationships.type_refs {
-            for ctr in chunk_type_refs {
+        // Defer type edge insertion — collect for later.
+        // Type edges reference chunk IDs that may be in later batches,
+        // so we insert them after all chunks are committed.
+        for (file, chunk_type_refs) in batch.relationships.type_refs {
+            for ctr in &chunk_type_refs {
                 total_type_edges += ctr.type_refs.len();
             }
-            if let Err(e) = store.upsert_type_edges_for_file(file, chunk_type_refs) {
-                tracing::warn!(
-                    file = %file.display(),
-                    error = %e,
-                    "Failed to store type edges"
-                );
-            }
+            deferred_type_edges.push((file, chunk_type_refs));
         }
 
         total_embedded += batch_count;
@@ -754,6 +751,19 @@ fn store_stage(
             "parsed:{} embedded:{} written:{}",
             parsed, embedded, total_embedded
         ));
+    }
+
+    // Insert deferred type edges now that all chunks are in the DB.
+    // Type edges reference source_chunk_id with a FK constraint, so they
+    // must be inserted after all chunks across all batches are committed.
+    for (file, chunk_type_refs) in &deferred_type_edges {
+        if let Err(e) = store.upsert_type_edges_for_file(file, chunk_type_refs) {
+            tracing::warn!(
+                file = %file.display(),
+                error = %e,
+                "Failed to store type edges"
+            );
+        }
     }
 
     Ok((total_embedded, total_cached, total_type_edges, total_calls))
