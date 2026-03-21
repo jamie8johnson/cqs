@@ -51,6 +51,23 @@ pub(crate) fn build_vector_index(
     build_vector_index_with_config(store, cqs_dir, None)
 }
 
+/// Builds a vector index for the store with the specified configuration.
+///
+/// Attempts to build a GPU-accelerated CAGRA index if the store contains enough vectors and GPU support is available. Falls back to HNSW index otherwise. If the HNSW index is detected to be stale due to an interrupted write, returns None to fall back to brute-force search.
+///
+/// # Arguments
+///
+/// * `store` - Reference to the data store containing vectors to index
+/// * `cqs_dir` - Path to the CQS directory
+/// * `ef_search` - Optional search parameter to configure index behavior
+///
+/// # Returns
+///
+/// Returns `Ok(Some(index))` with a boxed vector index implementation if indexing succeeds, or `Ok(None)` if the index is stale or unavailable.
+///
+/// # Errors
+///
+/// Returns an error if the HNSW index building fails or store operations encounter errors.
 pub(crate) fn build_vector_index_with_config(
     store: &cqs::Store,
     cqs_dir: &std::path::Path,
@@ -116,6 +133,15 @@ pub enum OutputFormat {
 }
 
 impl std::fmt::Display for OutputFormat {
+    /// Formats the enum variant as a human-readable string representation.
+    ///
+    /// # Arguments
+    ///
+    /// * `f` - The formatter to write the output to
+    ///
+    /// # Returns
+    ///
+    /// A `std::fmt::Result` indicating success or formatting error
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Text => write!(f, "text"),
@@ -284,6 +310,10 @@ enum Commands {
         #[cfg(feature = "llm-summaries")]
         #[arg(long)]
         improve_docs: bool,
+        /// Regenerate doc comments for all functions, even those with existing docs (requires --improve-docs)
+        #[cfg(feature = "llm-summaries")]
+        #[arg(long)]
+        improve_all: bool,
         /// Maximum number of functions to generate docs for (used with --improve-docs)
         #[cfg(feature = "llm-summaries")]
         #[arg(long)]
@@ -745,6 +775,8 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             #[cfg(feature = "llm-summaries")]
             improve_docs,
             #[cfg(feature = "llm-summaries")]
+            improve_all,
+            #[cfg(feature = "llm-summaries")]
             max_docs,
             #[cfg(feature = "llm-summaries")]
             hyde_queries,
@@ -759,6 +791,10 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
             let use_improve_docs = improve_docs;
             #[cfg(not(feature = "llm-summaries"))]
             let use_improve_docs = false;
+            #[cfg(feature = "llm-summaries")]
+            let use_improve_all = improve_all;
+            #[cfg(not(feature = "llm-summaries"))]
+            let use_improve_all = false;
             #[cfg(feature = "llm-summaries")]
             let use_max_docs = max_docs;
             #[cfg(not(feature = "llm-summaries"))]
@@ -778,6 +814,7 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
                 no_ignore,
                 use_llm,
                 use_improve_docs,
+                use_improve_all,
                 use_max_docs,
                 use_hyde,
                 use_max_hyde,
