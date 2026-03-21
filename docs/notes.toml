@@ -1085,3 +1085,27 @@ mentions = ["embedder"]
 sentiment = 0.0
 text = "LoRA rank 16 may be the bottleneck, not data size or epochs. CSN and CosQA both approaching asymptote at rank 16. Rank sweep (32/64) running to test if higher capacity raises the ceiling."
 mentions = ["embedder"]
+
+[[note]]
+sentiment = 1.0
+text = "Doc comment generation (--improve-all) improved Recall@1 from 90.9% to 92.7% and NDCG@10 from 0.951 to 0.965. 629 docs across 182 files via Haiku Batches API. DocFirst template now clearly best."
+mentions = [
+    "llm.rs",
+    "model_eval.rs",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Source file filter (is_source_file) is critical for --improve-docs. Without it, doc writer corrupted Cargo.toml, notes.toml, CLAUDE.md, and 150+ markdown files by injecting // comments."
+mentions = [
+    "llm.rs",
+    "doc_writer",
+]
+
+[[note]]
+sentiment = -1.0
+text = "Source file filter (is_source_file) is critical for --improve-docs. Without it, doc writer corrupted Cargo.toml, notes.toml, CLAUDE.md, and 150+ markdown files by injecting // comments."
+mentions = [
+    "llm.rs",
+    "doc_writer",
+]

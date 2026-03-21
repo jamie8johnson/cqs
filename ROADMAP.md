@@ -113,7 +113,10 @@ Stress eval against real codebases (cqs 2956 chunks, Flask, Express, Chi) showed
 - [x] SQ-7: LoRA fine-tuning of E5-base-v2. **Ship as default embedding model.**
   - v1-v3 regressed hard eval (adversarial confusable pairs — not realistic usage).
   - v3 on CoIR: +4.3pp NDCG@10, +0.5pp cosqa transfer. Real queries are diverse like CoIR, not adversarial.
-  - v4 training (200k CSN, 3ep) in progress. v5 planned (full 1.7M, 1ep).
+  - v4 (166k/3ep): over-specializes, CosQA drops to 0.305
+  - **v5 (166k/1ep): best overall** — 0.683 CSN, 0.348 CosQA. Strictly better than shipped v3.
+  - All variants use same 186k training data (CSN + docstring pairs). Differences are `--max-samples` and `--epochs`.
+  - **Action:** Switch default from v3 to v5. Convert safetensors → ONNX, upload to HuggingFace.
   - **Plan:** Upload best merged ONNX to HuggingFace as default model. Env var override to fall back to base E5.
   - Hard eval regression is acceptable — the adversarial scenario (6 confusable sorting functions) almost never happens in real usage.
   - **Training plan (v5):** 1.7M CSN, checkpoint after each epoch. Eval at epoch 1 (~5.5 hrs), decide whether to continue to epoch 2-3 by resuming from checkpoint. Avoids 16-hour blind run.
@@ -144,8 +147,15 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 - **Mixed LoRA (v6)** — CSN+CosQA+SO training dilutes CSN signal without improving CosQA. Our docstring pairs > CoIR training splits.
 
 **In progress:**
-- **Sample size sweep** — 10k/25k/50k/100k/200k CSN + docstrings at 1ep. Finding optimal training set size.
-- **Discriminating descriptions** — change LLM summary prompt from generic ("sorts an array") to distinguishing ("stable sort preserving relative order, recursive divide-and-conquer"). May fix the LLM enrichment regression on hard eval.
+- **Full CoIR pipeline run** — LoRA v3 + NL enrichment on all 10 tasks. Leaderboard position estimate.
+- **v5 → default** — convert and upload to HuggingFace, switch default model
+
+**Untested:**
+- **166k, 2 epochs** — midpoint between v5 (1ep, good transfer) and v4 (3ep, over-specialized). May find sweet spot.
+
+**Done:**
+- Sample size sweep (10k/50k/166k at 1ep) — 166k is optimal, more data at 1ep beats less data
+- Discriminating descriptions — shipped in v1.2.0, +16pp R@1
 
 **Other ideas (lower priority):**
 - **Query expansion** — synonym table or small LLM. Cheap recall boost. No model changes.
@@ -164,13 +174,16 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 | Base E5-base-v2 | 0.627 | — | #7 on leaderboard (50.9 overall) |
 | E5 + NL enrichment | 0.626 | -0.001 | Heuristic too crude for CoIR |
 | **E5 + LoRA v3** | **0.671** | **+0.043** | Approaching #5-6 territory |
-| E5 + LoRA v4 | TRAINING | — | 200k CSN, 3ep (expect further gains) |
+| E5 + LoRA v4 | 0.680 | +0.053 | Over-specializes (Python 0.971, CosQA drops) |
+| E5 + LoRA v5 | 0.678 | +0.051 | Best CosQA transfer (0.348) |
+| E5 + LoRA v6-mixed | 0.644 | +0.017 | CSN+CosQA+SO dilutes signal |
+| E5 + Pipeline (v3+enrichment) | RUNNING | — | Full 10-task run in progress |
 
-**Transfer (cosqa, out-of-distribution):** LoRA v3 +0.5pp NDCG@10. Genuine transfer.
+**Transfer (cosqa, out-of-distribution):** LoRA v3 +0.5pp, v5 +1.9pp, v4 -2.4pp (over-specialized).
 
-**Leaderboard targets:** #1 SFR-Code-2B (67.41 avg, 2B params), #2 CodeSage-large-v2 (64.18 avg, 94.26 CSN), #5 Voyage-Code-002 (56.26 avg, 81.79 CSN).
+**Leaderboard (13 models):** #1 SFR-Code-2B (67.41, 2B), #2 CodeSage-large-v2 (64.18, 1.3B), #5 Voyage-Code-002 (56.26), #6 E5-Mistral (55.18, 7B), **#7 E5-base-v2 (50.9, 110M)**.
 
-**Remaining:** v4 eval, reranker configs, cosqa/stackoverflow transfer, full 10-task run for leaderboard.
+**In progress:** Full 10-task pipeline run (LoRA v3 + NL enrichment). See `docs/research-log.md`.
 
 ### Literature survey (before paper)
 
