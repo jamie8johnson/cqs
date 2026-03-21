@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-03-21
+
+### Added
+- **SQ-8: `--improve-docs` flag** — LLM-generated doc comments for undocumented functions, written back to source files. Per-language DocWriter (11 explicit formats + `// ` default). Bottom-up insertion, decorator-aware, atomic writes.
+- **SQ-11: Type-aware embeddings** — full function signatures appended to NL descriptions before embedding. +3.6pp R@1 on hard eval. TypeScript MRR +0.068.
+- **SQ-12: `--hyde-queries` flag** — index-time HyDE query predictions via Batches API. LLM predicts 3-5 search queries per function, embedded alongside NL description.
+- **`CQS_RERANKER_MODEL` env var** — configurable cross-encoder reranker model in `reranker.rs`.
+- **`CQS_EMBEDDING_MODEL` env var** — configurable embedding model. Defaults to LoRA v3 fine-tuned model.
+- **Reranker eval harness** — `test_hard_reranker_comparison` in model_eval.rs for before/after reranker measurement.
+- **Weight sweep eval** — `test_weight_sweep` in model_eval.rs: 30-config parameter sweep for name_boost, keyword boost, RRF.
+- **Type-aware embedding eval** — `test_type_aware_embeddings` in model_eval.rs.
+
+### Changed
+- **Default embedding model**: switched from `intfloat/e5-base-v2` to `jamie8johnson/e5-base-v2-code-search` (LoRA v3, +4.4pp CSN NDCG@10 on CoIR benchmark). Override with `CQS_EMBEDDING_MODEL=intfloat/e5-base-v2`.
+- **LLM summary prompt**: changed from generic "Summarize this function" to discriminating "Describe what makes this function unique and distinguishable" (+16pp R@1 improvement). Requires re-running `--llm-summaries` to regenerate.
+- **Schema v16**: composite PK `(content_hash, purpose)` on `llm_summaries` table. Supports `summary`, `doc_comment`, and `hyde` purposes.
+
+### Fixed
+- CSS `@media print { }` panic — `find('(')` failed when no parentheses present (#625)
+- Doc rewriter `atomic_write` race condition — parallel tests with same PID produced identical temp file names (#628)
+
+### Security
+- Bumped `rustls-webpki` 0.103.9 → 0.103.10 (CRL scope check + X.509 name constraints bypass)
+
 ## [1.1.0] - 2026-03-19
 
 ### Breaking Changes
