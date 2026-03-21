@@ -32,7 +32,7 @@ cargo install cqs
 
 **Upgrading?** Schema changes require rebuilding the index:
 ```bash
-cqs index --force  # Run after upgrading from older versions (current schema: v15)
+cqs index --force  # Run after upgrading from older versions (current schema: v16)
 ```
 
 ## Quick Start
@@ -120,17 +120,11 @@ threshold = 0.4
 # Name boost for hybrid search (0.0 = pure semantic, 1.0 = pure name)
 name_boost = 0.2
 
-# Note weight in search results (0.0-1.0, lower = notes rank below code)
-note_weight = 1.0
-
 # HNSW search width (higher = better recall, slower queries)
 ef_search = 100
 
 # Skip index staleness checks on every query (useful on NFS or slow disks)
 stale_check = true
-
-# Search only notes, skip code results (equivalent to --note-only flag)
-note_only = false
 
 # Output modes
 quiet = false
@@ -306,6 +300,26 @@ cqs gather "auth flow" --expand 2         # Deeper expansion
 cqs gather "config" --direction callers   # Only callers, not callees
 ```
 
+## Training Data Generation
+
+Generate fine-tuning training data from git history (LoRA fine-tuning triplets):
+
+```bash
+cqs train-data --repos /path/to/repo --output triplets.jsonl
+cqs train-data --repos /path/to/repo1 /path/to/repo2 --output data/triplets.jsonl
+cqs train-data --repos . --output out.jsonl --max-commits 500  # Limit commit history
+cqs train-data --repos . --output out.jsonl --resume           # Resume from checkpoint
+```
+
+## Reranker Configuration
+
+The cross-encoder reranker model can be overridden via environment variable:
+
+```bash
+export CQS_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2  # default
+cqs "query" --rerank
+```
+
 ## Document Conversion
 
 Convert PDF, HTML, CHM, web help sites, and Markdown documents to cleaned, indexed Markdown:
@@ -403,7 +417,6 @@ Key commands (most support `--json`; `impact`, `review`, `ci`, and `trace` use `
 - `cqs "name" --name-only` - definition lookup (fast, no embedding)
 - `cqs "query" --semantic-only` - pure vector similarity, no keyword RRF
 - `cqs "query" --rerank` - cross-encoder re-ranking (slower, more accurate)
-- `cqs "query" --note-only` - search only notes (skip code results)
 - `cqs read <path>` - file with context notes injected as comments
 - `cqs read --focus <function>` - function + type dependencies only
 - `cqs stats` - index stats, chunk counts, HNSW index status
@@ -440,6 +453,7 @@ Key commands (most support `--json`; `impact`, `review`, `ci`, and `trace` use `
 - `cqs stale` - check index freshness (files changed since last index)
 - `cqs gc` - report/clean stale index entries
 - `cqs convert <path>` - convert PDF/HTML/CHM/Markdown to cleaned Markdown for indexing
+- `cqs train-data` - generate fine-tuning training data from git history
 - `cqs ref add/remove/list` - manage reference indexes for multi-index search
 - `cqs project register/remove/list/search` - cross-project search registry
 - `cqs completions <shell>` - generate shell completions (bash, zsh, fish, powershell, elvish)
@@ -511,6 +525,8 @@ cqs index --no-ignore      # Index everything
 cqs index --force          # Re-index all files
 cqs index --dry-run        # Show what would be indexed
 cqs index --llm-summaries  # Generate LLM summaries (requires ANTHROPIC_API_KEY)
+cqs index --llm-summaries --improve-docs  # Generate + write doc comments to source files
+cqs index --llm-summaries --hyde-queries  # Generate HyDE query predictions for better recall
 ```
 
 ## How It Works
@@ -518,9 +534,9 @@ cqs index --llm-summaries  # Generate LLM summaries (requires ANTHROPIC_API_KEY)
 **Parse → Describe → Embed → Enrich → Index → Search → Reason**
 
 1. **Parse** — Tree-sitter extracts functions, classes, structs, enums, traits, constants, and documentation across 51 languages. Also extracts call graphs (who calls whom) and type dependencies (who uses which types).
-2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
-3. **Embed** — E5-base-v2 generates 768-dimensional embeddings locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths.
-4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. Both cached by content_hash.
+2. **Describe** — Each code element gets a natural language description incorporating doc comments, parameter types, return types, and parent type context (e.g., methods include their struct/class name). Type-aware embeddings append full signatures for richer type discrimination (SQ-11). Optionally enriched with LLM-generated one-sentence summaries via `--llm-summaries`. This bridges the gap between how developers describe code and how it's written.
+3. **Embed** — E5-base-v2 generates 768-dimensional embeddings locally. 90.9% Recall@1, 0.951 NDCG@10 on confusable function retrieval — outperforms code-specific models because NL descriptions play to general-purpose model strengths. Optional HyDE query predictions (`--hyde-queries`) generate synthetic search queries per function for improved recall.
+4. **Enrich** — Call-graph-enriched embeddings prepend caller/callee context. Optional LLM summaries (via Claude Batches API) add one-sentence function purpose. `--improve-docs` generates and writes doc comments back to source files. Both cached by content_hash.
 5. **Index** — SQLite stores chunks, embeddings, call graph edges, and type dependency edges. HNSW provides fast approximate nearest-neighbor search. FTS5 enables keyword matching.
 6. **Search** — Hybrid RRF (Reciprocal Rank Fusion) combines semantic similarity with keyword matching. Optional cross-encoder re-ranking for highest accuracy.
 7. **Reason** — Call graph traversal, type dependency analysis, impact scoring, risk assessment, and smart context assembly build on the indexed data to answer questions like "what breaks if I change X?" in a single call.

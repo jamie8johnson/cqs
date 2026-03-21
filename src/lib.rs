@@ -14,6 +14,10 @@
 //! - **Batch & chat modes**: Persistent session with pipeline syntax (`search "error" | callers | test-map`)
 //! - **Notes with sentiment**: Unified memory system for AI collaborators
 //! - **Multi-language**: 51 languages with multi-grammar injection (HTML→JS/CSS, Svelte, Vue, Razor, etc.)
+//! - **Type-aware embeddings**: Full signatures appended to NL descriptions for richer type discrimination
+//! - **Doc comment generation**: `--improve-docs` generates and writes doc comments to source files via LLM
+//! - **HyDE query predictions**: `--hyde-queries` generates synthetic search queries per function for improved recall
+//! - **Training data generation**: `train-data` command generates fine-tuning triplets from git history
 //! - **GPU acceleration**: CUDA/TensorRT with CPU fallback
 //! - **Document conversion**: PDF, HTML, CHM, Web Help → cleaned Markdown (optional `convert` feature)
 //!

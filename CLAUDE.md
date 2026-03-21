@@ -100,6 +100,7 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs chat` — interactive REPL with readline, history, tab completion. Same commands and pipelines as batch.
 - `cqs audit-mode on/off` — toggle audit mode.
 - `cqs convert <path> [--output dir]` — convert PDF/HTML/CHM/MD to cleaned Markdown with sensible filenames.
+- `cqs train-data` — generate fine-tuning training data from git history.
 
 **Token budgeting** — `--tokens N` on `query`, `gather`, `context`, `explain`, `scout`, `onboard`, and `task` packs results into a token budget (greedy knapsack by score). Commands that don't normally output content (`context`, `explain`, `scout`) include source code within the budget. `task` uses waterfall budgeting across sections (scout 15%, code 50%, impact 15%, placement 10%, notes 10%). JSON output adds `token_count` and `token_budget` fields.
 

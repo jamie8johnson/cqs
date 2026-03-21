@@ -45,10 +45,13 @@ The only network activity is:
   - One-time download, cached in `~/.cache/huggingface/`
 
 - **LLM summaries** (`cqs index --llm-summaries`): Sends function code to the Anthropic API
+- **HyDE queries** (`cqs index --llm-summaries --hyde-queries`): Sends function descriptions to the Anthropic API for synthetic query generation
 
 | Flag | Endpoint | Data Sent | Notes |
 |------|----------|-----------|-------|
 | `--llm-summaries` | api.anthropic.com | Function bodies (up to 8000 chars), chunk type, language | Requires `ANTHROPIC_API_KEY`. Opt-in via `cqs index --llm-summaries` |
+| `--hyde-queries` | api.anthropic.com | Function NL descriptions, signatures | Requires `--llm-summaries`. Generates synthetic search queries per function |
+| `--improve-docs` | api.anthropic.com | Function bodies (for doc generation) | Requires `--llm-summaries`. Writes doc comments back to source files |
 
 No other network requests are made. Without `--llm-summaries`, all operations are offline.
 
@@ -79,6 +82,7 @@ No other network requests are made. Without `--llm-summaries`, all operations ar
 | `.cqs.toml` | Reference configuration | `cqs ref add`, `cqs ref remove` |
 | `~/.config/cqs/projects.toml` | Project registry | `cqs project register`, `cqs project remove` |
 | `~/.local/share/cqs/refs/*/` | Reference index creation and updates (write) | `cqs ref add`, `cqs ref update` |
+| Project source files | Doc comment insertion | `cqs index --llm-summaries --improve-docs` |
 
 ### Process Operations
 
