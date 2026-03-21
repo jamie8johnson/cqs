@@ -298,7 +298,12 @@ pub(crate) fn bfs_expand(
                 name_scores.insert(neighbor.clone(), (new_score, depth + 1));
                 queue.push_back((neighbor, depth + 1));
             } else if let Some(existing) = name_scores.get_mut(&neighbor) {
-                // Already visited — update score if higher, preserve minimum depth
+                // Already visited — update score if higher, preserve minimum depth.
+                // AC-13: We intentionally do NOT re-enqueue the node. Re-enqueueing
+                // would propagate the higher score to neighbors (Dijkstra-like), but
+                // risks exponential blowup on dense graphs. The max_expanded_nodes cap
+                // keeps memory bounded, and the score update here ensures the node itself
+                // gets the best available score even without re-expansion.
                 if new_score > existing.0 {
                     existing.0 = new_score;
                     existing.1 = existing.1.min(depth + 1);

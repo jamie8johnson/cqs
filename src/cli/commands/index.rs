@@ -103,6 +103,17 @@ pub(crate) fn cmd_index(
         if index_path.exists() {
             std::fs::rename(&index_path, &backup_path)
                 .with_context(|| format!("Failed to back up {}", index_path.display()))?;
+            // DS-13: Also remove WAL/SHM files left by SQLite — stale journal
+            // files from the old DB would corrupt the fresh database.
+            for suffix in &["-wal", "-shm"] {
+                let journal = cqs_dir.join(format!("index.db{suffix}"));
+                if journal.exists() {
+                    if let Err(e) = std::fs::remove_file(&journal) {
+                        tracing::warn!(path = %journal.display(), error = %e,
+                            "Failed to remove stale SQLite journal file");
+                    }
+                }
+            }
         }
         let store = Store::open(&index_path)
             .with_context(|| format!("Failed to create store at {}", index_path.display()))?;

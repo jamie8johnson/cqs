@@ -1125,3 +1125,27 @@ mentions = [
     "run_coir.py",
     "nl.rs",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Full 10-task CoIR: LoRA v5 scores 48.67 avg (#8), below base E5 50.90 (#7). LoRA fine-tuning for code search is a specialization trade-off — gains on CSN (+5.6pp) come at expense of generalist tasks (SO-QA, text2sql, codefeedback)."
+mentions = [
+    "run_coir.py",
+    "research-log.md",
+]
+
+[[note]]
+sentiment = 0.5
+text = "v1.3.0 audit: 87 findings, ~60 fixed by parallel agents in one session. EX-13 (is_source_file using language registry instead of hardcoded list) was the highest-value fix for doc generation coverage."
+mentions = [
+    "llm.rs",
+    "audit-triage.md",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Haiku summaries hurt R@1 by -5.3pp on well-documented confusable functions (19 Rust fixtures). Summaries help undocumented code (+1.8pp full codebase) but hurt already-documented code. The value is in filling gaps, not replacing good docs."
+mentions = [
+    "llm.rs",
+    "compare_summary_models.py",
+]

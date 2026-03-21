@@ -792,6 +792,14 @@ impl Language {
         grammar_fn()
     }
 
+    /// Get the tree-sitter grammar, returning `None` if the language feature
+    /// is disabled or the language has no tree-sitter grammar (RB-16).
+    pub fn try_grammar(&self) -> Option<tree_sitter::Language> {
+        self.try_def()
+            .and_then(|def| def.grammar)
+            .map(|grammar_fn| grammar_fn())
+    }
+
     /// Get the chunk extraction query pattern
     pub fn query_pattern(&self) -> &'static str {
         self.def().chunk_query

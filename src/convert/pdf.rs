@@ -58,6 +58,10 @@ fn find_pdf_script() -> Result<String> {
     if let Ok(script) = std::env::var("CQS_PDF_SCRIPT") {
         tracing::warn!(script = %script, "Using custom PDF script from CQS_PDF_SCRIPT env var");
         let p = PathBuf::from(&script);
+        // SEC-14: Extension-only check. This prevents trivial misuse (e.g., running
+        // a .sh or .exe) but does NOT prevent a malicious .py script placed via
+        // .envrc or shell profile in a cloned repository. See SECURITY.md for the
+        // full threat model of CQS_PDF_SCRIPT.
         if p.extension().is_none_or(|e| e != "py") {
             anyhow::bail!("CQS_PDF_SCRIPT must have .py extension (got: {}).", script);
         }

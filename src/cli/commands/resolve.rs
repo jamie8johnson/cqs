@@ -16,6 +16,7 @@ use cqs::ResolvedTarget;
 ///
 /// Wraps the library's `resolve_target` with anyhow error conversion.
 pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget> {
+    let _span = tracing::info_span!("resolve_target", target).entered();
     Ok(cqs::resolve_target(store, target)?)
 }
 
@@ -24,6 +25,7 @@ pub fn resolve_target(store: &Store, target: &str) -> Result<ResolvedTarget> {
 /// Loads config, loads all references, finds the one matching `name`.
 /// Returns an error with a user-friendly message if not found.
 pub(crate) fn find_reference(root: &Path, name: &str) -> Result<ReferenceIndex> {
+    let _span = tracing::info_span!("find_reference", name).entered();
     let config = Config::load(root);
     let references = reference::load_references(&config.references);
     references

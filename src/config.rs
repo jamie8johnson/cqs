@@ -250,8 +250,16 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Skip permission check on WSL (NTFS always reports 777) or /mnt/ paths
-            let is_wsl_mount = is_wsl() || path.to_str().is_some_and(|p| p.starts_with("/mnt/"));
+            // Skip permission check on WSL (NTFS always reports 777) or Windows drive mounts.
+            // SEC-13: Use `/mnt/[a-z]/` pattern to match WSL drive mounts specifically,
+            // not arbitrary /mnt/ subdirectories (e.g., /mnt/data/ on native Linux).
+            let is_wsl_mount = is_wsl()
+                || path.to_str().is_some_and(|p| {
+                    p.len() >= 7
+                        && p.starts_with("/mnt/")
+                        && p.as_bytes()[5].is_ascii_lowercase()
+                        && p.as_bytes()[6] == b'/'
+                });
             if !is_wsl_mount {
                 if let Ok(meta) = std::fs::metadata(path) {
                     let mode = meta.permissions().mode();
@@ -317,6 +325,10 @@ pub fn add_reference_to_config(
 ) -> Result<(), ConfigError> {
     // Acquire exclusive lock for the entire read-modify-write cycle.
     // Read through the locked fd to avoid TOCTOU between lock and read.
+    //
+    // NOTE: File locking is advisory only on WSL over 9P (DrvFs/NTFS mounts).
+    // This prevents concurrent cqs processes from corrupting the config,
+    // but cannot protect against external Windows process modifications.
     let mut lock_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -381,7 +393,10 @@ pub fn add_reference_to_config(
 
     if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
         // Cross-device fallback: copy to a same-dir temp, then rename
-        let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
+        // PB-19: unpredictable suffix to prevent symlink TOCTOU
+        let fb_suffix = crate::temp_suffix();
+        let fallback_tmp =
+            config_path.with_extension(format!("toml.{:016x}.fallback.tmp", fb_suffix));
         if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(ConfigError::Io(std::io::Error::other(format!(
@@ -404,6 +419,10 @@ pub fn add_reference_to_config(
 pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bool, ConfigError> {
     // Acquire exclusive lock for the entire read-modify-write cycle.
     // Read through the locked fd to avoid TOCTOU between lock and read.
+    //
+    // NOTE: File locking is advisory only on WSL over 9P (DrvFs/NTFS mounts).
+    // This prevents concurrent cqs processes from corrupting the config,
+    // but cannot protect against external Windows process modifications.
     let mut lock_file = match std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -455,7 +474,10 @@ pub fn remove_reference_from_config(config_path: &Path, name: &str) -> Result<bo
 
         if let Err(rename_err) = std::fs::rename(&tmp_path, config_path) {
             // Cross-device fallback: copy to a same-dir temp, then rename
-            let fallback_tmp = config_path.with_extension("toml.fallback.tmp");
+            // PB-19: unpredictable suffix to prevent symlink TOCTOU
+            let fb_suffix = crate::temp_suffix();
+            let fallback_tmp =
+                config_path.with_extension(format!("toml.{:016x}.fallback.tmp", fb_suffix));
             if let Err(copy_err) = std::fs::copy(&tmp_path, &fallback_tmp) {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(ConfigError::Io(std::io::Error::other(format!(

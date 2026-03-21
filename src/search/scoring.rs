@@ -342,6 +342,16 @@ impl<'a> NoteBoostIndex<'a> {
             }
         }
 
+        // AC-11: Deduplicate path mentions — keep strongest sentiment per mention string
+        let mut deduped_paths: HashMap<&'a str, f32> = HashMap::new();
+        for (mention, sentiment) in &path_mentions {
+            let entry = deduped_paths.entry(mention).or_insert(0.0);
+            if sentiment.abs() > entry.abs() {
+                *entry = *sentiment;
+            }
+        }
+        let path_mentions: Vec<(&'a str, f32)> = deduped_paths.into_iter().collect();
+
         Self {
             name_sentiments,
             path_mentions,

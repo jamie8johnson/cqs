@@ -117,7 +117,7 @@ fn test_task_to_json_integration() {
             risk: RiskScore {
                 caller_count: 5,
                 test_count: 2,
-                coverage: 0.4,
+                test_ratio: 0.4,
                 risk_level: RiskLevel::Medium,
                 blast_radius: RiskLevel::Medium,
                 score: 3.0,

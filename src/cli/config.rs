@@ -17,7 +17,8 @@ use super::Cli;
 // "user didn't set this, apply config file value".
 pub(crate) const DEFAULT_LIMIT: usize = 5;
 pub(crate) const DEFAULT_THRESHOLD: f32 = 0.3;
-pub(crate) const DEFAULT_NAME_BOOST: f32 = 0.2;
+// DEFAULT_NAME_BOOST lives in cqs::store (single source of truth).
+pub(crate) use cqs::store::DEFAULT_NAME_BOOST;
 /// Find project root by looking for common markers.
 ///
 /// For Cargo projects, detects workspace roots: if a `Cargo.toml` is found,

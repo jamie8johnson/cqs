@@ -268,6 +268,29 @@ Previous CoIR runs tested individual components in isolation (base model, LoRA a
 
 **Lesson for the paper:** NL enrichment is a *product feature* (helps when you own the whole pipeline), not a *model improvement* (hurts on standard benchmarks). The honest CoIR number is **v5 raw = 0.683**. The enrichment's +1.8pp on hard eval is real but only within cqs's controlled environment.
 
+### Exp 13: Full 10-Task CoIR with LoRA v5 — 2026-03-21
+
+First complete CoIR benchmark run. 9 tasks (codeforces dataset unavailable on HF).
+
+| Task | NDCG@10 | Subtasks | Notes |
+|------|---------|----------|-------|
+| stackoverflow-qa | **0.877** | 1 | NL→NL, E5 base strength |
+| codefeedback-st | **0.735** | 1 | Single-turn code feedback |
+| codesearchnet | **0.683** | 6 | NL→code, LoRA target (+5.6pp vs base) |
+| synthetic-text2sql | **0.567** | 1 | NL→SQL, zero SQL training |
+| codesearchnet-ccr | 0.490 | 6 | Cross-code retrieval |
+| codefeedback-mt | 0.399 | 1 | Multi-turn feedback |
+| cosqa | 0.348 | 1 | Code QA |
+| codetrans-dl | 0.174 | 1 | Code translation |
+| apps | 0.107 | 1 | Program synthesis |
+| **Overall avg** | **48.67** | 9 | **#8 on leaderboard (was #7 with base E5 at 50.90)** |
+
+**Key finding: LoRA fine-tuning for code search is a specialization trade-off.** v5 gains +5.6pp on CSN but loses ground on generalist tasks (SO-QA, text2sql, codefeedback), pulling the overall average below base E5 (48.67 vs 50.90). The model specialized toward NL→code at the cost of NL→NL and code→code retrieval.
+
+**Implication for the paper:** The layered enrichment pipeline (which doesn't touch model weights) may be better for overall benchmark performance than LoRA fine-tuning. Hard negative mining with task-balanced loss could improve code search without degrading generalist ability.
+
+**Implication for the product:** In cqs, we only do NL→code search. The LoRA + enrichment pipeline is the right choice for the product (0.683 CSN vs 0.627 base). The generalist degradation doesn't matter because cqs never does SO-QA or text2sql.
+
 ---
 
 ## CoIR Benchmark
@@ -383,3 +406,69 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 4. **Cross-encoder reranking needs hard negatives.** Random negatives are too easy. Catastrophic failure (-81.8pp) with code-trained reranker.
 5. **Doc comments improve embeddings.** Writing back LLM-generated docs to source → richer NL → better vectors (+1.8pp R@1).
 6. **Data > architecture for LoRA.** Rank 16→32 is flat. 50k→200k samples gives diminishing returns. Quality > quantity.
+7. **In-product enrichment ≠ benchmark improvement.** NL enrichment (signatures, doc text, names) helps +1.8pp inside cqs but hurts -4.5pp on CoIR. The model was trained on raw code; enrichment shifts the passage distribution. Benchmark numbers must use the raw model.
+8. **Don't ship before eval completes.** v3 was shipped as default before v5 results existed (11:17 AM vs 12:33 PM). v5 is strictly better on every metric.
+9. **LoRA fine-tuning is a specialization trade-off.** Full 10-task CoIR: v5 drops from #7 (base E5 50.90) to #8 (48.67). Gains on CSN (+5.6pp) come at the cost of generalist tasks (SO-QA, text2sql, codefeedback). Random negatives teach language discrimination, not semantic discrimination — over-specializes.
+10. **Hard negatives may fix the trade-off.** CoRNStack achieved 72.7 CSN without degrading other tasks. Their hard negatives force semantic discrimination that transfers across tasks. Random negatives → narrow specialization. Hard negatives → deep understanding.
+
+---
+
+## Publication Assessment (2026-03-21)
+
+**Status: Not yet publishable. 2-3 weeks from submittable draft.**
+
+### What we have
+- 13 experiments with verified metrics across three eval regimes (hard eval, CoIR CSN, full 10-task CoIR)
+- The LLM text arc: generic hurts → discriminating +16pp → doc comments +1.8pp on top
+- The benchmark-vs-product gap: enrichment helps in-product, hurts on benchmarks
+- The specialization trade-off: LoRA helps code search, hurts generalist retrieval
+- 10 LoRA variants with data scaling analysis
+- Full 10-task CoIR numbers: 48.67 avg (#8), with per-task breakdown
+
+### What's missing for publication
+1. **Near-SOTA results.** 0.683 CSN is good for 110M but 48.67 overall is below base E5. Need hard negative mining to push CSN toward 0.72+ without degrading generalist tasks.
+2. **Novelty framing.** Individual techniques aren't new. The combination + evaluation methodology insights are the contribution.
+3. **Controlled ablations.** Current comparisons are ad-hoc. Need confidence intervals, same-seed runs.
+4. **Training data expansion.** CSN only covers 6 languages. Rust/C++/TypeScript from public repos would strengthen practical angle.
+
+### Strongest paper angle
+"LoRA fine-tuning for code search is a specialization trade-off: a 110M model study." The contribution isn't SOTA results — it's the systematic analysis of what helps, what hurts, and why. The benchmark-vs-product gap, the specialization trade-off, the LLM text arc, and the layered pipeline architecture are all underexplored in the literature.
+
+### Roadmap to submission
+1. Hard negative mining (CoRNStack recipe) — fix the specialization trade-off **(in progress: mining 1.7M pairs)**
+2. Expand training data (Rust/C++/TS) — strengthen practical angle
+3. Run full CoIR with base E5 for controlled comparison
+4. Controlled ablation table — each layer added/removed with confidence intervals
+5. Write draft — intro (gap), method (layered pipeline), experiments (three regimes), discussion (trade-offs)
+
+### Dimensions of code retrieval quality
+
+Useful framework for designing eval sets and understanding which techniques help which dimension:
+
+1. **Semantic depth** — understanding what code *does*. Hard negatives target this.
+2. **Task breadth** — NL→code vs NL→NL vs code→code. LoRA narrows this.
+3. **Text distribution** — raw code vs enriched descriptions. Enrichment shifts this.
+4. **Abstraction level** — "implement a cache" → HashMap+TTL code. Neither LoRA nor enrichment bridges this well.
+5. **Structural awareness** — recursion, patterns, error handling. Embeddings see tokens, not structure.
+6. **Negative space** — "sort without allocating" requires understanding what code avoids.
+7. **Granularity** — function vs file vs concept level retrieval.
+8. **Cross-lingual transfer** — Python's `sorted(key=)` = Rust's `.sort_by_key()`. CoIR-CCR tests this (we score 0.490).
+
+Hard negatives primarily improve dimension 1 but may also help 4 (forcing abstract→concrete reasoning) and 8 (same-language negatives force semantic over syntactic discrimination). A dimension-specific eval would reveal which.
+
+### Hard negative mining (Exp 14, in progress)
+
+**Status:** Mining 1.7M CSN pairs with v5 model. FAISS index for top-100 nearest neighbors, γ=0.95 false negative filter, temperature=0.05 softmax sampling, 7 negatives per query, same-language constraint.
+
+**Script:** `~/training-data/mine_hard_negatives.py`
+
+**Test run (1000 pairs):** 100% got 7 negatives, ~49 valid candidates per query after filtering. Negatives are semantically related (same domain, different function) — exactly what we want.
+
+**After mining:**
+1. Train v7 with `train_lora.py --data csn_hard_negs.jsonl`, eval on hard eval + full 10-task CoIR
+2. Optionally augment with (discriminating_summary, code) pairs via `augment_with_summaries.py` for Dimension 4 (abstraction level)
+3. Key question: does CSN improve without degrading generalist tasks?
+
+**Summary augmentation (Dimension 4):** Script `~/training-data/augment_with_summaries.py` adds (discriminating_summary, code) pairs alongside (docstring, code) pairs. For our codebase, summaries are cached in cqs store. For CSN, would need ~$2 Haiku batch to generate. The discriminating summaries capture *what makes a function unique* — bridging abstract intent to concrete implementation. Free data augmentation for indexed codebases.
+
+**Note:** cqs users are always AI agents, not humans. Agent queries tend to be more precise and technical than human queries — "function that validates JWT tokens and checks expiration" rather than "JWT stuff." This affects which quality dimensions matter most: semantic depth (1) and abstraction level (4) over task breadth (2).

@@ -205,7 +205,7 @@ pub struct Store {
     /// must be re-opened to pick up index changes; the caller is responsible for that
     /// lifecycle. Do not add invalidation logic here — it would be dead code for the
     /// normal case and racy for the long-lived case (use a fresh `Store` instead).
-    call_graph_cache: std::sync::OnceLock<CallGraph>,
+    call_graph_cache: std::sync::OnceLock<std::sync::Arc<CallGraph>>,
     /// Cached test chunks — populated on first access, valid for Store lifetime.
     ///
     /// Same no-invalidation contract as `call_graph_cache` above: intentionally
@@ -283,6 +283,11 @@ impl Store {
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5))
+            // NORMAL synchronous in WAL mode: fsync on checkpoint, not every commit.
+            // Trade-off: a crash can lose the last few committed transactions (WAL
+            // tail not yet fsynced), but the database remains consistent. Acceptable
+            // for a rebuildable search index — `cqs index --force` recovers fully.
+            // FULL would fsync every commit, ~2x slower on spinning disk / WSL-NTFS.
             .synchronous(SqliteSynchronous::Normal)
             .pragma("mmap_size", config.mmap_size)
             .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(5));

@@ -132,6 +132,21 @@ pub enum OutputFormat {
     Mermaid,
 }
 
+/// Parse an `OutputFormat` that only allows text or json (rejects mermaid at parse time).
+///
+/// Used by `review` and `ci` commands which accept `--format` but don't support mermaid output.
+/// Catches the error at argument parsing rather than failing at runtime.
+fn parse_text_or_json_format(s: &str) -> std::result::Result<OutputFormat, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "text" => Ok(OutputFormat::Text),
+        "json" => Ok(OutputFormat::Json),
+        "mermaid" => {
+            Err("mermaid output is not supported for this command — use text or json".into())
+        }
+        other => Err(format!("invalid format '{other}' — expected text or json")),
+    }
+}
+
 impl std::fmt::Display for OutputFormat {
     /// Formats the enum variant as a human-readable string representation.
     ///
@@ -205,6 +220,13 @@ pub struct Cli {
     limit: usize,
 
     /// Min similarity threshold
+    ///
+    /// NOTE: `-t` is intentionally overloaded across subcommands.
+    /// In search/similar (here and top-level), it means "min similarity threshold" (default 0.3).
+    /// In diff/drift, it means "match threshold" for identity (default 0.95).
+    /// The semantics differ because the baseline similarity differs: search returns
+    /// low-similarity results worth filtering, while diff/drift compare known pairs
+    /// where 0.95+ means "unchanged".
     #[arg(short = 't', long, default_value = "0.3")]
     threshold: f32,
 
@@ -427,6 +449,10 @@ enum Commands {
         /// Reference name or "project" (default: project)
         target: Option<String>,
         /// Similarity threshold for "modified" (default: 0.95)
+        ///
+        /// `-t` here means "match threshold" — pairs above this are "unchanged",
+        /// below are "modified". Different from search's `-t` (min similarity 0.3).
+        /// See top-level threshold doc for rationale.
         #[arg(short = 't', long, default_value = "0.95")]
         threshold: f32,
         /// Filter by language
@@ -441,6 +467,8 @@ enum Commands {
         /// Reference name to compare against
         reference: String,
         /// Similarity threshold (default: 0.95)
+        ///
+        /// See Diff's `-t` doc — same overload rationale applies.
         #[arg(short = 't', long, default_value = "0.95")]
         threshold: f32,
         /// Minimum drift to show (default: 0.0)
@@ -510,8 +538,8 @@ enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output format: text, json
-        #[arg(long, default_value = "text")]
+        /// Output format: text, json (mermaid not supported)
+        #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
         format: OutputFormat,
         /// Maximum token budget for output (truncates callers/tests lists)
         #[arg(long, value_parser = parse_nonzero_usize)]
@@ -525,8 +553,8 @@ enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output format: text, json
-        #[arg(long, default_value = "text")]
+        /// Output format: text, json (mermaid not supported)
+        #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
         format: OutputFormat,
         /// Gate threshold: high, medium, off (default: high)
         #[arg(long, default_value = "high")]
@@ -1717,6 +1745,26 @@ mod tests {
     fn test_cmd_review_tokens_zero_rejected() {
         let result = Cli::try_parse_from(["cqs", "review", "--tokens", "0"]);
         assert!(result.is_err(), "--tokens 0 in review should be rejected");
+    }
+
+    // ===== AD-23: mermaid rejected at parse time for review/ci =====
+
+    #[test]
+    fn test_review_rejects_mermaid_format() {
+        let result = Cli::try_parse_from(["cqs", "review", "--format", "mermaid"]);
+        assert!(
+            result.is_err(),
+            "review --format mermaid should be rejected at parse time"
+        );
+    }
+
+    #[test]
+    fn test_ci_rejects_mermaid_format() {
+        let result = Cli::try_parse_from(["cqs", "ci", "--format", "mermaid"]);
+        assert!(
+            result.is_err(),
+            "ci --format mermaid should be rejected at parse time"
+        );
     }
 
     // ===== Error cases =====

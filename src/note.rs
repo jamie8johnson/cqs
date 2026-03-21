@@ -139,6 +139,10 @@ pub fn parse_notes(path: &Path) -> Result<Vec<Note>, NoteError> {
     // Using a separate lock file avoids the inode-vs-rename race: if we locked
     // the data file itself, a concurrent writer's atomic rename would orphan
     // our lock onto the old inode, letting a third process read stale data.
+    //
+    // NOTE: File locking is advisory only on WSL over 9P (DrvFs/NTFS mounts).
+    // This prevents concurrent cqs processes from corrupting notes,
+    // but cannot protect against external Windows process modifications.
     let lock_path = path.with_extension("toml.lock");
     let lock_file = std::fs::OpenOptions::new()
         .read(true)
@@ -206,6 +210,10 @@ pub fn rewrite_notes_file(
     let _span = tracing::debug_span!("rewrite_notes_file", path = %notes_path.display()).entered();
     // Lock a separate .lock file (exclusive) to coordinate with readers/writers.
     // See parse_notes() for why we use a separate lock file instead of the data file.
+    //
+    // NOTE: File locking is advisory only on WSL over 9P (DrvFs/NTFS mounts).
+    // This prevents concurrent cqs processes from corrupting notes,
+    // but cannot protect against external Windows process modifications.
     let lock_path = notes_path.with_extension("toml.lock");
     let _lock_file = {
         let f = std::fs::OpenOptions::new()

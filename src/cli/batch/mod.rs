@@ -85,7 +85,7 @@ pub(crate) struct BatchContext {
     audit_state: OnceLock<cqs::audit::AuditMode>,
     notes_cache: OnceLock<Vec<cqs::note::Note>>,
     // Intentionally never cleared — see struct-level doc comment on cache invalidation
-    call_graph: OnceLock<cqs::store::CallGraph>,
+    call_graph: OnceLock<std::sync::Arc<cqs::store::CallGraph>>,
     // Intentionally never cleared — see struct-level doc comment on cache invalidation
     test_chunks: OnceLock<Vec<cqs::store::ChunkSummary>>,
     config: OnceLock<cqs::config::Config>,
@@ -255,6 +255,7 @@ impl BatchContext {
         let _span = tracing::info_span!("batch_call_graph_init").entered();
         let g = self.store.get_call_graph()?;
         let _ = self.call_graph.set(g);
+        // Arc<CallGraph> derefs to &CallGraph
         Ok(self
             .call_graph
             .get()

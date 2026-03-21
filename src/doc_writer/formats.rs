@@ -173,6 +173,7 @@ pub fn doc_format_for(language: Language) -> DocFormat {
 /// # Returns
 /// Formatted doc comment string ready to insert into source, including trailing newline.
 pub fn format_doc_comment(text: &str, language: Language, indent: &str, func_name: &str) -> String {
+    let _span = tracing::debug_span!("format_doc_comment", func_name, ?language).entered();
     let format = doc_format_for(language);
     let lines: Vec<&str> = text.lines().collect();
 

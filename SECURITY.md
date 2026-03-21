@@ -19,7 +19,7 @@ cqs is a **local code search tool** for developers. It runs on your machine, ind
 
 1. **Path traversal**: Commands cannot read files outside project root
 2. **FTS injection**: Search queries sanitized before SQLite FTS5 MATCH operations
-3. **Database corruption**: `PRAGMA quick_check` on every database open
+3. **Database corruption**: `PRAGMA integrity_check(1)` on every database open
 4. **Reference config trust**: Warnings logged when reference configs override project settings
 
 ### What We Don't Protect Against
@@ -37,7 +37,8 @@ cqs runs locally by default. No telemetry. The optional `--llm-summaries` flag s
 The only network activity is:
 
 - **Model download** (`cqs init`): Downloads ~547MB model from HuggingFace Hub
-  - Source: `huggingface.co/intfloat/e5-base-v2`
+  - Default: `huggingface.co/jamie8johnson/e5-base-v2-code-search` (LoRA fine-tune)
+  - Fallback: `huggingface.co/intfloat/e5-base-v2` (via `CQS_EMBEDDING_MODEL` env var)
   - One-time download, cached in `~/.cache/huggingface/`
 
 - **Reranker model download** (first `--rerank` use): Downloads cross-encoder model from HuggingFace Hub

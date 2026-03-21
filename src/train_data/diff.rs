@@ -69,6 +69,7 @@ pub fn parse_hunk_header(line: &str) -> Option<HunkRange> {
 /// Skips submodule entries (detected by "Subproject commit" lines).
 /// Returns empty vec for empty input.
 pub fn parse_diff_output(diff: &str) -> Vec<DiffFile> {
+    let _span = tracing::info_span!("parse_diff_output").entered();
     if diff.is_empty() {
         return Vec::new();
     }

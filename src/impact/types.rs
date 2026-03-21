@@ -166,7 +166,12 @@ impl std::fmt::Display for RiskLevel {
 pub struct RiskScore {
     pub caller_count: usize,
     pub test_count: usize,
-    pub coverage: f32,
+    /// Ratio of test_count to caller_count, capped at 1.0.
+    ///
+    /// This is NOT transitive test coverage -- it is `min(test_count / max(caller_count, 1), 1.0)`.
+    /// A value of 1.0 means at least as many tests reach this function as callers exist,
+    /// but does not guarantee every caller path is tested.
+    pub test_ratio: f32,
     pub risk_level: RiskLevel,
     /// Blast radius based on caller count alone (Low 0-2, Medium 3-10, High >10).
     /// Unlike `risk_level`, this does NOT decrease with test coverage.
@@ -184,7 +189,7 @@ impl RiskScore {
             "score": self.score,
             "caller_count": self.caller_count,
             "test_count": self.test_count,
-            "coverage": self.coverage,
+            "test_ratio": self.test_ratio,
         })
     }
 }

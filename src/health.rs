@@ -147,7 +147,7 @@ mod tests {
     use super::*;
     use crate::language::{ChunkType, Language};
     use crate::parser::{CallSite, Chunk, FunctionCalls};
-    use crate::Embedding;
+    use crate::test_helpers::mock_embedding;
     use tempfile::TempDir;
 
     fn make_store() -> (Store, TempDir) {
@@ -178,15 +178,6 @@ mod tests {
         }
     }
 
-    /// Creates a mock embedding vector for testing purposes.
-    ///
-    /// # Returns
-    ///
-    /// An `Embedding` instance containing a 768-dimensional vector of zeros.
-    fn mock_embedding() -> Embedding {
-        Embedding::new(vec![0.0; 768])
-    }
-
     #[test]
     fn test_health_check_empty_store() {
         let (store, dir) = make_store();
@@ -209,7 +200,7 @@ mod tests {
             let file = format!("src/mod{}.rs", i);
             let chunk = test_chunk(&file, name, 1, &format!("fn {}() {{ }}", name));
             store
-                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
                 .unwrap();
         }
 
@@ -238,7 +229,7 @@ mod tests {
             let file = format!("src/gone{}.rs", i);
             let chunk = test_chunk(&file, name, 1, &format!("fn {}() {{ }}", name));
             store
-                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
                 .unwrap();
         }
 
@@ -267,7 +258,7 @@ mod tests {
             let file = format!("src/lib{}.rs", i);
             let chunk = test_chunk(&file, name, 10, &format!("fn {}() {{ todo!() }}", name));
             store
-                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
                 .unwrap();
         }
 
@@ -292,7 +283,7 @@ mod tests {
         // Insert a "target" function that will be the hotspot
         let target = test_chunk("src/core.rs", "hot_target", 1, "fn hot_target() { }");
         store
-            .upsert_chunk(&target, &mock_embedding(), Some(1000))
+            .upsert_chunk(&target, &mock_embedding(0.0), Some(1000))
             .unwrap();
 
         // Insert 6 caller functions that each call hot_target
@@ -307,7 +298,7 @@ mod tests {
                 &format!("fn {}() {{ hot_target() }}", caller_name),
             );
             store
-                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
                 .unwrap();
 
             // Record call graph: caller_i -> hot_target
@@ -362,7 +353,7 @@ mod tests {
         // Insert the target function — will become the hotspot
         let target = test_chunk("src/core.rs", "untested_hot", 1, "fn untested_hot() { }");
         store
-            .upsert_chunk(&target, &mock_embedding(), Some(1000))
+            .upsert_chunk(&target, &mock_embedding(0.0), Some(1000))
             .unwrap();
 
         // 6 callers, zero test functions → caller_count=6, test_count=0,
@@ -377,7 +368,7 @@ mod tests {
                 &format!("fn {}() {{ untested_hot() }}", caller_name),
             );
             store
-                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
                 .unwrap();
 
             store
@@ -438,7 +429,7 @@ mod tests {
         // Insert the target function
         let target = test_chunk("src/core.rs", "tested_hot", 1, "fn tested_hot() { }");
         store
-            .upsert_chunk(&target, &mock_embedding(), Some(1000))
+            .upsert_chunk(&target, &mock_embedding(0.0), Some(1000))
             .unwrap();
 
         // 6 callers
@@ -452,7 +443,7 @@ mod tests {
                 &format!("fn {}() {{ tested_hot() }}", caller_name),
             );
             store
-                .upsert_chunk(&chunk, &mock_embedding(), Some(1000))
+                .upsert_chunk(&chunk, &mock_embedding(0.0), Some(1000))
                 .unwrap();
 
             store
@@ -476,7 +467,7 @@ mod tests {
         let test_content = format!("#[test] fn {}() {{ tested_hot() }}", test_name);
         let test_chunk_data = test_chunk(test_file, test_name, 50, &test_content);
         store
-            .upsert_chunk(&test_chunk_data, &mock_embedding(), Some(1000))
+            .upsert_chunk(&test_chunk_data, &mock_embedding(0.0), Some(1000))
             .unwrap();
         store
             .upsert_function_calls(

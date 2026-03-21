@@ -81,6 +81,15 @@ pub(crate) fn cmd_review(
 /// Callers and tests are the variable-size sections that get truncated.
 /// `json` adds per-item overhead for JSON field names and structure tokens.
 /// Returns total token count used.
+/// Public entry point for batch mode to apply token budgeting to review output.
+pub(crate) fn apply_token_budget_public(
+    review: &mut ReviewResult,
+    budget: usize,
+    json: bool,
+) -> usize {
+    apply_token_budget(review, budget, json)
+}
+
 fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> usize {
     let _span = tracing::info_span!("review_token_budget", budget, json).entered();
 

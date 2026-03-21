@@ -250,11 +250,16 @@ impl From<ChunkRow> for ChunkSummary {
     }
 }
 
-/// A search result with similarity score
-#[derive(Debug, Clone, serde::Serialize)]
+/// A search result with similarity score.
+///
+/// Serialization uses explicit `to_json()` / `to_json_relative()` methods instead of
+/// `derive(Serialize)` to produce a lean, stable field set: only user-visible fields
+/// are included, with `has_parent` (bool) instead of raw `parent_id` (Option<String>),
+/// and paths normalized to forward slashes. The derive was removed (AD-27) to avoid
+/// two divergent serialization paths.
+#[derive(Debug, Clone)]
 pub struct SearchResult {
     /// The matching chunk
-    #[serde(flatten)]
     pub chunk: ChunkSummary,
     /// Similarity score (0.0 to 1.0, higher is better)
     pub score: f32,

@@ -318,14 +318,16 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
 
         let language = file_chunks.first().map(|c| c.language);
 
-        // Generate test name based on language
+        // EX-16: Generate test name based on language conventions
         let base_name = caller.name.trim_start_matches("self.");
         let test_name = match language {
             Some(crate::parser::Language::JavaScript | crate::parser::Language::TypeScript) => {
                 format!("test('{base_name}', ...)")
             }
-            Some(crate::parser::Language::Java) if !base_name.is_empty() => {
-                // Java: camelCase testMethodName
+            Some(crate::parser::Language::Java | crate::parser::Language::Kotlin)
+                if !base_name.is_empty() =>
+            {
+                // Java/Kotlin: camelCase testMethodName
                 match base_name.chars().next() {
                     Some(c) => {
                         let first = c.to_uppercase().to_string();
@@ -335,8 +337,49 @@ pub fn suggest_tests(store: &Store, impact: &ImpactResult) -> Vec<TestSuggestion
                     None => format!("test_{base_name}"),
                 }
             }
+            Some(crate::parser::Language::CSharp) if !base_name.is_empty() => {
+                // C#: PascalCase convention (xUnit/NUnit/MSTest)
+                match base_name.chars().next() {
+                    Some(c) => {
+                        let first = c.to_uppercase().to_string();
+                        let rest = &base_name[c.len_utf8()..];
+                        format!("{first}{rest}_ShouldWork")
+                    }
+                    None => format!("Test_{base_name}"),
+                }
+            }
+            Some(crate::parser::Language::Go) => {
+                // Go: TestFunctionName (PascalCase)
+                match base_name.chars().next() {
+                    Some(c) => {
+                        let first = c.to_uppercase().to_string();
+                        let rest = &base_name[c.len_utf8()..];
+                        format!("Test{first}{rest}")
+                    }
+                    None => format!("Test_{base_name}"),
+                }
+            }
+            Some(crate::parser::Language::Ruby) => {
+                // Ruby/RSpec: test_function_name or it 'does something'
+                format!("test_{base_name}")
+            }
+            Some(crate::parser::Language::Swift) => {
+                // Swift: testFunctionName (camelCase)
+                match base_name.chars().next() {
+                    Some(c) => {
+                        let first = c.to_uppercase().to_string();
+                        let rest = &base_name[c.len_utf8()..];
+                        format!("test{first}{rest}")
+                    }
+                    None => format!("test_{base_name}"),
+                }
+            }
+            Some(crate::parser::Language::Elixir) => {
+                // Elixir: test "description"
+                format!("test \"{base_name}\"")
+            }
             _ => {
-                // Rust, Python, Go, C, SQL, Markdown — all use snake_case test_ prefix
+                // Rust, Python, C, SQL, etc. — snake_case test_ prefix
                 format!("test_{base_name}")
             }
         };

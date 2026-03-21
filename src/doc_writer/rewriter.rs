@@ -44,6 +44,12 @@ struct ResolvedEdit {
 ///
 /// For `InsideBody` (Python): returns `line_start + 1` (line after `def`).
 pub fn find_insertion_point(line_start: usize, file_lines: &[&str], language: Language) -> usize {
+    let _span = tracing::debug_span!("find_insertion_point", line_start, %language).entered();
+    // RB-12: empty file_lines would panic on index access below
+    if file_lines.is_empty() || line_start == 0 {
+        return line_start;
+    }
+
     let format = doc_format_for(language);
 
     match format.position {
@@ -106,6 +112,8 @@ pub fn detect_existing_doc_range(
     file_lines: &[&str],
     language: Language,
 ) -> Option<Range<usize>> {
+    let _span =
+        tracing::debug_span!("detect_existing_doc_range", insertion_line, %language).entered();
     let format = doc_format_for(language);
 
     match format.position {
@@ -144,7 +152,8 @@ pub fn detect_existing_doc_range(
             None
         }
         InsertionPosition::BeforeFunction => {
-            if insertion_line < 2 {
+            // RB-13: bounds check — insertion_line is 1-based, need at least 2 lines
+            if insertion_line < 2 || file_lines.is_empty() {
                 return None;
             }
 
@@ -160,6 +169,9 @@ pub fn detect_existing_doc_range(
 
             // Scan upward from the line above insertion_line
             let start_idx = insertion_line - 2; // 0-based index of line above insertion
+            if start_idx >= file_lines.len() {
+                return None;
+            }
             let trimmed = file_lines[start_idx].trim();
 
             // For line-prefix-based docs (///, #, -- |, etc.)
@@ -232,8 +244,17 @@ pub fn rewrite_file(
     let content = std::fs::read_to_string(path)?;
     let file_lines: Vec<&str> = content.lines().collect();
 
-    // Re-parse to get current chunk positions
+    // Re-parse to get current chunk positions.
+    // RB-14: All edits for a single file must share the same language.
+    // If mixed, warn and filter to only edits matching the first language.
     let language = edits[0].language;
+    if edits.iter().any(|e| e.language != language) {
+        tracing::warn!(
+            file = %path.display(),
+            expected = %language,
+            "Mixed languages in doc edits for one file — using {}", language
+        );
+    }
     let chunks = match parser.parse_source(&content, language, path) {
         Ok(c) => c,
         Err(e) => {
@@ -246,6 +267,10 @@ pub fn rewrite_file(
     let mut resolved: Vec<ResolvedEdit> = Vec::new();
 
     for edit in edits {
+        // RB-14: skip edits with mismatched language
+        if edit.language != language {
+            continue;
+        }
         // Find matching chunk by name. If multiple matches, prefer the one
         // closest to the edit's original line_start.
         let matching_chunks: Vec<_> = chunks
@@ -811,5 +836,106 @@ fn gamma() {
         // Verify file is unchanged
         let result = std::fs::read_to_string(tmp.path()).unwrap();
         assert_eq!(result, source, "File should be unchanged");
+    }
+
+    // TC-5: Same-name function disambiguation (two `new()` in different impl blocks)
+    #[test]
+    fn test_rewrite_disambiguates_same_name_functions() {
+        let source = "\
+struct Alpha;
+
+impl Alpha {
+    fn new() -> Self {
+        Alpha
+    }
+}
+
+struct Beta;
+
+impl Beta {
+    fn new() -> Self {
+        Beta
+    }
+}
+";
+        let mut tmp = NamedTempFile::with_suffix(".rs").unwrap();
+        write!(tmp, "{source}").unwrap();
+        tmp.flush().unwrap();
+
+        let parser = Parser::new().unwrap();
+        // Target the second `new` (Beta::new at line 13)
+        let edit = make_edit(
+            tmp.path(),
+            "new",
+            "Creates a new Beta instance.",
+            Language::Rust,
+            13,
+            false,
+        );
+
+        let count = rewrite_file(tmp.path(), &[edit], &parser).unwrap();
+        assert_eq!(count, 1, "Should document exactly one function");
+
+        let result = std::fs::read_to_string(tmp.path()).unwrap();
+        // Doc should appear near "impl Beta", not "impl Alpha"
+        let beta_pos = result.find("impl Beta").unwrap();
+        let doc_pos = result.find("Creates a new Beta").unwrap();
+        let alpha_pos = result.find("impl Alpha").unwrap();
+        assert!(
+            doc_pos > alpha_pos,
+            "Doc should not be near Alpha, got:\n{result}"
+        );
+        assert!(
+            doc_pos > beta_pos || doc_pos < beta_pos + 50,
+            "Doc should be near Beta impl, got:\n{result}"
+        );
+    }
+
+    // TC-3: Adequate doc skip path (>= 30 chars)
+    #[test]
+    fn test_rewrite_skips_adequate_doc() {
+        let source = "/// This is a long enough doc comment for the function.\nfn hello() {\n    println!(\"hi\");\n}\n";
+        let mut tmp = NamedTempFile::with_suffix(".rs").unwrap();
+        write!(tmp, "{source}").unwrap();
+        tmp.flush().unwrap();
+
+        let parser = Parser::new().unwrap();
+        let edit = make_edit(
+            tmp.path(),
+            "hello",
+            "Replacement doc that should not appear.",
+            Language::Rust,
+            2,
+            true,
+        );
+
+        let count = rewrite_file(tmp.path(), &[edit], &parser).unwrap();
+        assert_eq!(count, 0, "Should skip function with adequate doc");
+
+        let result = std::fs::read_to_string(tmp.path()).unwrap();
+        assert!(
+            !result.contains("Replacement"),
+            "Original doc should be preserved, got:\n{result}"
+        );
+        assert!(
+            result.contains("This is a long enough"),
+            "Original doc should remain"
+        );
+    }
+
+    // TC-8: Empty edits array
+    #[test]
+    fn test_rewrite_empty_edits_returns_zero() {
+        let source = "fn hello() {\n    println!(\"hi\");\n}\n";
+        let mut tmp = NamedTempFile::with_suffix(".rs").unwrap();
+        write!(tmp, "{source}").unwrap();
+        tmp.flush().unwrap();
+
+        let parser = Parser::new().unwrap();
+        let count = rewrite_file(tmp.path(), &[], &parser).unwrap();
+        assert_eq!(count, 0, "Empty edits should return 0");
+
+        let result = std::fs::read_to_string(tmp.path()).unwrap();
+        assert_eq!(result, source, "File should be unchanged with empty edits");
     }
 }

@@ -278,7 +278,7 @@ mod tests {
                 blast_radius: level,
                 caller_count: 0,
                 test_count: 0,
-                coverage: 0.0,
+                test_ratio: 0.0,
                 score: 0.0,
             },
         }

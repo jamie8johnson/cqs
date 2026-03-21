@@ -221,10 +221,14 @@ impl Client {
             content
         };
 
+        // EX-15: Language-specific doc comment conventions
         let appendix = match language {
             "rust" => "\n\nUse `# Arguments`, `# Returns`, `# Errors`, `# Panics` sections as appropriate.",
             "python" => "\n\nFormat as a Google-style docstring (Args/Returns/Raises sections).",
             "go" => "\n\nStart with the function name per Go conventions.",
+            "java" => "\n\nUse Javadoc format: @param, @return, @throws tags.",
+            "csharp" => "\n\nUse XML doc comments: <summary>, <param>, <returns>, <exception> tags.",
+            "typescript" | "javascript" => "\n\nUse JSDoc format: @param {type} name, @returns {type}, @throws {type}.",
             _ => "",
         };
 
@@ -924,32 +928,55 @@ const SIGNAL_WORDS: &[&str] = &[
 /// Skips test functions (by name or file path) and non-source files
 /// (docs, config, markdown) that may contain code-like chunks but
 /// shouldn't have doc comments injected.
+/// Delegates to the canonical `crate::is_test_chunk` plus content-based markers (EX-14).
+///
+/// The canonical function checks name patterns and file paths. We add content-based
+/// checks for test attributes/annotations since doc comments are never useful on tests.
 fn is_test_chunk(chunk: &ChunkSummary) -> bool {
     let path = chunk.file.to_string_lossy();
-    chunk.name.starts_with("test_")
-        || path.contains("/tests/")
-        || path.starts_with("tests/")
-        || path.ends_with("_test.rs")
-        || path.ends_with("_tests.rs")
-        || chunk.content.contains("#[test]")
-        || chunk.content.contains("#[cfg(test)]")
+    if crate::is_test_chunk(&chunk.name, &path) {
+        return true;
+    }
+    // Content-based markers: test attributes that the name/path heuristics miss
+    chunk.content.contains("#[test]") || chunk.content.contains("#[cfg(test)]")
 }
 
 /// Check if a chunk is in a writable source file (not docs, config, etc.).
+///
+/// Uses the language registry's supported extensions instead of a hardcoded list (EX-13).
+/// Excludes `docs/` directories and data-format languages (JSON, XML, YAML, TOML, INI,
+/// Markdown, HTML, CSS, Nix, Make, LaTeX, ASP.NET) that shouldn't have doc comments injected.
 fn is_source_file(chunk: &ChunkSummary) -> bool {
+    use crate::language::REGISTRY;
+
     let path = chunk.file.to_string_lossy();
-    // Only write docs to actual source code files
-    let src_extensions = [
-        ".rs", ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".c", ".cpp", ".h", ".hpp", ".java",
-        ".cs", ".fs", ".kt", ".swift", ".rb", ".scala", ".php", ".lua", ".zig", ".jl", ".ex",
-        ".exs", ".erl", ".hs", ".ml", ".mli", ".gleam", ".r", ".pl", ".pm", ".sh", ".bash", ".ps1",
-        ".sql", ".sol", ".cu", ".glsl", ".svelte", ".vue", ".vb",
-    ];
-    // Exclude docs/, config files, markdown, toml, yaml, json, xml, etc.
+
+    // Exclude docs/ directories
     if path.starts_with("docs/") || path.contains("/docs/") {
         return false;
     }
-    src_extensions.iter().any(|ext| path.ends_with(ext))
+
+    // Extract extension from path
+    let ext = match std::path::Path::new(path.as_ref())
+        .extension()
+        .and_then(|e| e.to_str())
+    {
+        Some(e) => e,
+        None => return false,
+    };
+
+    // Check if the registry knows this extension
+    let def = match REGISTRY.from_extension(ext) {
+        Some(d) => d,
+        None => return false,
+    };
+
+    // Exclude data-format languages that shouldn't have doc comments
+    const DATA_FORMAT_LANGS: &[&str] = &[
+        "json", "xml", "yaml", "toml", "ini", "markdown", "html", "css", "nix", "make", "latex",
+        "aspx",
+    ];
+    !DATA_FORMAT_LANGS.contains(&def.name)
 }
 
 /// Determines whether a code chunk needs a documentation comment.
@@ -2072,13 +2099,16 @@ mod tests {
 
     #[test]
     fn test_build_doc_prompt_default() {
-        let prompt = Client::build_doc_prompt("function foo() {}", "function", "javascript");
+        // Use a language with no specific appendix
+        let prompt = Client::build_doc_prompt("defmodule Foo do end", "module", "elixir");
         assert!(prompt.contains("doc comment"));
-        assert!(prompt.contains("```javascript"));
-        // No language-specific appendix
+        assert!(prompt.contains("```elixir"));
+        // No language-specific appendix for elixir
         assert!(!prompt.contains("# Arguments"));
         assert!(!prompt.contains("Google-style"));
         assert!(!prompt.contains("Go conventions"));
+        assert!(!prompt.contains("JSDoc"));
+        assert!(!prompt.contains("Javadoc"));
     }
 
     #[test]
@@ -2086,5 +2116,130 @@ mod tests {
         let long = "x".repeat(10000);
         let prompt = Client::build_doc_prompt(&long, "function", "rust");
         assert!(prompt.len() < 10000 + 300);
+    }
+
+    // EX-15: Language-specific appendices for Java, C#, TypeScript, JavaScript
+    #[test]
+    fn test_build_doc_prompt_java() {
+        let prompt = Client::build_doc_prompt("public void foo() {}", "method", "java");
+        assert!(prompt.contains("Javadoc"));
+        assert!(prompt.contains("@param"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_csharp() {
+        let prompt = Client::build_doc_prompt("public void Foo() {}", "method", "csharp");
+        assert!(prompt.contains("XML doc"));
+        assert!(prompt.contains("<summary>"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_typescript() {
+        let prompt =
+            Client::build_doc_prompt("function foo(): string {}", "function", "typescript");
+        assert!(prompt.contains("JSDoc"));
+        assert!(prompt.contains("@param"));
+    }
+
+    #[test]
+    fn test_build_doc_prompt_javascript() {
+        let prompt = Client::build_doc_prompt("function foo() {}", "function", "javascript");
+        assert!(prompt.contains("JSDoc"));
+        assert!(prompt.contains("@param"));
+    }
+
+    // TC-2: build_hyde_prompt
+    #[test]
+    fn test_build_hyde_prompt_basic() {
+        let prompt = Client::build_hyde_prompt(
+            "fn search(query: &str) -> Vec<Result> { ... }",
+            "fn search(query: &str) -> Vec<Result>",
+            "rust",
+        );
+        assert!(prompt.contains("search query predictor"));
+        assert!(prompt.contains("3-5 short search"));
+        assert!(prompt.contains("Language: rust"));
+        assert!(prompt.contains("fn search"));
+    }
+
+    #[test]
+    fn test_build_hyde_prompt_truncation() {
+        let long_content = "x".repeat(10000);
+        let prompt = Client::build_hyde_prompt(&long_content, "fn big()", "rust");
+        assert!(prompt.len() < 10000 + 300, "Should truncate long content");
+    }
+
+    // TC-1: is_source_file
+    fn make_chunk_for_test(file: &str, language: Language) -> ChunkSummary {
+        ChunkSummary {
+            id: "test".to_string(),
+            file: std::path::PathBuf::from(file),
+            language,
+            chunk_type: ChunkType::Function,
+            name: "test_fn".to_string(),
+            signature: String::new(),
+            content: String::new(),
+            doc: None,
+            line_start: 1,
+            line_end: 10,
+            content_hash: String::new(),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+        }
+    }
+
+    #[test]
+    fn test_is_source_file_rust() {
+        let chunk = make_chunk_for_test("src/main.rs", Language::Rust);
+        assert!(is_source_file(&chunk), "Rust files should be source files");
+    }
+
+    #[test]
+    fn test_is_source_file_docs_excluded() {
+        let chunk = make_chunk_for_test("docs/guide.rs", Language::Rust);
+        assert!(
+            !is_source_file(&chunk),
+            "docs/ directories should be excluded"
+        );
+    }
+
+    #[test]
+    fn test_is_source_file_non_source_extension() {
+        let chunk = make_chunk_for_test("data/config.json", Language::Json);
+        assert!(
+            !is_source_file(&chunk),
+            "JSON files should not be source files"
+        );
+    }
+
+    #[test]
+    fn test_is_source_file_no_extension() {
+        let mut chunk = make_chunk_for_test("Makefile", Language::Rust);
+        chunk.file = std::path::PathBuf::from("Makefile");
+        assert!(
+            !is_source_file(&chunk),
+            "Files without extensions should not be source files"
+        );
+    }
+
+    // TC-5 (needs_doc_comment): non-source file should return false
+    #[test]
+    fn test_needs_doc_comment_non_source_file() {
+        let chunk = make_chunk_for_test("docs/example.md", Language::Markdown);
+        assert!(
+            !needs_doc_comment(&chunk),
+            "Non-source file should not need doc comment"
+        );
+    }
+
+    #[test]
+    fn test_needs_doc_comment_non_callable() {
+        let mut chunk = make_chunk_for_test("src/lib.rs", Language::Rust);
+        chunk.chunk_type = ChunkType::Struct;
+        assert!(
+            !needs_doc_comment(&chunk),
+            "Non-callable chunk type should not need doc comment"
+        );
     }
 }

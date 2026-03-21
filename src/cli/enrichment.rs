@@ -87,6 +87,9 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
 
     // Pre-fetch all LLM summaries once before the page loop (PERF-18).
     // Single query instead of per-page batched fetches.
+    // RM-25: Intentional full pre-load — summaries and HyDE predictions are ~100 bytes each,
+    // so even 100k chunks uses ~20MB. The alternative (paged lookups) would require N SQLite
+    // round trips during the enrichment loop. This is the right trade-off for batch processing.
     let all_summaries = match store.get_all_summaries("summary") {
         Ok(s) => s,
         Err(e) => {
@@ -147,6 +150,10 @@ pub(crate) fn enrichment_pass(store: &Store, embedder: &Embedder, quiet: bool) -
                     continue;
                 }
 
+                // PERF-20/21: These clone caller/callee names into CallContext.
+                // Borrowing would require lifetime parameters through CallContext → generate_nl,
+                // cascading across 5+ modules. At ~5 callers + ~5 callees per chunk, these
+                // clones are negligible (~500 bytes) compared to the embedding cost (~3ms each).
                 let ctx = cqs::CallContext {
                     callers: callers
                         .map(|v| v.iter().map(|c| c.name.clone()).collect())

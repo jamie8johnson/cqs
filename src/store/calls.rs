@@ -505,9 +505,9 @@ impl Store {
     /// change while the cache is live. In long-lived modes (batch, watch), callers must
     /// re-open the `Store` to pick up index changes — do not add a `clear()` here.
     /// ~15 call sites benefit from this single-scan caching.
-    pub fn get_call_graph(&self) -> Result<CallGraph, StoreError> {
+    pub fn get_call_graph(&self) -> Result<std::sync::Arc<CallGraph>, StoreError> {
         if let Some(cached) = self.call_graph_cache.get() {
-            return Ok(cached.clone());
+            return Ok(std::sync::Arc::clone(cached));
         }
         let _span = tracing::info_span!("get_call_graph").entered();
         let graph = self.rt.block_on(async {
@@ -545,8 +545,9 @@ impl Store {
 
             Ok::<_, StoreError>(CallGraph { forward, reverse })
         })?;
-        let _ = self.call_graph_cache.set(graph.clone());
-        Ok(graph)
+        let arc = std::sync::Arc::new(graph);
+        let _ = self.call_graph_cache.set(std::sync::Arc::clone(&arc));
+        Ok(arc)
     }
 
     /// Find callers with call-site line numbers for impact analysis.
@@ -844,10 +845,13 @@ impl Store {
         uncalled: Vec<LightChunk>,
         test_names: &std::collections::HashSet<String>,
     ) -> Vec<LightChunk> {
-        let entry_points: std::collections::HashSet<&str> =
-            build_entry_point_names().into_iter().collect();
-        let trait_methods: std::collections::HashSet<&str> =
-            build_trait_method_names().into_iter().collect();
+        // PERF-23: Use LazyLock-cached sets instead of rebuilding on every call
+        static ENTRY_POINTS: LazyLock<std::collections::HashSet<&'static str>> =
+            LazyLock::new(|| build_entry_point_names().into_iter().collect());
+        static TRAIT_METHODS: LazyLock<std::collections::HashSet<&'static str>> =
+            LazyLock::new(|| build_trait_method_names().into_iter().collect());
+        let entry_points = &*ENTRY_POINTS;
+        let trait_methods = &*TRAIT_METHODS;
 
         let mut candidates = Vec::new();
 
@@ -885,21 +889,17 @@ impl Store {
     ///
     /// Used for confidence scoring: files with active functions are "active".
     async fn fetch_active_files(&self) -> Result<std::collections::HashSet<String>, StoreError> {
-        // Single query: UNION of files with callers and files with type-edge activity
+        // PERF-22: Query function_calls directly (no JOIN on chunks) for files with callers.
+        // UNION with type_edges for files with type-edge activity.
+        // EH-17: propagate SQL error instead of swallowing — empty set inflates dead code confidence
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT c.origin
-             FROM chunks c
-             INNER JOIN function_calls fc ON c.name = fc.callee_name
+            "SELECT DISTINCT file FROM function_calls
              UNION
              SELECT DISTINCT c.origin FROM chunks c
              JOIN type_edges te ON c.id = te.source_chunk_id",
         )
         .fetch_all(&self.pool)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "Failed to query active files");
-            Vec::new()
-        });
+        .await?;
         Ok(rows.into_iter().map(|(f,)| f).collect())
     }
 
@@ -941,9 +941,18 @@ impl Store {
         let mut possibly_dead_pub = Vec::new();
 
         for light in candidates {
-            let (content, doc) = content_map
-                .remove(&light.id)
-                .unwrap_or_else(|| (String::new(), None));
+            // EH-18: log when content is missing — indicates deleted/stale chunk in index
+            let (content, doc) = match content_map.remove(&light.id) {
+                Some(pair) => pair,
+                None => {
+                    tracing::warn!(
+                        chunk_id = %light.id,
+                        name = %light.name,
+                        "Content missing for dead code candidate — chunk may be stale"
+                    );
+                    (String::new(), None)
+                }
+            };
 
             // Content-based trait impl check for methods
             if light.chunk_type == ChunkType::Method && TRAIT_IMPL_RE.is_match(&content) {

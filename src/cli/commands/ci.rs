@@ -88,6 +88,11 @@ pub(crate) fn cmd_ci(
 ///
 /// Reuses the same logic as review.rs — changed functions and risk summary
 /// are always included, callers and tests are truncated.
+/// Public entry point for batch mode to apply CI token budgeting.
+pub(crate) fn apply_ci_token_budget(review: &mut ReviewResult, budget: usize) -> usize {
+    apply_token_budget(review, budget, true)
+}
+
 fn apply_token_budget(review: &mut ReviewResult, budget: usize, json: bool) -> usize {
     let _span = tracing::info_span!("ci_token_budget", budget, json).entered();
 

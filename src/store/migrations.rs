@@ -196,6 +196,12 @@ async fn migrate_v14_to_v15(conn: &mut sqlx::SqliteConnection) -> Result<(), Sto
 /// Recreates llm_summaries with a composite primary key so the same content_hash
 /// can have multiple summaries for different purposes (e.g., 'summary', 'doc-comment').
 /// Existing rows get purpose='summary' as the default.
+///
+/// Safety: CREATE TABLE, INSERT INTO ... SELECT, DROP TABLE, and ALTER TABLE RENAME
+/// are all transactional in SQLite (they write to sqlite_master within the same
+/// transaction). If any step fails, the entire migration rolls back and the original
+/// llm_summaries table remains intact. The caller (`migrate`) wraps all steps in a
+/// single BEGIN/COMMIT via `pool.begin()`.
 async fn migrate_v15_to_v16(conn: &mut sqlx::SqliteConnection) -> Result<(), StoreError> {
     sqlx::query(
         "CREATE TABLE llm_summaries_v2 (

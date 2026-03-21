@@ -1744,6 +1744,318 @@ pub(super) fn dispatch_task(
     Ok(json)
 }
 
+/// Runs a diff-aware review and returns results as JSON.
+///
+/// Executes `git diff` against the given base ref (or HEAD) and runs the
+/// review pipeline: diff impact, risk scoring, note matching, staleness.
+pub(super) fn dispatch_review(
+    ctx: &BatchContext,
+    base: Option<&str>,
+    tokens: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_review", ?base).entered();
+
+    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    let result = cqs::review_diff(&ctx.store, &diff_text, &ctx.root)?;
+
+    match result {
+        None => Ok(serde_json::json!({
+            "changed_functions": [],
+            "affected_callers": [],
+            "affected_tests": [],
+            "risk_summary": { "overall": "low", "high": 0, "medium": 0, "low": 0 },
+        })),
+        Some(mut review) => {
+            // Apply token budget if specified
+            if let Some(budget) = tokens {
+                crate::cli::commands::review::apply_token_budget_public(&mut review, budget, true);
+            }
+            let mut output: serde_json::Value = serde_json::to_value(&review)?;
+            if let Some(budget) = tokens {
+                output["token_budget"] = serde_json::json!(budget);
+            }
+            Ok(output)
+        }
+    }
+}
+
+/// Runs CI analysis (review + dead code + gate) and returns results as JSON.
+///
+/// Note: In batch mode, gate failure is reported in the JSON output rather than
+/// causing a process exit, since the batch session must continue.
+pub(super) fn dispatch_ci(
+    ctx: &BatchContext,
+    base: Option<&str>,
+    gate: &crate::cli::GateLevel,
+    tokens: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_ci", ?gate).entered();
+
+    let threshold = match gate {
+        crate::cli::GateLevel::High => cqs::ci::GateThreshold::High,
+        crate::cli::GateLevel::Medium => cqs::ci::GateThreshold::Medium,
+        crate::cli::GateLevel::Off => cqs::ci::GateThreshold::Off,
+    };
+
+    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    let mut report = cqs::ci::run_ci_analysis(&ctx.store, &diff_text, &ctx.root, threshold)?;
+
+    // Apply token budget if specified
+    if let Some(budget) = tokens {
+        crate::cli::commands::ci::apply_ci_token_budget(&mut report.review, budget);
+    }
+
+    let mut output: serde_json::Value = serde_json::to_value(&report)?;
+    if let Some(budget) = tokens {
+        output["token_budget"] = serde_json::json!(budget);
+    }
+    Ok(output)
+}
+
+/// Runs semantic diff between a reference and the project (or another reference).
+pub(super) fn dispatch_diff(
+    ctx: &BatchContext,
+    source: &str,
+    target: Option<&str>,
+    threshold: f32,
+    lang: Option<&str>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_diff", source).entered();
+    let threshold = validate_finite_f32(threshold, "threshold")?;
+
+    let source_store = crate::cli::commands::resolve::resolve_reference_store(&ctx.root, source)?;
+
+    let target_label = target.unwrap_or("project");
+    let target_store = if target_label == "project" {
+        // Reuse the batch context's store — avoid re-opening
+        &ctx.store
+    } else {
+        // Need to load a separate reference store
+        // We can't return a reference to a local, so use get_ref + borrow_ref
+        ctx.get_ref(target_label)?;
+        // Fall through to resolve below since we can't borrow RefMut as &Store
+        // directly. Use resolve_reference_store which opens a fresh Store.
+        &ctx.store // placeholder — replaced below
+    };
+
+    // For non-project targets, resolve properly
+    let result = if target_label == "project" {
+        cqs::semantic_diff(
+            &source_store,
+            target_store,
+            source,
+            target_label,
+            threshold,
+            lang,
+        )?
+    } else {
+        let target_ref_store =
+            crate::cli::commands::resolve::resolve_reference_store(&ctx.root, target_label)?;
+        cqs::semantic_diff(
+            &source_store,
+            &target_ref_store,
+            source,
+            target_label,
+            threshold,
+            lang,
+        )?
+    };
+
+    let added: Vec<_> = result
+        .added
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "file": e.file.display().to_string(),
+                "type": e.chunk_type.to_string(),
+            })
+        })
+        .collect();
+
+    let removed: Vec<_> = result
+        .removed
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "file": e.file.display().to_string(),
+                "type": e.chunk_type.to_string(),
+            })
+        })
+        .collect();
+
+    let modified: Vec<_> = result
+        .modified
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "name": e.name,
+                "file": e.file.display().to_string(),
+                "type": e.chunk_type.to_string(),
+                "similarity": e.similarity,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "source": result.source,
+        "target": result.target,
+        "added": added,
+        "removed": removed,
+        "modified": modified,
+        "summary": {
+            "added": result.added.len(),
+            "removed": result.removed.len(),
+            "modified": result.modified.len(),
+            "unchanged": result.unchanged_count,
+        }
+    }))
+}
+
+/// Runs diff-aware impact analysis and returns results as JSON.
+pub(super) fn dispatch_impact_diff(
+    ctx: &BatchContext,
+    base: Option<&str>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_impact_diff", ?base).entered();
+
+    let diff_text = crate::cli::commands::run_git_diff(base)?;
+    let hunks = cqs::parse_unified_diff(&diff_text);
+
+    if hunks.is_empty() {
+        return Ok(serde_json::json!({
+            "changed_functions": [],
+            "callers": [],
+            "tests": [],
+            "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
+        }));
+    }
+
+    let changed = cqs::map_hunks_to_functions(&ctx.store, &hunks);
+    if changed.is_empty() {
+        return Ok(serde_json::json!({
+            "changed_functions": [],
+            "callers": [],
+            "tests": [],
+            "summary": { "changed_count": 0, "caller_count": 0, "test_count": 0 }
+        }));
+    }
+
+    let result = cqs::analyze_diff_impact(&ctx.store, changed)?;
+    Ok(cqs::diff_impact_to_json(&result, &ctx.root))
+}
+
+/// Runs task planning with template classification and returns results as JSON.
+pub(super) fn dispatch_plan(
+    ctx: &BatchContext,
+    description: &str,
+    limit: usize,
+    tokens: Option<usize>,
+) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_plan", description).entered();
+
+    let embedder = ctx.embedder()?;
+    let result = cqs::plan::plan(&ctx.store, embedder, description, &ctx.root, limit)
+        .context("Plan generation failed")?;
+
+    let mut json = cqs::plan::plan_to_json(&result, &ctx.root);
+    if let Some(budget) = tokens {
+        json["token_budget"] = serde_json::json!(budget);
+    }
+    Ok(json)
+}
+
+/// Suggests notes from codebase patterns and optionally applies them.
+pub(super) fn dispatch_suggest(ctx: &BatchContext, apply: bool) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_suggest", apply).entered();
+
+    let suggestions = cqs::suggest::suggest_notes(&ctx.store, &ctx.root)?;
+
+    if apply && !suggestions.is_empty() {
+        let notes_path = ctx.root.join("docs/notes.toml");
+        let entries: Vec<cqs::NoteEntry> = suggestions
+            .iter()
+            .map(|s| cqs::NoteEntry {
+                sentiment: s.sentiment,
+                text: s.text.clone(),
+                mentions: s.mentions.clone(),
+            })
+            .collect();
+        cqs::rewrite_notes_file(&notes_path, |notes| {
+            notes.extend(entries);
+            Ok(())
+        })?;
+        let notes = cqs::parse_notes(&notes_path)?;
+        cqs::index_notes(&notes, &notes_path, &ctx.store)?;
+    }
+
+    let json_val: Vec<_> = suggestions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "text": s.text,
+                "sentiment": s.sentiment,
+                "mentions": s.mentions,
+                "reason": s.reason,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "suggestions": json_val,
+        "total": suggestions.len(),
+        "applied": apply,
+    }))
+}
+
+/// Runs garbage collection on the index.
+///
+/// In batch mode, GC skips HNSW rebuild (the batch session holds the index)
+/// and reports what was pruned.
+pub(super) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_gc").entered();
+
+    let file_set = ctx.file_set()?;
+    let (stale_count, missing_count) = match ctx.store.count_stale_files(file_set) {
+        Ok(counts) => counts,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to count stale files");
+            (0, 0)
+        }
+    };
+
+    let pruned_chunks = ctx
+        .store
+        .prune_missing(file_set)
+        .context("Failed to prune deleted files from index")?;
+
+    let pruned_calls = ctx
+        .store
+        .prune_stale_calls()
+        .context("Failed to prune orphan call graph entries")?;
+
+    let pruned_type_edges = ctx
+        .store
+        .prune_stale_type_edges()
+        .context("Failed to prune orphan type edges")?;
+
+    let pruned_summaries = ctx
+        .store
+        .prune_orphan_summaries()
+        .context("Failed to prune orphan LLM summaries")?;
+
+    Ok(serde_json::json!({
+        "stale_files": stale_count,
+        "missing_files": missing_count,
+        "pruned_chunks": pruned_chunks,
+        "pruned_calls": pruned_calls,
+        "pruned_type_edges": pruned_type_edges,
+        "pruned_summaries": pruned_summaries,
+        "hnsw_rebuilt": false,
+    }))
+}
+
 /// Generates help documentation for the BatchInput command and returns it as JSON.
 ///
 /// # Returns

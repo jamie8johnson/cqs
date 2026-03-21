@@ -155,7 +155,9 @@ impl HnswIndex {
 
         // Use a temporary directory for atomic writes
         // This ensures that if we crash mid-save, the old index remains intact
-        let temp_dir = dir.join(format!(".{}.tmp", basename));
+        // PB-20: unpredictable suffix to prevent symlink TOCTOU
+        let suffix = crate::temp_suffix();
+        let temp_dir = dir.join(format!(".{}.{:016x}.tmp", basename, suffix));
         if temp_dir.exists() {
             std::fs::remove_dir_all(&temp_dir).map_err(|e| {
                 HnswError::Internal(format!(
@@ -277,7 +279,10 @@ impl HnswIndex {
                 if temp_path.exists() {
                     if let Err(rename_err) = std::fs::rename(&temp_path, &final_path) {
                         // Cross-device fallback (Docker overlayfs, NFS, etc.)
-                        let target_tmp = dir.join(format!(".{}.{}.tmp", basename, ext));
+                        // PB-20: unpredictable suffix
+                        let fb_suffix = crate::temp_suffix();
+                        let target_tmp =
+                            dir.join(format!(".{}.{}.{:016x}.tmp", basename, ext, fb_suffix));
                         std::fs::copy(&temp_path, &target_tmp).map_err(|copy_err| {
                             HnswError::Internal(format!(
                                 "Failed to rename {} → {} ({}), copy fallback also failed: {}",
@@ -332,11 +337,18 @@ impl HnswIndex {
     /// Memory is properly freed when the HnswIndex is dropped.
     pub fn load(dir: &Path, basename: &str) -> Result<Self, HnswError> {
         let _span = tracing::debug_span!("hnsw_load", dir = %dir.display(), basename).entered();
-        // Clean up stale temp dir from interrupted save (before anything else)
-        let temp_dir = dir.join(format!(".{}.tmp", basename));
-        if temp_dir.exists() {
-            tracing::info!("Cleaning up interrupted HNSW save");
-            let _ = std::fs::remove_dir_all(&temp_dir);
+        // Clean up stale temp dirs from interrupted saves (before anything else).
+        // PB-20: temp dirs now have unpredictable suffixes, so match by prefix+suffix pattern.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let prefix = format!(".{}.", basename);
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(&prefix) && name.ends_with(".tmp") && entry.path().is_dir() {
+                    tracing::info!(dir = %entry.path().display(), "Cleaning up interrupted HNSW save");
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
         }
 
         let graph_path = dir.join(format!("{}.hnsw.graph", basename));
@@ -422,6 +434,17 @@ impl HnswIndex {
         let id_map_reader = std::io::BufReader::new(id_map_file);
         let id_map: Vec<String> = serde_json::from_reader(id_map_reader)
             .map_err(|e| HnswError::Internal(format!("Failed to parse ID map: {}", e)))?;
+
+        // SEC-15: Cap element count to prevent memory exhaustion from crafted id_map files.
+        // 10M entries at ~64 bytes average ID = ~640MB — well above any real codebase.
+        const MAX_ID_MAP_ENTRIES: usize = 10_000_000;
+        if id_map.len() > MAX_ID_MAP_ENTRIES {
+            return Err(HnswError::Internal(format!(
+                "ID map has {} entries, exceeding {} limit — possible corruption",
+                id_map.len(),
+                MAX_ID_MAP_ENTRIES
+            )));
+        }
 
         // SEC-7: Validate data file size against id_map before bincode deserialization.
         // A crafted file could claim more vectors than the id_map supports, causing

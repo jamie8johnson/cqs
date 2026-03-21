@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use super::{EmbedderError, ExecutionProvider};
 
 /// Convert any ort error to [`EmbedderError::InferenceFailed`] via `.to_string()`.
-fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
+pub(super) fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
     EmbedderError::InferenceFailed(e.to_string())
 }
 
@@ -91,11 +91,9 @@ fn ort_runtime_search_dir() -> Option<PathBuf> {
 #[cfg(target_os = "linux")]
 fn find_ort_provider_dir() -> Option<PathBuf> {
     let cache_dir = dirs::cache_dir()?;
-    let triplet = match (std::env::consts::ARCH, std::env::consts::OS) {
-        ("x86_64", "linux") => "x86_64-unknown-linux-gnu",
-        ("aarch64", "linux") => "aarch64-unknown-linux-gnu",
-        ("x86_64", "macos") => "x86_64-apple-darwin",
-        ("aarch64", "macos") => "aarch64-apple-darwin",
+    let triplet = match std::env::consts::ARCH {
+        "x86_64" => "x86_64-unknown-linux-gnu",
+        "aarch64" => "aarch64-unknown-linux-gnu",
         _ => return None,
     };
     let ort_cache = cache_dir.join(format!("ort.pyke.io/dfbin/{triplet}"));

@@ -2,6 +2,7 @@
 
 mod provider;
 
+use provider::ort_err;
 pub(crate) use provider::{create_session, select_provider};
 
 use lru::LruCache;
@@ -42,7 +43,7 @@ pub enum EmbedderError {
     #[error("Model not found: {0}")]
     ModelNotFound(String),
     #[error("Tokenizer error: {0}")]
-    TokenizerError(String),
+    Tokenizer(String),
     #[error("Inference failed: {0}")]
     InferenceFailed(String),
     #[error("Checksum mismatch for {path}: expected {expected}, got {actual}")]
@@ -54,16 +55,10 @@ pub enum EmbedderError {
     #[error("Query cannot be empty")]
     EmptyQuery,
     #[error("HuggingFace Hub error: {0}")]
-    HfHubError(String),
+    HfHub(String),
 }
 
-/// Convert any ort error to [`EmbedderError::InferenceFailed`] via `.to_string()`.
-///
-/// Call sites use `.map_err(ort_err)` instead of `?` auto-conversion because
-/// a blanket `From` impl would conflict with other error conversions.
-fn ort_err<T>(e: ort::Error<T>) -> EmbedderError {
-    EmbedderError::InferenceFailed(e.to_string())
-}
+// `ort_err` is defined in `provider.rs` (pub(super)) and imported above.
 
 /// A 768-dimensional L2-normalized embedding vector
 ///
@@ -310,7 +305,7 @@ impl Embedder {
         let (_, tokenizer_path) = self.model_paths()?;
         self.tokenizer.get_or_try_init(|| {
             tokenizers::Tokenizer::from_file(tokenizer_path)
-                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))
         })
     }
 
@@ -326,12 +321,12 @@ impl Embedder {
     ///
     /// # Errors
     ///
-    /// Returns `EmbedderError::TokenizerError` if the tokenizer is unavailable or if encoding the text fails.
+    /// Returns `EmbedderError::Tokenizer` if the tokenizer is unavailable or if encoding the text fails.
     pub fn token_count(&self, text: &str) -> Result<usize, EmbedderError> {
         let encoding = self
             .tokenizer()?
             .encode(text, false)
-            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+            .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
         Ok(encoding.get_ids().len())
     }
 
@@ -346,7 +341,7 @@ impl Embedder {
         let encodings = self
             .tokenizer()?
             .encode_batch(texts.to_vec(), false)
-            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+            .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
         Ok(encodings.iter().map(|e| e.get_ids().len()).collect())
     }
 
@@ -370,7 +365,7 @@ impl Embedder {
         // overlap >= max_tokens/2 means step <= max_tokens/2, causing O(2n/max_tokens) windows
         // instead of O(n/max_tokens). With overlap >= max_tokens, step becomes 1 token = disaster.
         if overlap >= max_tokens / 2 {
-            return Err(EmbedderError::TokenizerError(format!(
+            return Err(EmbedderError::Tokenizer(format!(
                 "overlap ({overlap}) must be less than max_tokens/2 ({})",
                 max_tokens / 2
             )));
@@ -379,7 +374,7 @@ impl Embedder {
         let tokenizer = self.tokenizer()?;
         let encoding = tokenizer
             .encode(text, false)
-            .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+            .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
 
         let ids = encoding.get_ids();
         if ids.len() <= max_tokens {
@@ -400,7 +395,7 @@ impl Embedder {
             // Decode back to text
             let window_text = tokenizer
                 .decode(&window_ids, true)
-                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?;
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?;
 
             windows.push((window_text, window_idx));
             window_idx += 1;
@@ -519,7 +514,7 @@ impl Embedder {
     ///
     /// # Errors
     ///
-    /// Returns `EmbedderError::TokenizerError` if tokenization of the batch fails.
+    /// Returns `EmbedderError::Tokenizer` if tokenization of the batch fails.
     fn embed_batch(&self, texts: &[String]) -> Result<Vec<Embedding>, EmbedderError> {
         use ort::value::Tensor;
 
@@ -534,7 +529,7 @@ impl Embedder {
             let _tokenize = tracing::debug_span!("tokenize").entered();
             self.tokenizer()?
                 .encode_batch(texts.to_vec(), true)
-                .map_err(|e| EmbedderError::TokenizerError(e.to_string()))?
+                .map_err(|e| EmbedderError::Tokenizer(e.to_string()))?
         };
 
         // Prepare inputs - INT64 (i64) for ONNX model
@@ -647,15 +642,15 @@ impl Embedder {
 fn ensure_model() -> Result<(PathBuf, PathBuf), EmbedderError> {
     use hf_hub::api::sync::Api;
 
-    let api = Api::new().map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
+    let api = Api::new().map_err(|e| EmbedderError::HfHub(e.to_string()))?;
     let repo = api.model(model_repo());
 
     let model_path = repo
         .get(MODEL_FILE)
-        .map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
+        .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
     let tokenizer_path = repo
         .get(TOKENIZER_FILE)
-        .map_err(|e| EmbedderError::HfHubError(e.to_string()))?;
+        .map_err(|e| EmbedderError::HfHub(e.to_string()))?;
 
     // Verify checksums (skip if already verified via marker file)
     if !MODEL_BLAKE3.is_empty() || !TOKENIZER_BLAKE3.is_empty() {
@@ -877,7 +872,7 @@ mod tests {
         let err = EmbedderError::ModelNotFound("model.onnx".to_string());
         assert!(format!("{}", err).contains("model.onnx"));
 
-        let err = EmbedderError::TokenizerError("invalid token".to_string());
+        let err = EmbedderError::Tokenizer("invalid token".to_string());
         assert!(format!("{}", err).contains("invalid token"));
 
         let err = EmbedderError::ChecksumMismatch {

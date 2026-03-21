@@ -7,6 +7,7 @@ use std::path::Path;
 /// Read checkpoint file: tab-separated `repo_path\tsha` lines.
 /// Returns empty map if file doesn't exist.
 pub fn read_checkpoints(path: &Path) -> Result<HashMap<String, String>, TrainDataError> {
+    let _span = tracing::info_span!("read_checkpoints", path = %path.display()).entered();
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
@@ -25,6 +26,7 @@ pub fn read_checkpoints(path: &Path) -> Result<HashMap<String, String>, TrainDat
 /// Write or update a checkpoint entry for a repo.
 /// Reads existing entries, updates the entry for `repo`, writes back atomically.
 pub fn write_checkpoint(path: &Path, repo: &str, sha: &str) -> Result<(), TrainDataError> {
+    let _span = tracing::info_span!("write_checkpoint", path = %path.display(), repo).entered();
     let mut map = read_checkpoints(path)?;
     map.insert(repo.to_string(), sha.to_string());
 
@@ -45,6 +47,7 @@ pub fn write_checkpoint(path: &Path, repo: &str, sha: &str) -> Result<(), TrainD
 /// If a file doesn't end with `\n`, truncate to the last `\n`.
 /// Used for crash recovery: partial JSONL lines from interrupted writes.
 pub fn truncate_incomplete_line(path: &Path) -> Result<(), TrainDataError> {
+    let _span = tracing::info_span!("truncate_incomplete_line", path = %path.display()).entered();
     let content = match fs::read(path) {
         Ok(c) => c,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),

@@ -18,6 +18,7 @@ use cqs::train_data::TrainDataConfig;
 ///
 /// Returns an error if the underlying `generate_training_data` function encounters issues such as repository access failures or invalid commit data.
 pub fn cmd_train_data(config: TrainDataConfig) -> Result<()> {
+    let _span = tracing::info_span!("cmd_train_data").entered();
     let stats = cqs::train_data::generate_training_data(&config).map_err(|e| anyhow::anyhow!(e))?;
 
     println!(

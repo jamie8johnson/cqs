@@ -405,7 +405,7 @@ mod tests {
                 risk: RiskScore {
                     caller_count: 5,
                     test_count: 0,
-                    coverage: 0.0,
+                    test_ratio: 0.0,
                     risk_level: RiskLevel::High,
                     blast_radius: RiskLevel::Medium,
                     score: 5.0,
@@ -416,7 +416,7 @@ mod tests {
                 risk: RiskScore {
                     caller_count: 2,
                     test_count: 2,
-                    coverage: 1.0,
+                    test_ratio: 1.0,
                     risk_level: RiskLevel::Low,
                     blast_radius: RiskLevel::Low,
                     score: 0.0,
@@ -561,7 +561,7 @@ mod tests {
                 risk: RiskScore {
                     caller_count: 5,
                     test_count: 1,
-                    coverage: 0.2,
+                    test_ratio: 0.2,
                     risk_level: RiskLevel::High,
                     blast_radius: RiskLevel::Medium,
                     score: 4.0,

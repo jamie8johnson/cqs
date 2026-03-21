@@ -180,7 +180,7 @@ pub(crate) fn waterfall_pack(
                 fr.risk.risk_level,
                 fr.risk.score,
                 fr.risk.caller_count,
-                fr.risk.coverage * 100.0
+                fr.risk.test_ratio * 100.0
             )
         })
         .collect();
@@ -782,10 +782,10 @@ fn print_impact_section_idx(
                 fr.name,
                 level,
                 format!(
-                    "(score: {:.1}, callers: {}, coverage: {:.0}%)",
+                    "(score: {:.1}, callers: {}, test_ratio: {:.0}%)",
                     fr.risk.score,
                     fr.risk.caller_count,
-                    fr.risk.coverage * 100.0
+                    fr.risk.test_ratio * 100.0
                 )
                 .dimmed()
             );

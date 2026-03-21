@@ -3,7 +3,7 @@
 use crate::store::{CallGraph, StoreError};
 use crate::Store;
 
-use super::bfs::reverse_bfs;
+use super::bfs::{reverse_bfs, test_reachability};
 use super::types::{FunctionHints, RiskLevel, RiskScore};
 use super::DEFAULT_MAX_TEST_SEARCH_DEPTH;
 
@@ -75,11 +75,14 @@ pub fn compute_hints(
 /// Compute risk scores for a batch of function names.
 ///
 /// Uses pre-loaded call graph and test chunks to avoid repeated queries.
-/// Formula: `score = caller_count * (1.0 - coverage)` where
-/// `coverage = min(test_count / max(caller_count, 1), 1.0)`.
+/// Formula: `score = caller_count * (1.0 - test_ratio)` where
+/// `test_ratio = min(test_count / max(caller_count, 1), 1.0)`.
 ///
 /// Entry-point handling: functions with 0 callers and 0 tests get `Medium`
 /// risk (likely entry points that should have tests).
+///
+/// PERF-24: Uses a single forward BFS from all test nodes to build a
+/// reachability map, instead of N independent reverse_bfs calls.
 pub fn compute_risk_batch(
     names: &[&str],
     graph: &CallGraph,
@@ -87,13 +90,17 @@ pub fn compute_risk_batch(
 ) -> Vec<RiskScore> {
     let _span = tracing::info_span!("compute_risk_batch", count = names.len()).entered();
 
+    // Precompute test reachability via a single forward BFS from all test nodes,
+    // instead of N independent reverse_bfs calls (O(N*E) -> O(T*E)).
+    let test_names: Vec<&str> = test_chunks.iter().map(|t| t.name.as_str()).collect();
+    let reachability = test_reachability(graph, &test_names, DEFAULT_MAX_TEST_SEARCH_DEPTH);
+
     names
         .iter()
         .map(|name| {
-            let hints = compute_hints_with_graph(graph, test_chunks, name, None);
-            let caller_count = hints.caller_count;
-            let test_count = hints.test_count;
-            let coverage = if caller_count == 0 {
+            let caller_count = graph.reverse.get(*name).map(|v| v.len()).unwrap_or(0);
+            let test_count = reachability.get(*name).copied().unwrap_or(0);
+            let test_ratio = if caller_count == 0 {
                 if test_count > 0 {
                     1.0
                 } else {
@@ -102,7 +109,7 @@ pub fn compute_risk_batch(
             } else {
                 (test_count as f32 / caller_count as f32).min(1.0)
             };
-            let score = caller_count as f32 * (1.0 - coverage);
+            let score = caller_count as f32 * (1.0 - test_ratio);
             let risk_level = if caller_count == 0 && test_count == 0 {
                 // Entry point with no tests — flag as medium
                 RiskLevel::Medium
@@ -121,7 +128,7 @@ pub fn compute_risk_batch(
             RiskScore {
                 caller_count,
                 test_count,
-                coverage,
+                test_ratio,
                 risk_level,
                 blast_radius,
                 score,
@@ -156,7 +163,7 @@ pub fn compute_risk_and_tests(
             .iter()
             .filter(|t| ancestors.get(&t.name).is_some_and(|&d| d > 0))
             .count();
-        let coverage = if caller_count == 0 {
+        let test_ratio = if caller_count == 0 {
             if test_count > 0 {
                 1.0
             } else {
@@ -165,7 +172,7 @@ pub fn compute_risk_and_tests(
         } else {
             (test_count as f32 / caller_count as f32).min(1.0)
         };
-        let score = caller_count as f32 * (1.0 - coverage);
+        let score = caller_count as f32 * (1.0 - test_ratio);
         let risk_level = if caller_count == 0 && test_count == 0 {
             RiskLevel::Medium
         } else if score >= RISK_THRESHOLD_HIGH {
@@ -183,7 +190,7 @@ pub fn compute_risk_and_tests(
         scores.push(RiskScore {
             caller_count,
             test_count,
-            coverage,
+            test_ratio,
             risk_level,
             blast_radius,
             score,
@@ -324,10 +331,10 @@ mod tests {
             "target".to_string(),
             vec!["a".to_string(), "test_target".to_string()],
         );
-        let graph = CallGraph {
-            forward: HashMap::new(),
-            reverse,
-        };
+        let mut forward = HashMap::new();
+        forward.insert("test_target".to_string(), vec!["target".to_string()]);
+        forward.insert("a".to_string(), vec!["target".to_string()]);
+        let graph = CallGraph { forward, reverse };
         let test_chunks = vec![crate::store::ChunkSummary {
             id: "test_id".to_string(),
             file: PathBuf::from("tests/test.rs"),
@@ -432,9 +439,9 @@ mod tests {
         ];
         let scores = compute_risk_batch(&["target"], &graph, &test_chunks);
         assert!(
-            scores[0].coverage <= 1.0,
-            "Coverage should be capped at 1.0, got {}",
-            scores[0].coverage
+            scores[0].test_ratio <= 1.0,
+            "test_ratio should be capped at 1.0, got {}",
+            scores[0].test_ratio
         );
         assert_eq!(scores[0].risk_level, RiskLevel::Low);
     }

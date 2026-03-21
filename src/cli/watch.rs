@@ -40,18 +40,74 @@ const HNSW_REBUILD_THRESHOLD: usize = 100;
 /// Maximum pending files to prevent unbounded memory growth
 const MAX_PENDING_FILES: usize = 10_000;
 
+/// Track exponential backoff state for embedder initialization retries.
+///
+/// On repeated failures, backs off from 0s to max 5 minutes between attempts
+/// to avoid burning CPU retrying a broken ONNX model load every ~2s cycle.
+struct EmbedderBackoff {
+    /// Number of consecutive failures
+    failures: u32,
+    /// Instant when the next retry is allowed
+    next_retry: std::time::Instant,
+}
+
+impl EmbedderBackoff {
+    fn new() -> Self {
+        Self {
+            failures: 0,
+            next_retry: std::time::Instant::now(),
+        }
+    }
+
+    /// Record a failure and compute the next retry time with exponential backoff.
+    /// Backoff: 2^failures seconds, capped at 300s (5 min).
+    fn record_failure(&mut self) {
+        self.failures = self.failures.saturating_add(1);
+        let delay_secs = 2u64.saturating_pow(self.failures).min(300);
+        self.next_retry = std::time::Instant::now() + Duration::from_secs(delay_secs);
+        warn!(
+            failures = self.failures,
+            next_retry_secs = delay_secs,
+            "Embedder init failed, backing off"
+        );
+    }
+
+    /// Reset backoff on success.
+    fn reset(&mut self) {
+        self.failures = 0;
+    }
+
+    /// Whether we should attempt initialization (backoff expired).
+    fn should_retry(&self) -> bool {
+        std::time::Instant::now() >= self.next_retry
+    }
+}
+
 /// Try to initialize the embedder, returning a reference from the OnceCell.
 /// Deduplicates the 7-line pattern that appeared twice in cmd_watch.
-fn try_init_embedder(embedder: &OnceCell<Embedder>) -> Option<&Embedder> {
+/// Uses `backoff` to apply exponential backoff on repeated failures (RM-24).
+fn try_init_embedder<'a>(
+    embedder: &'a OnceCell<Embedder>,
+    backoff: &mut EmbedderBackoff,
+) -> Option<&'a Embedder> {
     match embedder.get() {
         Some(e) => Some(e),
-        None => match Embedder::new() {
-            Ok(e) => Some(embedder.get_or_init(|| e)),
-            Err(e) => {
-                warn!(error = %e, "Failed to initialize embedder");
-                None
+        None => {
+            if !backoff.should_retry() {
+                return None;
             }
-        },
+            match Embedder::new() {
+                Ok(e) => {
+                    backoff.reset();
+                    Some(embedder.get_or_init(|| e))
+                }
+                Err(e) => {
+                    warn!(error = %e, "Failed to initialize embedder");
+                    backoff.record_failure();
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -146,6 +202,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
     // Lazy-initialized embedder (~500MB, avoids startup delay unless changes occur).
     // Once initialized, stays in memory for fast reindexing. See module docs for memory details.
     let embedder: OnceCell<Embedder> = OnceCell::new();
+    let mut embedder_backoff = EmbedderBackoff::new();
 
     // Open store and reuse across reindex operations within a cycle.
     // Re-opened after each reindex cycle to clear stale OnceLock caches (DS-9).
@@ -212,6 +269,7 @@ pub fn cmd_watch(cli: &Cli, debounce_ms: u64, no_ignore: bool, poll: bool) -> Re
                             &store,
                             &parser,
                             &embedder,
+                            &mut embedder_backoff,
                             &mut pending_files,
                             &mut last_indexed_mtime,
                             &mut hnsw_index,
@@ -330,6 +388,7 @@ fn process_file_changes(
     store: &Store,
     parser: &CqParser,
     embedder: &OnceCell<Embedder>,
+    embedder_backoff: &mut EmbedderBackoff,
     pending_files: &mut HashSet<PathBuf>,
     last_indexed_mtime: &mut HashMap<PathBuf, SystemTime>,
     hnsw_index: &mut Option<HnswIndex>,
@@ -346,7 +405,7 @@ fn process_file_changes(
         }
     }
 
-    let emb = match try_init_embedder(embedder) {
+    let emb = match try_init_embedder(embedder, embedder_backoff) {
         Some(e) => e,
         None => return,
     };

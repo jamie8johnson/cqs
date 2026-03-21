@@ -20,6 +20,10 @@ const DEFAULT_MODEL_REPO: &str = "cross-encoder/ms-marco-MiniLM-L-6-v2";
 const MODEL_FILE: &str = "onnx/model.onnx";
 const TOKENIZER_FILE: &str = "tokenizer.json";
 
+// blake3 checksums -- empty to skip validation (set after pinning a model version)
+const MODEL_BLAKE3: &str = "";
+const TOKENIZER_BLAKE3: &str = "";
+
 /// Retrieves the reranker model repository path from the environment or returns the default.
 ///
 /// # Returns
@@ -43,6 +47,12 @@ pub enum RerankerError {
     Tokenizer(String),
     #[error("Inference error: {0}")]
     Inference(String),
+    #[error("Checksum mismatch for {path}: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        path: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 /// Convert any ort error to [`RerankerError::Inference`] via `.to_string()`.
@@ -231,6 +241,29 @@ impl Reranker {
                 .get(TOKENIZER_FILE)
                 .map_err(|e| RerankerError::ModelDownload(e.to_string()))?;
 
+            // Verify checksums (skip if already verified via marker file)
+            if !MODEL_BLAKE3.is_empty() || !TOKENIZER_BLAKE3.is_empty() {
+                let marker = model_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(".cqs_reranker_verified");
+                let expected_marker = format!("{}\n{}", MODEL_BLAKE3, TOKENIZER_BLAKE3);
+                let already_verified = std::fs::read_to_string(&marker)
+                    .map(|s| s == expected_marker)
+                    .unwrap_or(false);
+
+                if !already_verified {
+                    if !MODEL_BLAKE3.is_empty() {
+                        verify_checksum(&model_path, MODEL_BLAKE3)?;
+                    }
+                    if !TOKENIZER_BLAKE3.is_empty() {
+                        verify_checksum(&tokenizer_path, TOKENIZER_BLAKE3)?;
+                    }
+                    // Write marker after successful verification
+                    let _ = std::fs::write(&marker, &expected_marker);
+                }
+            }
+
             tracing::info!(model = %model_path.display(), "Reranker model ready");
             Ok((model_path, tokenizer_path))
         })
@@ -270,6 +303,27 @@ impl Reranker {
                 .map_err(|e| RerankerError::Tokenizer(e.to_string()))
         })
     }
+}
+
+/// Verify file checksum using blake3
+fn verify_checksum(path: &std::path::Path, expected: &str) -> Result<(), RerankerError> {
+    let mut file = std::fs::File::open(path).map_err(|e| {
+        RerankerError::ModelDownload(format!("Cannot open {}: {}", path.display(), e))
+    })?;
+    let mut hasher = blake3::Hasher::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| {
+        RerankerError::ModelDownload(format!("Read error on {}: {}", path.display(), e))
+    })?;
+    let actual = hasher.finalize().to_hex().to_string();
+
+    if actual != expected {
+        return Err(RerankerError::ChecksumMismatch {
+            path: path.display().to_string(),
+            expected: expected.to_string(),
+            actual,
+        });
+    }
+    Ok(())
 }
 
 /// Computes the sigmoid activation function.

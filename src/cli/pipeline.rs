@@ -16,7 +16,7 @@ use crossbeam_channel::{bounded, select, Receiver, Sender};
 use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 
-use cqs::parser::{ChunkTypeRefs, FunctionCalls};
+use cqs::parser::{CallSite, ChunkTypeRefs, FunctionCalls};
 use cqs::{normalize_path, Chunk, Embedder, Embedding, Parser as CqParser, Store};
 
 use super::check_interrupted;
@@ -99,6 +99,9 @@ pub(crate) fn apply_windowing(chunks: Vec<Chunk>, embedder: &Embedder) -> Vec<Ch
 struct RelationshipData {
     type_refs: HashMap<PathBuf, Vec<ChunkTypeRefs>>,
     function_calls: HashMap<PathBuf, Vec<FunctionCalls>>,
+    /// Per-chunk call sites for the `calls` table (PERF-28: extracted during parse stage
+    /// to avoid re-parsing in store_stage). Keyed by chunk ID.
+    chunk_calls: Vec<(String, CallSite)>,
 }
 
 /// Message types for the pipelined indexer
@@ -328,6 +331,14 @@ fn parser_stage(
                                     }
                                 }
                             }
+                            // PERF-28: Extract per-chunk calls here (rayon parallel)
+                            // instead of sequentially in store_stage.
+                            for chunk in &chunks {
+                                let calls = parser.extract_calls_from_chunk(chunk);
+                                for call in calls {
+                                    all_rels.chunk_calls.push((chunk.id.clone(), call));
+                                }
+                            }
                             all_chunks.extend(chunks);
                             if !chunk_type_refs.is_empty() {
                                 all_rels
@@ -362,6 +373,7 @@ fn parser_stage(
                     for (file, calls) in rels_b.function_calls {
                         rels_a.function_calls.entry(file).or_default().extend(calls);
                     }
+                    rels_a.chunk_calls.extend(rels_b.chunk_calls);
                     (chunks_a, rels_a)
                 },
             );
@@ -423,6 +435,9 @@ fn parser_stage(
         let batch_rels = if force {
             batch_rels
         } else {
+            // Build set of chunk IDs that survived the staleness filter
+            let surviving_ids: std::collections::HashSet<&str> =
+                chunks.iter().map(|c| c.id.as_str()).collect();
             RelationshipData {
                 type_refs: batch_rels
                     .type_refs
@@ -433,6 +448,11 @@ fn parser_stage(
                     .function_calls
                     .into_iter()
                     .filter(|(file, _)| file_mtimes.contains_key(file))
+                    .collect(),
+                chunk_calls: batch_rels
+                    .chunk_calls
+                    .into_iter()
+                    .filter(|(id, _)| surviving_ids.contains(id.as_str()))
                     .collect(),
             }
         };
@@ -645,7 +665,6 @@ fn cpu_embed_stage(
 fn store_stage(
     embed_rx: Receiver<EmbeddedBatch>,
     store: &Store,
-    parser: &CqParser,
     parsed_count: &AtomicUsize,
     embedded_count: &AtomicUsize,
     progress: &ProgressBar,
@@ -660,19 +679,9 @@ fn store_stage(
             break;
         }
 
-        // Extract call graph for this batch (per-chunk calls for the `calls` table)
-        let all_calls: Vec<_> = batch
-            .chunk_embeddings
-            .iter()
-            .flat_map(|(chunk, _)| {
-                let calls = parser.extract_calls_from_chunk(chunk);
-                if calls.is_empty() {
-                    Vec::new()
-                } else {
-                    calls.into_iter().map(|c| (chunk.id.clone(), c)).collect()
-                }
-            })
-            .collect();
+        // PERF-28: Use pre-extracted chunk calls from the parse stage (rayon parallel)
+        // instead of re-parsing each chunk sequentially here.
+        let all_calls = batch.relationships.chunk_calls;
 
         let batch_count = batch.chunk_embeddings.len();
 
@@ -846,14 +855,8 @@ pub(crate) fn run_index_pipeline(
         pb
     };
 
-    let (total_embedded, total_cached, total_type_edges, total_calls) = store_stage(
-        embed_rx,
-        &store,
-        &parser,
-        &parsed_count,
-        &embedded_count,
-        &progress,
-    )?;
+    let (total_embedded, total_cached, total_type_edges, total_calls) =
+        store_stage(embed_rx, &store, &parsed_count, &embedded_count, &progress)?;
 
     progress.finish_with_message("done");
 

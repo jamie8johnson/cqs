@@ -168,7 +168,7 @@ diff --git a/src/math.rs b/src/math.rs
         // Just verify the risk field is accessible and has valid values
         assert!(func.risk.score >= 0.0, "Risk score should be non-negative");
         assert!(
-            func.risk.coverage >= 0.0 && func.risk.coverage <= 1.0,
+            func.risk.test_ratio >= 0.0 && func.risk.test_ratio <= 1.0,
             "Coverage should be between 0 and 1"
         );
     }

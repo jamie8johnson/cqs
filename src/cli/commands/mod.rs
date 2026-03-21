@@ -4,7 +4,7 @@
 
 mod audit_mode;
 pub(crate) mod blame;
-mod ci;
+pub(crate) mod ci;
 pub(crate) mod context;
 #[cfg(feature = "convert")]
 mod convert;
@@ -31,7 +31,7 @@ pub(crate) mod read;
 mod reference;
 mod related;
 pub(crate) mod resolve;
-mod review;
+pub(crate) mod review;
 mod scout;
 mod similar;
 mod stale;

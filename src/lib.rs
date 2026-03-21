@@ -5,7 +5,7 @@
 //!
 //! ## Features
 //!
-//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (768-dim). 90.9% Recall@1 on confusable function retrieval.
+//! - **Semantic search**: Hybrid RRF (keyword + vector) using E5-base-v2 embeddings (768-dim). 92.7% Recall@1 on confusable function retrieval.
 //! - **Call graphs**: Callers, callees, transitive impact, shortest-path tracing between functions
 //! - **Impact analysis**: What breaks if you change X? Callers + affected tests + risk scoring
 //! - **Type dependencies**: Who uses this type? What types does this function use?
@@ -740,5 +740,24 @@ mentions = ["store.rs"]
         assert!(is_test_chunk("user_spec", "spec/user_spec.rb"));
         assert!(is_test_chunk("normal_fn", "tests/test_main.py"));
         assert!(!is_test_chunk("inspector", "src/inspect.rs"));
+    }
+
+    // TC-6: _tests.rs suffix and nested /tests/ path
+    #[test]
+    fn is_test_chunk_tests_suffix_and_nested_path() {
+        // File with _test suffix
+        assert!(is_test_chunk("normal_fn", "src/search_test.rs"));
+        assert!(is_test_chunk("normal_fn", "src/search_test.py"));
+        // Nested /tests/ directory
+        assert!(is_test_chunk("normal_fn", "src/store/tests/calls_test.rs"));
+        assert!(is_test_chunk("normal_fn", "tests/integration.rs"));
+        // .test. suffix (JS/TS)
+        assert!(is_test_chunk("normal_fn", "src/search.test.ts"));
+        assert!(is_test_chunk("normal_fn", "src/search.test.js"));
+        // _test.go suffix
+        assert!(is_test_chunk("normal_fn", "pkg/search_test.go"));
+        // Should NOT match
+        assert!(!is_test_chunk("normal_fn", "src/testing_utils.rs"));
+        assert!(!is_test_chunk("normal_fn", "src/attest.rs"));
     }
 }

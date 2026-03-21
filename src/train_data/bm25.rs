@@ -18,6 +18,7 @@ pub struct Bm25Index {
 impl Bm25Index {
     /// Build a BM25 index from a corpus of (content_hash, content) pairs.
     pub fn build(docs: &[(String, String)]) -> Self {
+        let _span = tracing::info_span!("bm25_build", doc_count = docs.len()).entered();
         let n = docs.len() as f32;
         let mut doc_terms = Vec::with_capacity(docs.len());
         let mut df: HashMap<String, f32> = HashMap::new();
@@ -60,6 +61,7 @@ impl Bm25Index {
 
     /// Score all documents against a query, returning (content_hash, score) sorted descending.
     pub fn score(&self, query: &str) -> Vec<(String, f32)> {
+        let _span = tracing::info_span!("bm25_score").entered();
         let query_terms = tokenize(query);
         let mut scores: Vec<(String, f32)> = self
             .docs
@@ -67,6 +69,10 @@ impl Bm25Index {
             .enumerate()
             .map(|(i, (hash, _))| {
                 let tf_map = &self.doc_terms[i];
+                // AC-15: Document length is the sum of term frequencies (total token count).
+                // This matches the `total_dl` accumulation in `build()` where `dl = terms.len()`.
+                // Both use the same tokenizer, so they are consistent. The sum of TF values
+                // equals the token count because each token increments its entry by 1.0.
                 let dl = tf_map.values().sum::<f32>();
                 let mut score = 0.0f32;
 
@@ -96,6 +102,7 @@ impl Bm25Index {
         positive_content: &str,
         k: usize,
     ) -> Vec<(String, String)> {
+        let _span = tracing::info_span!("bm25_select_negatives", k).entered();
         let positive_content_hash = blake3::hash(positive_content.as_bytes());
         let scored = self.score(query);
 

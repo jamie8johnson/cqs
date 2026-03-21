@@ -111,7 +111,10 @@ pub fn semantic_diff(
         "Loaded chunk identities"
     );
 
-    // Build lookup maps: key → (id, identity)
+    // Build lookup maps: key → identity.
+    // AC-12: If duplicate ChunkKeys exist (e.g., same name+type+file, different line_start),
+    // the last one wins. This is acceptable: window_idx>0 duplicates are already filtered
+    // above, and remaining collisions (rare: same name in two impl blocks) are approximate.
     let source_map: HashMap<ChunkKey, &ChunkIdentity> =
         source_ids.iter().map(|c| (ChunkKey::from(c), c)).collect();
     let target_map: HashMap<ChunkKey, &ChunkIdentity> =

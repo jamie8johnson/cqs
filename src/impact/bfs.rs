@@ -85,6 +85,53 @@ pub(super) fn reverse_bfs_multi(
     ancestors
 }
 
+/// Build a test reachability map via forward BFS from all test nodes.
+///
+/// Walks forward edges (caller -> callee) from each test node, collecting
+/// all functions reachable within `max_depth` hops. Returns a map of
+/// `function_name -> count of tests that reach it`.
+///
+/// This is O(T * avg_fan_out * depth) where T = test count, which is typically
+/// much cheaper than N * reverse_bfs when N (target count) > T.
+pub(super) fn test_reachability(
+    graph: &CallGraph,
+    test_names: &[&str],
+    max_depth: usize,
+) -> HashMap<String, usize> {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+
+    for &test_name in test_names {
+        // Forward BFS from this test node
+        let mut visited: HashMap<String, usize> = HashMap::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        visited.insert(test_name.to_string(), 0);
+        queue.push_back((test_name.to_string(), 0));
+
+        while let Some((current, d)) = queue.pop_front() {
+            if d >= max_depth {
+                continue;
+            }
+            if let Some(callees) = graph.forward.get(&current) {
+                for callee in callees {
+                    if !visited.contains_key(callee) {
+                        visited.insert(callee.clone(), d + 1);
+                        queue.push_back((callee.clone(), d + 1));
+                    }
+                }
+            }
+        }
+
+        // Count this test as reaching each visited function (excluding itself at depth 0)
+        for (name, depth) in &visited {
+            if *depth > 0 {
+                *counts.entry(name.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    counts
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +358,74 @@ mod tests {
             result["root"], 2,
             "root should be depth 2 (deep+1), not 3 (from stale queue entry)"
         );
+    }
+
+    // ===== test_reachability tests =====
+
+    #[test]
+    fn test_reachability_empty_graph() {
+        let graph = CallGraph {
+            forward: HashMap::new(),
+            reverse: HashMap::new(),
+        };
+        let result = test_reachability(&graph, &["test_a"], 5);
+        assert!(
+            result.is_empty(),
+            "No forward edges means nothing reachable"
+        );
+    }
+
+    #[test]
+    fn test_reachability_single_test() {
+        // test_a -> B -> C
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["B".to_string()]);
+        forward.insert("B".to_string(), vec!["C".to_string()]);
+        let graph = CallGraph {
+            forward,
+            reverse: HashMap::new(),
+        };
+        let result = test_reachability(&graph, &["test_a"], 5);
+        assert_eq!(result.get("B"), Some(&1), "B reachable from test_a");
+        assert_eq!(result.get("C"), Some(&1), "C reachable from test_a");
+        assert!(
+            !result.contains_key("test_a"),
+            "Test itself excluded (depth 0)"
+        );
+    }
+
+    #[test]
+    fn test_reachability_multiple_tests_shared_target() {
+        // test_a -> target, test_b -> target
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["target".to_string()]);
+        forward.insert("test_b".to_string(), vec!["target".to_string()]);
+        let graph = CallGraph {
+            forward,
+            reverse: HashMap::new(),
+        };
+        let result = test_reachability(&graph, &["test_a", "test_b"], 5);
+        assert_eq!(
+            result.get("target"),
+            Some(&2),
+            "target reachable from both tests"
+        );
+    }
+
+    #[test]
+    fn test_reachability_respects_depth() {
+        // test_a -> B -> C -> D
+        let mut forward = HashMap::new();
+        forward.insert("test_a".to_string(), vec!["B".to_string()]);
+        forward.insert("B".to_string(), vec!["C".to_string()]);
+        forward.insert("C".to_string(), vec!["D".to_string()]);
+        let graph = CallGraph {
+            forward,
+            reverse: HashMap::new(),
+        };
+        let result = test_reachability(&graph, &["test_a"], 2);
+        assert_eq!(result.get("B"), Some(&1), "B at depth 1");
+        assert_eq!(result.get("C"), Some(&1), "C at depth 2");
+        assert!(!result.contains_key("D"), "D beyond depth limit");
     }
 }

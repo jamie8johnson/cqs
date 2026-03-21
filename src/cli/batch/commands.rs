@@ -7,6 +7,7 @@ use super::BatchContext;
 
 use crate::cli::args::{ContextArgs, DeadArgs, GatherArgs, ImpactArgs, ScoutArgs};
 use crate::cli::parse_nonzero_usize;
+use crate::cli::GateLevel;
 
 use super::handlers;
 
@@ -221,6 +222,66 @@ pub(crate) enum BatchCmd {
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
     },
+    /// Comprehensive diff review
+    Review {
+        /// Base git reference
+        #[arg(long)]
+        base: Option<String>,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
+    /// CI pipeline: review + dead code + gate
+    Ci {
+        /// Base git reference
+        #[arg(long)]
+        base: Option<String>,
+        /// Gate threshold (high, medium, off)
+        #[arg(long, default_value = "off")]
+        gate: GateLevel,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
+    /// Semantic diff between indexed snapshots
+    Diff {
+        /// Source reference name
+        source: String,
+        /// Target reference (default: project)
+        target: Option<String>,
+        /// Similarity threshold
+        #[arg(long, default_value = "0.95")]
+        threshold: f32,
+        /// Filter by language
+        #[arg(short = 'l', long)]
+        lang: Option<String>,
+    },
+    /// Diff-aware impact analysis
+    #[command(name = "impact-diff")]
+    ImpactDiff {
+        /// Base git reference
+        #[arg(long)]
+        base: Option<String>,
+    },
+    /// Task planning with template classification
+    Plan {
+        /// Task description
+        description: String,
+        /// Max file groups
+        #[arg(short = 'n', long, default_value = "5")]
+        limit: usize,
+        /// Maximum token budget
+        #[arg(long, value_parser = parse_nonzero_usize)]
+        tokens: Option<usize>,
+    },
+    /// Auto-suggest notes from patterns
+    Suggest {
+        /// Apply suggestions (otherwise dry-run)
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Garbage collection: prune stale index entries
+    Gc,
     /// Show help
     Help,
 }
@@ -356,6 +417,26 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
             limit,
             tokens,
         } => handlers::dispatch_task(ctx, &description, limit, tokens),
+        BatchCmd::Review { base, tokens } => {
+            handlers::dispatch_review(ctx, base.as_deref(), tokens)
+        }
+        BatchCmd::Ci { base, gate, tokens } => {
+            handlers::dispatch_ci(ctx, base.as_deref(), &gate, tokens)
+        }
+        BatchCmd::Diff {
+            source,
+            target,
+            threshold,
+            lang,
+        } => handlers::dispatch_diff(ctx, &source, target.as_deref(), threshold, lang.as_deref()),
+        BatchCmd::ImpactDiff { base } => handlers::dispatch_impact_diff(ctx, base.as_deref()),
+        BatchCmd::Plan {
+            description,
+            limit,
+            tokens,
+        } => handlers::dispatch_plan(ctx, &description, limit, tokens),
+        BatchCmd::Suggest { apply } => handlers::dispatch_suggest(ctx, apply),
+        BatchCmd::Gc => handlers::dispatch_gc(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
     }
 }
