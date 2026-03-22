@@ -26,6 +26,7 @@ type EvalResults<'a> = Vec<(&'a str, HashMap<Language, (usize, usize)>, usize, u
 
 struct ModelConfig {
     name: &'static str,
+    /// HuggingFace repo ID or local directory path
     repo: &'static str,
     model_file: &'static str,
     tokenizer_file: &'static str,
@@ -108,28 +109,86 @@ const MODELS: &[ModelConfig] = &[
     },
 ];
 
+/// Local LoRA fine-tuned models (resolved at runtime via home dir)
+fn local_lora_models() -> Vec<ModelConfig> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user001".to_string());
+    let mut models = Vec::new();
+
+    let v5_dir = format!("{}/training-data/e5-code-search-lora-v5/onnx", home);
+    if std::path::Path::new(&v5_dir).join("model.onnx").exists() {
+        models.push(ModelConfig {
+            name: "E5-LoRA-v5",
+            repo: Box::leak(v5_dir.into_boxed_str()),
+            model_file: "model.onnx",
+            tokenizer_file: "tokenizer.json",
+            doc_prefix: Some("passage: "),
+            query_prefix: Some("query: "),
+            output_dim: 768,
+            max_length: 512,
+            needs_token_type_ids: true,
+            output_tensor: "last_hidden_state",
+            pooling: Pooling::MeanPooling,
+        });
+    }
+
+    let v7_dir = format!("{}/training-data/e5-code-search-lora-v7/onnx", home);
+    if std::path::Path::new(&v7_dir).join("model.onnx").exists() {
+        models.push(ModelConfig {
+            name: "E5-LoRA-v7",
+            repo: Box::leak(v7_dir.into_boxed_str()),
+            model_file: "model.onnx",
+            tokenizer_file: "tokenizer.json",
+            doc_prefix: Some("passage: "),
+            query_prefix: Some("query: "),
+            output_dim: 768,
+            max_length: 512,
+            needs_token_type_ids: true,
+            pooling: Pooling::MeanPooling,
+            output_tensor: "last_hidden_state",
+        });
+    }
+
+    models
+}
+
 // EvalCase, EVAL_CASES, HARD_EVAL_CASES, fixture_path, hard_fixture_path imported from eval_common
 
 // ===== Eval Embedder (model-agnostic) =====
 
-struct EvalEmbedder {
+struct EvalEmbedder<'a> {
     session: Session,
     tokenizer: tokenizers::Tokenizer,
-    config: &'static ModelConfig,
+    config: &'a ModelConfig,
 }
 
-impl EvalEmbedder {
-    fn new(config: &'static ModelConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        use hf_hub::api::sync::Api;
+impl<'a> EvalEmbedder<'a> {
+    fn new(config: &'a ModelConfig) -> Result<Self, Box<dyn std::error::Error>> {
+        let local_path = std::path::Path::new(config.repo);
+        let (model_path, tokenizer_path) = if local_path.is_dir() {
+            // Local model directory
+            eprintln!("  Loading {} from local: {}...", config.name, config.repo);
+            let mp = local_path.join(config.model_file);
+            let tp = local_path.join(config.tokenizer_file);
+            if !mp.exists() {
+                return Err(format!("Model file not found: {}", mp.display()).into());
+            }
+            if !tp.exists() {
+                return Err(format!("Tokenizer not found: {}", tp.display()).into());
+            }
+            (mp, tp)
+        } else {
+            // HuggingFace Hub download
+            use hf_hub::api::sync::Api;
+            eprintln!("  Downloading {} from {}...", config.name, config.repo);
+            let api = Api::new()?;
+            let repo = api.model(config.repo.to_string());
+            (
+                repo.get(config.model_file)?,
+                repo.get(config.tokenizer_file)?,
+            )
+        };
 
-        eprintln!("  Downloading {} from {}...", config.name, config.repo);
-        let api = Api::new()?;
-        let repo = api.model(config.repo.to_string());
-
-        let model_path = repo.get(config.model_file)?;
-        let tokenizer_path = repo.get(config.tokenizer_file)?;
-
-        eprintln!("  Creating ONNX session (CPU)...");
+        eprintln!("  Creating ONNX session...");
         let session = Session::builder()?.commit_from_file(&model_path)?;
 
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path)
@@ -1015,12 +1074,18 @@ fn test_hard_model_comparison() {
         chunk_descs.len()
     );
 
-    // Test only E5-base-v2 and jina-v2-base-code for speed
-    let test_models = [&MODELS[0], &MODELS[3]];
+    // HF models: E5-base-v2 and jina-v2-base-code
+    let test_models: Vec<&ModelConfig> = vec![&MODELS[0], &MODELS[3]];
+
+    // Local LoRA models (if present)
+    let local_models = local_lora_models();
+    let local_refs: Vec<&ModelConfig> = local_models.iter().collect();
+
+    let all_models: Vec<&ModelConfig> = test_models.into_iter().chain(local_refs).collect();
 
     let mut all_results: HardEvalResults = Vec::new();
 
-    for model_config in test_models {
+    for model_config in all_models {
         eprintln!("--- {} ---", model_config.name);
 
         let mut embedder = match EvalEmbedder::new(model_config) {

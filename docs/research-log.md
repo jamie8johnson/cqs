@@ -426,7 +426,8 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 7. **In-product enrichment ≠ benchmark improvement.** NL enrichment (signatures, doc text, names) helps +1.8pp inside cqs but hurts -4.5pp on CoIR. The model was trained on raw code; enrichment shifts the passage distribution. Benchmark numbers must use the raw model.
 8. **Don't ship before eval completes.** v3 was shipped as default before v5 results existed (11:17 AM vs 12:33 PM). v5 is strictly better on every metric.
 9. **LoRA fine-tuning is a specialization trade-off.** Full 10-task CoIR: v5 drops from #7 (base E5 50.90) to #8 (48.67). Gains on CSN (+5.6pp) come at the cost of generalist tasks (SO-QA, text2sql, codefeedback). Random negatives teach language discrimination, not semantic discrimination — over-specializes.
-10. **Hard negatives may fix the trade-off.** CoRNStack achieved 72.7 CSN without degrading other tasks. Their hard negatives force semantic discrimination that transfers across tasks. Random negatives → narrow specialization. Hard negatives → deep understanding.
+10. **Hard negatives alone don't fix the trade-off.** v7 (hard negs + GIST + Matryoshka) degraded further than v5 (R@1: 81.8% vs 85.5%). Language imbalance (PHP/Java/Python at 82%) likely overwhelms the benefit. CoRNStack's gains may require balanced data or larger scale. Next test: 46k/lang balanced training.
+11. **Language balance matters.** v7's 200k subsample preserved the source proportions (82% in 3 dominant langs). Stack languages at 3% each were too diluted. Equal-weight subsampling is the next experiment.
 
 ---
 
@@ -452,11 +453,13 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 "LoRA fine-tuning for code search is a specialization trade-off: a 110M model study." The contribution isn't SOTA results — it's the systematic analysis of what helps, what hurts, and why. The benchmark-vs-product gap, the specialization trade-off, the LLM text arc, and the layered pipeline architecture are all underexplored in the literature.
 
 ### Roadmap to submission
-1. Hard negative mining (CoRNStack recipe) — fix the specialization trade-off **(in progress: mining 1.7M pairs)**
-2. Expand training data (Rust/C++/TS) — strengthen practical angle
-3. Run full CoIR with base E5 for controlled comparison
-4. Controlled ablation table — each layer added/removed with confidence intervals
-5. Write draft — intro (gap), method (layered pipeline), experiments (three regimes), discussion (trade-offs)
+1. Hard negative mining (CoRNStack recipe) — **done** (1.89M pairs, 65% with hard negs)
+2. Expand training data (Rust/C++/TS) — **done** (Stack v1: 56k Rust, 58k TS, 63k C++)
+3. Train v7 (hard negs + GIST + Matryoshka) — **done, degraded** (R@1: 81.8%, worse than v5 85.5% and base 87.3%)
+4. **Train v7b balanced** — 46k/lang × 9 = 414k, equal language representation. Tests imbalance hypothesis.
+5. Run full CoIR with base E5 for controlled comparison — **done** (base 49.47, v5 48.67)
+6. Controlled ablation table — each layer added/removed with confidence intervals
+7. Write draft — intro (gap), method (layered pipeline), experiments (three regimes), discussion (trade-offs)
 
 ### Dimensions of code retrieval quality
 
@@ -497,6 +500,41 @@ Hard negatives primarily improve dimension 1 but may also help 4 (forcing abstra
 **After mining:**
 1. Train v7 with `train_lora.py --data csn_hard_negs.jsonl --epochs 1`, eval on hard eval + full 10-task CoIR
 2. Key question: does CSN improve without degrading generalist tasks?
+
+### Exp 14: v7 — Hard Negatives + GISTEmbedLoss + Matryoshka — 2026-03-22
+
+**Training config:**
+- Data: 200k subsample from 1.89M combined (CSN 6 + Stack Rust/TS/C++), shuffled seed 42
+- Language composition: PHP 23%, Java 22%, Python 21%, Go 17%, JS 6%, C++ 3%, TS 3%, Rust 3%, Ruby 2%
+- Loss: CachedGISTEmbedLoss (guide=base E5, margin=0.05) + MatryoshkaLoss (768/384/192/128)
+- LoRA: r=16, alpha=32, target=query/key/value/dense
+- Training: 1 epoch, batch 32, lr 2e-5, warmup 10%, fp16
+- Hardware: A6000 48GB, 6h53m (3.5s/step with GIST guide model)
+- Final train loss: 0.327 avg (0.146 last step), eval loss: 0.085
+
+**Hard eval results (55 adversarial queries, 268 chunks):**
+
+| Model | Training | Recall@1 | Recall@5 | MRR | NDCG@10 |
+|-------|----------|----------|----------|-----|---------|
+| **E5-base-v2** | None (pretrained) | **87.3%** | 98.2% | **0.9265** | **0.9449** |
+| jina-v2-base-code | Full FT (161M) | 76.4% | 100.0% | 0.8621 | 0.8971 |
+| E5-LoRA-v5 | 166k CSN, MNR, 1ep | 85.5% | 98.2% | 0.9077 | 0.9304 |
+| **E5-LoRA-v7** | 200k 9-lang, GIST+Matryoshka, 1ep | **81.8%** | 98.2% | **0.8750** | **0.9053** |
+
+Per-language MRR: v7 holds Python (0.955) but drops TypeScript (0.740 vs base 0.769) and Go (0.867 vs base 1.000).
+
+**v7 is worse than v5, and both are worse than base E5 on hard eval.** GISTEmbedLoss + hard negatives + Matryoshka did not solve the specialization trade-off — v7 actually degraded further (-3.7pp R@1 vs v5, -5.5pp vs base).
+
+**CoIR results:** Running (task b626hmrzb). Go NDCG@10: 0.785 (base 0.780, v5 0.793).
+
+**Why v7 failed (hypotheses):**
+1. **Language imbalance**: PHP/Java/Python dominate at 82% of training data. Rust/TS/C++ at 9% total — too diluted to help, but enough to disrupt learning.
+2. **GISTEmbedLoss didn't prevent degradation**: The guide model (base E5) filters false negatives, but doesn't prevent the model from over-fitting to dominant languages. The loss prevents false *negative* damage but not *imbalance* damage.
+3. **Matryoshka overhead**: Training across 4 dimensions may spread capacity too thin with limited data.
+4. **200k subsample too small for 9 languages**: v5 used 166k on 6 CSN languages. v7 used 200k on 9 languages — effectively less per-language coverage.
+
+**Next: v7b balanced (46k/lang × 9 = 414k)**
+Equal language representation. Ruby limits to 46k (smallest). Tests whether balance fixes the degradation.
 
 ### Language expansion analysis
 
@@ -549,8 +587,16 @@ The mining skip rate (~29.5% overall) is not uniform — languages with fewer pa
 - Matryoshka Representation Learning: GitHub uses it. sentence-transformers supports natively. Free to add to our training.
 
 **Genuinely novel ideas (verified as unexplored):**
-- **Negative space training**: explicit "without X" queries for code. Embeddings demonstrably fail at negation (OpenAI community: "laptops without touch screens" returns touch-screen results). No one has created negative-space training pairs for code search. LLM can generate these.
+- **Call-graph false negative filtering**: use structural evidence (shared callers, shared types, same module) to determine which in-batch pairs are false negatives, instead of asking another model. Deterministic, no guide model blindspots. cqs already builds call graphs and type edges for every indexed codebase — this is a product advantage that becomes a training advantage. Graph contrastive learning exists, but using call graphs specifically to filter false negatives during text embedding training is unpublished.
+- **Test-derived training queries**: `cqs test-map` maps functions to their tests. If a test calls `validate_email("bad@")` and asserts `false`, that's a behavioral specification: "function that rejects invalid email addresses." More precise than docstrings or LLM-generated queries. No one uses test assertions as training signal for code retrieval embeddings.
+- **Negative space training**: explicit "without X" queries for code. Embeddings demonstrably fail at negation. No one has created negative-space training pairs for code search.
 - **Multi-granularity semantic embedding**: different vector subspaces for function-level vs module-level vs concept-level meaning. Matryoshka handles dimension truncation but not semantic granularity.
+
+**Potential research contribution unique to cqs:** The call-graph filtering and test-derived queries are only possible in a system that deeply understands code structure. Benchmark pipelines see text; cqs sees call graphs, type edges, test coverage, and behavioral specifications. This is the paper's strongest angle — not "we made a small model competitive" but "code intelligence infrastructure creates training signals that text-only pipelines can't access."
+
+**Practical feasibility:** ~500 repos per language, clone and index with cqs, 2 hours parallel per language, 24GB disk. CSN data (90% of training set) has no repo context — only works for clone-and-index data. Same-repo heuristic from The Stack metadata is the free alternative (functions from same repo = potential false negatives).
+
+**Sequencing:** Get v7 results first (hard negs + GISTEmbedLoss + Matryoshka on current data). If generalist degradation persists, call-graph filtering is the next lever. Don't build the infrastructure before proving the baseline approach works.
 
 **Underexplored (exists but rare):**
 - Temporal/evolutionary training from git history: TransformCode uses syntactic transforms, TeaRAGs uses git trajectories for re-ranking, Repo2Vec embeds repos. But (old_version, new_version) contrastive pairs for embedding training is uncommon.
@@ -575,16 +621,20 @@ The mining skip rate (~29.5% overall) is not uniform — languages with fewer pa
 5. Matryoshka loss — implemented (`--matryoshka`). Multi-dimension embeddings at 768/384/192/128. Free multi-resolution retrieval.
 6. Test balanced vs unbalanced language distribution (v7a vs v7b)
 
-**v7 training command (ready to run after mining completes):**
+**Mining results (2026-03-22 05:45 CDT):**
+- 1,888,099 pairs processed, 1,226,409 (65%) got hard negatives
+- 661,690 (35%) skipped — no valid same-language negatives after γ=0.95 filter
+- GPU FAISS search: minutes (vs hours on CPU). Embedding cache saved to .npy.
+- Total mining time: ~2 hours (embedding) + minutes (search + sampling)
+
+**v7 training started (2026-03-22 05:58 CDT):**
 ```bash
 python train_lora.py \
   --data combined_9lang_hard_negs.jsonl \
   --output ./e5-code-search-lora-v7 \
-  --epochs 1 \
-  --use-gist \
-  --matryoshka \
-  --export-onnx
+  --epochs 1 --use-gist --matryoshka --export-onnx
 ```
+1.89M pairs, GISTEmbedLoss (base E5 guide, margin 0.05), Matryoshka (768/384/192/128), LoRA rank 16. ETA ~5-6 hours on A6000.
 
 Sources: [Qodo-Embed-1](https://www.qodo.ai/blog/qodo-embed-1-code-embedding-code-retrieval/), [GitHub Copilot Embedding](https://github.blog/news-insights/product-news/copilot-new-embedding-model-vs-code/), [Theoretical Limits](https://arxiv.org/abs/2508.21038), [GraphCodeBERT](https://openreview.net/pdf?id=jLoC4ez43PZ), [TransformCode](https://arxiv.org/pdf/2308.12773), [SimCSE Forgetting](https://caiac.pubpub.org/pub/n7sbt42t), [CoRNStack](https://arxiv.org/abs/2412.01007), [Negation in Embeddings](https://community.openai.com/t/embedding-does-not-capture-negative-expression/579676)
 

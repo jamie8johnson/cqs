@@ -150,20 +150,16 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 - Full CoIR pipeline run — enrichment hurts (-4.5pp). Product feature, not benchmark trick.
 - v5 → default — ONNX converted, uploaded to HuggingFace, model card updated.
 
-**In progress (training improvements):**
-1. **Hard negative mining** — CoRNStack recipe. Mining 1.7M CSN pairs with v5. Script: `mine_hard_negatives.py`. ~82% done.
-2. **9-language training data** — Extracted from The Stack v1: Rust 56k, TypeScript 58k, C++ 63k pairs. Need: consistency filter, mine hard negs, subsample per language for balance.
+**Done (training improvements):**
+1. **Hard negative mining** — 1.89M pairs mined, 65% got hard negatives. GPU FAISS, CoRNStack recipe.
+2. **9-language training data** — CSN 6 + Stack Rust 56k, TS 58k, C++ 63k.
+3. **v7 (unbalanced, GIST+Matryoshka)** — Trained 200k subsample. **Result: degraded.** Hard eval R@1: 81.8% (v5: 85.5%, base: 87.3%). Language imbalance (82% in 3 langs) overwhelmed hard negatives.
 
 **Next:**
-3. **Train v7** — combined hard negs, 9 languages, 1 epoch. Stack with:
-   - Matryoshka loss wrapper (multi-dimension: 768/384/192/128, free)
-   - Structural metadata in training NL (tree-sitter features appended to passages, free)
-   - Synthetic query augmentation (3-5 LLM-generated queries per function, ~$3 Haiku batch)
-   - GISTEmbedLoss with guide model — implemented in train_lora.py (`--use-gist`)
-   - Test v7a (unbalanced 1.89M) vs v7b (equal 56k/lang, 504k) — language balance experiment
-   Eval on hard eval + full 10-task CoIR.
-4. **Language-specific LoRA adapters** — Still viable. Our data sizes (56-63k) are 3.5-4x LoRACode's best case (15.7k Python → +86.7%). May fix the -7.9pp cross-code retrieval loss. Try after hard negatives.
-5. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data. Build eval from real agent usage patterns.
+4. **v7b balanced** — 46k/lang × 9 = 414k, equal language representation. Tests imbalance hypothesis. Quick — no new data.
+5. **Language-specific LoRA adapters** — If balanced also fails. LoRACode showed per-language gains correlate with data size; we have 46-63k/lang.
+6. **Call-graph enriched training data** — Clone ~500 repos/lang, extract with structural context. Only after balanced training proves the concept.
+7. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data. Build eval from real agent usage patterns.
 
 **Done:**
 - Sample size sweep (10k/50k/166k at 1ep) — 166k is optimal, more data at 1ep beats less data
