@@ -113,7 +113,9 @@ Per-language NDCG@10 (verified from `~/training-data/coir-results/`):
    - Eval on hard eval (which includes Rust/TS queries) and CoIR
    - Risk: dilution (v6-mixed showed CSN+CosQA+SO hurts). Mitigation: filter aggressively, keep CSN as majority.
 
-3. **Language-specific LoRA adapters** — LoRACode (ICLR 2025, arXiv 2503.05315) found language-specific adapters massively outperform task-specific. Up to 86.7% MRR improvement. Our v5 trains one adapter across all 6 langs. Routing by detected language could be a big win.
+3. **Language-specific LoRA adapters** — LoRACode (ICLR 2025, arXiv 2503.05315) found per-language adapters outperform task-specific on Text2Code. Results on UniXcoder (not E5): Python +86.7% relative MRR (29.76→55.56), Go +67%, but Ruby only +3.9%. Gains correlate with training data size. Caveats: tested on UniXcoder (weaker base than E5), low starting MRR (29-49%), and the relative improvement looks inflated because the base is weak. Our E5 v5 already achieves 0.683 CSN — relative gains would be smaller from a stronger baseline.
+   - **Assessment (corrected):** Our data sizes (56-63k per language) are 3.5-4x larger than LoRACode's best case (Python 15.7k → +86.7%). The data-size correlation actually *supports* per-language adapters for us — we're well above the threshold where gains were largest. The -7.9pp cross-code retrieval loss could be caused by a single adapter averaging across languages. Per-language adapters might fix that directly.
+   - **Still lower priority than hard negatives** — hard negatives improve semantic depth across all languages, while per-language adapters improve per-language pattern matching. Try hard negatives first, but don't write off adapters based on flawed reasoning about data size.
 
 4. **166k / 2 epochs** — quick sanity check. Does CosQA degrade gradually or cliff at 3ep?
 
@@ -300,7 +302,7 @@ First complete CoIR benchmark run. 9 tasks (codeforces dataset unavailable on HF
 | codesearchnet-ccr | **0.569** | 0.490 | **-7.9pp** |
 | **OVERALL** | **49.47** | 48.67 | **-0.8pp** |
 
-v5 wins on 3 tasks, loses on 6. Biggest loss: cross-code retrieval (-7.9pp) — LoRA damaged cross-language understanding. Our measured base (49.47) is slightly below the leaderboard's 50.90 — different eval setup.
+v5 wins on 3 tasks, loses on 6. Biggest loss: cross-code retrieval (-7.9pp) — LoRA damaged cross-language understanding. Our measured base (49.47) is 1.4pp below the leaderboard's 50.90 — likely because we're missing codeforces (1 of 10 tasks, dataset unavailable on HF) and possibly different eval split versions.
 
 **Implication for the paper:** The layered enrichment pipeline (which doesn't touch model weights) may be better for overall benchmark performance than LoRA fine-tuning. Hard negative mining with task-balanced loss could improve code search without degrading generalist ability.
 
@@ -479,7 +481,18 @@ Hard negatives primarily improve dimension 1 but may also help 4 (forcing abstra
 
 **Test run (1000 pairs):** 100% got 7 negatives, ~49 valid candidates per query after filtering. Negatives are semantically related (same domain, different function) — exactly what we want.
 
-**Progress (2026-03-22 00:56 CDT):** Mining 81.8% complete (1,399k / 1,711k pairs). 29.5% skip rate (no valid same-language hard negatives after γ=0.95 filter — mostly duplicate/generic functions). ~15-20 min to finish.
+**Run 1 (CSN only, CPU FAISS):** Killed after ~10 hours at 81.8%. CPU brute-force FAISS was the bottleneck (~1.7B dot products per batch × 1,710 batches). 29.5% skip rate (no valid same-language hard negatives).
+
+**Run 2 (9-language, GPU FAISS, 2026-03-22 04:00 CDT):** Combined dataset of 1.89M pairs (CSN 6 langs + Stack Rust/TS/C++). GPU FAISS installed (conda faiss-gpu 1.13.2). Softmax overflow fix applied. Embedding cache enabled. Streaming output with resume support. Query embedding complete (~30 min). Corpus embedding 13% at 2.25 it/s (code passages are longer → slower). ETA ~7:30 AM CDT for corpus, then GPU FAISS search (minutes) + sampling.
+
+**Verification pass (2026-03-22 04:30 CDT):** All factual claims in research log verified against actual data:
+- 9 per-task CoIR deltas: all match within rounding
+- CoRNStack +9.4pp: confirmed from Table 4 (72.7 - 63.3)
+- LoRACode 86.7%: confirmed as relative MRR gain on Python/UniXcoder
+- Dataset sizes: all match file line counts
+- Leaderboard base E5: 1.4pp discrepancy with official score (49.47 vs 50.90), likely from missing codeforces task
+
+**Consistency filtering results:** All three Stack languages passed at 100% (zero pairs filtered). Avg cosine similarity 0.82-0.84. The Stack pairs with doc comments are self-selecting for quality — regex extraction only captures documented functions. Same result as CSN: consistency filtering doesn't help clean data. The value is entirely in hard negative mining.
 
 **After mining:**
 1. Train v7 with `train_lora.py --data csn_hard_negs.jsonl --epochs 1`, eval on hard eval + full 10-task CoIR
@@ -527,6 +540,53 @@ Still need: consistency filtering, hard negative mining for new languages, combi
 - Proportional-with-floor: no language below 25k.
 
 The mining skip rate (~29.5% overall) is not uniform — languages with fewer pairs have fewer valid negative candidates. Ruby (46k pairs) probably skips 40-50% vs Python (392k) at ~25%. We'll know exact numbers when mining completes.
+
+### Literature survey (2026-03-22)
+
+**Validated directions (others doing similar):**
+- Hard negatives: GitHub Copilot's embedding model blog confirms "near misses" drove their biggest quality gains (+37.6% relative lift). CoRNStack, NV-Retriever same conclusion. We're on the right track.
+- Synthetic query generation: Qodo-Embed-1 (68.53 CoIR, 1.5B params) uses LLM-generated docstrings + search queries as training data. Their 1.5B beats 7B models. Data quality > model size.
+- Matryoshka Representation Learning: GitHub uses it. sentence-transformers supports natively. Free to add to our training.
+
+**Genuinely novel ideas (verified as unexplored):**
+- **Negative space training**: explicit "without X" queries for code. Embeddings demonstrably fail at negation (OpenAI community: "laptops without touch screens" returns touch-screen results). No one has created negative-space training pairs for code search. LLM can generate these.
+- **Multi-granularity semantic embedding**: different vector subspaces for function-level vs module-level vs concept-level meaning. Matryoshka handles dimension truncation but not semantic granularity.
+
+**Underexplored (exists but rare):**
+- Temporal/evolutionary training from git history: TransformCode uses syntactic transforms, TeaRAGs uses git trajectories for re-ranking, Repo2Vec embeds repos. But (old_version, new_version) contrastive pairs for embedding training is uncommon.
+- Structural metadata as text in training NL: GraphCodeBERT uses data flow graphs during pre-training, but as graph input to the model. Injecting structural features as *text* ("2 loops, 3 branches, calls 5 functions") into the NL before a standard text encoder is underexplored.
+- Co-change frequency as contrastive signal: functions modified together share coupling. TeaRAGs re-ranks by git signals. Using co-change as training pairs is rare.
+
+**Dead ends confirmed by literature:**
+- Generic pre-trained code embeddings don't always help downstream tasks (Springer EMSE)
+- Contrastive fine-tuning causes catastrophic forgetting of token-level knowledge (SimCSE/ACL)
+- Structure-blind embeddings underperform in 5/6 tasks (EMSE)
+- Single-vector embeddings have theoretical capacity limits based on sign-rank (arXiv 2508.21038)
+
+**Language balance question:** With 9 languages (PHP 23% down to Rust 3%), in-batch negatives are dominated by PHP/Java/Python. Underrepresented languages get cross-language negatives that teach language discrimination, not semantic understanding. No paper directly studies this for code embeddings. Plan: train v7a (unbalanced 1.89M) and v7b (equal 56k/lang, 504k total). If v7b wins despite less data, balance matters more than volume.
+
+**MNR loss may be the wrong loss function.** HuggingFace blog shows MNR alone can *hurt* (Korean example: base 0.671 → MNR 0.626, -0.045 — same magnitude as our LoRA degradation). GISTEmbedLoss with guide model + relative margin filtering outperforms MNR by handling false negatives. Consider switching from MNR to CachedGISTEmbedLoss for v7.
+
+**Actionable for next training run:**
+1. Matryoshka loss wrapper (free, add to train_lora.py)
+2. Synthetic query augmentation (~$3 Haiku batch for 1.89M pairs)
+3. Structural metadata in training NL (extract from tree-sitter, append to passage text)
+4. GISTEmbedLoss instead of MNR — implemented in train_lora.py (`--use-gist`). Guide model (base E5, frozen) filters false negatives with relative margin. Prevents the generalist degradation we see with MNR.
+5. Matryoshka loss — implemented (`--matryoshka`). Multi-dimension embeddings at 768/384/192/128. Free multi-resolution retrieval.
+6. Test balanced vs unbalanced language distribution (v7a vs v7b)
+
+**v7 training command (ready to run after mining completes):**
+```bash
+python train_lora.py \
+  --data combined_9lang_hard_negs.jsonl \
+  --output ./e5-code-search-lora-v7 \
+  --epochs 1 \
+  --use-gist \
+  --matryoshka \
+  --export-onnx
+```
+
+Sources: [Qodo-Embed-1](https://www.qodo.ai/blog/qodo-embed-1-code-embedding-code-retrieval/), [GitHub Copilot Embedding](https://github.blog/news-insights/product-news/copilot-new-embedding-model-vs-code/), [Theoretical Limits](https://arxiv.org/abs/2508.21038), [GraphCodeBERT](https://openreview.net/pdf?id=jLoC4ez43PZ), [TransformCode](https://arxiv.org/pdf/2308.12773), [SimCSE Forgetting](https://caiac.pubpub.org/pub/n7sbt42t), [CoRNStack](https://arxiv.org/abs/2412.01007), [Negation in Embeddings](https://community.openai.com/t/embedding-does-not-capture-negative-expression/579676)
 
 ### Haiku vs Sonnet summary comparison (Exp 14b)
 
