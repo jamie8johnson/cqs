@@ -1149,3 +1149,19 @@ mentions = [
     "llm.rs",
     "compare_summary_models.py",
 ]
+
+[[note]]
+sentiment = 0.5
+text = "GISTEmbedLoss with guide model may fix LoRA generalist degradation. HF blog shows MNR loss alone hurts Korean retrieval by -0.045 — same magnitude as our CoIR drop. Guide model filters false negatives with relative margin."
+mentions = [
+    "train_lora.py",
+    "research-log.md",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Literature survey: Qodo 1.5B beats 7B via synthetic training queries. GitHub Copilot confirms hard negatives are biggest quality gain. Data pipeline quality matters more than model size."
+mentions = [
+    "research-log.md",
+    "run_coir.py",
+]

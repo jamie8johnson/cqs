@@ -155,8 +155,14 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 2. **9-language training data** — Extracted from The Stack v1: Rust 56k, TypeScript 58k, C++ 63k pairs. Need: consistency filter, mine hard negs, subsample per language for balance.
 
 **Next:**
-3. **Train v7** — combined CSN hard negs + Stack pairs, 9 languages, 1 epoch. Eval on hard eval + full CoIR.
-4. **Language-specific LoRA adapters** — LoRACode (ICLR 2025). Route by detected language.
+3. **Train v7** — combined hard negs, 9 languages, 1 epoch. Stack with:
+   - Matryoshka loss wrapper (multi-dimension: 768/384/192/128, free)
+   - Structural metadata in training NL (tree-sitter features appended to passages, free)
+   - Synthetic query augmentation (3-5 LLM-generated queries per function, ~$3 Haiku batch)
+   - GISTEmbedLoss with guide model — implemented in train_lora.py (`--use-gist`)
+   - Test v7a (unbalanced 1.89M) vs v7b (equal 56k/lang, 504k) — language balance experiment
+   Eval on hard eval + full 10-task CoIR.
+4. **Language-specific LoRA adapters** — Still viable. Our data sizes (56-63k) are 3.5-4x LoRACode's best case (15.7k Python → +86.7%). May fix the -7.9pp cross-code retrieval loss. Try after hard negatives.
 5. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data. Build eval from real agent usage patterns.
 
 **Done:**
