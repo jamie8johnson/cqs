@@ -425,9 +425,9 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 6. **Data > architecture for LoRA.** Rank 16→32 is flat. 50k→200k samples gives diminishing returns. Quality > quantity.
 7. **In-product enrichment ≠ benchmark improvement.** NL enrichment (signatures, doc text, names) helps +1.8pp inside cqs but hurts -4.5pp on CoIR. The model was trained on raw code; enrichment shifts the passage distribution. Benchmark numbers must use the raw model.
 8. **Don't ship before eval completes.** v3 was shipped as default before v5 results existed (11:17 AM vs 12:33 PM). v5 is strictly better on every metric.
-9. **LoRA fine-tuning is a specialization trade-off.** Full 10-task CoIR: v5 drops from #7 (base E5 50.90) to #8 (48.67). Gains on CSN (+5.6pp) come at the cost of generalist tasks (SO-QA, text2sql, codefeedback). Random negatives teach language discrimination, not semantic discrimination — over-specializes.
-10. **Hard negatives alone don't fix the trade-off.** v7 (hard negs + GIST + Matryoshka) degraded further than v5 (R@1: 81.8% vs 85.5%). Language imbalance (PHP/Java/Python at 82%) likely overwhelms the benefit. CoRNStack's gains may require balanced data or larger scale. Next test: 46k/lang balanced training.
-11. **Language balance matters.** v7's 200k subsample preserved the source proportions (82% in 3 dominant langs). Stack languages at 3% each were too diluted. Equal-weight subsampling is the next experiment.
+9. **LoRA fine-tuning is a specialization trade-off — but hard negatives mostly fix it.** v5 (MNR loss) dropped from 49.48 to 48.67 overall CoIR (-0.81pp). v7 (GIST + hard negs) recovered to 49.19 (-0.29pp vs base), while pushing CSN to 0.707 (+2.4pp over v5). The trade-off shrinks from -0.81pp to -0.29pp with better training methodology.
+10. **Adversarial and realistic evals diverge.** v7 improved CoIR (6/9 tasks) but degraded hard eval (81.8% vs 85.5% R@1). Hard negatives teach purpose-level discrimination (what code does) but not implementation-level discrimination (how similar code differs). Different eval regimes test different quality dimensions.
+11. **Language balance still matters.** v7's 200k subsample preserved source proportions (82% in 3 dominant langs). Stack languages at 3% each were too diluted. Balanced subsampling (46k/lang) may further improve results.
 
 ---
 
@@ -455,7 +455,7 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 ### Roadmap to submission
 1. Hard negative mining (CoRNStack recipe) — **done** (1.89M pairs, 65% with hard negs)
 2. Expand training data (Rust/C++/TS) — **done** (Stack v1: 56k Rust, 58k TS, 63k C++)
-3. Train v7 (hard negs + GIST + Matryoshka) — **done, degraded** (R@1: 81.8%, worse than v5 85.5% and base 87.3%)
+3. Train v7 (hard negs + GIST + Matryoshka) — **done, mixed** (CoIR 49.19 +0.52pp vs v5, CSN 0.707 best ever, but hard eval R@1 81.8% degraded)
 4. **Train v7b balanced** — 46k/lang × 9 = 414k, equal language representation. Tests imbalance hypothesis.
 5. Run full CoIR with base E5 for controlled comparison — **done** (base 49.47, v5 48.67)
 6. Controlled ablation table — each layer added/removed with confidence intervals
@@ -523,18 +523,34 @@ Hard negatives primarily improve dimension 1 but may also help 4 (forcing abstra
 
 Per-language MRR: v7 holds Python (0.955) but drops TypeScript (0.740 vs base 0.769) and Go (0.867 vs base 1.000).
 
-**v7 is worse than v5, and both are worse than base E5 on hard eval.** GISTEmbedLoss + hard negatives + Matryoshka did not solve the specialization trade-off — v7 actually degraded further (-3.7pp R@1 vs v5, -5.5pp vs base).
+**v7 is worse than v5 on hard eval** (-3.7pp R@1), but the full CoIR tells a different story:
 
-**CoIR results:** Running (task b626hmrzb). Go NDCG@10: 0.785 (base 0.780, v5 0.793).
+**Full CoIR results (9 tasks):**
 
-**Why v7 failed (hypotheses):**
-1. **Language imbalance**: PHP/Java/Python dominate at 82% of training data. Rust/TS/C++ at 9% total — too diluted to help, but enough to disrupt learning.
-2. **GISTEmbedLoss didn't prevent degradation**: The guide model (base E5) filters false negatives, but doesn't prevent the model from over-fitting to dominant languages. The loss prevents false *negative* damage but not *imbalance* damage.
-3. **Matryoshka overhead**: Training across 4 dimensions may spread capacity too thin with limited data.
-4. **200k subsample too small for 9 languages**: v5 used 166k on 6 CSN languages. v7 used 200k on 9 languages — effectively less per-language coverage.
+| Task | Base | v5 | v7 | v7 vs v5 |
+|------|------|----|----|----------|
+| codesearchnet | 0.627 | 0.683 | **0.707** | **+2.4pp** |
+| codesearchnet-ccr | 0.569 | 0.490 | **0.508** | +1.8pp |
+| cosqa | 0.329 | 0.348 | **0.354** | +0.6pp |
+| codetrans-dl | 0.219 | 0.174 | **0.194** | +2.0pp |
+| stackoverflow-qa | 0.879 | 0.877 | **0.882** | +0.5pp |
+| codefeedback-st | 0.745 | 0.735 | **0.737** | +0.2pp |
+| synthetic-text2sql | 0.554 | 0.567 | 0.558 | -0.9pp |
+| apps | 0.115 | 0.107 | 0.105 | -0.2pp |
+| codefeedback-mt | 0.416 | 0.399 | 0.382 | -1.7pp |
+| **OVERALL** | **49.48** | **48.67** | **49.19** | **+0.52pp** |
+
+v7 wins 6/9, loses 3. CSN +2.4pp (best ever). CCR partially recovered (+1.8pp vs v5's -7.9pp collapse). Overall -0.29pp below base (v5 was -0.81pp). **GISTEmbedLoss + hard negatives mostly resolve the generalist degradation on realistic benchmarks.**
+
+**Split result:** Hard eval (adversarial confusable pairs) degrades while CoIR (realistic NL→code) improves. Hard negatives help distinguish code by *purpose* but don't help distinguish *similar implementations* (sorting variants, validator variants). The hard eval regression may be specific to the fixture design, not a general quality loss.
+
+**Why hard eval still degrades:**
+1. **Language imbalance**: PHP/Java/Python at 82%. Hard eval fixtures are Rust/Python/TS/JS/Go — underrepresented in training.
+2. **Hard eval tests a different axis**: confusable-function discrimination requires fine-grained implementation understanding, not the purpose-level understanding that hard negatives teach.
+3. **Matryoshka may spread capacity**: Training across 4 dimensions with limited data per language.
 
 **Next: v7b balanced (46k/lang × 9 = 414k)**
-Equal language representation. Ruby limits to 46k (smallest). Tests whether balance fixes the degradation.
+Equal language representation. Ruby limits to 46k (smallest). May improve hard eval by giving Rust/TS/Go more training weight. Also: consider shipping v7 for cqs product (NL→code only) while keeping base E5 as fallback.
 
 ### Language expansion analysis
 

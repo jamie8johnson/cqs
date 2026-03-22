@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-03-22
+
+### Added
+- **Hard eval supports local LoRA models** — `tests/model_eval.rs` resolves local directory paths, `local_lora_models()` auto-discovers v5/v7 from `~/training-data/`.
+
+### Changed
+- **Default embedding model upgraded to LoRA v7** on HuggingFace. GIST+Matryoshka+hard negatives: 0.707 CSN NDCG@10 (+2.4pp vs v5), 49.19 CoIR overall (nearly matches base E5). ONNX exported as opset 11 for CUDA EP compatibility.
+
+### Fixed
+- **FK constraint failure on fresh index** — `chunk_calls` were inserted before all chunks were committed across embedding batches, violating the `calls.caller_id` foreign key. Now deferred until all chunks are in the DB (same pattern as type_edges fix in v1.3.0). Also fixes silent call data loss on multi-file batches.
+
 ## [1.3.0] - 2026-03-21
 
 ### Added
