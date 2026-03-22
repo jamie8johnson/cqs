@@ -285,7 +285,22 @@ First complete CoIR benchmark run. 9 tasks (codeforces dataset unavailable on HF
 | apps | 0.107 | 1 | Program synthesis |
 | **Overall avg** | **48.67** | 9 | **#8 on leaderboard (was #7 with base E5 at 50.90)** |
 
-**Key finding: LoRA fine-tuning for code search is a specialization trade-off.** v5 gains +5.6pp on CSN but loses ground on generalist tasks (SO-QA, text2sql, codefeedback), pulling the overall average below base E5 (48.67 vs 50.90). The model specialized toward NL→code at the cost of NL→NL and code→code retrieval.
+**Key finding: LoRA fine-tuning for code search is a specialization trade-off.** Controlled comparison (our measurement, not leaderboard):
+
+| Task | Base E5 | LoRA v5 | Delta |
+|------|---------|---------|-------|
+| codesearchnet | 0.627 | **0.683** | **+5.6pp** |
+| cosqa | 0.329 | **0.348** | +1.9pp |
+| text2sql | 0.554 | **0.567** | +1.3pp |
+| stackoverflow-qa | **0.879** | 0.877 | -0.1pp |
+| codefeedback-st | **0.745** | 0.735 | -1.0pp |
+| codefeedback-mt | **0.416** | 0.399 | -1.6pp |
+| apps | **0.115** | 0.107 | -0.8pp |
+| codetrans-dl | **0.219** | 0.174 | **-4.5pp** |
+| codesearchnet-ccr | **0.569** | 0.490 | **-7.9pp** |
+| **OVERALL** | **49.47** | 48.67 | **-0.8pp** |
+
+v5 wins on 3 tasks, loses on 6. Biggest loss: cross-code retrieval (-7.9pp) — LoRA damaged cross-language understanding. Our measured base (49.47) is slightly below the leaderboard's 50.90 — different eval setup.
 
 **Implication for the paper:** The layered enrichment pipeline (which doesn't touch model weights) may be better for overall benchmark performance than LoRA fine-tuning. Hard negative mining with task-balanced loss could improve code search without degrading generalist ability.
 
@@ -464,10 +479,58 @@ Hard negatives primarily improve dimension 1 but may also help 4 (forcing abstra
 
 **Test run (1000 pairs):** 100% got 7 negatives, ~49 valid candidates per query after filtering. Negatives are semantically related (same domain, different function) — exactly what we want.
 
+**Progress (2026-03-22 00:56 CDT):** Mining 81.8% complete (1,399k / 1,711k pairs). 29.5% skip rate (no valid same-language hard negatives after γ=0.95 filter — mostly duplicate/generic functions). ~15-20 min to finish.
+
 **After mining:**
-1. Train v7 with `train_lora.py --data csn_hard_negs.jsonl`, eval on hard eval + full 10-task CoIR
-2. Optionally augment with (discriminating_summary, code) pairs via `augment_with_summaries.py` for Dimension 4 (abstraction level)
-3. Key question: does CSN improve without degrading generalist tasks?
+1. Train v7 with `train_lora.py --data csn_hard_negs.jsonl --epochs 1`, eval on hard eval + full 10-task CoIR
+2. Key question: does CSN improve without degrading generalist tasks?
+
+### Language expansion analysis
+
+CSN covers 6 languages (Go, Java, JS, Ruby, Python, PHP). Our users need Rust, C++, TypeScript.
+
+**Approach:** Clone popular repos (tokio, serde, axum, clap for Rust; TS compiler, deno for TS; nlohmann/json, fmt, spdlog for C++). Run `cqs index`, extract (docstring, code) pairs, consistency-filter, mine hard negatives.
+
+**The mix problem:**
+- Estimated new pairs: ~11k (3.5k Rust, 5.6k TS, 2.1k C++)
+- Existing CSN: 1.71M
+- New languages would be 0.7% of total — invisible without oversampling
+- Python alone (457k) is 41x larger than all 3 new languages combined
+
+**Options considered:**
+- A: Oversample new langs to 5% each in 166k training set. Risk: overfit to 4 repos per language.
+- B: Use new langs for **eval only**, not training. Check if CSN training transfers via E5's base multilingual ability. If it does, no new training data needed.
+- C: Generate more pairs (20+ repos per language, 50k+ per language). Makes mix meaningful without oversampling.
+- D: The Stack v2 on HuggingFace has all languages pre-parsed. Gated dataset — needs license acceptance at huggingface.co/datasets/bigcode/the-stack-v2-dedup. Could stream Rust/TS/C++ subsets without downloading full 3TB. Requires bulk download agreement with SoftwareHeritage/INRIA for full dataset.
+
+**Software Heritage principles (softwareheritage.org/2023/10/19/swh-statement-on-llm-for-code):**
+The Stack v2 is governed by three principles: (1) models must be released under open licenses — no monopolization of knowledge built from the commons, (2) training data must be fully identified via SWHID identifiers for transparency, attribution, and bias studies, (3) authors must have opt-out mechanisms before training begins. They frame source code as "a digital commons that embodies decades of human creative effort."
+
+For our use: we're training a LoRA adapter (open, published on HuggingFace under Apache 2.0), with traceable training data (CSN + The Stack subsets), and we're not redistributing the raw code. Should be compliant. The adapter weights don't contain memorized code — they adjust embedding geometry.
+
+**Decision:** Do B first — eval-only. Build a Rust/TS/C++ eval set from cloned repos. If CSN-trained model already searches Rust well (E5 base handles it), language expansion is low priority. If not, pursue D (The Stack) for volume.
+
+**Extraction results (2026-03-22):** Streamed from The Stack v1 with `extract_stack_pairs.py`. Regex-based function+docstring extraction, min 1 star filter.
+
+| Language | Files streamed | Pairs extracted | Repos |
+|----------|---------------|----------------|-------|
+| Rust | 50k | 56,130 | 13,154 |
+| TypeScript | 200k | 57,884 | 49,140 |
+| C++ | 200k | 25,186 | 44,528 |
+| **Total** | — | **139,200** | — |
+
+Still need: consistency filtering, hard negative mining for new languages, combine with CSN data.
+
+**Language balance strategy:** CSN is dominated by PHP/Java/Python (23-25% each). New languages at 56-63k pairs each are ~3% of combined 1.9M — comparable to Ruby (2.4%). After hard negative mining, small languages will lose more pairs (fewer candidates → higher skip rate). Solution: **subsample per language** when building the final training set. Options:
+- Equal: 50k per language × 9 = 450k total. Prevents dominance.
+- Weighted toward user need: oversample Rust (primary cqs user language).
+- Proportional-with-floor: no language below 25k.
+
+The mining skip rate (~29.5% overall) is not uniform — languages with fewer pairs have fewer valid negative candidates. Ruby (46k pairs) probably skips 40-50% vs Python (392k) at ~25%. We'll know exact numbers when mining completes.
+
+### Haiku vs Sonnet summary comparison (Exp 14b)
+
+Tested on 19 hard eval Rust functions. Both Haiku and Sonnet summaries **hurt** R@1 by 5.3pp on well-documented code. Model doesn't matter — the prompt is the key. Summaries are gap-fillers for undocumented code, not improvements for documented code. Haiku stays as default (5x cheaper, same embedding quality).
 
 **Summary augmentation (Dimension 4):** Script `~/training-data/augment_with_summaries.py` adds (discriminating_summary, code) pairs alongside (docstring, code) pairs. For our codebase, summaries are cached in cqs store. For CSN, would need ~$2 Haiku batch to generate. The discriminating summaries capture *what makes a function unique* — bridging abstract intent to concrete implementation. Free data augmentation for indexed codebases.
 

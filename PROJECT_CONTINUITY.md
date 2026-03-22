@@ -2,43 +2,50 @@
 
 ## Right Now
 
-**Hard negative mining running, audit fixes ready to commit (2026-03-21 15:38 CDT).**
+**Training data pipeline running (2026-03-22 02:00 CDT).**
 
 ### Running
-- Hard negative mining: 1.7M CSN pairs, ~3% done, ETA ~5:30 PM CDT. Output: `~/training-data/csn_hard_negs.jsonl`
-- After mining: train v7 with `train_lora.py --data csn_hard_negs.jsonl`, eval on hard eval + full 10-task CoIR
+- Hard negative mining: 1.7M CSN pairs, 81.8%+ done, still in memory (32GB RSS). Writing output when complete.
 
-### Ready to commit (~55 dirty files)
-All audit fixes from 6 agents:
-- P1 (16): EX-13/14, RB-12/13, EH-17/18, PB-19/20, DOC-15-20
-- P2 (6): AC-10, AC-14 (coverage→test_ratio), PERF-24, SEC-10, AD-27
-- P3 (~22): tracing spans, code dedup, WSL comments, backoff, tests
-- P4 (2): AD-28 (7 batch commands), PERF-28 (parallel call extraction)
-- CI: eval job summary step
-- Research log: Exp 13 CoIR, dimensions framework, publication assessment
-- Haiku vs Sonnet comparison: identical R@1, model doesn't matter for summaries
+### Complete this session
+- v1.3.0 released (PRs #640-644, tag pushed, binaries built)
+- HuggingFace: v5 model (166k/1ep) uploaded, model card updated
+- Full 14-category audit: 87 findings, 75 fixed
+- Full 10-task CoIR eval: 48.67 avg (#8)
+- Stack extraction: Rust 56k, TypeScript 58k, C++ 63k pairs from The Stack v1
+- Haiku vs Sonnet comparison: model doesn't matter for summaries
+- Usage telemetry implemented (CQS_TELEMETRY=1, .cqs/telemetry.jsonl)
+- GitHub issues created for unfixed audit items (#645-650)
 
-### After commit
-1. PR + merge
-2. Create GitHub issues for unfixed items (CQ-16, CQ-18, RM-22, RM-26, RM-27, AD-24)
-3. Re-run `--improve-all` (EX-13 fixed is_source_file to use language registry)
-4. Re-index, re-run hard eval to verify metrics
+### Uncommitted local changes
+- `src/cli/telemetry.rs` — new telemetry module
+- `src/cli/mod.rs` — telemetry hook in run_with
+- `src/cli/pipeline.rs` — deferred type edge insertion (FK fix)
+- `docs/research-log.md` — Stack extraction results, language balance
+- `docs/notes.toml` — groomed (7 removed, 16 updated)
+- `.github/workflows/ci.yml` — eval job summary step
 
-### Key findings this session
+### After mining finishes
+1. Consistency-filter the Stack pairs with v5 model
+2. Mine hard negatives for Rust/TS/C++ (same script, new data)
+3. Build balanced training set: subsample per language (equal or weighted)
+4. Train v7 on combined hard-neg data (9 languages)
+5. Eval on hard eval + full 10-task CoIR + Rust/TS/C++ eval set
+6. Reindex + re-run --improve-all (EX-13 fix: is_source_file uses registry now)
+
+### Key decisions this session
 - **v5 > v3**: shipped to HF (+1.2pp CSN, +1.4pp CosQA)
-- **LoRA is a specialization trade-off**: full CoIR 48.67 (#8) vs base 50.90 (#7)
-- **Hard negatives target semantic depth**: orthogonal to task breadth and text distribution
-- **Summaries are gap-fillers**: help undocumented code, hurt documented code. Model doesn't matter.
-- **8 quality dimensions**: semantic depth, task breadth, text distribution, abstraction level, structural awareness, negative space, granularity, cross-lingual transfer
-- **Agent users**: cqs users are always AI agents. Precise/technical queries. Semantic depth matters most.
+- **LoRA is specialization trade-off**: full CoIR 48.67 (#8) vs base 50.90 (#7)
+- **Hard negatives may fix trade-off**: CoRNStack +9.4pp without degrading generalist tasks
+- **9-language training**: Stack v1 streaming works, balanced extraction
+- **Subsample per language**: prevents PHP/Java/Python from dominating
+- **Agents use navigation, not search**: 0 semantic searches in audit session, mostly callers/read/context
+- **Summaries are gap-fillers**: hurt well-documented code (-5.3pp), help undocumented (+1.8pp)
+- **Telemetry over speculation**: measure real agent usage instead of optimizing proxy metrics
 
 ## Parked
-- Train v7 on hard negatives (waiting for mining)
-- Summary augmentation for Dimension 4 (abstraction level)
-- Expand training languages (Rust/C++/TS)
-- Language-specific LoRA adapters
-- Paper draft
-- GitHub issues for unfixed audit items
+- Paper draft (2-3 weeks from submittable — need hard neg results + controlled ablations)
+- Re-run --improve-all (blocked by ORT contention, do after mining)
 
 ## Architecture
 - Version: 1.3.0
@@ -47,3 +54,4 @@ All audit fixes from 6 agents:
 - Metrics: 92.7% R@1, 0.965 NDCG@10 (hard eval, DocFirst)
 - CoIR: 48.67 avg (9 tasks), CSN 0.683, CosQA 0.348
 - Tests: 1290 lib pass (with gpu-index)
+- Telemetry: CQS_TELEMETRY=1 in ~/.bashrc, logs to .cqs/telemetry.jsonl
