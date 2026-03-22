@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.0.13
+## Current: v1.3.0
 
-First stable release. All agent experience features shipped. CLI-only (MCP removed in v0.10.0). 51 languages. Two full audits complete (v0.12.3 + v0.19.2). Recursive multi-grammar injection framework.
+v1.3.0: `--improve-all` doc generation, LoRA v5 default model, Windows build fix, security deps, 75 audit fixes. 51 languages. Three full audits (v0.12.3, v0.19.2, v1.3.0). Usage telemetry. 9-language training data pipeline.
 
 ### 1.0.x Highlights
 
@@ -150,11 +150,14 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 - Full CoIR pipeline run — enrichment hurts (-4.5pp). Product feature, not benchmark trick.
 - v5 → default — ONNX converted, uploaded to HuggingFace, model card updated.
 
-**Next (training improvements, prioritized):**
-1. **Hard negative mining** — CoRNStack recipe. +9.4pp potential. Extend `filter_csn.py`.
-2. **Expand training languages** — Rust, C++, TypeScript from public repos. CSN only has 6 languages, our users need more. Mine with `cqs train-data`, consistency-filter with v5.
-3. **Language-specific LoRA adapters** — LoRACode (ICLR 2025). Route by detected language.
-4. **166k, 2 epochs** — midpoint between v5 (1ep) and v4 (3ep, over-specialized).
+**In progress (training improvements):**
+1. **Hard negative mining** — CoRNStack recipe. Mining 1.7M CSN pairs with v5. Script: `mine_hard_negatives.py`. ~82% done.
+2. **9-language training data** — Extracted from The Stack v1: Rust 56k, TypeScript 58k, C++ 63k pairs. Need: consistency filter, mine hard negs, subsample per language for balance.
+
+**Next:**
+3. **Train v7** — combined CSN hard negs + Stack pairs, 9 languages, 1 epoch. Eval on hard eval + full CoIR.
+4. **Language-specific LoRA adapters** — LoRACode (ICLR 2025). Route by detected language.
+5. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data. Build eval from real agent usage patterns.
 
 **Done:**
 - Sample size sweep (10k/50k/166k at 1ep) — 166k is optimal, more data at 1ep beats less data
