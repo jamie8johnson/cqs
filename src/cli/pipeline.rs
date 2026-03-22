@@ -461,8 +461,9 @@ fn parser_stage(
 
         if !chunks.is_empty() {
             // Send in embedding-sized batches with per-file mtimes and relationships.
-            // Relationships are sent with the first batch only (they're stored per-file,
-            // not per-chunk, so splitting across batches is unnecessary).
+            // Relationships are sent with the first batch only. Per-file data
+            // (function_calls, type_refs) is safe. Per-chunk data (chunk_calls,
+            // type_edges) is deferred in store_stage until all chunks are committed.
             let mut remaining_rels = Some(batch_rels);
             for chunk_batch in chunks.chunks(batch_size) {
                 let batch_mtimes: std::collections::HashMap<PathBuf, i64> = chunk_batch
@@ -674,6 +675,7 @@ fn store_stage(
     let mut total_type_edges = 0;
     let mut total_calls = 0;
     let mut deferred_type_edges: Vec<(PathBuf, Vec<ChunkTypeRefs>)> = Vec::new();
+    let mut deferred_chunk_calls: Vec<(String, CallSite)> = Vec::new();
 
     for batch in embed_rx {
         if check_interrupted() {
@@ -682,18 +684,20 @@ fn store_stage(
 
         // PERF-28: Use pre-extracted chunk calls from the parse stage (rayon parallel)
         // instead of re-parsing each chunk sequentially here.
-        let all_calls = batch.relationships.chunk_calls;
+        // Defer chunk_calls — they reference caller_id with FK on chunks(id),
+        // and chunks from later batches aren't in the DB yet.
+        deferred_chunk_calls.extend(batch.relationships.chunk_calls);
 
         let batch_count = batch.chunk_embeddings.len();
+        let no_calls: Vec<(String, CallSite)> = Vec::new();
 
-        // Atomically upsert chunks + calls in a single transaction per file group
+        // Upsert chunks WITHOUT calls (calls are deferred)
         if batch.file_mtimes.len() <= 1 {
             // Fast path: single file or no mtimes
             let mtime = batch.file_mtimes.values().next().copied();
-            store.upsert_chunks_and_calls(&batch.chunk_embeddings, mtime, &all_calls)?;
+            store.upsert_chunks_and_calls(&batch.chunk_embeddings, mtime, &no_calls)?;
         } else {
             // Multi-file batch: group by file and upsert with correct per-file mtime.
-            // Consume chunk_embeddings to avoid cloning (Chunk + Embedding are large).
             let mut by_file: std::collections::HashMap<PathBuf, Vec<(Chunk, Embedding)>> =
                 std::collections::HashMap::new();
             for (chunk, embedding) in batch.chunk_embeddings {
@@ -703,17 +707,9 @@ fn store_stage(
                     .push((chunk, embedding));
             }
 
-            // Build a set of chunk IDs per file for filtering calls
             for (file, pairs) in &by_file {
                 let mtime = batch.file_mtimes.get(file.as_path()).copied();
-                let chunk_ids: std::collections::HashSet<&str> =
-                    pairs.iter().map(|(c, _)| c.id.as_str()).collect();
-                let file_calls: Vec<_> = all_calls
-                    .iter()
-                    .filter(|(id, _)| chunk_ids.contains(id.as_str()))
-                    .cloned()
-                    .collect();
-                store.upsert_chunks_and_calls(pairs, mtime, &file_calls)?;
+                store.upsert_chunks_and_calls(pairs, mtime, &no_calls)?;
             }
         }
 
@@ -751,6 +747,20 @@ fn store_stage(
             "parsed:{} embedded:{} written:{}",
             parsed, embedded, total_embedded
         ));
+    }
+
+    // Insert deferred chunk calls now that all chunks are in the DB.
+    // chunk_calls reference caller_id with FK on chunks(id), so they
+    // must be inserted after all chunks across all batches are committed.
+    if !deferred_chunk_calls.is_empty() {
+        if let Err(e) = store.upsert_calls_batch(&deferred_chunk_calls) {
+            tracing::warn!(
+                count = deferred_chunk_calls.len(),
+                error = %e,
+                "Failed to store deferred chunk calls"
+            );
+        }
+        total_calls += deferred_chunk_calls.len();
     }
 
     // Insert deferred type edges now that all chunks are in the DB.
