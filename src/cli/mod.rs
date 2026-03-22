@@ -11,6 +11,7 @@ mod files;
 mod pipeline;
 mod signal;
 pub(crate) mod staleness;
+pub(crate) mod telemetry;
 mod watch;
 
 // Re-export for watch.rs and commands
@@ -776,6 +777,12 @@ enum Commands {
 
 /// Run CLI with pre-parsed arguments (used when main.rs needs to inspect args first)
 pub fn run_with(mut cli: Cli) -> Result<()> {
+    // Log command for telemetry (opt-in via CQS_TELEMETRY=1)
+    let cqs_dir = cqs::resolve_index_dir(&find_project_root());
+    let telem_args: Vec<String> = std::env::args().collect();
+    let (telem_cmd, telem_query) = telemetry::describe_command(&telem_args);
+    telemetry::log_command(&cqs_dir, &telem_cmd, telem_query.as_deref(), None);
+
     // Load config and apply defaults (CLI flags override config)
     let config = cqs::config::Config::load(&find_project_root());
     apply_config_defaults(&mut cli, &config);
