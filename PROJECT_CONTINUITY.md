@@ -28,6 +28,8 @@
 - Literature survey + paper draft v0.1
 - Novel ideas: call-graph false neg filtering, test-derived queries
 - All scripts quality-reviewed, backed up to github.com/jamie8johnson/cqs-training
+- v7 trained + evaluated (degraded — language imbalance)
+- Hard eval supports local LoRA models
 
 ## Parked
 - Synthetic query augmentation, structural metadata — v8
@@ -41,5 +43,6 @@
 - Current model: LoRA v5 (166k/1ep, 0.683 CSN, 48.67 CoIR) — still best
 - v7 (200k/GIST+Matryoshka): R@1 81.8% — degraded, not shipping
 - Hard eval: supports local LoRA models (tests/model_eval.rs)
+- Metrics: 92.7% R@1, 0.965 NDCG@10 (hard eval, DocFirst)
 - Tests: 1290 lib pass
 - Telemetry: CQS_TELEMETRY=1

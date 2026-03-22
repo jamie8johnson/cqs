@@ -596,7 +596,7 @@ The mining skip rate (~29.5% overall) is not uniform — languages with fewer pa
 
 **Practical feasibility:** ~500 repos per language, clone and index with cqs, 2 hours parallel per language, 24GB disk. CSN data (90% of training set) has no repo context — only works for clone-and-index data. Same-repo heuristic from The Stack metadata is the free alternative (functions from same repo = potential false negatives).
 
-**Sequencing:** Get v7 results first (hard negs + GISTEmbedLoss + Matryoshka on current data). If generalist degradation persists, call-graph filtering is the next lever. Don't build the infrastructure before proving the baseline approach works.
+**Sequencing:** v7 results showed degradation persists even with GISTEmbedLoss + hard negatives. Next test: balanced training (46k/lang). If that also fails, call-graph filtering is the next lever.
 
 **Underexplored (exists but rare):**
 - Temporal/evolutionary training from git history: TransformCode uses syntactic transforms, TeaRAGs uses git trajectories for re-ranking, Repo2Vec embeds repos. But (old_version, new_version) contrastive pairs for embedding training is uncommon.
@@ -627,14 +627,15 @@ The mining skip rate (~29.5% overall) is not uniform — languages with fewer pa
 - GPU FAISS search: minutes (vs hours on CPU). Embedding cache saved to .npy.
 - Total mining time: ~2 hours (embedding) + minutes (search + sampling)
 
-**v7 training started (2026-03-22 05:58 CDT):**
+**v7 training (2026-03-22 06:15–13:09 CDT):**
 ```bash
 python train_lora.py \
   --data combined_9lang_hard_negs.jsonl \
   --output ./e5-code-search-lora-v7 \
-  --epochs 1 --use-gist --matryoshka --export-onnx
+  --epochs 1 --batch-size 32 --max-samples 200000 \
+  --use-gist --matryoshka --export-onnx
 ```
-1.89M pairs, GISTEmbedLoss (base E5 guide, margin 0.05), Matryoshka (768/384/192/128), LoRA rank 16. ETA ~5-6 hours on A6000.
+200k subsample (full 1.89M was 55 hours with GIST). GISTEmbedLoss (base E5 guide, margin 0.05), Matryoshka (768/384/192/128), LoRA rank 16. 6h53m on A6000. See Exp 14 for results.
 
 Sources: [Qodo-Embed-1](https://www.qodo.ai/blog/qodo-embed-1-code-embedding-code-retrieval/), [GitHub Copilot Embedding](https://github.blog/news-insights/product-news/copilot-new-embedding-model-vs-code/), [Theoretical Limits](https://arxiv.org/abs/2508.21038), [GraphCodeBERT](https://openreview.net/pdf?id=jLoC4ez43PZ), [TransformCode](https://arxiv.org/pdf/2308.12773), [SimCSE Forgetting](https://caiac.pubpub.org/pub/n7sbt42t), [CoRNStack](https://arxiv.org/abs/2412.01007), [Negation in Embeddings](https://community.openai.com/t/embedding-does-not-capture-negative-expression/579676)
 
