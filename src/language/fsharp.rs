@@ -55,6 +55,11 @@ const CHUNK_QUERY: &str = r#"
     (type_name
       type_name: (identifier) @name))) @class
 
+;; Type extensions (type MyType with member ...)
+(type_extension
+  (type_name
+    type_name: (identifier) @name)) @extension
+
 ;; Member definitions — concrete (member this.Method(...) = ...)
 (member_defn
   (method_or_prop_defn
@@ -506,5 +511,22 @@ let processData (input: string) : int =
             "Expected Parse call, got: {:?}",
             names
         );
+    }
+
+    #[test]
+    fn parse_fsharp_type_extension() {
+        let content = "type MyRecord with\n    member x.Greet() = \"hello\"\n";
+        let file = write_temp_file(content, "fs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ext = chunks.iter().find(|c| c.chunk_type == crate::parser::ChunkType::Extension);
+        assert!(
+            ext.is_some(),
+            "Expected a type extension chunk, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
+        );
+        let ext = ext.unwrap();
+        assert_eq!(ext.name, "MyRecord");
+        assert_eq!(ext.chunk_type, crate::parser::ChunkType::Extension);
     }
 }
