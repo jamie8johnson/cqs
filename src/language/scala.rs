@@ -1,6 +1,6 @@
 //! Scala language definition
 
-use super::{ChunkType, LanguageDef, SignatureStyle};
+use super::{LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Scala code chunks
 const CHUNK_QUERY: &str = r#"
