@@ -11,7 +11,7 @@ use colored::Colorize;
 /// Reverse: `cqs deps --reverse func_name` — what types does this function use?
 pub(crate) fn cmd_deps(name: &str, reverse: bool, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_deps", name, reverse).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     if reverse {
         let types = store

@@ -36,7 +36,7 @@ pub(crate) fn cmd_task(
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_task", ?max_tokens).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new()?;
     let limit = limit.clamp(1, 10);
 

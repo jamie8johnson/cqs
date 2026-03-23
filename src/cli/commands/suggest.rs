@@ -22,7 +22,7 @@ use colored::Colorize;
 pub(crate) fn cmd_suggest(json: bool, apply: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_suggest", apply).entered();
 
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let suggestions = cqs::suggest::suggest_notes(&store, &root)?;
 
     if suggestions.is_empty() {

@@ -30,7 +30,7 @@ pub(crate) fn cmd_onboard(
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_onboard", concept, depth, ?max_tokens).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new()?;
     let depth = depth.clamp(1, 5);
 

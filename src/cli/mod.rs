@@ -39,6 +39,26 @@ pub(crate) fn open_project_store(
     Ok((store, root, cqs_dir))
 }
 
+/// Open the project store with a single-threaded runtime for read-only commands.
+///
+/// Same as [`open_project_store`] but uses `Store::open_light()` which creates a
+/// `current_thread` tokio runtime (1 OS thread) instead of `multi_thread` (4 OS threads).
+/// Keeps full 256MB mmap and 16MB cache for search performance.
+pub(crate) fn open_project_store_readonly(
+) -> anyhow::Result<(cqs::Store, std::path::PathBuf, std::path::PathBuf)> {
+    let root = find_project_root();
+    let cqs_dir = cqs::resolve_index_dir(&root);
+    let index_path = cqs_dir.join("index.db");
+
+    if !index_path.exists() {
+        anyhow::bail!("Index not found. Run 'cqs init && cqs index' first.");
+    }
+
+    let store = cqs::Store::open_light(&index_path)
+        .map_err(|e| anyhow::anyhow!("Failed to open index at {}: {}", index_path.display(), e))?;
+    Ok((store, root, cqs_dir))
+}
+
 /// Build the best available vector index for the store.
 ///
 /// Priority: CAGRA (GPU, large indexes) > HNSW (CPU) > brute-force (None).

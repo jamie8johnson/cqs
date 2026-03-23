@@ -23,7 +23,7 @@ use cqs::Parser;
 pub(crate) fn cmd_health(json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_health").entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
     // Enumerate current files for staleness check
     let parser = Parser::new()?;

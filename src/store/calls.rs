@@ -986,22 +986,7 @@ impl Store {
                 DeadConfidence::Medium
             };
 
-            let chunk = ChunkSummary::from(ChunkRow {
-                id: light.id,
-                origin: light.file.to_string_lossy().into_owned(),
-                language: light.language.to_string(),
-                chunk_type: light.chunk_type.to_string(),
-                name: light.name,
-                signature: light.signature,
-                content,
-                doc,
-                line_start: light.line_start,
-                line_end: light.line_end,
-                content_hash: String::new(),
-                window_idx: None,
-                parent_id: None,
-                parent_type_name: None,
-            });
+            let chunk = ChunkSummary::from(ChunkRow::from_light_chunk(light, content, doc));
 
             let dead_fn = DeadFunction { chunk, confidence };
 
@@ -1032,24 +1017,7 @@ impl Store {
 
         Ok(rows
             .into_iter()
-            .map(|row| {
-                ChunkSummary::from(ChunkRow {
-                    id: row.get(0),
-                    origin: row.get(1),
-                    language: row.get(2),
-                    chunk_type: row.get(3),
-                    name: row.get(4),
-                    signature: row.get(5),
-                    content: String::new(),
-                    doc: None,
-                    line_start: clamp_line_number(row.get::<i64, _>(6)),
-                    line_end: clamp_line_number(row.get::<i64, _>(7)),
-                    content_hash: String::new(),
-                    window_idx: None,
-                    parent_id: row.get(8),
-                    parent_type_name: row.get(9),
-                })
-            })
+            .map(|row| ChunkSummary::from(ChunkRow::from_row_lightweight(&row)))
             .collect())
     }
 

@@ -14,7 +14,7 @@ use crate::cli::Cli;
 pub(crate) fn cmd_stale(cli: &Cli, json: bool, count_only: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_stale").entered();
 
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     // Enumerate current files on disk
     let parser = Parser::new()?;

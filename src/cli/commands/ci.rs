@@ -42,7 +42,7 @@ pub(crate) fn cmd_ci(
     }
 
     let json = matches!(format, crate::cli::OutputFormat::Json);
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     // Convert CLI gate level to library type
     let threshold = match gate {

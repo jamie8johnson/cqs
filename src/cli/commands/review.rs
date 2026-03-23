@@ -34,7 +34,7 @@ pub(crate) fn cmd_review(
     }
 
     let json = matches!(format, crate::cli::OutputFormat::Json);
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     // 1. Get diff text
     let diff_text = if from_stdin {

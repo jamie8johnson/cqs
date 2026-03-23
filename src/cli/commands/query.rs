@@ -46,7 +46,7 @@ pub(crate) fn cmd_query(cli: &Cli, query: &str) -> Result<()> {
     let _span =
         tracing::info_span!("cmd_query", query_len = query.len(), query = %query_preview).entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
     // Name-only mode: search by function/struct name, skip embedding entirely
     if cli.name_only {

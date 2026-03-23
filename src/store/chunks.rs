@@ -882,7 +882,7 @@ impl Store {
                 let rows: Vec<_> = query.fetch_all(&self.pool).await?;
                 for row in &rows {
                     let chunk = ChunkSummary::from(ChunkRow::from_row(row));
-                    let origin_key: String = row.get(1);
+                    let origin_key: String = row.get("origin");
                     result.entry(origin_key).or_default().push(chunk);
                 }
             }

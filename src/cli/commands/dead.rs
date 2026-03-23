@@ -15,7 +15,7 @@ pub(crate) fn cmd_dead(
     min_level: DeadConfidence,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_dead").entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let (confident, possibly_pub) = store
         .find_dead_code(include_pub)
         .context("Failed to detect dead code")?;

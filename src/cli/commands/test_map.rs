@@ -22,7 +22,7 @@ use super::resolve::resolve_target;
 /// Fails if the project store cannot be opened, the target name cannot be resolved, the call graph cannot be loaded, or test chunks cannot be found.
 pub(crate) fn cmd_test_map(name: &str, max_depth: usize, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_test_map", name).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let resolved = resolve_target(&store, name)?;
     let target_name = resolved.chunk.name.clone();
 

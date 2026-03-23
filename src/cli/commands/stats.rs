@@ -13,7 +13,7 @@ use crate::cli::Cli;
 /// Display index statistics (chunk counts, languages, types)
 pub(crate) fn cmd_stats(cli: &Cli, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_stats").entered();
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
     let stats = store.stats().context("Failed to read index statistics")?;
 
     // Check staleness by scanning filesystem

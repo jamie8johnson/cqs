@@ -53,7 +53,7 @@ pub(crate) fn cmd_related(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_related", name).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     let result = cqs::find_related(&store, name, limit)?;
 

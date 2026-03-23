@@ -48,7 +48,7 @@ pub(crate) fn cmd_gather(
     )
     .entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new()?;
     let query_embedding = embedder.embed_query(query)?;
 

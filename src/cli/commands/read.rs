@@ -344,7 +344,7 @@ pub(crate) fn cmd_read(path: &str, focus: Option<&str>, json: bool) -> Result<()
 fn cmd_read_focused(focus: &str, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_read_focused", %focus).entered();
 
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
     let audit_mode = load_audit_state(&cqs_dir);
     let notes_path = root.join("docs/notes.toml");

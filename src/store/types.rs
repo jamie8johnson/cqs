@@ -316,24 +316,8 @@ impl Store {
                 let rows: Vec<_> = q.fetch_all(&self.pool).await?;
                 for row in rows {
                     use sqlx::Row;
-                    let type_name: String = row.get(0);
-                    // Build ChunkRow from remaining columns (offset by 1)
-                    let chunk = ChunkSummary::from(ChunkRow {
-                        id: row.get(1),
-                        origin: row.get(2),
-                        language: row.get(3),
-                        chunk_type: row.get(4),
-                        name: row.get(5),
-                        signature: row.get(6),
-                        content: row.get(7),
-                        doc: row.get(8),
-                        line_start: clamp_line_number(row.get::<i64, _>(9)),
-                        line_end: clamp_line_number(row.get::<i64, _>(10)),
-                        content_hash: String::new(),
-                        window_idx: None,
-                        parent_id: row.get(11),
-                        parent_type_name: row.get(12),
-                    });
+                    let type_name: String = row.get("target_type_name");
+                    let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
                     result.entry(type_name).or_default().push(chunk);
                 }
             }

@@ -37,7 +37,7 @@ pub(crate) fn cmd_trace(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_trace", source, target).entered();
 
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     // Resolve source and target to chunk names
     let source_resolved = resolve_target(&store, source)?;

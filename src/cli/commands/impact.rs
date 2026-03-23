@@ -28,7 +28,7 @@ pub(crate) fn cmd_impact(
     include_types: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact", name).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let depth = depth.clamp(1, 10);
 
     // Resolve target

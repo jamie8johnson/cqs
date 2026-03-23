@@ -131,6 +131,58 @@ impl ChunkRow {
             parent_type_name: row.get("parent_type_name"),
         }
     }
+
+    /// Construct from a SQLite row that omits content/doc columns.
+    ///
+    /// Used by queries (e.g., `find_test_chunks_async`) that SELECT only lightweight
+    /// metadata columns. Missing columns default: content/content_hash → empty string,
+    /// doc/window_idx → None.
+    pub(crate) fn from_row_lightweight(row: &sqlx::sqlite::SqliteRow) -> Self {
+        use sqlx::Row;
+        ChunkRow {
+            id: row.get("id"),
+            origin: row.get("origin"),
+            language: row.get("language"),
+            chunk_type: row.get("chunk_type"),
+            name: row.get("name"),
+            signature: row.get("signature"),
+            content: String::new(),
+            doc: None,
+            line_start: clamp_line_number(row.get::<i64, _>("line_start")),
+            line_end: clamp_line_number(row.get::<i64, _>("line_end")),
+            content_hash: String::new(),
+            window_idx: None,
+            parent_id: row.get("parent_id"),
+            parent_type_name: row.get("parent_type_name"),
+        }
+    }
+
+    /// Construct from a `LightChunk` plus separately-fetched content and doc.
+    ///
+    /// Used by `find_dead_code` where Phase 1 loads lightweight metadata and Phase 2
+    /// fetches content/doc only for candidates that pass filtering.
+    pub(crate) fn from_light_chunk(
+        light: super::calls::LightChunk,
+        content: String,
+        doc: Option<String>,
+    ) -> Self {
+        ChunkRow {
+            id: light.id,
+            origin: light.file.to_string_lossy().into_owned(),
+            language: light.language.to_string(),
+            chunk_type: light.chunk_type.to_string(),
+            name: light.name,
+            signature: light.signature,
+            content,
+            doc,
+            line_start: light.line_start,
+            line_end: light.line_end,
+            content_hash: String::new(),
+            window_idx: None,
+            parent_id: None,
+            parent_type_name: None,
+        }
+    }
 }
 
 /// Chunk metadata returned from search results

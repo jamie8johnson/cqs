@@ -270,7 +270,7 @@ fn print_blame_terminal(data: &BlameData, root: &Path) {
 pub(crate) fn cmd_blame(target: &str, json: bool, depth: usize, show_callers: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_blame", target).entered();
 
-    let (store, root, _cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, _cqs_dir) = crate::cli::open_project_store_readonly()?;
     let data = build_blame_data(&store, &root, target, depth, show_callers)?;
 
     if json {

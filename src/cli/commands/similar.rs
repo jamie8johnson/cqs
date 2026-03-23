@@ -62,7 +62,7 @@ pub(crate) fn cmd_similar(
 ) -> Result<()> {
     crate::cli::validate_finite_f32(threshold, "threshold")?;
     let _span = tracing::info_span!("cmd_similar", target).entered();
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
     // Resolve target to chunk
     let (chunk_id, chunk_name) = resolve_target(&store, target)?;

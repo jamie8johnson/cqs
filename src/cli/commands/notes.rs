@@ -487,7 +487,7 @@ fn cmd_notes_list(
 
     // Staleness check (requires store)
     let staleness: std::collections::HashMap<String, Vec<String>> = if check {
-        let (store, _, _) = crate::cli::open_project_store()?;
+        let (store, _, _) = crate::cli::open_project_store_readonly()?;
         cqs::suggest::check_note_staleness(&store, &root)?
             .into_iter()
             .collect()

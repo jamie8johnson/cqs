@@ -44,7 +44,7 @@ pub(crate) fn cmd_impact_diff(
     json: bool,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_impact_diff").entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     // 1. Get diff text
     let diff_text = if from_stdin {

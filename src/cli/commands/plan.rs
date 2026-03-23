@@ -35,7 +35,7 @@ pub(crate) fn cmd_plan(
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_plan", description).entered();
 
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new().context("Failed to create embedder")?;
 
     let result =

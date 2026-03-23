@@ -21,7 +21,7 @@ use cqs::{suggest_placement, Embedder};
 /// Returns an error if opening the project store fails, creating the embedder fails, generating placement suggestions fails, or JSON serialization fails.
 pub(crate) fn cmd_where(description: &str, limit: usize, json: bool) -> Result<()> {
     let _span = tracing::info_span!("cmd_where", description).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
     let embedder = Embedder::new()?;
     let limit = limit.clamp(1, 10);
 

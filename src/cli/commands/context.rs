@@ -281,7 +281,7 @@ pub(crate) fn cmd_context(
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_context", path, ?max_tokens).entered();
-    let (store, root, _) = crate::cli::open_project_store()?;
+    let (store, root, _) = crate::cli::open_project_store_readonly()?;
 
     // --tokens is incompatible with --compact and --summary (those modes are deliberately minimal)
     if max_tokens.is_some() && (compact || summary) {

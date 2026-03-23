@@ -126,7 +126,7 @@ pub use types::TypeGraph;
 pub use types::TypeUsage;
 
 // Internal use
-use helpers::{clamp_line_number, ChunkRow};
+use helpers::ChunkRow;
 
 use crate::nl::normalize_for_fts;
 
@@ -234,6 +234,25 @@ impl Store {
             StoreOpenConfig {
                 read_only: false,
                 use_current_thread: false,
+                max_connections: 4,
+                mmap_size: "268435456", // 256MB
+                cache_size: "-16384",   // 16MB
+            },
+        )
+    }
+
+    /// Open an existing index with single-threaded runtime but full memory.
+    ///
+    /// Uses `current_thread` tokio runtime (1 OS thread instead of 4) while
+    /// keeping the full 256MB mmap and 16MB cache of `open()`. Ideal for
+    /// read-only CLI commands on the primary project index where we need
+    /// full search performance but don't need multi-threaded async.
+    pub fn open_light(path: &Path) -> Result<Self, StoreError> {
+        Self::open_with_config(
+            path,
+            StoreOpenConfig {
+                read_only: false,
+                use_current_thread: true,
                 max_connections: 4,
                 mmap_size: "268435456", // 256MB
                 cache_size: "-16384",   // 16MB
@@ -697,26 +716,10 @@ impl Store {
             .fetch_all(&self.pool)
             .await?;
 
-            use sqlx::Row;
             let mut results = rows
                 .into_iter()
                 .map(|row| {
-                    let chunk = ChunkSummary::from(ChunkRow {
-                        id: row.get(0),
-                        origin: row.get(1),
-                        language: row.get(2),
-                        chunk_type: row.get(3),
-                        name: row.get(4),
-                        signature: row.get(5),
-                        content: row.get(6),
-                        doc: row.get(7),
-                        line_start: clamp_line_number(row.get::<i64, _>(8)),
-                        line_end: clamp_line_number(row.get::<i64, _>(9)),
-                        content_hash: String::new(),
-                        window_idx: None,
-                        parent_id: row.get(10),
-                        parent_type_name: row.get(11),
-                    });
+                    let chunk = ChunkSummary::from(ChunkRow::from_row(&row));
                     let name_lower = chunk.name.to_lowercase();
                     let score = helpers::score_name_match_pre_lower(&name_lower, &lower_name);
                     SearchResult { chunk, score }

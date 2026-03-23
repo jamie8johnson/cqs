@@ -278,7 +278,7 @@ pub(crate) fn cmd_explain(
     max_tokens: Option<usize>,
 ) -> Result<()> {
     let _span = tracing::info_span!("cmd_explain", target).entered();
-    let (store, root, cqs_dir) = crate::cli::open_project_store()?;
+    let (store, root, cqs_dir) = crate::cli::open_project_store_readonly()?;
 
     let data = build_explain_data(&store, &cqs_dir, target, max_tokens, None, None)?;
 
