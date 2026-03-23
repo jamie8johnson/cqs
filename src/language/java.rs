@@ -1,6 +1,6 @@
 //! Java language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Java code chunks
 const CHUNK_QUERY: &str = r#"
@@ -84,6 +84,26 @@ const STOPWORDS: &[&str] = &[
     "import", "package", "void", "int", "boolean", "string", "true", "false", "null",
 ];
 
+/// Post-process Java chunks: promote `static final` fields from Property to Constant.
+fn post_process_java(
+    _name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    source: &str,
+) -> bool {
+    if *chunk_type == ChunkType::Property && node.kind() == "field_declaration" {
+        // Check if modifiers contain both "static" and "final"
+        let field_text = &source[node.start_byte()..node.end_byte()];
+        // Look at text before the type/name: modifiers come first
+        let has_static = field_text.contains("static");
+        let has_final = field_text.contains("final");
+        if has_static && has_final {
+            *chunk_type = ChunkType::Constant;
+        }
+    }
+    true
+}
+
 /// Extracts the return type from a Java method signature and formats it as a documentation string.
 /// 
 /// Parses a Java method signature to identify the return type by finding the opening parenthesis and analyzing the words preceding it. The return type is assumed to be the second-to-last word before the parenthesis (the last word being the method name). Filters out Java modifiers and keywords that are not actual return types.
@@ -147,7 +167,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body"],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_java as PostProcessChunkFn),
     test_markers: &["@Test", "@ParameterizedTest", "@RepeatedTest"],
     test_path_patterns: &["%/test/%", "%/tests/%", "%Test.java"],
     structural_matchers: None,
@@ -227,7 +247,8 @@ public class Config {
         let chunks = parser.parse_file(file.path()).unwrap();
         let field = chunks.iter().find(|c| c.name == "name").unwrap();
         assert_eq!(field.chunk_type, ChunkType::Property);
+        // static final fields should be Constant, not Property
         let constant = chunks.iter().find(|c| c.name == "MAX_SIZE").unwrap();
-        assert_eq!(constant.chunk_type, ChunkType::Property);
+        assert_eq!(constant.chunk_type, ChunkType::Constant);
     }
 }
