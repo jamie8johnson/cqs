@@ -130,7 +130,7 @@ fn extract_return(signature: &str) -> Option<String> {
 /// - `enum_class_body` child → Enum
 /// - Anonymous "struct" keyword → Struct
 /// - Anonymous "actor" keyword → Class (actor treated as class)
-/// - Anonymous "extension" keyword → Class (extension treated as class)
+/// - Anonymous "extension" keyword → Extension
 /// - Anonymous "class" keyword or default → Class
 fn post_process_swift(
     _name: &mut String,
@@ -179,8 +179,8 @@ fn post_process_swift(
                 tracing::debug!("Reclassified class_declaration as Class (actor)");
             }
             "extension" => {
-                // Extension → Class (closest semantic match)
-                tracing::debug!("Reclassified class_declaration as Class (extension)");
+                *chunk_type = ChunkType::Extension;
+                tracing::debug!("Reclassified class_declaration as Extension");
             }
             _ => {
                 // "class" or unknown — default @class stays
@@ -497,10 +497,10 @@ extension Point {
             point_chunks.iter().any(|c| c.chunk_type == ChunkType::Struct),
             "Expected one Point to be Struct"
         );
-        // The extension should be Class type
+        // The extension should be Extension type
         assert!(
-            point_chunks.iter().any(|c| c.chunk_type == ChunkType::Class),
-            "Expected one Point to be Class (extension)"
+            point_chunks.iter().any(|c| c.chunk_type == ChunkType::Extension),
+            "Expected one Point to be Extension"
         );
     }
     /// Parses a Swift typealias declaration and verifies it is correctly identified as a TypeAlias chunk.

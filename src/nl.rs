@@ -463,10 +463,16 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
     // Name line (no prefix)
     parts.push(name_words);
 
-    // Struct/enum field names
+    // Extension: "extension of {name}" label
+    if chunk.chunk_type == ChunkType::Extension {
+        let name_tokens = tokenize_identifier(&chunk.name).join(" ");
+        parts.push(format!("extension of {}", name_tokens));
+    }
+
+    // Struct/enum/class/extension field names
     if matches!(
         chunk.chunk_type,
-        ChunkType::Struct | ChunkType::Enum | ChunkType::Class
+        ChunkType::Struct | ChunkType::Enum | ChunkType::Class | ChunkType::Extension
     ) {
         let fields = extract_field_names(&chunk.content, chunk.language);
         if !fields.is_empty() {
@@ -474,10 +480,10 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
-    // Class/struct/interface: extract member method names for richer NL
+    // Class/struct/interface/extension: extract member method names for richer NL
     if matches!(
         chunk.chunk_type,
-        ChunkType::Class | ChunkType::Struct | ChunkType::Interface
+        ChunkType::Class | ChunkType::Struct | ChunkType::Interface | ChunkType::Extension
     ) {
         let methods = extract_member_method_names(&chunk.content, chunk.language);
         if !methods.is_empty() {

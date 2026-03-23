@@ -475,6 +475,8 @@ define_chunk_types! {
     Object => "object";
     /// Type alias definition (Scala, future: Haskell, Kotlin)
     TypeAlias => "typealias";
+    /// Extension (Swift `extension Type { ... }`)
+    Extension => "extension";
 }
 
 impl ChunkType {
@@ -491,11 +493,15 @@ impl ChunkType {
         }
     }
 
-    /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
+    /// Returns true for types that have call graph connections (Function, Method, Property, Macro, Extension).
     pub fn is_callable(self) -> bool {
         matches!(
             self,
-            ChunkType::Function | ChunkType::Method | ChunkType::Property | ChunkType::Macro
+            ChunkType::Function
+                | ChunkType::Method
+                | ChunkType::Property
+                | ChunkType::Macro
+                | ChunkType::Extension
         )
     }
 
