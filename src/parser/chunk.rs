@@ -48,6 +48,7 @@ impl Parser {
             ("macro", ChunkType::Macro),
             ("object", ChunkType::Object),
             ("typealias", ChunkType::TypeAlias),
+            ("extension", ChunkType::Extension),
         ];
 
         // Find which definition capture matched and get its node
