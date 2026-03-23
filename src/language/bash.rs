@@ -7,6 +7,12 @@ const CHUNK_QUERY: &str = r#"
 ;; Function definitions (both `function foo() {}` and `foo() {}` syntaxes)
 (function_definition
   name: (word) @name) @function
+
+;; readonly FOO=bar declarations
+(declaration_command
+  "readonly"
+  (variable_assignment
+    name: (variable_name) @name)) @const
 "#;
 
 /// Tree-sitter query for extracting command invocations
@@ -307,6 +313,24 @@ ls -la
     /// - The file cannot be parsed
     /// - A function named "deploy" is not found in the parsed chunks
     /// - The doc comment does not contain the text "Deploy"
+
+    #[test]
+    fn parse_bash_readonly_constant() {
+        let content = r#"
+readonly MAX_RETRIES=3
+readonly API_URL="https://example.com"
+"#;
+        let file = write_temp_file(content, "sh");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let max = chunks.iter().find(|c| c.name == "MAX_RETRIES");
+        assert!(max.is_some(), "Should capture MAX_RETRIES, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>());
+        assert_eq!(max.unwrap().chunk_type, ChunkType::Constant);
+        let url = chunks.iter().find(|c| c.name == "API_URL");
+        assert!(url.is_some(), "Should capture API_URL");
+        assert_eq!(url.unwrap().chunk_type, ChunkType::Constant);
+    }
 
     #[test]
     fn parse_bash_doc_comment() {
