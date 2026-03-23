@@ -157,7 +157,8 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 
 **Next:**
 4. **v7b balanced** — 46k/lang × 9 = 414k, equal language representation. Tests imbalance hypothesis. Quick — no new data.
-5. **Language-specific LoRA adapters** — If balanced also fails. LoRACode showed per-language gains correlate with data size; we have 46-63k/lang.
+5. **Resume-from-checkpoint** — add `--resume-from-checkpoint` to `train_lora.py`. HF Trainer supports it natively. Enables multi-epoch training without restarting, checkpoint-and-eval at arbitrary points.
+6. **Language-specific LoRA adapters** — If balanced also fails. LoRACode showed per-language gains correlate with data size; we have 46-63k/lang.
 6. **Call-graph enriched training data** — Clone ~500 repos/lang, extract with structural context. Only after balanced training proves the concept.
 7. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data. Build eval from real agent usage patterns.
 
@@ -166,6 +167,7 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 - Discriminating descriptions — shipped in v1.2.0, +16pp R@1
 
 **Other ideas (lower priority):**
+- **Verified HF eval results** — run CoIR eval via HF Jobs + inspect-ai for cryptographic `verifyToken`. Requires CoIR benchmark datasets to have `eval.yaml` registered. Unverified results already uploaded.
 - **Query expansion** — synonym table or small LLM. Cheap recall boost. No model changes.
 - **SPLADE** — sparse learned retrieval. Could replace/augment FTS5.
 - **GNN on call graph** — embed by call graph position. Marginal over SQ-4 text enrichment.
