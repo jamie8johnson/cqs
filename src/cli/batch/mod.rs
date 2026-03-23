@@ -21,7 +21,7 @@ use std::io::{BufRead, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use anyhow::Result;
 use clap::Parser;
@@ -55,41 +55,39 @@ const IDLE_TIMEOUT_MINUTES: u64 = 5;
 ///
 /// # Cache invalidation
 ///
-/// ONNX sessions (embedder, reranker) are cleared after `IDLE_TIMEOUT_MINUTES`
-/// of inactivity to free memory, and re-initialized lazily on next use.
+/// **Stable caches** (embedder, reranker, config, audit_state) use `OnceLock`
+/// and live for the session. ONNX sessions are cleared after idle timeout.
 ///
-/// The remaining caches (call graph, test chunks, file set, notes, config) are
-/// **never cleared during a session**. This is a deliberate trade-off:
-/// - Batch sessions are typically short-lived (a single pipeline invocation or
-///   a bounded interactive session).
-/// - Re-reading the SQLite call graph or scanning the file system on every
-///   command would add latency with no correctness benefit for the common case.
-/// - If the index changes mid-session (e.g. `cqs index` runs concurrently),
-///   cached data may be stale. The correct remedy is to restart the batch
-///   session, which re-opens the Store and re-initializes all caches.
+/// **Mutable caches** (hnsw, call_graph, test_chunks, file_set, notes_cache)
+/// use `RefCell<Option<T>>` and are auto-invalidated when the index.db mtime
+/// changes. This detects concurrent `cqs index` runs during long `cqs chat`
+/// sessions. On invalidation, the Store is also re-opened since it has its own
+/// internal `OnceLock` caches (call_graph_cache, test_chunks_cache).
 ///
-/// There is no `clear_caches()` method because `OnceLock` cannot be reset after
-/// it has been set. To force cache invalidation, discard the `BatchContext` and
-/// call `create_context()` again.
+/// Manual invalidation is available via the `refresh` batch command.
 pub(crate) struct BatchContext {
-    pub store: Store,
+    // Wrapped in RefCell so we can re-open it when the index changes.
+    // Access via store() method which checks staleness first.
+    store: RefCell<Store>,
+    // Stable caches — keep OnceLock (not index-derived)
     embedder: OnceLock<Embedder>,
-    hnsw: OnceLock<Option<Box<dyn VectorIndex>>>,
+    config: OnceLock<cqs::config::Config>,
+    reranker: OnceLock<cqs::Reranker>,
+    // Time-bounded (30min expiry), not index-derived — keep OnceLock
+    audit_state: OnceLock<cqs::audit::AuditMode>,
+    // Mutable caches — RefCell<Option<T>> for invalidation on index change
+    hnsw: RefCell<Option<std::sync::Arc<dyn VectorIndex>>>,
+    call_graph: RefCell<Option<std::sync::Arc<cqs::store::CallGraph>>>,
+    test_chunks: RefCell<Option<Vec<cqs::store::ChunkSummary>>>,
+    file_set: RefCell<Option<HashSet<PathBuf>>>,
+    notes_cache: RefCell<Option<Vec<cqs::note::Note>>>,
     // Single-threaded by design — RefCell is correct, no Mutex needed
     // LRU-capped at 4 entries — each ReferenceIndex holds Store + HNSW (50-200MB)
     refs: RefCell<lru::LruCache<String, ReferenceIndex>>,
     pub root: PathBuf,
     pub cqs_dir: PathBuf,
-    file_set: OnceLock<HashSet<PathBuf>>,
-    // Intentionally never invalidated — notes/audit state fixed for session duration
-    audit_state: OnceLock<cqs::audit::AuditMode>,
-    notes_cache: OnceLock<Vec<cqs::note::Note>>,
-    // Intentionally never cleared — see struct-level doc comment on cache invalidation
-    call_graph: OnceLock<std::sync::Arc<cqs::store::CallGraph>>,
-    // Intentionally never cleared — see struct-level doc comment on cache invalidation
-    test_chunks: OnceLock<Vec<cqs::store::ChunkSummary>>,
-    config: OnceLock<cqs::config::Config>,
-    reranker: OnceLock<cqs::Reranker>,
+    /// Last-seen mtime of index.db, used to detect concurrent index updates.
+    index_mtime: Cell<Option<SystemTime>>,
     error_count: AtomicU64,
     /// Tracks when the last command was processed.
     /// Used to clear ONNX sessions (embedder, reranker) after idle timeout.
@@ -124,6 +122,73 @@ impl BatchContext {
         self.last_command_time.set(Instant::now());
     }
 
+    /// Check if index.db mtime changed since last access. If so, clear all
+    /// mutable caches and re-open the Store (which resets its internal
+    /// OnceLock caches like call_graph_cache, test_chunks_cache).
+    pub(crate) fn check_index_staleness(&self) {
+        let index_path = self.cqs_dir.join("index.db");
+        let current_mtime = match std::fs::metadata(&index_path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => return, // Can't stat — skip check
+        };
+
+        let last = self.index_mtime.get();
+        if last.is_some() && last != Some(current_mtime) {
+            let _span = tracing::info_span!("batch_index_invalidation").entered();
+            tracing::info!("index.db mtime changed, invalidating mutable caches");
+            self.invalidate_mutable_caches();
+
+            // Re-open the Store to reset its internal OnceLock caches
+            match Store::open(&index_path) {
+                Ok(new_store) => {
+                    *self.store.borrow_mut() = new_store;
+                    tracing::info!("Store re-opened after index change");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to re-open Store after index change");
+                }
+            }
+        }
+        self.index_mtime.set(Some(current_mtime));
+    }
+
+    /// Clear all mutable caches. Called on index mtime change or manual refresh.
+    fn invalidate_mutable_caches(&self) {
+        *self.hnsw.borrow_mut() = None;
+        *self.call_graph.borrow_mut() = None;
+        *self.test_chunks.borrow_mut() = None;
+        *self.file_set.borrow_mut() = None;
+        *self.notes_cache.borrow_mut() = None;
+        // Also clear LRU refs — reference indexes may also be stale
+        self.refs.borrow_mut().clear();
+    }
+
+    /// Manually invalidate all mutable caches and re-open the Store.
+    /// Used by the `refresh` batch command.
+    pub(crate) fn invalidate(&self) -> Result<()> {
+        let _span = tracing::info_span!("batch_manual_invalidation").entered();
+        self.invalidate_mutable_caches();
+
+        let index_path = self.cqs_dir.join("index.db");
+        let new_store = Store::open(&index_path)
+            .map_err(|e| anyhow::anyhow!("Failed to re-open Store: {e}"))?;
+        *self.store.borrow_mut() = new_store;
+
+        // Update mtime to current so we don't immediately re-invalidate
+        if let Ok(mtime) = std::fs::metadata(&index_path).and_then(|m| m.modified()) {
+            self.index_mtime.set(Some(mtime));
+        }
+
+        tracing::info!("Manual cache invalidation complete");
+        Ok(())
+    }
+
+    /// Borrow the Store, checking for index staleness first.
+    pub fn store(&self) -> std::cell::Ref<'_, Store> {
+        self.check_index_staleness();
+        self.store.borrow()
+    }
+
     /// Get or create the embedder (~500ms first call).
     pub fn embedder(&self) -> Result<&Embedder> {
         if let Some(e) = self.embedder.get() {
@@ -140,18 +205,25 @@ impl BatchContext {
     }
 
     /// Get or build the vector index (CAGRA/HNSW/brute-force, cached).
-    pub fn vector_index(&self) -> Result<Option<&dyn VectorIndex>> {
-        if let Some(idx) = self.hnsw.get() {
-            return Ok(idx.as_deref());
+    ///
+    /// Checks index staleness before returning cached value. If the index.db
+    /// changed, rebuilds the vector index from the fresh Store.
+    /// Returns a cloneable Arc so callers can hold a reference past RefCell borrow scope.
+    pub fn vector_index(&self) -> Result<Option<std::sync::Arc<dyn VectorIndex>>> {
+        self.check_index_staleness();
+        {
+            let cached = self.hnsw.borrow();
+            if let Some(arc) = cached.as_ref() {
+                return Ok(Some(std::sync::Arc::clone(arc)));
+            }
         }
         let _span = tracing::info_span!("batch_vector_index_init").entered();
-        let idx = build_vector_index(&self.store, &self.cqs_dir, self.config().ef_search)?;
-        let _ = self.hnsw.set(idx);
-        Ok(self
-            .hnsw
-            .get()
-            .expect("hnsw OnceLock populated by set() above")
-            .as_deref())
+        let store = self.store.borrow();
+        let idx = build_vector_index(&store, &self.cqs_dir, self.config().ef_search)?;
+        let result = idx.map(|boxed| -> std::sync::Arc<dyn VectorIndex> { boxed.into() });
+        let ret = result.clone();
+        *self.hnsw.borrow_mut() = result;
+        Ok(ret)
     }
 
     /// Get a cached reference index by name, loading on first access.
@@ -192,43 +264,54 @@ impl BatchContext {
     }
 
     /// Get or build the file set for staleness checks (cached).
-    pub(super) fn file_set(&self) -> Result<&HashSet<PathBuf>> {
-        if let Some(fs) = self.file_set.get() {
-            return Ok(fs);
+    pub(super) fn file_set(&self) -> Result<HashSet<PathBuf>> {
+        self.check_index_staleness();
+        {
+            let cached = self.file_set.borrow();
+            if let Some(fs) = cached.as_ref() {
+                return Ok(fs.clone());
+            }
         }
         let _span = tracing::info_span!("batch_file_set").entered();
         let exts: Vec<&str> = cqs::language::REGISTRY.supported_extensions().collect();
         let files = cqs::enumerate_files(&self.root, &exts, false)?;
         let set: HashSet<PathBuf> = files.into_iter().collect();
-        let _ = self.file_set.set(set);
-        Ok(self
-            .file_set
-            .get()
-            .expect("file_set OnceLock populated by set() above"))
+        let result = set.clone();
+        *self.file_set.borrow_mut() = Some(set);
+        Ok(result)
     }
 
     /// Get cached audit state (loaded once per session).
+    /// NOT index-derived — time-bounded (30min expiry). Stays OnceLock.
     pub(super) fn audit_state(&self) -> &cqs::audit::AuditMode {
         self.audit_state
             .get_or_init(|| cqs::audit::load_audit_state(&self.cqs_dir))
     }
 
-    /// Get cached notes (parsed once per session).
-    pub(super) fn notes(&self) -> &[cqs::note::Note] {
-        self.notes_cache.get_or_init(|| {
-            let notes_path = self.root.join("docs/notes.toml");
-            if notes_path.exists() {
-                match cqs::note::parse_notes(&notes_path) {
-                    Ok(notes) => notes,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to parse notes.toml for batch");
-                        vec![]
-                    }
-                }
-            } else {
-                vec![]
+    /// Get cached notes (parsed once per session, invalidated on index change).
+    pub(super) fn notes(&self) -> Vec<cqs::note::Note> {
+        self.check_index_staleness();
+        {
+            let cached = self.notes_cache.borrow();
+            if let Some(notes) = cached.as_ref() {
+                return notes.clone();
             }
-        })
+        }
+        let notes_path = self.root.join("docs/notes.toml");
+        let notes = if notes_path.exists() {
+            match cqs::note::parse_notes(&notes_path) {
+                Ok(notes) => notes,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to parse notes.toml for batch");
+                    vec![]
+                }
+            }
+        } else {
+            vec![]
+        };
+        let result = notes.clone();
+        *self.notes_cache.borrow_mut() = Some(notes);
+        result
     }
 
     /// Borrow a reference index by name (must be loaded via `get_ref` first).
@@ -247,33 +330,38 @@ impl BatchContext {
         }
     }
 
-    /// Get or load the call graph (cached for session). (PERF-22)
-    pub(super) fn call_graph(&self) -> Result<&cqs::store::CallGraph> {
-        if let Some(g) = self.call_graph.get() {
-            return Ok(g);
+    /// Get or load the call graph (cached, invalidated on index change). (PERF-22)
+    pub(super) fn call_graph(&self) -> Result<std::sync::Arc<cqs::store::CallGraph>> {
+        self.check_index_staleness();
+        {
+            let cached = self.call_graph.borrow();
+            if let Some(g) = cached.as_ref() {
+                return Ok(std::sync::Arc::clone(g));
+            }
         }
         let _span = tracing::info_span!("batch_call_graph_init").entered();
-        let g = self.store.get_call_graph()?;
-        let _ = self.call_graph.set(g);
-        // Arc<CallGraph> derefs to &CallGraph
-        Ok(self
-            .call_graph
-            .get()
-            .expect("call_graph OnceLock populated by set() above"))
+        let store = self.store.borrow();
+        let g = store.get_call_graph()?;
+        let result = std::sync::Arc::clone(&g);
+        *self.call_graph.borrow_mut() = Some(g);
+        Ok(result)
     }
 
-    /// Get or load test chunks (cached for session).
-    pub(super) fn test_chunks(&self) -> Result<&[cqs::store::ChunkSummary]> {
-        if let Some(tc) = self.test_chunks.get() {
-            return Ok(tc);
+    /// Get or load test chunks (cached, invalidated on index change).
+    pub(super) fn test_chunks(&self) -> Result<Vec<cqs::store::ChunkSummary>> {
+        self.check_index_staleness();
+        {
+            let cached = self.test_chunks.borrow();
+            if let Some(tc) = cached.as_ref() {
+                return Ok(tc.clone());
+            }
         }
         let _span = tracing::info_span!("batch_test_chunks_init").entered();
-        let tc = self.store.find_test_chunks()?;
-        let _ = self.test_chunks.set(tc);
-        Ok(self
-            .test_chunks
-            .get()
-            .expect("test_chunks OnceLock populated by set() above"))
+        let store = self.store.borrow();
+        let tc = store.find_test_chunks()?;
+        let result = tc.clone();
+        *self.test_chunks.borrow_mut() = Some(tc);
+        Ok(result)
     }
 
     /// Get cached project config (loaded once per session). (RM-21)
@@ -364,20 +452,58 @@ fn write_json_line(
 /// Used by both `cmd_batch` and `cmd_chat`.
 pub(crate) fn create_context() -> Result<BatchContext> {
     let (store, root, cqs_dir) = open_project_store()?;
+
+    // Capture initial index.db mtime
+    let index_mtime = std::fs::metadata(cqs_dir.join("index.db"))
+        .and_then(|m| m.modified())
+        .ok();
+
     Ok(BatchContext {
-        store,
+        store: RefCell::new(store),
         embedder: OnceLock::new(),
-        hnsw: OnceLock::new(),
+        config: OnceLock::new(),
+        reranker: OnceLock::new(),
+        audit_state: OnceLock::new(),
+        hnsw: RefCell::new(None),
+        call_graph: RefCell::new(None),
+        test_chunks: RefCell::new(None),
+        file_set: RefCell::new(None),
+        notes_cache: RefCell::new(None),
         refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap())),
         root,
         cqs_dir,
-        file_set: OnceLock::new(),
-        audit_state: OnceLock::new(),
-        notes_cache: OnceLock::new(),
-        call_graph: OnceLock::new(),
-        test_chunks: OnceLock::new(),
+        index_mtime: Cell::new(index_mtime),
+        error_count: AtomicU64::new(0),
+        last_command_time: Cell::new(Instant::now()),
+    })
+}
+
+/// Create a BatchContext for testing with a temporary store.
+#[cfg(test)]
+fn create_test_context(cqs_dir: &std::path::Path) -> Result<BatchContext> {
+    let index_path = cqs_dir.join("index.db");
+    let store =
+        Store::open(&index_path).map_err(|e| anyhow::anyhow!("Failed to open test store: {e}"))?;
+    let root = cqs_dir.parent().unwrap_or(cqs_dir).to_path_buf();
+    let index_mtime = std::fs::metadata(&index_path)
+        .and_then(|m| m.modified())
+        .ok();
+
+    Ok(BatchContext {
+        store: RefCell::new(store),
+        embedder: OnceLock::new(),
         config: OnceLock::new(),
         reranker: OnceLock::new(),
+        audit_state: OnceLock::new(),
+        hnsw: RefCell::new(None),
+        call_graph: RefCell::new(None),
+        test_chunks: RefCell::new(None),
+        file_set: RefCell::new(None),
+        notes_cache: RefCell::new(None),
+        refs: RefCell::new(lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap())),
+        root,
+        cqs_dir: cqs_dir.to_path_buf(),
+        index_mtime: Cell::new(index_mtime),
         error_count: AtomicU64::new(0),
         last_command_time: Cell::new(Instant::now()),
     })
@@ -504,4 +630,141 @@ pub(crate) fn cmd_batch() -> Result<()> {
     }
 
     Ok(())
+}
+
+// ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cqs::store::ModelInfo;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Create a temp dir with an initialized index.db for testing.
+    fn setup_test_store() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let cqs_dir = dir.path().join(".cqs");
+        std::fs::create_dir_all(&cqs_dir).unwrap();
+        let index_path = cqs_dir.join("index.db");
+        let store = Store::open(&index_path).unwrap();
+        store.init(&ModelInfo::default()).unwrap();
+        drop(store);
+        (dir, cqs_dir)
+    }
+
+    #[test]
+    fn test_invalidate_clears_mutable_caches() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Populate mutable caches
+        *ctx.file_set.borrow_mut() = Some(HashSet::new());
+        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        *ctx.call_graph.borrow_mut() = Some(std::sync::Arc::new(cqs::store::CallGraph {
+            forward: Default::default(),
+            reverse: Default::default(),
+        }));
+        *ctx.test_chunks.borrow_mut() = Some(vec![]);
+
+        // Verify caches are populated
+        assert!(ctx.file_set.borrow().is_some());
+        assert!(ctx.notes_cache.borrow().is_some());
+        assert!(ctx.call_graph.borrow().is_some());
+        assert!(ctx.test_chunks.borrow().is_some());
+
+        // Invalidate
+        ctx.invalidate().unwrap();
+
+        // Verify all mutable caches are cleared
+        assert!(ctx.file_set.borrow().is_none());
+        assert!(ctx.notes_cache.borrow().is_none());
+        assert!(ctx.call_graph.borrow().is_none());
+        assert!(ctx.test_chunks.borrow().is_none());
+        assert!(ctx.hnsw.borrow().is_none());
+    }
+
+    #[test]
+    fn test_mtime_staleness_detection() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Populate a cache
+        *ctx.notes_cache.borrow_mut() = Some(vec![]);
+        assert!(ctx.notes_cache.borrow().is_some());
+
+        // First staleness check — sets baseline mtime, no invalidation
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_some(),
+            "First check should not invalidate"
+        );
+
+        // Touch index.db to simulate concurrent `cqs index`
+        // Sleep to ensure mtime changes (filesystem granularity is ~1s on some FS)
+        thread::sleep(Duration::from_secs(2));
+        let index_path = cqs_dir.join("index.db");
+        // Append a byte to force mtime change
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&index_path)
+                .unwrap();
+            file.write_all(b" ").unwrap();
+            file.sync_all().unwrap();
+        }
+
+        // Second staleness check — mtime changed, should invalidate
+        ctx.check_index_staleness();
+        assert!(
+            ctx.notes_cache.borrow().is_none(),
+            "Mtime change should invalidate cache"
+        );
+    }
+
+    #[test]
+    fn test_stable_caches_survive_invalidation() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // Set audit_state (stable — OnceLock, not index-derived)
+        let _ = ctx.audit_state.set(cqs::audit::AuditMode {
+            enabled: false,
+            expires_at: None,
+        });
+
+        // Invalidate mutable caches
+        ctx.invalidate().unwrap();
+
+        // Verify stable cache survives
+        assert!(
+            ctx.audit_state.get().is_some(),
+            "audit_state should survive invalidation"
+        );
+    }
+
+    #[test]
+    fn test_refresh_command_parses() {
+        let input = commands::BatchInput::try_parse_from(["refresh"]).unwrap();
+        assert!(matches!(input.cmd, commands::BatchCmd::Refresh));
+    }
+
+    #[test]
+    fn test_invalidate_alias_parses() {
+        let input = commands::BatchInput::try_parse_from(["invalidate"]).unwrap();
+        assert!(matches!(input.cmd, commands::BatchCmd::Refresh));
+    }
+
+    #[test]
+    fn test_store_accessor_returns_valid_ref() {
+        let (_dir, cqs_dir) = setup_test_store();
+        let ctx = create_test_context(&cqs_dir).unwrap();
+
+        // store() should return a usable Ref
+        let store_ref = ctx.store();
+        // Verify we can call a method on it (stats() queries the DB)
+        let stats = store_ref.stats();
+        assert!(stats.is_ok(), "Store should be usable via store() accessor");
+    }
 }

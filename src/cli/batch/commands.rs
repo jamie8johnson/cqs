@@ -282,6 +282,9 @@ pub(crate) enum BatchCmd {
     },
     /// Garbage collection: prune stale index entries
     Gc,
+    /// Invalidate all mutable caches and re-open the Store
+    #[command(visible_alias = "invalidate")]
+    Refresh,
     /// Show help
     Help,
 }
@@ -437,6 +440,7 @@ pub(crate) fn dispatch(ctx: &BatchContext, cmd: BatchCmd) -> Result<serde_json::
         } => handlers::dispatch_plan(ctx, &description, limit, tokens),
         BatchCmd::Suggest { apply } => handlers::dispatch_suggest(ctx, apply),
         BatchCmd::Gc => handlers::dispatch_gc(ctx),
+        BatchCmd::Refresh => handlers::dispatch_refresh(ctx),
         BatchCmd::Help => handlers::dispatch_help(),
     }
 }

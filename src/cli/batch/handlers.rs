@@ -40,7 +40,7 @@ pub(super) fn dispatch_blame(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_blame", target).entered();
     let data = crate::cli::commands::blame::build_blame_data(
-        &ctx.store,
+        &ctx.store(),
         &ctx.root,
         target,
         depth,
@@ -96,7 +96,7 @@ pub(super) fn dispatch_search(
 
     if params.name_only {
         let results = ctx
-            .store
+            .store()
             .search_by_name(&params.query, params.limit.clamp(1, 100))?;
         let json_results: Vec<serde_json::Value> = results
             .iter()
@@ -146,9 +146,10 @@ pub(super) fn dispatch_search(
     // Check audit mode (cached per session)
     let audit_mode = ctx.audit_state();
     let index = ctx.vector_index()?;
+    let index = index.as_deref();
 
     let results = if audit_mode.is_active() {
-        let code_results = ctx.store.search_filtered_with_index(
+        let code_results = ctx.store().search_filtered_with_index(
             &query_embedding,
             &filter,
             effective_limit,
@@ -160,7 +161,7 @@ pub(super) fn dispatch_search(
             .map(cqs::store::UnifiedResult::Code)
             .collect()
     } else {
-        ctx.store.search_unified_with_index(
+        ctx.store().search_unified_with_index(
             &query_embedding,
             &filter,
             effective_limit,
@@ -265,7 +266,7 @@ pub(super) fn dispatch_deps(
     let _span = tracing::info_span!("batch_deps", name, reverse).entered();
 
     if reverse {
-        let types = ctx.store.get_types_used_by(name)?;
+        let types = ctx.store().get_types_used_by(name)?;
         Ok(serde_json::json!({
             "function": name,
             "types": types.iter().map(|t| {
@@ -274,7 +275,7 @@ pub(super) fn dispatch_deps(
             "count": types.len(),
         }))
     } else {
-        let users = ctx.store.get_type_users(name)?;
+        let users = ctx.store().get_type_users(name)?;
         let json_users: Vec<serde_json::Value> = users
             .iter()
             .map(|c| {
@@ -304,7 +305,7 @@ pub(super) fn dispatch_deps(
 /// A `Result` containing a JSON array of caller objects, each with `name`, `file`, and `line` fields. Returns an error if the store query fails.
 pub(super) fn dispatch_callers(ctx: &BatchContext, name: &str) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_callers", name).entered();
-    let callers = ctx.store.get_callers_full(name)?;
+    let callers = ctx.store().get_callers_full(name)?;
     let json_callers: Vec<serde_json::Value> = callers
         .iter()
         .map(|c| {
@@ -337,7 +338,7 @@ pub(super) fn dispatch_callers(ctx: &BatchContext, name: &str) -> Result<serde_j
 /// Returns an error if the store fails to retrieve the callees for the given function name.
 pub(super) fn dispatch_callees(ctx: &BatchContext, name: &str) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_callees", name).entered();
-    let callees = ctx.store.get_callees_full(name, None)?;
+    let callees = ctx.store().get_callees_full(name, None)?;
     Ok(serde_json::json!({
         "function": name,
         "calls": callees.iter().map(|(n, line)| {
@@ -370,6 +371,7 @@ pub(super) fn dispatch_explain(
     let _span = tracing::info_span!("batch_explain", target).entered();
 
     let index = ctx.vector_index()?;
+    let index = index.as_deref();
     let embedder = if tokens.is_some() {
         Some(ctx.embedder()?)
     } else {
@@ -377,7 +379,7 @@ pub(super) fn dispatch_explain(
     };
 
     let data = crate::cli::commands::explain::build_explain_data(
-        &ctx.store,
+        &ctx.store(),
         &ctx.cqs_dir,
         target,
         tokens,
@@ -425,18 +427,19 @@ pub(super) fn dispatch_similar(
     let threshold = validate_finite_f32(threshold, "threshold")?;
     let limit = limit.clamp(1, 100);
 
-    let resolved = cqs::resolve_target(&ctx.store, target)?;
+    let resolved = cqs::resolve_target(&ctx.store(), target)?;
     let chunk = &resolved.chunk;
 
     let (source_chunk, embedding) = ctx
-        .store
+        .store()
         .get_chunk_with_embedding(&chunk.id)?
         .ok_or_else(|| anyhow::anyhow!("Could not load embedding for '{}'", chunk.name))?;
 
     let filter = cqs::SearchFilter::default();
 
     let index = ctx.vector_index()?;
-    let results = ctx.store.search_filtered_with_index(
+    let index = index.as_deref();
+    let results = ctx.store().search_filtered_with_index(
         &embedding,
         &filter,
         limit.saturating_add(1),
@@ -516,8 +519,9 @@ pub(super) fn dispatch_gather(
             .borrow_ref(rn)
             .ok_or_else(|| anyhow::anyhow!("Reference '{}' not loaded", rn))?;
         let index = ctx.vector_index()?;
+        let index = index.as_deref();
         cqs::gather_cross_index_with_index(
-            &ctx.store,
+            &ctx.store(),
             &ref_idx,
             &query_embedding,
             query,
@@ -526,7 +530,7 @@ pub(super) fn dispatch_gather(
             index,
         )?
     } else {
-        cqs::gather(&ctx.store, &query_embedding, query, &opts, &ctx.root)?
+        cqs::gather(&ctx.store(), &query_embedding, query, &opts, &ctx.root)?
     };
 
     // Token-budget packing
@@ -596,16 +600,16 @@ pub(super) fn dispatch_impact(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_impact", name).entered();
 
-    let resolved = cqs::resolve_target(&ctx.store, name)?;
+    let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let chunk = &resolved.chunk;
     let depth = depth.clamp(1, 10);
 
-    let result = cqs::analyze_impact(&ctx.store, &chunk.name, depth, include_types)?;
+    let result = cqs::analyze_impact(&ctx.store(), &chunk.name, depth, include_types)?;
 
     let mut json = cqs::impact_to_json(&result, &ctx.root);
 
     if do_suggest_tests {
-        let suggestions = cqs::suggest_tests(&ctx.store, &result);
+        let suggestions = cqs::suggest_tests(&ctx.store(), &result);
         let suggestions_json: Vec<_> = suggestions
             .iter()
             .map(|s| {
@@ -651,11 +655,11 @@ pub(super) fn dispatch_test_map(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_test_map", name).entered();
 
-    let resolved = cqs::resolve_target(&ctx.store, name)?;
+    let resolved = cqs::resolve_target(&ctx.store(), name)?;
     let target_name = resolved.chunk.name.clone();
 
     let graph = ctx.call_graph()?;
-    let test_chunks = ctx.store.find_test_chunks()?;
+    let test_chunks = ctx.store().find_test_chunks()?;
 
     // Reverse BFS from target
     let mut ancestors: HashMap<String, (usize, String)> = HashMap::new();
@@ -763,8 +767,8 @@ pub(super) fn dispatch_trace(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_trace", source, target).entered();
 
-    let source_resolved = cqs::resolve_target(&ctx.store, source)?;
-    let target_resolved = cqs::resolve_target(&ctx.store, target)?;
+    let source_resolved = cqs::resolve_target(&ctx.store(), source)?;
+    let target_resolved = cqs::resolve_target(&ctx.store(), target)?;
     let source_name = source_resolved.chunk.name.clone();
     let target_name = target_resolved.chunk.name.clone();
 
@@ -824,7 +828,7 @@ pub(super) fn dispatch_trace(
         Some(names) => {
             // Batch lookup instead of N+1 queries (PERF-20)
             let name_refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-            let batch_results = ctx.store.search_by_names_batch(&name_refs, 1)?;
+            let batch_results = ctx.store().search_by_names_batch(&name_refs, 1)?;
 
             let mut path_json = Vec::new();
             for name in &names {
@@ -889,7 +893,7 @@ pub(super) fn dispatch_dead(
 ) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_dead").entered();
 
-    let (confident, possibly_pub) = ctx.store.find_dead_code(include_pub)?;
+    let (confident, possibly_pub) = ctx.store().find_dead_code(include_pub)?;
 
     let confident: Vec<_> = confident
         .into_iter()
@@ -951,7 +955,7 @@ pub(super) fn dispatch_related(
     let _span = tracing::info_span!("batch_related", name).entered();
     let limit = limit.clamp(1, 100);
 
-    let result = cqs::find_related(&ctx.store, name, limit)?;
+    let result = cqs::find_related(&ctx.store(), name, limit)?;
 
     let to_json = |items: &[cqs::RelatedFunction]| -> Vec<serde_json::Value> {
         items
@@ -1003,13 +1007,13 @@ pub(super) fn dispatch_context(
     let _span = tracing::info_span!("batch_context", path).entered();
 
     if compact {
-        let data = crate::cli::commands::context::build_compact_data(&ctx.store, path)?;
+        let data = crate::cli::commands::context::build_compact_data(&ctx.store(), path)?;
         return Ok(crate::cli::commands::context::compact_to_json(&data, path));
     }
 
     if summary {
         // Batch summary is a simpler aggregation (total counts, no per-caller detail)
-        let chunks = ctx.store.get_chunks_by_origin(path)?;
+        let chunks = ctx.store().get_chunks_by_origin(path)?;
         if chunks.is_empty() {
             anyhow::bail!(
                 "No indexed chunks found for '{}'. Is the file indexed?",
@@ -1017,8 +1021,8 @@ pub(super) fn dispatch_context(
             );
         }
         let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = ctx.store.get_caller_counts_batch(&names)?;
-        let callee_counts = ctx.store.get_callee_counts_batch(&names)?;
+        let caller_counts = ctx.store().get_caller_counts_batch(&names)?;
+        let callee_counts = ctx.store().get_callee_counts_batch(&names)?;
         let total_callers: u64 = caller_counts.values().sum();
         let total_callees: u64 = callee_counts.values().sum();
 
@@ -1031,7 +1035,7 @@ pub(super) fn dispatch_context(
     }
 
     // Full context — with optional token packing
-    let chunks = ctx.store.get_chunks_by_origin(path)?;
+    let chunks = ctx.store().get_chunks_by_origin(path)?;
     if chunks.is_empty() {
         anyhow::bail!(
             "No indexed chunks found for '{}'. Is the file indexed?",
@@ -1042,7 +1046,7 @@ pub(super) fn dispatch_context(
     let (chunks, token_info) = if let Some(budget) = tokens {
         let embedder = ctx.embedder()?;
         let names: Vec<&str> = chunks.iter().map(|c| c.name.as_str()).collect();
-        let caller_counts = ctx.store.get_caller_counts_batch(&names)?;
+        let caller_counts = ctx.store().get_caller_counts_batch(&names)?;
         let (included, used) = crate::cli::commands::context::pack_by_relevance(
             &chunks,
             &caller_counts,
@@ -1101,10 +1105,10 @@ pub(super) fn dispatch_context(
 /// Returns an error if any of the store queries fail (stats, note_count, function_call_stats, or type_edge_stats).
 pub(super) fn dispatch_stats(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stats").entered();
-    let stats = ctx.store.stats()?;
-    let note_count = ctx.store.note_count()?;
-    let fc_stats = ctx.store.function_call_stats()?;
-    let te_stats = ctx.store.type_edge_stats()?;
+    let stats = ctx.store().stats()?;
+    let note_count = ctx.store().note_count()?;
+    let fc_stats = ctx.store().function_call_stats()?;
+    let te_stats = ctx.store().type_edge_stats()?;
     let errors = ctx.error_count.load(std::sync::atomic::Ordering::Relaxed);
 
     Ok(serde_json::json!({
@@ -1157,7 +1161,7 @@ pub(super) fn dispatch_onboard(
     let _span = tracing::info_span!("batch_onboard", query, depth).entered();
     let embedder = ctx.embedder()?;
     let depth = depth.clamp(1, 5);
-    let result = cqs::onboard(&ctx.store, embedder, query, &ctx.root, depth)?;
+    let result = cqs::onboard(&ctx.store(), embedder, query, &ctx.root, depth)?;
 
     let Some(budget) = tokens else {
         return cqs::onboard_to_json(&result)
@@ -1176,7 +1180,7 @@ pub(super) fn dispatch_onboard(
 
     // Batch-fetch content
     let names: Vec<&str> = entries.iter().map(|(n, _)| n.as_str()).collect();
-    let chunks_by_name = match ctx.store.get_chunks_by_names_batch(&names) {
+    let chunks_by_name = match ctx.store().get_chunks_by_names_batch(&names) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to batch-fetch chunks for onboard token packing");
@@ -1262,7 +1266,7 @@ pub(super) fn dispatch_scout(
     let _span = tracing::info_span!("batch_scout", query).entered();
     let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 50);
-    let result = cqs::scout(&ctx.store, embedder, query, &ctx.root, limit)?;
+    let result = cqs::scout(&ctx.store(), embedder, query, &ctx.root, limit)?;
 
     let Some(budget) = tokens else {
         return Ok(cqs::scout_to_json(&result, &ctx.root));
@@ -1274,7 +1278,7 @@ pub(super) fn dispatch_scout(
         .iter()
         .flat_map(|g| g.chunks.iter().map(|c| c.name.as_str()))
         .collect();
-    let chunks_by_name = match ctx.store.get_chunks_by_names_batch(&all_names) {
+    let chunks_by_name = match ctx.store().get_chunks_by_names_batch(&all_names) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to batch-fetch chunks for scout token packing");
@@ -1355,7 +1359,7 @@ pub(super) fn dispatch_where(
     let _span = tracing::info_span!("batch_where", description).entered();
     let embedder = ctx.embedder()?;
     let limit = limit.clamp(1, 10);
-    let result = cqs::suggest_placement(&ctx.store, embedder, description, limit)?;
+    let result = cqs::suggest_placement(&ctx.store(), embedder, description, limit)?;
 
     let suggestions_json: Vec<_> = result
         .suggestions
@@ -1418,12 +1422,9 @@ pub(super) fn dispatch_read(
     let (file_path, content) = crate::cli::commands::read::validate_and_read_file(&ctx.root, path)?;
 
     let audit_state = ctx.audit_state();
-    let (header, notes_injected) = crate::cli::commands::read::build_file_note_header(
-        path,
-        &file_path,
-        audit_state,
-        ctx.notes(),
-    );
+    let notes = ctx.notes();
+    let (header, notes_injected) =
+        crate::cli::commands::read::build_file_note_header(path, &file_path, audit_state, &notes);
 
     let enriched = if header.is_empty() {
         content
@@ -1461,12 +1462,13 @@ fn dispatch_read_focused(ctx: &BatchContext, focus: &str) -> Result<serde_json::
     let _span = tracing::info_span!("batch_read_focused", focus).entered();
 
     let audit_state = ctx.audit_state();
+    let notes = ctx.notes();
     let result = crate::cli::commands::read::build_focused_output(
-        &ctx.store,
+        &ctx.store(),
         focus,
         &ctx.root,
         audit_state,
-        ctx.notes(),
+        &notes,
     )?;
 
     let mut json = serde_json::json!({
@@ -1509,7 +1511,7 @@ pub(super) fn dispatch_stale(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_stale").entered();
 
     let file_set = ctx.file_set()?;
-    let report = ctx.store.list_stale_files(file_set)?;
+    let report = ctx.store().list_stale_files(&file_set)?;
 
     let stale_json: Vec<_> = report
         .stale
@@ -1557,7 +1559,7 @@ pub(super) fn dispatch_health(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_health").entered();
 
     let file_set = ctx.file_set()?;
-    let report = cqs::health::health_check(&ctx.store, file_set, &ctx.cqs_dir)?;
+    let report = cqs::health::health_check(&ctx.store(), &file_set, &ctx.cqs_dir)?;
 
     Ok(serde_json::to_value(&report)?)
 }
@@ -1609,7 +1611,7 @@ pub(super) fn dispatch_drift(
 
     let result = cqs::drift::detect_drift(
         &ref_idx.store,
-        &ctx.store,
+        &ctx.store(),
         reference,
         threshold,
         min_drift,
@@ -1725,13 +1727,13 @@ pub(super) fn dispatch_task(
     let graph = ctx.call_graph()?;
     let test_chunks = ctx.test_chunks()?;
     let result = cqs::task_with_resources(
-        &ctx.store,
+        &ctx.store(),
         embedder,
         description,
         &ctx.root,
         limit,
-        graph,
-        test_chunks,
+        &graph,
+        &test_chunks,
     )?;
 
     // Full waterfall budgeting (same as CLI) when --tokens is specified
@@ -1756,7 +1758,7 @@ pub(super) fn dispatch_review(
     let _span = tracing::info_span!("batch_review", ?base).entered();
 
     let diff_text = crate::cli::commands::run_git_diff(base)?;
-    let result = cqs::review_diff(&ctx.store, &diff_text, &ctx.root)?;
+    let result = cqs::review_diff(&ctx.store(), &diff_text, &ctx.root)?;
 
     match result {
         None => Ok(serde_json::json!({
@@ -1798,7 +1800,7 @@ pub(super) fn dispatch_ci(
     };
 
     let diff_text = crate::cli::commands::run_git_diff(base)?;
-    let mut report = cqs::ci::run_ci_analysis(&ctx.store, &diff_text, &ctx.root, threshold)?;
+    let mut report = cqs::ci::run_ci_analysis(&ctx.store(), &diff_text, &ctx.root, threshold)?;
 
     // Apply token budget if specified
     if let Some(budget) = tokens {
@@ -1828,14 +1830,14 @@ pub(super) fn dispatch_diff(
     let target_label = target.unwrap_or("project");
     let target_store = if target_label == "project" {
         // Reuse the batch context's store — avoid re-opening
-        &ctx.store
+        &ctx.store()
     } else {
         // Need to load a separate reference store
         // We can't return a reference to a local, so use get_ref + borrow_ref
         ctx.get_ref(target_label)?;
         // Fall through to resolve below since we can't borrow RefMut as &Store
         // directly. Use resolve_reference_store which opens a fresh Store.
-        &ctx.store // placeholder — replaced below
+        &ctx.store() // placeholder — replaced below
     };
 
     // For non-project targets, resolve properly
@@ -1932,7 +1934,7 @@ pub(super) fn dispatch_impact_diff(
         }));
     }
 
-    let changed = cqs::map_hunks_to_functions(&ctx.store, &hunks);
+    let changed = cqs::map_hunks_to_functions(&ctx.store(), &hunks);
     if changed.is_empty() {
         return Ok(serde_json::json!({
             "changed_functions": [],
@@ -1942,7 +1944,7 @@ pub(super) fn dispatch_impact_diff(
         }));
     }
 
-    let result = cqs::analyze_diff_impact(&ctx.store, changed)?;
+    let result = cqs::analyze_diff_impact(&ctx.store(), changed)?;
     Ok(cqs::diff_impact_to_json(&result, &ctx.root))
 }
 
@@ -1956,7 +1958,7 @@ pub(super) fn dispatch_plan(
     let _span = tracing::info_span!("batch_plan", description).entered();
 
     let embedder = ctx.embedder()?;
-    let result = cqs::plan::plan(&ctx.store, embedder, description, &ctx.root, limit)
+    let result = cqs::plan::plan(&ctx.store(), embedder, description, &ctx.root, limit)
         .context("Plan generation failed")?;
 
     let mut json = cqs::plan::plan_to_json(&result, &ctx.root);
@@ -1970,7 +1972,7 @@ pub(super) fn dispatch_plan(
 pub(super) fn dispatch_suggest(ctx: &BatchContext, apply: bool) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_suggest", apply).entered();
 
-    let suggestions = cqs::suggest::suggest_notes(&ctx.store, &ctx.root)?;
+    let suggestions = cqs::suggest::suggest_notes(&ctx.store(), &ctx.root)?;
 
     if apply && !suggestions.is_empty() {
         let notes_path = ctx.root.join("docs/notes.toml");
@@ -1987,7 +1989,7 @@ pub(super) fn dispatch_suggest(ctx: &BatchContext, apply: bool) -> Result<serde_
             Ok(())
         })?;
         let notes = cqs::parse_notes(&notes_path)?;
-        cqs::index_notes(&notes, &notes_path, &ctx.store)?;
+        cqs::index_notes(&notes, &notes_path, &ctx.store())?;
     }
 
     let json_val: Vec<_> = suggestions
@@ -2017,7 +2019,7 @@ pub(super) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_json::Value> {
     let _span = tracing::info_span!("batch_gc").entered();
 
     let file_set = ctx.file_set()?;
-    let (stale_count, missing_count) = match ctx.store.count_stale_files(file_set) {
+    let (stale_count, missing_count) = match ctx.store().count_stale_files(&file_set) {
         Ok(counts) => counts,
         Err(e) => {
             tracing::warn!(error = %e, "Failed to count stale files");
@@ -2026,22 +2028,22 @@ pub(super) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_json::Value> {
     };
 
     let pruned_chunks = ctx
-        .store
-        .prune_missing(file_set)
+        .store()
+        .prune_missing(&file_set)
         .context("Failed to prune deleted files from index")?;
 
     let pruned_calls = ctx
-        .store
+        .store()
         .prune_stale_calls()
         .context("Failed to prune orphan call graph entries")?;
 
     let pruned_type_edges = ctx
-        .store
+        .store()
         .prune_stale_type_edges()
         .context("Failed to prune orphan type edges")?;
 
     let pruned_summaries = ctx
-        .store
+        .store()
         .prune_orphan_summaries()
         .context("Failed to prune orphan LLM summaries")?;
 
@@ -2065,6 +2067,12 @@ pub(super) fn dispatch_gc(ctx: &BatchContext) -> Result<serde_json::Value> {
 /// # Errors
 ///
 /// Returns an error if writing help text to the buffer fails or if UTF-8 conversion fails.
+pub(super) fn dispatch_refresh(ctx: &BatchContext) -> Result<serde_json::Value> {
+    let _span = tracing::info_span!("batch_refresh").entered();
+    ctx.invalidate()?;
+    Ok(serde_json::json!({"status": "ok", "message": "Caches invalidated, Store re-opened"}))
+}
+
 pub(super) fn dispatch_help() -> Result<serde_json::Value> {
     use clap::CommandFactory;
     let mut buf = Vec::new();
