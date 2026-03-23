@@ -39,7 +39,7 @@ const CHUNK_QUERY: &str = r#"
 
 ;; Events
 (event_definition
-  name: (identifier) @name) @property
+  name: (identifier) @name) @event
 
 ;; State variables
 (state_variable_declaration
@@ -315,6 +315,23 @@ enum Status { Active, Paused, Stopped }
         assert_eq!(s.chunk_type, ChunkType::Struct);
         let e = chunks.iter().find(|c| c.name == "Status").unwrap();
         assert_eq!(e.chunk_type, ChunkType::Enum);
+    }
+
+    #[test]
+    fn parse_solidity_event() {
+        let content = r#"
+contract Token {
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+"#;
+        let file = write_temp_file(content, "sol");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let transfer = chunks.iter().find(|c| c.name == "Transfer").unwrap();
+        assert_eq!(transfer.chunk_type, ChunkType::Event);
+        let approval = chunks.iter().find(|c| c.name == "Approval").unwrap();
+        assert_eq!(approval.chunk_type, ChunkType::Event);
     }
 
     #[test]
