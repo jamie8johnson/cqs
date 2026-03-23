@@ -185,6 +185,7 @@ macro_rules! define_languages {
 /// Function signature for post-processing extracted chunks.
 /// Takes `(&mut name, &mut chunk_type, definition_node, source)`.
 /// Returns `false` to discard the chunk.
+#[allow(clippy::ptr_arg)] // &mut String required: 14 implementations mutate the name (push_str, replace, etc.)
 pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node, &str) -> bool;
 
 /// Function signature for language-specific structural pattern matchers.
