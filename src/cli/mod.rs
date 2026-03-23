@@ -514,9 +514,12 @@ enum Commands {
     Impact {
         #[command(flatten)]
         args: args::ImpactArgs,
-        /// Output format: text, json, mermaid
+        /// Output format: text, json, mermaid (use --json as shorthand for --format json)
         #[arg(long, default_value = "text")]
         format: OutputFormat,
+        /// Shorthand for --format json
+        #[arg(long, conflicts_with = "format")]
+        json: bool,
     },
     /// Impact analysis from a git diff — what callers and tests are affected
     #[command(name = "impact-diff")]
@@ -539,9 +542,12 @@ enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output format: text, json (mermaid not supported)
+        /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
         #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
         format: OutputFormat,
+        /// Shorthand for --format json
+        #[arg(long, conflicts_with = "format")]
+        json: bool,
         /// Maximum token budget for output (truncates callers/tests lists)
         #[arg(long, value_parser = parse_nonzero_usize)]
         tokens: Option<usize>,
@@ -554,9 +560,12 @@ enum Commands {
         /// Read diff from stdin instead of running git
         #[arg(long)]
         stdin: bool,
-        /// Output format: text, json (mermaid not supported)
+        /// Output format: text, json (use --json as shorthand for --format json; mermaid not supported)
         #[arg(long, default_value = "text", value_parser = parse_text_or_json_format)]
         format: OutputFormat,
+        /// Shorthand for --format json
+        #[arg(long, conflicts_with = "format")]
+        json: bool,
         /// Gate threshold: high, medium, off (default: high)
         #[arg(long, default_value = "high")]
         gate: GateLevel,
@@ -573,9 +582,12 @@ enum Commands {
         /// Max search depth (1-50)
         #[arg(long, default_value = "10", value_parser = clap::value_parser!(u16).range(1..=50))]
         max_depth: u16,
-        /// Output format: text, json, mermaid
+        /// Output format: text, json, mermaid (use --json as shorthand for --format json)
         #[arg(long, default_value = "text")]
         format: OutputFormat,
+        /// Shorthand for --format json
+        #[arg(long, conflicts_with = "format")]
+        json: bool,
     },
     /// Find tests that exercise a function
     TestMap {
@@ -915,14 +927,18 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         }) => cmd_similar(&cli, target, limit, threshold, json),
         Some(Commands::Impact {
             ref args,
-            ref format,
-        }) => cmd_impact(
-            &args.name,
-            args.depth,
             format,
-            args.suggest_tests,
-            args.include_types,
-        ),
+            json,
+        }) => {
+            let format = if json { OutputFormat::Json } else { format };
+            cmd_impact(
+                &args.name,
+                args.depth,
+                &format,
+                args.suggest_tests,
+                args.include_types,
+            )
+        }
         Some(Commands::ImpactDiff {
             ref base,
             stdin,
@@ -931,22 +947,34 @@ pub fn run_with(mut cli: Cli) -> Result<()> {
         Some(Commands::Review {
             ref base,
             stdin,
-            ref format,
+            format,
+            json,
             tokens,
-        }) => cmd_review(base.as_deref(), stdin, format, tokens),
+        }) => {
+            let format = if json { OutputFormat::Json } else { format };
+            cmd_review(base.as_deref(), stdin, &format, tokens)
+        }
         Some(Commands::Ci {
             ref base,
             stdin,
-            ref format,
+            format,
+            json,
             ref gate,
             tokens,
-        }) => cmd_ci(base.as_deref(), stdin, format, gate, tokens),
+        }) => {
+            let format = if json { OutputFormat::Json } else { format };
+            cmd_ci(base.as_deref(), stdin, &format, gate, tokens)
+        }
         Some(Commands::Trace {
             ref source,
             ref target,
             max_depth,
-            ref format,
-        }) => cmd_trace(source, target, max_depth as usize, format),
+            format,
+            json,
+        }) => {
+            let format = if json { OutputFormat::Json } else { format };
+            cmd_trace(source, target, max_depth as usize, &format)
+        }
         Some(Commands::TestMap {
             ref name,
             depth,
@@ -1703,11 +1731,13 @@ mod tests {
                 base,
                 stdin,
                 format,
+                json,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
                 assert!(matches!(format, OutputFormat::Text));
+                assert!(!json);
                 assert!(tokens.is_none());
             }
             _ => panic!("Expected Review command"),
@@ -1772,6 +1802,82 @@ mod tests {
             result.is_err(),
             "ci --format mermaid should be rejected at parse time"
         );
+    }
+
+    // ===== --json alias for --format json (#650) =====
+
+    #[test]
+    fn test_impact_json_flag() {
+        let cli = Cli::try_parse_from(["cqs", "impact", "my_func", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Impact { json, format, .. }) => {
+                assert!(json);
+                assert!(matches!(format, OutputFormat::Text)); // default, overridden at dispatch
+            }
+            _ => panic!("Expected Impact command"),
+        }
+    }
+
+    #[test]
+    fn test_impact_json_conflicts_with_format() {
+        let result =
+            Cli::try_parse_from(["cqs", "impact", "my_func", "--json", "--format", "text"]);
+        assert!(result.is_err(), "--json and --format should conflict");
+    }
+
+    #[test]
+    fn test_review_json_flag() {
+        let cli = Cli::try_parse_from(["cqs", "review", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Review { json, format, .. }) => {
+                assert!(json);
+                assert!(matches!(format, OutputFormat::Text));
+            }
+            _ => panic!("Expected Review command"),
+        }
+    }
+
+    #[test]
+    fn test_review_json_conflicts_with_format() {
+        let result = Cli::try_parse_from(["cqs", "review", "--json", "--format", "json"]);
+        assert!(result.is_err(), "--json and --format should conflict");
+    }
+
+    #[test]
+    fn test_ci_json_flag() {
+        let cli = Cli::try_parse_from(["cqs", "ci", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Ci { json, format, .. }) => {
+                assert!(json);
+                assert!(matches!(format, OutputFormat::Text));
+            }
+            _ => panic!("Expected Ci command"),
+        }
+    }
+
+    #[test]
+    fn test_ci_json_conflicts_with_format() {
+        let result = Cli::try_parse_from(["cqs", "ci", "--json", "--format", "json"]);
+        assert!(result.is_err(), "--json and --format should conflict");
+    }
+
+    #[test]
+    fn test_trace_json_flag() {
+        let cli = Cli::try_parse_from(["cqs", "trace", "a", "b", "--json"]).unwrap();
+        match cli.command {
+            Some(Commands::Trace { json, format, .. }) => {
+                assert!(json);
+                assert!(matches!(format, OutputFormat::Text));
+            }
+            _ => panic!("Expected Trace command"),
+        }
+    }
+
+    #[test]
+    fn test_trace_json_conflicts_with_format() {
+        let result =
+            Cli::try_parse_from(["cqs", "trace", "a", "b", "--json", "--format", "mermaid"]);
+        assert!(result.is_err(), "--json and --format should conflict");
     }
 
     // ===== Error cases =====
@@ -1911,12 +2017,14 @@ mod tests {
                 base,
                 stdin,
                 format,
+                json,
                 gate,
                 tokens,
             }) => {
                 assert!(base.is_none());
                 assert!(!stdin);
                 assert!(matches!(format, OutputFormat::Text));
+                assert!(!json);
                 assert!(matches!(gate, GateLevel::High));
                 assert!(tokens.is_none());
             }
