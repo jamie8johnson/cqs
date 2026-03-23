@@ -43,6 +43,15 @@ const CHUNK_QUERY: &str = r#"
 ;; Callback: -callback name(Args) -> Ret.
 (callback
   fun: (atom) @name) @interface
+
+;; Preprocessor macro: -define(NAME, value).
+(pp_define
+  lhs: (macro_lhs
+    name: (var) @name)) @macro
+
+(pp_define
+  lhs: (macro_lhs
+    name: (atom) @name)) @macro
 "#;
 
 /// Tree-sitter query for extracting Erlang function calls.
@@ -83,6 +92,7 @@ fn post_process_erlang(
         "record_decl" => *chunk_type = ChunkType::Struct,
         "behaviour_attribute" => *chunk_type = ChunkType::Interface,
         "callback" => *chunk_type = ChunkType::Interface,
+        "pp_define" => *chunk_type = ChunkType::Macro,
         _ => {}
     }
     true
@@ -287,6 +297,27 @@ helper(X) -> X.
             "Expected helper, got: {:?}",
             names
         );
+    }
+
+    #[test]
+    fn parse_erlang_define_macro() {
+        let content = r#"
+-module(mymod).
+-define(MAX_RETRIES, 3).
+-define(TIMEOUT, 5000).
+"#;
+        let file = write_temp_file(content, "erl");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let retries = chunks
+            .iter()
+            .find(|c| c.name == "MAX_RETRIES" && c.chunk_type == ChunkType::Macro);
+        assert!(retries.is_some(), "Should find MAX_RETRIES macro, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>());
+        let timeout = chunks
+            .iter()
+            .find(|c| c.name == "TIMEOUT" && c.chunk_type == ChunkType::Macro);
+        assert!(timeout.is_some(), "Should find TIMEOUT macro");
     }
 
     #[test]

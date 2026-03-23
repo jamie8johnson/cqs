@@ -758,6 +758,7 @@ pub(crate) fn extract_definition_node<'c, 't>(
         "property",
         "delegate",
         "event",
+        "extension",
     ];
     DEF_CAPTURES.iter().find_map(|name| {
         query

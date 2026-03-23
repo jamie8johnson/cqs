@@ -139,7 +139,9 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 | 3 | **HyDE query predictions (SQ-12)** | Medium | Mixed | **Done (PR #631)** — shipped as `--hyde-queries`. Mixed on hard eval, neutral on stress eval. Untested on CoIR. |
 | 4 | **LoRA fine-tuning (SQ-7)** | Medium | +4.3pp CoIR | **Done (v3)** — regresses hard eval but +4.3pp on CoIR. v4 training. |
 | 5 | **Hard negative reranker (V2)** | Medium | Unknown | V1 failed (random negs). BM25 top-k negatives may fix. Untested on CoIR. |
-| 6 | **ColBERT late interaction** | Hard | Potentially high | Token-level matching. New index structure. Not started. |
+| 6 | **Contrastive discriminating summaries** | Medium | +2-4pp est | Feed top-3 similar names to LLM: "unlike X, this function..." Exp 8 contrastive was +18pp vs +16pp. Needs: Store neighbor lookup, batch pipeline plumbing. |
+| 7 | **Algorithm/pattern detection in NL** | Medium | +1-3pp est | Tree-sitter structural features (loops, recursion, data structures) in NL text. |
+| 8 | **ColBERT late interaction** | Hard | Potentially high | Token-level matching. New index structure. Not started. |
 
 **Evaluated and rejected:**
 - **CodeSage-large-v2** — 94.26 on CSN but 20% R@1 on hard eval. Code-native model can't parse NL queries.

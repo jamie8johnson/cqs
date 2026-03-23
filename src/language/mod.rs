@@ -185,6 +185,7 @@ macro_rules! define_languages {
 /// Function signature for post-processing extracted chunks.
 /// Takes `(&mut name, &mut chunk_type, definition_node, source)`.
 /// Returns `false` to discard the chunk.
+#[allow(clippy::ptr_arg)] // &mut String required: 14 implementations mutate the name (push_str, replace, etc.)
 pub type PostProcessChunkFn = fn(&mut String, &mut ChunkType, tree_sitter::Node, &str) -> bool;
 
 /// Function signature for language-specific structural pattern matchers.
@@ -475,6 +476,8 @@ define_chunk_types! {
     Object => "object";
     /// Type alias definition (Scala, future: Haskell, Kotlin)
     TypeAlias => "typealias";
+    /// Extension (Swift `extension Type { ... }`)
+    Extension => "extension";
 }
 
 impl ChunkType {
@@ -491,11 +494,15 @@ impl ChunkType {
         }
     }
 
-    /// Returns true for types that have call graph connections (Function, Method, Property, Macro).
+    /// Returns true for types that have call graph connections (Function, Method, Property, Macro, Extension).
     pub fn is_callable(self) -> bool {
         matches!(
             self,
-            ChunkType::Function | ChunkType::Method | ChunkType::Property | ChunkType::Macro
+            ChunkType::Function
+                | ChunkType::Method
+                | ChunkType::Property
+                | ChunkType::Macro
+                | ChunkType::Extension
         )
     }
 

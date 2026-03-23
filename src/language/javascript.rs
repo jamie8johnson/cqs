@@ -1,6 +1,6 @@
 //! JavaScript language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting JavaScript code chunks
 const CHUNK_QUERY: &str = r#"
@@ -24,6 +24,13 @@ const CHUNK_QUERY: &str = r#"
 
 (class_declaration
   name: (identifier) @name) @class
+
+;; Module-level const declarations (non-function values)
+(lexical_declaration
+  kind: "const"
+  (variable_declarator
+    name: (identifier) @name
+    value: (_) @_val) @const)
 "#;
 
 /// Tree-sitter query for extracting function calls
@@ -45,6 +52,45 @@ const STOPWORDS: &[&str] = &[
     "export", "from", "default", "try", "catch", "finally", "throw", "async", "await",
     "true", "false", "null", "undefined", "typeof", "instanceof", "void",
 ];
+
+/// Returns true if the node is nested inside a function/method/arrow body.
+fn is_inside_function(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.parent();
+    while let Some(parent) = cursor {
+        match parent.kind() {
+            "function_declaration" | "function_expression" | "arrow_function"
+            | "method_definition" | "generator_function_declaration"
+            | "generator_function" => return true,
+            _ => {}
+        }
+        cursor = parent.parent();
+    }
+    false
+}
+
+/// Post-process JavaScript chunks: skip `@const` captures whose value is an arrow_function
+/// or function_expression (already captured as Function), and skip const inside function bodies.
+fn post_process_javascript(
+    _name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    if *chunk_type == ChunkType::Constant {
+        // Skip const declarations inside function bodies — only capture module-level
+        if is_inside_function(node) {
+            return false;
+        }
+        // node is the variable_declarator; check if the value child is a function
+        if let Some(value) = node.child_by_field_name("value") {
+            let kind = value.kind();
+            if kind == "arrow_function" || kind == "function_expression" || kind == "function" {
+                return false;
+            }
+        }
+    }
+    true
+}
 
 /// Extracts the return type from a JavaScript function signature.
 /// 
@@ -82,7 +128,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &["class_body"],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_javascript as PostProcessChunkFn),
     test_markers: &["describe(", "it(", "test("],
     test_path_patterns: &["%.test.%", "%.spec.%", "%/tests/%"],
     structural_matchers: None,
@@ -93,4 +139,44 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_javascript_const_value() {
+        let content = r#"
+const MAX_RETRIES = 3;
+const API_URL = "https://example.com";
+const handler = () => { return 1; };
+
+function foo() {}
+"#;
+        let file = write_temp_file(content, "js");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let max = chunks.iter().find(|c| c.name == "MAX_RETRIES");
+        assert!(max.is_some(), "Should capture MAX_RETRIES");
+        assert_eq!(max.unwrap().chunk_type, ChunkType::Constant);
+        let url = chunks.iter().find(|c| c.name == "API_URL");
+        assert!(url.is_some(), "Should capture API_URL");
+        assert_eq!(url.unwrap().chunk_type, ChunkType::Constant);
+        // handler is an arrow function — should be Function, not Constant
+        let handler = chunks.iter().find(|c| c.name == "handler");
+        assert!(handler.is_some(), "Should capture handler");
+        assert_eq!(handler.unwrap().chunk_type, ChunkType::Function);
+    }
 }

@@ -1,11 +1,15 @@
 //! Objective-C language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, SignatureStyle};
 
 /// Tree-sitter query for extracting Objective-C code chunks
 const CHUNK_QUERY: &str = r#"
 ;; Class interfaces (@interface ... @end)
 (class_interface
+  (identifier) @name) @class
+
+;; Class implementations (@implementation ... @end)
+(class_implementation
   (identifier) @name) @class
 
 ;; Protocols (@protocol ... @end)
@@ -80,6 +84,32 @@ fn extract_return(_signature: &str) -> Option<String> {
     None
 }
 
+/// Post-process Objective-C chunks to reclassify categories as Extension.
+///
+/// ObjC categories (`@interface Type (Category)` / `@implementation Type (Category)`)
+/// use the same `class_interface` / `class_implementation` nodes as regular classes,
+/// but have a `category` field. When present, reclassify as Extension.
+fn post_process_objc(
+    _name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    match node.kind() {
+        "class_interface" | "class_implementation" => {
+            if node.child_by_field_name("category").is_some() {
+                *chunk_type = ChunkType::Extension;
+                tracing::debug!(
+                    "Reclassified {} as Extension (has category)",
+                    node.kind()
+                );
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "objc",
     grammar: Some(|| tree_sitter_objc::LANGUAGE.into()),
@@ -98,7 +128,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &["implementation_definition"],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_objc),
     test_markers: &["- (void)test"],
     test_path_patterns: &["%/Tests/%", "%Tests.m"],
     structural_matchers: None,
@@ -353,5 +383,61 @@ mod tests {
             "Expected free call, got: {:?}",
             names
         );
+    }
+
+    #[test]
+    fn parse_objc_category_interface() {
+        let content = r#"
+@interface NSString (Utilities)
+- (BOOL)isBlank;
+@end
+"#;
+        let file = write_temp_file(content, "m");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let cat = chunks.iter().find(|c| c.name == "NSString").unwrap();
+        assert_eq!(cat.chunk_type, ChunkType::Extension);
+    }
+
+    #[test]
+    fn parse_objc_category_implementation() {
+        let content = r#"
+@implementation NSString (Utilities)
+
+- (BOOL)isBlank {
+    return [[self stringByTrimmingCharactersInSet:
+        [NSCharacterSet whitespaceAndNewlineCharacterSet]] length] == 0;
+}
+
+@end
+"#;
+        let file = write_temp_file(content, "m");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        // The implementation itself should be Extension
+        let impls: Vec<_> = chunks
+            .iter()
+            .filter(|c| c.name == "NSString" && c.chunk_type == ChunkType::Extension)
+            .collect();
+        assert!(
+            !impls.is_empty(),
+            "Expected NSString category implementation as Extension, got: {:?}",
+            chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_objc_regular_class_stays_class() {
+        // Ensure non-category classes are still Class, not Extension
+        let content = r#"
+@interface Person : NSObject
+@property (nonatomic) NSString *name;
+@end
+"#;
+        let file = write_temp_file(content, "m");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let class = chunks.iter().find(|c| c.name == "Person").unwrap();
+        assert_eq!(class.chunk_type, ChunkType::Class);
     }
 }

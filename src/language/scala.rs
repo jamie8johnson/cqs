@@ -35,6 +35,12 @@ const CHUNK_QUERY: &str = r#"
 ;; Type aliases — name is type_identifier, not identifier
 (type_definition
   name: (type_identifier) @name) @typealias
+
+;; Scala 3 extensions — name extracted from first parameter type
+(extension_definition
+  parameters: (parameters
+    (parameter
+      type: (type_identifier) @name))) @extension
 "#;
 
 /// Tree-sitter query for extracting Scala function calls
@@ -394,5 +400,31 @@ object App {
         let names: Vec<_> = calls.iter().map(|c| c.callee_name.as_str()).collect();
         assert!(names.contains(&"transform"), "Expected transform, got: {:?}", names);
         assert!(names.contains(&"println"), "Expected println, got: {:?}", names);
+    }
+
+    #[test]
+    fn parse_scala3_extension() {
+        let content = r#"
+extension (x: Int)
+  def isEven: Boolean = x % 2 == 0
+  def double: Int = x * 2
+"#;
+        let file = write_temp_file(content, "scala");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ext = chunks
+            .iter()
+            .find(|c| c.chunk_type == ChunkType::Extension);
+        assert!(
+            ext.is_some(),
+            "Expected an extension chunk, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, &c.chunk_type))
+                .collect::<Vec<_>>()
+        );
+        let ext = ext.unwrap();
+        assert_eq!(ext.name, "Int");
+        assert_eq!(ext.chunk_type, ChunkType::Extension);
     }
 }

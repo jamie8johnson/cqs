@@ -1,6 +1,16 @@
 //! Python language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+
+/// Returns true if the name follows UPPER_CASE convention (all ASCII uppercase/digits/underscores,
+/// at least one letter, e.g. MAX_RETRIES, API_URL_V2).
+fn is_upper_snake_case(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && name.bytes().any(|b| b.is_ascii_uppercase())
+}
 
 /// Tree-sitter query for extracting Python code chunks
 const CHUNK_QUERY: &str = r#"
@@ -9,6 +19,12 @@ const CHUNK_QUERY: &str = r#"
 
 (class_definition
   name: (identifier) @name) @class
+
+;; Module-level constant assignments (UPPER_CASE convention)
+(expression_statement
+  (assignment
+    left: (identifier) @name
+    right: (_))) @const
 "#;
 
 /// Tree-sitter query for extracting function calls
@@ -57,6 +73,36 @@ const STOPWORDS: &[&str] = &[
     "nonlocal",
 ];
 
+/// Returns true if the node is nested inside a function/class body.
+fn is_inside_function(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.parent();
+    while let Some(parent) = cursor {
+        if parent.kind() == "function_definition" {
+            return true;
+        }
+        cursor = parent.parent();
+    }
+    false
+}
+
+/// Post-process Python chunks: only keep `@const` captures whose name is UPPER_CASE
+/// and that are at module level (not inside function bodies).
+#[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
+fn post_process_python(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    if *chunk_type == ChunkType::Constant {
+        if is_inside_function(node) {
+            return false;
+        }
+        return is_upper_snake_case(name);
+    }
+    true
+}
+
 /// Extracts the return type from a function signature and formats it as a descriptive string.
 /// 
 /// # Arguments
@@ -101,7 +147,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &[],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_python as PostProcessChunkFn),
     test_markers: &["def test_", "pytest"],
     test_path_patterns: &["%/tests/%", "%\\_test.py", "%/test\\_%"],
     structural_matchers: None,
@@ -117,4 +163,63 @@ static DEFINITION: LanguageDef = LanguageDef {
 
 pub fn definition() -> &'static LanguageDef {
     &DEFINITION
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn parse_python_upper_case_constant() {
+        let content = r#"
+MAX_RETRIES = 3
+API_URL = "https://example.com"
+lowercase_var = 42
+MixedCase = "nope"
+
+def foo():
+    pass
+"#;
+        let file = write_temp_file(content, "py");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let max = chunks.iter().find(|c| c.name == "MAX_RETRIES");
+        assert!(max.is_some(), "Should capture MAX_RETRIES");
+        assert_eq!(max.unwrap().chunk_type, ChunkType::Constant);
+        let url = chunks.iter().find(|c| c.name == "API_URL");
+        assert!(url.is_some(), "Should capture API_URL");
+        assert_eq!(url.unwrap().chunk_type, ChunkType::Constant);
+        // lowercase and MixedCase should be filtered out
+        assert!(
+            chunks.iter().find(|c| c.name == "lowercase_var").is_none(),
+            "Should not capture lowercase_var"
+        );
+        assert!(
+            chunks.iter().find(|c| c.name == "MixedCase").is_none(),
+            "Should not capture MixedCase"
+        );
+    }
+
+    #[test]
+    fn test_is_upper_snake_case() {
+        assert!(is_upper_snake_case("MAX_RETRIES"));
+        assert!(is_upper_snake_case("API_URL_V2"));
+        assert!(is_upper_snake_case("X"));
+        assert!(!is_upper_snake_case("lowercase"));
+        assert!(!is_upper_snake_case("MixedCase"));
+        assert!(!is_upper_snake_case(""));
+        assert!(!is_upper_snake_case("123")); // no letters
+    }
 }
