@@ -87,6 +87,7 @@ fn is_inside_function(node: tree_sitter::Node) -> bool {
 
 /// Post-process Python chunks: only keep `@const` captures whose name is UPPER_CASE
 /// and that are at module level (not inside function bodies).
+#[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
 fn post_process_python(
     name: &mut String,
     chunk_type: &mut ChunkType,
