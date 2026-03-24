@@ -172,7 +172,13 @@ impl Store {
             let scored = score_heap.into_sorted_vec();
 
             let results = self
-                .finalize_results(scored, &filter.query_text, fsql.use_rrf, limit)
+                .finalize_results(
+                    scored,
+                    &filter.query_text,
+                    fsql.use_rrf,
+                    limit,
+                    filter.path_pattern.as_deref(),
+                )
                 .await?;
 
             tracing::debug!(count = results.len(), "search_filtered complete");
@@ -195,6 +201,7 @@ impl Store {
         query_text: &str,
         use_rrf: bool,
         limit: usize,
+        path_pattern: Option<&str>,
     ) -> Result<Vec<SearchResult>, StoreError> {
         // Step 1: RRF fusion with FTS keyword search, or plain truncate
         let final_scored: Vec<(String, f32)> = if use_rrf {
@@ -210,7 +217,20 @@ impl Store {
                 .bind((limit * 3) as i64)
                 .fetch_all(&self.pool)
                 .await?;
-                fts_rows.into_iter().map(|(id,)| id).collect()
+                // Apply path filter to FTS results (FTS5 doesn't support JOIN filtering)
+                let fts_all: Vec<String> = fts_rows.into_iter().map(|(id,)| id).collect();
+                let path_owned = path_pattern.map(String::from);
+                if let Some(fts_glob) = compile_glob_filter(path_owned.as_ref()) {
+                    fts_all
+                        .into_iter()
+                        .filter(|id| {
+                            let file = extract_file_from_chunk_id(id);
+                            fts_glob.is_match(file)
+                        })
+                        .collect()
+                } else {
+                    fts_all
+                }
             };
             let semantic_ids: Vec<&str> = scored.iter().map(|(id, _)| id.as_str()).collect();
             // Request extra candidates from RRF to compensate for parent dedup
@@ -392,8 +412,14 @@ impl Store {
             let scored: Vec<(String, f32)> =
                 scored.into_iter().map(|(c, score)| (c.id, score)).collect();
 
-            self.finalize_results(scored, &filter.query_text, use_rrf, limit)
-                .await
+            self.finalize_results(
+                scored,
+                &filter.query_text,
+                use_rrf,
+                limit,
+                filter.path_pattern.as_deref(),
+            )
+            .await
         })
     }
 

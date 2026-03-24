@@ -662,3 +662,32 @@ Tested on 19 hard eval Rust functions. Both Haiku and Sonnet summaries **hurt** 
 **Summary augmentation (Dimension 4):** Script `~/training-data/augment_with_summaries.py` adds (discriminating_summary, code) pairs alongside (docstring, code) pairs. For our codebase, summaries are cached in cqs store. For CSN, would need ~$2 Haiku batch to generate. The discriminating summaries capture *what makes a function unique* — bridging abstract intent to concrete implementation. Free data augmentation for indexed codebases.
 
 **Note:** cqs users are always AI agents, not humans. Agent queries tend to be more precise and technical than human queries — "function that validates JWT tokens and checks expiration" rather than "JWT stuff." This affects which quality dimensions matter most: semantic depth (1) and abstraction level (4) over task breadth (2).
+
+### Exp 15: Contrastive Summaries (SQ-10b) — 2026-03-24
+
+**Implementation:** Brute-force pairwise cosine on all callable chunk embeddings (~12k chunks), extract top-3 nearest neighbors per chunk, pass neighbor names into LLM summary prompt. Prompt: "This function is similar to but different from: X, Y, Z. Describe what distinguishes it."
+
+**Key decisions:**
+- Removed doc-comment shortcut — all callable chunks go through contrastive API path (~$0.38 Haiku)
+- HNSW unavailable during summary pass (built after), so brute-force cosine on raw embeddings
+- Memory: 12k² × 4 = ~550MB brief allocation for similarity matrix
+- Summaries cached by content_hash — one-time cost per function
+
+**Bug found:** FTS keyword results in RRF fusion were NOT filtered by `--path` glob, causing eval fixture scaffolding (`HARD_EVAL_CASES` constant) to contaminate search results. Fixed by applying `compile_glob_filter` to FTS results in `finalize_results`.
+
+**Full-pipeline eval (55 queries, 5 languages, scoped to fixture files):**
+
+| Metric | Value |
+|--------|-------|
+| Recall@1 | 51/55 (92.7%) |
+| Recall@5 | 53/55 (96.3%) |
+| Recall@10 | 53/55 (96.3%) |
+| NDCG@10 | 0.9478 |
+
+**Misses (2):**
+- TS `mergeSort` — `_insertionSortSmall` helper ranked higher (semantically very close to "stable sort for small arrays")
+- TS `insertionSort` — `quicksort` ranked higher (both are comparison sorts)
+
+**Note:** Previous 65.4% R@1 baseline was measured with the FTS path filter bug — `HARD_EVAL_CASES` contaminated results. The 92.7% is the first clean full-pipeline measurement. Cannot directly compare to the buggy baseline.
+
+**Cost:** ~$0.38 one-time (2635 Haiku API calls × ~300 input tokens × ~50 output tokens). Incremental: $0.01-0.05 per session (only new/changed functions).

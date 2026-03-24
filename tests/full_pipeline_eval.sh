@@ -8,8 +8,11 @@
 set -euo pipefail
 
 HITS=0
+HITS5=0
+HITS10=0
 TOTAL=0
 MISSES=""
+RANKS=""
 
 eval_query() {
     local query="$1"
@@ -19,9 +22,9 @@ eval_query() {
 
     TOTAL=$((TOTAL + 1))
 
-    # Search with cqs, get top-5 results as JSON
+    # Search with cqs, scoped to fixture files (exclude production code and eval scaffolding)
     local results
-    results=$(cqs "$query" --lang "$lang" --json 2>/dev/null)
+    results=$(cqs "$query" --lang "$lang" --path "tests/fixtures/**" --json 2>/dev/null)
 
     # Extract top-5 names
     local top5
@@ -47,14 +50,27 @@ for i, n in enumerate(names):
 print('miss')
 " 2>/dev/null)
 
-    if [ "$rank1" = "1" ]; then
-        HITS=$((HITS + 1))
-        echo "  + [$lang] \"$query\" -> $expected (rank 1) top5: $top5"
-    elif [ "$rank1" != "miss" ] && [ "$rank1" -le 5 ] 2>/dev/null; then
-        echo "  ~ [$lang] \"$query\" -> $expected (rank $rank1) top5: $top5"
-    else
-        echo "  - [$lang] \"$query\" -> $expected (rank $rank1) top5: $top5"
+    if [ "$rank1" = "miss" ]; then
+        echo "  - [$lang] \"$query\" -> $expected (rank miss) top5: $top5"
         MISSES="$MISSES\n  [$lang] \"$query\" exp=$expected got=$top5"
+        RANKS="$RANKS 0"
+    else
+        RANKS="$RANKS $rank1"
+        if [ "$rank1" -le 1 ] 2>/dev/null; then
+            HITS=$((HITS + 1))
+            HITS5=$((HITS5 + 1))
+            HITS10=$((HITS10 + 1))
+            echo "  + [$lang] \"$query\" -> $expected (rank 1) top5: $top5"
+        elif [ "$rank1" -le 5 ] 2>/dev/null; then
+            HITS5=$((HITS5 + 1))
+            HITS10=$((HITS10 + 1))
+            echo "  ~ [$lang] \"$query\" -> $expected (rank $rank1) top5: $top5"
+        elif [ "$rank1" -le 10 ] 2>/dev/null; then
+            HITS10=$((HITS10 + 1))
+            echo "  . [$lang] \"$query\" -> $expected (rank $rank1) top5: $top5"
+        else
+            echo "  - [$lang] \"$query\" -> $expected (rank $rank1) top5: $top5"
+        fi
     fi
 }
 
@@ -120,7 +136,7 @@ eval_query "sort using binary max-heap data structure" "HeapSort" "go" ""
 eval_query "simple sort efficient for small nearly sorted arrays" "InsertionSort" "go" ""
 eval_query "non-comparison integer sort processing digits" "RadixSort" "go" ""
 eval_query "validate phone number with international country code" "ValidatePhone" "go" ""
-eval_query "check if URL has valid protocol and hostname" "ValidateURL" "go" ""
+eval_query "check if URL has valid protocol and hostname" "ValidateURL" "go" "ValidateUrl"
 eval_query "pad string to fixed width with fill character" "PadString" "go" ""
 eval_query "count number of words in text" "CountWords" "go" ""
 eval_query "extract numeric values from mixed text string" "ExtractNumbers" "go" ""
@@ -129,7 +145,20 @@ eval_query "check whether circuit allows request through" "ShouldAllow" "go" "Ci
 
 echo ""
 echo "=== Results ==="
-echo "Recall@1: $HITS/$TOTAL ($(echo "scale=1; $HITS * 100 / $TOTAL" | bc)%)"
+echo "Recall@1:  $HITS/$TOTAL ($(echo "scale=1; $HITS * 100 / $TOTAL" | bc)%)"
+echo "Recall@5:  $HITS5/$TOTAL ($(echo "scale=1; $HITS5 * 100 / $TOTAL" | bc)%)"
+echo "Recall@10: $HITS10/$TOTAL ($(echo "scale=1; $HITS10 * 100 / $TOTAL" | bc)%)"
+
+# Compute NDCG@10
+NDCG=$(echo "$RANKS" | python3 -c "
+import sys, math
+ranks = [int(x) for x in sys.stdin.read().split() if x]
+dcg = sum(1.0 / math.log2(r + 1) for r in ranks if r > 0)
+idcg = len(ranks) * 1.0  # ideal: all at rank 1 = 1/log2(2) = 1.0
+print(f'{dcg / idcg:.4f}' if idcg > 0 else '0.0000')
+")
+echo "NDCG@10:   $NDCG"
+
 if [ -n "$MISSES" ]; then
     echo ""
     echo "Misses:"

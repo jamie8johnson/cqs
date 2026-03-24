@@ -1,7 +1,11 @@
 //! LLM summary pass orchestration — collects chunks, submits batches, stores results.
 
+use std::collections::HashMap;
+
+use ndarray::Array2;
+
 use super::batch::BatchPhase2;
-use super::{Client, LlmConfig, LlmError, MAX_BATCH_SIZE, MAX_CONTENT_CHARS, MIN_CONTENT_CHARS};
+use super::{Client, LlmConfig, LlmError, MAX_BATCH_SIZE, MIN_CONTENT_CHARS};
 use crate::Store;
 
 /// Run the LLM summary pass using the Batches API.
@@ -33,16 +37,22 @@ pub fn llm_summary_pass(
     })?;
     let client = Client::new(&api_key, llm_config)?;
 
-    let mut doc_extracted = 0usize;
     let mut cached = 0usize;
     let mut skipped = 0usize;
     let mut cursor = 0i64;
     const PAGE_SIZE: usize = 500;
 
+    // Phase 0: Precompute contrastive neighbors from embedding similarity
+    let neighbor_map = match find_contrastive_neighbors(store, 3) {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(error = %e, "Contrastive neighbor computation failed, falling back to discriminating-only");
+            HashMap::new()
+        }
+    };
+
     // Phase 1: Collect chunks needing summaries
-    // Store doc-comment summaries immediately, collect API-needing chunks
-    let mut to_store: Vec<(String, String, String, String)> = Vec::new();
-    // (custom_id=content_hash, content, chunk_type, language) for batch API
+    // (custom_id=content_hash, prompt, chunk_type, language) for batch API
     let mut batch_items: Vec<(String, String, String, String)> = Vec::new();
     // Track content_hashes already queued to avoid duplicate custom_ids in batch
     let mut queued_hashes: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -82,32 +92,34 @@ pub fn llm_summary_pass(
                 continue;
             }
 
-            // Doc comment shortcut
-            if let Some(ref doc) = cs.doc {
-                if doc.len() > 10 {
-                    let first_sentence = extract_first_sentence(doc);
-                    if !first_sentence.is_empty() {
-                        to_store.push((
-                            cs.content_hash.clone(),
-                            first_sentence,
-                            "doc-comment".to_string(),
-                            "summary".to_string(),
-                        ));
-                        doc_extracted += 1;
-                        continue;
-                    }
-                }
-            }
+            // All chunks go through the contrastive API path (option 2).
+            // Doc-comment shortcut removed — contrastive summaries are more
+            // discriminating for retrieval than raw first-sentence extraction.
 
             // Queue for batch API (deduplicate by content_hash)
             if queued_hashes.insert(cs.content_hash.clone()) {
+                // Pre-build prompt with contrastive neighbor context if available
+                let neighbors = neighbor_map
+                    .get(&cs.content_hash)
+                    .cloned()
+                    .unwrap_or_default();
+                let prompt = if neighbors.is_empty() {
+                    Client::build_prompt(
+                        &cs.content,
+                        &cs.chunk_type.to_string(),
+                        &cs.language.to_string(),
+                    )
+                } else {
+                    Client::build_contrastive_prompt(
+                        &cs.content,
+                        &cs.chunk_type.to_string(),
+                        &cs.language.to_string(),
+                        &neighbors,
+                    )
+                };
                 batch_items.push((
                     cs.content_hash.clone(),
-                    if cs.content.len() > MAX_CONTENT_CHARS {
-                        cs.content[..cs.content.floor_char_boundary(MAX_CONTENT_CHARS)].to_string()
-                    } else {
-                        cs.content.clone()
-                    },
+                    prompt,
                     cs.chunk_type.to_string(),
                     cs.language.to_string(),
                 ));
@@ -126,16 +138,21 @@ pub fn llm_summary_pass(
         }
     }
 
-    // Store doc-comment summaries immediately
-    if !to_store.is_empty() {
-        store.upsert_summaries_batch(&to_store)?;
-    }
+    // Count how many batch items got contrastive neighbors
+    let with_neighbors = if neighbor_map.is_empty() {
+        0
+    } else {
+        batch_items
+            .iter()
+            .filter(|(hash, _, _, _)| neighbor_map.contains_key(hash))
+            .count()
+    };
 
     tracing::info!(
         cached,
-        doc_extracted,
         skipped,
         api_needed = batch_items.len(),
+        with_neighbors,
         "Summary scan complete"
     );
 
@@ -151,117 +168,127 @@ pub fn llm_summary_pass(
         &batch_items,
         &|s| s.get_pending_batch_id(),
         &|s, id| s.set_pending_batch_id(id),
-        &|c, items, max_tok| c.submit_batch(items, max_tok),
+        &|c, items, max_tok| c.submit_batch_prebuilt(items, max_tok),
     )?;
     let api_generated = api_results.len();
 
-    tracing::info!(
-        api_generated,
-        doc_extracted,
-        cached,
-        skipped,
-        "LLM summary pass complete"
-    );
+    tracing::info!(api_generated, cached, skipped, "LLM summary pass complete");
 
-    Ok(api_generated + doc_extracted)
+    Ok(api_generated)
 }
 
-/// Extract the first sentence from a doc comment.
-fn extract_first_sentence(doc: &str) -> String {
-    let trimmed = doc.trim();
-    if let Some(pos) = trimmed.find(['.', '!', '?']) {
-        let sentence = trimmed[..=pos].trim();
-        if sentence.len() > 10 {
-            return sentence.to_string();
+/// Precompute top-N nearest neighbors for all callable chunks by cosine similarity.
+///
+/// Loads all callable chunk embeddings from SQLite, builds a pairwise cosine similarity
+/// matrix via L2-normalized matrix multiply, and returns a map from content_hash to
+/// neighbor names. Used to generate contrastive LLM summaries ("unlike X, this does Y").
+///
+/// Runs during `llm_summary_pass` Phase 1, when embeddings are in SQLite but HNSW
+/// is not yet built. ~1.3s for 10k chunks.
+///
+/// Memory: N×N×4 bytes for the similarity matrix (~550MB at 12k callable chunks).
+/// The matrix is dropped after top-N extraction.
+fn find_contrastive_neighbors(
+    store: &Store,
+    limit: usize,
+) -> Result<HashMap<String, Vec<String>>, LlmError> {
+    let _span = tracing::info_span!("find_contrastive_neighbors", limit).entered();
+
+    // Collect callable chunk identities (content_hash, name)
+    let mut chunk_ids: Vec<(String, String)> = Vec::new(); // (content_hash, name)
+    let mut cursor = 0i64;
+    loop {
+        let (page, next) = store.chunks_paged(cursor, 500)?;
+        if page.is_empty() {
+            break;
+        }
+        cursor = next;
+        for cs in &page {
+            if !cs.chunk_type.is_callable() {
+                continue;
+            }
+            if cs.content.len() < MIN_CONTENT_CHARS {
+                continue;
+            }
+            if cs.window_idx.is_some_and(|idx| idx > 0) {
+                continue;
+            }
+            chunk_ids.push((cs.content_hash.clone(), cs.name.clone()));
         }
     }
-    let first_line = trimmed.lines().next().unwrap_or("").trim();
-    if first_line.len() > 10 {
-        first_line.to_string()
-    } else {
-        String::new()
+
+    if chunk_ids.len() < 2 {
+        tracing::info!(
+            count = chunk_ids.len(),
+            "Too few callable chunks for contrastive neighbors"
+        );
+        return Ok(HashMap::new());
     }
+
+    // Batch-fetch embeddings
+    let hashes: Vec<&str> = chunk_ids.iter().map(|(h, _)| h.as_str()).collect();
+    let embeddings = store.get_embeddings_by_hashes(&hashes)?;
+
+    // Filter to chunks with embeddings, build matrix
+    let mut valid: Vec<(&str, &str, &[f32])> = Vec::new(); // (hash, name, embedding)
+    for (hash, name) in &chunk_ids {
+        if let Some(emb) = embeddings.get(hash.as_str()) {
+            valid.push((hash, name, emb.as_slice()));
+        }
+    }
+
+    let n = valid.len();
+    if n < 2 {
+        return Ok(HashMap::new());
+    }
+
+    let dim = valid[0].2.len();
+    tracing::info!(chunks = n, dim, "Computing pairwise cosine similarity");
+
+    // Build L2-normalized ndarray matrix
+    let mut matrix = Array2::<f32>::zeros((n, dim));
+    for (i, (_, _, emb)) in valid.iter().enumerate() {
+        let mut row = matrix.row_mut(i);
+        for (j, &v) in emb.iter().enumerate() {
+            row[j] = v;
+        }
+        // L2-normalize
+        let norm = matrix.row(i).mapv(|x| x * x).sum().sqrt();
+        if norm > 0.0 {
+            matrix.row_mut(i).mapv_inplace(|x| x / norm);
+        }
+    }
+
+    // Pairwise cosine = normalized @ normalized.T
+    let sims = matrix.dot(&matrix.t());
+
+    // Extract top-N neighbors per chunk (excluding self)
+    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(n);
+    for i in 0..n {
+        let row = sims.row(i);
+        // Partial sort: collect (index, score) pairs, sort desc, take top-N
+        let mut scored: Vec<(usize, f32)> =
+            (0..n).filter(|&j| j != i).map(|j| (j, row[j])).collect();
+        scored.sort_unstable_by(|a, b| b.1.total_cmp(&a.1));
+        let neighbors: Vec<String> = scored
+            .iter()
+            .take(limit)
+            .map(|(j, _)| valid[*j].1.to_string())
+            .collect();
+        if !neighbors.is_empty() {
+            result.insert(valid[i].0.to_string(), neighbors);
+        }
+    }
+
+    let with_neighbors = result.len();
+    tracing::info!(total = n, with_neighbors, "Contrastive neighbors computed");
+
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_extract_first_sentence_period() {
-        assert_eq!(
-            extract_first_sentence("Parse a config file. Returns validated settings."),
-            "Parse a config file."
-        );
-    }
-
-    #[test]
-    fn test_extract_first_sentence_no_period() {
-        assert_eq!(
-            extract_first_sentence("Parse a config file and return settings"),
-            "Parse a config file and return settings"
-        );
-    }
-
-    #[test]
-    fn test_extract_first_sentence_short() {
-        assert_eq!(extract_first_sentence("Hi."), "");
-    }
-
-    #[test]
-    fn test_extract_first_sentence_multiline() {
-        assert_eq!(
-            extract_first_sentence("Parse a config file.\n\nThis handles TOML and JSON."),
-            "Parse a config file."
-        );
-    }
-
-    #[test]
-    fn extract_first_sentence_url_with_period() {
-        // URL period — cuts at first period in domain (known behavior, not a bug)
-        let r = extract_first_sentence("See https://example.com. Usage guide.");
-        assert_eq!(r, "See https://example.");
-    }
-
-    #[test]
-    fn extract_first_sentence_short_falls_to_line() {
-        // "Short." is 6 chars <=10, falls to first line
-        let r = extract_first_sentence("Short. More text here.");
-        assert_eq!(r, "Short. More text here.");
-    }
-
-    #[test]
-    fn extract_first_sentence_exclamation() {
-        let r = extract_first_sentence("This is great! More.");
-        assert_eq!(r, "This is great!");
-    }
-
-    #[test]
-    fn extract_first_sentence_question() {
-        let r = extract_first_sentence("Is this working? Yes.");
-        assert_eq!(r, "Is this working?");
-    }
-
-    #[test]
-    fn extract_first_sentence_whitespace_only() {
-        assert_eq!(extract_first_sentence("   \n  \t  "), "");
-    }
-
-    #[test]
-    fn extract_first_sentence_empty_input() {
-        assert_eq!(extract_first_sentence(""), "");
-    }
-
-    #[test]
-    fn extract_first_sentence_boundary_11_chars() {
-        assert_eq!(extract_first_sentence("1234567890."), "1234567890.");
-    }
-
-    #[test]
-    fn extract_first_sentence_short_multiline() {
-        // Both sentence and first line too short
-        assert_eq!(extract_first_sentence("OK.\nMore"), "");
-    }
 
     // ===== TC-22: LLM pass chunk filtering condition tests =====
     //

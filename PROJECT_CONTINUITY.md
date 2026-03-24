@@ -2,35 +2,35 @@
 
 ## Right Now
 
-**v1.4.0 audit complete (2026-03-24). 70/74 findings fixed. Ready to merge.**
+**v1.4.1 released + contrastive summaries implemented (2026-03-24).**
 
-### Audit Results (v1.4.0)
-- 14-category audit, 3 batches, 74 unique findings
-- P1: 10/10 fixed (crashes, security, data loss)
-- P2: 15/15 fixed (correctness, performance, duplication)
-- P3: 37/37 fixed (docs, derives, spans, tests, small improvements)
-- P4: 8/12 fixed, 4 deferred (2 informational, 2 upstream-blocked)
-- Tests: 1916 pass (up from 1095 pre-audit), 0 failures, 0 warnings
-- Key fixes: Windows path separator bug, UTF-8 panic, API key exfiltration warning, LLM batch dedup (-215 lines), HNSW rollback safety, BFS batching, 29 new tests
+### Contrastive Summaries (SQ-10)
+- Brute-force cosine neighbors precomputed from embeddings during summary pass
+- Top-3 nearest neighbors passed to LLM prompt: "This function is similar to but different from: X, Y, Z"
+- Doc-comment shortcut removed — all callable chunks go through contrastive API path (~$0.38 one-time)
+- FTS path filter bug fixed — `--path` glob now applies to FTS keyword results too
+- Full-pipeline eval: **92.7% R@1, 96.3% R@5, 0.9478 NDCG@10** (55 queries, 5 languages)
+- 2 remaining misses: TS helper-function confusion (genuine hard cases)
 
 ### Uncommitted changes
-All audit fixes on `main` working tree — needs branch + PR + merge.
+- Contrastive summary implementation (`src/llm/summary.rs`, `src/llm/prompts.rs`, `src/llm/batch.rs`)
+- FTS path filter fix (`src/search/query.rs`)
+- Improved eval script (`tests/full_pipeline_eval.sh` — path scoping, R@1/R@5/R@10/NDCG metrics)
+- Audit skill update (mandatory `cqs health`/`cqs dead` first steps)
 
 ### Next experiments (prioritized)
-1. **Contrastive discriminating summaries** — plan at `docs/superpowers/plans/2026-03-24-contrastive-summaries.md`. ~1.5h implementation.
-2. **KeyDAC query augmentation** (free) — keyword-preserving training data augmentation
-3. **KD-LoRA distillation** — CodeSage-large (1.3B) → E5-base (110M). ~12h on A6000.
+1. **KeyDAC query augmentation** — plan at `docs/superpowers/plans/2026-03-24-keydac-augmentation.md`. ~1h code + 14-21h train.
+2. **KD-LoRA distillation** — CodeSage-large (1.3B) → E5-base (110M). ~12h on A6000.
 
 ### Next session
-1. **Merge audit PR** if not merged yet
-2. **Execute contrastive summaries** — Rust changes in `src/llm/summary.rs`
-3. **Execute KeyDAC augmentation** — plan at `docs/superpowers/plans/2026-03-24-keydac-augmentation.md`
+1. **Merge contrastive summaries PR** if not merged yet
+2. **Execute KeyDAC augmentation**
+3. **Re-run hard eval** with contrastive summaries in fixture embeddings (requires adding summary injection to eval test harness)
 
 ## Parked
 - Paper revision — after next training improvement
 - Verified HF eval results — needs CoIR benchmark registration
 - v7b epoch 2 — deprioritized (v7b didn't improve)
-- Full-pipeline hard eval with doc comments — costs API credits
 
 ## Open Issues
 - #665: RM-23 enrichment_pass ~105MB memory (deferred)
@@ -41,8 +41,9 @@ All audit fixes on `main` working tree — needs branch + PR + merge.
 - #63: paste crate warning (monitoring)
 
 ## Architecture
-- Version: 1.4.0 (released, tagged, published to crates.io)
-- Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR, 89.1% hard eval)
+- Version: 1.4.1 (released, tagged, published to crates.io)
+- Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR, 89.1% hard eval raw)
+- Full-pipeline: 92.7% R@1, 0.9478 NDCG@10 (with contrastive summaries + enrichment)
 - ChunkType: 20 variants (Extension: 4 langs, Constructor: 10 langs)
-- Tests: 1916 pass (post-audit)
+- Tests: 1916 pass
 - 5th full audit (v0.5.3, v0.12.3, v0.19.2, v1.0.13, v1.4.0)
