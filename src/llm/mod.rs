@@ -427,4 +427,81 @@ mod tests {
         let results = parse_batch_results_jsonl(jsonl);
         assert!(results.is_empty());
     }
+
+    #[test]
+    fn parse_jsonl_truncated_json() {
+        // First line valid, second line truncated mid-JSON → only first result returned
+        let jsonl = concat!(
+            r#"{"custom_id":"h1","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"Valid line."}]}}}"#,
+            "\n",
+            r#"{"custom_id":"h2","result":{"type":"succeeded","message":{"content":[{"type":"te"#,
+        );
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(
+            results.len(),
+            1,
+            "Only the complete first line should parse"
+        );
+        assert_eq!(results.get("h1").unwrap(), "Valid line.");
+        assert!(!results.contains_key("h2"));
+    }
+
+    #[test]
+    fn parse_jsonl_unicode_in_summary() {
+        // Summary contains CJK characters and emoji — should be preserved exactly
+        let summary = "代码解析模块 🦀 parses Rust source files";
+        let jsonl = format!(
+            r#"{{"custom_id":"h1","result":{{"type":"succeeded","message":{{"content":[{{"type":"text","text":"{}"}}]}}}}}}"#,
+            summary
+        );
+        let results = parse_batch_results_jsonl(&jsonl);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.get("h1").unwrap(), summary);
+    }
+
+    #[test]
+    fn parse_jsonl_very_long_summary() {
+        // 100k char summary → stored without truncation
+        let long_text: String = "x".repeat(100_000);
+        let jsonl = format!(
+            r#"{{"custom_id":"h1","result":{{"type":"succeeded","message":{{"content":[{{"type":"text","text":"{}"}}]}}}}}}"#,
+            long_text
+        );
+        let results = parse_batch_results_jsonl(&jsonl);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results.get("h1").unwrap().len(), 100_000);
+    }
+
+    #[test]
+    fn parse_jsonl_duplicate_custom_ids() {
+        // Two lines with the same custom_id → HashMap keeps last (1 result)
+        let jsonl = concat!(
+            r#"{"custom_id":"same","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"First."}]}}}"#,
+            "\n",
+            r#"{"custom_id":"same","result":{"type":"succeeded","message":{"content":[{"type":"text","text":"Second."}]}}}"#,
+        );
+        let results = parse_batch_results_jsonl(jsonl);
+        assert_eq!(
+            results.len(),
+            1,
+            "Duplicate custom_ids collapse to one entry"
+        );
+        assert_eq!(
+            results.get("same").unwrap(),
+            "Second.",
+            "HashMap last-write-wins keeps the second entry"
+        );
+    }
+
+    #[test]
+    fn parse_jsonl_null_message_on_succeeded() {
+        // "message":null on a succeeded result → no result stored
+        // (This is the explicit adversarial variant — succeeded type but null message)
+        let jsonl = r#"{"custom_id":"h1","result":{"type":"succeeded","message":null}}"#;
+        let results = parse_batch_results_jsonl(jsonl);
+        assert!(
+            results.is_empty(),
+            "succeeded + null message should produce no result"
+        );
+    }
 }

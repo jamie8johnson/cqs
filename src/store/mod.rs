@@ -1479,4 +1479,89 @@ mod tests {
             .check_schema_version(std::path::Path::new("/test"))
             .is_ok());
     }
+
+    // ===== TC-19: concurrent access and edge-case tests =====
+
+    #[test]
+    fn concurrent_readonly_opens() {
+        // Two readonly stores opened against the same DB should both succeed (WAL allows
+        // multiple readers).
+        let (_writer, dir) = make_test_store_initialized();
+        let db_path = dir.path().join("index.db");
+
+        let ro1 = Store::open_readonly(&db_path).expect("first readonly open failed");
+        let ro2 = Store::open_readonly(&db_path).expect("second readonly open failed");
+
+        // Both stores should be able to query metadata without error.
+        assert!(ro1.check_model_version().is_ok());
+        assert!(ro2.check_model_version().is_ok());
+    }
+
+    #[test]
+    fn readonly_open_while_writer_holds() {
+        // A readonly store opened while a writer Store is alive should succeed.
+        // SQLite WAL mode permits concurrent readers alongside a writer.
+        let (writer, dir) = make_test_store_initialized();
+        let db_path = dir.path().join("index.db");
+
+        let ro = Store::open_readonly(&db_path).expect("readonly open failed while writer active");
+        assert!(ro.check_model_version().is_ok());
+
+        // Writer is still alive — drop it after to make the intent clear.
+        drop(writer);
+    }
+
+    #[test]
+    fn onclock_cache_not_invalidated_by_writes() {
+        // get_call_graph() populates the OnceLock cache on first call.
+        // Subsequent writes to function_calls must NOT update the cached value —
+        // this is intentional by design (per-command Store lifetime contract).
+        let (store, _dir) = make_test_store_initialized();
+
+        // Prime the cache with an empty call graph.
+        let graph_before = store.get_call_graph().expect("first get_call_graph failed");
+        let callers_before = graph_before.forward.len();
+
+        // Write new call data to the store.
+        store
+            .upsert_function_calls(
+                std::path::Path::new("test.rs"),
+                &[crate::parser::FunctionCalls {
+                    name: "caller".to_string(),
+                    line_start: 1,
+                    calls: vec![crate::parser::CallSite {
+                        callee_name: "callee".to_string(),
+                        line_number: 2,
+                    }],
+                }],
+            )
+            .unwrap();
+
+        // Cache must still return the stale (pre-write) value.
+        let graph_after = store
+            .get_call_graph()
+            .expect("second get_call_graph failed");
+        assert_eq!(
+            graph_after.forward.len(),
+            callers_before,
+            "OnceLock cache should not be invalidated by writes within the same Store lifetime"
+        );
+    }
+
+    #[test]
+    fn double_init_is_idempotent() {
+        // Calling init() twice on the same store should succeed without error.
+        // Schema uses INSERT OR REPLACE / CREATE TABLE IF NOT EXISTS, so a second
+        // init() must be a no-op rather than a conflict.
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("index.db");
+        let store = Store::open(&db_path).unwrap();
+
+        store
+            .init(&ModelInfo::default())
+            .expect("first init() failed");
+        store
+            .init(&ModelInfo::default())
+            .expect("second init() should be idempotent but failed");
+    }
 }

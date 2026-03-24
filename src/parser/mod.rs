@@ -772,6 +772,8 @@ pub(crate) fn extract_definition_node<'c, 't>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
     /// Verifies that the Parser correctly extracts function definitions from Rust source code.
     ///
     /// This is a unit test that validates the `parse_source` method's ability to identify and parse individual functions from a source file. It tests parsing a Rust snippet containing two function definitions and asserts that both functions are extracted as separate chunks with their correct names.
@@ -798,5 +800,97 @@ mod tests {
         assert!(chunks.len() >= 2);
         assert!(chunks.iter().any(|c| c.name == "hello"));
         assert!(chunks.iter().any(|c| c.name == "world"));
+    }
+
+    #[test]
+    fn parse_source_empty_string() {
+        let parser = Parser::new().unwrap();
+        let chunks = parser
+            .parse_source("", Language::Rust, Path::new("test.rs"))
+            .unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn parse_source_whitespace_only() {
+        let parser = Parser::new().unwrap();
+        let chunks = parser
+            .parse_source("   \n\t\n  \n", Language::Rust, Path::new("test.rs"))
+            .unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn parse_source_only_comments() {
+        let parser = Parser::new().unwrap();
+        let source = "// comment\n/* block */";
+        let chunks = parser
+            .parse_source(source, Language::Rust, Path::new("test.rs"))
+            .unwrap();
+        assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn parse_source_binary_content_no_panic() {
+        let parser = Parser::new().unwrap();
+        // Safety: we are deliberately constructing a &str from bytes that are
+        // not valid UTF-8 sequences. tree-sitter must not panic on this.
+        // Using a lossy approach: embed the bytes in a string literal that
+        // Rust allows by escaping them.
+        let source = "\x00\x01\x02";
+        // This should not panic — result may be Ok or Err, both are acceptable.
+        let _ = parser.parse_source(source, Language::Rust, Path::new("binary.rs"));
+    }
+
+    #[test]
+    fn parse_source_extremely_long_line() {
+        let parser = Parser::new().unwrap();
+        // 200 000-char line — not valid Rust, but the parser must not panic.
+        let long_line = "x".repeat(200_000);
+        let _ = parser.parse_source(&long_line, Language::Rust, Path::new("long.rs"));
+    }
+
+    #[test]
+    fn parse_source_deeply_nested_braces() {
+        let parser = Parser::new().unwrap();
+        // 500 unclosed opening braces — malformed, but must not panic.
+        let source = "{".repeat(500);
+        let _ = parser.parse_source(&source, Language::Rust, Path::new("nested.rs"));
+    }
+
+    #[test]
+    fn parse_source_wrong_language_no_panic() {
+        let parser = Parser::new().unwrap();
+        // Python source fed to the Rust grammar — must not panic.
+        let python_source = "def foo(x):\n    return x + 1\n\nclass Bar:\n    pass\n";
+        let _ = parser.parse_source(python_source, Language::Rust, Path::new("wrong.rs"));
+    }
+
+    #[test]
+    fn parse_source_null_bytes_in_source() {
+        let parser = Parser::new().unwrap();
+        // Null byte embedded in otherwise-valid Rust — must not panic.
+        let source = "fn foo() {}\0fn bar() {}";
+        let _ = parser.parse_source(source, Language::Rust, Path::new("null.rs"));
+    }
+
+    #[test]
+    fn parse_file_all_nonexistent_file() {
+        let parser = Parser::new().unwrap();
+        let result = parser.parse_file_all(Path::new("/nonexistent/file.rs"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_file_all_empty_file() {
+        let parser = Parser::new().unwrap();
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty.rs");
+        std::fs::File::create(&path).unwrap();
+        let result = parser.parse_file_all(&path).unwrap();
+        let (chunks, calls, type_refs) = result;
+        assert!(chunks.is_empty());
+        assert!(calls.is_empty());
+        assert!(type_refs.is_empty());
     }
 }

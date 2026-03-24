@@ -441,4 +441,164 @@ mod tests {
         assert!(!skip_short, "200 chars > MIN_CONTENT_CHARS");
         assert!(!skip_windowed, "No window index");
     }
+
+    // ===== TC-4: contrastive neighbor edge-case tests =====
+
+    /// Empty store → find_contrastive_neighbors returns Ok with empty HashMap.
+    #[test]
+    fn contrastive_neighbors_empty_store() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::Store::open(&dir.path().join("index.db")).unwrap();
+        store.init(&crate::store::ModelInfo::default()).unwrap();
+        let result = find_contrastive_neighbors(&store, 3);
+        assert!(result.is_ok(), "Expected Ok, got {:?}", result);
+        assert!(
+            result.unwrap().is_empty(),
+            "Expected empty HashMap for empty store"
+        );
+    }
+
+    /// Empty store with limit=0 → Ok, empty HashMap.
+    #[test]
+    fn contrastive_neighbors_limit_zero() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::Store::open(&dir.path().join("index.db")).unwrap();
+        store.init(&crate::store::ModelInfo::default()).unwrap();
+        let result = find_contrastive_neighbors(&store, 0);
+        assert!(result.is_ok(), "Expected Ok, got {:?}", result);
+        assert!(
+            result.unwrap().is_empty(),
+            "Expected empty HashMap when limit=0"
+        );
+    }
+
+    /// L2-normalizing a zero vector must not panic; the row must remain all-zero.
+    /// A unit vector must be unchanged after normalization.
+    #[test]
+    fn l2_normalize_zero_vector_no_panic() {
+        use ndarray::Array2;
+        let mut matrix = Array2::<f32>::zeros((2, 4));
+        // row 0: all zeros — norm is 0, should be left as-is
+        // row 1: unit vector along first axis
+        matrix[[1, 0]] = 1.0;
+
+        for i in 0..2 {
+            let norm = matrix.row(i).mapv(|x| x * x).sum().sqrt();
+            if norm > 0.0 {
+                matrix.row_mut(i).mapv_inplace(|x| x / norm);
+            }
+        }
+
+        // Zero row stays zero
+        for j in 0..4 {
+            assert_eq!(
+                matrix[[0, j]],
+                0.0,
+                "Zero row should stay zero after normalization"
+            );
+        }
+        // Unit row stays unit (norm == 1.0)
+        let norm_after: f32 = matrix.row(1).mapv(|x| x * x).sum().sqrt();
+        assert!(
+            (norm_after - 1.0).abs() < 1e-6,
+            "Unit row norm should be 1.0, got {}",
+            norm_after
+        );
+    }
+
+    /// A 3×4 matrix with one all-zero row: after pairwise cosine (matrix @ matrix.T),
+    /// the zero row's self-similarity is 0.0 and all cross-similarities involving it are 0.0.
+    #[test]
+    fn pairwise_cosine_with_zero_row() {
+        use ndarray::Array2;
+        let mut matrix = Array2::<f32>::zeros((3, 4));
+        // row 0: zero vector
+        // row 1: unit along dim 0
+        matrix[[1, 0]] = 1.0;
+        // row 2: unit along dim 1
+        matrix[[2, 1]] = 1.0;
+
+        // Normalize (zero row unchanged)
+        for i in 0..3 {
+            let norm = matrix.row(i).mapv(|x| x * x).sum().sqrt();
+            if norm > 0.0 {
+                matrix.row_mut(i).mapv_inplace(|x| x / norm);
+            }
+        }
+
+        let sims = matrix.dot(&matrix.t());
+
+        // Zero row: self-sim = 0, cross-sims = 0
+        assert_eq!(sims[[0, 0]], 0.0, "Zero-row self-sim should be 0");
+        assert_eq!(
+            sims[[0, 1]],
+            0.0,
+            "Zero-row cross-sim with row 1 should be 0"
+        );
+        assert_eq!(
+            sims[[0, 2]],
+            0.0,
+            "Zero-row cross-sim with row 2 should be 0"
+        );
+        assert_eq!(
+            sims[[1, 0]],
+            0.0,
+            "Cross-sim with zero-row should be 0 (symmetric)"
+        );
+        assert_eq!(
+            sims[[2, 0]],
+            0.0,
+            "Cross-sim with zero-row should be 0 (symmetric)"
+        );
+
+        // Non-zero rows: self-sim ≈ 1.0
+        assert!(
+            (sims[[1, 1]] - 1.0).abs() < 1e-6,
+            "Row 1 self-sim should be 1.0, got {}",
+            sims[[1, 1]]
+        );
+        assert!(
+            (sims[[2, 2]] - 1.0).abs() < 1e-6,
+            "Row 2 self-sim should be 1.0, got {}",
+            sims[[2, 2]]
+        );
+    }
+
+    /// 3×4 matrix with all rows identical: after L2-normalization, all pairwise
+    /// similarities (including self) should be ≈ 1.0.
+    #[test]
+    fn pairwise_cosine_identical_vectors() {
+        use ndarray::Array2;
+        let mut matrix = Array2::<f32>::zeros((3, 4));
+        // All rows identical: [1, 2, 3, 4]
+        for i in 0..3 {
+            matrix[[i, 0]] = 1.0;
+            matrix[[i, 1]] = 2.0;
+            matrix[[i, 2]] = 3.0;
+            matrix[[i, 3]] = 4.0;
+        }
+
+        // L2-normalize each row
+        for i in 0..3 {
+            let norm = matrix.row(i).mapv(|x| x * x).sum().sqrt();
+            if norm > 0.0 {
+                matrix.row_mut(i).mapv_inplace(|x| x / norm);
+            }
+        }
+
+        let sims = matrix.dot(&matrix.t());
+
+        // All pairwise similarities should be ≈ 1.0
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(
+                    (sims[[i, j]] - 1.0).abs() < 1e-6,
+                    "sims[{},{}] should be ≈ 1.0 for identical vectors, got {}",
+                    i,
+                    j,
+                    sims[[i, j]]
+                );
+            }
+        }
+    }
 }

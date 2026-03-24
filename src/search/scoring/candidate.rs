@@ -749,4 +749,107 @@ mod tests {
             "Positive note should boost score"
         );
     }
+
+    // ===== Adversarial BoundedScoreHeap and score_candidate tests =====
+
+    #[test]
+    fn heap_all_nan_scores() {
+        let mut heap = BoundedScoreHeap::new(5);
+        heap.push("a".to_string(), f32::NAN);
+        heap.push("b".to_string(), f32::NAN);
+        heap.push("c".to_string(), f32::NAN);
+        let results = heap.into_sorted_vec();
+        assert!(
+            results.is_empty(),
+            "All NaN scores should produce empty results, got {} items",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn heap_mixed_valid_and_nan() {
+        let mut heap = BoundedScoreHeap::new(10);
+        heap.push("nan1".to_string(), f32::NAN);
+        heap.push("ok1".to_string(), 0.7);
+        heap.push("inf".to_string(), f32::INFINITY);
+        heap.push("ok2".to_string(), 0.9);
+        heap.push("nan2".to_string(), f32::NAN);
+        heap.push("neginf".to_string(), f32::NEG_INFINITY);
+        heap.push("ok3".to_string(), 0.5);
+        let results = heap.into_sorted_vec();
+        // Only finite scores kept
+        assert_eq!(results.len(), 3, "Only finite scores should be kept");
+        // All results must be finite
+        for (id, score) in &results {
+            assert!(
+                score.is_finite(),
+                "Result '{id}' has non-finite score {score}"
+            );
+        }
+        // Sorted descending
+        assert_eq!(results[0].0, "ok2");
+        assert_eq!(results[1].0, "ok1");
+        assert_eq!(results[2].0, "ok3");
+    }
+
+    #[test]
+    fn heap_negative_scores() {
+        let mut heap = BoundedScoreHeap::new(5);
+        heap.push("a".to_string(), -0.1);
+        heap.push("b".to_string(), -0.5);
+        heap.push("c".to_string(), -0.3);
+        let results = heap.into_sorted_vec();
+        assert_eq!(results.len(), 3, "All negative scores should be kept");
+        // Sorted descending (least negative first)
+        assert_eq!(results[0].0, "a", "Least negative should be first");
+        assert_eq!(results[1].0, "c");
+        assert_eq!(results[2].0, "b", "Most negative should be last");
+    }
+
+    #[test]
+    fn heap_capacity_zero() {
+        let mut heap = BoundedScoreHeap::new(0);
+        heap.push("a".to_string(), 0.9);
+        heap.push("b".to_string(), 0.8);
+        let results = heap.into_sorted_vec();
+        assert!(
+            results.is_empty(),
+            "Capacity-0 heap should always be empty, got {} items",
+            results.len()
+        );
+    }
+
+    #[test]
+    fn score_candidate_zero_embedding() {
+        // Zero vector query — cosine_similarity returns 0.0 (finite) for a zero vs normal dot,
+        // so score_candidate may return Some(0.0) if threshold is 0.0.
+        // The important constraint: must not panic and must not return a non-finite score.
+        let zero_query = vec![0.0f32; 768];
+        let normal_emb = test_embedding(1.0);
+        let filter = SearchFilter {
+            query_text: "test".into(),
+            ..Default::default()
+        };
+        let notes: Vec<NoteSummary> = vec![];
+        let note_index = NoteBoostIndex::new(&notes);
+
+        let result = score_candidate(
+            &normal_emb,
+            &zero_query,
+            None,
+            "src/lib.rs",
+            &filter,
+            None,
+            None,
+            &note_index,
+            0.0,
+        );
+        match result {
+            None => {} // acceptable — cosine returned None or score below threshold
+            Some(v) => assert!(
+                v.is_finite(),
+                "score_candidate with zero query must return finite score, got {v}"
+            ),
+        }
+    }
 }

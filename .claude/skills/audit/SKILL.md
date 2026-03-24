@@ -96,7 +96,7 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
 | API Design | Consistency, ergonomics, naming, type design |
 | Error Handling | Result chains, context, recovery, swallowed errors |
 | Observability | Logging coverage, tracing, debuggability |
-| Test Coverage | Gaps, meaningful assertions, integration tests |
+| Test Coverage | Gaps, meaningful assertions, integration tests, adversarial/edge-case coverage (malformed input, concurrent access, NaN/Inf values, error paths) |
 | Robustness | unwrap/expect, edge cases (empty/huge/unicode/malformed), panic paths |
 | Algorithm Correctness | Off-by-one, boundary conditions, logic errors |
 | Extensibility | Adding features without surgery, hardcoded values |
@@ -105,6 +105,30 @@ You have `cqs` on PATH. Use it for faster code exploration — still read source
 | Data Safety | Corruption, validation, migrations, races, deadlocks, thread safety |
 | Performance | O(n²), unnecessary iterations, batching, caching, I/O patterns |
 | Resource Management | Memory usage, startup time, idle cost, OOM protection, leaks |
+
+## Mandatory First Steps per Category
+
+Run these cqs commands **before** manual exploration — they surface the highest-value data in a single call.
+
+**Batch 1:**
+- **Code Quality**: Run `cqs dead --json` + `cqs health --json` first.
+- **Documentation**: Run `cqs health --json` for staleness counts.
+- **API Design**: No mandatory command.
+- **Error Handling**: No mandatory command — grep-driven.
+- **Observability**: No mandatory command — grep for `tracing::` patterns.
+
+**Batch 2:**
+- **Test Coverage**: Run `cqs health --json` first (includes untested hotspots). Also check for **adversarial test gaps**: functions that accept user input, external data, or embeddings should have tests for malformed/adversarial inputs (empty, NaN, truncated, wrong-type, concurrent).
+- **Robustness**: No mandatory command — grep for `.unwrap()`, `.expect(`, `panic!`.
+- **Algorithm Correctness**: Use `cqs explain <fn> --json` on algorithmic functions.
+- **Extensibility**: Run `cqs health --json` for hotspot overview.
+- **Platform Behavior**: No mandatory command.
+
+**Batch 3:**
+- **Security**: No mandatory command.
+- **Data Safety**: No mandatory command.
+- **Performance**: Run `cqs health --json` first (identifies hotspots).
+- **Resource Management**: No mandatory command.
 
 ## Rules
 

@@ -147,4 +147,66 @@ mod tests {
             "Should fail for wrong dimension"
         );
     }
+
+    // ===== Adversarial embedding tests =====
+
+    #[test]
+    fn cosine_nan_embedding() {
+        let nan_emb = vec![f32::NAN; 768];
+        let normal_emb = make_embedding(0.5);
+        assert!(
+            cosine_similarity(&nan_emb, &normal_emb).is_none(),
+            "NaN embedding vs normal should return None"
+        );
+        assert!(
+            cosine_similarity(&normal_emb, &nan_emb).is_none(),
+            "Normal vs NaN embedding should return None"
+        );
+    }
+
+    #[test]
+    fn cosine_inf_embedding() {
+        let mut inf_emb = make_embedding(0.5);
+        inf_emb[42] = f32::INFINITY;
+        let normal_emb = make_embedding(0.5);
+        assert!(
+            cosine_similarity(&inf_emb, &normal_emb).is_none(),
+            "Vector with Inf value vs normal should return None"
+        );
+    }
+
+    #[test]
+    fn cosine_zero_norm_vector() {
+        let zero_emb = make_embedding(0.0);
+        let normal_emb = make_embedding(0.5);
+        // dot product of zero vector with anything = 0.0, which is finite
+        // so this may return Some(0.0) — the point is it must not panic or return NaN
+        let result = cosine_similarity(&zero_emb, &normal_emb);
+        match result {
+            None => {} // acceptable
+            Some(v) => assert!(v.is_finite(), "Zero-norm result must be finite, got {v}"),
+        }
+    }
+
+    #[test]
+    fn cosine_negative_inf_embedding() {
+        let mut neg_inf_emb = make_embedding(0.5);
+        neg_inf_emb[0] = f32::NEG_INFINITY;
+        let normal_emb = make_embedding(0.5);
+        assert!(
+            cosine_similarity(&neg_inf_emb, &normal_emb).is_none(),
+            "Vector with NEG_INFINITY vs normal should return None"
+        );
+    }
+
+    #[test]
+    fn cosine_subnormal_values() {
+        // Subnormal (denormalized) floats: very close to zero but nonzero
+        let subnormal_emb = make_embedding(f32::MIN_POSITIVE / 2.0);
+        let result = cosine_similarity(&subnormal_emb, &subnormal_emb);
+        match result {
+            None => {} // acceptable — product of subnormals can underflow to 0
+            Some(v) => assert!(v.is_finite(), "Subnormal result must be finite, got {v}"),
+        }
+    }
 }
