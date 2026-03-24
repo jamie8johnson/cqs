@@ -76,17 +76,18 @@ impl Client {
         Ok(batch.id)
     }
 
-    /// Submit a batch of summary requests to the Batches API.
+    /// Submit a batch where prompts are already built (content field IS the prompt).
     ///
-    /// `items` is a list of (custom_id, content, chunk_type, language).
-    /// `max_tokens` controls the per-request token limit.
-    /// Returns the batch ID for polling.
-    pub(super) fn submit_batch(
+    /// Used by the contrastive summary path which pre-builds prompts with neighbor context.
+    pub(super) fn submit_batch_prebuilt(
         &self,
         items: &[(String, String, String, String)],
         max_tokens: u32,
     ) -> Result<String, LlmError> {
-        self.submit_batch_inner(items, max_tokens, "Batch", Self::build_prompt)
+        // Identity: content is already the full prompt, ignore field3/language
+        self.submit_batch_inner(items, max_tokens, "Batch", |content, _, _| {
+            content.to_string()
+        })
     }
 
     /// Submit a batch of doc-comment requests to the Batches API.

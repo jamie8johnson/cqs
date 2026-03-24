@@ -1,8 +1,8 @@
 # Roadmap
 
-## Current: v1.4.0
+## Current: v1.4.1
 
-v1.4.0: Extension/Constructor ChunkTypes, batch cache invalidation, 4-file refactor split, R/Lua improvements. v1.4.0 audit: 70/74 findings fixed, 1916 tests. v1.3.0: `--improve-all` doc generation, LoRA v5 default model, Windows build fix, security deps, 75 audit fixes. 51 languages. Five full audits (v0.5.3, v0.12.3, v0.19.2, v1.0.13, v1.4.0). Usage telemetry. 9-language training data pipeline.
+v1.4.1: 70/74 audit findings fixed. Contrastive LLM summaries (embedding-neighbor context). FTS path filter fix. Full-pipeline eval: 92.7% R@1, 96.3% R@5, 0.9478 NDCG@10. v1.4.0: Extension/Constructor ChunkTypes, batch cache invalidation, 4-file refactor. 51 languages. Five full audits.
 
 ### 1.0.x Highlights
 

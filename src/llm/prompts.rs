@@ -3,7 +3,7 @@
 use super::{Client, MAX_CONTENT_CHARS};
 
 impl Client {
-    /// Build the prompt for a code chunk.
+    /// Build the discriminating prompt for a code chunk (no neighbor context).
     pub(super) fn build_prompt(content: &str, chunk_type: &str, language: &str) -> String {
         let truncated = if content.len() > MAX_CONTENT_CHARS {
             &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
@@ -15,6 +15,42 @@ impl Client {
              Focus on the specific algorithm, approach, or behavioral characteristics \
              that distinguish it. One sentence only. Be specific, not generic.\n\n```{}\n{}\n```",
             chunk_type, chunk_type, language, truncated
+        )
+    }
+
+    /// Build a contrastive prompt with nearest-neighbor context.
+    ///
+    /// Tells the LLM about similar functions, producing summaries like
+    /// "unlike heap_sort, this function uses a divide-and-conquer merge strategy".
+    pub(super) fn build_contrastive_prompt(
+        content: &str,
+        chunk_type: &str,
+        language: &str,
+        neighbors: &[String],
+    ) -> String {
+        let truncated = if content.len() > MAX_CONTENT_CHARS {
+            &content[..content.floor_char_boundary(MAX_CONTENT_CHARS)]
+        } else {
+            content
+        };
+        let neighbor_list: String = neighbors
+            .iter()
+            .take(5)
+            .map(|n| {
+                if n.len() > 60 {
+                    &n[..n.floor_char_boundary(60)]
+                } else {
+                    n.as_str()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "This {} is similar to but different from: {}. \
+             Describe what specifically distinguishes this {} from those. \
+             Focus on the algorithm, data structure, or behavioral difference. \
+             One sentence only. Be concrete.\n\n```{}\n{}\n```",
+            chunk_type, neighbor_list, chunk_type, language, truncated
         )
     }
 
@@ -78,24 +114,37 @@ mod tests {
     #[test]
     fn test_build_prompt() {
         let prompt = Client::build_prompt("fn foo() {}", "function", "rust");
-        assert!(prompt.contains("function"));
+        assert!(prompt.contains("unique and distinguishable"));
         assert!(prompt.contains("```rust"));
         assert!(prompt.contains("fn foo()"));
+    }
+
+    #[test]
+    fn test_build_contrastive_prompt() {
+        let prompt = Client::build_contrastive_prompt(
+            "fn merge_sort() {}",
+            "function",
+            "rust",
+            &["heap_sort".into(), "quicksort".into()],
+        );
+        assert!(prompt.contains("heap_sort"));
+        assert!(prompt.contains("quicksort"));
+        assert!(prompt.contains("distinguishes"));
+        assert!(!prompt.contains("unique and distinguishable"));
     }
 
     #[test]
     fn test_build_prompt_truncation() {
         let long = "x".repeat(10000);
         let prompt = Client::build_prompt(&long, "function", "rust");
-        // Prompt should contain truncated content
-        assert!(prompt.len() < 10000 + 200); // prompt overhead + truncated
+        assert!(prompt.len() < 10000 + 200);
     }
 
     #[test]
     fn build_prompt_multibyte_no_panic() {
         let content: String = std::iter::repeat('あ').take(2667).collect();
         let prompt = Client::build_prompt(&content, "function", "rust");
-        assert!(prompt.len() <= 8300); // discriminating prompt is slightly longer
+        assert!(prompt.len() <= 8300);
     }
 
     // ===== build_doc_prompt tests =====
