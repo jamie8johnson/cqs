@@ -257,6 +257,7 @@ fn extract_return(signature: &str) -> Option<String> {
 ///
 /// A `function_definition` with no return type (no type child before the declarator)
 /// is a constructor. Destructors (name starts with `~`) are excluded.
+#[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
 fn post_process_cpp(
     name: &mut String,
     chunk_type: &mut ChunkType,

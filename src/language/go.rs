@@ -195,6 +195,7 @@ fn extract_return(signature: &str) -> Option<String> {
 /// Post-process Go chunks: reclassify `New*` functions as Constructor (convention).
 ///
 /// Go convention: `func NewTypeName(...)` is a constructor for TypeName.
+#[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
 fn post_process_go(
     name: &mut String,
     chunk_type: &mut ChunkType,
