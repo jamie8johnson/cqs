@@ -1,6 +1,6 @@
 //! C# language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting C# code chunks
 const CHUNK_QUERY: &str = r#"
@@ -147,6 +147,21 @@ fn extract_return(signature: &str) -> Option<String> {
     None
 }
 
+/// Post-process C# chunks: reclassify `constructor_declaration` nodes as Constructor.
+fn post_process_csharp(
+    _name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    if node.kind() == "constructor_declaration"
+        && matches!(*chunk_type, ChunkType::Function | ChunkType::Method)
+    {
+        *chunk_type = ChunkType::Constructor;
+    }
+    true
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "csharp",
     grammar: Some(|| tree_sitter_c_sharp::LANGUAGE.into()),
@@ -171,7 +186,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &["declaration_list"],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_csharp as PostProcessChunkFn),
     test_markers: &["[Test]", "[Fact]", "[Theory]", "[TestMethod]"],
     test_path_patterns: &["%/Tests/%", "%/tests/%", "%Tests.cs"],
     structural_matchers: None,
@@ -190,6 +205,18 @@ pub fn definition() -> &'static LanguageDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parser::{ChunkType, Parser};
+    use std::io::Write;
+
+    fn write_temp_file(content: &str, ext: &str) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new()
+            .suffix(&format!(".{}", ext))
+            .tempfile()
+            .unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f.flush().unwrap();
+        f
+    }
 
     #[test]
     fn test_extract_return_csharp() {
@@ -202,5 +229,31 @@ mod tests {
             extract_return("private static string GetValue()"),
             Some("Returns string".to_string())
         );
+    }
+
+    #[test]
+    fn parse_csharp_constructor() {
+        let content = r#"
+public class Service {
+    private readonly ILogger _logger;
+
+    public Service(ILogger logger) {
+        _logger = logger;
+    }
+
+    public void Run() { }
+}
+"#;
+        let file = write_temp_file(content, "cs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks
+            .iter()
+            .find(|c| c.name == "Service" && c.chunk_type != ChunkType::Class)
+            .unwrap();
+        assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+        // Run should still be a Method
+        let method = chunks.iter().find(|c| c.name == "Run").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
     }
 }

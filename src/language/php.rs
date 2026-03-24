@@ -115,12 +115,16 @@ const COMMON_TYPES: &[&str] = &[
 /// This hook strips the prefix so property names match call sites.
 fn post_process_php(
     name: &mut String,
-    _chunk_type: &mut ChunkType,
+    chunk_type: &mut ChunkType,
     _node: tree_sitter::Node,
     _source: &str,
 ) -> bool {
     if let Some(stripped) = name.strip_prefix('$') {
         *name = stripped.to_string();
+    }
+    // PHP __construct is a constructor
+    if *chunk_type == ChunkType::Method && name == "__construct" {
+        *chunk_type = ChunkType::Constructor;
     }
     true
 }
@@ -446,7 +450,7 @@ class User {
         let parser = Parser::new().unwrap();
         let chunks = parser.parse_file(file.path()).unwrap();
         let ctor = chunks.iter().find(|c| c.name == "__construct").unwrap();
-        assert_eq!(ctor.chunk_type, ChunkType::Method);
+        assert_eq!(ctor.chunk_type, ChunkType::Constructor);
         assert_eq!(ctor.parent_type_name.as_deref(), Some("User"));
     }
     /// Parses PHP function calls from a temporary PHP file and verifies that the parser correctly identifies function calls within a function definition.

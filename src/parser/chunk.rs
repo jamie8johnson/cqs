@@ -49,6 +49,7 @@ impl Parser {
             ("object", ChunkType::Object),
             ("typealias", ChunkType::TypeAlias),
             ("extension", ChunkType::Extension),
+            ("constructor", ChunkType::Constructor),
         ];
 
         // Find which definition capture matched and get its node
@@ -787,7 +788,7 @@ public enum Color { Red, Green, Blue }
 
         #[test]
         #[cfg(feature = "lang-csharp")]
-        fn test_parse_csharp_constructor_inferred_method() {
+        fn test_parse_csharp_constructor_inferred_constructor() {
             let content = r#"
 public class Foo {
     public Foo(int x) { }
@@ -797,14 +798,14 @@ public class Foo {
             let parser = Parser::new().unwrap();
             let chunks = parser.parse_file(file.path()).unwrap();
 
-            // Constructor → Function → inferred to Method (inside declaration_list)
+            // Constructor → Function → inferred to Method → post_process to Constructor
             let ctors: Vec<_> = chunks
                 .iter()
-                .filter(|c| c.name == "Foo" && c.chunk_type == ChunkType::Method)
+                .filter(|c| c.name == "Foo" && c.chunk_type == ChunkType::Constructor)
                 .collect();
             assert!(
                 !ctors.is_empty(),
-                "Constructor should be inferred as Method"
+                "Constructor should be classified as Constructor"
             );
         }
 

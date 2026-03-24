@@ -1,6 +1,6 @@
 //! Go language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Go code chunks
 const CHUNK_QUERY: &str = r#"
@@ -192,6 +192,22 @@ fn extract_return(signature: &str) -> Option<String> {
     None
 }
 
+/// Post-process Go chunks: reclassify `New*` functions as Constructor (convention).
+///
+/// Go convention: `func NewTypeName(...)` is a constructor for TypeName.
+fn post_process_go(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    _node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    // Go convention: top-level func NewFoo(...) is a constructor
+    if *chunk_type == ChunkType::Function && name.starts_with("New") && name.len() > 3 {
+        *chunk_type = ChunkType::Constructor;
+    }
+    true
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "go",
     grammar: Some(|| tree_sitter_go::LANGUAGE.into()),
@@ -214,7 +230,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &[],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_go as PostProcessChunkFn),
     test_markers: &[],
     test_path_patterns: &["%\\_test.go"],
     structural_matchers: None,
@@ -336,5 +352,30 @@ mod tests {
         let chunks = parser.parse_file(file.path()).unwrap();
         let s = chunks.iter().find(|c| c.name == "Foo").unwrap();
         assert_eq!(s.chunk_type, ChunkType::Struct);
+    }
+
+    #[test]
+    fn parse_go_constructor() {
+        let content = r#"
+package main
+
+type Server struct {
+    Port int
+}
+
+func NewServer(port int) *Server {
+    return &Server{Port: port}
+}
+
+func helper() {}
+"#;
+        let file = write_temp_file(content, "go");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks.iter().find(|c| c.name == "NewServer").unwrap();
+        assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+        // helper should still be a Function
+        let func = chunks.iter().find(|c| c.name == "helper").unwrap();
+        assert_eq!(func.chunk_type, ChunkType::Function);
     }
 }

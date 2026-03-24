@@ -100,6 +100,10 @@ fn post_process_python(
         }
         return is_upper_snake_case(name);
     }
+    // __init__ methods are constructors
+    if *chunk_type == ChunkType::Method && name == "__init__" {
+        *chunk_type = ChunkType::Constructor;
+    }
     true
 }
 
@@ -221,5 +225,25 @@ def foo():
         assert!(!is_upper_snake_case("MixedCase"));
         assert!(!is_upper_snake_case(""));
         assert!(!is_upper_snake_case("123")); // no letters
+    }
+
+    #[test]
+    fn parse_python_constructor() {
+        let content = r#"
+class Greeter:
+    def __init__(self, name):
+        self.name = name
+
+    def greet(self):
+        print(self.name)
+"#;
+        let file = write_temp_file(content, "py");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks.iter().find(|c| c.name == "__init__").unwrap();
+        assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+        // greet should still be a Method
+        let method = chunks.iter().find(|c| c.name == "greet").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
     }
 }

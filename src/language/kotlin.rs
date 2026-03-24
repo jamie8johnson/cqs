@@ -22,6 +22,12 @@ const CHUNK_QUERY: &str = r#"
 (function_declaration
   (identifier) @name) @function
 
+;; Secondary constructors — post_process_chunk reclassifies to Constructor
+(secondary_constructor) @function
+
+;; Init blocks — post_process_chunk reclassifies to Constructor
+(anonymous_initializer) @function
+
 ;; Property declarations (val/var)
 (property_declaration
   (variable_declaration
@@ -100,12 +106,27 @@ const COMMON_TYPES: &[&str] = &[
 /// 1. If an anonymous "interface" keyword child exists -> Interface
 /// 2. If `modifiers` contains a `class_modifier` with text "enum" -> Enum
 fn post_process_kotlin(
-    _name: &mut String,
+    name: &mut String,
     chunk_type: &mut ChunkType,
     node: tree_sitter::Node,
     source: &str,
 ) -> bool {
-    // Only reclassify class_declarations
+    // Reclassify secondary_constructor and anonymous_initializer (init blocks)
+    match node.kind() {
+        "secondary_constructor" => {
+            *chunk_type = ChunkType::Constructor;
+            *name = "constructor".to_string();
+            return true;
+        }
+        "anonymous_initializer" => {
+            *chunk_type = ChunkType::Constructor;
+            *name = "init".to_string();
+            return true;
+        }
+        _ => {}
+    }
+
+    // Only reclassify class_declarations below
     if node.kind() != "class_declaration" {
         return true;
     }
@@ -550,5 +571,58 @@ sealed class Result {
         let chunks = parser.parse_file(file.path()).unwrap();
         let sealed = chunks.iter().find(|c| c.name == "Result").unwrap();
         assert_eq!(sealed.chunk_type, ChunkType::Class);
+    }
+
+    #[test]
+    fn parse_kotlin_secondary_constructor() {
+        let content = r#"
+class MyClass(val name: String) {
+    constructor(x: Int) : this(x.toString())
+    fun greet() { println("hi") }
+}
+"#;
+        let file = write_temp_file(content, "kt");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks
+            .iter()
+            .find(|c| c.name == "constructor" && c.chunk_type == ChunkType::Constructor);
+        assert!(
+            ctor.is_some(),
+            "Expected secondary constructor as Constructor, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, c.chunk_type))
+                .collect::<Vec<_>>()
+        );
+        // greet should still be a Method
+        let method = chunks.iter().find(|c| c.name == "greet").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
+    }
+
+    #[test]
+    fn parse_kotlin_init_block() {
+        let content = r#"
+class Config(val path: String) {
+    init {
+        println("loading config")
+    }
+    fun load() { }
+}
+"#;
+        let file = write_temp_file(content, "kt");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let init = chunks
+            .iter()
+            .find(|c| c.name == "init" && c.chunk_type == ChunkType::Constructor);
+        assert!(
+            init.is_some(),
+            "Expected init block as Constructor, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, c.chunk_type))
+                .collect::<Vec<_>>()
+        );
     }
 }

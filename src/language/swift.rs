@@ -30,6 +30,9 @@ const CHUNK_QUERY: &str = r#"
 (protocol_function_declaration
   (simple_identifier) @name) @function
 
+;; Initializers (init declarations) — post_process reclassifies as Constructor
+(init_declaration) @function
+
 ;; Typealias
 (typealias_declaration
   (type_identifier) @name) @typealias
@@ -132,12 +135,27 @@ fn extract_return(signature: &str) -> Option<String> {
 /// - Anonymous "actor" keyword → Class (actor treated as class)
 /// - Anonymous "extension" keyword → Extension
 /// - Anonymous "class" keyword or default → Class
+///
+/// Also reclassifies `init` methods as Constructor.
 fn post_process_swift(
-    _name: &mut String,
+    name: &mut String,
     chunk_type: &mut ChunkType,
     node: tree_sitter::Node,
     source: &str,
 ) -> bool {
+    // init_declaration nodes and init methods are constructors
+    if node.kind() == "init_declaration" {
+        *chunk_type = ChunkType::Constructor;
+        if name == "<anonymous>" {
+            *name = "init".to_string();
+        }
+        return true;
+    }
+    if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) && name == "init" {
+        *chunk_type = ChunkType::Constructor;
+        return true;
+    }
+
     if node.kind() != "class_declaration" {
         return true;
     }
@@ -605,5 +623,37 @@ class Calculator {
         let method = chunks.iter().find(|c| c.name == "add").unwrap();
         assert_eq!(method.chunk_type, ChunkType::Method);
         assert_eq!(method.parent_type_name.as_deref(), Some("Calculator"));
+    }
+
+    #[test]
+    fn parse_swift_constructor() {
+        let content = r#"
+class Server {
+    let port: Int
+
+    init(port: Int) {
+        self.port = port
+    }
+
+    func start() { }
+}
+"#;
+        let file = write_temp_file(content, "swift");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks
+            .iter()
+            .find(|c| c.name == "init" && c.chunk_type == ChunkType::Constructor);
+        assert!(
+            ctor.is_some(),
+            "Expected init as Constructor, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, c.chunk_type))
+                .collect::<Vec<_>>()
+        );
+        // start should still be a Method
+        let method = chunks.iter().find(|c| c.name == "start").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
     }
 }
