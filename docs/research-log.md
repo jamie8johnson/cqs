@@ -426,8 +426,9 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 7. **In-product enrichment ≠ benchmark improvement.** NL enrichment (signatures, doc text, names) helps +1.8pp inside cqs but hurts -4.5pp on CoIR. The model was trained on raw code; enrichment shifts the passage distribution. Benchmark numbers must use the raw model.
 8. **Don't ship before eval completes.** v3 was shipped as default before v5 results existed (11:17 AM vs 12:33 PM). v5 is strictly better on every metric.
 9. **LoRA fine-tuning is a specialization trade-off — but hard negatives mostly fix it.** v5 (MNR loss) dropped from 49.48 to 48.67 overall CoIR (-0.81pp). v7 (GIST + hard negs) recovered to 49.19 (-0.29pp vs base), while pushing CSN to 0.707 (+2.4pp over v5). The trade-off shrinks from -0.81pp to -0.29pp with better training methodology.
-10. **Adversarial and realistic evals diverge.** v7 improved CoIR (6/9 tasks) but degraded hard eval (81.8% vs 85.5% R@1). Hard negatives teach purpose-level discrimination (what code does) but not implementation-level discrimination (how similar code differs). Different eval regimes test different quality dimensions.
-11. **Language balance still matters.** v7's 200k subsample preserved source proportions (82% in 3 dominant langs). Stack languages at 3% each were too diluted. Balanced subsampling (46k/lang) may further improve results.
+10. **The "hard eval degradation" was an ONNX bug.** Initial v7 hard eval showed 81.8% R@1 — but this was opset-18 CUDA EP producing garbage embeddings. Corrected with opset-11 weight injection: v7 matches base at 89.1% R@1. Always verify ONNX compatibility before trusting eval results.
+11. **Language balance doesn't help NL→code.** v7b (414k balanced, 46k/lang) scored -0.16pp vs v7 (200k unbalanced) overall. Dominant languages benefit from more data. Balance only helps cross-language tasks (CCR +0.3pp, codetrans +0.9pp). Natural proportions are better for primary use case.
+12. **Production eval ≠ fixture eval.** Full-pipeline eval against 6,867-chunk codebase: 65.4% R@1 (vs 89.1% on 268 fixtures). The difference is corpus size, not pipeline quality. Python/JS/Go score 86-100% R@1 in production. Rust scores 1/11 because Rust fixtures compete with 4,000+ cqs Rust functions.
 
 ---
 
@@ -455,7 +456,7 @@ Key finding: v4 over-specializes on CSN Python (0.971!) at the expense of CosQA 
 ### Roadmap to submission
 1. Hard negative mining (CoRNStack recipe) — **done** (1.89M pairs, 65% with hard negs)
 2. Expand training data (Rust/C++/TS) — **done** (Stack v1: 56k Rust, 58k TS, 63k C++)
-3. Train v7 (hard negs + GIST + Matryoshka) — **done, mixed** (CoIR 49.19 +0.52pp vs v5, CSN 0.707 best ever, but hard eval R@1 81.8% degraded)
+3. Train v7 (hard negs + GIST + Matryoshka) — **done** (CoIR 49.19 +0.52pp vs v5, CSN 0.707, hard eval 89.1% matches base. Initial 81.8% was opset-18 bug.)
 4. **Train v7b balanced** — 46k/lang × 9 = 414k, equal language representation. Tests imbalance hypothesis.
 5. Run full CoIR with base E5 for controlled comparison — **done** (base 49.47, v5 48.67)
 6. Controlled ablation table — each layer added/removed with confidence intervals
@@ -512,18 +513,17 @@ Hard negatives primarily improve dimension 1 but may also help 4 (forcing abstra
 - Hardware: A6000 48GB, 6h53m (3.5s/step with GIST guide model)
 - Final train loss: 0.327 avg (0.146 last step), eval loss: 0.085
 
-**Hard eval results (55 adversarial queries, 268 chunks):**
+**Hard eval results (55 adversarial queries, 268 chunks) — INITIAL (opset-18 bug, INVALID):**
 
-| Model | Training | Recall@1 | Recall@5 | MRR | NDCG@10 |
-|-------|----------|----------|----------|-----|---------|
-| **E5-base-v2** | None (pretrained) | **87.3%** | 98.2% | **0.9265** | **0.9449** |
-| jina-v2-base-code | Full FT (161M) | 76.4% | 100.0% | 0.8621 | 0.8971 |
-| E5-LoRA-v5 | 166k CSN, MNR, 1ep | 85.5% | 98.2% | 0.9077 | 0.9304 |
-| **E5-LoRA-v7** | 200k 9-lang, GIST+Matryoshka, 1ep | **81.8%** | 98.2% | **0.8750** | **0.9053** |
+~~The table below used opset-18 ONNX which caused CUDA EP to produce garbage embeddings. See corrected results below.~~
 
-Per-language MRR: v7 holds Python (0.955) but drops TypeScript (0.740 vs base 0.769) and Go (0.867 vs base 1.000).
+| Model | Training | Recall@1 (BUGGY) |
+|-------|----------|----------|
+| ~~E5-LoRA-v7~~ | ~~200k 9-lang~~ | ~~81.8%~~ |
 
-**v7 is worse than v5 on hard eval** (-3.7pp R@1), but the full CoIR tells a different story:
+**See corrected hard eval results further down** (section "CORRECTION 2026-03-23") — v7 matches base at 89.1% R@1.
+
+**Full CoIR results (valid, not affected by ONNX bug):**
 
 **Full CoIR results (9 tasks):**
 
