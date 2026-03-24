@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-03-24
+
+### Added
+- **Contrastive LLM summaries** — precompute top-3 embedding neighbors per chunk, pass to LLM prompt. Produces summaries like "unlike heap_sort, this uses divide-and-conquer merging." Doc-comment shortcut removed — all callable chunks go through contrastive API.
+- **34 adversarial tests** — parser malformed input (10), store concurrent access (4), search NaN/Inf/zero embeddings (10), contrastive neighbor edge cases (5), JSONL parsing edge cases (5).
+- **`build_contrastive_prompt()`** — separate prompt function for neighbor-aware summaries.
+- **`submit_batch_prebuilt()`** — identity prompt builder for pre-built prompts.
+
+### Fixed
+- **FTS path filter** — `--path` glob now applies to FTS keyword results in RRF fusion. Previously only the semantic path was filtered, causing unscoped results to contaminate rankings.
+- **Full-pipeline eval** — scoped to fixture files, reports R@1/R@5/R@10/NDCG@10, accepts case variants for Go `ValidateURL`/`ValidateUrl`.
+
+### Changed
+- **Audit skill** — Test Coverage category now checks for adversarial/edge-case gaps. Mandatory first steps added for all 14 categories.
+- **Full-pipeline metrics** — 92.7% R@1, 96.3% R@5, 0.9478 NDCG@10 (55 queries, 5 languages).
+
 ## [1.4.1] - 2026-03-24
 
 ### Fixed
