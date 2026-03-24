@@ -460,6 +460,17 @@ pub fn generate_nl_with_template(chunk: &Chunk, template: NlTemplate) -> String 
         }
     }
 
+    // Constructor: "constructor for {parent}" or "constructor that initializes {name}"
+    if chunk.chunk_type == ChunkType::Constructor {
+        if let Some(ref parent_name) = chunk.parent_type_name {
+            let parent_words = tokenize_identifier(parent_name).join(" ");
+            parts.push(format!("constructor for {}", parent_words));
+        } else {
+            let name_tokens = tokenize_identifier(&chunk.name).join(" ");
+            parts.push(format!("constructor that initializes {}", name_tokens));
+        }
+    }
+
     // Name line (no prefix)
     parts.push(name_words);
 

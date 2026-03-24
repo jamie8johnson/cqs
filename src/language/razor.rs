@@ -268,6 +268,13 @@ fn post_process_razor(
                 false
             }
         }
+        // C# constructor_declaration nodes inside razor_block
+        "constructor_declaration"
+            if matches!(*chunk_type, ChunkType::Function | ChunkType::Method) =>
+        {
+            *chunk_type = ChunkType::Constructor;
+            true
+        }
         _ => true, // Pass through C# chunks unchanged
     }
 }
@@ -591,11 +598,11 @@ mod tests {
         let file = write_temp_file(content, "cshtml");
         let parser = Parser::new().unwrap();
         let chunks = parser.parse_file(file.path()).unwrap();
-        // Constructor inside class inside razor_block — reclassified as Method
-        let ctor = chunks.iter().find(|c| c.name == "MyService" && c.chunk_type == ChunkType::Method);
+        // Constructor inside class inside razor_block — reclassified as Constructor
+        let ctor = chunks.iter().find(|c| c.name == "MyService" && c.chunk_type == ChunkType::Constructor);
         assert!(
             ctor.is_some(),
-            "Expected 'MyService' constructor as Method, got: {:?}",
+            "Expected 'MyService' constructor as Constructor, got: {:?}",
             chunks.iter().map(|c| (&c.name, &c.chunk_type)).collect::<Vec<_>>()
         );
     }

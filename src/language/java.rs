@@ -84,7 +84,8 @@ const STOPWORDS: &[&str] = &[
     "import", "package", "void", "int", "boolean", "string", "true", "false", "null",
 ];
 
-/// Post-process Java chunks: promote `static final` fields from Property to Constant.
+/// Post-process Java chunks: promote `static final` fields from Property to Constant,
+/// and reclassify `constructor_declaration` nodes as Constructor.
 fn post_process_java(
     _name: &mut String,
     chunk_type: &mut ChunkType,
@@ -100,6 +101,12 @@ fn post_process_java(
         if has_static && has_final {
             *chunk_type = ChunkType::Constant;
         }
+    }
+    // constructor_declaration nodes are constructors
+    if node.kind() == "constructor_declaration"
+        && matches!(*chunk_type, ChunkType::Function | ChunkType::Method)
+    {
+        *chunk_type = ChunkType::Constructor;
     }
     true
 }
@@ -250,5 +257,30 @@ public class Config {
         // static final fields should be Constant, not Property
         let constant = chunks.iter().find(|c| c.name == "MAX_SIZE").unwrap();
         assert_eq!(constant.chunk_type, ChunkType::Constant);
+    }
+
+    #[test]
+    fn parse_java_constructor() {
+        let content = r#"
+public class Person {
+    private String name;
+
+    public Person(String name) {
+        this.name = name;
+    }
+
+    public String getName() {
+        return name;
+    }
+}
+"#;
+        let file = write_temp_file(content, "java");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks.iter().find(|c| c.name == "Person" && c.chunk_type != ChunkType::Class).unwrap();
+        assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+        // getName should still be a Method
+        let method = chunks.iter().find(|c| c.name == "getName").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
     }
 }

@@ -43,11 +43,14 @@ fn test_rust_method_detection() {
         .collect();
     assert!(!methods.is_empty(), "Should find methods in impl block");
 
-    // Check Calculator::new is a method
-    let new_method = chunks
+    // Check Calculator::new is a constructor
+    let new_ctor = chunks
         .iter()
-        .find(|c| c.name == "new" && c.chunk_type == ChunkType::Method);
-    assert!(new_method.is_some(), "Calculator::new should be a method");
+        .find(|c| c.name == "new" && c.chunk_type == ChunkType::Constructor);
+    assert!(
+        new_ctor.is_some(),
+        "Calculator::new should be a constructor"
+    );
 }
 
 #[test]

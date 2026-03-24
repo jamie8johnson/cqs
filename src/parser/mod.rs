@@ -759,6 +759,7 @@ pub(crate) fn extract_definition_node<'c, 't>(
         "delegate",
         "event",
         "extension",
+        "constructor",
     ];
     DEF_CAPTURES.iter().find_map(|name| {
         query

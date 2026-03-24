@@ -1,6 +1,6 @@
 //! C++ language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting C++ code chunks
 const CHUNK_QUERY: &str = r#"
@@ -253,6 +253,35 @@ fn extract_return(signature: &str) -> Option<String> {
     None
 }
 
+/// Post-process C++ chunks: detect constructors.
+///
+/// A `function_definition` with no return type (no type child before the declarator)
+/// is a constructor. Destructors (name starts with `~`) are excluded.
+#[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
+fn post_process_cpp(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    if !matches!(*chunk_type, ChunkType::Function | ChunkType::Method) {
+        return true;
+    }
+    // Skip destructors
+    if name.starts_with('~') {
+        return true;
+    }
+    // C++ constructors: function_definition with no return type before the declarator.
+    // Regular methods have a type child (e.g., primitive_type, type_identifier).
+    if node.kind() == "function_definition" {
+        let has_return_type = node.child_by_field_name("type").is_some();
+        if !has_return_type {
+            *chunk_type = ChunkType::Constructor;
+        }
+    }
+    true
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "cpp",
     grammar: Some(|| tree_sitter_cpp::LANGUAGE.into()),
@@ -271,7 +300,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &["field_declaration_list"],
     extract_container_name: None,
     extract_qualified_method: Some(extract_qualified_method),
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_cpp as PostProcessChunkFn),
     test_markers: &["TEST(", "TEST_F(", "EXPECT_", "ASSERT_"],
     test_path_patterns: &["%/tests/%", "%\\_test.cpp", "%\\_test.cc"],
     structural_matchers: None,
@@ -760,5 +789,62 @@ void process() {
         assert!(names.contains(&"transform"), "Expected transform, got: {:?}", names);
         assert!(names.contains(&"method"), "Expected method, got: {:?}", names);
         assert!(names.contains(&"cleanup"), "Expected cleanup, got: {:?}", names);
+    }
+
+    #[test]
+    fn parse_cpp_constructor() {
+        let content = r#"
+class Widget {
+public:
+    Widget(int x) : x_(x) {}
+    void draw() {}
+private:
+    int x_;
+};
+"#;
+        let file = write_temp_file(content, "cpp");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks
+            .iter()
+            .find(|c| c.name == "Widget" && c.chunk_type == ChunkType::Constructor);
+        assert!(
+            ctor.is_some(),
+            "Expected Widget constructor, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, c.chunk_type))
+                .collect::<Vec<_>>()
+        );
+        // draw should still be a Method
+        let method = chunks.iter().find(|c| c.name == "draw").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
+        // Destructor should NOT be a Constructor
+    }
+
+    #[test]
+    fn parse_cpp_destructor_not_constructor() {
+        let content = r#"
+class Foo {
+public:
+    Foo() {}
+    ~Foo() {}
+};
+"#;
+        let file = write_temp_file(content, "cpp");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let dtor = chunks
+            .iter()
+            .find(|c| c.name.starts_with('~'));
+        assert!(
+            dtor.is_some(),
+            "Expected destructor, got: {:?}",
+            chunks
+                .iter()
+                .map(|c| (&c.name, c.chunk_type))
+                .collect::<Vec<_>>()
+        );
+        assert_ne!(dtor.unwrap().chunk_type, ChunkType::Constructor);
     }
 }

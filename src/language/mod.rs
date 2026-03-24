@@ -478,6 +478,8 @@ define_chunk_types! {
     TypeAlias => "typealias";
     /// Extension (Swift `extension Type { ... }`)
     Extension => "extension";
+    /// Constructor (initializer method — `__init__`, `new`, `init`, etc.)
+    Constructor => "constructor";
 }
 
 impl ChunkType {
@@ -494,12 +496,13 @@ impl ChunkType {
         }
     }
 
-    /// Returns true for types that have call graph connections (Function, Method, Property, Macro, Extension).
+    /// Returns true for types that have call graph connections (Function, Method, Constructor, Property, Macro, Extension).
     pub fn is_callable(self) -> bool {
         matches!(
             self,
             ChunkType::Function
                 | ChunkType::Method
+                | ChunkType::Constructor
                 | ChunkType::Property
                 | ChunkType::Macro
                 | ChunkType::Extension

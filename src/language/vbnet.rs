@@ -146,15 +146,16 @@ const COMMON_TYPES: &[&str] = &[
     "StringBuilder", "Exception", "Nullable",
 ];
 
-/// Post-process: assign "New" name to constructor chunks (no @name capture in query).
+/// Post-process: assign "New" name to constructor chunks and reclassify as Constructor.
 fn post_process_vbnet(
     name: &mut String,
-    _kind: &mut ChunkType,
+    kind: &mut ChunkType,
     node: tree_sitter::Node,
     _source: &str,
 ) -> bool {
     if node.kind() == "constructor_declaration" {
         *name = "New".to_string();
+        *kind = ChunkType::Constructor;
     }
     true
 }
@@ -291,8 +292,8 @@ End Class
             names
         );
         assert!(
-            names.iter().any(|(n, t)| *n == "New" && *t == ChunkType::Method),
-            "Expected 'New' constructor method, got: {:?}",
+            names.iter().any(|(n, t)| *n == "New" && *t == ChunkType::Constructor),
+            "Expected 'New' constructor, got: {:?}",
             names
         );
         assert!(

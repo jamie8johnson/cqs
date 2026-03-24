@@ -1,16 +1,111 @@
 //! Lua language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
+
+/// Returns true if the name follows UPPER_CASE convention (all ASCII uppercase/digits/underscores,
+/// at least one letter, e.g. MAX_RETRIES, API_URL_V2).
+fn is_upper_snake_case(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && name.bytes().any(|b| b.is_ascii_uppercase())
+}
+
+/// Returns true if the node is nested inside a function body.
+fn is_inside_function(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.parent();
+    while let Some(parent) = cursor {
+        match parent.kind() {
+            "function_declaration" | "function_definition" => return true,
+            _ => {}
+        }
+        cursor = parent.parent();
+    }
+    false
+}
+
+/// Post-process Lua chunks: only keep `@const` captures whose name is UPPER_CASE
+/// and that are at module level (not inside function bodies). Also skip assignments
+/// whose RHS is a function_definition (already captured as Function), and deduplicate
+/// assignment_statement nodes that are already captured via their parent variable_declaration.
+#[allow(clippy::ptr_arg)] // signature must match PostProcessChunkFn type alias
+fn post_process_lua(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    if *chunk_type == ChunkType::Constant {
+        // Deduplicate: if this assignment_statement is inside a variable_declaration,
+        // skip it — the variable_declaration match already captures the same constant.
+        if node.kind() == "assignment_statement" {
+            if let Some(parent) = node.parent() {
+                if parent.kind() == "variable_declaration" {
+                    return false;
+                }
+            }
+        }
+        // Skip constants inside function bodies — only capture module-level
+        if is_inside_function(node) {
+            return false;
+        }
+        // Skip if RHS is a function_definition (already captured as Function)
+        if has_function_value(node) {
+            return false;
+        }
+        return is_upper_snake_case(name);
+    }
+    true
+}
+
+/// Check if any value in the assignment is a function_definition.
+fn has_function_value(node: tree_sitter::Node) -> bool {
+    let mut cursor = node.walk();
+    if !cursor.goto_first_child() {
+        return false;
+    }
+    loop {
+        let child = cursor.node();
+        if child.kind() == "expression_list" || child.kind() == "assignment_statement" {
+            // Recurse into expression_list or nested assignment_statement
+            if has_function_value(child) {
+                return true;
+            }
+        }
+        if child.kind() == "function_definition" {
+            return true;
+        }
+        if !cursor.goto_next_sibling() {
+            break;
+        }
+    }
+    false
+}
 
 /// Tree-sitter query for extracting Lua code chunks.
 ///
 /// Functions → Function (both `function foo()` and local function forms).
 /// Method-style declarations via `method_index_expression` name field
 /// are captured as functions and reclassified to Method via method_containers.
+/// Constants → Constant (UPPER_CASE convention, filtered via post_process).
 const CHUNK_QUERY: &str = r#"
 ;; Named function declarations (function foo() / function mod.foo() / function mod:bar())
 (function_declaration
   name: (_) @name) @function
+
+;; Local variable assignments (local MAX_SIZE = 100)
+;; Filtered to UPPER_CASE by post_process_lua
+(variable_declaration
+  (assignment_statement
+    (variable_list
+      name: (identifier) @name))) @const
+
+;; Global assignments (MAX_RETRIES = 3)
+;; Filtered to UPPER_CASE by post_process_lua
+(assignment_statement
+  (variable_list
+    name: (identifier) @name)) @const
 "#;
 
 /// Tree-sitter query for extracting Lua function calls.
@@ -67,7 +162,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &[],
     extract_container_name: None,
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_lua as PostProcessChunkFn),
     test_markers: &[],
     test_path_patterns: &["%/tests/%", "%/test/%", "%_test.lua", "%_spec.lua"],
     structural_matchers: None,
@@ -233,6 +328,136 @@ end
             "Expected configure, got: {:?}",
             names
         );
+    }
+
+    #[test]
+    fn parse_lua_local_constant() {
+        let content = r#"
+local MAX_SIZE = 100
+local API_URL = "https://example.com"
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let max = chunks.iter().find(|c| c.name == "MAX_SIZE").unwrap();
+        assert_eq!(max.chunk_type, ChunkType::Constant);
+        let url = chunks.iter().find(|c| c.name == "API_URL").unwrap();
+        assert_eq!(url.chunk_type, ChunkType::Constant);
+    }
+
+    #[test]
+    fn parse_lua_global_constant() {
+        let content = r#"
+MAX_RETRIES = 3
+DEFAULT_TIMEOUT = 30
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let retries = chunks.iter().find(|c| c.name == "MAX_RETRIES").unwrap();
+        assert_eq!(retries.chunk_type, ChunkType::Constant);
+        let timeout = chunks.iter().find(|c| c.name == "DEFAULT_TIMEOUT").unwrap();
+        assert_eq!(timeout.chunk_type, ChunkType::Constant);
+    }
+
+    #[test]
+    fn parse_lua_skip_lowercase_vars() {
+        let content = r#"
+local counter = 0
+local myTable = {}
+helper_value = 42
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        // lowercase names should be filtered out by post_process
+        assert!(chunks.iter().find(|c| c.name == "counter").is_none());
+        assert!(chunks.iter().find(|c| c.name == "myTable").is_none());
+        assert!(chunks.iter().find(|c| c.name == "helper_value").is_none());
+    }
+
+    #[test]
+    fn parse_lua_skip_constants_inside_functions() {
+        let content = r#"
+function init()
+    local MAX_LOCAL = 50
+    GLOBAL_IN_FUNC = 99
+end
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        // Constants inside function bodies should be skipped
+        assert!(chunks.iter().find(|c| c.name == "MAX_LOCAL").is_none());
+        assert!(chunks.iter().find(|c| c.name == "GLOBAL_IN_FUNC").is_none());
+        // But the function itself should be captured
+        let func = chunks.iter().find(|c| c.name == "init").unwrap();
+        assert_eq!(func.chunk_type, ChunkType::Function);
+    }
+
+    #[test]
+    fn parse_lua_skip_function_assigned_to_var() {
+        let content = r#"
+local MY_HANDLER = function(x)
+    return x * 2
+end
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        // Function-valued assignments should not become constants
+        assert!(chunks.iter().find(|c| c.name == "MY_HANDLER" && c.chunk_type == ChunkType::Constant).is_none());
+    }
+
+    #[test]
+    fn parse_lua_mixed_functions_and_constants() {
+        let content = r#"
+local VERSION = "1.0.0"
+MAX_BUFFER = 4096
+
+function process(data)
+    return data
+end
+
+local function helper()
+    return true
+end
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let names: Vec<_> = chunks.iter().map(|c| (c.name.as_str(), c.chunk_type)).collect();
+        assert!(names.contains(&("VERSION", ChunkType::Constant)), "Expected VERSION constant, got: {:?}", names);
+        assert!(names.contains(&("MAX_BUFFER", ChunkType::Constant)), "Expected MAX_BUFFER constant, got: {:?}", names);
+        assert!(names.contains(&("process", ChunkType::Function)), "Expected process function, got: {:?}", names);
+        assert!(names.contains(&("helper", ChunkType::Function)), "Expected helper function, got: {:?}", names);
+    }
+
+    #[test]
+    fn parse_lua_no_duplicate_constants() {
+        let content = r#"
+local MAX_SIZE = 100
+MAX_RETRIES = 3
+"#;
+        let file = write_temp_file(content, "lua");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        // Each constant should appear exactly once
+        let max_count = chunks.iter().filter(|c| c.name == "MAX_SIZE").count();
+        let retries_count = chunks.iter().filter(|c| c.name == "MAX_RETRIES").count();
+        assert_eq!(max_count, 1, "MAX_SIZE should appear once, got {}", max_count);
+        assert_eq!(retries_count, 1, "MAX_RETRIES should appear once, got {}", retries_count);
+    }
+
+    #[test]
+    fn test_is_upper_snake_case_lua() {
+        assert!(is_upper_snake_case("MAX_RETRIES"));
+        assert!(is_upper_snake_case("API_URL_V2"));
+        assert!(is_upper_snake_case("X"));
+        assert!(!is_upper_snake_case("lowercase"));
+        assert!(!is_upper_snake_case("MixedCase"));
+        assert!(!is_upper_snake_case(""));
+        assert!(!is_upper_snake_case("123")); // no letters
     }
 
     #[test]

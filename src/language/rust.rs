@@ -1,6 +1,6 @@
 //! Rust language definition
 
-use super::{LanguageDef, SignatureStyle};
+use super::{ChunkType, LanguageDef, PostProcessChunkFn, SignatureStyle};
 
 /// Tree-sitter query for extracting Rust code chunks
 const CHUNK_QUERY: &str = r#"
@@ -157,6 +157,20 @@ const COMMON_TYPES: &[&str] = &[
     "Write", "Seek", "BufRead", "ToString", "Serialize", "Deserialize",
 ];
 
+/// Post-process Rust chunks: reclassify `new` methods as Constructor (convention).
+fn post_process_rust(
+    name: &mut String,
+    chunk_type: &mut ChunkType,
+    _node: tree_sitter::Node,
+    _source: &str,
+) -> bool {
+    // Rust convention: fn new(...) inside an impl block is a constructor
+    if *chunk_type == ChunkType::Method && name == "new" {
+        *chunk_type = ChunkType::Constructor;
+    }
+    true
+}
+
 static DEFINITION: LanguageDef = LanguageDef {
     name: "rust",
     grammar: Some(|| tree_sitter_rust::LANGUAGE.into()),
@@ -175,7 +189,7 @@ static DEFINITION: LanguageDef = LanguageDef {
     container_body_kinds: &[],
     extract_container_name: Some(extract_container_name_rust),
     extract_qualified_method: None,
-    post_process_chunk: None,
+    post_process_chunk: Some(post_process_rust as PostProcessChunkFn),
     test_markers: &["#[test]", "#[cfg(test)]"],
     test_path_patterns: &["%/tests/%", "%\\_test.rs"],
     structural_matchers: None,
@@ -257,5 +271,32 @@ mod tests {
         let chunks = parser.parse_file(file.path()).unwrap();
         let ta = chunks.iter().find(|c| c.name == "Result").unwrap();
         assert_eq!(ta.chunk_type, ChunkType::TypeAlias);
+    }
+
+    #[test]
+    fn parse_rust_constructor() {
+        let content = r#"
+struct Config {
+    path: String,
+}
+
+impl Config {
+    fn new(path: String) -> Self {
+        Config { path }
+    }
+
+    fn validate(&self) -> bool {
+        true
+    }
+}
+"#;
+        let file = write_temp_file(content, "rs");
+        let parser = Parser::new().unwrap();
+        let chunks = parser.parse_file(file.path()).unwrap();
+        let ctor = chunks.iter().find(|c| c.name == "new").unwrap();
+        assert_eq!(ctor.chunk_type, ChunkType::Constructor);
+        // validate should still be a Method
+        let method = chunks.iter().find(|c| c.name == "validate").unwrap();
+        assert_eq!(method.chunk_type, ChunkType::Method);
     }
 }
