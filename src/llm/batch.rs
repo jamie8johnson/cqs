@@ -266,6 +266,12 @@ impl Client {
 
 /// Configuration for the Phase 2 batch orchestration pattern.
 ///
+/// Type alias for pending metadata get/set closures (clippy::type_complexity).
+type PendingFn = dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>;
+/// Type alias for batch submit closures (clippy::type_complexity).
+type SubmitFn =
+    dyn Fn(&Client, &[(String, String, String, String)], u32) -> Result<String, LlmError>;
+
 /// Captures the per-purpose differences (pending metadata key, submit function, purpose string)
 /// so the orchestration logic (`submit_or_resume`) can be shared across summary, doc, and HyDE passes.
 pub(super) struct BatchPhase2 {
@@ -292,12 +298,8 @@ impl BatchPhase2 {
         store: &Store,
         batch_items: &[(String, String, String, String)],
         get_pending: &dyn Fn(&Store) -> Result<Option<String>, crate::store::StoreError>,
-        set_pending: &dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>,
-        submit: &dyn Fn(
-            &Client,
-            &[(String, String, String, String)],
-            u32,
-        ) -> Result<String, LlmError>,
+        set_pending: &PendingFn,
+        submit: &SubmitFn,
     ) -> Result<HashMap<String, String>, LlmError> {
         let _span = tracing::info_span!(
             "submit_or_resume",
@@ -371,7 +373,7 @@ impl BatchPhase2 {
         client: &Client,
         store: &Store,
         batch_id: &str,
-        clear_pending: &dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>,
+        clear_pending: &PendingFn,
     ) -> Result<HashMap<String, String>, LlmError> {
         let _span = tracing::info_span!("batch_resume", batch_id, purpose = self.purpose).entered();
         client.wait_for_batch(batch_id, self.quiet)?;
@@ -413,12 +415,8 @@ impl BatchPhase2 {
         client: &Client,
         store: &Store,
         batch_items: &[(String, String, String, String)],
-        set_pending: &dyn Fn(&Store, Option<&str>) -> Result<(), crate::store::StoreError>,
-        submit: &dyn Fn(
-            &Client,
-            &[(String, String, String, String)],
-            u32,
-        ) -> Result<String, LlmError>,
+        set_pending: &PendingFn,
+        submit: &SubmitFn,
     ) -> Result<String, LlmError> {
         tracing::info!(
             count = batch_items.len(),
