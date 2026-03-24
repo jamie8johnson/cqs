@@ -29,15 +29,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "769th embedding dimension can encode explicit sentiment. Similarity search then weights by feeling automatically. Breaking schema change but enables sentiment-aware retrieval."
-mentions = [
-    "src/embedder.rs",
-    "src/store/mod.rs",
-    "src/hnsw/mod.rs",
-]
-
-[[note]]
 sentiment = 1.0
 text = "Git as team sync layer. Commit notes.toml, push/pull handles sync. Access control = repo permissions. History = blame. Conflict resolution = merge. No infrastructure needed."
 mentions = [
@@ -80,42 +71,12 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.0
-text = "CI catches what local builds miss. Feature flags differ between dev (gpu-index enabled) and CI (default features). Clippy on CI found dead code invisible locally."
-mentions = [
-    "CI",
-    "clippy",
-    "features",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Pre-commit hook catches fmt issues before CI roundtrip. Fast feedback loop. Worth the setup."
-mentions = [
-    ".githooks",
-    "cargo fmt",
-]
-
-[[note]]
 sentiment = -0.5
 text = "batch_size=64 crashed system at ~2% through rust-lang/rust. batch_size=32 runs stable. With 2048-token windowing, GPU util cycles 0-99% (bursty) as it waits for ort CPU fallback ops between batches."
 mentions = [
     "src/cli/mod.rs",
     "batch_size",
     "gpu-index",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Don't make up numbers. Git history is right there: `git log --reverse --format='%ai' | head -1`. Check facts instead of guessing."
-mentions = ["git"]
-
-[[note]]
-sentiment = 0.5
-text = "Put token count in filename for large files (e.g., DESIGN_SPEC_27k_tokens.md). Claude sees it in glob results and knows to chunk or skip. Metadata in the filesystem."
-mentions = [
-    "docs/",
-    "workflow",
 ]
 
 [[note]]
@@ -147,15 +108,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "note_weight parameter added to SearchFilter. Default 1.0, lower values attenuate note scores before merging with code results. CLI --note-weight flag. Useful when notes dominate due to high semantic match."
-mentions = [
-    "SearchFilter",
-    "src/search.rs",
-    "src/cli/mod.rs",
-]
-
-[[note]]
 sentiment = 1.0
 text = "Embedding model: E5-base-v2 confirmed as best choice. Hard eval (55 confusable queries across 5 languages): E5 90.9% Recall@1, 0.941 MRR vs jina-v2-base-code 80.0% R@1, 0.863 MRR. General-purpose model beats code-specific because NL template transforms code into natural language. BERT-style required for CUDA (no rotary embeddings)."
 mentions = [
@@ -173,25 +125,6 @@ mentions = [
     "glob",
     "brute-force",
     "algorithm correctness",
-]
-
-[[note]]
-sentiment = 0.5
-text = "note_weight=0 bug: documented as 'excludes notes from results' but only zeroed scores - notes still appeared. Caught by test_search_unified_note_weight_zero_excludes_notes. Tests that assert absence (not just presence) find real bugs. Write negative-case tests."
-mentions = [
-    "src/search.rs",
-    "SearchFilter",
-    "note_weight",
-    "testing",
-]
-
-[[note]]
-sentiment = 1.0
-text = "Audits consistently find real bugs. History: 10-category (v0.4): 16 issues closed, proptest found RRF bound bug. 20-category v1 (v0.5.1): ~85 actionable from ~120 raw, 3 PRs for P1-P3, 13 P4 issues. 20-category v2 (v0.6.0): ~120 unique from 193 raw, 28 fixes across P1-P3 (PRs #259, #261, #262, #263), 7 issues for remaining items. Key: 5 parallel agents per batch, audit mode on, collect ALL findings before fixing ANY. Batch by priority tier."
-mentions = [
-    "docs/audit-findings.md",
-    "audit",
-    "workflow",
 ]
 
 [[note]]
@@ -224,64 +157,11 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Fresh-eyes review caught missing weight validation in ref add — user could pass weight >1.0 which amplifies reference scores instead of damping them. Always validate user-facing numeric inputs at entry point."
-mentions = [
-    "src/cli/commands/reference.rs",
-    "cmd_ref_add",
-]
-
-[[note]]
-sentiment = 0.5
-text = "20-category audit produced 38% duplicate findings. Categories like Input Security + Data Security, Memory Management + Resource Footprint, and Algorithmic Complexity + I/O Efficiency overlap heavily. Consolidated to 14 categories / 3 batches for next run. Cuts collection time ~25% and eliminates redundancy."
-mentions = [
-    "docs/plans/2026-02-04-20-category-audit-design.md",
-    ".claude/skills/audit/SKILL.md",
-    "audit",
-]
-
-[[note]]
-sentiment = -0.5
-text = "CHANGELOG pollution trap: if you update CHANGELOG entries after the tag is already cut, the entry drifts from reality. Always verify with `git show vX.Y.Z:CHANGELOG.md` before a release to catch drift. v0.5.3 entry had multi-index content that wasn't in that release."
-mentions = [
-    "CHANGELOG.md",
-    "git tag",
-    "release",
-]
-
-[[note]]
-sentiment = -0.5
-text = "cfg(test) only applies within the library crate's unit tests. Integration tests (tests/*.rs) are separate compilation units — they see the public API without cfg(test) gating. Can't use cfg(test) to hide types only needed by integration tests."
-mentions = [
-    "cfg(test)",
-    "tests/",
-    "integration tests",
-]
-
-[[note]]
-sentiment = -0.5
 text = "cqs diff loads embeddings one-by-one for each matched pair via get_chunk_with_embedding. For large diffs (1000+ matched functions), this will be slow. Batch loading would help but adds complexity — defer until someone hits the perf wall."
 mentions = [
     "src/diff.rs",
     "semantic_diff",
     "get_chunk_with_embedding",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Create cqs-prefixed skills in .claude/skills/ to extend agent capabilities. Skill = SKILL.md with frontmatter (name, description, argument-hint) + usage docs. Update bootstrap's portable skills list and decide if project-local or global (~/.claude/skills/). Keep names prefixed to avoid collisions."
-mentions = [
-    ".claude/skills/cqs-bootstrap/SKILL.md",
-    ".claude/skills/",
-]
-
-[[note]]
-sentiment = 1.0
-text = "Post-v0.8.0 features shipped across 3 context windows with zero regressions. Tears + MEMORY.md system worked — each window picked up exactly where the last left off. Key: commit per batch, update tears after each commit, keep MEMORY.md under 200 lines."
-mentions = [
-    "PROJECT_CONTINUITY.md",
-    "MEMORY.md",
-    "tears",
-    "workflow",
 ]
 
 [[note]]
@@ -336,15 +216,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Git deps in Cargo.toml block cargo publish. For tree-sitter grammar forks, publish the fork to crates.io under a new name (e.g. tree-sitter-sequel-tsql) then use version dep. One-time effort per grammar fork."
-mentions = [
-    "Cargo.toml",
-    "tree-sitter-sql",
-    "cargo publish",
-]
-
-[[note]]
-sentiment = -0.5
 text = "extract_name_fallback() in chunk.rs searches for SQL keywords (PROCEDURE, FUNCTION, VIEW, TRIGGER) but lives in generic parser code. Harmless for non-SQL languages (returns None) but couples generic parsing to SQL-specific knowledge."
 mentions = [
     "src/parser/chunk.rs",
@@ -379,38 +250,6 @@ mentions = ["src/parser/markdown.rs"]
 sentiment = 0.5
 text = "Adaptive heading detection works for both standard and inverted hierarchies. Heuristic: 'shallowest heading level appearing more than once, excluding title' = primary split level. Handles AVEVA docs (H2 title → H1 chapters) and standard markdown (H1 title → H2 sections) with same code."
 mentions = ["src/parser/markdown.rs"]
-
-[[note]]
-sentiment = -0.5
-text = "Always verify release binary version matches latest code before testing features. Previous session used debug build for markdown indexing but never rebuilt release. cqs --version catches this."
-mentions = [
-    "release binary",
-    "cargo build --release",
-]
-
-[[note]]
-sentiment = -0.5
-text = "CLI-first migration: clap allow_negative_numbers=true is required for args that accept negative floats like --sentiment -0.5, otherwise clap parses -0 as an unknown flag"
-mentions = [
-    "src/cli/commands/notes.rs",
-    "clap",
-]
-
-[[note]]
-sentiment = 0.5
-text = "File-based audit mode (.cqs/audit-mode.json with RFC 3339 expiry) persists state across CLI invocations. Simple alternative to in-memory state tracking."
-mentions = [
-    "src/audit.rs",
-    ".cqs/audit-mode.json",
-]
-
-[[note]]
-sentiment = 0.5
-text = "SQLite integrity check on every Store::open via PRAGMA quick_check. Catches B-tree corruption early with StoreError::Corruption. Added in PR #343 (DS12)."
-mentions = [
-    "src/store/mod.rs",
-    "src/store/helpers.rs",
-]
 
 [[note]]
 sentiment = -0.5
@@ -455,22 +294,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "Pre-audit security sweep found 10 issues in code that passed 3 prior audits. Different lens (attacker mindset vs code quality) catches different bugs. Run security-focused review separately from quality audits."
-mentions = [
-    "audit",
-    "security",
-]
-
-[[note]]
-sentiment = -0.5
-text = "CRLF line ending drift in WSL: Edit tool on /mnt/c/ NTFS files can silently introduce CRLF, causing full-file diffs of unchanged files. Always check git diff --stat before committing. Use git checkout -- <file> to restore."
-mentions = [
-    "WSL",
-    "git",
-]
-
-[[note]]
 sentiment = -0.5
 text = "Half-open vs inclusive interval overlap: hunk [start, start+count) vs chunk [line_start, line_end]. Correct: start <= end_inclusive && exclusive_end > start_inclusive. Using >= with exclusive end is the classic off-by-one."
 mentions = [
@@ -488,22 +311,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "57 stale remote branches accumulated before cleanup. Squash-merge doesn't mark branches as merged in git, so git branch -r --merged misses them. Prune after each release: git remote prune origin."
-mentions = [
-    "release",
-    "git",
-]
-
-[[note]]
-sentiment = 1.0
-text = "7-feature plan executed cleanly across multiple sessions. Plan file structure (build order, per-feature sections with SQL, structs, files, tests, fresh-eyes findings) was effective. The build-order dependency chain (2→6→5→3→4→1→7) prevented integration conflicts."
-mentions = [
-    "plans",
-    "agent-experience",
-]
-
-[[note]]
-sentiment = -0.5
 text = "WSL inotify over 9P delivers duplicate/delayed events for the same file change, causing watch mode to reindex in a loop. Fix: track last-indexed mtime per file, skip events where mtime hasn't changed."
 mentions = [
     "src/cli/watch.rs",
@@ -517,14 +324,6 @@ text = "Scout note matching: m.ends_with(f) was wrong direction — matched when
 mentions = [
     "src/scout.rs",
     "note_mention_matches_file",
-]
-
-[[note]]
-sentiment = 0.5
-text = "cqs plan shipped as skill (.claude/skills/cqs-plan/SKILL.md) with 5 task-type templates: add flag, add command, fix bug, add language, refactor. Experiment confirmed: scout+template = 43% faster + more idiomatic than scout alone. Templates provide structural checklist; scout provides codebase-specific conventions. Not a CLI command — pure skill."
-mentions = [
-    "src/scout.rs",
-    "cqs plan",
 ]
 
 [[note]]
@@ -554,15 +353,6 @@ text = "HnswIndex::insert_batch only works on HnswInner::Owned variant. Loaded (
 mentions = [
     "src/hnsw/mod.rs",
     "insert_batch",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Always check for open PRs before releasing. PR #379 (26 P1 audit fixes) sat open and unmerged for an entire release cycle — fixes landed via later PRs by coincidence. Add 'gh pr list --state open' to pre-release checklist."
-mentions = [
-    "release",
-    "gh",
-    "workflow",
 ]
 
 [[note]]
@@ -615,15 +405,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 1.0
-text = "v0.12.4 audit release: 61 fixes across 14 categories. Subagent-driven development with opus agents worked well — 11 tasks, each with spec + quality review. Key lesson: design tasks with exclusive file ownership to avoid parallel agent conflicts."
-mentions = [
-    "audit-triage.md",
-    "review.rs",
-    "impact",
-]
-
-[[note]]
 sentiment = -0.5
 text = "SQLite 999 variable limit hit in batch inserts — use INSERT_BATCH constants (999/bind_count) and chunk iterations. Applies to calls.rs and chunks.rs batch methods."
 mentions = [
@@ -662,11 +443,6 @@ mentions = [
     "reranker.rs",
     "embedder.rs",
 ]
-
-[[note]]
-sentiment = -0.5
-text = "gh release create uses --notes-file not --body-file (unlike gh pr create which uses --body-file). Easy to confuse."
-mentions = ["release"]
 
 [[note]]
 sentiment = 0.0
@@ -708,14 +484,6 @@ mentions = [
     "src/language/rust.rs",
     "src/language/go.rs",
     "src/parser/calls.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "pub(crate) items can't be re-exported as pub from lib.rs — compiler error E0364. If a constant/type needs to cross the lib→binary crate boundary, it must be pub. COMMON_TYPES hit this in Phase 1b."
-mentions = [
-    "src/focused_read.rs",
-    "src/lib.rs",
 ]
 
 [[note]]
@@ -780,11 +548,6 @@ mentions = [
 
 [[note]]
 sentiment = -0.5
-text = "Embedding::new() dimension check must allow MODEL_DIM (768) as valid — the embedding pipeline creates 768-dim vectors before appending sentiment to make 769. Only warn on truly wrong dimensions."
-mentions = ["src/embedder.rs"]
-
-[[note]]
-sentiment = -0.5
 text = "Command listings drift across docs. 6 files have independent command lists (README, CLAUDE.md, bootstrap template, audit agent block, red-team agent block, CLAUDE.md agent instructions). When adding a CLI command, update all 6."
 mentions = [
     "README.md",
@@ -803,35 +566,11 @@ mentions = [
 
 [[note]]
 sentiment = 0.5
-text = "Adding a new language is now data-driven: one-line define_languages! entry, fill LanguageDef struct (queries, stopwords, common_types, container_body_kinds), done. No parser dispatch edits needed. Property/Delegate/Event ChunkType variants ready for reuse."
-mentions = [
-    "src/language/mod.rs",
-    "src/parser/chunk.rs",
-]
-
-[[note]]
-sentiment = 0.5
 text = "Macro ChunkType added for Rust macro_rules! definitions. Also fixed pre-existing gap: property/delegate/event missing from calls.rs definition filter — those chunk types had call extraction silently skipped in parse_file_relationships."
 mentions = [
     "src/language/mod.rs",
     "src/parser/calls.rs",
     "ChunkType",
-]
-
-[[note]]
-sentiment = -1.0
-text = "Context compaction reverted ALL uncommitted file edits — 14 P1 fixes across 15+ files lost silently. Lesson: commit early and often during multi-step work, don't batch edits across many files without committing"
-mentions = [
-    "audit",
-    "context-compaction",
-]
-
-[[note]]
-sentiment = 0.5
-text = "P2 agent file edits survive context compaction because agents write independently. Main-context edits don't survive. Strategy: delegate file-editing work to agents when possible"
-mentions = [
-    "audit",
-    "agents",
 ]
 
 [[note]]
@@ -849,15 +588,6 @@ mentions = [
     "src/cli/batch/mod.rs",
     "src/cli/chat.rs",
     "BatchContext",
-]
-
-[[note]]
-sentiment = 1.0
-text = "Second 14-category audit (v0.19.2): 117 findings, 107 fixed across 4 priority tiers (P1: 46, P2: 29, P3: 29, P4: 3). Two deferred: PF-5 (HNSW candidate fetch #510) and PB-3 (normalize_path, fixed PR #509). Confirms 14-category / 3-batch structure works at scale. Total across both audits: ~200 findings fixed."
-mentions = [
-    "docs/audit-findings.md",
-    "docs/audit-triage.md",
-    "audit",
 ]
 
 [[note]]
@@ -891,40 +621,11 @@ text = "Release workflow: ubuntu-22.04 has glibc 2.35 but ort prebuilt binaries 
 mentions = ["release.yml"]
 
 [[note]]
-sentiment = -0.5
-text = "Cross-encoder reranking (ms-marco-MiniLM-L-6-v2) is useless for code search — all scoring modes worse than bi-encoder baseline. Would need a code-specific cross-encoder."
-mentions = [
-    "reranker.rs",
-    "search-quality",
-]
-
-[[note]]
 sentiment = 0.5
 text = "NL enrichment: adding field names for structs/enums/classes to Compact template is a clean win — hard eval +3.7pp R@1. But adding file path + language/type prefix hurts holdout -5pp. Dir-only file context (no stem) is neutral."
 mentions = [
     "nl.rs",
     "search-quality",
-]
-
-[[note]]
-sentiment = -0.5
-text = "name_boost sweep (0.0→0.8) has near-zero effect on stress eval with 3970 chunks. FTS keyword matching is just as noisy as semantic matching in large corpora."
-mentions = ["search-quality"]
-
-[[note]]
-sentiment = -0.5
-text = "HNSW search has non-determinism — holdout eval R@1 varies ~2-3pp between runs on identical code. Don't draw conclusions from 1-2pp differences."
-mentions = [
-    "hnsw",
-    "search-quality",
-]
-
-[[note]]
-sentiment = -0.5
-text = "embed_documents() returns 768-dim but store expects 769 (768 + sentiment). Must call .with_sentiment(0.0) when using embed_documents for store updates."
-mentions = [
-    "embedder.rs",
-    "pipeline.rs",
 ]
 
 [[note]]
@@ -960,32 +661,6 @@ mentions = [
 ]
 
 [[note]]
-sentiment = 0.5
-text = "Fresh-eyes plan review caught 3 bugs before implementation: wrong generation counter protocol, pre-filter hash input, feature/fix scope mixing. Self-review pays off."
-mentions = [
-    "pipeline.rs",
-    "persist.rs",
-]
-
-[[note]]
-sentiment = 0.5
-text = "SQ-6 plan review caught 8 issues: nested tokio panic (use blocking reqwest), summary_hash column redundant (enrichment_hash covers it), enrichment_pass signature change unnecessary (load internally), missing doc comment shortcut, missing callable filter, missing window chunk handling, missing content length minimum, existing summaries should always be used regardless of flag"
-mentions = [
-    "llm.rs",
-    "pipeline.rs",
-    "nl.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "SQ-6 stress eval: summaries HURT search quality with E5-base-v2. R@1 dropped 2.1pp (58.0->55.9), Python MRR dropped 0.157. Model treats summaries same as prose — adds noise rather than discrimination. SQ-7 (LoRA) is the only real fix."
-mentions = [
-    "llm.rs",
-    "nl.rs",
-    "pipeline_eval.rs",
-]
-
-[[note]]
 sentiment = -0.5
 text = "ORT CUDA provider path resolution: dladdr returns argv[0] on glibc static linking. ORT computes absolute(argv0).remove_filename() = CWD, not binary dir. Fix: compute same path via /proc/self/cmdline, symlink providers there."
 mentions = [
@@ -1018,73 +693,9 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -0.5
-text = "CSS parser panic at css.rs:55 — slice bounds error on @media print block in redis/deps CSS. Triggered during train-data generation. Needs investigation."
-mentions = [
-    "css.rs",
-    "parser",
-]
-
-[[note]]
-sentiment = 0.5
-text = "LoRA training running: 183k triplets, 3 epochs, ~6 hrs on A6000. Baseline R@1=89.1%, TypeScript weakest at 0.758. CSS parser panic fixed (css.rs:55 @media print). 19 repos, 12 languages in training data."
-mentions = [
-    "train_lora.py",
-    "model_eval.rs",
-    "css.rs",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Reranking should be default for --json output (agent use). Agents want best results, don't care about 500ms latency. Interactive stays fast. Add to next PR."
-mentions = [
-    "search",
-    "reranker.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "SQ-10 reranker: both web-trained and code-trained cross-encoders hurt code search. Web-trained -10.9pp R@1, code-trained -81.8pp (catastrophic). Random same-language negatives too easy; model likely collapsed. E5-base-v2 embedding-only is near-optimal."
-mentions = [
-    "reranker.rs",
-    "model_eval.rs",
-]
-
-[[note]]
 sentiment = 1.0
 text = "SQ-11 type-aware embeddings: appending full signature to NL descriptions is the first positive result in 7 experiments. R@1 87.3%→90.9%, TS MRR 0.746→0.814. Prepending is worse — early tokens matter more for E5."
 mentions = ["nl.rs"]
-
-[[note]]
-sentiment = 0.0
-text = "SQ-12 hyde stress eval: neutral/slightly negative on unbalanced corpus. Both fixture and noise functions get predictions, so relative ranking unchanged. Hyde helps query-document gap, not signal-to-noise ratio."
-mentions = [
-    "llm.rs",
-    "pipeline_eval.rs",
-]
-
-[[note]]
-sentiment = 1.0
-text = "CoIR confirms eval regime hypothesis: LoRA v3 regressed -16pp on hard eval but gives +4.3pp NDCG@10 on CoIR CodeSearchNet. Biggest gains on weakest languages (Go +7.8pp, Ruby +5.6pp)."
-mentions = [
-    "llm.rs",
-    "model_eval.rs",
-]
-
-[[note]]
-sentiment = 0.5
-text = "CoIR cosqa transfer test: LoRA v3 gives +0.005 NDCG@10 on out-of-distribution task. Small but genuine transfer — not just CSN memorization."
-mentions = ["llm.rs"]
-
-[[note]]
-sentiment = -0.5
-text = "CodeSage-large-v2 gets 20% R@1 on hard eval despite 94.26 on CSN. Code-native model can't parse NL queries. CSN benchmark flatters code models — real NL→code search needs NL understanding. E5-base-v2 is the right base."
-mentions = ["embedder"]
-
-[[note]]
-sentiment = 0.0
-text = "LoRA rank 16 may be the bottleneck, not data size or epochs. CSN and CosQA both approaching asymptote at rank 16. Rank sweep (32/64) running to test if higher capacity raises the ceiling."
-mentions = ["embedder"]
 
 [[note]]
 sentiment = 1.0
@@ -1103,75 +714,30 @@ mentions = [
 ]
 
 [[note]]
-sentiment = -1.0
-text = "Source file filter (is_source_file) is critical for --improve-docs. Without it, doc writer corrupted Cargo.toml, notes.toml, CLAUDE.md, and 150+ markdown files by injecting // comments."
-mentions = [
-    "llm.rs",
-    "doc_writer",
-]
-
-[[note]]
-sentiment = -0.5
-text = "v5 LoRA (166k/1ep) beats v3 (50k/1ep) on both CSN (+1.2pp) and CosQA (+1.4pp). Shipping decision for v3 was made before v5 results existed. Always wait for full eval before shipping."
-mentions = [
-    "llm.rs",
-    "run_coir.py",
-]
-
-[[note]]
-sentiment = 0.0
-text = "Pipeline NL enrichment helps in-product (+1.8pp R@1) but hurts on CoIR benchmark (-4.5pp). Enrichment shifts passage text away from training distribution. Benchmark numbers must use raw model, not enriched text."
-mentions = [
-    "run_coir.py",
-    "nl.rs",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Full 10-task CoIR: LoRA v5 scores 48.67 avg (#8), below base E5 50.90 (#7). LoRA fine-tuning for code search is a specialization trade-off — gains on CSN (+5.6pp) come at expense of generalist tasks (SO-QA, text2sql, codefeedback)."
-mentions = [
-    "run_coir.py",
-    "research-log.md",
-]
-
-[[note]]
-sentiment = 0.5
-text = "v1.3.0 audit: 87 findings, ~60 fixed by parallel agents in one session. EX-13 (is_source_file using language registry instead of hardcoded list) was the highest-value fix for doc generation coverage."
-mentions = [
-    "llm.rs",
-    "audit-triage.md",
-]
-
-[[note]]
-sentiment = -0.5
-text = "Haiku summaries hurt R@1 by -5.3pp on well-documented confusable functions (19 Rust fixtures). Summaries help undocumented code (+1.8pp full codebase) but hurt already-documented code. The value is in filling gaps, not replacing good docs."
-mentions = [
-    "llm.rs",
-    "compare_summary_models.py",
-]
-
-[[note]]
-sentiment = 0.5
-text = "GISTEmbedLoss with guide model may fix LoRA generalist degradation. HF blog shows MNR loss alone hurts Korean retrieval by -0.045 — same magnitude as our CoIR drop. Guide model filters false negatives with relative margin."
-mentions = [
-    "train_lora.py",
-    "research-log.md",
-]
-
-[[note]]
-sentiment = 0.5
-text = "Literature survey: Qodo 1.5B beats 7B via synthetic training queries. GitHub Copilot confirms hard negatives are biggest quality gain. Data pipeline quality matters more than model size."
-mentions = [
-    "research-log.md",
-    "run_coir.py",
-]
-
-[[note]]
-sentiment = 0.0
-text = "v7b balanced (414k, 46k/lang) did not improve over v7 unbalanced (200k). Natural language proportions beat equal representation for NL→code search. Balance only helps cross-language tasks (CCR, codetrans)."
-mentions = ["train_lora.py"]
-
-[[note]]
 sentiment = 0.5
 text = "Brute-force cosine for contrastive neighbors is fast enough: 1.3s for 10k chunks (768-dim matrix multiply). No need for HNSW or FTS approximation."
 mentions = ["llm/summary.rs"]
+
+[[note]]
+sentiment = -0.5
+text = "FTS keyword results in RRF fusion were NOT path-filtered — --path glob only applied to semantic/HNSW path. Eval fixture scaffolding (HARD_EVAL_CASES constant) contaminated search results. Fixed by applying compile_glob_filter to FTS results in finalize_results()."
+mentions = [
+    "src/search/query.rs",
+    "finalize_results",
+]
+
+[[note]]
+sentiment = 0.5
+text = "Contrastive LLM summaries: brute-force cosine neighbors from embeddings, top-3 per chunk, passed to prompt. Doc-comment shortcut removed — all callable chunks go through API. ~$0.38 one-time Haiku. Full pipeline: 92.7% R@1, 0.948 NDCG@10."
+mentions = [
+    "src/llm/summary.rs",
+    "find_contrastive_neighbors",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Parallel audit agents cause file contention — agent writes get reverted when another agent touches the same file. Solution: ensure exclusive file ownership per agent. impact/mod.rs was reverted 3 times during P2 fixes."
+mentions = [
+    "audit",
+    "agents",
+]

@@ -181,11 +181,11 @@ src/
   impact/         - Impact analysis (callers + affected tests + diff-aware)
     mod.rs      - Public API, re-exports
     types.rs    - Impact types (CallerDetail, RiskScore, etc.)
-    analysis.rs - suggest_tests, find_transitive_callers
-    diff.rs     - analyze_diff_impact
-    bfs.rs      - Reverse BFS traversal
+    analysis.rs - suggest_tests, find_transitive_callers, extract_call_snippet_from_cache
+    diff.rs     - analyze_diff_impact, map_hunks_to_functions
+    bfs.rs      - Reverse BFS, reverse_bfs_multi_attributed, test_reachability
     format.rs   - JSON/Mermaid formatting
-    hints.rs    - compute_hints, risk scoring
+    hints.rs    - compute_hints, compute_hints_batch, compute_risk_batch, risk scoring
   related.rs      - Co-occurrence analysis (shared callers, callees, types)
   scout.rs        - Pre-investigation dashboard (search + callers/tests + staleness + notes)
   task.rs         - Single-call implementation brief (scout + gather + impact + placement + notes)
@@ -200,7 +200,7 @@ src/
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
   llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
-    mod.rs, batch.rs, doc_comments.rs, hyde.rs, prompts.rs, summary.rs
+    mod.rs, batch.rs (BatchPhase2, submit_batch_prebuilt), doc_comments.rs, hyde.rs, prompts.rs (build_contrastive_prompt), summary.rs (find_contrastive_neighbors)
   doc_writer/   - Doc comment generation and source file rewriting (SQ-8, optional "llm-summaries" feature)
     mod.rs      - DocCommentResult, module exports
     formats.rs  - Per-language doc comment formatting (prefix, position, wrapping)
