@@ -17,7 +17,7 @@ use crate::{normalize_path, normalize_slashes};
 use std::path::Path;
 
 /// Relativize a path against a root, returning the stripped version.
-fn rel_path(path: &std::path::PathBuf, root: &Path) -> std::path::PathBuf {
+fn rel_path(path: &Path, root: &Path) -> std::path::PathBuf {
     path.strip_prefix(root).unwrap_or(path).to_path_buf()
 }
 
