@@ -1600,6 +1600,220 @@ fn test_cuda_compatibility() {
     }
 }
 
+// ===== Enriched hard eval - with LLM summaries =====
+
+/// Load pre-generated LLM summaries from fixture file
+fn load_fixture_summaries() -> HashMap<String, String> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::Path::new(&manifest_dir).join("tests/fixtures/eval_hard_summaries.json");
+    let content = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
+    serde_json::from_str(&content)
+        .unwrap_or_else(|e| panic!("Failed to parse {}: {}", path.display(), e))
+}
+
+/// Generate enriched NL: prepend summary (if available) to base NL description.
+/// Matches production behavior in `generate_nl_with_call_context_and_summary`.
+fn generate_enriched_nl(chunk: &cqs::parser::Chunk, summary: Option<&str>) -> String {
+    let base_nl = generate_nl_description(chunk);
+    match summary {
+        Some(s) if !s.is_empty() => format!("{} {}", s, base_nl),
+        _ => base_nl,
+    }
+}
+
+#[test]
+#[ignore] // Requires model files. Run with: cargo test hard_with_summaries -- --ignored --nocapture
+fn test_hard_with_summaries() {
+    let parser = Parser::new().expect("Failed to initialize parser");
+    let e5_config = &MODELS[0]; // E5-base-v2 (production model)
+    let mut embedder = EvalEmbedder::new(e5_config).expect("Failed to load E5-base-v2");
+
+    let summaries = load_fixture_summaries();
+    eprintln!("Loaded {} fixture summaries\n", summaries.len());
+
+    let languages = [
+        Language::Rust,
+        Language::Python,
+        Language::TypeScript,
+        Language::JavaScript,
+        Language::Go,
+    ];
+
+    // Parse BOTH original and hard fixtures — combined corpus (same as test_hard_model_comparison)
+    let mut chunks: Vec<cqs::parser::Chunk> = Vec::new();
+    for lang in &languages {
+        let path = fixture_path(*lang);
+        let parsed = parser
+            .parse_file(&path)
+            .expect("Failed to parse original fixture");
+        chunks.extend(parsed);
+        let hard_path = hard_fixture_path(*lang);
+        if hard_path.exists() {
+            let parsed = parser
+                .parse_file(&hard_path)
+                .expect("Failed to parse hard fixture");
+            chunks.extend(parsed);
+        }
+    }
+
+    // Generate enriched NL descriptions (prepend summary where available)
+    let mut with_summary = 0usize;
+    let mut without_summary = 0usize;
+
+    struct ChunkDesc {
+        name: String,
+        language: Language,
+        nl_text: String,
+    }
+
+    let mut chunk_descs: Vec<ChunkDesc> = Vec::new();
+    for chunk in &chunks {
+        let summary = summaries.get(&chunk.name).map(|s| s.as_str());
+        if summary.is_some() {
+            with_summary += 1;
+        } else {
+            without_summary += 1;
+        }
+        let nl = generate_enriched_nl(chunk, summary);
+        chunk_descs.push(ChunkDesc {
+            name: chunk.name.clone(),
+            language: chunk.language,
+            nl_text: nl,
+        });
+    }
+
+    eprintln!(
+        "Parsed {} chunks: {} with summaries, {} without\n",
+        chunk_descs.len(),
+        with_summary,
+        without_summary
+    );
+
+    // Show a sample enriched NL
+    if let Some(desc) = chunk_descs.iter().find(|d| summaries.contains_key(&d.name)) {
+        eprintln!(
+            "  Sample enriched: {}\n",
+            &desc.nl_text[..desc.nl_text.len().min(150)]
+        );
+    }
+
+    // Embed all chunk descriptions
+    eprintln!("Embedding {} chunks...", chunk_descs.len());
+    let nl_texts: Vec<&str> = chunk_descs.iter().map(|c| c.nl_text.as_str()).collect();
+    let mut all_embeddings: Vec<Vec<f32>> = Vec::new();
+    for batch in nl_texts.chunks(16) {
+        let embs = embedder.embed_documents(batch).expect("Embedding failed");
+        all_embeddings.extend(embs);
+    }
+    assert_eq!(
+        all_embeddings.len(),
+        chunk_descs.len(),
+        "Embedding count mismatch"
+    );
+
+    let indexed: Vec<IndexedChunk> = chunk_descs
+        .iter()
+        .zip(all_embeddings.into_iter())
+        .map(|(desc, emb)| IndexedChunk {
+            name: desc.name.clone(),
+            language: desc.language,
+            embedding: emb,
+        })
+        .collect();
+
+    // Pre-embed all queries
+    eprintln!("Embedding {} queries...", HARD_EVAL_CASES.len());
+    let query_embeddings: Vec<Vec<f32>> = HARD_EVAL_CASES
+        .iter()
+        .map(|case| {
+            embedder
+                .embed_query(case.query)
+                .expect("Query embed failed")
+        })
+        .collect();
+
+    // Detailed per-query output
+    eprintln!("\n  Hard eval cases ({} queries):", HARD_EVAL_CASES.len());
+    for (case, query_embedding) in HARD_EVAL_CASES.iter().zip(query_embeddings.iter()) {
+        let mut scored: Vec<(&str, f32)> = indexed
+            .iter()
+            .filter(|c| c.language == case.language)
+            .map(|c| {
+                (
+                    c.name.as_str(),
+                    cosine_similarity(query_embedding, &c.embedding),
+                )
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+        let rank = scored
+            .iter()
+            .position(|(name, _)| *name == case.expected_name)
+            .map(|pos| pos + 1);
+
+        let top5: Vec<&str> = scored.iter().take(5).map(|(n, _)| *n).collect();
+        let status = match rank {
+            Some(1) => "+",
+            Some(r) if r <= 5 => "~",
+            _ => "-",
+        };
+        eprintln!(
+            "  {} [{:?}] \"{}\" -> exp: {} (rank: {}), top5: {:?}",
+            status,
+            case.language,
+            case.query,
+            case.expected_name,
+            rank.map(|r| r.to_string()).unwrap_or("miss".to_string()),
+            top5
+        );
+    }
+
+    // Compute metrics
+    let (r1_hits, r1_total) = compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 1);
+    let (r5_hits, r5_total) = compute_recall_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 5);
+    let (_, per_lang_mrr) = compute_mrr(&indexed, HARD_EVAL_CASES, &query_embeddings);
+    let ndcg_10 = compute_ndcg_at_k(&indexed, HARD_EVAL_CASES, &query_embeddings, 10);
+
+    let recall_1 = r1_hits as f64 / r1_total as f64;
+    let recall_5 = r5_hits as f64 / r5_total as f64;
+
+    // Print results
+    eprintln!("\n=== Enriched Hard Eval (with LLM summaries) ===\n");
+    eprintln!(
+        "  Coverage: {}/{} chunks have summaries ({:.0}%)",
+        with_summary,
+        chunk_descs.len(),
+        with_summary as f64 / chunk_descs.len() as f64 * 100.0
+    );
+    eprintln!(
+        "  Recall@1: {}/{} ({:.1}%)",
+        r1_hits,
+        r1_total,
+        recall_1 * 100.0
+    );
+    eprintln!(
+        "  Recall@5: {}/{} ({:.1}%)",
+        r5_hits,
+        r5_total,
+        recall_5 * 100.0
+    );
+    eprintln!("  NDCG@10: {:.4}", ndcg_10);
+    eprintln!("\n  Per-language MRR:");
+    for (lang, lang_mrr, count) in &per_lang_mrr {
+        eprintln!("    {:?}: {:.4} ({} queries)", lang, lang_mrr, count);
+    }
+    eprintln!();
+
+    // Gate: enriched pipeline should achieve at least 85% R@1
+    assert!(
+        recall_1 >= 0.85,
+        "Enriched hard eval R@1 {:.1}% below 85% threshold",
+        recall_1 * 100.0
+    );
+}
+
 // ===== Unit tests for retrieval metrics (TC-7) =====
 // These test the pure metric functions without requiring model downloads.
 
