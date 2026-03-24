@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
-// Model configuration - LoRA v3 fine-tuned E5-base-v2 for code search (SQ-7).
+// Model configuration - LoRA v7 fine-tuned E5-base-v2 for code search (SQ-7).
 // Override with CQS_EMBEDDING_MODEL env var to use a different model.
 const DEFAULT_MODEL_REPO: &str = "jamie8johnson/e5-base-v2-code-search";
 const MODEL_FILE: &str = "model.onnx";

@@ -55,16 +55,20 @@ v1.3.0: `--improve-all` doc generation, LoRA v5 default model, Windows build fix
 
 ### ChunkType Variant Status
 
-All 16 variants shipped and used across languages. Only one potential new variant remains: `Extension` for Swift.
+20 variants shipped. Recent additions (PR #662, #663):
 
-| Variant | Shipped in | Used by |
-|---------|-----------|---------|
-| `Module` | v0.16.0 | F#, Ruby, TS (namespace) |
-| `Macro` | v0.17.0 | Rust, C (`#define(...)`) |
-| `TypeAlias` | v0.17.0 | Scala, Rust, TypeScript, Go, C, F#, SQL |
-| `Object` | v0.17.0 | Scala |
+| Variant | Used by |
+|---------|---------|
+| `Extension` | Swift, Objective-C (categories), F#, Scala 3 |
+| `Constructor` | Python, Java, C#, Kotlin, Swift, VB.NET, Rust, Go, C++, PHP, Razor |
+| `Constant` | Rust, Go, C, C++, Gleam, Ruby, PHP, GLSL, Python, JavaScript, TypeScript, Java, Erlang, Bash, R, Lua |
+| `Event` | C#, VB.NET, Solidity |
 
-Infrastructure for adding variants is now cheap: per-language LanguageDef fields, data-driven container extraction, dynamic callable SQL. New variant = enum arm + Display/FromStr + is_callable decision + nl.rs + capture_types.
+Infrastructure for adding variants is cheap: enum arm + Display/FromStr + is_callable + nl.rs + capture_types in parser.
+
+**Coverage gaps fixed (PR #662):** Python/JS/TS constants, Solidity events, Java static final → Constant, Erlang -define() → Macro, Bash readonly → Constant.
+
+**Language improvements (PR #663):** R: S4/R6 classes + UPPER_CASE constants. Lua: UPPER_CASE constants.
 
 ### Multi-Grammar Parsing
 
@@ -155,14 +159,22 @@ Ranked by difficulty / likely impact. 8 experiments + CoIR benchmark completed. 
 **Done (training improvements):**
 1. **Hard negative mining** — 1.89M pairs mined, 65% got hard negatives. GPU FAISS, CoRNStack recipe.
 2. **9-language training data** — CSN 6 + Stack Rust 56k, TS 58k, C++ 63k.
-3. **v7 (unbalanced, GIST+Matryoshka)** — Trained 200k subsample. **Result: degraded.** Hard eval R@1: 81.8% (v5: 85.5%, base: 87.3%). Language imbalance (82% in 3 langs) overwhelmed hard negatives.
+3. **v7 (unbalanced, GIST+Matryoshka)** — 200k subsample. **Best model.** CoIR 49.19, CSN 0.707, hard eval 89.1% (matches base). Shipped v1.3.1.
+4. **v7b balanced** — 414k (46k/lang × 9). **No improvement.** CSN -0.5pp vs v7. Balance doesn't help NL→code.
+5. **Resume-from-checkpoint** — `--resume-from-checkpoint` added to `train_lora.py`.
+6. **ONNX opset-11 export** — weight injection into base E5 graph. Integrated into `train_lora.py --export-onnx`.
 
-**Next:**
-4. **v7b balanced** — 46k/lang × 9 = 414k, equal language representation. Tests imbalance hypothesis. Quick — no new data.
-5. **Resume-from-checkpoint** — add `--resume-from-checkpoint` to `train_lora.py`. HF Trainer supports it natively. Enables multi-epoch training without restarting, checkpoint-and-eval at arbitrary points.
-6. **Language-specific LoRA adapters** — If balanced also fails. LoRACode showed per-language gains correlate with data size; we have 46-63k/lang.
-6. **Call-graph enriched training data** — Clone ~500 repos/lang, extract with structural context. Only after balanced training proves the concept.
-7. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data. Build eval from real agent usage patterns.
+**Next (training — plans written, ready to execute):**
+7. **KeyDAC query augmentation** ($0, ~1h code + 14-21h train) — keyword-preserving query rewrites. Preserve function name/param tokens, modify surrounding words (delete/swap/synonym). 200k pairs → ~600k augmented. Teaches phrasing robustness. Plan: `docs/superpowers/plans/2026-03-24-keydac-augmentation.md`. Python script in training-data repo.
+8. **Contrastive discriminating summaries** ($0, ~1.5h code) — brute-force cosine on embeddings to find top-3 neighbors, pass to LLM prompt: "unlike X, this function..." Index-time improvement in Rust cqs binary. Plan: `docs/superpowers/plans/2026-03-24-contrastive-summaries.md`.
+9. **LLM summary augmentation for training** (~$38) — generate discriminating summaries for 200k training pairs, add as additional (summary, code) query pairs. Enriches query side only. Script: `augment_with_summaries.py`.
+
+**Later:**
+10. **KD-LoRA distillation** (~12h on A6000) — distill CodeSage-large (1.3B, 64.18 CoIR) into E5-base (110M) via LoRA. Potentially largest single quality jump.
+11. **Language-specific LoRA adapters** — if improvements plateau. LoRACode approach.
+12. **Call-graph enriched training data** — clone repos, extract with structural context.
+13. **Publish training dataset to HuggingFace** — after confirming final dataset composition.
+14. **Agent task eval** — telemetry (CQS_TELEMETRY=1) collecting data.
 
 **Done:**
 - Sample size sweep (10k/50k/166k at 1ep) — 166k is optimal, more data at 1ep beats less data

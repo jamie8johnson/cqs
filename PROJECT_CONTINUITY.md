@@ -2,52 +2,52 @@
 
 ## Right Now
 
-**v7 CoIR complete (2026-03-22). Mixed result: +2.4pp CSN, -5.5pp hard eval. Specialization trade-off partially resolved.**
+**All evals and refactoring complete (2026-03-24). Contrastive summaries plan written. Ready for next experiment.**
 
-### v7 Results (complete)
-- Training: 200k subsample, GIST + Matryoshka + hard negs, 1ep, 6h53m on A6000
-- **CoIR overall: 49.19** (v5: 48.67, base: 49.48) — +0.52pp vs v5, only -0.29pp vs base
-- CoIR CSN: **0.707** (v5: 0.683, base: 0.627) — +2.4pp vs v5, best ever
-- CoIR CCR: 0.508 (v5: 0.490, base: 0.569) — partially recovered (+1.8pp vs v5)
-- v7 wins 6/9 CoIR tasks, loses 3
-- Hard eval R@1: **81.8%** (v5: 85.5%, base: 87.3%) — worse on adversarial pairs
-- **Key insight:** GIST + hard negs fix generalist degradation on realistic benchmarks but not adversarial confusable-function pairs
+### Final Model Results
 
-### Hard eval now supports local LoRA models
-- Modified `tests/model_eval.rs`: `EvalEmbedder` resolves local paths, `local_lora_models()` auto-discovers v5/v7
+| Eval | v7 | v7b | Base |
+|------|-----|------|------|
+| Hard eval (raw, 268 chunks) | 89.1% R@1 | 89.1% | 89.1% |
+| CoIR overall (9 tasks) | **49.19** | 49.03 | 49.48 |
+| CoIR CSN (6 langs) | **0.707** | 0.702 | 0.627 |
+| Full pipeline (6,867 chunks) | 65.4% R@1 | — | — |
 
-### Decision: ship v7 or stay on v5?
-- For cqs product (NL→code only): v7 is strictly better (0.707 vs 0.683 CSN)
-- For generalist: v7 nearly matches base (49.19 vs 49.48)
-- Hard eval regression means confusable functions (sorting variants, validators) get worse
-- v5 is safer; v7 is better for the primary use case
+**v7 unbalanced (200k) is the best model.** Shipped in v1.3.1. v7b balanced didn't improve.
 
-### Still possible: v7b balanced training
-- 46k/lang × 9 = 414k total — may further improve by fixing language imbalance
-- Language imbalance (82% in 3 langs) likely still dragging down results
+### What's merged since v1.3.1
+- PR #656: 5 issue fixes (--json alias, light runtime, chunks.rs split, batch cache invalidation)
+- PR #662: Extension ChunkType (Swift/ObjC/F#/Scala) + coverage gaps (7 langs)
+- PR #663: 4 file splits (llm/calls/handlers/scoring) + Constructor ChunkType (10 langs) + R/Lua improvements
+- 5 dependabot PRs (#657-661)
 
-## Session accomplishments
-- v1.3.0 released + 75 audit fixes (PRs #640-653)
-- Full 10-task CoIR controlled comparison: base 49.48, v5 48.67, v7 49.19
-- 9-language training data pipeline (extract → filter → mine)
-- Literature survey + paper draft v0.1
-- Novel ideas: call-graph false neg filtering, test-derived queries
-- All scripts quality-reviewed, backed up to github.com/jamie8johnson/cqs-training
-- v7 trained + evaluated — CoIR improved, hard eval degraded
-- Hard eval supports local LoRA models
+### Next experiments (prioritized)
+1. **Contrastive discriminating summaries** — plan written at `docs/superpowers/plans/2026-03-24-contrastive-summaries.md`. ~1.5h implementation. Brute-force cosine neighbors, contrastive prompt.
+2. **KeyDAC query augmentation** (free) — keyword-preserving training data augmentation
+3. **KD-LoRA distillation** — CodeSage-large (1.3B) → E5-base (110M). ~12h on A6000.
+
+### Pending Changes
+- `ROADMAP.md` — updated with ChunkType status, refactoring done, literature survey refs
+- `docs/superpowers/plans/2026-03-24-contrastive-summaries.md` — new plan
+- `tests/full_pipeline_eval.sh` — new eval script
 
 ## Parked
-- v7b balanced (46k/lang × 9 = 414k) — if imbalance is the remaining issue
-- Synthetic query augmentation, structural metadata — v8
-- Call-graph enriched training data — after balanced training proves concept
-- Language-specific LoRA adapters — if balanced training also fails
-- Paper revision — after shipping decision
-- Rebuild cqs binary + reindex + re-run --improve-all
+- Paper revision — after next training improvement
+- Verified HF eval results — needs CoIR benchmark registration
+- v7b epoch 2 — deprioritized (v7b didn't improve)
+- Full-pipeline hard eval with doc comments — costs API credits
+
+## Open Issues
+- #389: CAGRA memory retention (blocked on upstream cuVS)
+- #255: Pre-built reference packages (enhancement)
+- #106: ort pre-release RC
+- #63: paste crate warning (monitoring)
 
 ## Architecture
-- Version: 1.3.1, Schema: v16
-- Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR)
-- Hard eval: supports local LoRA models (tests/model_eval.rs)
-- Metrics: 92.7% R@1, 0.965 NDCG@10 (hard eval, DocFirst, with v5)
-- Tests: 1290 lib pass
+- Version: 1.4.0
+- Current model: LoRA v7 (200k 9-lang, GIST+Matryoshka, 0.707 CSN, 49.19 CoIR, 89.1% hard eval)
+- ChunkType: 20 variants (Extension: 4 langs, Constructor: 10 langs)
+- 4 large files split into submodules (llm, calls, handlers, scoring)
+- store/chunks.rs also split (PR #656)
+- Tests: 1867 pass
 - Telemetry: CQS_TELEMETRY=1

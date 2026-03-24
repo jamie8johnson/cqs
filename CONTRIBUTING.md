@@ -109,7 +109,8 @@ src/
     batch/      - Batch mode: persistent Store + Embedder, stdin commands, JSONL output, pipeline syntax
       mod.rs      - BatchContext, vector index builder, main loop
       commands.rs - BatchInput/BatchCmd parsing, dispatch router
-      handlers.rs - Handler functions (one per command)
+      handlers/ - Handler functions (one per command)
+        mod.rs, analysis.rs, graph.rs, info.rs, misc.rs, search.rs
       pipeline.rs - Pipeline execution (pipe chaining via `|`)
       types.rs    - Output types (ChunkOutput, normalize_path)
     args.rs     - Shared CLI/batch arg structs via #[command(flatten)]
@@ -127,9 +128,11 @@ src/
   test_helpers.rs - Shared test fixtures module
   store/        - SQLite storage layer (Schema v16, WAL mode)
     mod.rs      - Store struct, open/init, FTS5, RRF fusion
-    chunks.rs   - Chunk CRUD, embedding_batches() for streaming
+    chunks/     - Chunk storage and retrieval
+      mod.rs, crud.rs, staleness.rs, embeddings.rs, query.rs, async_helpers.rs
     notes.rs    - Note CRUD, note_embeddings(), brute-force search
-    calls.rs    - Call graph storage and queries
+    calls/      - Call graph storage and queries
+      mod.rs, crud.rs, dead_code.rs, query.rs, related.rs, test_map.rs
     types.rs    - Type edge storage and queries
     helpers.rs  - Types, embedding conversion functions
     migrations.rs - Schema migration framework
@@ -146,7 +149,8 @@ src/
   reranker.rs   - Cross-encoder re-ranking (ms-marco-MiniLM-L-6-v2)
   search/       - Search algorithms, name matching, HNSW-guided search
     mod.rs      - search_filtered(), search_unified_with_index(), hybrid RRF
-    scoring.rs  - ScoringConfig, score normalization, RRF fusion constants
+    scoring/    - ScoringConfig, score normalization, RRF fusion constants
+      mod.rs, candidate.rs, config.rs, filter.rs, name_match.rs, note_boost.rs
     query.rs    - Query parsing, filter extraction
   math.rs       - Vector math utilities (cosine similarity, SIMD)
   hnsw/         - HNSW index with batched build, atomic writes
@@ -195,7 +199,8 @@ src/
   suggest.rs    - Auto-suggest notes from code patterns
   config.rs     - Configuration file support
   index.rs      - VectorIndex trait (HNSW, CAGRA)
-  llm.rs        - LLM summary generation, HyDE query predictions via Anthropic Batches API
+  llm/          - LLM summary generation, HyDE query predictions via Anthropic Batches API
+    mod.rs, batch.rs, doc_comments.rs, hyde.rs, prompts.rs, summary.rs
   doc_writer/   - Doc comment generation and source file rewriting (SQ-8, optional "llm-summaries" feature)
     mod.rs      - DocCommentResult, module exports
     formats.rs  - Per-language doc comment formatting (prefix, position, wrapping)

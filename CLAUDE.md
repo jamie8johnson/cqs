@@ -64,7 +64,7 @@ Use it for:
 
 Fall back to Grep/Glob only for exact string matches or when semantic search returns nothing.
 
-**Key commands** (most support `--json`; `impact`, `review`, `ci`, and `trace` use `--format json` instead). Search is project-only by default — use `--include-refs` for cross-index, or `--ref <name>` for a specific reference:
+**Key commands** (`--json` works on all commands; `--format mermaid` also accepted on impact/trace). Search is project-only by default — use `--include-refs` for cross-index, or `--ref <name>` for a specific reference:
 - `cqs read <path>` — file contents with notes injected as comments. Use instead of raw `Read` for indexed source files.
 - `cqs read --focus <function>` — focused read: function + type dependencies only. Saves tokens.
 - `cqs similar <function>` — find code similar to a given function. Refactoring discovery, duplicates.
@@ -85,8 +85,8 @@ Fall back to Grep/Glob only for exact string matches or when semantic search ret
 - `cqs impact <function>` — what breaks if you change it. Callers + affected tests.
 - `cqs impact-diff [--base REF]` — diff-aware impact: changed functions, callers, tests to re-run.
 - `cqs batch` — batch mode: reads commands from stdin, outputs JSONL. Persistent Store + lazy Embedder. Supports pipeline syntax: `search "error" | callers | test-map` chains commands via fan-out.
-- `cqs review` — comprehensive diff review: impact-diff + notes + risk scoring. `--base`, `--format json`.
-- `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate. Exit 3 on gate fail. `--format json` for structured output.
+- `cqs review` — comprehensive diff review: impact-diff + notes + risk scoring. `--base`, `--json`.
+- `cqs ci [--base REF] [--gate high|medium|off]` — CI pipeline: review + dead code + gate. Exit 3 on gate fail. `--json` for structured output.
 - `cqs test-map <function>` — map function to tests that exercise it.
 - `cqs trace <source> <target>` — shortest call path between two functions.
 - `cqs context <file>` — module-level overview: chunks, callers, callees, notes.

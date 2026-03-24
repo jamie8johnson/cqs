@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-03-24
+
+### Added
+- **Extension ChunkType** — Swift extensions, Objective-C categories, F# type extensions, Scala 3 extension definitions. Parser infrastructure wired (`capture_types`, `DEF_CAPTURES`).
+- **Constructor ChunkType** — Detects constructors across 10 languages: Python `__init__`, Java/C#/Razor `constructor_declaration`, Kotlin `init`, Swift `init`, VB.NET `Sub New`, Rust `new`, Go `New*`, C++ (no return type), PHP `__construct`. NL: "constructor for {parent}".
+- **Python/JS/TS constant capture** — UPPER_CASE module-level assignments as `ChunkType::Constant` with `post_process` filtering.
+- **`--json` flag on impact/review/ci/trace** — alias for `--format json`. Backward-compatible with existing `--format` flag.
+- **Batch/chat cache auto-invalidation** — mutable caches (HNSW, call graph, file set, notes) invalidate on `index.db` mtime change. `refresh`/`invalidate` command added.
+- **`tests/full_pipeline_eval.sh`** — full-pipeline hard eval script (55 queries against live cqs index).
+
+### Changed
+- **Read-only commands use single-thread runtime** — `Store::open_light()` with `current_thread` tokio runtime for 27 read-only commands. Full 256MB mmap/16MB cache preserved.
+- **Solidity events use `Event` ChunkType** instead of `Property`.
+- **Java `static final` fields promoted to `Constant`** instead of `Property`.
+- **Erlang `-define()` macros captured as `Macro`**.
+- **Bash `readonly` declarations captured as `Constant`**.
+- **R parser improved** — S4 classes (`setClass`), R6 classes (`R6Class`), UPPER_CASE constants.
+- **Lua parser improved** — UPPER_CASE constants (local and global).
+
+### Refactored
+- **`llm.rs` (2245 lines)** split into 6 submodules: client, prompts, batch, summary, doc_comments, hyde.
+- **`store/calls.rs` (1570 lines)** split into 6 submodules: types, crud, query, dead_code, test_map, related.
+- **`cli/batch/handlers.rs` (2082 lines)** split into 6 submodules: search, graph, analysis, info, misc.
+- **`search/scoring.rs` (1748 lines)** split into 5 submodules: config, name_match, note_boost, filter, candidate.
+
+### Fixed
+- **`--json` conflicts with `--format`** — clap `conflicts_with` prevents ambiguous `--json --format mermaid`.
+
+### Dependencies
+- Bumped `tree-sitter-rust` 0.24.0 → 0.24.1
+- Bumped `tree-sitter-fsharp` 0.1.0 → 0.2.2
+- Bumped `tracing-subscriber` 0.3.22 → 0.3.23
+- Bumped `toml` 1.0.6 → 1.0.7
+- Bumped `clap_complete` 4.5.66 → 4.6.0
+
 ## [1.3.1] - 2026-03-22
 
 ### Added

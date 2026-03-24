@@ -1165,3 +1165,13 @@ mentions = [
     "research-log.md",
     "run_coir.py",
 ]
+
+[[note]]
+sentiment = 0.0
+text = "v7b balanced (414k, 46k/lang) did not improve over v7 unbalanced (200k). Natural language proportions beat equal representation for NL→code search. Balance only helps cross-language tasks (CCR, codetrans)."
+mentions = ["train_lora.py"]
+
+[[note]]
+sentiment = 0.5
+text = "Brute-force cosine for contrastive neighbors is fast enough: 1.3s for 10k chunks (768-dim matrix multiply). No need for HNSW or FTS approximation."
+mentions = ["llm/summary.rs"]
