@@ -741,3 +741,20 @@ mentions = [
     "audit",
     "agents",
 ]
+
+[[note]]
+sentiment = -0.5
+text = "Hard eval R@1 varies 2-3pp between runs due to HNSW non-determinism (graph structure differs on rebuild). 92.7% and 94.5% observed on same code/model. Don't draw conclusions from <3pp differences. Run 3x and take median for reliable comparisons."
+mentions = [
+    "src/hnsw/build.rs",
+    "tests/model_eval.rs",
+]
+
+[[note]]
+sentiment = -0.5
+text = "Hard eval R@1 varies 2-4pp between runs (observed: 90.9%, 94.5%, 94.5% on identical code). Source: ORT CUDA inference non-determinism in embedding, not HNSW. GPU thread scheduling produces slightly different float results. Run 3x median for reliable comparisons."
+mentions = [
+    "src/embedder/mod.rs",
+    "tests/model_eval.rs",
+    "CUDA",
+]
